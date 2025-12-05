@@ -20,14 +20,16 @@ export interface CRMLeadData {
 
 /**
  * Get all leads for CRM view
+ * @param clientId - Optional workspace ID to filter leads by
  */
-export async function getCRMLeads(): Promise<{
+export async function getCRMLeads(clientId?: string | null): Promise<{
   success: boolean;
   data?: CRMLeadData[];
   error?: string;
 }> {
   try {
     const leads = await prisma.lead.findMany({
+      where: clientId ? { clientId } : undefined,
       include: {
         client: {
           select: {

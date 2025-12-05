@@ -1,27 +1,47 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { createClient as createSupabaseClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 
 export interface ClientData {
   name: string;
   ghlLocationId: string;
   ghlPrivateKey: string;
-  workspaceId?: string;
 }
 
 /**
- * Fetch all GHL clients from the database
+ * Get the current user's ID from Supabase
+ */
+async function getCurrentUserId(): Promise<string | null> {
+  try {
+    const supabase = await createSupabaseClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    return user?.id || null;
+  } catch (error) {
+    console.error("Failed to get current user:", error);
+    return null;
+  }
+}
+
+/**
+ * Fetch all GHL clients/workspaces owned by the current user
  */
 export async function getClients() {
   try {
+    const userId = await getCurrentUserId();
+    
+    if (!userId) {
+      return { success: false, error: "Not authenticated" };
+    }
+
     const clients = await prisma.client.findMany({
+      where: { userId }, // Only fetch workspaces owned by this user
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
         name: true,
         ghlLocationId: true,
-        workspaceId: true,
         createdAt: true,
         _count: {
           select: { leads: true },
@@ -36,10 +56,16 @@ export async function getClients() {
 }
 
 /**
- * Create a new GHL client
+ * Create a new GHL client/workspace for the current user
  */
 export async function createClient(data: ClientData) {
   try {
+    const userId = await getCurrentUserId();
+    
+    if (!userId) {
+      return { success: false, error: "Not authenticated" };
+    }
+
     // Validate required fields
     if (!data.name || !data.ghlLocationId || !data.ghlPrivateKey) {
       return { success: false, error: "Missing required fields" };
@@ -51,15 +77,23 @@ export async function createClient(data: ClientData) {
     });
 
     if (existing) {
-      return { success: false, error: "A client with this Location ID already exists" };
+      return { success: false, error: "A workspace with this Location ID already exists" };
     }
 
+    // Create the client/workspace with userId
     const client = await prisma.client.create({
       data: {
         name: data.name,
         ghlLocationId: data.ghlLocationId,
         ghlPrivateKey: data.ghlPrivateKey,
-        workspaceId: data.workspaceId || "default",
+        userId, // Tie workspace to current user
+      },
+    });
+
+    // Create default workspace settings
+    await prisma.workspaceSettings.create({
+      data: {
+        clientId: client.id,
       },
     });
 
@@ -67,15 +101,30 @@ export async function createClient(data: ClientData) {
     return { success: true, data: client };
   } catch (error) {
     console.error("Failed to create client:", error);
-    return { success: false, error: "Failed to create client" };
+    return { success: false, error: "Failed to create workspace" };
   }
 }
 
 /**
- * Delete a GHL client by ID
+ * Delete a GHL client/workspace by ID (only if owned by current user)
  */
 export async function deleteClient(id: string) {
   try {
+    const userId = await getCurrentUserId();
+    
+    if (!userId) {
+      return { success: false, error: "Not authenticated" };
+    }
+
+    // Verify ownership before deleting
+    const client = await prisma.client.findFirst({
+      where: { id, userId },
+    });
+
+    if (!client) {
+      return { success: false, error: "Workspace not found or access denied" };
+    }
+
     await prisma.client.delete({
       where: { id },
     });
@@ -84,12 +133,12 @@ export async function deleteClient(id: string) {
     return { success: true };
   } catch (error) {
     console.error("Failed to delete client:", error);
-    return { success: false, error: "Failed to delete client" };
+    return { success: false, error: "Failed to delete workspace" };
   }
 }
 
 /**
- * Get a single client by Location ID (used by webhook)
+ * Get a single client by Location ID (used by webhook - no auth check)
  */
 export async function getClientByLocationId(locationId: string) {
   try {
@@ -102,4 +151,3 @@ export async function getClientByLocationId(locationId: string) {
     return null;
   }
 }
-

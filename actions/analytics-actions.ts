@@ -33,19 +33,25 @@ export interface AnalyticsData {
 
 /**
  * Get analytics data from the database
+ * @param clientId - Optional workspace ID to filter by
  */
-export async function getAnalytics(): Promise<{
+export async function getAnalytics(clientId?: string | null): Promise<{
   success: boolean;
   data?: AnalyticsData;
   error?: string;
 }> {
   try {
+    const clientFilter = clientId ? { clientId } : {};
+
     // Get total leads
-    const totalLeads = await prisma.lead.count();
+    const totalLeads = await prisma.lead.count({
+      where: clientFilter,
+    });
 
     // Get leads we contacted (have outbound messages)
     const leadsContacted = await prisma.lead.count({
       where: {
+        ...clientFilter,
         messages: {
           some: {
             direction: "outbound",
@@ -57,6 +63,7 @@ export async function getAnalytics(): Promise<{
     // Get leads that replied (have inbound messages)
     const leadsResponded = await prisma.lead.count({
       where: {
+        ...clientFilter,
         messages: {
           some: {
             direction: "inbound",
@@ -66,13 +73,14 @@ export async function getAnalytics(): Promise<{
     });
 
     // Calculate response rate: leads that replied / leads contacted
-    const responseRate = leadsContacted > 0 
-      ? Math.round((leadsResponded / leadsContacted) * 100) 
+    const responseRate = leadsContacted > 0
+      ? Math.round((leadsResponded / leadsContacted) * 100)
       : 0;
 
     // Get meetings booked (leads with "Meeting Requested" sentiment)
     const meetingsBooked = await prisma.lead.count({
       where: {
+        ...clientFilter,
         sentimentTag: "Meeting Requested",
       },
     });
@@ -80,6 +88,7 @@ export async function getAnalytics(): Promise<{
     // Get sentiment breakdown
     const sentimentCounts = await prisma.lead.groupBy({
       by: ["sentimentTag"],
+      where: clientFilter,
       _count: {
         sentimentTag: true,
       },
@@ -88,14 +97,15 @@ export async function getAnalytics(): Promise<{
     const sentimentBreakdown = sentimentCounts.map((s) => ({
       sentiment: s.sentimentTag || "Unknown",
       count: s._count.sentimentTag,
-      percentage: totalLeads > 0 
-        ? Math.round((s._count.sentimentTag / totalLeads) * 100) 
+      percentage: totalLeads > 0
+        ? Math.round((s._count.sentimentTag / totalLeads) * 100)
         : 0,
     }));
 
     // Get status breakdown
     const statusCounts = await prisma.lead.groupBy({
       by: ["status"],
+      where: clientFilter,
       _count: {
         status: true,
       },
@@ -104,8 +114,8 @@ export async function getAnalytics(): Promise<{
     const leadsByStatus = statusCounts.map((s) => ({
       status: s.status,
       count: s._count.status,
-      percentage: totalLeads > 0 
-        ? Math.round((s._count.status / totalLeads) * 100) 
+      percentage: totalLeads > 0
+        ? Math.round((s._count.status / totalLeads) * 100)
         : 0,
     }));
 
@@ -130,20 +140,20 @@ export async function getAnalytics(): Promise<{
     // Group messages by actual date (last 7 days)
     const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     const weeklyStats: { day: string; inbound: number; outbound: number }[] = [];
-    
+
     for (let i = 6; i >= 0; i--) {
       const date = new Date(now);
       date.setDate(date.getDate() - i);
       date.setHours(0, 0, 0, 0);
-      
+
       const nextDate = new Date(date);
       nextDate.setDate(nextDate.getDate() + 1);
-      
+
       const dayMessages = messages.filter((m) => {
         const msgDate = new Date(m.createdAt);
         return msgDate >= date && msgDate < nextDate;
       });
-      
+
       weeklyStats.push({
         day: dayNames[date.getDay()],
         inbound: dayMessages.filter((m) => m.direction === "inbound").length,

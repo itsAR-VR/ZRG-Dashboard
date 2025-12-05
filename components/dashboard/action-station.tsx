@@ -2,7 +2,6 @@
 
 import { useRef, useEffect, useState } from "react"
 import type { Conversation } from "@/lib/mock-data"
-import { aiDrafts as mockAiDrafts } from "@/lib/mock-data"
 import { ChatMessage } from "./chat-message"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -66,23 +65,11 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
         setOriginalDraft(draftData[0].content)
         setHasAiDraft(true)
       } else {
-        // Check if conversation says it has draft but we didn't find it
-        if (conversation.hasAiDraft) {
-          console.warn("[ActionStation] Conversation.hasAiDraft is true but no drafts found in DB for:", conversation.id)
-        }
-        // Check for mock drafts
-        const mockDraft = mockAiDrafts[conversation.id]
-        if (mockDraft) {
-          console.log("[ActionStation] Using mock draft")
-          setComposeMessage(mockDraft)
-          setOriginalDraft(mockDraft)
-          setHasAiDraft(true)
-        } else {
-          console.log("[ActionStation] No drafts found")
-          setComposeMessage("")
-          setOriginalDraft("")
-          setHasAiDraft(false)
-        }
+        // No drafts found
+        console.log("[ActionStation] No drafts found")
+        setComposeMessage("")
+        setOriginalDraft("")
+        setHasAiDraft(false)
         setDrafts([])
       }
       setIsLoadingDrafts(false)

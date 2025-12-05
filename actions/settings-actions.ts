@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 
 export interface UserSettingsData {
   id: string;
-  userId: string;
+  clientId: string;
   aiPersonaName: string | null;
   aiTone: string | null;
   aiGreeting: string | null;
@@ -22,24 +22,49 @@ export interface UserSettingsData {
 }
 
 /**
- * Get user settings (or create defaults if none exist)
+ * Get workspace settings (or return null if no workspace selected)
+ * @param clientId - Workspace/client ID
  */
-export async function getUserSettings(): Promise<{
+export async function getUserSettings(clientId?: string | null): Promise<{
   success: boolean;
   data?: UserSettingsData;
   error?: string;
 }> {
   try {
-    // Try to find existing settings
-    let settings = await prisma.userSettings.findUnique({
-      where: { userId: "default" },
+    if (!clientId) {
+      // Return default settings when no workspace is selected
+      return {
+        success: true,
+        data: {
+          id: "default",
+          clientId: "default",
+          aiPersonaName: null,
+          aiTone: "friendly-professional",
+          aiGreeting: "Hi {firstName},",
+          aiSignature: null,
+          autoApproveMeetings: true,
+          flagUncertainReplies: true,
+          pauseForOOO: true,
+          autoBlacklist: true,
+          emailDigest: true,
+          slackAlerts: true,
+          timezone: "America/Los_Angeles",
+          workStartTime: "09:00",
+          workEndTime: "17:00",
+        },
+      };
+    }
+
+    // Try to find existing settings for this workspace
+    let settings = await prisma.workspaceSettings.findUnique({
+      where: { clientId },
     });
 
     // Create default settings if none exist
     if (!settings) {
-      settings = await prisma.userSettings.create({
+      settings = await prisma.workspaceSettings.create({
         data: {
-          userId: "default",
+          clientId,
           aiTone: "friendly-professional",
           autoApproveMeetings: true,
           flagUncertainReplies: true,
@@ -53,22 +78,35 @@ export async function getUserSettings(): Promise<{
       });
     }
 
-    return { success: true, data: settings };
+    return {
+      success: true,
+      data: {
+        ...settings,
+        clientId: settings.clientId,
+      },
+    };
   } catch (error) {
-    console.error("Failed to fetch user settings:", error);
+    console.error("Failed to fetch workspace settings:", error);
     return { success: false, error: "Failed to fetch settings" };
   }
 }
 
 /**
- * Update user settings
+ * Update workspace settings
+ * @param clientId - Workspace/client ID
+ * @param data - Settings data to update
  */
 export async function updateUserSettings(
+  clientId: string | null | undefined,
   data: Partial<UserSettingsData>
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await prisma.userSettings.upsert({
-      where: { userId: "default" },
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    await prisma.workspaceSettings.upsert({
+      where: { clientId },
       update: {
         aiPersonaName: data.aiPersonaName,
         aiTone: data.aiTone,
@@ -85,7 +123,7 @@ export async function updateUserSettings(
         workEndTime: data.workEndTime,
       },
       create: {
-        userId: "default",
+        clientId,
         aiPersonaName: data.aiPersonaName,
         aiTone: data.aiTone ?? "friendly-professional",
         aiGreeting: data.aiGreeting,
@@ -105,24 +143,31 @@ export async function updateUserSettings(
     revalidatePath("/");
     return { success: true };
   } catch (error) {
-    console.error("Failed to update user settings:", error);
+    console.error("Failed to update workspace settings:", error);
     return { success: false, error: "Failed to update settings" };
   }
 }
 
 /**
- * Update AI signature
+ * Update AI signature for a workspace
  */
-export async function updateAISignature(signature: string): Promise<{
+export async function updateAISignature(
+  clientId: string | null | undefined,
+  signature: string
+): Promise<{
   success: boolean;
   error?: string;
 }> {
   try {
-    await prisma.userSettings.upsert({
-      where: { userId: "default" },
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    await prisma.workspaceSettings.upsert({
+      where: { clientId },
       update: { aiSignature: signature },
       create: {
-        userId: "default",
+        clientId,
         aiSignature: signature,
       },
     });
@@ -136,23 +181,30 @@ export async function updateAISignature(signature: string): Promise<{
 }
 
 /**
- * Update AI personality
+ * Update AI personality for a workspace
  */
-export async function updateAIPersonality(data: {
-  name?: string;
-  tone?: string;
-  greeting?: string;
-}): Promise<{ success: boolean; error?: string }> {
+export async function updateAIPersonality(
+  clientId: string | null | undefined,
+  data: {
+    name?: string;
+    tone?: string;
+    greeting?: string;
+  }
+): Promise<{ success: boolean; error?: string }> {
   try {
-    await prisma.userSettings.upsert({
-      where: { userId: "default" },
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    await prisma.workspaceSettings.upsert({
+      where: { clientId },
       update: {
         aiPersonaName: data.name,
         aiTone: data.tone,
         aiGreeting: data.greeting,
       },
       create: {
-        userId: "default",
+        clientId,
         aiPersonaName: data.name,
         aiTone: data.tone ?? "friendly-professional",
         aiGreeting: data.greeting,
@@ -168,20 +220,27 @@ export async function updateAIPersonality(data: {
 }
 
 /**
- * Update automation rules
+ * Update automation rules for a workspace
  */
-export async function updateAutomationRules(data: {
-  autoApproveMeetings?: boolean;
-  flagUncertainReplies?: boolean;
-  pauseForOOO?: boolean;
-  autoBlacklist?: boolean;
-}): Promise<{ success: boolean; error?: string }> {
+export async function updateAutomationRules(
+  clientId: string | null | undefined,
+  data: {
+    autoApproveMeetings?: boolean;
+    flagUncertainReplies?: boolean;
+    pauseForOOO?: boolean;
+    autoBlacklist?: boolean;
+  }
+): Promise<{ success: boolean; error?: string }> {
   try {
-    await prisma.userSettings.upsert({
-      where: { userId: "default" },
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    await prisma.workspaceSettings.upsert({
+      where: { clientId },
       update: data,
       create: {
-        userId: "default",
+        clientId,
         ...data,
       },
     });
@@ -193,4 +252,3 @@ export async function updateAutomationRules(data: {
     return { success: false, error: "Failed to update rules" };
   }
 }
-

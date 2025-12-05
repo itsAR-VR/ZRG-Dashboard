@@ -8,15 +8,14 @@ import {
   Plus,
   ChevronDown,
   ChevronUp,
-  ExternalLink,
   Mail,
   Phone,
   MoreHorizontal,
   Building2,
-  Globe,
   Clock,
   Loader2,
   MessageSquare,
+  Users,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -28,7 +27,6 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Separator } from "@/components/ui/separator"
 import { getCRMLeads, updateLeadStatus, deleteLead, type CRMLeadData } from "@/actions/crm-actions"
-import { mockLeads, type Lead } from "@/lib/mock-data"
 
 type LeadStatus = "new" | "qualified" | "meeting-booked" | "not-interested" | "blacklisted"
 
@@ -158,10 +156,13 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange }: LeadDetailShee
   )
 }
 
-export function CRMView() {
+interface CRMViewProps {
+  activeWorkspace?: string | null
+}
+
+export function CRMView({ activeWorkspace }: CRMViewProps) {
   const [leads, setLeads] = useState<CRMLeadData[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [useMockData, setUseMockData] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
   const [sortField, setSortField] = useState<"name" | "leadScore" | "company">("leadScore")
@@ -169,40 +170,23 @@ export function CRMView() {
   const [selectedLead, setSelectedLead] = useState<CRMLeadData | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
 
-  // Fetch leads on mount
+  // Fetch leads on mount and when workspace changes
   useEffect(() => {
     async function fetchLeads() {
       setIsLoading(true)
-      const result = await getCRMLeads()
+      const result = await getCRMLeads(activeWorkspace)
       
-      if (result.success && result.data && result.data.length > 0) {
+      if (result.success && result.data) {
         setLeads(result.data)
-        setUseMockData(false)
       } else {
-        // Fall back to mock data
-        const mockCrmLeads: CRMLeadData[] = mockLeads.map((l) => ({
-          id: l.id,
-          name: l.name,
-          email: l.email,
-          phone: l.phone,
-          company: l.company,
-          title: l.title,
-          status: l.status,
-          leadScore: l.leadScore,
-          sentimentTag: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          messageCount: 0,
-        }))
-        setLeads(mockCrmLeads)
-        setUseMockData(true)
+        setLeads([])
       }
       
       setIsLoading(false)
     }
 
     fetchLeads()
-  }, [])
+  }, [activeWorkspace])
 
   const filteredLeads = leads
     .filter((lead) => {
@@ -241,20 +225,14 @@ export function CRMView() {
       setSelectedLead({ ...selectedLead, status })
     }
     
-    // Persist to database if not using mock data
-    if (!useMockData) {
-      await updateLeadStatus(id, status)
-    }
+    await updateLeadStatus(id, status)
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm("Are you sure you want to delete this lead?")) return
     
     setLeads(leads.filter((l) => l.id !== id))
-    
-    if (!useMockData) {
-      await deleteLead(id)
-    }
+    await deleteLead(id)
   }
 
   const openLeadDetail = (lead: CRMLeadData) => {
@@ -275,6 +253,34 @@ export function CRMView() {
     )
   }
 
+  // Empty state when no leads
+  if (leads.length === 0) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="border-b px-6 py-4">
+          <h1 className="text-2xl font-bold">CRM / Leads</h1>
+          <p className="text-muted-foreground">Manage your leads and contacts</p>
+        </div>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center space-y-4">
+            <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
+              <Users className="h-12 w-12 text-muted-foreground" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold">No leads yet</h3>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                {activeWorkspace 
+                  ? "This workspace doesn't have any leads yet. Leads will appear here when they start messaging."
+                  : "Select a workspace to view its leads, or wait for incoming messages from your GHL integrations."
+                }
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="border-b px-6 py-4">
@@ -282,7 +288,7 @@ export function CRMView() {
           <div>
             <h1 className="text-2xl font-bold">CRM / Leads</h1>
             <p className="text-muted-foreground">
-              {useMockData ? "Showing demo data" : `${leads.length} leads from database`}
+              {leads.length} {leads.length === 1 ? 'lead' : 'leads'}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -354,7 +360,7 @@ export function CRMView() {
                 {filteredLeads.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                      No leads found
+                      No leads match your search
                     </TableCell>
                   </TableRow>
                 ) : (

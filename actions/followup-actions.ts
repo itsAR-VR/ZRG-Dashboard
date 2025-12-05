@@ -19,8 +19,13 @@ export interface FollowUpTaskData {
 
 /**
  * Get all follow-up tasks
+ * @param filter - Time filter for tasks
+ * @param clientId - Optional workspace ID to filter by
  */
-export async function getFollowUpTasks(filter: "today" | "week" | "overdue" | "all" = "all"): Promise<{
+export async function getFollowUpTasks(
+  filter: "today" | "week" | "overdue" | "all" = "all",
+  clientId?: string | null
+): Promise<{
   success: boolean;
   data?: FollowUpTaskData[];
   error?: string;
@@ -34,7 +39,10 @@ export async function getFollowUpTasks(filter: "today" | "week" | "overdue" | "a
     const endOfWeek = new Date(startOfDay);
     endOfWeek.setDate(endOfWeek.getDate() + 7);
 
-    let whereClause: any = { status: "pending" };
+    let whereClause: any = {
+      status: "pending",
+      ...(clientId && { lead: { clientId } }),
+    };
 
     switch (filter) {
       case "today":

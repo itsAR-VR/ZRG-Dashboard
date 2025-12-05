@@ -6,8 +6,8 @@ import { ActionStation } from "./action-station";
 import { CrmDrawer } from "./crm-drawer";
 import { getConversations, getConversation, type ConversationData } from "@/actions/lead-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
-import { Loader2, Wifi, WifiOff } from "lucide-react";
-import { mockConversations, type Conversation, type Lead } from "@/lib/mock-data";
+import { Loader2, Wifi, WifiOff, Inbox } from "lucide-react";
+import { type Conversation, type Lead } from "@/lib/mock-data";
 import { Badge } from "@/components/ui/badge";
 
 interface InboxViewProps {
@@ -20,7 +20,7 @@ interface InboxViewProps {
 const POLLING_INTERVAL = 30000;
 
 // Convert DB conversation to component format
-function convertToMockFormat(conv: ConversationData): Conversation {
+function convertToComponentFormat(conv: ConversationData): Conversation {
   return {
     id: conv.id,
     lead: {
@@ -42,7 +42,6 @@ function convertToMockFormat(conv: ConversationData): Conversation {
       },
     },
     platform: conv.platform,
-    // Use the sentimentTag directly if available, otherwise use classification
     classification: (conv.sentimentTag?.toLowerCase().replace(/\s+/g, "-") || conv.classification) as Conversation["classification"],
     lastMessage: conv.lastMessage,
     lastMessageTime: new Date(conv.lastMessageTime),
@@ -58,9 +57,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [isCrmOpen, setIsCrmOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [useMockData, setUseMockData] = useState(false);
   const [isLive, setIsLive] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const realtimeConnectedRef = useRef(false);
@@ -71,29 +68,29 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     
     try {
       const result = await getConversations(activeWorkspace);
-      if (result.success && result.data && result.data.length > 0) {
-        const converted = result.data.map(convertToMockFormat);
+      if (result.success && result.data) {
+        const converted = result.data.map(convertToComponentFormat);
         setConversations(converted);
-        setUseMockData(false);
-        setLastUpdate(new Date());
         
         // Set first conversation as active if none selected or current selection not in list
-        const currentExists = converted.some(c => c.id === activeConversationId);
-        if (!activeConversationId || !currentExists) {
-          setActiveConversationId(converted[0].id);
+        if (converted.length > 0) {
+          const currentExists = converted.some(c => c.id === activeConversationId);
+          if (!activeConversationId || !currentExists) {
+            setActiveConversationId(converted[0].id);
+          }
+        } else {
+          setActiveConversationId(null);
+          setActiveConversation(null);
         }
       } else {
-        // Fall back to mock data if no real data
-        setConversations(mockConversations);
-        setUseMockData(true);
-        if (!activeConversationId && mockConversations.length > 0) {
-          setActiveConversationId(mockConversations[0].id);
-        }
+        // No data - show empty state
+        setConversations([]);
+        setActiveConversationId(null);
+        setActiveConversation(null);
       }
     } catch (error) {
       console.error("Error fetching conversations:", error);
-      setConversations(mockConversations);
-      setUseMockData(true);
+      setConversations([]);
     } finally {
       setIsLoading(false);
     }
@@ -106,17 +103,8 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
       return;
     }
 
-    // If using mock data, find from mock
-    if (useMockData) {
-      const mock = mockConversations.find((c) => c.id === activeConversationId);
-      setActiveConversation(mock || null);
-      return;
-    }
-
-    // Otherwise fetch from DB
     const result = await getConversation(activeConversationId);
     if (result.success && result.data) {
-      // Find the base conversation from our list
       const baseConv = conversations.find((c) => c.id === activeConversationId);
       if (baseConv) {
         setActiveConversation({
@@ -125,7 +113,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
         });
       }
     }
-  }, [activeConversationId, useMockData, conversations]);
+  }, [activeConversationId, conversations]);
 
   // Refetch when workspace changes
   useEffect(() => {
@@ -137,11 +125,10 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     fetchActiveConversation();
   }, [fetchActiveConversation]);
 
-  // Set up realtime subscriptions - ALWAYS try to connect
+  // Set up realtime subscriptions
   useEffect(() => {
     console.log("[Realtime] Setting up subscriptions...");
 
-    // Subscribe to new messages
     const messagesChannel = subscribeToMessages((payload) => {
       console.log("[Realtime] New message received:", payload);
       realtimeConnectedRef.current = true;
@@ -149,7 +136,6 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
       fetchConversations();
     });
 
-    // Subscribe to lead updates
     const leadsChannel = subscribeToLeads((payload) => {
       console.log("[Realtime] Lead updated:", payload);
       realtimeConnectedRef.current = true;
@@ -157,7 +143,6 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
       fetchConversations();
     });
 
-    // Check connection status after a delay
     const checkConnection = setTimeout(() => {
       if (!realtimeConnectedRef.current) {
         console.log("[Realtime] No connection detected, relying on polling");
@@ -173,14 +158,12 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     };
   }, [fetchConversations]);
 
-  // Set up polling as fallback (always active, but less frequent if realtime works)
+  // Set up polling as fallback
   useEffect(() => {
-    // Clear existing polling
     if (pollingRef.current) {
       clearInterval(pollingRef.current);
     }
 
-    // Set up polling
     pollingRef.current = setInterval(() => {
       console.log("[Polling] Refreshing conversations...");
       fetchConversations();
@@ -205,6 +188,28 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     return (
       <div className="flex flex-1 items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Empty state when no conversations
+  if (conversations.length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <div className="text-center space-y-4">
+          <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
+            <Inbox className="h-12 w-12 text-muted-foreground" />
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold">No conversations yet</h3>
+            <p className="text-sm text-muted-foreground max-w-sm">
+              {activeWorkspace 
+                ? "This workspace doesn't have any conversations yet. They will appear here when leads start messaging."
+                : "Select a workspace or wait for incoming messages from your GHL integrations."
+              }
+            </p>
+          </div>
+        </div>
       </div>
     );
   }

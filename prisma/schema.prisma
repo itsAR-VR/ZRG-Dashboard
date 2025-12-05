@@ -10,16 +10,46 @@ datasource db {
 }
 
 // Stores GHL API Keys per sub-account for multi-tenancy
+// Each workspace is tied to a user (from Supabase Auth)
 model Client {
-  id            String     @id @default(uuid())
+  id            String              @id @default(uuid())
   name          String
-  ghlLocationId String     @unique // Used to identify which client sent the webhook
-  ghlPrivateKey String     // The generic API key for this sub-account
-  workspaceId   String     // To group clients
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  ghlLocationId String              @unique // Used to identify which client sent the webhook
+  ghlPrivateKey String              // The generic API key for this sub-account
+  userId        String              // Supabase Auth user ID - ties workspace to user
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
   leads         Lead[]
   campaigns     Campaign[]
+  settings      WorkspaceSettings?  // One-to-one relation with settings
+
+  @@index([userId])
+}
+
+// Workspace-specific settings (AI personality, automation, etc.)
+model WorkspaceSettings {
+  id                   String   @id @default(uuid())
+  clientId             String   @unique // Links to workspace
+  client               Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // AI Personality Settings
+  aiPersonaName        String?
+  aiTone               String?  @default("friendly-professional")
+  aiGreeting           String?
+  aiSignature          String?  @db.Text
+  // Automation Rules
+  autoApproveMeetings  Boolean  @default(true)
+  flagUncertainReplies Boolean  @default(true)
+  pauseForOOO          Boolean  @default(true)
+  autoBlacklist        Boolean  @default(true)
+  // Notification Settings
+  emailDigest          Boolean  @default(true)
+  slackAlerts          Boolean  @default(true)
+  // Schedule Settings
+  timezone             String?
+  workStartTime        String?  @default("09:00")
+  workEndTime          String?  @default("17:00")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 }
 
 // GHL Workflows/Campaigns synced from the API
@@ -107,29 +137,4 @@ model AIDraft {
 
   @@index([leadId])
   @@index([status])
-}
-
-// User settings and preferences
-model UserSettings {
-  id                   String   @id @default(uuid())
-  userId               String   @unique @default("default") // For now, single user
-  // AI Personality Settings
-  aiPersonaName        String?
-  aiTone               String?  @default("friendly-professional")
-  aiGreeting           String?
-  aiSignature          String?  @db.Text
-  // Automation Rules
-  autoApproveMeetings  Boolean  @default(true)
-  flagUncertainReplies Boolean  @default(true)
-  pauseForOOO          Boolean  @default(true)
-  autoBlacklist        Boolean  @default(true)
-  // Notification Settings
-  emailDigest          Boolean  @default(true)
-  slackAlerts          Boolean  @default(true)
-  // Schedule Settings
-  timezone             String?
-  workStartTime        String?  @default("09:00")
-  workEndTime          String?  @default("17:00")
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
 }

@@ -19,8 +19,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { getFollowUpTasks, completeFollowUpTask, skipFollowUpTask, type FollowUpTaskData } from "@/actions/followup-actions"
-import { mockFollowUpTasks, type FollowUpTask } from "@/lib/mock-data"
+import { getFollowUpTasks, completeFollowUpTask, skipFollowUpTask } from "@/actions/followup-actions"
 
 const typeIcons = {
   email: Mail,
@@ -60,7 +59,7 @@ function formatDueDate(date: Date): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" })
 }
 
-// Unified task type for both DB and mock data
+// Unified task type
 interface UnifiedTask {
   id: string
   type: "email" | "call" | "linkedin" | "sms"
@@ -158,18 +157,20 @@ function TaskCard({ task, onExecute, onSnooze, onSkip }: TaskCardProps) {
   )
 }
 
-export function FollowUpsView() {
+interface FollowUpsViewProps {
+  activeWorkspace?: string | null
+}
+
+export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
   const [tasks, setTasks] = useState<UnifiedTask[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [useMockData, setUseMockData] = useState(false)
 
   useEffect(() => {
     async function fetchTasks() {
       setIsLoading(true)
-      const result = await getFollowUpTasks("all")
+      const result = await getFollowUpTasks("all", activeWorkspace)
       
-      if (result.success && result.data && result.data.length > 0) {
-        // Convert DB tasks to unified format
+      if (result.success && result.data) {
         const dbTasks: UnifiedTask[] = result.data.map((t) => ({
           id: t.id,
           type: t.type,
@@ -182,31 +183,15 @@ export function FollowUpsView() {
           suggestedMessage: t.suggestedMessage,
         }))
         setTasks(dbTasks)
-        setUseMockData(false)
       } else {
-        // Fall back to mock data
-        const mockTasks: UnifiedTask[] = mockFollowUpTasks.map((t) => ({
-          id: t.id,
-          type: t.type,
-          dueDate: new Date(t.dueDate),
-          leadName: t.lead.name,
-          leadCompany: t.lead.company,
-          leadScore: t.lead.leadScore,
-          leadTitle: t.lead.title,
-          sequenceStep: t.sequenceStep,
-          totalSteps: t.totalSteps,
-          campaignName: t.campaignName,
-          suggestedMessage: t.suggestedMessage,
-        }))
-        setTasks(mockTasks)
-        setUseMockData(true)
+        setTasks([])
       }
       
       setIsLoading(false)
     }
 
     fetchTasks()
-  }, [])
+  }, [activeWorkspace])
 
   const overdueTasks = tasks.filter((t) => isOverdue(t.dueDate))
   const todayTasks = tasks.filter((t) => isToday(t.dueDate))
@@ -214,9 +199,7 @@ export function FollowUpsView() {
 
   const handleExecute = async (id: string) => {
     setTasks(tasks.filter((t) => t.id !== id))
-    if (!useMockData) {
-      await completeFollowUpTask(id)
-    }
+    await completeFollowUpTask(id)
   }
 
   const handleSnooze = (id: string) => {
@@ -225,9 +208,7 @@ export function FollowUpsView() {
 
   const handleSkip = async (id: string) => {
     setTasks(tasks.filter((t) => t.id !== id))
-    if (!useMockData) {
-      await skipFollowUpTask(id)
-    }
+    await skipFollowUpTask(id)
   }
 
   if (isLoading) {
@@ -238,13 +219,39 @@ export function FollowUpsView() {
     )
   }
 
+  // Empty state when no tasks
+  if (tasks.length === 0) {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="border-b px-6 py-4">
+          <h1 className="text-2xl font-bold">Follow-ups</h1>
+          <p className="text-muted-foreground">Manage your scheduled outreach tasks</p>
+        </div>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center space-y-4">
+            <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
+              <Calendar className="h-12 w-12 text-muted-foreground" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold">No follow-up tasks</h3>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                {activeWorkspace 
+                  ? "This workspace doesn't have any follow-up tasks. Tasks will appear when leads need follow-ups."
+                  : "Select a workspace to view its follow-up tasks."
+                }
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="border-b px-6 py-4">
         <h1 className="text-2xl font-bold">Follow-ups</h1>
-        <p className="text-muted-foreground">
-          {useMockData ? "Showing demo data" : "Manage your scheduled outreach tasks"}
-        </p>
+        <p className="text-muted-foreground">Manage your scheduled outreach tasks</p>
       </div>
 
       <div className="flex-1 overflow-hidden p-6">
@@ -296,23 +303,15 @@ export function FollowUpsView() {
 
           <ScrollArea className="h-[calc(100%-48px)] mt-4">
             <TabsContent value="all" className="mt-0 space-y-3">
-              {tasks.length === 0 ? (
-                <div className="text-center py-12 text-muted-foreground">
-                  <Calendar className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No follow-up tasks</p>
-                  <p className="text-sm mt-2">Tasks will appear here when leads need follow-ups</p>
-                </div>
-              ) : (
-                tasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    onExecute={handleExecute}
-                    onSnooze={handleSnooze}
-                    onSkip={handleSkip}
-                  />
-                ))
-              )}
+              {tasks.map((task) => (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  onExecute={handleExecute}
+                  onSnooze={handleSnooze}
+                  onSkip={handleSkip}
+                />
+              ))}
             </TabsContent>
 
             <TabsContent value="overdue" className="mt-0 space-y-3">

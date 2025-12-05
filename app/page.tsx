@@ -28,7 +28,10 @@ export default function DashboardPage() {
       const result = await getClients()
       if (result.success && result.data) {
         setWorkspaces(result.data as Client[])
-        // Don't auto-select - show all by default (null)
+        // Auto-select first workspace if available
+        if (result.data.length > 0 && !activeWorkspace) {
+          setActiveWorkspace(result.data[0].id)
+        }
       }
     }
     fetchWorkspaces()
@@ -37,13 +40,13 @@ export default function DashboardPage() {
   const renderContent = () => {
     switch (activeView) {
       case "followups":
-        return <FollowUpsView />
+        return <FollowUpsView activeWorkspace={activeWorkspace} />
       case "crm":
-        return <CRMView />
+        return <CRMView activeWorkspace={activeWorkspace} />
       case "analytics":
-        return <AnalyticsView />
+        return <AnalyticsView activeWorkspace={activeWorkspace} />
       case "settings":
-        return <SettingsView />
+        return <SettingsView activeWorkspace={activeWorkspace} />
       case "inbox":
       default:
         return (

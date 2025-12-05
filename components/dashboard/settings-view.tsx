@@ -76,7 +76,11 @@ const teamMembers = [
   },
 ]
 
-export function SettingsView() {
+interface SettingsViewProps {
+  activeWorkspace?: string | null
+}
+
+export function SettingsView({ activeWorkspace }: SettingsViewProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [hasChanges, setHasChanges] = useState(false)
@@ -110,11 +114,11 @@ export function SettingsView() {
     autoBlacklist: true,
   })
 
-  // Load settings on mount
+  // Load settings when workspace changes
   useEffect(() => {
     async function loadSettings() {
       setIsLoading(true)
-      const result = await getUserSettings()
+      const result = await getUserSettings(activeWorkspace)
       
       if (result.success && result.data) {
         setSettings(result.data)
@@ -146,7 +150,7 @@ export function SettingsView() {
     }
 
     loadSettings()
-  }, [])
+  }, [activeWorkspace])
 
   // Track changes
   const handleChange = () => {
@@ -157,7 +161,7 @@ export function SettingsView() {
   const handleSaveSettings = async () => {
     setIsSaving(true)
     
-    const result = await updateUserSettings({
+    const result = await updateUserSettings(activeWorkspace, {
       aiPersonaName: aiPersona.name || undefined,
       aiTone: aiPersona.tone,
       aiGreeting: aiPersona.greeting,
