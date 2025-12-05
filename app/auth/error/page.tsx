@@ -1,9 +1,18 @@
+"use client";
+
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, RefreshCw } from "lucide-react";
 
 export default function AuthErrorPage() {
+  const searchParams = useSearchParams();
+  const message = searchParams.get("message");
+
+  // Check if it's an expired link error
+  const isExpiredError = message?.toLowerCase().includes("expired");
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md text-center">
@@ -15,25 +24,43 @@ export default function AuthErrorPage() {
           </div>
           <CardTitle className="text-2xl font-bold">Authentication Error</CardTitle>
           <CardDescription>
-            Something went wrong during authentication
+            {isExpiredError 
+              ? "Your verification link has expired" 
+              : "Something went wrong during authentication"
+            }
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          {message && (
+            <div className="p-3 bg-destructive/10 rounded-md">
+              <p className="text-sm text-destructive">{message}</p>
+            </div>
+          )}
           <p className="text-sm text-muted-foreground">
-            The link may have expired or there was an issue with your authentication.
-            Please try again.
+            {isExpiredError 
+              ? "Email verification links expire after 24 hours. Please sign up again to receive a new link."
+              : "Please try signing in again or contact support if the problem persists."
+            }
           </p>
         </CardContent>
         <CardFooter className="flex justify-center gap-4">
           <Link href="/auth/login">
             <Button variant="outline">Back to Login</Button>
           </Link>
-          <Link href="/auth/signup">
-            <Button>Sign Up</Button>
-          </Link>
+          {isExpiredError ? (
+            <Link href="/auth/signup">
+              <Button>
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Sign Up Again
+              </Button>
+            </Link>
+          ) : (
+            <Link href="/auth/signup">
+              <Button>Sign Up</Button>
+            </Link>
+          )}
         </CardFooter>
       </Card>
     </div>
   );
 }
-
