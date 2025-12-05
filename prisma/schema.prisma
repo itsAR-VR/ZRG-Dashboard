@@ -96,6 +96,7 @@ model Lead {
 // SMS messages synced from GHL
 model Message {
   id        String   @id @default(uuid())
+  ghlId     String?  @unique // GoHighLevel Message ID - source of truth for deduplication
   body      String   @db.Text
   direction String   // 'inbound' or 'outbound'
   leadId    String

@@ -14,6 +14,7 @@ interface SendMessageResult {
 interface SyncHistoryResult {
   success: boolean;
   importedCount?: number;
+  healedCount?: number;  // Messages with corrected ghlId/timestamp
   totalMessages?: number;
   skippedDuplicates?: number;
   error?: string;
@@ -63,8 +64,8 @@ async function messageExists(
 
 /**
  * Sync conversation history from GHL for a lead
- * Fetches all messages from GHL and imports any that are missing
- * Uses fuzzy timestamp matching to prevent duplicates
+ * Uses GHL Message ID (ghlId) as the source of truth for deduplication
+ * Heals existing messages that were created without ghlId by matching body+direction
  * 
  * @param leadId - The internal lead ID
  */
@@ -112,47 +113,86 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
     const ghlMessages = exportResult.data.messages || [];
     console.log(`[Sync] Found ${ghlMessages.length} messages in GHL`);
 
-    // Import messages that don't exist yet
-    // Store the actual GHL timestamp in sentAt for accurate time display
+    // Intelligent sync using ghlId as source of truth
     let importedCount = 0;
+    let healedCount = 0;
     let skippedDuplicates = 0;
     
     for (const msg of ghlMessages) {
       try {
         const msgTimestamp = new Date(msg.dateAdded); // Actual time from GHL
-        
-        // Check if message already exists using fuzzy timestamp matching
-        const exists = await messageExists(leadId, msg.body, msg.direction, msgTimestamp);
+        const ghlId = msg.id;
 
-        if (!exists) {
-          await prisma.message.create({
+        // Step 1: Check if message exists by ghlId (definitive match)
+        const existingByGhlId = await prisma.message.findUnique({
+          where: { ghlId },
+        });
+
+        if (existingByGhlId) {
+          // Message already exists with ghlId - just ensure timestamp is correct
+          if (existingByGhlId.sentAt.getTime() !== msgTimestamp.getTime()) {
+            await prisma.message.update({
+              where: { ghlId },
+              data: { sentAt: msgTimestamp },
+            });
+            console.log(`[Sync] Fixed timestamp for ghlId ${ghlId}`);
+            healedCount++;
+          } else {
+            skippedDuplicates++;
+          }
+          continue;
+        }
+
+        // Step 2: Check if message exists by body + direction (legacy match without ghlId)
+        const existingByContent = await prisma.message.findFirst({
+          where: {
+            leadId,
+            body: msg.body,
+            direction: msg.direction,
+            ghlId: null, // Only match messages without ghlId
+          },
+        });
+
+        if (existingByContent) {
+          // "Heal" the legacy message: add ghlId and correct timestamp
+          await prisma.message.update({
+            where: { id: existingByContent.id },
             data: {
-              body: msg.body,
-              direction: msg.direction,
-              leadId,
-              sentAt: msgTimestamp, // Store actual GHL timestamp
-              // createdAt will default to now() (when record was created in our DB)
+              ghlId,
+              sentAt: msgTimestamp, // Fix the timestamp to GHL's actual time
             },
           });
-          importedCount++;
-          console.log(`[Sync] Imported: "${msg.body.substring(0, 30)}..." @ ${msgTimestamp.toISOString()}`);
-        } else {
-          skippedDuplicates++;
-          console.log(`[Sync] Skipped duplicate: "${msg.body.substring(0, 30)}..."`);
+          healedCount++;
+          console.log(`[Sync] Healed: "${msg.body.substring(0, 30)}..." -> ghlId: ${ghlId}, sentAt: ${msgTimestamp.toISOString()}`);
+          continue;
         }
+
+        // Step 3: No match found - create new message with ghlId
+        await prisma.message.create({
+          data: {
+            ghlId,
+            body: msg.body,
+            direction: msg.direction,
+            leadId,
+            sentAt: msgTimestamp,
+          },
+        });
+        importedCount++;
+        console.log(`[Sync] Imported: "${msg.body.substring(0, 30)}..." (${msg.direction}) @ ${msgTimestamp.toISOString()}`);
       } catch (error) {
         // Log but continue with other messages
-        console.error(`[Sync] Error importing message: ${error}`);
+        console.error(`[Sync] Error processing message ${msg.id}: ${error}`);
       }
     }
 
-    console.log(`[Sync] Imported ${importedCount} new messages, skipped ${skippedDuplicates} duplicates`);
+    console.log(`[Sync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
 
     revalidatePath("/");
 
     return {
       success: true,
       importedCount,
+      healedCount,
       totalMessages: ghlMessages.length,
       skippedDuplicates,
     };
@@ -211,14 +251,20 @@ export async function sendMessage(
       return { success: false, error: result.error || "Failed to send message via GHL" };
     }
 
-    // Save the outbound message to our database
-    // sentAt = now() since we're sending it right now
+    // Extract GHL message ID and timestamp from response
+    const ghlMessageId = result.data?.messageId || null;
+    const ghlDateAdded = result.data?.dateAdded ? new Date(result.data.dateAdded) : new Date();
+
+    console.log(`[sendMessage] GHL messageId: ${ghlMessageId}, dateAdded: ${ghlDateAdded.toISOString()}`);
+
+    // Save the outbound message to our database with GHL ID
     const savedMessage = await prisma.message.create({
       data: {
+        ghlId: ghlMessageId, // Store GHL message ID for deduplication
         body: message,
         direction: "outbound",
         leadId: lead.id,
-        sentAt: new Date(), // Explicit: message is sent now
+        sentAt: ghlDateAdded, // Use GHL timestamp for accuracy
       },
     });
 

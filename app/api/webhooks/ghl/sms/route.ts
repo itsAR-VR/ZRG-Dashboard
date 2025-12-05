@@ -231,44 +231,81 @@ async function fetchGHLConversationHistory(
 
 /**
  * Import historical messages into our database
- * Uses fuzzy timestamp matching to prevent duplicates
+ * Uses GHL Message ID (ghlId) as source of truth for deduplication
  * Stores the actual GHL timestamp in sentAt for accurate time display
  */
 async function importHistoricalMessages(
   leadId: string,
   messages: GHLExportedMessage[]
-): Promise<number> {
+): Promise<{ imported: number; healed: number }> {
   let importedCount = 0;
+  let healedCount = 0;
 
   for (const msg of messages) {
     try {
       const msgTimestamp = new Date(msg.dateAdded); // Actual time from GHL
-      
-      // Check if message already exists with fuzzy matching
-      const exists = await messageExists(leadId, msg.body, msg.direction, msgTimestamp);
+      const ghlId = msg.id;
 
-      if (!exists) {
-        await prisma.message.create({
+      // Step 1: Check if message exists by ghlId (definitive match)
+      const existingByGhlId = await prisma.message.findUnique({
+        where: { ghlId },
+      });
+
+      if (existingByGhlId) {
+        // Already imported with correct ghlId - just fix timestamp if needed
+        if (existingByGhlId.sentAt.getTime() !== msgTimestamp.getTime()) {
+          await prisma.message.update({
+            where: { ghlId },
+            data: { sentAt: msgTimestamp },
+          });
+          healedCount++;
+          console.log(`[Import] Fixed timestamp for ghlId ${ghlId}`);
+        }
+        continue;
+      }
+
+      // Step 2: Check for legacy message without ghlId
+      const existingByContent = await prisma.message.findFirst({
+        where: {
+          leadId,
+          body: msg.body,
+          direction: msg.direction,
+          ghlId: null,
+        },
+      });
+
+      if (existingByContent) {
+        // Heal the legacy message
+        await prisma.message.update({
+          where: { id: existingByContent.id },
           data: {
-            body: msg.body,
-            direction: msg.direction,
-            leadId,
-            sentAt: msgTimestamp, // Store actual GHL timestamp
-            // createdAt will default to now() (when record was created in our DB)
+            ghlId,
+            sentAt: msgTimestamp,
           },
         });
-        importedCount++;
-        console.log(`[Import] Saved message: "${msg.body.substring(0, 30)}..." @ ${msgTimestamp.toISOString()}`);
-      } else {
-        console.log(`[Import] Skipped duplicate: "${msg.body.substring(0, 30)}..."`);
+        healedCount++;
+        console.log(`[Import] Healed: "${msg.body.substring(0, 30)}..." -> ghlId: ${ghlId}`);
+        continue;
       }
+
+      // Step 3: Create new message with ghlId
+      await prisma.message.create({
+        data: {
+          ghlId,
+          body: msg.body,
+          direction: msg.direction,
+          leadId,
+          sentAt: msgTimestamp,
+        },
+      });
+      importedCount++;
+      console.log(`[Import] Saved: "${msg.body.substring(0, 30)}..." (${msg.direction}) @ ${msgTimestamp.toISOString()}`);
     } catch (error) {
-      // Log but continue with other messages
-      console.error(`[Import] Error importing message: ${error}`);
+      console.error(`[Import] Error importing message ${msg.id}: ${error}`);
     }
   }
 
-  return importedCount;
+  return { imported: importedCount, healed: healedCount };
 }
 
 /**
@@ -486,47 +523,67 @@ export async function POST(request: NextRequest) {
 
     // Import historical messages if this is a new lead or has no messages
     let importedMessagesCount = 0;
+    let healedMessagesCount = 0;
     if ((isNewLead || hasNoMessages) && historicalMessages.length > 0) {
       console.log(`[History Import] Importing ${historicalMessages.length} messages...`);
-      importedMessagesCount = await importHistoricalMessages(lead.id, historicalMessages);
-      console.log(`[History Import] Imported ${importedMessagesCount} new messages`);
+      const importResult = await importHistoricalMessages(lead.id, historicalMessages);
+      importedMessagesCount = importResult.imported;
+      healedMessagesCount = importResult.healed;
+      console.log(`[History Import] Imported ${importedMessagesCount} new, healed ${healedMessagesCount}`);
       
       // IMPORTANT: Check if the current webhook message was in the history
       // GHL's export API might not include the very latest message due to indexing delay
+      // We save without ghlId here - it will be "healed" on next sync
       if (messageBody) {
-        const currentMsgExists = await messageExists(lead.id, messageBody, "inbound", webhookMessageTime);
-        if (!currentMsgExists) {
-          console.log(`[Webhook] Current message not in history, saving explicitly...`);
+        // Check by ghlId first (from history), then by content
+        const currentMsgInHistory = historicalMessages.find(
+          (m) => m.body === messageBody && m.direction === "inbound"
+        );
+        
+        if (currentMsgInHistory) {
+          // Already imported with ghlId from history
+          console.log(`[Webhook] Current message already in history with ghlId: ${currentMsgInHistory.id}`);
+        } else {
+          // Not in history - save without ghlId (will be healed on next sync)
+          console.log(`[Webhook] Current message not in history, saving without ghlId...`);
           await prisma.message.create({
             data: {
               body: messageBody,
               direction: "inbound",
               leadId: lead.id,
-              sentAt: webhookMessageTime, // Use extracted timestamp
+              sentAt: webhookMessageTime,
+              // ghlId will be added on next sync
             },
           });
           importedMessagesCount++;
           console.log(`[Webhook] Saved current inbound message @ ${webhookMessageTime.toISOString()}`);
-        } else {
-          console.log(`[Webhook] Current message already in history, skipping`);
         }
       }
     } else if (messageBody) {
       // For existing leads with messages, save the current message
-      // But first check if it's a duplicate (might happen if webhook fires twice)
-      const exists = await messageExists(lead.id, messageBody, "inbound", webhookMessageTime);
-      if (!exists) {
+      // Check by ghlId first (if we have it from a previous sync)
+      // Webhook payload doesn't include ghlId, so we check by content
+      const existingByContent = await prisma.message.findFirst({
+        where: {
+          leadId: lead.id,
+          body: messageBody,
+          direction: "inbound",
+        },
+      });
+      
+      if (!existingByContent) {
         const message = await prisma.message.create({
           data: {
             body: messageBody,
             direction: "inbound",
             leadId: lead.id,
-            sentAt: webhookMessageTime, // Use extracted timestamp
+            sentAt: webhookMessageTime,
+            // ghlId will be added on next sync
           },
         });
         console.log(`Created message: ${message.id} @ ${webhookMessageTime.toISOString()}`);
       } else {
-        console.log(`[Webhook] Skipped duplicate message`);
+        console.log(`[Webhook] Message already exists (id: ${existingByContent.id})`);
       }
     }
 
@@ -556,7 +613,7 @@ export async function POST(request: NextRequest) {
     console.log(`Lead ID: ${lead.id}`);
     console.log(`Sentiment: ${sentimentTag}`);
     console.log(`Status: ${leadStatus}`);
-    console.log(`Imported Messages: ${importedMessagesCount}`);
+    console.log(`Imported Messages: ${importedMessagesCount}, Healed: ${healedMessagesCount}`);
     console.log(`Draft ID: ${draftId || "none"}`);
 
     return NextResponse.json({

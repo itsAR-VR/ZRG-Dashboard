@@ -188,15 +188,23 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
     const result = await syncConversationHistory(conversation.id)
     
     if (result.success) {
-      if (result.importedCount && result.importedCount > 0) {
-        toast.success(`Synced ${result.importedCount} messages from GHL`, {
+      const imported = result.importedCount || 0
+      const healed = result.healedCount || 0
+      const hasChanges = imported > 0 || healed > 0
+
+      if (hasChanges) {
+        const parts = []
+        if (imported > 0) parts.push(`${imported} new`)
+        if (healed > 0) parts.push(`${healed} fixed`)
+        
+        toast.success(`Synced: ${parts.join(", ")}`, {
           description: `Total messages in GHL: ${result.totalMessages}`
         })
-        // Trigger a page refresh to show new messages
+        // Trigger a page refresh to show updated messages
         window.location.reload()
       } else {
-        toast.info("No new messages to sync", {
-          description: `All ${result.totalMessages} messages already imported`
+        toast.info("No changes needed", {
+          description: `All ${result.totalMessages} messages already synced correctly`
         })
       }
     } else {
