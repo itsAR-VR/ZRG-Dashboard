@@ -30,12 +30,13 @@ import { Separator } from "@/components/ui/separator"
 import { getCRMLeads, updateLeadStatus, deleteLead, type CRMLeadData } from "@/actions/crm-actions"
 import { mockLeads, type Lead } from "@/lib/mock-data"
 
-type LeadStatus = "new" | "qualified" | "meeting-booked" | "blacklisted"
+type LeadStatus = "new" | "qualified" | "meeting-booked" | "not-interested" | "blacklisted"
 
 const statusColors: Record<LeadStatus, string> = {
   new: "bg-blue-500/10 text-blue-500 border-blue-500/20",
   qualified: "bg-green-500/10 text-green-500 border-green-500/20",
   "meeting-booked": "bg-primary/10 text-primary border-primary/20",
+  "not-interested": "bg-muted text-muted-foreground border-muted",
   blacklisted: "bg-destructive/10 text-destructive border-destructive/20",
 }
 
@@ -43,6 +44,7 @@ const statusLabels: Record<LeadStatus, string> = {
   new: "New",
   qualified: "Qualified",
   "meeting-booked": "Meeting Booked",
+  "not-interested": "Not Interested",
   blacklisted: "Blacklisted",
 }
 
@@ -134,6 +136,7 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange }: LeadDetailShee
                 <SelectItem value="new">New</SelectItem>
                 <SelectItem value="qualified">Qualified</SelectItem>
                 <SelectItem value="meeting-booked">Meeting Booked</SelectItem>
+                <SelectItem value="not-interested">Not Interested</SelectItem>
                 <SelectItem value="blacklisted">Blacklisted</SelectItem>
               </SelectContent>
             </Select>
@@ -316,6 +319,7 @@ export function CRMView() {
               <SelectItem value="new">New</SelectItem>
               <SelectItem value="qualified">Qualified</SelectItem>
               <SelectItem value="meeting-booked">Meeting Booked</SelectItem>
+              <SelectItem value="not-interested">Not Interested</SelectItem>
               <SelectItem value="blacklisted">Blacklisted</SelectItem>
             </SelectContent>
           </Select>
@@ -401,6 +405,7 @@ export function CRMView() {
                             <SelectItem value="new">New</SelectItem>
                             <SelectItem value="qualified">Qualified</SelectItem>
                             <SelectItem value="meeting-booked">Meeting Booked</SelectItem>
+                            <SelectItem value="not-interested">Not Interested</SelectItem>
                             <SelectItem value="blacklisted">Blacklisted</SelectItem>
                           </SelectContent>
                         </Select>

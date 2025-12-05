@@ -51,24 +51,33 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
         return
       }
 
+      console.log("[ActionStation] Fetching drafts for conversation:", conversation.id, "hasAiDraft from props:", conversation.hasAiDraft)
       setIsLoadingDrafts(true)
       const result = await getPendingDrafts(conversation.id)
+      console.log("[ActionStation] Draft fetch result:", result)
       
       if (result.success && result.data && result.data.length > 0) {
         const draftData = result.data as AIDraft[]
+        console.log("[ActionStation] Found drafts:", draftData.length, "First draft:", draftData[0]?.content?.substring(0, 50))
         setDrafts(draftData)
         // Auto-populate the compose box with the AI draft
         setComposeMessage(draftData[0].content)
         setOriginalDraft(draftData[0].content)
         setHasAiDraft(true)
       } else {
+        // Check if conversation says it has draft but we didn't find it
+        if (conversation.hasAiDraft) {
+          console.warn("[ActionStation] Conversation.hasAiDraft is true but no drafts found in DB for:", conversation.id)
+        }
         // Check for mock drafts
         const mockDraft = mockAiDrafts[conversation.id]
         if (mockDraft) {
+          console.log("[ActionStation] Using mock draft")
           setComposeMessage(mockDraft)
           setOriginalDraft(mockDraft)
           setHasAiDraft(true)
         } else {
+          console.log("[ActionStation] No drafts found")
           setComposeMessage("")
           setOriginalDraft("")
           setHasAiDraft(false)

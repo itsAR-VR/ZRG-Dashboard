@@ -93,6 +93,8 @@ export async function sendMessage(
  */
 export async function getPendingDrafts(leadId: string) {
   try {
+    console.log("[getPendingDrafts] Fetching drafts for leadId:", leadId);
+    
     const drafts = await prisma.aIDraft.findMany({
       where: {
         leadId,
@@ -103,9 +105,11 @@ export async function getPendingDrafts(leadId: string) {
       },
     });
 
+    console.log("[getPendingDrafts] Found drafts:", drafts.length, drafts.map(d => ({ id: d.id, status: d.status })));
+    
     return { success: true, data: drafts };
   } catch (error) {
-    console.error("Failed to get pending drafts:", error);
+    console.error("[getPendingDrafts] Failed to get drafts:", error);
     return { success: false, error: "Failed to get drafts" };
   }
 }
