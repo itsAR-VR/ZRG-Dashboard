@@ -4,14 +4,14 @@ import { useRef, useEffect, useState } from "react"
 import type { Conversation } from "@/lib/mock-data"
 import { aiDrafts as mockAiDrafts } from "@/lib/mock-data"
 import { ChatMessage } from "./chat-message"
-import { AiDraftZone } from "./ai-draft-zone"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
-import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2 } from "lucide-react"
+import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { sendMessage, getPendingDrafts, approveAndSendDraft, rejectDraft } from "@/actions/message-actions"
 import { toast } from "sonner"
+import { useUser } from "@/contexts/user-context"
 
 interface ActionStationProps {
   conversation: Conversation | null
@@ -32,24 +32,47 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
   const [isSending, setIsSending] = useState(false)
   const [drafts, setDrafts] = useState<AIDraft[]>([])
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(false)
+  const [hasAiDraft, setHasAiDraft] = useState(false)
+  const [originalDraft, setOriginalDraft] = useState("")
+  const { user } = useUser()
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [conversation?.messages])
 
-  // Fetch real AI drafts when conversation changes
+  // Fetch real AI drafts when conversation changes and auto-populate compose box
   useEffect(() => {
     async function fetchDrafts() {
       if (!conversation) {
         setDrafts([])
+        setComposeMessage("")
+        setHasAiDraft(false)
+        setOriginalDraft("")
         return
       }
 
       setIsLoadingDrafts(true)
       const result = await getPendingDrafts(conversation.id)
-      if (result.success && result.data) {
-        setDrafts(result.data as AIDraft[])
+      
+      if (result.success && result.data && result.data.length > 0) {
+        const draftData = result.data as AIDraft[]
+        setDrafts(draftData)
+        // Auto-populate the compose box with the AI draft
+        setComposeMessage(draftData[0].content)
+        setOriginalDraft(draftData[0].content)
+        setHasAiDraft(true)
       } else {
+        // Check for mock drafts
+        const mockDraft = mockAiDrafts[conversation.id]
+        if (mockDraft) {
+          setComposeMessage(mockDraft)
+          setOriginalDraft(mockDraft)
+          setHasAiDraft(true)
+        } else {
+          setComposeMessage("")
+          setOriginalDraft("")
+          setHasAiDraft(false)
+        }
         setDrafts([])
       }
       setIsLoadingDrafts(false)
@@ -62,43 +85,55 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
     if (!composeMessage.trim() || !conversation) return
 
     setIsSending(true)
-    const result = await sendMessage(conversation.id, composeMessage)
     
-    if (result.success) {
-      toast.success("Message sent!")
-      setComposeMessage("")
+    // If we have a real AI draft, approve it
+    if (drafts.length > 0) {
+      const result = await approveAndSendDraft(drafts[0].id, composeMessage)
+      if (result.success) {
+        toast.success("Message sent!")
+        setComposeMessage("")
+        setDrafts([])
+        setHasAiDraft(false)
+        setOriginalDraft("")
+      } else {
+        toast.error(result.error || "Failed to send message")
+      }
     } else {
-      toast.error(result.error || "Failed to send message")
+      // Regular send
+      const result = await sendMessage(conversation.id, composeMessage)
+      if (result.success) {
+        toast.success("Message sent!")
+        setComposeMessage("")
+        setHasAiDraft(false)
+        setOriginalDraft("")
+      } else {
+        toast.error(result.error || "Failed to send message")
+      }
     }
     
     setIsSending(false)
   }
 
-  const handleApproveDraft = async (draftId: string, content: string) => {
-    setIsSending(true)
-    const result = await approveAndSendDraft(draftId, content)
-    
-    if (result.success) {
-      toast.success("Draft approved and sent!")
-      // Remove the approved draft from the list
-      setDrafts(drafts.filter(d => d.id !== draftId))
-    } else {
-      toast.error(result.error || "Failed to send draft")
+  const handleRejectDraft = async () => {
+    if (drafts.length > 0) {
+      const result = await rejectDraft(drafts[0].id)
+      if (result.success) {
+        toast.success("Draft rejected")
+        setDrafts([])
+      } else {
+        toast.error(result.error || "Failed to reject draft")
+      }
     }
-    
-    setIsSending(false)
+    setComposeMessage("")
+    setHasAiDraft(false)
+    setOriginalDraft("")
   }
 
-  const handleRejectDraft = async (draftId: string) => {
-    const result = await rejectDraft(draftId)
-    
-    if (result.success) {
-      toast.success("Draft rejected")
-      setDrafts(drafts.filter(d => d.id !== draftId))
-    } else {
-      toast.error(result.error || "Failed to reject draft")
-    }
+  const handleResetDraft = () => {
+    setComposeMessage(originalDraft)
   }
+
+  const isEdited = hasAiDraft && composeMessage !== originalDraft
 
   if (!conversation) {
     return (
@@ -109,11 +144,6 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
   }
 
   const { lead } = conversation
-  
-  // Use real drafts if available, otherwise fall back to mock
-  const currentDraft = drafts.length > 0 
-    ? { content: drafts[0].content, draftId: drafts[0].id }
-    : mockAiDrafts[conversation.id]
 
   const getScoreColor = (score: number) => {
     if (score >= 80) return "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"
@@ -178,7 +208,13 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {conversation.messages && conversation.messages.length > 0 ? (
           conversation.messages.map((message) => (
-            <ChatMessage key={message.id} message={message} leadName={lead.name} />
+            <ChatMessage 
+              key={message.id} 
+              message={message} 
+              leadName={lead.name}
+              userName={user?.fullName || "You"}
+              userAvatar={user?.avatarUrl}
+            />
           ))
         ) : (
           <div className="text-center text-muted-foreground py-8">
@@ -188,63 +224,76 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
         <div ref={messagesEndRef} />
       </div>
 
-      {/* AI Draft Zone - Only show if we have a draft */}
-      {currentDraft && (
-        <AiDraftZone
-          initialDraft={currentDraft}
-          onApprove={(content) => {
-            if (drafts.length > 0) {
-              handleApproveDraft(drafts[0].id, content)
-            } else {
-              // For mock drafts, just send the message directly
-              handleSendMessage()
-            }
-          }}
-          onReject={() => {
-            if (drafts.length > 0) {
-              handleRejectDraft(drafts[0].id)
-            }
-          }}
-          isLoading={isSending}
-        />
-      )}
-
-      {/* Compose Box - Only show if no AI draft */}
-      {!currentDraft && (
-        <div className="border-t border-border p-4">
-          <div className="flex gap-2">
-            <Textarea
-              placeholder="Type your message..."
-              value={composeMessage}
-              onChange={(e) => setComposeMessage(e.target.value)}
-              className="min-h-[80px] resize-none"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault()
-                  handleSendMessage()
-                }
-              }}
-            />
-            <Button 
-              onClick={handleSendMessage} 
-              disabled={!composeMessage.trim() || isSending}
-              className="self-end"
+      {/* Compose Box with integrated AI Draft */}
+      <div className="border-t border-border p-4">
+        {/* AI Draft indicator */}
+        {hasAiDraft && (
+          <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-1.5 text-xs text-primary">
+              <Sparkles className="h-3.5 w-3.5" />
+              <span className="font-medium">AI Suggested Reply</span>
+            </div>
+            {isEdited && (
+              <span className="text-xs text-muted-foreground">(edited)</span>
+            )}
+            <div className="flex-1" />
+            {isEdited && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleResetDraft}
+                className="h-6 px-2 text-xs text-muted-foreground"
+              >
+                <RotateCcw className="h-3 w-3 mr-1" />
+                Reset
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleRejectDraft}
+              className="h-6 px-2 text-xs text-muted-foreground"
             >
-              {isSending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <>
-                  <Send className="h-4 w-4 mr-2" />
-                  Send
-                </>
-              )}
+              Discard
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            Press Enter to send, Shift+Enter for new line
-          </p>
+        )}
+        
+        <div className="flex gap-2">
+          <Textarea
+            placeholder="Type your message..."
+            value={composeMessage}
+            onChange={(e) => setComposeMessage(e.target.value)}
+            className={cn(
+              "min-h-[80px] resize-none",
+              hasAiDraft && "border-primary/30 bg-primary/5"
+            )}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault()
+                handleSendMessage()
+              }
+            }}
+          />
+          <Button 
+            onClick={handleSendMessage} 
+            disabled={!composeMessage.trim() || isSending}
+            className="self-end"
+          >
+            {isSending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <>
+                <Send className="h-4 w-4 mr-2" />
+                Send
+              </>
+            )}
+          </Button>
         </div>
-      )}
+        <p className="text-xs text-muted-foreground mt-2">
+          Press Enter to send, Shift+Enter for new line
+        </p>
+      </div>
     </div>
   )
 }

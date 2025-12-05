@@ -11,8 +11,9 @@ const openai = new OpenAI({
 // Sentiment tags for classification
 const SENTIMENT_TAGS = [
   "Meeting Requested",
-  "Not Interested",
+  "Call Requested",
   "Information Requested",
+  "Not Interested",
   "Blacklist",
   "Follow Up",
   "Out of Office",
@@ -21,6 +22,19 @@ const SENTIMENT_TAGS = [
 ] as const;
 
 type SentimentTag = (typeof SENTIMENT_TAGS)[number];
+
+// Map sentiment tags to lead statuses
+const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
+  "Meeting Requested": "meeting-booked",
+  "Call Requested": "qualified",
+  "Information Requested": "qualified",
+  "Not Interested": "not-interested",
+  "Blacklist": "blacklisted",
+  "Follow Up": "new",
+  "Out of Office": "new",
+  "Positive": "qualified",
+  "Neutral": "new",
+};
 
 /**
  * GHL Workflow Webhook Payload Structure
@@ -185,13 +199,14 @@ async function classifySentiment(transcript: string): Promise<SentimentTag> {
           role: "system",
           content: `You are a sales conversation classifier. Analyze the conversation transcript and classify it into ONE of these categories:
           
-- "Meeting Requested" - Lead wants to schedule a call/meeting
+- "Meeting Requested" - Lead wants to schedule a meeting or video call
+- "Call Requested" - Lead provides a phone number or explicitly asks for a phone call
+- "Information Requested" - Lead asks for more details/information about the product or service
 - "Not Interested" - Lead explicitly declines or shows no interest
-- "Information Requested" - Lead asks for more details/information
-- "Blacklist" - Lead explicitly asks to stop contact or uses profanity/threats
+- "Blacklist" - Lead explicitly asks to stop contact, unsubscribe, or uses profanity/threats
 - "Follow Up" - Conversation needs a follow-up but no clear next step
 - "Out of Office" - Lead mentions being away/unavailable
-- "Positive" - Generally positive response but no specific action
+- "Positive" - Generally positive response but no specific action requested
 - "Neutral" - No clear sentiment or just acknowledgment
 
 Respond with ONLY the category name, nothing else.`,
@@ -293,7 +308,11 @@ export async function POST(request: NextRequest) {
     const sentimentTag = await classifySentiment(transcript || messageBody);
     console.log(`AI Classification: ${sentimentTag}`);
 
-    // Upsert the lead
+    // Determine lead status based on sentiment
+    const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || "new";
+    console.log(`Lead status: ${leadStatus}`);
+
+    // Upsert the lead with auto-updated status
     const lead = await prisma.lead.upsert({
       where: { ghlContactId: contactId },
       create: {
@@ -302,7 +321,7 @@ export async function POST(request: NextRequest) {
         lastName,
         email,
         phone,
-        status: "new",
+        status: leadStatus,
         sentimentTag,
         clientId: client.id,
       },
@@ -312,6 +331,7 @@ export async function POST(request: NextRequest) {
         email: email || undefined,
         phone: phone || undefined,
         sentimentTag,
+        status: leadStatus, // Auto-update status based on sentiment
       },
     });
 
@@ -354,6 +374,7 @@ export async function POST(request: NextRequest) {
     console.log("=== Webhook Processing Complete ===");
     console.log(`Lead ID: ${lead.id}`);
     console.log(`Sentiment: ${sentimentTag}`);
+    console.log(`Status: ${leadStatus}`);
     console.log(`Draft ID: ${draftId || "none"}`);
 
     return NextResponse.json({
@@ -361,6 +382,7 @@ export async function POST(request: NextRequest) {
       leadId: lead.id,
       contactId,
       sentimentTag,
+      status: leadStatus,
       draftId,
       message: "Webhook processed successfully",
     });

@@ -16,18 +16,23 @@ import {
   Linkedin,
   Building2,
   ChevronDown,
+  LogOut,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { getInboxCounts } from "@/actions/lead-actions"
+import { signOut } from "@/actions/auth-actions"
+import { useUser } from "@/contexts/user-context"
 
 export type ViewType = "inbox" | "followups" | "crm" | "analytics" | "settings"
 
@@ -79,6 +84,7 @@ export function Sidebar({
     drafts: 0,
     awaiting: 0,
   })
+  const { user } = useUser()
 
   // Fetch counts on mount, when workspace changes, and periodically
   useEffect(() => {
@@ -105,6 +111,19 @@ export function Sidebar({
   ]
 
   const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)
+
+  const getInitials = (name: string) => {
+    return name
+      .split(" ")
+      .map((n) => n[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 2)
+  }
+
+  const handleSignOut = async () => {
+    await signOut()
+  }
 
   return (
     <aside className="flex h-full w-64 flex-col border-r border-border bg-card">
@@ -228,6 +247,40 @@ export function Sidebar({
           </>
         )}
       </nav>
+
+      {/* User Profile */}
+      {user && (
+        <div className="border-t border-border p-3">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" className="w-full justify-start gap-3 h-auto py-2">
+                <Avatar className="h-8 w-8">
+                  {user.avatarUrl && <AvatarImage src={user.avatarUrl} alt={user.fullName} />}
+                  <AvatarFallback className="bg-primary/10 text-primary text-xs">
+                    {getInitials(user.fullName)}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex flex-col items-start min-w-0">
+                  <span className="text-sm font-medium truncate w-full">{user.fullName}</span>
+                  <span className="text-xs text-muted-foreground truncate w-full">{user.email}</span>
+                </div>
+                <ChevronDown className="h-4 w-4 shrink-0 opacity-50 ml-auto" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem onClick={() => onViewChange("settings")}>
+                <Settings className="h-4 w-4 mr-2" />
+                Settings
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={handleSignOut} className="text-destructive focus:text-destructive">
+                <LogOut className="h-4 w-4 mr-2" />
+                Sign Out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
     </aside>
   )
 }

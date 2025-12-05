@@ -115,6 +115,7 @@ Generate an appropriate SMS response:`,
 function getResponseStrategy(sentimentTag: string): string {
   const strategies: Record<string, string> = {
     "Meeting Requested": "Confirm interest and propose specific meeting times. Be enthusiastic but professional.",
+    "Call Requested": "Acknowledge their request for a call. Confirm the best number to reach them and propose specific call times.",
     "Not Interested": "Acknowledge their decision respectfully. Ask if they'd like to be contacted in the future or if there's anything specific they're looking for.",
     "Information Requested": "Provide the requested information clearly and concisely. Offer to schedule a call for more details.",
     "Follow Up": "Check in on their interest level. Reference any previous context and offer value.",
