@@ -15,12 +15,56 @@ interface SyncHistoryResult {
   success: boolean;
   importedCount?: number;
   totalMessages?: number;
+  skippedDuplicates?: number;
   error?: string;
+}
+
+/**
+ * Check if a message with similar content already exists
+ * Uses fuzzy timestamp matching (within 60 seconds) to handle timing differences
+ * between our database and GHL's timestamps
+ */
+async function messageExists(
+  leadId: string,
+  body: string,
+  direction: string,
+  timestamp?: Date
+): Promise<boolean> {
+  // If no timestamp provided, just check by body and direction
+  if (!timestamp) {
+    const existing = await prisma.message.findFirst({
+      where: {
+        leadId,
+        body,
+        direction,
+      },
+    });
+    return !!existing;
+  }
+
+  // Check with fuzzy timestamp (within 60 seconds)
+  const windowStart = new Date(timestamp.getTime() - 60000); // 60 seconds before
+  const windowEnd = new Date(timestamp.getTime() + 60000); // 60 seconds after
+
+  const existing = await prisma.message.findFirst({
+    where: {
+      leadId,
+      body,
+      direction,
+      createdAt: {
+        gte: windowStart,
+        lte: windowEnd,
+      },
+    },
+  });
+
+  return !!existing;
 }
 
 /**
  * Sync conversation history from GHL for a lead
  * Fetches all messages from GHL and imports any that are missing
+ * Uses fuzzy timestamp matching to prevent duplicates
  * 
  * @param leadId - The internal lead ID
  */
@@ -70,37 +114,37 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
 
     // Import messages that don't exist yet
     let importedCount = 0;
+    let skippedDuplicates = 0;
+    
     for (const msg of ghlMessages) {
       try {
-        // Check if message already exists
-        const existingMessage = await prisma.message.findFirst({
-          where: {
-            leadId,
-            body: msg.body,
-            createdAt: new Date(msg.dateAdded),
-          },
-        });
+        const msgTimestamp = new Date(msg.dateAdded);
+        
+        // Check if message already exists using fuzzy timestamp matching
+        const exists = await messageExists(leadId, msg.body, msg.direction, msgTimestamp);
 
-        if (!existingMessage) {
+        if (!exists) {
           await prisma.message.create({
             data: {
               body: msg.body,
               direction: msg.direction,
               leadId,
-              createdAt: new Date(msg.dateAdded),
+              createdAt: msgTimestamp,
             },
           });
           importedCount++;
+          console.log(`[Sync] Imported: "${msg.body.substring(0, 30)}..." (${msg.direction})`);
+        } else {
+          skippedDuplicates++;
+          console.log(`[Sync] Skipped duplicate: "${msg.body.substring(0, 30)}..."`);
         }
       } catch (error) {
-        // Ignore duplicate errors
-        if (!(error instanceof Error && error.message.includes("Unique"))) {
-          console.error(`[Sync] Error importing message: ${error}`);
-        }
+        // Log but continue with other messages
+        console.error(`[Sync] Error importing message: ${error}`);
       }
     }
 
-    console.log(`[Sync] Imported ${importedCount} new messages`);
+    console.log(`[Sync] Imported ${importedCount} new messages, skipped ${skippedDuplicates} duplicates`);
 
     revalidatePath("/");
 
@@ -108,6 +152,7 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
       success: true,
       importedCount,
       totalMessages: ghlMessages.length,
+      skippedDuplicates,
     };
   } catch (error) {
     console.error("[Sync] Failed to sync conversation history:", error);

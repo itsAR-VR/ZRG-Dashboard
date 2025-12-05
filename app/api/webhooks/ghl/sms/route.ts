@@ -131,6 +131,47 @@ interface GHLExportResponse {
 }
 
 /**
+ * Check if a message with similar content already exists
+ * Uses fuzzy timestamp matching (within 60 seconds) to handle timing differences
+ */
+async function messageExists(
+  leadId: string,
+  body: string,
+  direction: string,
+  timestamp?: Date
+): Promise<boolean> {
+  // If no timestamp provided, just check by body and direction
+  if (!timestamp) {
+    const existing = await prisma.message.findFirst({
+      where: {
+        leadId,
+        body,
+        direction,
+      },
+    });
+    return !!existing;
+  }
+
+  // Check with fuzzy timestamp (within 60 seconds)
+  const windowStart = new Date(timestamp.getTime() - 60000); // 60 seconds before
+  const windowEnd = new Date(timestamp.getTime() + 60000); // 60 seconds after
+
+  const existing = await prisma.message.findFirst({
+    where: {
+      leadId,
+      body,
+      direction,
+      createdAt: {
+        gte: windowStart,
+        lte: windowEnd,
+      },
+    },
+  });
+
+  return !!existing;
+}
+
+/**
  * Fetch full conversation history from GHL using the export API
  * Endpoint: GET /conversations/messages/export
  * Docs: https://marketplace.gohighlevel.com/docs/ghl/conversations/export-messages-by-location
@@ -190,7 +231,7 @@ async function fetchGHLConversationHistory(
 
 /**
  * Import historical messages into our database
- * Only imports messages that don't already exist
+ * Uses fuzzy timestamp matching to prevent duplicates
  */
 async function importHistoricalMessages(
   leadId: string,
@@ -200,31 +241,28 @@ async function importHistoricalMessages(
 
   for (const msg of messages) {
     try {
-      // Check if message already exists (by checking for same body + timestamp combo)
-      const existingMessage = await prisma.message.findFirst({
-        where: {
-          leadId,
-          body: msg.body,
-          createdAt: new Date(msg.dateAdded),
-        },
-      });
+      const msgTimestamp = new Date(msg.dateAdded);
+      
+      // Check if message already exists with fuzzy matching
+      const exists = await messageExists(leadId, msg.body, msg.direction, msgTimestamp);
 
-      if (!existingMessage) {
+      if (!exists) {
         await prisma.message.create({
           data: {
             body: msg.body,
             direction: msg.direction,
             leadId,
-            createdAt: new Date(msg.dateAdded),
+            createdAt: msgTimestamp,
           },
         });
         importedCount++;
+        console.log(`[Import] Saved message: "${msg.body.substring(0, 30)}..." @ ${msgTimestamp.toISOString()}`);
+      } else {
+        console.log(`[Import] Skipped duplicate: "${msg.body.substring(0, 30)}..."`);
       }
     } catch (error) {
-      // Ignore duplicate errors, log others
-      if (!(error instanceof Error && error.message.includes("Unique"))) {
-        console.error(`[Import] Error importing message: ${error}`);
-      }
+      // Log but continue with other messages
+      console.error(`[Import] Error importing message: ${error}`);
     }
   }
 
@@ -412,16 +450,42 @@ export async function POST(request: NextRequest) {
       console.log(`[History Import] Importing ${historicalMessages.length} messages...`);
       importedMessagesCount = await importHistoricalMessages(lead.id, historicalMessages);
       console.log(`[History Import] Imported ${importedMessagesCount} new messages`);
+      
+      // IMPORTANT: Check if the current webhook message was in the history
+      // GHL's export API might not include the very latest message due to indexing delay
+      if (messageBody) {
+        const currentMsgExists = await messageExists(lead.id, messageBody, "inbound");
+        if (!currentMsgExists) {
+          console.log(`[Webhook] Current message not in history, saving explicitly...`);
+          await prisma.message.create({
+            data: {
+              body: messageBody,
+              direction: "inbound",
+              leadId: lead.id,
+            },
+          });
+          importedMessagesCount++;
+          console.log(`[Webhook] Saved current inbound message`);
+        } else {
+          console.log(`[Webhook] Current message already in history, skipping`);
+        }
+      }
     } else if (messageBody) {
-      // For existing leads, just save the current message
-      const message = await prisma.message.create({
-        data: {
-          body: messageBody,
-          direction: "inbound",
-          leadId: lead.id,
-        },
-      });
-      console.log(`Created message: ${message.id}`);
+      // For existing leads with messages, save the current message
+      // But first check if it's a duplicate (might happen if webhook fires twice)
+      const exists = await messageExists(lead.id, messageBody, "inbound");
+      if (!exists) {
+        const message = await prisma.message.create({
+          data: {
+            body: messageBody,
+            direction: "inbound",
+            leadId: lead.id,
+          },
+        });
+        console.log(`Created message: ${message.id}`);
+      } else {
+        console.log(`[Webhook] Skipped duplicate message`);
+      }
     }
 
     // Generate AI draft if appropriate for this sentiment
