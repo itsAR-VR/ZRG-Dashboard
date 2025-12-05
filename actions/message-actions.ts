@@ -1,7 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { sendSMS } from "@/lib/ghl-api";
+import { sendSMS, exportMessages, type GHLExportedMessage } from "@/lib/ghl-api";
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 
@@ -9,6 +9,113 @@ interface SendMessageResult {
   success: boolean;
   messageId?: string;
   error?: string;
+}
+
+interface SyncHistoryResult {
+  success: boolean;
+  importedCount?: number;
+  totalMessages?: number;
+  error?: string;
+}
+
+/**
+ * Sync conversation history from GHL for a lead
+ * Fetches all messages from GHL and imports any that are missing
+ * 
+ * @param leadId - The internal lead ID
+ */
+export async function syncConversationHistory(leadId: string): Promise<SyncHistoryResult> {
+  try {
+    // Get the lead with their client info
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      include: {
+        client: {
+          select: {
+            ghlPrivateKey: true,
+            ghlLocationId: true,
+          },
+        },
+      },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    if (!lead.ghlContactId) {
+      return { success: false, error: "Lead has no GHL contact ID" };
+    }
+
+    if (!lead.client.ghlPrivateKey || !lead.client.ghlLocationId) {
+      return { success: false, error: "Workspace is missing GHL configuration" };
+    }
+
+    console.log(`[Sync] Fetching conversation history for lead ${leadId} (contact: ${lead.ghlContactId})`);
+
+    // Fetch messages from GHL
+    const exportResult = await exportMessages(
+      lead.client.ghlLocationId,
+      lead.ghlContactId,
+      lead.client.ghlPrivateKey,
+      "SMS"
+    );
+
+    if (!exportResult.success || !exportResult.data) {
+      return { success: false, error: exportResult.error || "Failed to fetch messages from GHL" };
+    }
+
+    const ghlMessages = exportResult.data.messages || [];
+    console.log(`[Sync] Found ${ghlMessages.length} messages in GHL`);
+
+    // Import messages that don't exist yet
+    let importedCount = 0;
+    for (const msg of ghlMessages) {
+      try {
+        // Check if message already exists
+        const existingMessage = await prisma.message.findFirst({
+          where: {
+            leadId,
+            body: msg.body,
+            createdAt: new Date(msg.dateAdded),
+          },
+        });
+
+        if (!existingMessage) {
+          await prisma.message.create({
+            data: {
+              body: msg.body,
+              direction: msg.direction,
+              leadId,
+              createdAt: new Date(msg.dateAdded),
+            },
+          });
+          importedCount++;
+        }
+      } catch (error) {
+        // Ignore duplicate errors
+        if (!(error instanceof Error && error.message.includes("Unique"))) {
+          console.error(`[Sync] Error importing message: ${error}`);
+        }
+      }
+    }
+
+    console.log(`[Sync] Imported ${importedCount} new messages`);
+
+    revalidatePath("/");
+
+    return {
+      success: true,
+      importedCount,
+      totalMessages: ghlMessages.length,
+    };
+  } catch (error) {
+    console.error("[Sync] Failed to sync conversation history:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
 }
 
 /**

@@ -179,5 +179,61 @@ export async function getWorkflow(
   );
 }
 
+/**
+ * Exported message structure from GHL
+ */
+export interface GHLExportedMessage {
+  id: string;
+  direction: "inbound" | "outbound";
+  status: string;
+  type: number;
+  locationId: string;
+  attachments: unknown[];
+  body: string;
+  contactId: string;
+  contentType: string;
+  conversationId: string;
+  dateAdded: string;
+  dateUpdated: string;
+  altId?: string;
+  messageType: string;
+  userId?: string;
+  source?: string;
+}
+
+interface GHLExportResponse {
+  messages: GHLExportedMessage[];
+  nextCursor: string | null;
+  total: number;
+  traceId: string;
+}
+
+/**
+ * Export messages for a contact from GHL
+ * Uses the /conversations/messages/export endpoint
+ * 
+ * @param locationId - The GHL location ID
+ * @param contactId - The GHL contact ID
+ * @param privateKey - The GHL private integration key
+ * @param channel - The channel type (default: SMS)
+ */
+export async function exportMessages(
+  locationId: string,
+  contactId: string,
+  privateKey: string,
+  channel: string = "SMS"
+): Promise<GHLApiResponse<GHLExportResponse>> {
+  const params = new URLSearchParams({
+    locationId,
+    contactId,
+    channel,
+  });
+  
+  return ghlRequest<GHLExportResponse>(
+    `/conversations/messages/export?${params.toString()}`,
+    privateKey
+  );
+}
+
 export type { GHLConversation, GHLMessage, GHLWorkflow, GHLSendMessageResponse };
 
