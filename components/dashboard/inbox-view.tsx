@@ -1,16 +1,18 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ConversationFeed, type FilterState } from "./conversation-feed";
+import { ConversationFeed } from "./conversation-feed";
 import { ActionStation } from "./action-station";
 import { CrmDrawer } from "./crm-drawer";
-import { getConversations, getConversation, getInboxCounts, type ConversationData } from "@/actions/lead-actions";
+import { getConversations, getConversation, type ConversationData } from "@/actions/lead-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff } from "lucide-react";
 import { mockConversations, type Conversation, type Lead } from "@/lib/mock-data";
 import { Badge } from "@/components/ui/badge";
 
 interface InboxViewProps {
+  activeChannel: string;
+  activeFilter: string;
   activeWorkspace: string | null;
 }
 
@@ -50,7 +52,7 @@ function convertToMockFormat(conv: ConversationData): Conversation {
   };
 }
 
-export function InboxView({ activeWorkspace }: InboxViewProps) {
+export function InboxView({ activeChannel, activeFilter, activeWorkspace }: InboxViewProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
@@ -60,30 +62,8 @@ export function InboxView({ activeWorkspace }: InboxViewProps) {
   const [isLive, setIsLive] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   
-  // Filter state
-  const [filters, setFilters] = useState<FilterState>({
-    requiresAttention: false,
-    hasAiDraft: false,
-    awaitingReply: false,
-  });
-  const [filterCounts, setFilterCounts] = useState({
-    attention: 0,
-    drafts: 0,
-    awaiting: 0,
-  });
-  
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const realtimeConnectedRef = useRef(false);
-
-  // Fetch filter counts
-  const fetchFilterCounts = useCallback(async () => {
-    const result = await getInboxCounts(activeWorkspace);
-    setFilterCounts({
-      attention: result.requiresAttention,
-      drafts: result.draftsForApproval,
-      awaiting: result.awaitingReply,
-    });
-  }, [activeWorkspace]);
 
   // Fetch conversations from database
   const fetchConversations = useCallback(async (showLoading = false) => {
@@ -117,10 +97,7 @@ export function InboxView({ activeWorkspace }: InboxViewProps) {
     } finally {
       setIsLoading(false);
     }
-    
-    // Also refresh counts
-    fetchFilterCounts();
-  }, [activeConversationId, activeWorkspace, fetchFilterCounts]);
+  }, [activeConversationId, activeWorkspace]);
 
   // Fetch full conversation when active conversation changes
   const fetchActiveConversation = useCallback(async () => {
@@ -216,19 +193,12 @@ export function InboxView({ activeWorkspace }: InboxViewProps) {
     };
   }, [fetchConversations]);
 
-  // Filter conversations based on active filters
+  // Filter conversations by channel and filter
   const filteredConversations = conversations.filter((conv) => {
-    // If no filters active, show all
-    if (!filters.requiresAttention && !filters.hasAiDraft && !filters.awaitingReply) {
-      return true;
-    }
-    
-    // If any filter is active, check if conversation matches any active filter
-    if (filters.requiresAttention && conv.requiresAttention) return true;
-    if (filters.hasAiDraft && conv.hasAiDraft) return true;
-    if (filters.awaitingReply && !conv.requiresAttention && !conv.hasAiDraft) return true;
-    
-    return false;
+    if (activeChannel !== "all" && conv.platform !== activeChannel) return false;
+    if (activeFilter === "attention" && !conv.requiresAttention) return false;
+    if (activeFilter === "drafts" && !conv.hasAiDraft) return false;
+    return true;
   });
 
   if (isLoading) {
@@ -265,9 +235,6 @@ export function InboxView({ activeWorkspace }: InboxViewProps) {
         conversations={filteredConversations}
         activeConversationId={activeConversationId}
         onSelectConversation={setActiveConversationId}
-        filters={filters}
-        onFiltersChange={setFilters}
-        filterCounts={filterCounts}
       />
       <ActionStation
         conversation={activeConversation}

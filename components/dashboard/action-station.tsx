@@ -7,9 +7,9 @@ import { ChatMessage } from "./chat-message"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
-import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw } from "lucide-react"
+import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { sendMessage, getPendingDrafts, approveAndSendDraft, rejectDraft } from "@/actions/message-actions"
+import { sendMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft } from "@/actions/message-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
 
@@ -30,6 +30,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [composeMessage, setComposeMessage] = useState("")
   const [isSending, setIsSending] = useState(false)
+  const [isRegenerating, setIsRegenerating] = useState(false)
   const [drafts, setDrafts] = useState<AIDraft[]>([])
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(false)
   const [hasAiDraft, setHasAiDraft] = useState(false)
@@ -95,11 +96,31 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
 
     setIsSending(true)
     
+    // Regular send (no draft approval needed, user composed manually)
+    const result = await sendMessage(conversation.id, composeMessage)
+    if (result.success) {
+      toast.success("Message sent!")
+      setComposeMessage("")
+      setDrafts([])
+      setHasAiDraft(false)
+      setOriginalDraft("")
+    } else {
+      toast.error(result.error || "Failed to send message")
+    }
+    
+    setIsSending(false)
+  }
+
+  const handleApproveAndSend = async () => {
+    if (!composeMessage.trim() || !conversation) return
+
+    setIsSending(true)
+    
     // If we have a real AI draft, approve it
     if (drafts.length > 0) {
       const result = await approveAndSendDraft(drafts[0].id, composeMessage)
       if (result.success) {
-        toast.success("Message sent!")
+        toast.success("Draft approved and sent!")
         setComposeMessage("")
         setDrafts([])
         setHasAiDraft(false)
@@ -108,7 +129,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
         toast.error(result.error || "Failed to send message")
       }
     } else {
-      // Regular send
+      // Fallback to regular send
       const result = await sendMessage(conversation.id, composeMessage)
       if (result.success) {
         toast.success("Message sent!")
@@ -136,6 +157,36 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
     setComposeMessage("")
     setHasAiDraft(false)
     setOriginalDraft("")
+  }
+
+  const handleRegenerateDraft = async () => {
+    if (!conversation) return
+
+    setIsRegenerating(true)
+    
+    // Reject existing draft first if any
+    if (drafts.length > 0) {
+      await rejectDraft(drafts[0].id)
+    }
+    
+    const result = await regenerateDraft(conversation.id)
+    
+    if (result.success && result.data) {
+      toast.success("New AI draft generated!")
+      setDrafts([{ 
+        id: result.data.id, 
+        content: result.data.content, 
+        status: "pending", 
+        createdAt: new Date() 
+      }])
+      setComposeMessage(result.data.content)
+      setOriginalDraft(result.data.content)
+      setHasAiDraft(true)
+    } else {
+      toast.error(result.error || "Failed to generate draft")
+    }
+    
+    setIsRegenerating(false)
   }
 
   const handleResetDraft = () => {
@@ -235,7 +286,27 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
 
       {/* Compose Box with integrated AI Draft */}
       <div className="border-t border-border p-4">
-        {/* AI Draft indicator */}
+        {/* Compose with AI button - shown when no draft exists */}
+        {!hasAiDraft && !isLoadingDrafts && (
+          <div className="flex justify-end mb-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRegenerateDraft}
+              disabled={isRegenerating}
+              className="text-xs"
+            >
+              {isRegenerating ? (
+                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+              ) : (
+                <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+              )}
+              Compose with AI
+            </Button>
+          </div>
+        )}
+
+        {/* AI Draft indicator and actions */}
         {hasAiDraft && (
           <div className="flex items-center gap-2 mb-2">
             <div className="flex items-center gap-1.5 text-xs text-primary">
@@ -257,14 +328,6 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
                 Reset
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleRejectDraft}
-              className="h-6 px-2 text-xs text-muted-foreground"
-            >
-              Discard
-            </Button>
           </div>
         )}
         
@@ -280,24 +343,82 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault()
-                handleSendMessage()
+                if (hasAiDraft) {
+                  handleApproveAndSend()
+                } else {
+                  handleSendMessage()
+                }
               }
             }}
           />
-          <Button 
-            onClick={handleSendMessage} 
-            disabled={!composeMessage.trim() || isSending}
-            className="self-end"
-          >
-            {isSending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
+          
+          {/* Action buttons */}
+          <div className="flex flex-col gap-1.5 self-end">
+            {hasAiDraft ? (
               <>
-                <Send className="h-4 w-4 mr-2" />
-                Send
+                {/* Reject button */}
+                <Button 
+                  variant="outline"
+                  size="icon"
+                  onClick={handleRejectDraft}
+                  disabled={isSending || isRegenerating}
+                  className="h-8 w-8"
+                  title="Reject draft"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+                
+                {/* Regenerate button */}
+                <Button 
+                  variant="outline"
+                  size="icon"
+                  onClick={handleRegenerateDraft}
+                  disabled={isSending || isRegenerating}
+                  className="h-8 w-8"
+                  title="Regenerate draft"
+                >
+                  {isRegenerating ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                </Button>
+                
+                {/* Approve & Send button */}
+                <Button 
+                  onClick={handleApproveAndSend} 
+                  disabled={!composeMessage.trim() || isSending || isRegenerating}
+                  className="h-8 px-3"
+                  title="Approve and send"
+                >
+                  {isSending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <>
+                      <Check className="h-4 w-4 mr-1" />
+                      <Send className="h-4 w-4" />
+                    </>
+                  )}
+                </Button>
               </>
+            ) : (
+              /* Regular send button when no AI draft */
+              <Button 
+                onClick={handleSendMessage} 
+                disabled={!composeMessage.trim() || isSending}
+                className="h-8 px-3"
+              >
+                {isSending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <>
+                    <Send className="h-4 w-4 mr-2" />
+                    Send
+                  </>
+                )}
+              </Button>
             )}
-          </Button>
+          </div>
         </div>
         <p className="text-xs text-muted-foreground mt-2">
           Press Enter to send, Shift+Enter for new line

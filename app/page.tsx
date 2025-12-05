@@ -17,6 +17,8 @@ interface Client {
 
 export default function DashboardPage() {
   const [activeView, setActiveView] = useState<ViewType>("inbox")
+  const [activeChannel, setActiveChannel] = useState("all")
+  const [activeFilter, setActiveFilter] = useState("")
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null)
   const [workspaces, setWorkspaces] = useState<Client[]>([])
 
@@ -46,6 +48,8 @@ export default function DashboardPage() {
       default:
         return (
           <InboxView 
+            activeChannel={activeChannel}
+            activeFilter={activeFilter}
             activeWorkspace={activeWorkspace}
           />
         )
@@ -55,6 +59,10 @@ export default function DashboardPage() {
   return (
     <div className="flex h-screen bg-background">
       <Sidebar
+        activeChannel={activeChannel}
+        onChannelChange={setActiveChannel}
+        activeFilter={activeFilter}
+        onFilterChange={setActiveFilter}
         activeView={activeView}
         onViewChange={setActiveView}
         activeWorkspace={activeWorkspace}

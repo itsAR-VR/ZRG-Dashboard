@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { sendSMS } from "@/lib/ghl-api";
 import { revalidatePath } from "next/cache";
+import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 
 interface SendMessageResult {
   success: boolean;
@@ -193,6 +194,80 @@ export async function rejectDraft(draftId: string): Promise<{ success: boolean; 
     return { success: true };
   } catch (error) {
     console.error("Failed to reject draft:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
+ * Regenerate an AI draft for a lead
+ * This rejects any existing pending drafts and creates a new one
+ * 
+ * @param leadId - The lead ID
+ */
+export async function regenerateDraft(leadId: string): Promise<{ 
+  success: boolean; 
+  data?: { id: string; content: string }; 
+  error?: string 
+}> {
+  try {
+    // Get the lead with messages for context
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      include: {
+        messages: {
+          orderBy: { createdAt: "asc" },
+          take: 10, // Last 10 messages for context
+        },
+      },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    // Reject any existing pending drafts
+    await prisma.aIDraft.updateMany({
+      where: {
+        leadId,
+        status: "pending",
+      },
+      data: { status: "rejected" },
+    });
+
+    // Build conversation transcript from messages
+    const transcript = lead.messages
+      .map((msg) => `${msg.direction === "inbound" ? "Lead" : "Agent"}: ${msg.body}`)
+      .join("\n");
+
+    // Determine sentiment - use existing or default to "Neutral"
+    const sentimentTag = lead.sentimentTag || "Neutral";
+
+    // Check if we should generate a draft for this sentiment
+    if (!shouldGenerateDraft(sentimentTag)) {
+      return { success: false, error: "Cannot generate draft for this sentiment (Blacklisted)" };
+    }
+
+    // Generate new draft
+    const draftResult = await generateResponseDraft(leadId, transcript, sentimentTag);
+
+    if (!draftResult.success || !draftResult.draftId || !draftResult.content) {
+      return { success: false, error: draftResult.error || "Failed to generate draft" };
+    }
+
+    revalidatePath("/");
+
+    return { 
+      success: true, 
+      data: { 
+        id: draftResult.draftId, 
+        content: draftResult.content 
+      } 
+    };
+  } catch (error) {
+    console.error("Failed to regenerate draft:", error);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
