@@ -11,14 +11,30 @@ datasource db {
 
 // Stores GHL API Keys per sub-account for multi-tenancy
 model Client {
-  id            String   @id @default(uuid())
+  id            String     @id @default(uuid())
   name          String
-  ghlLocationId String   @unique // Used to identify which client sent the webhook
-  ghlPrivateKey String   // The generic API key for this sub-account
-  workspaceId   String   // To group clients
+  ghlLocationId String     @unique // Used to identify which client sent the webhook
+  ghlPrivateKey String     // The generic API key for this sub-account
+  workspaceId   String     // To group clients
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  leads         Lead[]
+  campaigns     Campaign[]
+}
+
+// GHL Workflows/Campaigns synced from the API
+model Campaign {
+  id            String   @id @default(uuid())
+  ghlWorkflowId String   @unique
+  name          String
+  status        String   @default("active") // active, inactive, draft
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leads         Lead[]
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  leads         Lead[]
+
+  @@index([clientId])
 }
 
 // Lead/Contact record synced from GHL
@@ -33,6 +49,8 @@ model Lead {
   sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.
   clientId     String
   client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  campaignId   String?       // Optional link to the originating campaign
+  campaign     Campaign?     @relation(fields: [campaignId], references: [id])
   messages     Message[]
   followUps    FollowUpTask[]
   aiDrafts     AIDraft[]
@@ -40,6 +58,7 @@ model Lead {
   updatedAt    DateTime      @updatedAt
 
   @@index([clientId])
+  @@index([campaignId])
   @@index([sentimentTag])
 }
 

@@ -1,27 +1,38 @@
 "use client"
 
-import { useState } from "react"
-import { Send, RotateCcw, Sparkles } from "lucide-react"
+import { useState, useEffect } from "react"
+import { Send, RotateCcw, Sparkles, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 
 interface AiDraftZoneProps {
-  initialDraft: string
+  initialDraft: string | { content: string; draftId?: string }
   onApprove: (content: string) => void
   onReject: () => void
+  isLoading?: boolean
 }
 
-export function AiDraftZone({ initialDraft, onApprove, onReject }: AiDraftZoneProps) {
-  const [draft, setDraft] = useState(initialDraft)
+export function AiDraftZone({ initialDraft, onApprove, onReject, isLoading = false }: AiDraftZoneProps) {
+  // Handle both string and object formats for initialDraft
+  const initialContent = typeof initialDraft === "string" ? initialDraft : initialDraft.content
+  
+  const [draft, setDraft] = useState(initialContent)
   const [isEdited, setIsEdited] = useState(false)
+
+  // Update draft when initialDraft changes
+  useEffect(() => {
+    const newContent = typeof initialDraft === "string" ? initialDraft : initialDraft.content
+    setDraft(newContent)
+    setIsEdited(false)
+  }, [initialDraft])
 
   const handleDraftChange = (value: string) => {
     setDraft(value)
-    setIsEdited(value !== initialDraft)
+    setIsEdited(value !== initialContent)
   }
 
   const handleReset = () => {
-    setDraft(initialDraft)
+    setDraft(initialContent)
     setIsEdited(false)
   }
 
@@ -41,6 +52,7 @@ export function AiDraftZone({ initialDraft, onApprove, onReject }: AiDraftZonePr
           onChange={(e) => handleDraftChange(e.target.value)}
           className="min-h-[120px] resize-none border-none bg-transparent p-0 text-sm leading-relaxed focus-visible:ring-0"
           placeholder="AI is generating a response..."
+          disabled={isLoading}
         />
 
         <div className="mt-4 flex items-center justify-between">
@@ -48,7 +60,7 @@ export function AiDraftZone({ initialDraft, onApprove, onReject }: AiDraftZonePr
             variant="ghost"
             size="sm"
             onClick={handleReset}
-            disabled={!isEdited}
+            disabled={!isEdited || isLoading}
             className="text-muted-foreground"
           >
             <RotateCcw className="mr-2 h-4 w-4" />
@@ -56,12 +68,21 @@ export function AiDraftZone({ initialDraft, onApprove, onReject }: AiDraftZonePr
           </Button>
 
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={onReject}>
-              Reject / Rewrite
+            <Button variant="outline" size="sm" onClick={onReject} disabled={isLoading}>
+              Reject
             </Button>
-            <Button size="sm" onClick={() => onApprove(draft)}>
-              <Send className="mr-2 h-4 w-4" />
-              Approve & Send
+            <Button size="sm" onClick={() => onApprove(draft)} disabled={isLoading}>
+              {isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <Send className="mr-2 h-4 w-4" />
+                  Approve & Send
+                </>
+              )}
             </Button>
           </div>
         </div>

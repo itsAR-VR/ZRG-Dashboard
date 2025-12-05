@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 interface InboxViewProps {
   activeChannel: string;
   activeFilter: string;
+  activeWorkspace: string | null;
 }
 
 // Polling interval in milliseconds (30 seconds)
@@ -51,7 +52,7 @@ function convertToMockFormat(conv: ConversationData): Conversation {
   };
 }
 
-export function InboxView({ activeChannel, activeFilter }: InboxViewProps) {
+export function InboxView({ activeChannel, activeFilter, activeWorkspace }: InboxViewProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
@@ -69,15 +70,16 @@ export function InboxView({ activeChannel, activeFilter }: InboxViewProps) {
     if (showLoading) setIsLoading(true);
     
     try {
-      const result = await getConversations();
+      const result = await getConversations(activeWorkspace);
       if (result.success && result.data && result.data.length > 0) {
         const converted = result.data.map(convertToMockFormat);
         setConversations(converted);
         setUseMockData(false);
         setLastUpdate(new Date());
         
-        // Set first conversation as active if none selected
-        if (!activeConversationId && converted.length > 0) {
+        // Set first conversation as active if none selected or current selection not in list
+        const currentExists = converted.some(c => c.id === activeConversationId);
+        if (!activeConversationId || !currentExists) {
           setActiveConversationId(converted[0].id);
         }
       } else {
@@ -95,7 +97,7 @@ export function InboxView({ activeChannel, activeFilter }: InboxViewProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [activeConversationId]);
+  }, [activeConversationId, activeWorkspace]);
 
   // Fetch full conversation when active conversation changes
   const fetchActiveConversation = useCallback(async () => {
@@ -125,10 +127,10 @@ export function InboxView({ activeChannel, activeFilter }: InboxViewProps) {
     }
   }, [activeConversationId, useMockData, conversations]);
 
-  // Initial data fetch
+  // Refetch when workspace changes
   useEffect(() => {
     fetchConversations(true);
-  }, []);
+  }, [activeWorkspace]);
 
   // Fetch active conversation when selection changes
   useEffect(() => {

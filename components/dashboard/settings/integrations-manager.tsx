@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useTransition } from "react";
-import { Plus, Trash2, Building2, Key, MapPin, Loader2 } from "lucide-react";
+import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/table";
 import { Separator } from "@/components/ui/separator";
 import { getClients, createClient, deleteClient } from "@/actions/client-actions";
+import { syncCampaignsFromGHL } from "@/actions/campaign-actions";
+import { toast } from "sonner";
 
 interface Client {
   id: string;
@@ -26,6 +28,7 @@ interface Client {
   createdAt: Date;
   _count: {
     leads: number;
+    campaigns?: number;
   };
 }
 
@@ -33,6 +36,7 @@ export function IntegrationsManager() {
   const [clients, setClients] = useState<Client[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
+  const [syncingClientId, setSyncingClientId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
 
@@ -68,6 +72,7 @@ export function IntegrationsManager() {
       if (result.success) {
         setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "" });
         setShowForm(false);
+        toast.success("Workspace added successfully");
         await fetchClients();
       } else {
         setError(result.error || "Failed to create client");
@@ -83,11 +88,27 @@ export function IntegrationsManager() {
     startTransition(async () => {
       const result = await deleteClient(id);
       if (result.success) {
+        toast.success("Workspace deleted");
         await fetchClients();
       } else {
         setError(result.error || "Failed to delete client");
       }
     });
+  }
+
+  async function handleSyncCampaigns(clientId: string) {
+    setSyncingClientId(clientId);
+    
+    const result = await syncCampaignsFromGHL(clientId);
+    
+    if (result.success) {
+      toast.success(`Synced ${result.synced} campaigns from GHL`);
+      await fetchClients();
+    } else {
+      toast.error(result.error || "Failed to sync campaigns");
+    }
+    
+    setSyncingClientId(null);
   }
 
   return (
@@ -223,7 +244,22 @@ export function IntegrationsManager() {
                       Active
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-right space-x-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleSyncCampaigns(client.id)}
+                      disabled={syncingClientId === client.id}
+                    >
+                      {syncingClientId === client.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <>
+                          <RefreshCw className="h-4 w-4 mr-1" />
+                          Sync Campaigns
+                        </>
+                      )}
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -259,4 +295,3 @@ export function IntegrationsManager() {
     </Card>
   );
 }
-

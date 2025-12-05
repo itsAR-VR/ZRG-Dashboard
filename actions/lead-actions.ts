@@ -49,14 +49,16 @@ function requiresAttention(sentimentTag: string | null): boolean {
 
 /**
  * Fetch all conversations (leads with messages) for the inbox
+ * @param clientId - Optional client ID to filter by workspace
  */
-export async function getConversations(): Promise<{
+export async function getConversations(clientId?: string | null): Promise<{
   success: boolean;
   data?: ConversationData[];
   error?: string;
 }> {
   try {
     const leads = await prisma.lead.findMany({
+      where: clientId ? { clientId } : undefined,
       include: {
         client: {
           select: {
@@ -66,6 +68,10 @@ export async function getConversations(): Promise<{
         },
         messages: {
           orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+        aiDrafts: {
+          where: { status: "pending" },
           take: 1,
         },
       },
@@ -93,7 +99,7 @@ export async function getConversations(): Promise<{
         classification: mapSentimentToClassification(lead.sentimentTag),
         lastMessage: latestMessage?.body || "No messages yet",
         lastMessageTime: latestMessage?.createdAt || lead.createdAt,
-        hasAiDraft: false, // AI drafts not implemented yet
+        hasAiDraft: lead.aiDrafts && lead.aiDrafts.length > 0,
         requiresAttention: requiresAttention(lead.sentimentTag),
         sentimentTag: lead.sentimentTag,
       };
@@ -108,8 +114,9 @@ export async function getConversations(): Promise<{
 
 /**
  * Get inbox filter counts for sidebar
+ * @param clientId - Optional client ID to filter by workspace
  */
-export async function getInboxCounts(): Promise<{
+export async function getInboxCounts(clientId?: string | null): Promise<{
   requiresAttention: number;
   draftsForApproval: number;
   awaitingReply: number;
@@ -117,21 +124,30 @@ export async function getInboxCounts(): Promise<{
 }> {
   try {
     const attentionTags = ["Meeting Requested", "Information Requested", "Follow Up"];
+    const clientFilter = clientId ? { clientId } : {};
     
-    const [attention, total] = await Promise.all([
+    const [attention, drafts, total] = await Promise.all([
       prisma.lead.count({
         where: {
+          ...clientFilter,
           sentimentTag: { in: attentionTags },
         },
       }),
-      prisma.lead.count(),
+      prisma.aIDraft.count({
+        where: {
+          status: "pending",
+          lead: clientId ? { clientId } : undefined,
+        },
+      }),
+      prisma.lead.count({
+        where: clientFilter,
+      }),
     ]);
 
-    // For now, drafts and awaiting are placeholders until we implement those features
     return {
       requiresAttention: attention,
-      draftsForApproval: 0, // Will be implemented with AIDraft model
-      awaitingReply: Math.max(0, total - attention), // Leads without attention-requiring tags
+      draftsForApproval: drafts,
+      awaitingReply: Math.max(0, total - attention),
       total,
     };
   } catch (error) {

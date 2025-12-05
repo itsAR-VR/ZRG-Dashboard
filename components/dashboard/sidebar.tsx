@@ -14,14 +14,28 @@ import {
   Mail,
   MessageSquare,
   Linkedin,
+  Building2,
+  ChevronDown,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { getInboxCounts } from "@/actions/lead-actions"
 
 export type ViewType = "inbox" | "followups" | "crm" | "analytics" | "settings"
+
+interface Workspace {
+  id: string
+  name: string
+  ghlLocationId: string
+}
 
 interface SidebarProps {
   activeChannel: string
@@ -30,6 +44,9 @@ interface SidebarProps {
   onFilterChange: (filter: string) => void
   activeView: ViewType
   onViewChange: (view: ViewType) => void
+  activeWorkspace: string | null
+  onWorkspaceChange: (workspace: string | null) => void
+  workspaces: Workspace[]
 }
 
 const navItems = [
@@ -53,6 +70,9 @@ export function Sidebar({
   onFilterChange,
   activeView,
   onViewChange,
+  activeWorkspace,
+  onWorkspaceChange,
+  workspaces,
 }: SidebarProps) {
   const [counts, setCounts] = useState<FilterCounts>({
     attention: 0,
@@ -60,10 +80,10 @@ export function Sidebar({
     awaiting: 0,
   })
 
-  // Fetch counts on mount and periodically
+  // Fetch counts on mount, when workspace changes, and periodically
   useEffect(() => {
     async function fetchCounts() {
-      const result = await getInboxCounts()
+      const result = await getInboxCounts(activeWorkspace)
       setCounts({
         attention: result.requiresAttention,
         drafts: result.draftsForApproval,
@@ -76,13 +96,15 @@ export function Sidebar({
     // Refresh counts every 30 seconds
     const interval = setInterval(fetchCounts, 30000)
     return () => clearInterval(interval)
-  }, [])
+  }, [activeWorkspace])
 
   const filterItems = [
     { id: "attention", label: "Requires Attention", icon: AlertCircle, count: counts.attention, variant: "destructive" as const },
     { id: "drafts", label: "Drafts for Approval", icon: FileEdit, count: counts.drafts, variant: "warning" as const },
     { id: "awaiting", label: "Awaiting Reply", icon: Send, count: counts.awaiting, variant: "secondary" as const },
   ]
+
+  const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)
 
   return (
     <aside className="flex h-full w-64 flex-col border-r border-border bg-card">
@@ -92,8 +114,44 @@ export function Sidebar({
         <span className="text-lg font-semibold text-foreground">Inbox</span>
       </div>
 
+      {/* Workspace Selector */}
+      {workspaces.length > 0 && (
+        <div className="border-b border-border p-3">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="w-full justify-between">
+                <span className="flex items-center gap-2 truncate">
+                  <Building2 className="h-4 w-4 shrink-0" />
+                  <span className="truncate">
+                    {selectedWorkspace ? selectedWorkspace.name : "All Workspaces"}
+                  </span>
+                </span>
+                <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-56">
+              <DropdownMenuItem onClick={() => onWorkspaceChange(null)}>
+                <span className={cn(!activeWorkspace && "font-semibold")}>
+                  All Workspaces
+                </span>
+              </DropdownMenuItem>
+              {workspaces.map((workspace) => (
+                <DropdownMenuItem
+                  key={workspace.id}
+                  onClick={() => onWorkspaceChange(workspace.id)}
+                >
+                  <span className={cn(activeWorkspace === workspace.id && "font-semibold")}>
+                    {workspace.name}
+                  </span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
+
       {/* Navigation */}
-      <nav className="flex-1 space-y-1 p-3">
+      <nav className="flex-1 space-y-1 p-3 overflow-y-auto">
         {navItems.map((item) => (
           <Button
             key={item.id}

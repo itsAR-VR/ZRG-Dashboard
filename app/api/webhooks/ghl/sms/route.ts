@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import OpenAI from "openai";
+import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -328,15 +329,39 @@ export async function POST(request: NextRequest) {
       console.log(`Created message: ${message.id}`);
     }
 
+    // Generate AI draft if appropriate for this sentiment
+    let draftId: string | undefined;
+    if (shouldGenerateDraft(sentimentTag)) {
+      try {
+        const draftResult = await generateResponseDraft(
+          lead.id,
+          transcript || `Lead: ${messageBody}`,
+          sentimentTag
+        );
+        if (draftResult.success) {
+          draftId = draftResult.draftId;
+          console.log(`Generated AI draft: ${draftId}`);
+        } else {
+          console.error("Failed to generate AI draft:", draftResult.error);
+        }
+      } catch (error) {
+        console.error("Error generating AI draft:", error);
+      }
+    } else {
+      console.log(`Skipping AI draft for sentiment: ${sentimentTag}`);
+    }
+
     console.log("=== Webhook Processing Complete ===");
     console.log(`Lead ID: ${lead.id}`);
     console.log(`Sentiment: ${sentimentTag}`);
+    console.log(`Draft ID: ${draftId || "none"}`);
 
     return NextResponse.json({
       success: true,
       leadId: lead.id,
       contactId,
       sentimentTag,
+      draftId,
       message: "Webhook processed successfully",
     });
   } catch (error) {
