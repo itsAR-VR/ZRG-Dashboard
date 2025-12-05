@@ -1,0 +1,56 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// Stores GHL API Keys per sub-account for multi-tenancy
+model Client {
+  id            String   @id @default(uuid())
+  name          String
+  ghlLocationId String   @unique // Used to identify which client sent the webhook
+  ghlPrivateKey String   // The generic API key for this sub-account
+  workspaceId   String   // To group clients
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  leads         Lead[]
+}
+
+// Lead/Contact record synced from GHL
+model Lead {
+  id           String    @id @default(uuid())
+  ghlContactId String    @unique
+  firstName    String?
+  lastName     String?
+  email        String?
+  phone        String?
+  status       String    @default("new")
+  sentimentTag String?   // e.g., 'Meeting Requested', 'Not Interested', etc.
+  clientId     String
+  client       Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  messages     Message[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([clientId])
+}
+
+// SMS messages synced from GHL
+model Message {
+  id        String   @id @default(uuid())
+  body      String   @db.Text
+  direction String   // 'inbound' or 'outbound'
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([leadId])
+  @@index([createdAt(sort: Desc)])
+}

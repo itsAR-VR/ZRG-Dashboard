@@ -1,30 +1,42 @@
-# AI Master Inbox Dashboard
+# ZRG AI Master Inbox & CRM Dashboard
 
-*Automatically synced with your [v0.app](https://v0.app) deployments*
+A scalable, full-stack custom application designed to replace legacy n8n/Airtable workflows. This system manages high-volume sales outreach by unifying Email, SMS (GoHighLevel), and LinkedIn conversations into a single "Master Inbox" with AI-driven sentiment analysis and drafting capabilities.
 
-[![Deployed on Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-black?style=for-the-badge&logo=vercel)](https://vercel.com/ars-projects/v0-ai-master-inbox-dashboard)
-[![Built with v0](https://img.shields.io/badge/Built%20with-v0.app-black?style=for-the-badge)](https://v0.app/chat/gzGPCzhfIJa)
+## 🏗 Architecture
 
-## Overview
+- **Frontend:** Next.js 14 (App Router), Tailwind CSS, Shadcn UI, Lucide Icons.
+- **Backend:** Next.js Server Actions & API Routes.
+- **Database:** Supabase (PostgreSQL) with Prisma ORM.
+- **AI Engine:** OpenAI (GPT-5.1 / GPT-5-mini).
+- **Infrastructure:** Vercel (Hosting & Cron Jobs).
 
-This repository will stay in sync with your deployed chats on [v0.app](https://v0.app).
-Any changes you make to your deployed app will be automatically pushed to this repository from [v0.app](https://v0.app).
+## 🔌 Core Integrations
 
-## Deployment
+- **GoHighLevel (GHL):** SMS messaging via Private Integrations (v2 API).
+- **EmailBison:** Outbound email infrastructure.
+- **Unipile:** LinkedIn message syncing (Planned).
+- **Slack:** High-priority notifications (e.g., "Meeting Booked").
 
-Your project is live at:
+## 🚀 Key Features
 
-**[https://vercel.com/ars-projects/v0-ai-master-inbox-dashboard](https://vercel.com/ars-projects/v0-ai-master-inbox-dashboard)**
+1.  **Master Inbox:** A 3-pane dashboard (Folders -> Feed -> Conversation) to manage multi-channel communications.
+2.  **AI Automation:**
+    * **Classification:** Automatically tags incoming messages (e.g., "Meeting Requested", "Not Interested", "Blacklist").
+    * **Drafting:** Generates context-aware reply drafts for human approval.
+3.  **Dynamic Multi-Tenancy:**
+    * Manage multiple client workspaces on the fly by inputting API keys in the settings (no code deployment required).
+4.  **Real-Time Sync:** Uses Supabase Realtime to update the inbox instantly when new webhooks arrive.
 
-## Build your app
+## 🛠️ Getting Started
 
-Continue building your app on:
+### Prerequisites
+- Node.js 18+
+- Supabase Project
+- OpenAI API Key
+- GoHighLevel Account (for testing webhooks)
 
-**[https://v0.app/chat/gzGPCzhfIJa](https://v0.app/chat/gzGPCzhfIJa)**
+### Environment Setup
 
-## How It Works
-
-1. Create and modify your project using [v0.app](https://v0.app)
-2. Deploy your chats from the v0 interface
-3. Changes are automatically pushed to this repository
-4. Vercel deploys the latest version from this repository
+1. Copy the example environment file:
+   ```bash
+   cp .env.example .env.local
