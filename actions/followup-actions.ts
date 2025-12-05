@@ -27,9 +27,11 @@ export async function getFollowUpTasks(filter: "today" | "week" | "overdue" | "a
 }> {
   try {
     const now = new Date();
-    const startOfDay = new Date(now.setHours(0, 0, 0, 0));
-    const endOfDay = new Date(now.setHours(23, 59, 59, 999));
-    const endOfWeek = new Date(now);
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(now);
+    endOfDay.setHours(23, 59, 59, 999);
+    const endOfWeek = new Date(startOfDay);
     endOfWeek.setDate(endOfWeek.getDate() + 7);
 
     let whereClause: any = { status: "pending" };

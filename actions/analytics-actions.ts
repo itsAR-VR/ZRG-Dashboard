@@ -43,8 +43,8 @@ export async function getAnalytics(): Promise<{
     // Get total leads
     const totalLeads = await prisma.lead.count();
 
-    // Get leads with messages (responded)
-    const leadsWithResponses = await prisma.lead.count({
+    // Get leads we contacted (have outbound messages)
+    const leadsContacted = await prisma.lead.count({
       where: {
         messages: {
           some: {
@@ -54,9 +54,20 @@ export async function getAnalytics(): Promise<{
       },
     });
 
-    // Calculate response rate
-    const responseRate = totalLeads > 0 
-      ? Math.round((leadsWithResponses / totalLeads) * 100) 
+    // Get leads that replied (have inbound messages)
+    const leadsResponded = await prisma.lead.count({
+      where: {
+        messages: {
+          some: {
+            direction: "inbound",
+          },
+        },
+      },
+    });
+
+    // Calculate response rate: leads that replied / leads contacted
+    const responseRate = leadsContacted > 0 
+      ? Math.round((leadsResponded / leadsContacted) * 100) 
       : 0;
 
     // Get meetings booked (leads with "Meeting Requested" sentiment)
@@ -99,8 +110,10 @@ export async function getAnalytics(): Promise<{
     }));
 
     // Get weekly message stats (last 7 days)
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const now = new Date();
+    const sevenDaysAgo = new Date(now);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6); // 6 days ago + today = 7 days
+    sevenDaysAgo.setHours(0, 0, 0, 0);
 
     const messages = await prisma.message.findMany({
       where: {
@@ -114,19 +127,29 @@ export async function getAnalytics(): Promise<{
       },
     });
 
-    // Group messages by day
+    // Group messages by actual date (last 7 days)
     const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const weeklyStats = dayNames.map((day, index) => {
+    const weeklyStats: { day: string; inbound: number; outbound: number }[] = [];
+    
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date(now);
+      date.setDate(date.getDate() - i);
+      date.setHours(0, 0, 0, 0);
+      
+      const nextDate = new Date(date);
+      nextDate.setDate(nextDate.getDate() + 1);
+      
       const dayMessages = messages.filter((m) => {
-        const msgDay = new Date(m.createdAt).getDay();
-        return msgDay === index;
+        const msgDate = new Date(m.createdAt);
+        return msgDate >= date && msgDate < nextDate;
       });
-      return {
-        day,
+      
+      weeklyStats.push({
+        day: dayNames[date.getDay()],
         inbound: dayMessages.filter((m) => m.direction === "inbound").length,
         outbound: dayMessages.filter((m) => m.direction === "outbound").length,
-      };
-    });
+      });
+    }
 
     // Get top clients
     const clients = await prisma.client.findMany({
