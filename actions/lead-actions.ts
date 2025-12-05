@@ -20,6 +20,7 @@ export interface ConversationData {
   hasAiDraft: boolean;
   requiresAttention: boolean;
   sentimentTag: string | null;
+  campaignId: string | null;
 }
 
 /**
@@ -102,6 +103,7 @@ export async function getConversations(clientId?: string | null): Promise<{
         hasAiDraft: lead.aiDrafts && lead.aiDrafts.length > 0,
         requiresAttention: requiresAttention(lead.sentimentTag),
         sentimentTag: lead.sentimentTag,
+        campaignId: lead.campaignId,
       };
     });
 

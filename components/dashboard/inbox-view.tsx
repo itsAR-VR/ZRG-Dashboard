@@ -5,6 +5,7 @@ import { ConversationFeed } from "./conversation-feed";
 import { ActionStation } from "./action-station";
 import { CrmDrawer } from "./crm-drawer";
 import { getConversations, getConversation, type ConversationData } from "@/actions/lead-actions";
+import { getCampaigns } from "@/actions/campaign-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff, Inbox } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
@@ -16,11 +17,16 @@ interface InboxViewProps {
   activeWorkspace: string | null;
 }
 
+interface Campaign {
+  id: string;
+  name: string;
+}
+
 // Polling interval in milliseconds (30 seconds)
 const POLLING_INTERVAL = 30000;
 
 // Convert DB conversation to component format
-function convertToComponentFormat(conv: ConversationData): Conversation {
+function convertToComponentFormat(conv: ConversationData): Conversation & { campaignId?: string | null } {
   return {
     id: conv.id,
     lead: {
@@ -48,19 +54,37 @@ function convertToComponentFormat(conv: ConversationData): Conversation {
     messages: [],
     hasAiDraft: conv.hasAiDraft,
     requiresAttention: conv.requiresAttention,
+    campaignId: conv.campaignId,
   };
 }
 
 export function InboxView({ activeChannel, activeFilter, activeWorkspace }: InboxViewProps) {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversations, setConversations] = useState<(Conversation & { campaignId?: string | null })[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [isCrmOpen, setIsCrmOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isLive, setIsLive] = useState(false);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [activeCampaign, setActiveCampaign] = useState<string>("all");
   
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const realtimeConnectedRef = useRef(false);
+
+  // Fetch campaigns for the active workspace
+  const fetchCampaigns = useCallback(async () => {
+    if (!activeWorkspace) {
+      setCampaigns([]);
+      return;
+    }
+    
+    const result = await getCampaigns(activeWorkspace);
+    if (result.success && result.data) {
+      setCampaigns(result.data.map(c => ({ id: c.id, name: c.name })));
+    } else {
+      setCampaigns([]);
+    }
+  }, [activeWorkspace]);
 
   // Fetch conversations from database
   const fetchConversations = useCallback(async (showLoading = false) => {
@@ -118,6 +142,8 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
   // Refetch when workspace changes
   useEffect(() => {
     fetchConversations(true);
+    fetchCampaigns();
+    setActiveCampaign("all"); // Reset campaign filter when workspace changes
   }, [activeWorkspace]);
 
   // Fetch active conversation when selection changes
@@ -176,11 +202,12 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     };
   }, [fetchConversations]);
 
-  // Filter conversations by channel and filter
+  // Filter conversations by channel, filter, and campaign
   const filteredConversations = conversations.filter((conv) => {
     if (activeChannel !== "all" && conv.platform !== activeChannel) return false;
     if (activeFilter === "attention" && !conv.requiresAttention) return false;
     if (activeFilter === "drafts" && !conv.hasAiDraft) return false;
+    if (activeCampaign !== "all" && conv.campaignId !== activeCampaign) return false;
     return true;
   });
 
@@ -240,6 +267,9 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
         conversations={filteredConversations}
         activeConversationId={activeConversationId}
         onSelectConversation={setActiveConversationId}
+        campaigns={campaigns}
+        activeCampaign={activeCampaign}
+        onCampaignChange={setActiveCampaign}
       />
       <ActionStation
         conversation={activeConversation}
@@ -251,6 +281,10 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
           lead={activeConversation.lead}
           isOpen={isCrmOpen}
           onClose={() => setIsCrmOpen(false)}
+          onLeadUpdate={() => {
+            fetchConversations();
+            fetchActiveConversation();
+          }}
         />
       )}
     </>

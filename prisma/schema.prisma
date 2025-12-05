@@ -77,6 +77,7 @@ model Lead {
   phone        String?
   status       String        @default("new")
   sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.
+  snoozedUntil DateTime?     // When snoozed, hide from inbox until this date
   clientId     String
   client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
   campaignId   String?       // Optional link to the originating campaign

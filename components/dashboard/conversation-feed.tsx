@@ -7,16 +7,27 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Search } from "lucide-react"
 
+interface Campaign {
+  id: string;
+  name: string;
+}
+
 interface ConversationFeedProps {
   conversations: Conversation[]
   activeConversationId: string | null
   onSelectConversation: (id: string) => void
+  campaigns?: Campaign[]
+  activeCampaign?: string
+  onCampaignChange?: (campaignId: string) => void
 }
 
 export function ConversationFeed({ 
   conversations, 
   activeConversationId, 
   onSelectConversation,
+  campaigns = [],
+  activeCampaign = "all",
+  onCampaignChange,
 }: ConversationFeedProps) {
   const [searchQuery, setSearchQuery] = useState("")
 
@@ -52,14 +63,20 @@ export function ConversationFeed({
               <SelectItem value="month">This Month</SelectItem>
             </SelectContent>
           </Select>
-          <Select defaultValue="all">
+          <Select 
+            value={activeCampaign} 
+            onValueChange={onCampaignChange}
+          >
             <SelectTrigger className="flex-1 text-xs">
               <SelectValue placeholder="Campaign" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Campaigns</SelectItem>
-              <SelectItem value="outreach-q4">Outreach Q4</SelectItem>
-              <SelectItem value="nurture">Nurture</SelectItem>
+              {campaigns.map((campaign) => (
+                <SelectItem key={campaign.id} value={campaign.id}>
+                  {campaign.name}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>

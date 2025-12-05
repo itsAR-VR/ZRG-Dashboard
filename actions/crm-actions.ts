@@ -154,6 +154,7 @@ export async function getLeadDetails(leadId: string) {
         company: lead.client.name,
         status: lead.status,
         sentimentTag: lead.sentimentTag,
+        snoozedUntil: lead.snoozedUntil,
         messages: lead.messages,
         createdAt: lead.createdAt,
         updatedAt: lead.updatedAt,
@@ -162,6 +163,71 @@ export async function getLeadDetails(leadId: string) {
   } catch (error) {
     console.error("Failed to fetch lead details:", error);
     return { success: false, error: "Failed to fetch lead" };
+  }
+}
+
+/**
+ * Snooze a lead for a specified number of days
+ * The lead won't appear in the inbox until the snooze period expires
+ */
+export async function snoozeLead(
+  leadId: string,
+  days: number = 2
+): Promise<{ success: boolean; snoozedUntil?: Date; error?: string }> {
+  try {
+    const snoozedUntil = new Date();
+    snoozedUntil.setDate(snoozedUntil.getDate() + days);
+
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: { snoozedUntil },
+    });
+
+    revalidatePath("/");
+    return { success: true, snoozedUntil };
+  } catch (error) {
+    console.error("Failed to snooze lead:", error);
+    return { success: false, error: "Failed to snooze lead" };
+  }
+}
+
+/**
+ * Unsnooze a lead (remove snooze period)
+ */
+export async function unsnoozeLead(
+  leadId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: { snoozedUntil: null },
+    });
+
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to unsnooze lead:", error);
+    return { success: false, error: "Failed to unsnooze lead" };
+  }
+}
+
+/**
+ * Book a meeting for a lead (updates status to meeting-booked)
+ */
+export async function bookMeeting(
+  leadId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: { status: "meeting-booked" },
+    });
+
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to book meeting:", error);
+    return { success: false, error: "Failed to book meeting" };
   }
 }
 
