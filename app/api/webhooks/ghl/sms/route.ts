@@ -100,75 +100,80 @@ interface GHLWebhookPayload {
   triggerData?: Record<string, unknown>;
 }
 
-interface GHLMessage {
+/**
+ * GHL Message from export API
+ * Based on the actual API response structure
+ */
+interface GHLExportedMessage {
   id: string;
+  direction: "inbound" | "outbound";
+  status: string;
+  type: number;
+  locationId: string;
+  attachments: unknown[];
   body: string;
-  direction: string;
+  contactId: string;
+  contentType: string;
+  conversationId: string;
   dateAdded: string;
+  dateUpdated: string;
+  altId?: string;
   messageType: string;
+  userId?: string;
+  source?: string;
+}
+
+interface GHLExportResponse {
+  messages: GHLExportedMessage[];
+  nextCursor: string | null;
+  total: number;
+  traceId: string;
 }
 
 /**
- * Fetch conversation history from GHL API
+ * Fetch full conversation history from GHL using the export API
+ * Endpoint: GET /conversations/messages/export
+ * Docs: https://marketplace.gohighlevel.com/docs/ghl/conversations/export-messages-by-location
  */
-async function fetchGHLConversation(
+async function fetchGHLConversationHistory(
+  locationId: string,
   contactId: string,
   privateKey: string
-): Promise<string> {
+): Promise<{ messages: GHLExportedMessage[]; transcript: string }> {
   try {
-    // GHL API endpoint for getting conversations
-    const url = `https://services.leadconnectorhq.com/conversations/search?contactId=${contactId}`;
+    const url = new URL("https://services.leadconnectorhq.com/conversations/messages/export");
+    url.searchParams.set("locationId", locationId);
+    url.searchParams.set("contactId", contactId);
+    url.searchParams.set("channel", "SMS");
 
-    const response = await fetch(url, {
+    console.log(`[GHL API] Fetching conversation history: ${url.toString()}`);
+
+    const response = await fetch(url.toString(), {
       method: "GET",
       headers: {
         Authorization: `Bearer ${privateKey}`,
         Version: "2021-04-15",
-        "Content-Type": "application/json",
+        Accept: "application/json",
       },
     });
 
     if (!response.ok) {
-      console.error("GHL API error:", response.status, await response.text());
-      return "";
+      const errorText = await response.text();
+      console.error(`[GHL API] Error ${response.status}: ${errorText}`);
+      return { messages: [], transcript: "" };
     }
 
-    const data = await response.json();
-    const conversations = data.conversations || [];
+    const data: GHLExportResponse = await response.json();
+    const messages = data.messages || [];
 
-    if (conversations.length === 0) {
-      return "";
-    }
+    console.log(`[GHL API] Fetched ${messages.length} messages (total: ${data.total})`);
 
-    // Get the first conversation and fetch messages
-    const conversationId = conversations[0].id;
-    const messagesUrl = `https://services.leadconnectorhq.com/conversations/${conversationId}/messages`;
+    // Sort messages by date (oldest first for transcript)
+    const sortedMessages = [...messages].sort(
+      (a, b) => new Date(a.dateAdded).getTime() - new Date(b.dateAdded).getTime()
+    );
 
-    const messagesResponse = await fetch(messagesUrl, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${privateKey}`,
-        Version: "2021-04-15",
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!messagesResponse.ok) {
-      console.error("GHL Messages API error:", messagesResponse.status);
-      return "";
-    }
-
-    const messagesData = await messagesResponse.json();
-    const messages: GHLMessage[] = messagesData.messages || [];
-
-    // Sort by date and format into transcript
-    const sortedMessages = messages
-      .filter((m) => m.messageType === "SMS" || m.messageType === "TYPE_SMS")
-      .sort(
-        (a, b) =>
-          new Date(a.dateAdded).getTime() - new Date(b.dateAdded).getTime()
-      );
-
+    // Build transcript for AI classification
     const transcript = sortedMessages
       .map((m) => {
         const role = m.direction === "inbound" ? "Lead" : "Agent";
@@ -176,11 +181,54 @@ async function fetchGHLConversation(
       })
       .join("\n");
 
-    return transcript;
+    return { messages: sortedMessages, transcript };
   } catch (error) {
-    console.error("Error fetching GHL conversation:", error);
-    return "";
+    console.error("[GHL API] Error fetching conversation history:", error);
+    return { messages: [], transcript: "" };
   }
+}
+
+/**
+ * Import historical messages into our database
+ * Only imports messages that don't already exist
+ */
+async function importHistoricalMessages(
+  leadId: string,
+  messages: GHLExportedMessage[]
+): Promise<number> {
+  let importedCount = 0;
+
+  for (const msg of messages) {
+    try {
+      // Check if message already exists (by checking for same body + timestamp combo)
+      const existingMessage = await prisma.message.findFirst({
+        where: {
+          leadId,
+          body: msg.body,
+          createdAt: new Date(msg.dateAdded),
+        },
+      });
+
+      if (!existingMessage) {
+        await prisma.message.create({
+          data: {
+            body: msg.body,
+            direction: msg.direction,
+            leadId,
+            createdAt: new Date(msg.dateAdded),
+          },
+        });
+        importedCount++;
+      }
+    } catch (error) {
+      // Ignore duplicate errors, log others
+      if (!(error instanceof Error && error.message.includes("Unique"))) {
+        console.error(`[Import] Error importing message: ${error}`);
+      }
+    }
+  }
+
+  return importedCount;
 }
 
 /**
@@ -288,23 +336,44 @@ export async function POST(request: NextRequest) {
     const email = payload.email || payload.customData?.Email || null;
     const phone = payload.phone || payload.customData?.["Phone Number"] || null;
 
-    // Get the message body
+    // Get the message body from current webhook
     const messageBody =
       payload.message?.body || payload.customData?.Message || "";
 
     console.log(`Processing message from ${firstName} ${lastName}: "${messageBody}"`);
 
-    // Fetch conversation history from GHL for better context
+    // Check if this is a new lead (first time seeing this contact)
+    const existingLead = await prisma.lead.findUnique({
+      where: { ghlContactId: contactId },
+      include: { _count: { select: { messages: true } } },
+    });
+
+    const isNewLead = !existingLead;
+    const hasNoMessages = !existingLead || existingLead._count.messages === 0;
+
+    console.log(`Lead status: ${isNewLead ? "NEW" : "EXISTING"}, hasMessages: ${!hasNoMessages}`);
+
+    // Fetch conversation history from GHL
+    // Do this for new leads OR leads with no messages (to backfill history)
     let transcript = "";
-    try {
-      transcript = await fetchGHLConversation(contactId, client.ghlPrivateKey);
-      console.log(`Fetched conversation transcript (${transcript.length} chars)`);
-    } catch (error) {
-      console.error("Failed to fetch conversation history:", error);
+    let historicalMessages: GHLExportedMessage[] = [];
+
+    if (isNewLead || hasNoMessages) {
+      console.log("[History Import] Fetching full conversation history from GHL...");
+      const historyResult = await fetchGHLConversationHistory(
+        locationId,
+        contactId,
+        client.ghlPrivateKey
+      );
+      historicalMessages = historyResult.messages;
+      transcript = historyResult.transcript;
+      console.log(`[History Import] Got ${historicalMessages.length} historical messages`);
+    } else {
+      // For existing leads with messages, just use the current message for classification
+      transcript = `Lead: ${messageBody}`;
     }
 
     // Classify sentiment using AI
-    // Use transcript if available, otherwise just the current message
     const sentimentTag = await classifySentiment(transcript || messageBody);
     console.log(`AI Classification: ${sentimentTag}`);
 
@@ -337,8 +406,14 @@ export async function POST(request: NextRequest) {
 
     console.log(`Upserted lead: ${lead.id}`);
 
-    // Save the message if there's content
-    if (messageBody) {
+    // Import historical messages if this is a new lead or has no messages
+    let importedMessagesCount = 0;
+    if ((isNewLead || hasNoMessages) && historicalMessages.length > 0) {
+      console.log(`[History Import] Importing ${historicalMessages.length} messages...`);
+      importedMessagesCount = await importHistoricalMessages(lead.id, historicalMessages);
+      console.log(`[History Import] Imported ${importedMessagesCount} new messages`);
+    } else if (messageBody) {
+      // For existing leads, just save the current message
       const message = await prisma.message.create({
         data: {
           body: messageBody,
@@ -375,6 +450,7 @@ export async function POST(request: NextRequest) {
     console.log(`Lead ID: ${lead.id}`);
     console.log(`Sentiment: ${sentimentTag}`);
     console.log(`Status: ${leadStatus}`);
+    console.log(`Imported Messages: ${importedMessagesCount}`);
     console.log(`Draft ID: ${draftId || "none"}`);
 
     return NextResponse.json({
@@ -383,6 +459,7 @@ export async function POST(request: NextRequest) {
       contactId,
       sentimentTag,
       status: leadStatus,
+      importedMessages: importedMessagesCount,
       draftId,
       message: "Webhook processed successfully",
     });
