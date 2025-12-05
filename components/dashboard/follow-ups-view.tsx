@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   Mail,
   Phone,
@@ -12,12 +12,14 @@ import {
   Play,
   Clock4,
   SkipForward,
+  Loader2,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { getFollowUpTasks, completeFollowUpTask, skipFollowUpTask, type FollowUpTaskData } from "@/actions/followup-actions"
 import { mockFollowUpTasks, type FollowUpTask } from "@/lib/mock-data"
 
 const typeIcons = {
@@ -36,29 +38,45 @@ const typeColors = {
 
 function isToday(date: Date): boolean {
   const today = new Date()
-  return date.toDateString() === today.toDateString()
+  return new Date(date).toDateString() === today.toDateString()
 }
 
 function isOverdue(date: Date): boolean {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  return date < today
+  return new Date(date) < today
 }
 
 function formatDueDate(date: Date): string {
-  if (isToday(date)) return "Today"
-  if (isOverdue(date)) {
-    const days = Math.ceil((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24))
+  const d = new Date(date)
+  if (isToday(d)) return "Today"
+  if (isOverdue(d)) {
+    const days = Math.ceil((Date.now() - d.getTime()) / (1000 * 60 * 60 * 24))
     return `${days} day${days > 1 ? "s" : ""} overdue`
   }
-  const days = Math.ceil((date.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+  const days = Math.ceil((d.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
   if (days === 1) return "Tomorrow"
   if (days <= 7) return `In ${days} days`
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+}
+
+// Unified task type for both DB and mock data
+interface UnifiedTask {
+  id: string
+  type: "email" | "call" | "linkedin" | "sms"
+  dueDate: Date
+  leadName: string
+  leadCompany: string
+  leadScore?: number
+  leadTitle?: string
+  sequenceStep?: number | null
+  totalSteps?: number | null
+  campaignName?: string | null
+  suggestedMessage?: string | null
 }
 
 interface TaskCardProps {
-  task: FollowUpTask
+  task: UnifiedTask
   onExecute: (id: string) => void
   onSnooze: (id: string) => void
   onSkip: (id: string) => void
@@ -78,27 +96,37 @@ function TaskCard({ task, onExecute, onSnooze, onSkip }: TaskCardProps) {
 
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
-              <span className="font-semibold truncate">{task.lead.name}</span>
-              <Badge variant="outline" className="text-xs shrink-0">
-                Score: {task.lead.leadScore}
-              </Badge>
+              <span className="font-semibold truncate">{task.leadName}</span>
+              {task.leadScore && (
+                <Badge variant="outline" className="text-xs shrink-0">
+                  Score: {task.leadScore}
+                </Badge>
+              )}
             </div>
 
             <p className="text-sm text-muted-foreground truncate">
-              {task.lead.title} at {task.lead.company}
+              {task.leadTitle ? `${task.leadTitle} at ` : ""}{task.leadCompany}
             </p>
 
-            <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
-              <span className="flex items-center gap-1">
-                <Calendar className="h-3 w-3" />
-                {task.campaignName}
-              </span>
-              <span className="flex items-center gap-1">
-                Step {task.sequenceStep}/{task.totalSteps}
-              </span>
-            </div>
+            {(task.campaignName || task.sequenceStep) && (
+              <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
+                {task.campaignName && (
+                  <span className="flex items-center gap-1">
+                    <Calendar className="h-3 w-3" />
+                    {task.campaignName}
+                  </span>
+                )}
+                {task.sequenceStep && task.totalSteps && (
+                  <span className="flex items-center gap-1">
+                    Step {task.sequenceStep}/{task.totalSteps}
+                  </span>
+                )}
+              </div>
+            )}
 
-            <p className="mt-3 text-sm bg-muted/50 rounded-md p-2 line-clamp-2">{task.suggestedMessage}</p>
+            {task.suggestedMessage && (
+              <p className="mt-3 text-sm bg-muted/50 rounded-md p-2 line-clamp-2">{task.suggestedMessage}</p>
+            )}
 
             <div className="flex items-center justify-between mt-3">
               <span
@@ -131,29 +159,92 @@ function TaskCard({ task, onExecute, onSnooze, onSkip }: TaskCardProps) {
 }
 
 export function FollowUpsView() {
-  const [tasks, setTasks] = useState(mockFollowUpTasks)
+  const [tasks, setTasks] = useState<UnifiedTask[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [useMockData, setUseMockData] = useState(false)
+
+  useEffect(() => {
+    async function fetchTasks() {
+      setIsLoading(true)
+      const result = await getFollowUpTasks("all")
+      
+      if (result.success && result.data && result.data.length > 0) {
+        // Convert DB tasks to unified format
+        const dbTasks: UnifiedTask[] = result.data.map((t) => ({
+          id: t.id,
+          type: t.type,
+          dueDate: new Date(t.dueDate),
+          leadName: t.leadName,
+          leadCompany: t.leadCompany,
+          sequenceStep: t.sequenceStep,
+          totalSteps: t.totalSteps,
+          campaignName: t.campaignName,
+          suggestedMessage: t.suggestedMessage,
+        }))
+        setTasks(dbTasks)
+        setUseMockData(false)
+      } else {
+        // Fall back to mock data
+        const mockTasks: UnifiedTask[] = mockFollowUpTasks.map((t) => ({
+          id: t.id,
+          type: t.type,
+          dueDate: new Date(t.dueDate),
+          leadName: t.lead.name,
+          leadCompany: t.lead.company,
+          leadScore: t.lead.leadScore,
+          leadTitle: t.lead.title,
+          sequenceStep: t.sequenceStep,
+          totalSteps: t.totalSteps,
+          campaignName: t.campaignName,
+          suggestedMessage: t.suggestedMessage,
+        }))
+        setTasks(mockTasks)
+        setUseMockData(true)
+      }
+      
+      setIsLoading(false)
+    }
+
+    fetchTasks()
+  }, [])
 
   const overdueTasks = tasks.filter((t) => isOverdue(t.dueDate))
   const todayTasks = tasks.filter((t) => isToday(t.dueDate))
   const upcomingTasks = tasks.filter((t) => !isOverdue(t.dueDate) && !isToday(t.dueDate))
 
-  const handleExecute = (id: string) => {
+  const handleExecute = async (id: string) => {
     setTasks(tasks.filter((t) => t.id !== id))
+    if (!useMockData) {
+      await completeFollowUpTask(id)
+    }
   }
 
   const handleSnooze = (id: string) => {
     setTasks(tasks.map((t) => (t.id === id ? { ...t, dueDate: new Date(Date.now() + 1000 * 60 * 60 * 24) } : t)))
   }
 
-  const handleSkip = (id: string) => {
+  const handleSkip = async (id: string) => {
     setTasks(tasks.filter((t) => t.id !== id))
+    if (!useMockData) {
+      await skipFollowUpTask(id)
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    )
   }
 
   return (
     <div className="flex flex-col h-full">
       <div className="border-b px-6 py-4">
         <h1 className="text-2xl font-bold">Follow-ups</h1>
-        <p className="text-muted-foreground">Manage your scheduled outreach tasks</p>
+        <p className="text-muted-foreground">
+          {useMockData ? "Showing demo data" : "Manage your scheduled outreach tasks"}
+        </p>
       </div>
 
       <div className="flex-1 overflow-hidden p-6">
@@ -205,15 +296,23 @@ export function FollowUpsView() {
 
           <ScrollArea className="h-[calc(100%-48px)] mt-4">
             <TabsContent value="all" className="mt-0 space-y-3">
-              {tasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  onExecute={handleExecute}
-                  onSnooze={handleSnooze}
-                  onSkip={handleSkip}
-                />
-              ))}
+              {tasks.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <Calendar className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                  <p>No follow-up tasks</p>
+                  <p className="text-sm mt-2">Tasks will appear here when leads need follow-ups</p>
+                </div>
+              ) : (
+                tasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    onExecute={handleExecute}
+                    onSnooze={handleSnooze}
+                    onSkip={handleSkip}
+                  />
+                ))
+              )}
             </TabsContent>
 
             <TabsContent value="overdue" className="mt-0 space-y-3">

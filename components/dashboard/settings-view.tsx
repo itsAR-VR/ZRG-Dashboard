@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   Mail,
   Linkedin,
@@ -17,6 +17,8 @@ import {
   Users,
   Bot,
   Sparkles,
+  Loader2,
+  Save,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -31,6 +33,8 @@ import { Separator } from "@/components/ui/separator"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { IntegrationsManager } from "./settings/integrations-manager"
+import { getUserSettings, updateUserSettings, type UserSettingsData } from "@/actions/settings-actions"
+import { toast } from "sonner"
 
 interface Integration {
   id: string
@@ -41,10 +45,10 @@ interface Integration {
 }
 
 const integrations: Integration[] = [
-  { id: "gmail", name: "Gmail", icon: Mail, connected: true, account: "alex@zeroriskgrowth.com" },
+  { id: "gmail", name: "Gmail", icon: Mail, connected: false },
   { id: "outlook", name: "Outlook", icon: Mail, connected: false },
-  { id: "linkedin", name: "LinkedIn", icon: Linkedin, connected: true, account: "Alex Thompson" },
-  { id: "twilio", name: "Twilio SMS", icon: MessageSquare, connected: true, account: "+1 (555) 000-1234" },
+  { id: "linkedin", name: "LinkedIn", icon: Linkedin, connected: false },
+  { id: "twilio", name: "Twilio SMS", icon: MessageSquare, connected: false },
   { id: "dialpad", name: "Dialpad", icon: Phone, connected: false },
 ]
 
@@ -73,32 +77,148 @@ const teamMembers = [
 ]
 
 export function SettingsView() {
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [hasChanges, setHasChanges] = useState(false)
+
+  // Settings state from database
+  const [settings, setSettings] = useState<UserSettingsData | null>(null)
+
+  // Local state for form inputs
   const [aiPersona, setAiPersona] = useState({
-    name: "Alex",
-    tone: "professional",
+    name: "",
+    tone: "friendly-professional",
     greeting: "Hi {firstName},",
-    signature: "Best regards,\nAlex Thompson\nZero Risk Growth",
+    signature: "",
   })
 
   const [availability, setAvailability] = useState({
     timezone: "America/Los_Angeles",
     startTime: "09:00",
     endTime: "17:00",
-    workDays: ["monday", "tuesday", "wednesday", "thursday", "friday"],
   })
 
   const [notifications, setNotifications] = useState({
     emailDigest: true,
     slackAlerts: true,
-    urgentOnly: false,
-    meetingRequests: true,
   })
+
+  const [automationRules, setAutomationRules] = useState({
+    autoApproveMeetings: true,
+    flagUncertainReplies: true,
+    pauseForOOO: true,
+    autoBlacklist: true,
+  })
+
+  // Load settings on mount
+  useEffect(() => {
+    async function loadSettings() {
+      setIsLoading(true)
+      const result = await getUserSettings()
+      
+      if (result.success && result.data) {
+        setSettings(result.data)
+        // Populate form state from database
+        setAiPersona({
+          name: result.data.aiPersonaName || "",
+          tone: result.data.aiTone || "friendly-professional",
+          greeting: result.data.aiGreeting || "Hi {firstName},",
+          signature: result.data.aiSignature || "",
+        })
+        setAvailability({
+          timezone: result.data.timezone || "America/Los_Angeles",
+          startTime: result.data.workStartTime || "09:00",
+          endTime: result.data.workEndTime || "17:00",
+        })
+        setNotifications({
+          emailDigest: result.data.emailDigest,
+          slackAlerts: result.data.slackAlerts,
+        })
+        setAutomationRules({
+          autoApproveMeetings: result.data.autoApproveMeetings,
+          flagUncertainReplies: result.data.flagUncertainReplies,
+          pauseForOOO: result.data.pauseForOOO,
+          autoBlacklist: result.data.autoBlacklist,
+        })
+      }
+      
+      setIsLoading(false)
+    }
+
+    loadSettings()
+  }, [])
+
+  // Track changes
+  const handleChange = () => {
+    setHasChanges(true)
+  }
+
+  // Save all settings
+  const handleSaveSettings = async () => {
+    setIsSaving(true)
+    
+    const result = await updateUserSettings({
+      aiPersonaName: aiPersona.name || undefined,
+      aiTone: aiPersona.tone,
+      aiGreeting: aiPersona.greeting,
+      aiSignature: aiPersona.signature || undefined,
+      autoApproveMeetings: automationRules.autoApproveMeetings,
+      flagUncertainReplies: automationRules.flagUncertainReplies,
+      pauseForOOO: automationRules.pauseForOOO,
+      autoBlacklist: automationRules.autoBlacklist,
+      emailDigest: notifications.emailDigest,
+      slackAlerts: notifications.slackAlerts,
+      timezone: availability.timezone,
+      workStartTime: availability.startTime,
+      workEndTime: availability.endTime,
+    })
+
+    if (result.success) {
+      toast.success("Settings saved", {
+        description: "Your settings have been saved successfully.",
+      })
+      setHasChanges(false)
+    } else {
+      toast.error("Error", {
+        description: result.error || "Failed to save settings.",
+      })
+    }
+
+    setIsSaving(false)
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col h-full overflow-auto">
       <div className="border-b px-6 py-4">
-        <h1 className="text-2xl font-bold">Settings</h1>
-        <p className="text-muted-foreground">Manage your account and preferences</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">Settings</h1>
+            <p className="text-muted-foreground">Manage your account and preferences</p>
+          </div>
+          {hasChanges && (
+            <Button onClick={handleSaveSettings} disabled={isSaving}>
+              {isSaving ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Save className="h-4 w-4 mr-2" />
+                  Save Changes
+                </>
+              )}
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="p-6">
@@ -164,7 +284,10 @@ export function SettingsView() {
                   <Label>Timezone</Label>
                   <Select
                     value={availability.timezone}
-                    onValueChange={(v) => setAvailability({ ...availability, timezone: v })}
+                    onValueChange={(v) => {
+                      setAvailability({ ...availability, timezone: v })
+                      handleChange()
+                    }}
                   >
                     <SelectTrigger>
                       <Globe className="h-4 w-4 mr-2" />
@@ -184,7 +307,10 @@ export function SettingsView() {
                     <Input
                       type="time"
                       value={availability.startTime}
-                      onChange={(e) => setAvailability({ ...availability, startTime: e.target.value })}
+                      onChange={(e) => {
+                        setAvailability({ ...availability, startTime: e.target.value })
+                        handleChange()
+                      }}
                     />
                   </div>
                   <div className="space-y-2">
@@ -192,7 +318,10 @@ export function SettingsView() {
                     <Input
                       type="time"
                       value={availability.endTime}
-                      onChange={(e) => setAvailability({ ...availability, endTime: e.target.value })}
+                      onChange={(e) => {
+                        setAvailability({ ...availability, endTime: e.target.value })
+                        handleChange()
+                      }}
                     />
                   </div>
                 </div>
@@ -215,7 +344,10 @@ export function SettingsView() {
                   </div>
                   <Switch
                     checked={notifications.emailDigest}
-                    onCheckedChange={(v) => setNotifications({ ...notifications, emailDigest: v })}
+                    onCheckedChange={(v) => {
+                      setNotifications({ ...notifications, emailDigest: v })
+                      handleChange()
+                    }}
                   />
                 </div>
                 <Separator />
@@ -226,18 +358,10 @@ export function SettingsView() {
                   </div>
                   <Switch
                     checked={notifications.slackAlerts}
-                    onCheckedChange={(v) => setNotifications({ ...notifications, slackAlerts: v })}
-                  />
-                </div>
-                <Separator />
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">Meeting Requests Only</p>
-                    <p className="text-sm text-muted-foreground">Only notify for high-priority leads</p>
-                  </div>
-                  <Switch
-                    checked={notifications.meetingRequests}
-                    onCheckedChange={(v) => setNotifications({ ...notifications, meetingRequests: v })}
+                    onCheckedChange={(v) => {
+                      setNotifications({ ...notifications, slackAlerts: v })
+                      handleChange()
+                    }}
                   />
                 </div>
               </CardContent>
@@ -274,14 +398,14 @@ export function SettingsView() {
                             </Badge>
                           ) : (
                             <Badge variant="outline" className="text-muted-foreground">
-                              Not Connected
+                              Coming Soon
                             </Badge>
                           )}
                         </div>
                         {integration.account && <p className="text-sm text-muted-foreground">{integration.account}</p>}
                       </div>
                     </div>
-                    <Button variant={integration.connected ? "outline" : "default"} size="sm">
+                    <Button variant="outline" size="sm" disabled={!integration.connected}>
                       {integration.connected ? "Disconnect" : "Connect"}
                     </Button>
                   </div>
@@ -307,17 +431,28 @@ export function SettingsView() {
                     <Input
                       id="aiName"
                       value={aiPersona.name}
-                      onChange={(e) => setAiPersona({ ...aiPersona, name: e.target.value })}
+                      onChange={(e) => {
+                        setAiPersona({ ...aiPersona, name: e.target.value })
+                        handleChange()
+                      }}
+                      placeholder="Your name for outreach"
                     />
                     <p className="text-xs text-muted-foreground">The name used in outreach messages</p>
                   </div>
                   <div className="space-y-2">
                     <Label>Communication Tone</Label>
-                    <Select value={aiPersona.tone} onValueChange={(v) => setAiPersona({ ...aiPersona, tone: v })}>
+                    <Select 
+                      value={aiPersona.tone} 
+                      onValueChange={(v) => {
+                        setAiPersona({ ...aiPersona, tone: v })
+                        handleChange()
+                      }}
+                    >
                       <SelectTrigger>
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="friendly-professional">Friendly Professional</SelectItem>
                         <SelectItem value="professional">Professional</SelectItem>
                         <SelectItem value="friendly">Friendly</SelectItem>
                         <SelectItem value="casual">Casual</SelectItem>
@@ -332,7 +467,10 @@ export function SettingsView() {
                   <Input
                     id="greeting"
                     value={aiPersona.greeting}
-                    onChange={(e) => setAiPersona({ ...aiPersona, greeting: e.target.value })}
+                    onChange={(e) => {
+                      setAiPersona({ ...aiPersona, greeting: e.target.value })
+                      handleChange()
+                    }}
                   />
                   <p className="text-xs text-muted-foreground">
                     Use {"{firstName}"}, {"{lastName}"}, {"{company}"} as variables
@@ -344,8 +482,12 @@ export function SettingsView() {
                   <Textarea
                     id="signature"
                     value={aiPersona.signature}
-                    onChange={(e) => setAiPersona({ ...aiPersona, signature: e.target.value })}
+                    onChange={(e) => {
+                      setAiPersona({ ...aiPersona, signature: e.target.value })
+                      handleChange()
+                    }}
                     rows={4}
+                    placeholder="Best regards,&#10;Your Name&#10;Company Name"
                   />
                 </div>
 
@@ -359,19 +501,43 @@ export function SettingsView() {
                   <div className="grid gap-3">
                     <div className="flex items-center justify-between p-3 rounded-lg border">
                       <span className="text-sm">Auto-approve meeting confirmations</span>
-                      <Switch defaultChecked />
+                      <Switch 
+                        checked={automationRules.autoApproveMeetings}
+                        onCheckedChange={(v) => {
+                          setAutomationRules({ ...automationRules, autoApproveMeetings: v })
+                          handleChange()
+                        }}
+                      />
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
                       <span className="text-sm">Flag uncertain responses for review</span>
-                      <Switch defaultChecked />
+                      <Switch 
+                        checked={automationRules.flagUncertainReplies}
+                        onCheckedChange={(v) => {
+                          setAutomationRules({ ...automationRules, flagUncertainReplies: v })
+                          handleChange()
+                        }}
+                      />
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
                       <span className="text-sm">Pause sequences for Out-of-Office replies</span>
-                      <Switch defaultChecked />
+                      <Switch 
+                        checked={automationRules.pauseForOOO}
+                        onCheckedChange={(v) => {
+                          setAutomationRules({ ...automationRules, pauseForOOO: v })
+                          handleChange()
+                        }}
+                      />
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
                       <span className="text-sm">Auto-blacklist explicit opt-outs</span>
-                      <Switch defaultChecked />
+                      <Switch 
+                        checked={automationRules.autoBlacklist}
+                        onCheckedChange={(v) => {
+                          setAutomationRules({ ...automationRules, autoBlacklist: v })
+                          handleChange()
+                        }}
+                      />
                     </div>
                   </div>
                 </div>

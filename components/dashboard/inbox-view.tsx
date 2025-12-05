@@ -1,20 +1,24 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { ConversationFeed } from "./conversation-feed";
 import { ActionStation } from "./action-station";
 import { CrmDrawer } from "./crm-drawer";
 import { getConversations, getConversation, type ConversationData } from "@/actions/lead-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
-import { Loader2 } from "lucide-react";
+import { Loader2, Wifi, WifiOff } from "lucide-react";
 import { mockConversations, type Conversation, type Lead } from "@/lib/mock-data";
+import { Badge } from "@/components/ui/badge";
 
 interface InboxViewProps {
   activeChannel: string;
   activeFilter: string;
 }
 
-// Convert DB conversation to mock format for compatibility
+// Polling interval in milliseconds (30 seconds)
+const POLLING_INTERVAL = 30000;
+
+// Convert DB conversation to component format
 function convertToMockFormat(conv: ConversationData): Conversation {
   return {
     id: conv.id,
@@ -37,7 +41,8 @@ function convertToMockFormat(conv: ConversationData): Conversation {
       },
     },
     platform: conv.platform,
-    classification: conv.classification as Conversation["classification"],
+    // Use the sentimentTag directly if available, otherwise use classification
+    classification: (conv.sentimentTag?.toLowerCase().replace(/\s+/g, "-") || conv.classification) as Conversation["classification"],
     lastMessage: conv.lastMessage,
     lastMessageTime: new Date(conv.lastMessageTime),
     messages: [],
@@ -53,15 +58,24 @@ export function InboxView({ activeChannel, activeFilter }: InboxViewProps) {
   const [isCrmOpen, setIsCrmOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [useMockData, setUseMockData] = useState(false);
+  const [isLive, setIsLive] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const realtimeConnectedRef = useRef(false);
 
   // Fetch conversations from database
-  const fetchConversations = useCallback(async () => {
+  const fetchConversations = useCallback(async (showLoading = false) => {
+    if (showLoading) setIsLoading(true);
+    
     try {
       const result = await getConversations();
       if (result.success && result.data && result.data.length > 0) {
         const converted = result.data.map(convertToMockFormat);
         setConversations(converted);
         setUseMockData(false);
+        setLastUpdate(new Date());
+        
         // Set first conversation as active if none selected
         if (!activeConversationId && converted.length > 0) {
           setActiveConversationId(converted[0].id);
@@ -113,35 +127,69 @@ export function InboxView({ activeChannel, activeFilter }: InboxViewProps) {
 
   // Initial data fetch
   useEffect(() => {
-    fetchConversations();
-  }, [fetchConversations]);
+    fetchConversations(true);
+  }, []);
 
   // Fetch active conversation when selection changes
   useEffect(() => {
     fetchActiveConversation();
   }, [fetchActiveConversation]);
 
-  // Set up realtime subscriptions
+  // Set up realtime subscriptions - ALWAYS try to connect
   useEffect(() => {
-    if (useMockData) return;
+    console.log("[Realtime] Setting up subscriptions...");
 
     // Subscribe to new messages
-    const messagesChannel = subscribeToMessages(() => {
-      // Refresh conversations when new message arrives
+    const messagesChannel = subscribeToMessages((payload) => {
+      console.log("[Realtime] New message received:", payload);
+      realtimeConnectedRef.current = true;
+      setIsLive(true);
       fetchConversations();
     });
 
     // Subscribe to lead updates
-    const leadsChannel = subscribeToLeads(() => {
-      // Refresh conversations when lead is updated
+    const leadsChannel = subscribeToLeads((payload) => {
+      console.log("[Realtime] Lead updated:", payload);
+      realtimeConnectedRef.current = true;
+      setIsLive(true);
       fetchConversations();
     });
 
+    // Check connection status after a delay
+    const checkConnection = setTimeout(() => {
+      if (!realtimeConnectedRef.current) {
+        console.log("[Realtime] No connection detected, relying on polling");
+        setIsLive(false);
+      }
+    }, 5000);
+
     return () => {
+      console.log("[Realtime] Cleaning up subscriptions...");
+      clearTimeout(checkConnection);
       unsubscribe(messagesChannel);
       unsubscribe(leadsChannel);
     };
-  }, [useMockData, fetchConversations]);
+  }, [fetchConversations]);
+
+  // Set up polling as fallback (always active, but less frequent if realtime works)
+  useEffect(() => {
+    // Clear existing polling
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+    }
+
+    // Set up polling
+    pollingRef.current = setInterval(() => {
+      console.log("[Polling] Refreshing conversations...");
+      fetchConversations();
+    }, POLLING_INTERVAL);
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+      }
+    };
+  }, [fetchConversations]);
 
   // Filter conversations by channel and filter
   const filteredConversations = conversations.filter((conv) => {
@@ -161,6 +209,26 @@ export function InboxView({ activeChannel, activeFilter }: InboxViewProps) {
 
   return (
     <>
+      {/* Live indicator */}
+      <div className="absolute top-2 right-2 z-10">
+        <Badge 
+          variant="outline" 
+          className={`text-xs ${isLive ? "bg-green-500/10 text-green-500 border-green-500/30" : "bg-muted text-muted-foreground"}`}
+        >
+          {isLive ? (
+            <>
+              <Wifi className="h-3 w-3 mr-1" />
+              Live
+            </>
+          ) : (
+            <>
+              <WifiOff className="h-3 w-3 mr-1" />
+              Polling
+            </>
+          )}
+        </Badge>
+      </div>
+      
       <ConversationFeed
         conversations={filteredConversations}
         activeConversationId={activeConversationId}
@@ -181,4 +249,3 @@ export function InboxView({ activeChannel, activeFilter }: InboxViewProps) {
     </>
   );
 }
-

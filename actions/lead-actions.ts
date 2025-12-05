@@ -107,6 +107,45 @@ export async function getConversations(): Promise<{
 }
 
 /**
+ * Get inbox filter counts for sidebar
+ */
+export async function getInboxCounts(): Promise<{
+  requiresAttention: number;
+  draftsForApproval: number;
+  awaitingReply: number;
+  total: number;
+}> {
+  try {
+    const attentionTags = ["Meeting Requested", "Information Requested", "Follow Up"];
+    
+    const [attention, total] = await Promise.all([
+      prisma.lead.count({
+        where: {
+          sentimentTag: { in: attentionTags },
+        },
+      }),
+      prisma.lead.count(),
+    ]);
+
+    // For now, drafts and awaiting are placeholders until we implement those features
+    return {
+      requiresAttention: attention,
+      draftsForApproval: 0, // Will be implemented with AIDraft model
+      awaitingReply: Math.max(0, total - attention), // Leads without attention-requiring tags
+      total,
+    };
+  } catch (error) {
+    console.error("Failed to get inbox counts:", error);
+    return {
+      requiresAttention: 0,
+      draftsForApproval: 0,
+      awaitingReply: 0,
+      total: 0,
+    };
+  }
+}
+
+/**
  * Get a single conversation with full message history
  */
 export async function getConversation(leadId: string) {

@@ -23,21 +23,24 @@ model Client {
 
 // Lead/Contact record synced from GHL
 model Lead {
-  id           String    @id @default(uuid())
-  ghlContactId String    @unique
+  id           String        @id @default(uuid())
+  ghlContactId String        @unique
   firstName    String?
   lastName     String?
   email        String?
   phone        String?
-  status       String    @default("new")
-  sentimentTag String?   // e.g., 'Meeting Requested', 'Not Interested', etc.
+  status       String        @default("new")
+  sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.
   clientId     String
-  client       Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
   messages     Message[]
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  followUps    FollowUpTask[]
+  aiDrafts     AIDraft[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
 
   @@index([clientId])
+  @@index([sentimentTag])
 }
 
 // SMS messages synced from GHL
@@ -51,4 +54,63 @@ model Message {
 
   @@index([leadId])
   @@index([createdAt(sort: Desc)])
+}
+
+// Follow-up tasks for leads
+model FollowUpTask {
+  id               String    @id @default(uuid())
+  leadId           String
+  lead             Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  type             String    // 'email', 'call', 'sms', 'linkedin'
+  dueDate          DateTime
+  status           String    @default("pending") // pending, completed, skipped
+  suggestedMessage String?   @db.Text
+  sequenceStep     Int?      // Current step in campaign sequence
+  totalSteps       Int?      // Total steps in campaign
+  campaignName     String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([leadId])
+  @@index([dueDate])
+  @@index([status])
+}
+
+// AI-generated draft messages pending approval
+model AIDraft {
+  id        String   @id @default(uuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  content   String   @db.Text
+  status    String   @default("pending") // pending, approved, rejected
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([leadId])
+  @@index([status])
+}
+
+// User settings and preferences
+model UserSettings {
+  id                   String   @id @default(uuid())
+  userId               String   @unique @default("default") // For now, single user
+  // AI Personality Settings
+  aiPersonaName        String?
+  aiTone               String?  @default("friendly-professional")
+  aiGreeting           String?
+  aiSignature          String?  @db.Text
+  // Automation Rules
+  autoApproveMeetings  Boolean  @default(true)
+  flagUncertainReplies Boolean  @default(true)
+  pauseForOOO          Boolean  @default(true)
+  autoBlacklist        Boolean  @default(true)
+  // Notification Settings
+  emailDigest          Boolean  @default(true)
+  slackAlerts          Boolean  @default(true)
+  // Schedule Settings
+  timezone             String?
+  workStartTime        String?  @default("09:00")
+  workEndTime          String?  @default("17:00")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 }

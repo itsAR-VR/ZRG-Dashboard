@@ -1,5 +1,6 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
 import {
   Inbox,
@@ -18,6 +19,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { getInboxCounts } from "@/actions/lead-actions"
 
 export type ViewType = "inbox" | "followups" | "crm" | "analytics" | "settings"
 
@@ -38,11 +40,11 @@ const navItems = [
   { id: "settings" as ViewType, label: "Settings", icon: Settings },
 ]
 
-const filterItems = [
-  { id: "attention", label: "Requires Attention", icon: AlertCircle, count: 2, variant: "destructive" as const },
-  { id: "drafts", label: "Drafts for Approval", icon: FileEdit, count: 3, variant: "warning" as const },
-  { id: "awaiting", label: "Awaiting Reply", icon: Send, count: 5, variant: "secondary" as const },
-]
+interface FilterCounts {
+  attention: number
+  drafts: number
+  awaiting: number
+}
 
 export function Sidebar({
   activeChannel,
@@ -52,6 +54,36 @@ export function Sidebar({
   activeView,
   onViewChange,
 }: SidebarProps) {
+  const [counts, setCounts] = useState<FilterCounts>({
+    attention: 0,
+    drafts: 0,
+    awaiting: 0,
+  })
+
+  // Fetch counts on mount and periodically
+  useEffect(() => {
+    async function fetchCounts() {
+      const result = await getInboxCounts()
+      setCounts({
+        attention: result.requiresAttention,
+        drafts: result.draftsForApproval,
+        awaiting: result.awaitingReply,
+      })
+    }
+
+    fetchCounts()
+    
+    // Refresh counts every 30 seconds
+    const interval = setInterval(fetchCounts, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const filterItems = [
+    { id: "attention", label: "Requires Attention", icon: AlertCircle, count: counts.attention, variant: "destructive" as const },
+    { id: "drafts", label: "Drafts for Approval", icon: FileEdit, count: counts.drafts, variant: "warning" as const },
+    { id: "awaiting", label: "Awaiting Reply", icon: Send, count: counts.awaiting, variant: "secondary" as const },
+  ]
+
   return (
     <aside className="flex h-full w-64 flex-col border-r border-border bg-card">
       {/* Branding */}
@@ -86,21 +118,23 @@ export function Sidebar({
                   key={item.id}
                   variant={activeFilter === item.id ? "secondary" : "ghost"}
                   className="w-full justify-between"
-                  onClick={() => onFilterChange(item.id)}
+                  onClick={() => onFilterChange(activeFilter === item.id ? "" : item.id)}
                 >
                   <span className="flex items-center gap-3">
                     <item.icon className="h-4 w-4" />
                     <span className="text-sm">{item.label}</span>
                   </span>
-                  <Badge
-                    variant={item.variant === "warning" ? "outline" : item.variant}
-                    className={cn(
-                      "ml-auto",
-                      item.variant === "warning" && "border-amber-500 bg-amber-500/10 text-amber-500",
-                    )}
-                  >
-                    {item.count}
-                  </Badge>
+                  {item.count > 0 && (
+                    <Badge
+                      variant={item.variant === "warning" ? "outline" : item.variant}
+                      className={cn(
+                        "ml-auto",
+                        item.variant === "warning" && "border-amber-500 bg-amber-500/10 text-amber-500",
+                      )}
+                    >
+                      {item.count}
+                    </Badge>
+                  )}
                 </Button>
               ))}
             </div>
