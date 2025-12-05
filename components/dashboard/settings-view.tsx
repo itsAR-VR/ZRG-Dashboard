@@ -30,6 +30,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { IntegrationsManager } from "./settings/integrations-manager"
 
 interface Integration {
   id: string
@@ -245,10 +246,14 @@ export function SettingsView() {
 
           {/* Integrations */}
           <TabsContent value="integrations" className="space-y-6">
+            {/* GHL Workspaces - Dynamic Multi-Tenancy */}
+            <IntegrationsManager />
+
+            {/* Other Channel Integrations */}
             <Card>
               <CardHeader>
-                <CardTitle>Connected Accounts</CardTitle>
-                <CardDescription>Manage your channel integrations</CardDescription>
+                <CardTitle>Other Channels</CardTitle>
+                <CardDescription>Additional channel integrations (coming soon)</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 {integrations.map((integration) => (
