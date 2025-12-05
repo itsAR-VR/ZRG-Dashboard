@@ -68,7 +68,7 @@ export async function getConversations(clientId?: string | null): Promise<{
           },
         },
         messages: {
-          orderBy: { createdAt: "desc" },
+          orderBy: { sentAt: "desc" },
           take: 1,
         },
         aiDrafts: {
@@ -99,7 +99,7 @@ export async function getConversations(clientId?: string | null): Promise<{
         platform: "sms" as const, // Currently only SMS is implemented
         classification: mapSentimentToClassification(lead.sentimentTag),
         lastMessage: latestMessage?.body || "No messages yet",
-        lastMessageTime: latestMessage?.createdAt || lead.createdAt,
+        lastMessageTime: latestMessage?.sentAt || lead.createdAt, // Use sentAt for actual message time
         hasAiDraft: lead.aiDrafts && lead.aiDrafts.length > 0,
         requiresAttention: requiresAttention(lead.sentimentTag),
         sentimentTag: lead.sentimentTag,
@@ -178,7 +178,7 @@ export async function getConversation(leadId: string) {
           },
         },
         messages: {
-          orderBy: { createdAt: "asc" },
+          orderBy: { sentAt: "asc" }, // Order by actual message time
         },
       },
     });
@@ -207,7 +207,7 @@ export async function getConversation(leadId: string) {
           id: msg.id,
           sender: msg.direction === "inbound" ? ("lead" as const) : ("ai" as const),
           content: msg.body,
-          timestamp: msg.createdAt,
+          timestamp: msg.sentAt, // Use sentAt for actual message time
         })),
       },
     };

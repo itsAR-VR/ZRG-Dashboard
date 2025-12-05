@@ -42,7 +42,7 @@ async function messageExists(
     return !!existing;
   }
 
-  // Check with fuzzy timestamp (within 60 seconds)
+  // Check with fuzzy timestamp (within 60 seconds) on sentAt (actual message time)
   const windowStart = new Date(timestamp.getTime() - 60000); // 60 seconds before
   const windowEnd = new Date(timestamp.getTime() + 60000); // 60 seconds after
 
@@ -51,7 +51,7 @@ async function messageExists(
       leadId,
       body,
       direction,
-      createdAt: {
+      sentAt: {
         gte: windowStart,
         lte: windowEnd,
       },
@@ -113,12 +113,13 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
     console.log(`[Sync] Found ${ghlMessages.length} messages in GHL`);
 
     // Import messages that don't exist yet
+    // Store the actual GHL timestamp in sentAt for accurate time display
     let importedCount = 0;
     let skippedDuplicates = 0;
     
     for (const msg of ghlMessages) {
       try {
-        const msgTimestamp = new Date(msg.dateAdded);
+        const msgTimestamp = new Date(msg.dateAdded); // Actual time from GHL
         
         // Check if message already exists using fuzzy timestamp matching
         const exists = await messageExists(leadId, msg.body, msg.direction, msgTimestamp);
@@ -129,11 +130,12 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
               body: msg.body,
               direction: msg.direction,
               leadId,
-              createdAt: msgTimestamp,
+              sentAt: msgTimestamp, // Store actual GHL timestamp
+              // createdAt will default to now() (when record was created in our DB)
             },
           });
           importedCount++;
-          console.log(`[Sync] Imported: "${msg.body.substring(0, 30)}..." (${msg.direction})`);
+          console.log(`[Sync] Imported: "${msg.body.substring(0, 30)}..." @ ${msgTimestamp.toISOString()}`);
         } else {
           skippedDuplicates++;
           console.log(`[Sync] Skipped duplicate: "${msg.body.substring(0, 30)}..."`);
@@ -210,11 +212,13 @@ export async function sendMessage(
     }
 
     // Save the outbound message to our database
+    // sentAt = now() since we're sending it right now
     const savedMessage = await prisma.message.create({
       data: {
         body: message,
         direction: "outbound",
         leadId: lead.id,
+        sentAt: new Date(), // Explicit: message is sent now
       },
     });
 
@@ -370,7 +374,7 @@ export async function regenerateDraft(leadId: string): Promise<{
       where: { id: leadId },
       include: {
         messages: {
-          orderBy: { createdAt: "asc" },
+          orderBy: { sentAt: "asc" }, // Order by actual message time
           take: 10, // Last 10 messages for context
         },
       },

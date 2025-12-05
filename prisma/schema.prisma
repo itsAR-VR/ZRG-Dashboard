@@ -100,10 +100,11 @@ model Message {
   direction String   // 'inbound' or 'outbound'
   leadId    String
   lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
+  sentAt    DateTime @default(now()) // Actual timestamp from GHL when message was sent/received
+  createdAt DateTime @default(now()) // When record was created in our database
 
   @@index([leadId])
-  @@index([createdAt(sort: Desc)])
+  @@index([sentAt(sort: Desc)])
 }
 
 // Follow-up tasks for leads

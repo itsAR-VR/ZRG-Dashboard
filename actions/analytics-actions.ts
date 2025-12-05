@@ -38,15 +38,15 @@ export interface AnalyticsData {
  */
 async function calculateAvgResponseTime(clientId?: string | null): Promise<string> {
   try {
-    // Get all leads with their messages ordered by time
+    // Get all leads with their messages ordered by actual message time
     const leads = await prisma.lead.findMany({
       where: clientId ? { clientId } : undefined,
       include: {
         messages: {
-          orderBy: { createdAt: "asc" },
+          orderBy: { sentAt: "asc" }, // Use sentAt for accurate timing
           select: {
             direction: true,
-            createdAt: true,
+            sentAt: true,
           },
         },
       },
@@ -57,14 +57,14 @@ async function calculateAvgResponseTime(clientId?: string | null): Promise<strin
     // For each lead, find response times (inbound -> outbound pairs)
     for (const lead of leads) {
       const messages = lead.messages;
-      
+
       for (let i = 0; i < messages.length - 1; i++) {
         const current = messages[i];
         const next = messages[i + 1];
-        
+
         // Look for inbound message followed by outbound response
         if (current.direction === "inbound" && next.direction === "outbound") {
-          const responseTimeMs = new Date(next.createdAt).getTime() - new Date(current.createdAt).getTime();
+          const responseTimeMs = new Date(next.sentAt).getTime() - new Date(current.sentAt).getTime();
           // Only count responses within 7 days (ignore stale data)
           if (responseTimeMs > 0 && responseTimeMs < 7 * 24 * 60 * 60 * 1000) {
             responseTimes.push(responseTimeMs);
@@ -79,19 +79,19 @@ async function calculateAvgResponseTime(clientId?: string | null): Promise<strin
 
     // Calculate average in milliseconds
     const avgMs = responseTimes.reduce((sum, time) => sum + time, 0) / responseTimes.length;
-    
+
     // Format the time
     const minutes = Math.round(avgMs / (1000 * 60));
-    
+
     if (minutes < 60) {
       return `${minutes}m`;
     }
-    
+
     const hours = avgMs / (1000 * 60 * 60);
     if (hours < 24) {
       return `${hours.toFixed(1)}h`;
     }
-    
+
     const days = hours / 24;
     return `${days.toFixed(1)}d`;
   } catch (error) {
@@ -196,13 +196,13 @@ export async function getAnalytics(clientId?: string | null): Promise<{
 
     const messages = await prisma.message.findMany({
       where: {
-        createdAt: {
+        sentAt: { // Use sentAt for accurate message timing
           gte: sevenDaysAgo,
         },
       },
       select: {
         direction: true,
-        createdAt: true,
+        sentAt: true,
       },
     });
 
@@ -219,7 +219,7 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       nextDate.setDate(nextDate.getDate() + 1);
 
       const dayMessages = messages.filter((m) => {
-        const msgDate = new Date(m.createdAt);
+        const msgDate = new Date(m.sentAt);
         return msgDate >= date && msgDate < nextDate;
       });
 

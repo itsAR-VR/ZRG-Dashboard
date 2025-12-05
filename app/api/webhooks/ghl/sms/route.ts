@@ -152,7 +152,7 @@ async function messageExists(
     return !!existing;
   }
 
-  // Check with fuzzy timestamp (within 60 seconds)
+  // Check with fuzzy timestamp (within 60 seconds) on sentAt (actual message time)
   const windowStart = new Date(timestamp.getTime() - 60000); // 60 seconds before
   const windowEnd = new Date(timestamp.getTime() + 60000); // 60 seconds after
 
@@ -161,7 +161,7 @@ async function messageExists(
       leadId,
       body,
       direction,
-      createdAt: {
+      sentAt: {
         gte: windowStart,
         lte: windowEnd,
       },
@@ -232,6 +232,7 @@ async function fetchGHLConversationHistory(
 /**
  * Import historical messages into our database
  * Uses fuzzy timestamp matching to prevent duplicates
+ * Stores the actual GHL timestamp in sentAt for accurate time display
  */
 async function importHistoricalMessages(
   leadId: string,
@@ -241,7 +242,7 @@ async function importHistoricalMessages(
 
   for (const msg of messages) {
     try {
-      const msgTimestamp = new Date(msg.dateAdded);
+      const msgTimestamp = new Date(msg.dateAdded); // Actual time from GHL
       
       // Check if message already exists with fuzzy matching
       const exists = await messageExists(leadId, msg.body, msg.direction, msgTimestamp);
@@ -252,7 +253,8 @@ async function importHistoricalMessages(
             body: msg.body,
             direction: msg.direction,
             leadId,
-            createdAt: msgTimestamp,
+            sentAt: msgTimestamp, // Store actual GHL timestamp
+            // createdAt will default to now() (when record was created in our DB)
           },
         });
         importedCount++;
@@ -444,6 +446,44 @@ export async function POST(request: NextRequest) {
 
     console.log(`Upserted lead: ${lead.id}`);
 
+    // Try to extract message timestamp from webhook payload
+    // GHL may include date/time in customData or date_created field
+    let webhookMessageTime: Date | null = null;
+    
+    // Try customData Date+Time fields
+    if (payload.customData?.Date && payload.customData?.Time) {
+      try {
+        // Format: "Dec 5th, 2024" + "7:33 PM"
+        const dateStr = `${payload.customData.Date} ${payload.customData.Time}`;
+        const parsed = new Date(dateStr);
+        if (!isNaN(parsed.getTime())) {
+          webhookMessageTime = parsed;
+          console.log(`[Webhook] Parsed message time from customData: ${webhookMessageTime.toISOString()}`);
+        }
+      } catch (e) {
+        console.log(`[Webhook] Could not parse customData date: ${e}`);
+      }
+    }
+    
+    // Fallback to date_created if available
+    if (!webhookMessageTime && payload.date_created) {
+      try {
+        const parsed = new Date(payload.date_created);
+        if (!isNaN(parsed.getTime())) {
+          webhookMessageTime = parsed;
+          console.log(`[Webhook] Using date_created: ${webhookMessageTime.toISOString()}`);
+        }
+      } catch (e) {
+        console.log(`[Webhook] Could not parse date_created: ${e}`);
+      }
+    }
+    
+    // Final fallback to now
+    if (!webhookMessageTime) {
+      webhookMessageTime = new Date();
+      console.log(`[Webhook] Using current time as fallback: ${webhookMessageTime.toISOString()}`);
+    }
+
     // Import historical messages if this is a new lead or has no messages
     let importedMessagesCount = 0;
     if ((isNewLead || hasNoMessages) && historicalMessages.length > 0) {
@@ -454,7 +494,7 @@ export async function POST(request: NextRequest) {
       // IMPORTANT: Check if the current webhook message was in the history
       // GHL's export API might not include the very latest message due to indexing delay
       if (messageBody) {
-        const currentMsgExists = await messageExists(lead.id, messageBody, "inbound");
+        const currentMsgExists = await messageExists(lead.id, messageBody, "inbound", webhookMessageTime);
         if (!currentMsgExists) {
           console.log(`[Webhook] Current message not in history, saving explicitly...`);
           await prisma.message.create({
@@ -462,10 +502,11 @@ export async function POST(request: NextRequest) {
               body: messageBody,
               direction: "inbound",
               leadId: lead.id,
+              sentAt: webhookMessageTime, // Use extracted timestamp
             },
           });
           importedMessagesCount++;
-          console.log(`[Webhook] Saved current inbound message`);
+          console.log(`[Webhook] Saved current inbound message @ ${webhookMessageTime.toISOString()}`);
         } else {
           console.log(`[Webhook] Current message already in history, skipping`);
         }
@@ -473,16 +514,17 @@ export async function POST(request: NextRequest) {
     } else if (messageBody) {
       // For existing leads with messages, save the current message
       // But first check if it's a duplicate (might happen if webhook fires twice)
-      const exists = await messageExists(lead.id, messageBody, "inbound");
+      const exists = await messageExists(lead.id, messageBody, "inbound", webhookMessageTime);
       if (!exists) {
         const message = await prisma.message.create({
           data: {
             body: messageBody,
             direction: "inbound",
             leadId: lead.id,
+            sentAt: webhookMessageTime, // Use extracted timestamp
           },
         });
-        console.log(`Created message: ${message.id}`);
+        console.log(`Created message: ${message.id} @ ${webhookMessageTime.toISOString()}`);
       } else {
         console.log(`[Webhook] Skipped duplicate message`);
       }
