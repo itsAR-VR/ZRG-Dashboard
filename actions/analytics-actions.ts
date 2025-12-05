@@ -32,6 +32,75 @@ export interface AnalyticsData {
 }
 
 /**
+ * Calculate average response time from inbound messages to outbound responses
+ * @param clientId - Optional workspace ID to filter by
+ * @returns Formatted string like "2.4h" or "15m" or "N/A"
+ */
+async function calculateAvgResponseTime(clientId?: string | null): Promise<string> {
+  try {
+    // Get all leads with their messages ordered by time
+    const leads = await prisma.lead.findMany({
+      where: clientId ? { clientId } : undefined,
+      include: {
+        messages: {
+          orderBy: { createdAt: "asc" },
+          select: {
+            direction: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    const responseTimes: number[] = [];
+
+    // For each lead, find response times (inbound -> outbound pairs)
+    for (const lead of leads) {
+      const messages = lead.messages;
+      
+      for (let i = 0; i < messages.length - 1; i++) {
+        const current = messages[i];
+        const next = messages[i + 1];
+        
+        // Look for inbound message followed by outbound response
+        if (current.direction === "inbound" && next.direction === "outbound") {
+          const responseTimeMs = new Date(next.createdAt).getTime() - new Date(current.createdAt).getTime();
+          // Only count responses within 7 days (ignore stale data)
+          if (responseTimeMs > 0 && responseTimeMs < 7 * 24 * 60 * 60 * 1000) {
+            responseTimes.push(responseTimeMs);
+          }
+        }
+      }
+    }
+
+    if (responseTimes.length === 0) {
+      return "N/A";
+    }
+
+    // Calculate average in milliseconds
+    const avgMs = responseTimes.reduce((sum, time) => sum + time, 0) / responseTimes.length;
+    
+    // Format the time
+    const minutes = Math.round(avgMs / (1000 * 60));
+    
+    if (minutes < 60) {
+      return `${minutes}m`;
+    }
+    
+    const hours = avgMs / (1000 * 60 * 60);
+    if (hours < 24) {
+      return `${hours.toFixed(1)}h`;
+    }
+    
+    const days = hours / 24;
+    return `${days.toFixed(1)}d`;
+  } catch (error) {
+    console.error("Error calculating avg response time:", error);
+    return "N/A";
+  }
+}
+
+/**
  * Get analytics data from the database
  * @param clientId - Optional workspace ID to filter by
  */
@@ -182,6 +251,9 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       .sort((a, b) => b.leads - a.leads)
       .slice(0, 5);
 
+    // Calculate actual average response time
+    const avgResponseTime = await calculateAvgResponseTime(clientId);
+
     return {
       success: true,
       data: {
@@ -189,7 +261,7 @@ export async function getAnalytics(clientId?: string | null): Promise<{
           totalLeads,
           responseRate,
           meetingsBooked,
-          avgResponseTime: "2.4h", // TODO: Calculate from actual message timestamps
+          avgResponseTime,
         },
         sentimentBreakdown,
         weeklyStats,

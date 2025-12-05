@@ -181,6 +181,37 @@ export async function skipFollowUpTask(taskId: string): Promise<{
 }
 
 /**
+ * Snooze a follow-up task by a number of days
+ * @param taskId - The task ID
+ * @param days - Number of days to snooze (default: 1)
+ */
+export async function snoozeFollowUpTask(
+  taskId: string,
+  days: number = 1
+): Promise<{
+  success: boolean;
+  newDueDate?: Date;
+  error?: string;
+}> {
+  try {
+    const newDueDate = new Date();
+    newDueDate.setDate(newDueDate.getDate() + days);
+    newDueDate.setHours(9, 0, 0, 0); // Set to 9 AM on the snooze date
+
+    await prisma.followUpTask.update({
+      where: { id: taskId },
+      data: { dueDate: newDueDate },
+    });
+
+    revalidatePath("/");
+    return { success: true, newDueDate };
+  } catch (error) {
+    console.error("Failed to snooze follow-up task:", error);
+    return { success: false, error: "Failed to snooze task" };
+  }
+}
+
+/**
  * Get follow-up task counts by filter
  */
 export async function getFollowUpCounts(): Promise<{

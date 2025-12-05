@@ -19,7 +19,8 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { getFollowUpTasks, completeFollowUpTask, skipFollowUpTask } from "@/actions/followup-actions"
+import { getFollowUpTasks, completeFollowUpTask, skipFollowUpTask, snoozeFollowUpTask } from "@/actions/followup-actions"
+import { toast } from "sonner"
 
 const typeIcons = {
   email: Mail,
@@ -198,17 +199,41 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
   const upcomingTasks = tasks.filter((t) => !isOverdue(t.dueDate) && !isToday(t.dueDate))
 
   const handleExecute = async (id: string) => {
+    // Optimistic update
     setTasks(tasks.filter((t) => t.id !== id))
-    await completeFollowUpTask(id)
+    const result = await completeFollowUpTask(id)
+    if (result.success) {
+      toast.success("Task completed")
+    } else {
+      toast.error(result.error || "Failed to complete task")
+    }
   }
 
-  const handleSnooze = (id: string) => {
-    setTasks(tasks.map((t) => (t.id === id ? { ...t, dueDate: new Date(Date.now() + 1000 * 60 * 60 * 24) } : t)))
+  const handleSnooze = async (id: string) => {
+    // Optimistic update - snooze for 1 day
+    const newDueDate = new Date()
+    newDueDate.setDate(newDueDate.getDate() + 1)
+    newDueDate.setHours(9, 0, 0, 0)
+    
+    setTasks(tasks.map((t) => (t.id === id ? { ...t, dueDate: newDueDate } : t)))
+    
+    const result = await snoozeFollowUpTask(id, 1)
+    if (result.success) {
+      toast.success("Task snoozed until tomorrow at 9 AM")
+    } else {
+      toast.error(result.error || "Failed to snooze task")
+    }
   }
 
   const handleSkip = async (id: string) => {
+    // Optimistic update
     setTasks(tasks.filter((t) => t.id !== id))
-    await skipFollowUpTask(id)
+    const result = await skipFollowUpTask(id)
+    if (result.success) {
+      toast.success("Task skipped")
+    } else {
+      toast.error(result.error || "Failed to skip task")
+    }
   }
 
   if (isLoading) {

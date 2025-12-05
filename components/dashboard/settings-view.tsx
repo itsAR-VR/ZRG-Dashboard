@@ -7,9 +7,6 @@ import {
   MessageSquare,
   Phone,
   Check,
-  Plus,
-  Trash2,
-  User,
   Clock,
   Globe,
   Bell,
@@ -19,6 +16,7 @@ import {
   Sparkles,
   Loader2,
   Save,
+  Lock,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -31,10 +29,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { IntegrationsManager } from "./settings/integrations-manager"
 import { getUserSettings, updateUserSettings, type UserSettingsData } from "@/actions/settings-actions"
 import { toast } from "sonner"
+import { useUser } from "@/contexts/user-context"
 
 interface Integration {
   id: string
@@ -52,35 +50,12 @@ const integrations: Integration[] = [
   { id: "dialpad", name: "Dialpad", icon: Phone, connected: false },
 ]
 
-const teamMembers = [
-  {
-    id: "1",
-    name: "Alex Thompson",
-    email: "alex@zeroriskgrowth.com",
-    role: "Admin",
-    avatar: "/diverse-group-meeting.png",
-  },
-  {
-    id: "2",
-    name: "Jordan Lee",
-    email: "jordan@zeroriskgrowth.com",
-    role: "Manager",
-    avatar: "/jordan-landscape.png",
-  },
-  {
-    id: "3",
-    name: "Sam Rivera",
-    email: "sam@zeroriskgrowth.com",
-    role: "Member",
-    avatar: "/sam-portrait.png",
-  },
-]
-
 interface SettingsViewProps {
   activeWorkspace?: string | null
 }
 
 export function SettingsView({ activeWorkspace }: SettingsViewProps) {
+  const { user, isLoading: isUserLoading } = useUser()
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [hasChanges, setHasChanges] = useState(false)
@@ -191,7 +166,18 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
     setIsSaving(false)
   }
 
-  if (isLoading) {
+  // Get user display info
+  const userDisplayName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "User"
+  const userEmail = user?.email || ""
+  const userAvatar = user?.user_metadata?.avatar_url || ""
+  const userInitials = userDisplayName
+    .split(" ")
+    .map((n: string) => n[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2)
+
+  if (isLoading || isUserLoading) {
     return (
       <div className="flex flex-col h-full items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -239,38 +225,26 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <User className="h-5 w-5" />
+                  <Users className="h-5 w-5" />
                   Profile
                 </CardTitle>
-                <CardDescription>Your personal account settings</CardDescription>
+                <CardDescription>Your personal account settings (managed via your login provider)</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center gap-4">
                   <Avatar className="h-20 w-20">
-                    <AvatarImage src="/abstract-profile.png" />
-                    <AvatarFallback>AT</AvatarFallback>
+                    {userAvatar ? (
+                      <AvatarImage src={userAvatar} alt={userDisplayName} />
+                    ) : null}
+                    <AvatarFallback className="text-lg">{userInitials}</AvatarFallback>
                   </Avatar>
                   <div>
-                    <Button variant="outline" size="sm">
-                      Change Photo
-                    </Button>
-                    <p className="text-xs text-muted-foreground mt-1">JPG, PNG. Max 2MB.</p>
+                    <p className="font-semibold text-lg">{userDisplayName}</p>
+                    <p className="text-sm text-muted-foreground">{userEmail}</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Profile managed by {user?.app_metadata?.provider || "email"} login
+                    </p>
                   </div>
-                </div>
-                <Separator />
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="firstName">First Name</Label>
-                    <Input id="firstName" defaultValue="Alex" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="lastName">Last Name</Label>
-                    <Input id="lastName" defaultValue="Thompson" />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
-                  <Input id="email" type="email" defaultValue="alex@zeroriskgrowth.com" />
                 </div>
               </CardContent>
             </Card>
@@ -553,70 +527,23 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
           <TabsContent value="team" className="space-y-6">
             <Card>
               <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="flex items-center gap-2">
-                      <Users className="h-5 w-5" />
-                      Team Members
-                    </CardTitle>
-                    <CardDescription>Manage who has access to this workspace</CardDescription>
-                  </div>
-                  <Button>
-                    <Plus className="h-4 w-4 mr-2" />
-                    Invite Member
-                  </Button>
-                </div>
+                <CardTitle className="flex items-center gap-2">
+                  <Users className="h-5 w-5" />
+                  Team Members
+                </CardTitle>
+                <CardDescription>Manage who has access to this workspace</CardDescription>
               </CardHeader>
               <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Member</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {teamMembers.map((member) => (
-                      <TableRow key={member.id}>
-                        <TableCell>
-                          <div className="flex items-center gap-3">
-                            <Avatar>
-                              <AvatarImage src={member.avatar || "/placeholder.svg"} />
-                              <AvatarFallback>
-                                {member.name
-                                  .split(" ")
-                                  .map((n) => n[0])
-                                  .join("")}
-                              </AvatarFallback>
-                            </Avatar>
-                            <div>
-                              <p className="font-medium">{member.name}</p>
-                              <p className="text-sm text-muted-foreground">{member.email}</p>
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <Select defaultValue={member.role.toLowerCase()}>
-                            <SelectTrigger className="w-[120px]">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="admin">Admin</SelectItem>
-                              <SelectItem value="manager">Manager</SelectItem>
-                              <SelectItem value="member">Member</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive">
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <div className="rounded-full bg-muted p-4 mb-4">
+                    <Lock className="h-8 w-8 text-muted-foreground" />
+                  </div>
+                  <h3 className="text-lg font-semibold mb-2">Team Management Coming Soon</h3>
+                  <p className="text-sm text-muted-foreground max-w-md">
+                    Multi-user team management and role-based access control will be available in a future update.
+                    Currently, each workspace is tied to your individual account.
+                  </p>
+                </div>
               </CardContent>
             </Card>
 
@@ -634,7 +561,10 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
                     <p className="font-medium">Two-Factor Authentication</p>
                     <p className="text-sm text-muted-foreground">Require 2FA for all team members</p>
                   </div>
-                  <Switch />
+                  <Switch 
+                    disabled 
+                    onCheckedChange={() => toast.info("Coming soon", { description: "2FA will be available in a future update." })}
+                  />
                 </div>
                 <Separator />
                 <div className="flex items-center justify-between">
@@ -642,7 +572,12 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
                     <p className="font-medium">SSO (Single Sign-On)</p>
                     <p className="text-sm text-muted-foreground">Enable SAML-based SSO</p>
                   </div>
-                  <Button variant="outline" size="sm">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    disabled
+                    onClick={() => toast.info("Coming soon", { description: "SSO will be available in a future update." })}
+                  >
                     Configure
                   </Button>
                 </div>
