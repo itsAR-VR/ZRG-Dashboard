@@ -283,7 +283,7 @@ export function IntegrationsManager() {
             <div className="p-4 rounded-lg bg-muted/50 space-y-2">
               <p className="text-sm font-medium">Webhook URL for GHL</p>
               <code className="block text-xs bg-background p-2 rounded border break-all">
-                {typeof window !== "undefined" ? window.location.origin : "https://your-domain.com"}/api/webhooks/ghl/sms
+                {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/ghl/sms
               </code>
               <p className="text-xs text-muted-foreground">
                 Configure this URL in GHL → Automation → Webhooks to receive inbound SMS notifications.
