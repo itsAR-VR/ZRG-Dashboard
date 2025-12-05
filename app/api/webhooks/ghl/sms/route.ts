@@ -21,21 +21,68 @@ const SENTIMENT_TAGS = [
 
 type SentimentTag = (typeof SENTIMENT_TAGS)[number];
 
+/**
+ * GHL Workflow Webhook Payload Structure
+ * Based on actual GHL webhook data
+ */
 interface GHLWebhookPayload {
-  type: string;
-  locationId: string;
-  contactId: string;
-  body?: string;
-  message?: string;
-  direction?: string;
-  contact?: {
+  // Contact fields (snake_case from GHL)
+  contact_id: string;
+  first_name?: string;
+  last_name?: string;
+  full_name?: string;
+  email?: string;
+  phone?: string;
+  tags?: string;
+  country?: string;
+  date_created?: string;
+  full_address?: string;
+  contact_type?: string;
+
+  // Location info
+  location?: {
     id: string;
-    firstName?: string;
-    lastName?: string;
-    email?: string;
-    phone?: string;
+    name?: string;
+    address?: string;
+    city?: string;
+    state?: string;
+    country?: string;
+    postalCode?: string;
+    fullAddress?: string;
+  };
+
+  // Message info
+  message?: {
+    type?: number;
+    body?: string;
+  };
+
+  // Workflow info
+  workflow?: {
+    id?: string;
     name?: string;
   };
+
+  // Custom data passed through the webhook
+  customData?: {
+    ID?: string;
+    "Phone Number"?: string;
+    "First Name"?: string;
+    "Last Name"?: string;
+    Email?: string;
+    Message?: string;
+    Date?: string;
+    Time?: string;
+    [key: string]: string | undefined;
+  };
+
+  // Attribution
+  contact?: {
+    attributionSource?: Record<string, unknown>;
+    lastAttributionSource?: Record<string, unknown>;
+  };
+  attributionSource?: Record<string, unknown>;
+  triggerData?: Record<string, unknown>;
 }
 
 interface GHLMessage {
@@ -102,7 +149,10 @@ async function fetchGHLConversation(
     // Sort by date and format into transcript
     const sortedMessages = messages
       .filter((m) => m.messageType === "SMS" || m.messageType === "TYPE_SMS")
-      .sort((a, b) => new Date(a.dateAdded).getTime() - new Date(b.dateAdded).getTime());
+      .sort(
+        (a, b) =>
+          new Date(a.dateAdded).getTime() - new Date(b.dateAdded).getTime()
+      );
 
     const transcript = sortedMessages
       .map((m) => {
@@ -155,12 +205,12 @@ Respond with ONLY the category name, nothing else.`,
     });
 
     const result = completion.choices[0]?.message?.content?.trim() as SentimentTag;
-    
+
     // Validate the result is a valid tag
     if (SENTIMENT_TAGS.includes(result)) {
       return result;
     }
-    
+
     return "Neutral";
   } catch (error) {
     console.error("OpenAI classification error:", error);
@@ -170,26 +220,33 @@ Respond with ONLY the category name, nothing else.`,
 
 /**
  * POST handler for GHL SMS webhooks
+ * Handles the workflow webhook payload from GoHighLevel
  */
 export async function POST(request: NextRequest) {
   try {
     const payload: GHLWebhookPayload = await request.json();
 
-    console.log("Received GHL webhook:", JSON.stringify(payload, null, 2));
+    console.log("=== GHL SMS Webhook Received ===");
+    console.log("Payload:", JSON.stringify(payload, null, 2));
 
-    // Extract required fields
-    const { locationId, contactId, contact, body, message, direction } = payload;
+    // Extract location ID (for client lookup)
+    const locationId = payload.location?.id;
 
     if (!locationId) {
+      console.error("Missing location.id in payload");
       return NextResponse.json(
-        { error: "Missing locationId" },
+        { error: "Missing location.id" },
         { status: 400 }
       );
     }
 
+    // Extract contact ID
+    const contactId = payload.contact_id;
+
     if (!contactId) {
+      console.error("Missing contact_id in payload");
       return NextResponse.json(
-        { error: "Missing contactId" },
+        { error: "Missing contact_id" },
         { status: 400 }
       );
     }
@@ -202,26 +259,38 @@ export async function POST(request: NextRequest) {
     if (!client) {
       console.log(`No client found for locationId: ${locationId}`);
       return NextResponse.json(
-        { error: "Client not registered" },
+        { error: `Client not registered for location: ${locationId}` },
         { status: 404 }
       );
     }
 
-    // Extract contact info
-    const firstName = contact?.firstName || contact?.name?.split(" ")[0] || null;
-    const lastName = contact?.lastName || contact?.name?.split(" ").slice(1).join(" ") || null;
-    const email = contact?.email || null;
-    const phone = contact?.phone || null;
+    console.log(`Found client: ${client.name} (${client.id})`);
+
+    // Extract contact info from root level fields
+    const firstName = payload.first_name || payload.customData?.["First Name"] || null;
+    const lastName = payload.last_name || payload.customData?.["Last Name"] || null;
+    const email = payload.email || payload.customData?.Email || null;
+    const phone = payload.phone || payload.customData?.["Phone Number"] || null;
 
     // Get the message body
-    const messageBody = body || message || "";
-    const messageDirection = direction || "inbound";
+    const messageBody =
+      payload.message?.body || payload.customData?.Message || "";
 
-    // Fetch conversation history from GHL
-    const transcript = await fetchGHLConversation(contactId, client.ghlPrivateKey);
+    console.log(`Processing message from ${firstName} ${lastName}: "${messageBody}"`);
+
+    // Fetch conversation history from GHL for better context
+    let transcript = "";
+    try {
+      transcript = await fetchGHLConversation(contactId, client.ghlPrivateKey);
+      console.log(`Fetched conversation transcript (${transcript.length} chars)`);
+    } catch (error) {
+      console.error("Failed to fetch conversation history:", error);
+    }
 
     // Classify sentiment using AI
+    // Use transcript if available, otherwise just the current message
     const sentimentTag = await classifySentiment(transcript || messageBody);
+    console.log(`AI Classification: ${sentimentTag}`);
 
     // Upsert the lead
     const lead = await prisma.lead.upsert({
@@ -245,40 +314,54 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    console.log(`Upserted lead: ${lead.id}`);
+
     // Save the message if there's content
     if (messageBody) {
-      await prisma.message.create({
+      const message = await prisma.message.create({
         data: {
           body: messageBody,
-          direction: messageDirection,
+          direction: "inbound",
           leadId: lead.id,
         },
       });
+      console.log(`Created message: ${message.id}`);
     }
 
-    console.log(`Processed webhook for lead ${lead.id}, sentiment: ${sentimentTag}`);
+    console.log("=== Webhook Processing Complete ===");
+    console.log(`Lead ID: ${lead.id}`);
+    console.log(`Sentiment: ${sentimentTag}`);
 
     return NextResponse.json({
       success: true,
       leadId: lead.id,
+      contactId,
       sentimentTag,
+      message: "Webhook processed successfully",
     });
   } catch (error) {
     console.error("Webhook processing error:", error);
     return NextResponse.json(
-      { error: "Internal server error" },
+      {
+        error: "Internal server error",
+        details: error instanceof Error ? error.message : "Unknown error",
+      },
       { status: 500 }
     );
   }
 }
 
 /**
- * GET handler for webhook verification (if needed)
+ * GET handler for webhook health check
  */
 export async function GET() {
   return NextResponse.json({
     status: "ok",
     message: "GHL SMS webhook endpoint is active",
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      webhook: "POST /api/webhooks/ghl/sms",
+      healthCheck: "GET /api/webhooks/ghl/sms",
+    },
   });
 }
-
