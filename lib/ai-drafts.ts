@@ -25,20 +25,24 @@ export async function generateResponseDraft(
   sentimentTag: string
 ): Promise<DraftGenerationResult> {
   try {
-    // Get user settings for AI personality
-    const settings = await prisma.userSettings.findUnique({
-      where: { userId: "default" },
+    // Get the lead with their workspace settings for AI personality
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: { 
+        firstName: true,
+        client: {
+          select: {
+            settings: true,
+          },
+        },
+      },
     });
 
+    // Get settings from the lead's workspace
+    const settings = lead?.client?.settings;
     const aiTone = settings?.aiTone || "friendly-professional";
     const aiName = settings?.aiPersonaName || "Alex";
     const aiGreeting = settings?.aiGreeting || "Hi {firstName},";
-
-    // Get the lead's first name for personalization
-    const lead = await prisma.lead.findUnique({
-      where: { id: leadId },
-      select: { firstName: true },
-    });
 
     const firstName = lead?.firstName || "there";
 
