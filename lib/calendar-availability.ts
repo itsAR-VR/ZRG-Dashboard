@@ -14,18 +14,18 @@ import { prisma } from "@/lib/prisma";
 export type CalendarType = "calendly" | "hubspot" | "ghl" | "unknown";
 
 export interface AvailabilitySlot {
-  startTime: Date;
-  endTime?: Date;
+    startTime: Date;
+    endTime?: Date;
 }
 
 export interface AvailabilityResult {
-  success: boolean;
-  slots: AvailabilitySlot[];
-  calendarType: CalendarType;
-  calendarName?: string;
-  calendarUrl?: string;
-  error?: string;
-  requiresManualReview?: boolean;
+    success: boolean;
+    slots: AvailabilitySlot[];
+    calendarType: CalendarType;
+    calendarName?: string;
+    calendarUrl?: string;
+    error?: string;
+    requiresManualReview?: boolean;
 }
 
 // =============================================================================
@@ -36,35 +36,35 @@ export interface AvailabilityResult {
  * Detects calendar type from URL patterns
  */
 export function detectCalendarType(url: string): CalendarType {
-  const lowerUrl = url.toLowerCase();
+    const lowerUrl = url.toLowerCase();
 
-  // Calendly patterns
-  if (lowerUrl.includes("calendly.com")) {
-    return "calendly";
-  }
+    // Calendly patterns
+    if (lowerUrl.includes("calendly.com")) {
+        return "calendly";
+    }
 
-  // HubSpot patterns
-  if (
-    lowerUrl.includes("meetings.hubspot.com") ||
-    lowerUrl.includes("hubspot.com/meetings") ||
-    lowerUrl.includes("/meetings/")
-  ) {
-    return "hubspot";
-  }
+    // HubSpot patterns
+    if (
+        lowerUrl.includes("meetings.hubspot.com") ||
+        lowerUrl.includes("hubspot.com/meetings") ||
+        lowerUrl.includes("/meetings/")
+    ) {
+        return "hubspot";
+    }
 
-  // GoHighLevel patterns
-  if (
-    lowerUrl.includes("leadconnectorhq.com") ||
-    lowerUrl.includes("gohighlevel.com") ||
-    lowerUrl.includes("msgsndr.com") ||
-    lowerUrl.includes(".highlevel.") ||
-    // Common GHL custom domain patterns
-    lowerUrl.includes("/widget/booking/")
-  ) {
-    return "ghl";
-  }
+    // GoHighLevel patterns
+    if (
+        lowerUrl.includes("leadconnectorhq.com") ||
+        lowerUrl.includes("gohighlevel.com") ||
+        lowerUrl.includes("msgsndr.com") ||
+        lowerUrl.includes(".highlevel.") ||
+        // Common GHL custom domain patterns
+        lowerUrl.includes("/widget/booking/")
+    ) {
+        return "ghl";
+    }
 
-  return "unknown";
+    return "unknown";
 }
 
 // =============================================================================
@@ -72,158 +72,158 @@ export function detectCalendarType(url: string): CalendarType {
 // =============================================================================
 
 interface CalendlyEventInfo {
-  uuid: string;
-  availability_timezone: string;
+    uuid: string;
+    availability_timezone: string;
 }
 
 /**
  * Parse Calendly URL to extract profile and event slugs
  */
 function parseCalendlyUrl(url: string): { profileSlug: string; eventSlug: string } | null {
-  try {
-    // Clean URL - remove query params for parsing
-    const cleanUrl = url.split("?")[0];
-    const urlObj = new URL(cleanUrl);
-    const pathParts = urlObj.pathname.split("/").filter(Boolean);
+    try {
+        // Clean URL - remove query params for parsing
+        const cleanUrl = url.split("?")[0];
+        const urlObj = new URL(cleanUrl);
+        const pathParts = urlObj.pathname.split("/").filter(Boolean);
 
-    if (pathParts.length >= 2) {
-      return {
-        profileSlug: pathParts[0],
-        eventSlug: pathParts[1],
-      };
+        if (pathParts.length >= 2) {
+            return {
+                profileSlug: pathParts[0],
+                eventSlug: pathParts[1],
+            };
+        }
+        // Single path might be a scheduling link
+        if (pathParts.length === 1) {
+            return {
+                profileSlug: "",
+                eventSlug: pathParts[0],
+            };
+        }
+    } catch {
+        // Invalid URL
     }
-    // Single path might be a scheduling link
-    if (pathParts.length === 1) {
-      return {
-        profileSlug: "",
-        eventSlug: pathParts[0],
-      };
-    }
-  } catch {
-    // Invalid URL
-  }
-  return null;
+    return null;
 }
 
 /**
  * Get Calendly event UUID from standard URL
  */
 async function getCalendlyEventUUID(profileSlug: string, eventSlug: string): Promise<CalendlyEventInfo | null> {
-  try {
-    const response = await fetch(
-      `https://calendly.com/api/booking/event_types/lookup?event_type_slug=${encodeURIComponent(eventSlug)}&profile_slug=${encodeURIComponent(profileSlug)}`,
-      { headers: { Accept: "application/json" } }
-    );
+    try {
+        const response = await fetch(
+            `https://calendly.com/api/booking/event_types/lookup?event_type_slug=${encodeURIComponent(eventSlug)}&profile_slug=${encodeURIComponent(profileSlug)}`,
+            { headers: { Accept: "application/json" } }
+        );
 
-    if (response.ok) {
-      const data = await response.json();
-      return {
-        uuid: data.uuid,
-        availability_timezone: data.availability_timezone || "UTC",
-      };
+        if (response.ok) {
+            const data = await response.json();
+            return {
+                uuid: data.uuid,
+                availability_timezone: data.availability_timezone || "UTC",
+            };
+        }
+    } catch (error) {
+        console.error("Failed to get Calendly event UUID:", error);
     }
-  } catch (error) {
-    console.error("Failed to get Calendly event UUID:", error);
-  }
-  return null;
+    return null;
 }
 
 /**
  * Get Calendly event UUID from scheduling link
  */
 async function getCalendlySchedulingLinkUUID(slug: string): Promise<CalendlyEventInfo | null> {
-  try {
-    // First, get the scheduling link info
-    const linkResponse = await fetch(`https://calendly.com/api/booking/scheduling_links/${encodeURIComponent(slug)}`, {
-      headers: { Accept: "application/json" },
-    });
+    try {
+        // First, get the scheduling link info
+        const linkResponse = await fetch(`https://calendly.com/api/booking/scheduling_links/${encodeURIComponent(slug)}`, {
+            headers: { Accept: "application/json" },
+        });
 
-    if (!linkResponse.ok) return null;
-    const linkData = await linkResponse.json();
+        if (!linkResponse.ok) return null;
+        const linkData = await linkResponse.json();
 
-    // Then get the event type using the owner_uuid
-    const eventResponse = await fetch(
-      `https://calendly.com/api/booking/event_types/lookup?share_uuid=${encodeURIComponent(linkData.owner_uuid)}`,
-      { headers: { Accept: "application/json" } }
-    );
+        // Then get the event type using the owner_uuid
+        const eventResponse = await fetch(
+            `https://calendly.com/api/booking/event_types/lookup?share_uuid=${encodeURIComponent(linkData.owner_uuid)}`,
+            { headers: { Accept: "application/json" } }
+        );
 
-    if (eventResponse.ok) {
-      const eventData = await eventResponse.json();
-      return {
-        uuid: eventData.uuid,
-        availability_timezone: eventData.availability_timezone || "UTC",
-      };
+        if (eventResponse.ok) {
+            const eventData = await eventResponse.json();
+            return {
+                uuid: eventData.uuid,
+                availability_timezone: eventData.availability_timezone || "UTC",
+            };
+        }
+    } catch (error) {
+        console.error("Failed to get Calendly scheduling link UUID:", error);
     }
-  } catch (error) {
-    console.error("Failed to get Calendly scheduling link UUID:", error);
-  }
-  return null;
+    return null;
 }
 
 /**
  * Fetch availability from Calendly
  */
 export async function fetchCalendlyAvailability(url: string, days: number = 28): Promise<AvailabilitySlot[]> {
-  const parsed = parseCalendlyUrl(url);
-  if (!parsed) {
-    console.error("Failed to parse Calendly URL:", url);
-    return [];
-  }
-
-  // Try standard URL first, then scheduling link
-  let eventInfo: CalendlyEventInfo | null = null;
-
-  if (parsed.profileSlug) {
-    eventInfo = await getCalendlyEventUUID(parsed.profileSlug, parsed.eventSlug);
-  }
-
-  if (!eventInfo) {
-    eventInfo = await getCalendlySchedulingLinkUUID(parsed.eventSlug);
-  }
-
-  if (!eventInfo) {
-    console.error("Could not resolve Calendly event UUID for:", url);
-    return [];
-  }
-
-  try {
-    const now = new Date();
-    const rangeStart = now.toISOString().split("T")[0];
-    const rangeEnd = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-
-    const response = await fetch(
-      `https://calendly.com/api/booking/event_types/${eventInfo.uuid}/calendar/range?range_start=${rangeStart}&range_end=${rangeEnd}&timezone=${encodeURIComponent(eventInfo.availability_timezone)}`,
-      { headers: { Accept: "application/json" } }
-    );
-
-    if (!response.ok) {
-      console.error("Calendly availability request failed:", response.status);
-      return [];
+    const parsed = parseCalendlyUrl(url);
+    if (!parsed) {
+        console.error("Failed to parse Calendly URL:", url);
+        return [];
     }
 
-    const data = await response.json();
-    const slots: AvailabilitySlot[] = [];
+    // Try standard URL first, then scheduling link
+    let eventInfo: CalendlyEventInfo | null = null;
 
-    // Parse the days/spots structure
-    if (data.days && Array.isArray(data.days)) {
-      for (const day of data.days) {
-        if (day.spots && Array.isArray(day.spots)) {
-          for (const spot of day.spots) {
-            if (spot.start_time) {
-              slots.push({
-                startTime: new Date(spot.start_time),
-              });
-            }
-          }
+    if (parsed.profileSlug) {
+        eventInfo = await getCalendlyEventUUID(parsed.profileSlug, parsed.eventSlug);
+    }
+
+    if (!eventInfo) {
+        eventInfo = await getCalendlySchedulingLinkUUID(parsed.eventSlug);
+    }
+
+    if (!eventInfo) {
+        console.error("Could not resolve Calendly event UUID for:", url);
+        return [];
+    }
+
+    try {
+        const now = new Date();
+        const rangeStart = now.toISOString().split("T")[0];
+        const rangeEnd = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+
+        const response = await fetch(
+            `https://calendly.com/api/booking/event_types/${eventInfo.uuid}/calendar/range?range_start=${rangeStart}&range_end=${rangeEnd}&timezone=${encodeURIComponent(eventInfo.availability_timezone)}`,
+            { headers: { Accept: "application/json" } }
+        );
+
+        if (!response.ok) {
+            console.error("Calendly availability request failed:", response.status);
+            return [];
         }
-      }
-    }
 
-    return slots;
-  } catch (error) {
-    console.error("Failed to fetch Calendly availability:", error);
-    return [];
-  }
+        const data = await response.json();
+        const slots: AvailabilitySlot[] = [];
+
+        // Parse the days/spots structure
+        if (data.days && Array.isArray(data.days)) {
+            for (const day of data.days) {
+                if (day.spots && Array.isArray(day.spots)) {
+                    for (const spot of day.spots) {
+                        if (spot.start_time) {
+                            slots.push({
+                                startTime: new Date(spot.start_time),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        return slots;
+    } catch (error) {
+        console.error("Failed to fetch Calendly availability:", error);
+        return [];
+    }
 }
 
 // =============================================================================
@@ -234,87 +234,87 @@ export async function fetchCalendlyAvailability(url: string, days: number = 28):
  * Parse HubSpot meeting URL to extract slug
  */
 function parseHubSpotUrl(url: string): string | null {
-  try {
-    const urlObj = new URL(url);
+    try {
+        const urlObj = new URL(url);
 
-    // Pattern: meetings.hubspot.com/{slug}
-    if (urlObj.hostname === "meetings.hubspot.com") {
-      const slug = urlObj.pathname.split("/").filter(Boolean)[0];
-      return slug || null;
-    }
+        // Pattern: meetings.hubspot.com/{slug}
+        if (urlObj.hostname === "meetings.hubspot.com") {
+            const slug = urlObj.pathname.split("/").filter(Boolean)[0];
+            return slug || null;
+        }
 
-    // Pattern: *.hubspot.com/meetings/{slug}
-    if (urlObj.pathname.includes("/meetings/")) {
-      const parts = urlObj.pathname.split("/meetings/");
-      if (parts[1]) {
-        return parts[1].split("/")[0].split("?")[0];
-      }
+        // Pattern: *.hubspot.com/meetings/{slug}
+        if (urlObj.pathname.includes("/meetings/")) {
+            const parts = urlObj.pathname.split("/meetings/");
+            if (parts[1]) {
+                return parts[1].split("/")[0].split("?")[0];
+            }
+        }
+    } catch {
+        // Invalid URL
     }
-  } catch {
-    // Invalid URL
-  }
-  return null;
+    return null;
 }
 
 /**
  * Fetch availability from HubSpot
  */
 export async function fetchHubSpotAvailability(url: string, days: number = 28): Promise<AvailabilitySlot[]> {
-  const slug = parseHubSpotUrl(url);
-  if (!slug) {
-    console.error("Failed to parse HubSpot URL:", url);
-    return [];
-  }
-
-  const slots: AvailabilitySlot[] = [];
-  const monthsNeeded = Math.ceil(days / 30);
-
-  try {
-    for (let monthOffset = 0; monthOffset < monthsNeeded; monthOffset++) {
-      const response = await fetch(
-        `https://api.hubspot.com/meetings-public/v3/book/availability-page?slug=${encodeURIComponent(slug)}&monthOffset=${monthOffset}&timezone=UTC`,
-        { headers: { Accept: "application/json" } }
-      );
-
-      if (!response.ok) {
-        console.error("HubSpot availability request failed:", response.status);
-        break;
-      }
-
-      const data = await response.json();
-
-      // Parse the availability structure
-      // HubSpot returns: linkAvailability.linkAvailabilityByDuration['1800000'].availabilities
-      const linkAvailability = data.linkAvailability;
-      if (linkAvailability?.linkAvailabilityByDuration) {
-        // Get the first duration option (usually 30 min = 1800000ms)
-        const durations = Object.values(linkAvailability.linkAvailabilityByDuration) as Array<{
-          availabilities?: Array<{ startMillisUtc: number }>;
-        }>;
-        for (const duration of durations) {
-          if (duration.availabilities && Array.isArray(duration.availabilities)) {
-            for (const avail of duration.availabilities) {
-              if (avail.startMillisUtc) {
-                slots.push({
-                  startTime: new Date(avail.startMillisUtc),
-                });
-              }
-            }
-          }
-        }
-      }
-
-      // Check if there are more months available
-      if (!linkAvailability?.hasMore) {
-        break;
-      }
+    const slug = parseHubSpotUrl(url);
+    if (!slug) {
+        console.error("Failed to parse HubSpot URL:", url);
+        return [];
     }
 
-    return slots;
-  } catch (error) {
-    console.error("Failed to fetch HubSpot availability:", error);
-    return [];
-  }
+    const slots: AvailabilitySlot[] = [];
+    const monthsNeeded = Math.ceil(days / 30);
+
+    try {
+        for (let monthOffset = 0; monthOffset < monthsNeeded; monthOffset++) {
+            const response = await fetch(
+                `https://api.hubspot.com/meetings-public/v3/book/availability-page?slug=${encodeURIComponent(slug)}&monthOffset=${monthOffset}&timezone=UTC`,
+                { headers: { Accept: "application/json" } }
+            );
+
+            if (!response.ok) {
+                console.error("HubSpot availability request failed:", response.status);
+                break;
+            }
+
+            const data = await response.json();
+
+            // Parse the availability structure
+            // HubSpot returns: linkAvailability.linkAvailabilityByDuration['1800000'].availabilities
+            const linkAvailability = data.linkAvailability;
+            if (linkAvailability?.linkAvailabilityByDuration) {
+                // Get the first duration option (usually 30 min = 1800000ms)
+                const durations = Object.values(linkAvailability.linkAvailabilityByDuration) as Array<{
+                    availabilities?: Array<{ startMillisUtc: number }>;
+                }>;
+                for (const duration of durations) {
+                    if (duration.availabilities && Array.isArray(duration.availabilities)) {
+                        for (const avail of duration.availabilities) {
+                            if (avail.startMillisUtc) {
+                                slots.push({
+                                    startTime: new Date(avail.startMillisUtc),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check if there are more months available
+            if (!linkAvailability?.hasMore) {
+                break;
+            }
+        }
+
+        return slots;
+    } catch (error) {
+        console.error("Failed to fetch HubSpot availability:", error);
+        return [];
+    }
 }
 
 // =============================================================================
@@ -326,105 +326,105 @@ export async function fetchHubSpotAvailability(url: string, days: number = 28): 
  * Parses the __NUXT_DATA__ script to find the calendar ID
  */
 function extractGHLCalendarId(html: string): string | null {
-  try {
-    // Find the __NUXT_DATA__ script tag
-    const nuxtMatch = html.match(/<script[^>]*id="__NUXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-    if (!nuxtMatch) {
-      console.error("No __NUXT_DATA__ found in GHL page");
-      return null;
+    try {
+        // Find the __NUXT_DATA__ script tag
+        const nuxtMatch = html.match(/<script[^>]*id="__NUXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+        if (!nuxtMatch) {
+            console.error("No __NUXT_DATA__ found in GHL page");
+            return null;
+        }
+
+        const nuxtJson = nuxtMatch[1].trim();
+        const nuxtData = JSON.parse(nuxtJson);
+
+        if (!Array.isArray(nuxtData)) {
+            return null;
+        }
+
+        // Look for an object whose only key looks like a calendar ID
+        // GHL calendar IDs are typically 20+ alphanumeric characters
+        for (const item of nuxtData) {
+            if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+
+            const keys = Object.keys(item);
+            if (keys.length !== 1) continue;
+
+            const key = keys[0];
+            if (/^[A-Za-z0-9]{20,}$/.test(key)) {
+                return key;
+            }
+        }
+    } catch (error) {
+        console.error("Failed to extract GHL calendar ID:", error);
     }
-
-    const nuxtJson = nuxtMatch[1].trim();
-    const nuxtData = JSON.parse(nuxtJson);
-
-    if (!Array.isArray(nuxtData)) {
-      return null;
-    }
-
-    // Look for an object whose only key looks like a calendar ID
-    // GHL calendar IDs are typically 20+ alphanumeric characters
-    for (const item of nuxtData) {
-      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-
-      const keys = Object.keys(item);
-      if (keys.length !== 1) continue;
-
-      const key = keys[0];
-      if (/^[A-Za-z0-9]{20,}$/.test(key)) {
-        return key;
-      }
-    }
-  } catch (error) {
-    console.error("Failed to extract GHL calendar ID:", error);
-  }
-  return null;
+    return null;
 }
 
 /**
  * Fetch availability from GoHighLevel
  */
 export async function fetchGHLAvailability(url: string, days: number = 28): Promise<AvailabilitySlot[]> {
-  try {
-    // First, fetch the calendar page HTML to get the calendar ID
-    const pageResponse = await fetch(url, {
-      headers: {
-        Accept: "text/html",
-        "User-Agent": "Mozilla/5.0 (compatible; ZRG-Dashboard/1.0)",
-      },
-    });
+    try {
+        // First, fetch the calendar page HTML to get the calendar ID
+        const pageResponse = await fetch(url, {
+            headers: {
+                Accept: "text/html",
+                "User-Agent": "Mozilla/5.0 (compatible; ZRG-Dashboard/1.0)",
+            },
+        });
 
-    if (!pageResponse.ok) {
-      console.error("Failed to fetch GHL calendar page:", pageResponse.status);
-      return [];
-    }
-
-    const html = await pageResponse.text();
-    const calendarId = extractGHLCalendarId(html);
-
-    if (!calendarId) {
-      console.error("Could not extract calendar ID from GHL page");
-      return [];
-    }
-
-    // Now fetch the free slots
-    const now = Date.now();
-    const endDate = now + days * 24 * 60 * 60 * 1000;
-
-    const slotsResponse = await fetch(
-      `https://backend.leadconnectorhq.com/calendars/${calendarId}/free-slots?startDate=${now}&endDate=${endDate}&timezone=UTC`,
-      { headers: { Accept: "application/json" } }
-    );
-
-    if (!slotsResponse.ok) {
-      console.error("GHL free-slots request failed:", slotsResponse.status);
-      return [];
-    }
-
-    const data = await slotsResponse.json();
-    const slots: AvailabilitySlot[] = [];
-
-    // Parse GHL response - it returns date keys with slots arrays
-    for (const [key, value] of Object.entries(data)) {
-      // Skip metadata keys
-      if (key === "traceId") continue;
-
-      const dayData = value as { slots?: Array<{ startTime?: string }> };
-      if (dayData?.slots && Array.isArray(dayData.slots)) {
-        for (const slot of dayData.slots) {
-          if (slot.startTime) {
-            slots.push({
-              startTime: new Date(slot.startTime),
-            });
-          }
+        if (!pageResponse.ok) {
+            console.error("Failed to fetch GHL calendar page:", pageResponse.status);
+            return [];
         }
-      }
-    }
 
-    return slots;
-  } catch (error) {
-    console.error("Failed to fetch GHL availability:", error);
-    return [];
-  }
+        const html = await pageResponse.text();
+        const calendarId = extractGHLCalendarId(html);
+
+        if (!calendarId) {
+            console.error("Could not extract calendar ID from GHL page");
+            return [];
+        }
+
+        // Now fetch the free slots
+        const now = Date.now();
+        const endDate = now + days * 24 * 60 * 60 * 1000;
+
+        const slotsResponse = await fetch(
+            `https://backend.leadconnectorhq.com/calendars/${calendarId}/free-slots?startDate=${now}&endDate=${endDate}&timezone=UTC`,
+            { headers: { Accept: "application/json" } }
+        );
+
+        if (!slotsResponse.ok) {
+            console.error("GHL free-slots request failed:", slotsResponse.status);
+            return [];
+        }
+
+        const data = await slotsResponse.json();
+        const slots: AvailabilitySlot[] = [];
+
+        // Parse GHL response - it returns date keys with slots arrays
+        for (const [key, value] of Object.entries(data)) {
+            // Skip metadata keys
+            if (key === "traceId") continue;
+
+            const dayData = value as { slots?: Array<{ startTime?: string }> };
+            if (dayData?.slots && Array.isArray(dayData.slots)) {
+                for (const slot of dayData.slots) {
+                    if (slot.startTime) {
+                        slots.push({
+                            startTime: new Date(slot.startTime),
+                        });
+                    }
+                }
+            }
+        }
+
+        return slots;
+    } catch (error) {
+        console.error("Failed to fetch GHL availability:", error);
+        return [];
+    }
 }
 
 // =============================================================================
@@ -435,34 +435,34 @@ export async function fetchGHLAvailability(url: string, days: number = 28): Prom
  * Format availability slots for display in emails
  */
 function formatSlotsForDisplay(slots: AvailabilitySlot[], timezone: string, count: number): string[] {
-  const formatted: string[] = [];
+    const formatted: string[] = [];
 
-  for (const slot of slots.slice(0, count)) {
-    try {
-      const date = slot.startTime;
+    for (const slot of slots.slice(0, count)) {
+        try {
+            const date = slot.startTime;
 
-      // Format: "Mon, Dec 9 · 10:00 AM (America/New_York)"
-      const dayPart = new Intl.DateTimeFormat("en-US", {
-        timeZone: timezone,
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-      }).format(date);
+            // Format: "Mon, Dec 9 · 10:00 AM (America/New_York)"
+            const dayPart = new Intl.DateTimeFormat("en-US", {
+                timeZone: timezone,
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+            }).format(date);
 
-      const timePart = new Intl.DateTimeFormat("en-US", {
-        timeZone: timezone,
-        hour: "numeric",
-        minute: "2-digit",
-        hour12: true,
-      }).format(date);
+            const timePart = new Intl.DateTimeFormat("en-US", {
+                timeZone: timezone,
+                hour: "numeric",
+                minute: "2-digit",
+                hour12: true,
+            }).format(date);
 
-      formatted.push(`${dayPart} · ${timePart} (${timezone})`);
-    } catch (error) {
-      console.error("Failed to format slot:", error);
+            formatted.push(`${dayPart} · ${timePart} (${timezone})`);
+        } catch (error) {
+            console.error("Failed to format slot:", error);
+        }
     }
-  }
 
-  return formatted;
+    return formatted;
 }
 
 /**
@@ -471,135 +471,135 @@ function formatSlotsForDisplay(slots: AvailabilitySlot[], timezone: string, coun
  * fetches slots, and converts to the appropriate timezone
  */
 export async function getAvailabilityForLead(leadId: string): Promise<AvailabilityResult> {
-  try {
-    // Fetch lead with calendar preference and client settings
-    const lead = await prisma.lead.findUnique({
-      where: { id: leadId },
-      select: {
-        id: true,
-        timezone: true,
-        preferredCalendarLinkId: true,
-        preferredCalendarLink: {
-          select: {
-            id: true,
-            name: true,
-            url: true,
-            type: true,
-          },
-        },
-        client: {
-          select: {
-            id: true,
-            calendarLinks: {
-              where: { isDefault: true },
-              take: 1,
-              select: {
+    try {
+        // Fetch lead with calendar preference and client settings
+        const lead = await prisma.lead.findUnique({
+            where: { id: leadId },
+            select: {
                 id: true,
-                name: true,
-                url: true,
-                type: true,
-              },
-            },
-            settings: {
-              select: {
                 timezone: true,
-                calendarSlotsToShow: true,
-                calendarLookAheadDays: true,
-              },
+                preferredCalendarLinkId: true,
+                preferredCalendarLink: {
+                    select: {
+                        id: true,
+                        name: true,
+                        url: true,
+                        type: true,
+                    },
+                },
+                client: {
+                    select: {
+                        id: true,
+                        calendarLinks: {
+                            where: { isDefault: true },
+                            take: 1,
+                            select: {
+                                id: true,
+                                name: true,
+                                url: true,
+                                type: true,
+                            },
+                        },
+                        settings: {
+                            select: {
+                                timezone: true,
+                                calendarSlotsToShow: true,
+                                calendarLookAheadDays: true,
+                            },
+                        },
+                    },
+                },
             },
-          },
-        },
-      },
-    });
+        });
 
-    if (!lead) {
-      return {
-        success: false,
-        slots: [],
-        calendarType: "unknown",
-        error: "Lead not found",
-        requiresManualReview: true,
-      };
-    }
+        if (!lead) {
+            return {
+                success: false,
+                slots: [],
+                calendarType: "unknown",
+                error: "Lead not found",
+                requiresManualReview: true,
+            };
+        }
 
-    // Determine which calendar to use
-    const calendar = lead.preferredCalendarLink || lead.client.calendarLinks[0];
+        // Determine which calendar to use
+        const calendar = lead.preferredCalendarLink || lead.client.calendarLinks[0];
 
-    if (!calendar) {
-      return {
-        success: false,
-        slots: [],
-        calendarType: "unknown",
-        error: "No calendar configured",
-        requiresManualReview: true,
-      };
-    }
+        if (!calendar) {
+            return {
+                success: false,
+                slots: [],
+                calendarType: "unknown",
+                error: "No calendar configured",
+                requiresManualReview: true,
+            };
+        }
 
-    // Get settings
-    const settings = lead.client.settings;
-    const slotsToShow = settings?.calendarSlotsToShow || 3;
-    const lookAheadDays = settings?.calendarLookAheadDays || 28;
-    const timezone = lead.timezone || settings?.timezone || "UTC";
+        // Get settings
+        const settings = lead.client.settings;
+        const slotsToShow = settings?.calendarSlotsToShow || 3;
+        const lookAheadDays = settings?.calendarLookAheadDays || 28;
+        const timezone = lead.timezone || settings?.timezone || "UTC";
 
-    // Fetch availability based on calendar type
-    const calendarType = calendar.type as CalendarType;
-    let rawSlots: AvailabilitySlot[] = [];
+        // Fetch availability based on calendar type
+        const calendarType = calendar.type as CalendarType;
+        let rawSlots: AvailabilitySlot[] = [];
 
-    switch (calendarType) {
-      case "calendly":
-        rawSlots = await fetchCalendlyAvailability(calendar.url, lookAheadDays);
-        break;
-      case "hubspot":
-        rawSlots = await fetchHubSpotAvailability(calendar.url, lookAheadDays);
-        break;
-      case "ghl":
-        rawSlots = await fetchGHLAvailability(calendar.url, lookAheadDays);
-        break;
-      default:
+        switch (calendarType) {
+            case "calendly":
+                rawSlots = await fetchCalendlyAvailability(calendar.url, lookAheadDays);
+                break;
+            case "hubspot":
+                rawSlots = await fetchHubSpotAvailability(calendar.url, lookAheadDays);
+                break;
+            case "ghl":
+                rawSlots = await fetchGHLAvailability(calendar.url, lookAheadDays);
+                break;
+            default:
+                return {
+                    success: false,
+                    slots: [],
+                    calendarType: "unknown",
+                    calendarName: calendar.name,
+                    calendarUrl: calendar.url,
+                    error: `Unknown calendar type: ${calendar.type}`,
+                    requiresManualReview: true,
+                };
+        }
+
+        if (rawSlots.length === 0) {
+            return {
+                success: false,
+                slots: [],
+                calendarType,
+                calendarName: calendar.name,
+                calendarUrl: calendar.url,
+                error: "No availability slots found",
+                requiresManualReview: true,
+            };
+        }
+
+        // Sort slots by date and take only what we need
+        rawSlots.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+        const limitedSlots = rawSlots.slice(0, slotsToShow);
+
         return {
-          success: false,
-          slots: [],
-          calendarType: "unknown",
-          calendarName: calendar.name,
-          calendarUrl: calendar.url,
-          error: `Unknown calendar type: ${calendar.type}`,
-          requiresManualReview: true,
+            success: true,
+            slots: limitedSlots,
+            calendarType,
+            calendarName: calendar.name,
+            calendarUrl: calendar.url,
+        };
+    } catch (error) {
+        console.error("Failed to get availability for lead:", error);
+        return {
+            success: false,
+            slots: [],
+            calendarType: "unknown",
+            error: error instanceof Error ? error.message : "Unknown error",
+            requiresManualReview: true,
         };
     }
-
-    if (rawSlots.length === 0) {
-      return {
-        success: false,
-        slots: [],
-        calendarType,
-        calendarName: calendar.name,
-        calendarUrl: calendar.url,
-        error: "No availability slots found",
-        requiresManualReview: true,
-      };
-    }
-
-    // Sort slots by date and take only what we need
-    rawSlots.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
-    const limitedSlots = rawSlots.slice(0, slotsToShow);
-
-    return {
-      success: true,
-      slots: limitedSlots,
-      calendarType,
-      calendarName: calendar.name,
-      calendarUrl: calendar.url,
-    };
-  } catch (error) {
-    console.error("Failed to get availability for lead:", error);
-    return {
-      success: false,
-      slots: [],
-      calendarType: "unknown",
-      error: error instanceof Error ? error.message : "Unknown error",
-      requiresManualReview: true,
-    };
-  }
 }
 
 /**
@@ -607,167 +607,167 @@ export async function getAvailabilityForLead(leadId: string): Promise<Availabili
  * Now includes filtering of booked slots
  */
 export async function getFormattedAvailabilityForLead(
-  clientId: string,
-  leadId?: string
+    clientId: string,
+    leadId?: string
 ): Promise<Array<{ datetime: string; label: string }>> {
-  try {
-    // Determine which calendar to use
-    const calendarLink = await prisma.calendarLink.findFirst({
-      where: {
-        clientId,
-        isDefault: true,
-      },
-      select: {
-        url: true,
-        type: true,
-        name: true,
-      },
-    });
+    try {
+        // Determine which calendar to use
+        const calendarLink = await prisma.calendarLink.findFirst({
+            where: {
+                clientId,
+                isDefault: true,
+            },
+            select: {
+                url: true,
+                type: true,
+                name: true,
+            },
+        });
 
-    if (!calendarLink) {
-      return [];
-    }
+        if (!calendarLink) {
+            return [];
+        }
 
-    // Get workspace settings
-    const settings = await prisma.workspaceSettings.findUnique({
-      where: { clientId },
-      select: {
-        timezone: true,
-        calendarSlotsToShow: true,
-        calendarLookAheadDays: true,
-      },
-    });
+        // Get workspace settings
+        const settings = await prisma.workspaceSettings.findUnique({
+            where: { clientId },
+            select: {
+                timezone: true,
+                calendarSlotsToShow: true,
+                calendarLookAheadDays: true,
+            },
+        });
 
-    const lookAheadDays = settings?.calendarLookAheadDays || 28;
-    const slotsToShow = settings?.calendarSlotsToShow || 3;
-    const timezone = settings?.timezone || "America/Los_Angeles";
+        const lookAheadDays = settings?.calendarLookAheadDays || 28;
+        const slotsToShow = settings?.calendarSlotsToShow || 3;
+        const timezone = settings?.timezone || "America/Los_Angeles";
 
-    // Fetch availability based on calendar type
-    const calendarType = calendarLink.type as CalendarType;
-    let rawSlots: AvailabilitySlot[] = [];
+        // Fetch availability based on calendar type
+        const calendarType = calendarLink.type as CalendarType;
+        let rawSlots: AvailabilitySlot[] = [];
 
-    switch (calendarType) {
-      case "calendly":
-        rawSlots = await fetchCalendlyAvailability(calendarLink.url, lookAheadDays);
-        break;
-      case "hubspot":
-        rawSlots = await fetchHubSpotAvailability(calendarLink.url, lookAheadDays);
-        break;
-      case "ghl":
-        rawSlots = await fetchGHLAvailability(calendarLink.url, lookAheadDays);
-        break;
-      default:
+        switch (calendarType) {
+            case "calendly":
+                rawSlots = await fetchCalendlyAvailability(calendarLink.url, lookAheadDays);
+                break;
+            case "hubspot":
+                rawSlots = await fetchHubSpotAvailability(calendarLink.url, lookAheadDays);
+                break;
+            case "ghl":
+                rawSlots = await fetchGHLAvailability(calendarLink.url, lookAheadDays);
+                break;
+            default:
+                return [];
+        }
+
+        if (rawSlots.length === 0) {
+            return [];
+        }
+
+        // Get booked slots from leads to filter out
+        const bookedSlots = await prisma.lead.findMany({
+            where: {
+                clientId,
+                bookedSlot: { not: null },
+            },
+            select: {
+                bookedSlot: true,
+            },
+        });
+
+        const bookedDatetimes = new Set(
+            bookedSlots
+                .filter(l => l.bookedSlot)
+                .map(l => new Date(l.bookedSlot!).toISOString())
+        );
+
+        // Filter out booked slots
+        const availableSlots = rawSlots.filter(
+            slot => !bookedDatetimes.has(slot.startTime.toISOString())
+        );
+
+        // Sort by date
+        availableSlots.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+
+        // Format slots for display
+        const formattedSlots = availableSlots.slice(0, slotsToShow * 2).map(slot => {
+            const date = slot.startTime;
+
+            const dayPart = new Intl.DateTimeFormat("en-US", {
+                timeZone: timezone,
+                weekday: "long",
+                month: "short",
+                day: "numeric",
+            }).format(date);
+
+            const timePart = new Intl.DateTimeFormat("en-US", {
+                timeZone: timezone,
+                hour: "numeric",
+                minute: "2-digit",
+                hour12: true,
+            }).format(date);
+
+            return {
+                datetime: date.toISOString(),
+                label: `${timePart} on ${dayPart}`,
+            };
+        });
+
+        return formattedSlots.slice(0, slotsToShow);
+    } catch (error) {
+        console.error("Failed to get formatted availability:", error);
         return [];
     }
-
-    if (rawSlots.length === 0) {
-      return [];
-    }
-
-    // Get booked slots from leads to filter out
-    const bookedSlots = await prisma.lead.findMany({
-      where: {
-        clientId,
-        bookedSlot: { not: null },
-      },
-      select: {
-        bookedSlot: true,
-      },
-    });
-
-    const bookedDatetimes = new Set(
-      bookedSlots
-        .filter(l => l.bookedSlot)
-        .map(l => new Date(l.bookedSlot!).toISOString())
-    );
-
-    // Filter out booked slots
-    const availableSlots = rawSlots.filter(
-      slot => !bookedDatetimes.has(slot.startTime.toISOString())
-    );
-
-    // Sort by date
-    availableSlots.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
-
-    // Format slots for display
-    const formattedSlots = availableSlots.slice(0, slotsToShow * 2).map(slot => {
-      const date = slot.startTime;
-      
-      const dayPart = new Intl.DateTimeFormat("en-US", {
-        timeZone: timezone,
-        weekday: "long",
-        month: "short",
-        day: "numeric",
-      }).format(date);
-
-      const timePart = new Intl.DateTimeFormat("en-US", {
-        timeZone: timezone,
-        hour: "numeric",
-        minute: "2-digit",
-        hour12: true,
-      }).format(date);
-
-      return {
-        datetime: date.toISOString(),
-        label: `${timePart} on ${dayPart}`,
-      };
-    });
-
-    return formattedSlots.slice(0, slotsToShow);
-  } catch (error) {
-    console.error("Failed to get formatted availability:", error);
-    return [];
-  }
 }
 
 /**
  * Legacy function for backward compatibility
  */
 export async function getFormattedAvailabilityForLeadLegacy(leadId: string): Promise<{
-  success: boolean;
-  slots: string[];
-  calendarUrl?: string;
-  error?: string;
-  requiresManualReview?: boolean;
+    success: boolean;
+    slots: string[];
+    calendarUrl?: string;
+    error?: string;
+    requiresManualReview?: boolean;
 }> {
-  const result = await getAvailabilityForLead(leadId);
+    const result = await getAvailabilityForLead(leadId);
 
-  if (!result.success || result.slots.length === 0) {
-    return {
-      success: false,
-      slots: [],
-      calendarUrl: result.calendarUrl,
-      error: result.error,
-      requiresManualReview: result.requiresManualReview,
-    };
-  }
+    if (!result.success || result.slots.length === 0) {
+        return {
+            success: false,
+            slots: [],
+            calendarUrl: result.calendarUrl,
+            error: result.error,
+            requiresManualReview: result.requiresManualReview,
+        };
+    }
 
-  // Get lead timezone for formatting
-  const lead = await prisma.lead.findUnique({
-    where: { id: leadId },
-    select: {
-      timezone: true,
-      client: {
+    // Get lead timezone for formatting
+    const lead = await prisma.lead.findUnique({
+        where: { id: leadId },
         select: {
-          settings: {
-            select: {
-              timezone: true,
-              calendarSlotsToShow: true,
+            timezone: true,
+            client: {
+                select: {
+                    settings: {
+                        select: {
+                            timezone: true,
+                            calendarSlotsToShow: true,
+                        },
+                    },
+                },
             },
-          },
         },
-      },
-    },
-  });
+    });
 
-  const timezone = lead?.timezone || lead?.client?.settings?.timezone || "UTC";
-  const slotsToShow = lead?.client?.settings?.calendarSlotsToShow || 3;
+    const timezone = lead?.timezone || lead?.client?.settings?.timezone || "UTC";
+    const slotsToShow = lead?.client?.settings?.calendarSlotsToShow || 3;
 
-  const formattedSlots = formatSlotsForDisplay(result.slots, timezone, slotsToShow);
+    const formattedSlots = formatSlotsForDisplay(result.slots, timezone, slotsToShow);
 
-  return {
-    success: true,
-    slots: formattedSlots,
-    calendarUrl: result.calendarUrl,
-  };
+    return {
+        success: true,
+        slots: formattedSlots,
+        calendarUrl: result.calendarUrl,
+    };
 }

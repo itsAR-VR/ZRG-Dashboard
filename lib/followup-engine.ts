@@ -266,7 +266,7 @@ export async function generateFollowUpMessage(
     // Get availability slots for email
     let availability = "";
     const slotsToShow = settings?.calendarSlotsToShow || 3;
-    
+
     if (settings?.timezone) {
       const { hours: startH, minutes: startM } = parseTime(settings.workStartTime, "09:00");
       const { hours: endH, minutes: endM } = parseTime(settings.workEndTime, "17:00");
@@ -873,7 +873,7 @@ export async function processMessageForAutoBooking(
       if (bookingResult.success) {
         // Send Slack notification for auto-booking
         await sendAutoBookingSlackNotification(leadId, firstSlot);
-        
+
         return {
           booked: true,
           appointmentId: bookingResult.appointmentId,
@@ -887,7 +887,7 @@ export async function processMessageForAutoBooking(
     if (bookingResult.success) {
       // Send Slack notification for auto-booking
       await sendAutoBookingSlackNotification(leadId, acceptedSlot);
-      
+
       return {
         booked: true,
         appointmentId: bookingResult.appointmentId,

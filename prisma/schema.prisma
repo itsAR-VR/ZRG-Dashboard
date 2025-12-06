@@ -17,6 +17,7 @@ model Client {
   ghlLocationId String              @unique // Used to identify which client sent the webhook
   ghlPrivateKey String              // The generic API key for this sub-account
   emailBisonApiKey     String?
+  emailBisonWorkspaceId String?     @unique // EmailBison workspace ID for webhook matching
   userId        String              // Supabase Auth user ID - ties workspace to user
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt

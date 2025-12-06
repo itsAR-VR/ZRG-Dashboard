@@ -553,7 +553,7 @@ export async function getKnowledgeAssetsForAI(
  */
 function detectCalendarType(url: string): CalendarLinkData["type"] {
   const lowerUrl = url.toLowerCase();
-  
+
   if (lowerUrl.includes("calendly.com")) {
     return "calendly";
   }

@@ -81,6 +81,7 @@ type Client = {
   ghlLocationId: string;
   ghlPrivateKey: string;
   emailBisonApiKey: string | null;
+  emailBisonWorkspaceId: string | null;
   userId: string;
 };
 
@@ -137,15 +138,36 @@ function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): { c
   };
 }
 
-async function findClient(request: NextRequest): Promise<Client | null> {
+async function findClient(request: NextRequest, payload?: InboxxiaWebhook): Promise<Client | null> {
   const url = new URL(request.url);
   const clientIdParam = url.searchParams.get("clientId");
 
+  // Strategy 1: Look up by clientId query param (explicit, most reliable)
   if (clientIdParam) {
     const client = await prisma.client.findUnique({ where: { id: clientIdParam } });
-    if (client) return client;
+    if (client) {
+      console.log(`[Email Webhook] Client found via clientId param: ${client.name} (${client.id})`);
+      return client;
+    }
+    console.warn(`[Email Webhook] clientId param provided but no client found: ${clientIdParam}`);
   }
 
+  // Strategy 2: Look up by EmailBison workspace_id from payload
+  const workspaceId = payload?.event?.workspace_id;
+  if (workspaceId) {
+    const workspaceIdStr = String(workspaceId);
+    const client = await prisma.client.findUnique({
+      where: { emailBisonWorkspaceId: workspaceIdStr },
+    });
+    if (client) {
+      console.log(`[Email Webhook] Client found via workspace_id: ${client.name} (${client.id})`);
+      return client;
+    }
+    console.warn(`[Email Webhook] workspace_id in payload but no matching client: ${workspaceIdStr}`);
+  }
+
+  // No client found - log diagnostic info
+  console.error(`[Email Webhook] Client lookup failed. clientId param: ${clientIdParam || "none"}, workspace_id: ${workspaceId || "none"}`);
   return null;
 }
 
@@ -240,7 +262,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     return NextResponse.json({ error: "Missing reply.id" }, { status: 400 });
   }
 
-  const client = await findClient(request);
+  const client = await findClient(request, payload);
   if (!client) {
     return NextResponse.json({ error: "Client not found for webhook" }, { status: 404 });
   }
@@ -372,7 +394,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     return NextResponse.json({ error: "Missing reply.id" }, { status: 400 });
   }
 
-  const client = await findClient(request);
+  const client = await findClient(request, payload);
   if (!client) {
     return NextResponse.json({ error: "Client not found for webhook" }, { status: 404 });
   }
@@ -488,7 +510,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     return NextResponse.json({ error: "Missing reply.id" }, { status: 400 });
   }
 
-  const client = await findClient(request);
+  const client = await findClient(request, payload);
   if (!client) {
     return NextResponse.json({ error: "Client not found for webhook" }, { status: 404 });
   }
@@ -600,7 +622,7 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
     return NextResponse.json({ error: "Missing scheduled_email.id" }, { status: 400 });
   }
 
-  const client = await findClient(request);
+  const client = await findClient(request, payload);
   if (!client) {
     return NextResponse.json({ error: "Client not found for webhook" }, { status: 404 });
   }
@@ -660,7 +682,7 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
 async function handleEmailOpened(request: NextRequest, payload: InboxxiaWebhook): Promise<NextResponse> {
   const data = payload.data;
 
-  const client = await findClient(request);
+  const client = await findClient(request, payload);
   if (!client) {
     return NextResponse.json({ error: "Client not found for webhook" }, { status: 404 });
   }
@@ -684,7 +706,7 @@ async function handleEmailBounced(request: NextRequest, payload: InboxxiaWebhook
   const data = payload.data;
   const reply = data?.reply;
 
-  const client = await findClient(request);
+  const client = await findClient(request, payload);
   if (!client) {
     return NextResponse.json({ error: "Client not found for webhook" }, { status: 404 });
   }
@@ -743,7 +765,7 @@ async function handleEmailBounced(request: NextRequest, payload: InboxxiaWebhook
 async function handleLeadUnsubscribed(request: NextRequest, payload: InboxxiaWebhook): Promise<NextResponse> {
   const data = payload.data;
 
-  const client = await findClient(request);
+  const client = await findClient(request, payload);
   if (!client) {
     return NextResponse.json({ error: "Client not found for webhook" }, { status: 404 });
   }
@@ -788,10 +810,14 @@ export async function POST(request: NextRequest) {
   try {
     const payload: InboxxiaWebhook = await request.json();
     const eventType = payload.event?.type;
+    const workspaceId = payload.event?.workspace_id;
+    const workspaceName = payload.event?.workspace_name;
+    const leadEmail = payload.data?.lead?.email || payload.data?.reply?.from_email_address;
 
-    console.log(`[Inboxxia Webhook] Received event: ${eventType}`);
+    console.log(`[Inboxxia Webhook] Received event: ${eventType} | workspace: ${workspaceName || workspaceId || "unknown"} | lead: ${leadEmail || "unknown"}`);
 
     if (!payload.data) {
+      console.error(`[Inboxxia Webhook] Missing data field in payload for event: ${eventType}`);
       return NextResponse.json({ error: "Missing data" }, { status: 400 });
     }
 

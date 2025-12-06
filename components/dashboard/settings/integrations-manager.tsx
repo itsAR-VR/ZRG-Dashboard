@@ -26,6 +26,7 @@ interface Client {
   name: string;
   ghlLocationId: string;
   emailBisonApiKey: string | null;
+  emailBisonWorkspaceId: string | null;
   createdAt: Date;
   _count: {
     leads: number;
@@ -50,6 +51,7 @@ export function IntegrationsManager() {
     ghlLocationId: "",
     ghlPrivateKey: "",
     emailBisonApiKey: "",
+    emailBisonWorkspaceId: "",
   });
 
   // Fetch clients on mount
@@ -75,7 +77,7 @@ export function IntegrationsManager() {
     startTransition(async () => {
       const result = await createClient(formData);
       if (result.success) {
-        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "" });
+        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonWorkspaceId: "" });
         setShowForm(false);
         setShowEmailFields(false);
         toast.success("Workspace added successfully");
@@ -92,9 +94,10 @@ export function IntegrationsManager() {
     startTransition(async () => {
       const result = await updateClient(clientId, {
         emailBisonApiKey: formData.emailBisonApiKey,
+        emailBisonWorkspaceId: formData.emailBisonWorkspaceId,
       });
       if (result.success) {
-        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "" });
+        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonWorkspaceId: "" });
         setEditingClientId(null);
         toast.success("EmailBison credentials updated");
         await fetchClients();
@@ -245,6 +248,21 @@ export function IntegrationsManager() {
                 
                 {showEmailFields && (
                   <div className="mt-4 space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="emailBisonWorkspaceId" className="flex items-center gap-2">
+                        <MapPin className="h-4 w-4" />
+                        EmailBison Workspace ID
+                      </Label>
+                      <Input
+                        id="emailBisonWorkspaceId"
+                        placeholder="e.g., 12345"
+                        value={formData.emailBisonWorkspaceId}
+                        onChange={(e) => setFormData({ ...formData, emailBisonWorkspaceId: e.target.value })}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Found in EmailBison webhook payloads as workspace_id. Required for automatic webhook routing.
+                      </p>
+                    </div>
                     <div className="space-y-2">
                       <Label htmlFor="emailBisonApiKey" className="flex items-center gap-2">
                         <Key className="h-4 w-4" />
@@ -401,12 +419,13 @@ export function IntegrationsManager() {
                             onClick={() => {
                               if (isEditingThis) {
                                 setEditingClientId(null);
-                                setFormData({ ...formData, emailBisonApiKey: "" });
+                                setFormData({ ...formData, emailBisonApiKey: "", emailBisonWorkspaceId: "" });
                               } else {
                                 setEditingClientId(client.id);
                                 setFormData({
                                   ...formData,
                                   emailBisonApiKey: client.emailBisonApiKey || "",
+                                  emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
                                 });
                               }
                             }}
@@ -419,6 +438,16 @@ export function IntegrationsManager() {
                         {/* Inline edit form for EmailBison credentials */}
                         {isEditingThis && (
                           <div className="w-full mt-2 p-3 border rounded-lg bg-muted/30 space-y-3">
+                            <div className="space-y-2">
+                              <Label htmlFor={`workspaceId-${client.id}`} className="text-xs">Workspace ID (required for webhook routing)</Label>
+                              <Input
+                                id={`workspaceId-${client.id}`}
+                                placeholder="e.g., 12345"
+                                value={formData.emailBisonWorkspaceId}
+                                onChange={(e) => setFormData({ ...formData, emailBisonWorkspaceId: e.target.value })}
+                                className="h-8 text-sm"
+                              />
+                            </div>
                             <div className="space-y-2">
                               <Label htmlFor={`emailKey-${client.id}`} className="text-xs">API Key</Label>
                               <Input
@@ -433,7 +462,7 @@ export function IntegrationsManager() {
                             <Button
                               size="sm"
                               onClick={() => handleUpdateEmailCredentials(client.id)}
-                              disabled={isPending || !formData.emailBisonApiKey}
+                              disabled={isPending || (!formData.emailBisonApiKey && !formData.emailBisonWorkspaceId)}
                             >
                               {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Email Config"}
                             </Button>
@@ -480,7 +509,7 @@ export function IntegrationsManager() {
                   Configure this URL in EmailBison → Settings → Webhooks to receive inbound email notifications.
                 </p>
                 <p className="text-xs text-muted-foreground mt-2">
-                  <strong>Tip:</strong> Append <code className="bg-background px-1 py-0.5 rounded">?clientId=YOUR_WORKSPACE_ID</code> to route emails to a specific workspace.
+                  <strong>Important:</strong> Set your EmailBison Workspace ID above to enable automatic webhook routing. The system matches incoming webhooks by the <code className="bg-background px-1 py-0.5 rounded">workspace_id</code> in the payload.
                 </p>
               </div>
             </div>

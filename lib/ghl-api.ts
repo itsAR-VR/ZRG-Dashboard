@@ -58,7 +58,7 @@ async function ghlRequest<T>(
 ): Promise<GHLApiResponse<T>> {
   try {
     const url = `${GHL_API_BASE}${endpoint}`;
-    
+
     const response = await fetch(url, {
       ...options,
       headers: {
@@ -228,7 +228,7 @@ export async function exportMessages(
     contactId,
     channel,
   });
-  
+
   return ghlRequest<GHLExportResponse>(
     `/conversations/messages/export?${params.toString()}`,
     privateKey
@@ -484,7 +484,7 @@ export async function testGHLConnection(
   privateKey: string
 ): Promise<GHLApiResponse<{ valid: boolean; calendarCount: number }>> {
   const result = await getGHLCalendars(locationId, privateKey);
-  
+
   if (result.success && result.data) {
     return {
       success: true,
@@ -494,7 +494,7 @@ export async function testGHLConnection(
       },
     };
   }
-  
+
   return {
     success: false,
     error: result.error || "Failed to connect to GHL",

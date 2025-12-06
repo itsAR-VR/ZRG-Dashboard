@@ -9,6 +9,7 @@ export interface ClientData {
   ghlLocationId: string;
   ghlPrivateKey: string;
   emailBisonApiKey?: string;
+  emailBisonWorkspaceId?: string;
 }
 
 /**
@@ -44,6 +45,7 @@ export async function getClients() {
         name: true,
         ghlLocationId: true,
         emailBisonApiKey: true,
+        emailBisonWorkspaceId: true,
         createdAt: true,
         _count: {
           select: { leads: true },
@@ -89,6 +91,7 @@ export async function createClient(data: ClientData) {
         ghlLocationId: data.ghlLocationId,
         ghlPrivateKey: data.ghlPrivateKey,
         emailBisonApiKey: data.emailBisonApiKey || null,
+        emailBisonWorkspaceId: data.emailBisonWorkspaceId || null,
         userId, // Tie workspace to current user
       },
     });
@@ -133,6 +136,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
     if (data.name !== undefined) updateData.name = data.name;
     if (data.ghlPrivateKey !== undefined) updateData.ghlPrivateKey = data.ghlPrivateKey;
     if (data.emailBisonApiKey !== undefined) updateData.emailBisonApiKey = data.emailBisonApiKey || null;
+    if (data.emailBisonWorkspaceId !== undefined) updateData.emailBisonWorkspaceId = data.emailBisonWorkspaceId || null;
 
     const updatedClient = await prisma.client.update({
       where: { id },
