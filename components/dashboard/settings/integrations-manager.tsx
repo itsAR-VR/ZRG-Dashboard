@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useTransition } from "react";
-import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw } from "lucide-react";
+import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, Globe, ChevronDown, ChevronUp, MessageSquare } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,15 +16,17 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Separator } from "@/components/ui/separator";
-import { getClients, createClient, deleteClient } from "@/actions/client-actions";
+import { getClients, createClient, deleteClient, updateClient } from "@/actions/client-actions";
 import { syncCampaignsFromGHL } from "@/actions/campaign-actions";
+import { syncEmailCampaignsFromEmailBison } from "@/actions/email-campaign-actions";
 import { toast } from "sonner";
 
 interface Client {
   id: string;
   name: string;
   ghlLocationId: string;
-  workspaceId: string;
+  emailBisonApiKey: string | null;
+  emailBisonInstanceUrl: string | null;
   createdAt: Date;
   _count: {
     leads: number;
@@ -37,14 +39,19 @@ export function IntegrationsManager() {
   const [isLoading, setIsLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
   const [syncingClientId, setSyncingClientId] = useState<string | null>(null);
+  const [syncingEmailClientId, setSyncingEmailClientId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [showEmailFields, setShowEmailFields] = useState(false);
+  const [editingClientId, setEditingClientId] = useState<string | null>(null);
 
   // Form state
   const [formData, setFormData] = useState({
     name: "",
     ghlLocationId: "",
     ghlPrivateKey: "",
+    emailBisonApiKey: "",
+    emailBisonInstanceUrl: "",
   });
 
   // Fetch clients on mount
@@ -70,14 +77,49 @@ export function IntegrationsManager() {
     startTransition(async () => {
       const result = await createClient(formData);
       if (result.success) {
-        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "" });
+        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonInstanceUrl: "" });
         setShowForm(false);
+        setShowEmailFields(false);
         toast.success("Workspace added successfully");
         await fetchClients();
       } else {
         setError(result.error || "Failed to create client");
       }
     });
+  }
+
+  async function handleUpdateEmailCredentials(clientId: string) {
+    setError(null);
+
+    startTransition(async () => {
+      const result = await updateClient(clientId, {
+        emailBisonApiKey: formData.emailBisonApiKey,
+        emailBisonInstanceUrl: formData.emailBisonInstanceUrl,
+      });
+      if (result.success) {
+        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonInstanceUrl: "" });
+        setEditingClientId(null);
+        toast.success("EmailBison credentials updated");
+        await fetchClients();
+      } else {
+        setError(result.error || "Failed to update credentials");
+      }
+    });
+  }
+
+  async function handleSyncEmailCampaigns(clientId: string) {
+    setSyncingEmailClientId(clientId);
+    
+    const result = await syncEmailCampaignsFromEmailBison(clientId);
+    
+    if (result.success) {
+      toast.success(`Synced ${result.synced} email campaigns from EmailBison`);
+      await fetchClients();
+    } else {
+      toast.error(result.error || "Failed to sync email campaigns");
+    }
+    
+    setSyncingEmailClientId(null);
   }
 
   async function handleDelete(id: string) {
@@ -187,6 +229,57 @@ export function IntegrationsManager() {
                   Found in GHL → Settings → Integrations → Private Integrations
                 </p>
               </div>
+
+              {/* EmailBison Integration Section */}
+              <div className="border-t pt-4 mt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowEmailFields(!showEmailFields)}
+                  className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Mail className="h-4 w-4" />
+                  EmailBison Integration (Optional)
+                  {showEmailFields ? (
+                    <ChevronUp className="h-4 w-4" />
+                  ) : (
+                    <ChevronDown className="h-4 w-4" />
+                  )}
+                </button>
+                
+                {showEmailFields && (
+                  <div className="mt-4 space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="emailBisonInstanceUrl" className="flex items-center gap-2">
+                        <Globe className="h-4 w-4" />
+                        EmailBison Instance URL
+                      </Label>
+                      <Input
+                        id="emailBisonInstanceUrl"
+                        placeholder="https://your-instance.emailbison.com"
+                        value={formData.emailBisonInstanceUrl}
+                        onChange={(e) => setFormData({ ...formData, emailBisonInstanceUrl: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="emailBisonApiKey" className="flex items-center gap-2">
+                        <Key className="h-4 w-4" />
+                        EmailBison API Key
+                      </Label>
+                      <Input
+                        id="emailBisonApiKey"
+                        type="password"
+                        placeholder="eb_xxxxxxxxxxxxxxxx"
+                        value={formData.emailBisonApiKey}
+                        onChange={(e) => setFormData({ ...formData, emailBisonApiKey: e.target.value })}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Found in your EmailBison instance → Settings → API Keys
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <Button type="submit" disabled={isPending} className="w-full sm:w-auto">
                 {isPending ? (
                   <>
@@ -228,66 +321,194 @@ export function IntegrationsManager() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {clients.map((client) => (
-                <TableRow key={client.id}>
-                  <TableCell className="font-medium">{client.name}</TableCell>
-                  <TableCell>
-                    <code className="text-xs bg-muted px-2 py-1 rounded">
-                      {client.ghlLocationId}
-                    </code>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="secondary">{client._count.leads} leads</Badge>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="outline" className="text-green-500 border-green-500/30 bg-green-500/10">
-                      Active
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right space-x-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleSyncCampaigns(client.id)}
-                      disabled={syncingClientId === client.id}
-                    >
-                      {syncingClientId === client.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <>
-                          <RefreshCw className="h-4 w-4 mr-1" />
-                          Sync Campaigns
-                        </>
-                      )}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleDelete(client.id)}
-                      disabled={isPending}
-                      className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
+              {clients.map((client) => {
+                const hasEmailBison = !!(client.emailBisonApiKey && client.emailBisonInstanceUrl);
+                const isEditingThis = editingClientId === client.id;
+                
+                return (
+                  <TableRow key={client.id}>
+                    <TableCell className="font-medium">
+                      <div className="flex flex-col gap-1">
+                        <span>{client.name}</span>
+                        <div className="flex gap-1">
+                          <Badge variant="outline" className="text-green-500 border-green-500/30 bg-green-500/10 text-[10px]">
+                            SMS
+                          </Badge>
+                          {hasEmailBison ? (
+                            <Badge variant="outline" className="text-blue-500 border-blue-500/30 bg-blue-500/10 text-[10px]">
+                              <Mail className="h-3 w-3 mr-1" />
+                              Email
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-muted-foreground text-[10px]">
+                              <Mail className="h-3 w-3 mr-1" />
+                              No Email
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <code className="text-xs bg-muted px-2 py-1 rounded">
+                        {client.ghlLocationId}
+                      </code>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="secondary">{client._count.leads} leads</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="text-green-500 border-green-500/30 bg-green-500/10">
+                        Active
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex flex-col gap-2 items-end">
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleSyncCampaigns(client.id)}
+                            disabled={syncingClientId === client.id}
+                          >
+                            {syncingClientId === client.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <>
+                                <RefreshCw className="h-4 w-4 mr-1" />
+                                Sync SMS
+                              </>
+                            )}
+                          </Button>
+                          {hasEmailBison && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleSyncEmailCampaigns(client.id)}
+                              disabled={syncingEmailClientId === client.id}
+                            >
+                              {syncingEmailClientId === client.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <>
+                                  <Mail className="h-4 w-4 mr-1" />
+                                  Sync Email
+                                </>
+                              )}
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleDelete(client.id)}
+                            disabled={isPending}
+                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                        
+                        {/* Configure EmailBison button */}
+                        {!hasEmailBison && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-xs text-muted-foreground"
+                            onClick={() => {
+                              if (isEditingThis) {
+                                setEditingClientId(null);
+                                setFormData({ ...formData, emailBisonApiKey: "", emailBisonInstanceUrl: "" });
+                              } else {
+                                setEditingClientId(client.id);
+                                setFormData({
+                                  ...formData,
+                                  emailBisonApiKey: client.emailBisonApiKey || "",
+                                  emailBisonInstanceUrl: client.emailBisonInstanceUrl || "",
+                                });
+                              }
+                            }}
+                          >
+                            <Mail className="h-3 w-3 mr-1" />
+                            {isEditingThis ? "Cancel" : "Configure Email"}
+                          </Button>
+                        )}
+                        
+                        {/* Inline edit form for EmailBison credentials */}
+                        {isEditingThis && (
+                          <div className="w-full mt-2 p-3 border rounded-lg bg-muted/30 space-y-3">
+                            <div className="space-y-2">
+                              <Label htmlFor={`emailUrl-${client.id}`} className="text-xs">Instance URL</Label>
+                              <Input
+                                id={`emailUrl-${client.id}`}
+                                placeholder="https://your-instance.emailbison.com"
+                                value={formData.emailBisonInstanceUrl}
+                                onChange={(e) => setFormData({ ...formData, emailBisonInstanceUrl: e.target.value })}
+                                className="h-8 text-sm"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor={`emailKey-${client.id}`} className="text-xs">API Key</Label>
+                              <Input
+                                id={`emailKey-${client.id}`}
+                                type="password"
+                                placeholder="eb_xxxxxxxxxxxxxxxx"
+                                value={formData.emailBisonApiKey}
+                                onChange={(e) => setFormData({ ...formData, emailBisonApiKey: e.target.value })}
+                                className="h-8 text-sm"
+                              />
+                            </div>
+                            <Button
+                              size="sm"
+                              onClick={() => handleUpdateEmailCredentials(client.id)}
+                              disabled={isPending || !formData.emailBisonApiKey || !formData.emailBisonInstanceUrl}
+                            >
+                              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Email Config"}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         )}
 
-        {/* Webhook URL Info */}
+        {/* Webhook URLs Info */}
         {clients.length > 0 && (
           <>
             <Separator />
-            <div className="p-4 rounded-lg bg-muted/50 space-y-2">
-              <p className="text-sm font-medium">Webhook URL for GHL</p>
-              <code className="block text-xs bg-background p-2 rounded border break-all">
-                {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/ghl/sms
-              </code>
-              <p className="text-xs text-muted-foreground">
-                Configure this URL in GHL → Automation → Webhooks to receive inbound SMS notifications.
-              </p>
+            <div className="space-y-4">
+              {/* GHL Webhook */}
+              <div className="p-4 rounded-lg bg-muted/50 space-y-2">
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4" />
+                  Webhook URL for GHL (SMS)
+                </p>
+                <code className="block text-xs bg-background p-2 rounded border break-all">
+                  {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/ghl/sms
+                </code>
+                <p className="text-xs text-muted-foreground">
+                  Configure this URL in GHL → Automation → Webhooks to receive inbound SMS notifications.
+                </p>
+              </div>
+
+              {/* EmailBison Webhook */}
+              <div className="p-4 rounded-lg bg-muted/50 space-y-2">
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Mail className="h-4 w-4" />
+                  Webhook URL for EmailBison
+                </p>
+                <code className="block text-xs bg-background p-2 rounded border break-all">
+                  {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/email
+                </code>
+                <p className="text-xs text-muted-foreground">
+                  Configure this URL in EmailBison → Settings → Webhooks to receive inbound email notifications.
+                </p>
+                <p className="text-xs text-muted-foreground mt-2">
+                  <strong>Tip:</strong> Append <code className="bg-background px-1 py-0.5 rounded">?clientId=YOUR_WORKSPACE_ID</code> to route emails to a specific workspace.
+                </p>
+              </div>
             </div>
           </>
         )}

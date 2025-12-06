@@ -8,6 +8,8 @@ export interface ClientData {
   name: string;
   ghlLocationId: string;
   ghlPrivateKey: string;
+  emailBisonApiKey?: string;
+  emailBisonInstanceUrl?: string;
 }
 
 /**
@@ -42,6 +44,8 @@ export async function getClients() {
         id: true,
         name: true,
         ghlLocationId: true,
+        emailBisonApiKey: true,
+        emailBisonInstanceUrl: true,
         createdAt: true,
         _count: {
           select: { leads: true },
@@ -86,6 +90,8 @@ export async function createClient(data: ClientData) {
         name: data.name,
         ghlLocationId: data.ghlLocationId,
         ghlPrivateKey: data.ghlPrivateKey,
+        emailBisonApiKey: data.emailBisonApiKey || null,
+        emailBisonInstanceUrl: data.emailBisonInstanceUrl || null,
         userId, // Tie workspace to current user
       },
     });
@@ -102,6 +108,46 @@ export async function createClient(data: ClientData) {
   } catch (error) {
     console.error("Failed to create client:", error);
     return { success: false, error: "Failed to create workspace" };
+  }
+}
+
+/**
+ * Update an existing client/workspace (only if owned by current user)
+ */
+export async function updateClient(id: string, data: Partial<ClientData>) {
+  try {
+    const userId = await getCurrentUserId();
+    
+    if (!userId) {
+      return { success: false, error: "Not authenticated" };
+    }
+
+    // Verify ownership before updating
+    const client = await prisma.client.findFirst({
+      where: { id, userId },
+    });
+
+    if (!client) {
+      return { success: false, error: "Workspace not found or access denied" };
+    }
+
+    // Build update data, only including fields that are provided
+    const updateData: Record<string, string | null> = {};
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.ghlPrivateKey !== undefined) updateData.ghlPrivateKey = data.ghlPrivateKey;
+    if (data.emailBisonApiKey !== undefined) updateData.emailBisonApiKey = data.emailBisonApiKey || null;
+    if (data.emailBisonInstanceUrl !== undefined) updateData.emailBisonInstanceUrl = data.emailBisonInstanceUrl || null;
+
+    const updatedClient = await prisma.client.update({
+      where: { id },
+      data: updateData,
+    });
+
+    revalidatePath("/");
+    return { success: true, data: updatedClient };
+  } catch (error) {
+    console.error("Failed to update client:", error);
+    return { success: false, error: "Failed to update workspace" };
   }
 }
 
