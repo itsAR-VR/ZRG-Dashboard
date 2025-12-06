@@ -23,6 +23,159 @@ interface SyncHistoryResult {
   error?: string;
 }
 
+export interface LeadSyncInfo {
+  leadId: string;
+  canSyncSms: boolean;
+  canSyncEmail: boolean;
+  ghlContactId: string | null;
+  emailBisonLeadId: string | null;
+  hasEmailMessages: boolean;
+  hasSmsMessages: boolean;
+}
+
+/**
+ * Get sync capabilities for a lead
+ * Returns which sync methods are available based on external IDs
+ */
+export async function getLeadSyncInfo(leadId: string): Promise<{
+  success: boolean;
+  data?: LeadSyncInfo;
+  error?: string;
+}> {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: {
+        id: true,
+        ghlContactId: true,
+        emailBisonLeadId: true,
+        messages: {
+          select: {
+            channel: true,
+          },
+        },
+        client: {
+          select: {
+            ghlPrivateKey: true,
+            emailBisonApiKey: true,
+          },
+        },
+      },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    // Check what types of messages exist
+    const hasEmailMessages = lead.messages.some(m => m.channel === "email");
+    const hasSmsMessages = lead.messages.some(m => m.channel === "sms" || !m.channel);
+
+    // Determine sync capabilities
+    const canSyncSms = !!(lead.ghlContactId && lead.client.ghlPrivateKey);
+    const canSyncEmail = !!(lead.emailBisonLeadId && lead.client.emailBisonApiKey);
+
+    return {
+      success: true,
+      data: {
+        leadId: lead.id,
+        canSyncSms,
+        canSyncEmail,
+        ghlContactId: lead.ghlContactId,
+        emailBisonLeadId: lead.emailBisonLeadId,
+        hasEmailMessages,
+        hasSmsMessages,
+      },
+    };
+  } catch (error) {
+    console.error("[getLeadSyncInfo] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
+ * Smart sync that automatically determines which sync method to use
+ * Based on lead's external IDs
+ */
+export async function smartSyncConversation(leadId: string): Promise<SyncHistoryResult> {
+  // First get the lead's sync capabilities
+  const syncInfo = await getLeadSyncInfo(leadId);
+  
+  if (!syncInfo.success || !syncInfo.data) {
+    return { success: false, error: syncInfo.error || "Failed to get lead sync info" };
+  }
+
+  const { canSyncSms, canSyncEmail, hasEmailMessages, hasSmsMessages, emailBisonLeadId, ghlContactId } = syncInfo.data;
+
+  // If neither sync is available, return appropriate error
+  if (!canSyncSms && !canSyncEmail) {
+    if (hasEmailMessages && !emailBisonLeadId) {
+      return { 
+        success: false, 
+        error: "This lead's emails cannot be synced (no EmailBison lead ID - may be from a bounce notification)" 
+      };
+    }
+    if (hasSmsMessages && !ghlContactId) {
+      return { 
+        success: false, 
+        error: "This lead's SMS messages cannot be synced (no GHL contact ID)" 
+      };
+    }
+    return { 
+      success: false, 
+      error: "No sync method available for this lead (missing external IDs or credentials)" 
+    };
+  }
+
+  let totalImported = 0;
+  let totalHealed = 0;
+  let totalMessages = 0;
+  let totalSkipped = 0;
+  const errors: string[] = [];
+
+  // Sync SMS if available
+  if (canSyncSms) {
+    const smsResult = await syncConversationHistory(leadId);
+    if (smsResult.success) {
+      totalImported += smsResult.importedCount || 0;
+      totalHealed += smsResult.healedCount || 0;
+      totalMessages += smsResult.totalMessages || 0;
+      totalSkipped += smsResult.skippedDuplicates || 0;
+    } else if (smsResult.error) {
+      errors.push(`SMS: ${smsResult.error}`);
+    }
+  }
+
+  // Sync Email if available
+  if (canSyncEmail) {
+    const emailResult = await syncEmailConversationHistory(leadId);
+    if (emailResult.success) {
+      totalImported += emailResult.importedCount || 0;
+      totalHealed += emailResult.healedCount || 0;
+      totalMessages += emailResult.totalMessages || 0;
+      totalSkipped += emailResult.skippedDuplicates || 0;
+    } else if (emailResult.error) {
+      errors.push(`Email: ${emailResult.error}`);
+    }
+  }
+
+  // If all attempted syncs failed, return error
+  if (errors.length > 0 && totalImported === 0 && totalHealed === 0) {
+    return { success: false, error: errors.join("; ") };
+  }
+
+  return {
+    success: true,
+    importedCount: totalImported,
+    healedCount: totalHealed,
+    totalMessages,
+    skippedDuplicates: totalSkipped,
+  };
+}
+
 /**
  * Check if a message with similar content already exists
  * Uses fuzzy timestamp matching (within 60 seconds) to handle timing differences
@@ -74,7 +227,7 @@ async function messageExists(
  */
 export async function syncConversationHistory(leadId: string): Promise<SyncHistoryResult> {
   try {
-    // Get the lead with their client info
+    // Get the lead with their client info and SMS message count
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       include: {
@@ -82,6 +235,18 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
           select: {
             ghlPrivateKey: true,
             ghlLocationId: true,
+          },
+        },
+        _count: {
+          select: {
+            messages: {
+              where: { 
+                OR: [
+                  { channel: "sms" },
+                  { channel: null },
+                ],
+              },
+            },
           },
         },
       },
@@ -92,6 +257,14 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
     }
 
     if (!lead.ghlContactId) {
+      // Provide more helpful error message based on context
+      const hasSmsMessages = lead._count.messages > 0;
+      if (hasSmsMessages) {
+        return { 
+          success: false, 
+          error: "Cannot sync SMS: Lead was created from email only (no GHL contact ID)" 
+        };
+      }
       return { success: false, error: "Lead has no GHL contact ID" };
     }
 
@@ -366,7 +539,7 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
 function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): string {
   const source = textBody || htmlBody || "";
   if (!source.trim()) return "";
-  
+
   // Strip HTML tags and normalize whitespace
   return source
     .replace(/<[^>]+>/g, "")
@@ -384,13 +557,20 @@ function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): str
  */
 export async function syncEmailConversationHistory(leadId: string): Promise<SyncHistoryResult> {
   try {
-    // Get the lead with their client info
+    // Get the lead with their client info and message count
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       include: {
         client: {
           select: {
             emailBisonApiKey: true,
+          },
+        },
+        _count: {
+          select: {
+            messages: {
+              where: { channel: "email" },
+            },
           },
         },
       },
@@ -401,11 +581,19 @@ export async function syncEmailConversationHistory(leadId: string): Promise<Sync
     }
 
     if (!lead.emailBisonLeadId) {
+      // Provide more helpful error message based on context
+      const hasEmailMessages = lead._count.messages > 0;
+      if (hasEmailMessages) {
+        return { 
+          success: false, 
+          error: "Cannot sync: Lead emails came from a bounce notification or external source (no EmailBison lead ID)" 
+        };
+      }
       return { success: false, error: "Lead has no EmailBison lead ID" };
     }
 
     if (!lead.client.emailBisonApiKey) {
-      return { success: false, error: "Workspace is missing EmailBison credentials" };
+      return { success: false, error: "Workspace is missing EmailBison API key" };
     }
 
     console.log(`[EmailSync] Fetching conversation history for lead ${leadId} (EmailBison ID: ${lead.emailBisonLeadId})`);
@@ -432,7 +620,7 @@ export async function syncEmailConversationHistory(leadId: string): Promise<Sync
 
     const replies = repliesResult.data || [];
     const sentEmails = sentResult.data || [];
-    
+
     console.log(`[EmailSync] Found ${replies.length} replies and ${sentEmails.length} sent emails in EmailBison`);
 
     let importedCount = 0;
@@ -443,10 +631,10 @@ export async function syncEmailConversationHistory(leadId: string): Promise<Sync
     for (const reply of replies) {
       try {
         const emailBisonReplyId = String(reply.id);
-        const msgTimestamp = reply.date_received 
-          ? new Date(reply.date_received) 
-          : reply.created_at 
-            ? new Date(reply.created_at) 
+        const msgTimestamp = reply.date_received
+          ? new Date(reply.date_received)
+          : reply.created_at
+            ? new Date(reply.created_at)
             : new Date();
         const body = cleanEmailBody(reply.html_body, reply.text_body);
         const subject = reply.email_subject || null;
@@ -532,8 +720,8 @@ export async function syncEmailConversationHistory(leadId: string): Promise<Sync
     for (const sentEmail of sentEmails) {
       try {
         const inboxxiaScheduledEmailId = String(sentEmail.id);
-        const msgTimestamp = sentEmail.sent_at 
-          ? new Date(sentEmail.sent_at) 
+        const msgTimestamp = sentEmail.sent_at
+          ? new Date(sentEmail.sent_at)
           : new Date();
         const body = sentEmail.email_body || "";
         const subject = sentEmail.email_subject || null;
