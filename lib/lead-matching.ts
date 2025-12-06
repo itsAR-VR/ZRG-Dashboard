@@ -235,7 +235,7 @@ export async function getLeadChannels(leadId: string): Promise<("sms" | "email" 
  */
 export function getAvailableChannels(lead: { phone?: string | null; email?: string | null }): ("sms" | "email" | "linkedin")[] {
   const channels: ("sms" | "email" | "linkedin")[] = [];
-  
+
   if (lead.phone) {
     channels.push("sms");
   }
@@ -243,6 +243,6 @@ export function getAvailableChannels(lead: { phone?: string | null; email?: stri
     channels.push("email");
   }
   // LinkedIn will be added when we have linkedinId integration
-  
+
   return channels;
 }

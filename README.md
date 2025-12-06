@@ -2,7 +2,7 @@
 
 A scalable, full-stack application designed to manage high-volume sales outreach. This system replaces legacy n8n/Airtable workflows by unifying Email, SMS (GoHighLevel), and LinkedIn conversations into a single "Master Inbox" with AI-driven sentiment analysis, automatic drafting, and campaign management.
 
-**Current Status:** Phase II Complete (Email Integration via Inboxxia + SMS via GoHighLevel)
+**Current Status:** Phase II Complete (Email Integration via Inboxxia + SMS via GoHighLevel) with **Multi-Channel Lead Architecture** foundation (SMS + Email live, LinkedIn scaffolded).
 
 **Live Demo:** [https://zrg-dashboard.vercel.app/](https://zrg-dashboard.vercel.app/)
 
@@ -48,11 +48,20 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - [x] **Email Body Sanitization** - Strips quoted text, signatures, HTML boilerplate
 - [x] **Deduplication** - Prevents duplicate messages via `emailBisonReplyId` and `inboxxiaScheduledEmailId`
 - [x] **Campaign Sync** - Syncs Inboxxia campaigns to dashboard
-- [x] **Unified Inbox** - SMS and Email in single conversation view with platform badges
+- [x] **Unified Inbox** - SMS and Email in single conversation view with platform/channel badges
+
+### Multi-Channel Lead Architecture (New)
+- [x] **Single Lead, Multiple Channels** — Leads can own SMS + Email now; LinkedIn fields are present for next phase.
+- [x] **`Message.channel`** — Explicit channel field (`sms` | `email` | `linkedin`) on all messages.
+- [x] **Cross-Channel Dedup** — `findOrCreateLead` utility matches by email **or** normalized phone to prevent duplicate leads across webhooks.
+- [x] **GHL SMS Webhook** — Uses unified lead-matching, captures email when present, saves `channel: "sms"`.
+- [x] **Inboxxia Email Webhook** — Uses unified lead-matching, saves `channel: "email"`.
+- [x] **Inbox UI** — Conversation cards show all active channels; Action Station has channel tabs (SMS/Email; LinkedIn placeholder).
 
 ### Dashboard Features
 - [x] **Inbox View** - Filterable conversation list with search
 - [x] **Action Station** - AI draft review, edit, approve/reject workflow
+- [x] **Channel Tabs** - Switch per-lead between SMS/Email (LinkedIn coming soon) with per-channel message counts
 - [x] **CRM Drawer** - Lead details, status management, sentiment tags
 - [x] **Settings Page** - Workspace management, API key configuration
 - [x] **Email Credential Management** - Inboxxia API key input per workspace
@@ -136,6 +145,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 
 ```prisma
 model Message {
+  channel                  String   @default("sms") // 'sms' | 'email' | 'linkedin'
   ghlId                    String?  @unique  // GHL message ID
   emailBisonReplyId        String?  @unique  // Inboxxia reply ID
   inboxxiaScheduledEmailId String?  @unique  // Inboxxia scheduled email ID
@@ -212,17 +222,17 @@ npm run dev
 - [x] Phase II: Inboxxia email integration & multi-event webhook handling
 - [x] AI draft generation with sentiment-aware responses
 - [x] Auto-reply system for qualified leads
-- [x] Unified inbox for SMS + Email
+- [x] Unified inbox for SMS + Email with channel tabs and cross-channel dedup
 - [x] Campaign sync and management
 
 ### 🚧 In Progress / Next Up
-- [ ] **Analytics Dashboard** - Email open rates, reply rates, campaign performance
-- [ ] **Auto-Follow-Up Logic** - Scheduled follow-ups based on lead status
-- [ ] **Email Opens Tracking** - Persist EMAIL_OPENED events for analytics
-- [ ] **Lead Scoring** - AI-powered lead prioritization
+- [ ] **Channel-Aware Analytics** - Open/reply rates by channel, sentiment trends
+- [ ] **Auto-Follow-Up Logic** - Channel-aware follow-ups based on lead status/sentiment
+- [ ] **Email Opens Persistence** - Store EMAIL_OPENED events for analytics
+- [ ] **Lead Scoring** - AI-powered prioritization across channels
 
 ### 📋 Future Phases
-- [ ] **Phase III: LinkedIn Integration** - Unipile API for LinkedIn messaging
+- [ ] **Phase III: LinkedIn Integration** - Unipile API for LinkedIn messaging (channel = `linkedin`)
 - [ ] **Phase IV: Advanced Analytics** - Funnel visualization, A/B testing
 - [ ] **Phase V: Team Features** - Multi-user access, assignment workflows
 - [ ] **EmailGuard Integration** - Email validation before sending
