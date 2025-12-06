@@ -16,6 +16,7 @@ import {
   Loader2,
   MessageSquare,
   Users,
+  ExternalLink,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -61,9 +62,10 @@ interface LeadDetailSheetProps {
   open: boolean
   onClose: () => void
   onStatusChange: (id: string, status: LeadStatus) => void
+  onOpenInInbox?: (leadId: string) => void
 }
 
-function LeadDetailSheet({ lead, open, onClose, onStatusChange }: LeadDetailSheetProps) {
+function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox }: LeadDetailSheetProps) {
   if (!lead) return null
 
   return (
@@ -76,7 +78,7 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange }: LeadDetailShee
           </div>
         </SheetHeader>
 
-        <div className="mt-6 space-y-6">
+        <div className="mt-6 space-y-6 px-1">
           <div>
             <p className="text-muted-foreground">{lead.title || "No title"}</p>
             <p className="flex items-center gap-1 text-primary">
@@ -140,14 +142,16 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange }: LeadDetailShee
             </Select>
           </div>
 
-          <div className="flex gap-2 pt-4">
-            <Button className="flex-1" disabled={!lead.email}>
-              <Mail className="h-4 w-4 mr-2" />
-              Send Email
-            </Button>
-            <Button variant="outline" className="flex-1 bg-transparent" disabled={!lead.phone}>
-              <Phone className="h-4 w-4 mr-2" />
-              Call
+          <div className="pt-4">
+            <Button 
+              className="w-full" 
+              onClick={() => {
+                onOpenInInbox?.(lead.id)
+                onClose()
+              }}
+            >
+              <ExternalLink className="h-4 w-4 mr-2" />
+              Open in Master Inbox
             </Button>
           </div>
         </div>
@@ -158,9 +162,10 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange }: LeadDetailShee
 
 interface CRMViewProps {
   activeWorkspace?: string | null
+  onOpenInInbox?: (leadId: string) => void
 }
 
-export function CRMView({ activeWorkspace }: CRMViewProps) {
+export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
   const [leads, setLeads] = useState<CRMLeadData[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState("")
@@ -336,7 +341,7 @@ export function CRMView({ activeWorkspace }: CRMViewProps) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="cursor-pointer hover:bg-muted/50" onClick={() => handleSort("name")}>
+                  <TableHead className="cursor-pointer hover:bg-muted/50 pl-4" onClick={() => handleSort("name")}>
                     <div className="flex items-center gap-1">
                       Name <SortIcon field="name" />
                     </div>
@@ -353,7 +358,7 @@ export function CRMView({ activeWorkspace }: CRMViewProps) {
                     </div>
                   </TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead className="text-right pr-4">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -370,7 +375,7 @@ export function CRMView({ activeWorkspace }: CRMViewProps) {
                       className="cursor-pointer hover:bg-muted/50"
                       onClick={() => openLeadDetail(lead)}
                     >
-                      <TableCell>
+                      <TableCell className="pl-4">
                         <div>
                           <p className="font-medium">{lead.name}</p>
                           <p className="text-sm text-muted-foreground">{lead.email || "No email"}</p>
@@ -416,7 +421,7 @@ export function CRMView({ activeWorkspace }: CRMViewProps) {
                           </SelectContent>
                         </Select>
                       </TableCell>
-                      <TableCell className="text-right">
+                      <TableCell className="text-right pr-4">
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
                             <Button variant="ghost" size="icon">
@@ -425,8 +430,15 @@ export function CRMView({ activeWorkspace }: CRMViewProps) {
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem onClick={() => openLeadDetail(lead)}>View Details</DropdownMenuItem>
-                            <DropdownMenuItem>Send Email</DropdownMenuItem>
-                            <DropdownMenuItem>Schedule Call</DropdownMenuItem>
+                            <DropdownMenuItem 
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onOpenInInbox?.(lead.id)
+                              }}
+                            >
+                              <ExternalLink className="h-4 w-4 mr-2" />
+                              Open in Master Inbox
+                            </DropdownMenuItem>
                             <DropdownMenuItem 
                               className="text-destructive"
                               onClick={(e) => {
@@ -457,6 +469,7 @@ export function CRMView({ activeWorkspace }: CRMViewProps) {
         open={sheetOpen}
         onClose={() => setSheetOpen(false)}
         onStatusChange={handleStatusChange}
+        onOpenInInbox={onOpenInInbox}
       />
     </div>
   )

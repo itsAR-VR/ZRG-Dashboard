@@ -563,7 +563,7 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
           </TabsList>
 
           <ScrollArea className="h-[calc(100%-48px)] mt-4">
-            <TabsContent value="all" className="mt-0 space-y-3">
+            <TabsContent value="all" className="mt-0 space-y-3 pr-4">
               {tasks.map((task) => (
                 <TaskCard
                   key={task.id}
@@ -575,7 +575,7 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
               ))}
             </TabsContent>
 
-            <TabsContent value="overdue" className="mt-0 space-y-3">
+            <TabsContent value="overdue" className="mt-0 space-y-3 pr-4">
               {overdueTasks.map((task) => (
                 <TaskCard
                   key={task.id}
@@ -593,7 +593,7 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
               )}
             </TabsContent>
 
-            <TabsContent value="today" className="mt-0 space-y-3">
+            <TabsContent value="today" className="mt-0 space-y-3 pr-4">
               {todayTasks.map((task) => (
                 <TaskCard
                   key={task.id}
@@ -611,7 +611,7 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
               )}
             </TabsContent>
 
-            <TabsContent value="upcoming" className="mt-0 space-y-3">
+            <TabsContent value="upcoming" className="mt-0 space-y-3 pr-4">
               {upcomingTasks.map((task) => (
                 <TaskCard
                   key={task.id}
@@ -630,7 +630,7 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
             </TabsContent>
 
             {/* Active Sequences Tab */}
-            <TabsContent value="sequences" className="mt-0 space-y-6">
+            <TabsContent value="sequences" className="mt-0 space-y-6 pr-4">
               {instances.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <ListTodo className="h-12 w-12 mx-auto mb-4 opacity-50" />

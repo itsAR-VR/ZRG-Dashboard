@@ -16,6 +16,7 @@ interface InboxViewProps {
   activeChannel: string;
   activeFilter: string;
   activeWorkspace: string | null;
+  initialConversationId?: string | null;
 }
 
 // Polling interval in milliseconds (30 seconds)
@@ -66,7 +67,7 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
   };
 }
 
-export function InboxView({ activeChannel, activeFilter, activeWorkspace }: InboxViewProps) {
+export function InboxView({ activeChannel, activeFilter, activeWorkspace, initialConversationId }: InboxViewProps) {
   const [conversations, setConversations] = useState<ConversationWithSentiment[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
@@ -243,6 +244,13 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     fetchConversations(true);
     setActiveSentiment("all"); // Reset sentiment filter when workspace changes
   }, [activeWorkspace]);
+
+  // Handle initial conversation selection (e.g., from CRM "Open in Master Inbox")
+  useEffect(() => {
+    if (initialConversationId) {
+      setActiveConversationId(initialConversationId);
+    }
+  }, [initialConversationId]);
 
   // Fetch active conversation when selection changes
   useEffect(() => {

@@ -21,6 +21,13 @@ export default function DashboardPage() {
   const [activeFilter, setActiveFilter] = useState("")
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null)
   const [workspaces, setWorkspaces] = useState<Client[]>([])
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
+
+  // Handler to open a lead in the Master Inbox from CRM
+  const handleOpenInInbox = (leadId: string) => {
+    setSelectedLeadId(leadId)
+    setActiveView("inbox")
+  }
 
   // Fetch workspaces on mount
   useEffect(() => {
@@ -42,7 +49,7 @@ export default function DashboardPage() {
       case "followups":
         return <FollowUpsView activeWorkspace={activeWorkspace} />
       case "crm":
-        return <CRMView activeWorkspace={activeWorkspace} />
+        return <CRMView activeWorkspace={activeWorkspace} onOpenInInbox={handleOpenInInbox} />
       case "analytics":
         return <AnalyticsView activeWorkspace={activeWorkspace} />
       case "settings":
@@ -54,6 +61,7 @@ export default function DashboardPage() {
             activeChannel={activeChannel}
             activeFilter={activeFilter}
             activeWorkspace={activeWorkspace}
+            initialConversationId={selectedLeadId}
           />
         )
     }
