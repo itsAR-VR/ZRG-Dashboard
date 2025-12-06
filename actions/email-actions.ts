@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { sendEmailBisonReply } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
+import { syncEmailConversationHistory } from "@/actions/message-actions";
 
 interface SendEmailResult {
   success: boolean;
@@ -81,8 +82,8 @@ export async function sendEmailReply(
     }
 
     const client = lead.client;
-    if (!client.emailBisonApiKey || !client.emailBisonInstanceUrl) {
-      return { success: false, error: "Client missing EmailBison credentials" };
+    if (!client.emailBisonApiKey) {
+      return { success: false, error: "Client missing EmailBison API key" };
     }
 
     // Validate recipient via EmailGuard
@@ -117,16 +118,27 @@ export async function sendEmailReply(
     const messageContent = editedContent || draft.content;
     const subject = latestInboundEmail?.subject || null;
 
+    // Construct to_emails array (required by EmailBison API)
+    const toEmails = lead.email
+      ? [{ name: lead.firstName || null, email_address: lead.email }]
+      : [];
+
+    // Convert CC/BCC string arrays to EmailBisonRecipient format
+    const ccEmails = latestInboundEmail?.cc?.map(address => ({ name: null, email_address: address })) || [];
+    const bccEmails = latestInboundEmail?.bcc?.map(address => ({ name: null, email_address: address })) || [];
+
+    // Call sendEmailBisonReply with correct 3 parameters: (apiKey, replyId, payload)
     const sendResult = await sendEmailBisonReply(
-      client.emailBisonInstanceUrl,
       client.emailBisonApiKey,
       replyId,
       {
         message: messageContent,
-        sender_email_id: lead.senderAccountId,
+        sender_email_id: parseInt(lead.senderAccountId), // Must be number
+        to_emails: toEmails, // Required field
         subject: subject || undefined,
-        cc: latestInboundEmail?.cc || [],
-        bcc: latestInboundEmail?.bcc || [],
+        cc_emails: ccEmails, // Correct field name
+        bcc_emails: bccEmails, // Correct field name
+        inject_previous_email_body: true,
       }
     );
 
@@ -138,6 +150,7 @@ export async function sendEmailReply(
       data: {
         body: messageContent,
         subject,
+        channel: "email",
         cc: latestInboundEmail?.cc || [],
         bcc: latestInboundEmail?.bcc || [],
         direction: "outbound",
@@ -155,6 +168,12 @@ export async function sendEmailReply(
     // This matches the SMS flow behavior in approveAndSendDraft
 
     revalidatePath("/");
+
+    // Trigger background sync to ensure thread consistency
+    // This runs async and doesn't block the response
+    syncEmailConversationHistory(lead.id).catch((err) => {
+      console.error("[Email] Background sync failed:", err);
+    });
 
     return { success: true, messageId: message.id };
   } catch (error) {
