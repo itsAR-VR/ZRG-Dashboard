@@ -23,6 +23,9 @@ import {
   Link2,
   HelpCircle,
   Briefcase,
+  Calendar,
+  Star,
+  ExternalLink,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -42,9 +45,13 @@ import {
   updateUserSettings, 
   addKnowledgeAsset,
   deleteKnowledgeAsset,
+  addCalendarLink,
+  deleteCalendarLink,
+  setDefaultCalendarLink,
   type UserSettingsData,
   type KnowledgeAssetData,
   type QualificationQuestion,
+  type CalendarLinkData,
 } from "@/actions/settings-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
@@ -97,6 +104,15 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
   const [newAssetName, setNewAssetName] = useState("")
   const [newAssetContent, setNewAssetContent] = useState("")
   const [newAssetType, setNewAssetType] = useState<"text" | "url">("text")
+
+  // Calendar links state
+  const [calendarLinks, setCalendarLinks] = useState<CalendarLinkData[]>([])
+  const [newCalendarName, setNewCalendarName] = useState("")
+  const [newCalendarUrl, setNewCalendarUrl] = useState("")
+  const [calendarSettings, setCalendarSettings] = useState({
+    slotsToShow: 3,
+    lookAheadDays: 28,
+  })
 
   const [availability, setAvailability] = useState({
     timezone: "America/Los_Angeles",
@@ -162,6 +178,15 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
         if (result.knowledgeAssets) {
           setKnowledgeAssets(result.knowledgeAssets)
         }
+        // Set calendar links
+        if (result.calendarLinks) {
+          setCalendarLinks(result.calendarLinks)
+        }
+        // Set calendar settings
+        setCalendarSettings({
+          slotsToShow: result.data.calendarSlotsToShow ?? 3,
+          lookAheadDays: result.data.calendarLookAheadDays ?? 28,
+        })
       }
       
       setIsLoading(false)
@@ -198,6 +223,8 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
       timezone: availability.timezone,
       workStartTime: availability.startTime,
       workEndTime: availability.endTime,
+      calendarSlotsToShow: calendarSettings.slotsToShow,
+      calendarLookAheadDays: calendarSettings.lookAheadDays,
     })
 
     if (result.success) {
@@ -280,6 +307,74 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
       toast.error(result.error || "Failed to delete asset")
     }
   }, [])
+
+  // Calendar link handlers
+  const handleAddCalendarLink = useCallback(async () => {
+    if (!newCalendarName.trim() || !newCalendarUrl.trim()) {
+      toast.error("Please provide both name and URL for the calendar")
+      return
+    }
+
+    const result = await addCalendarLink(activeWorkspace, {
+      name: newCalendarName.trim(),
+      url: newCalendarUrl.trim(),
+    })
+
+    if (result.success && result.calendarLinkId) {
+      // Detect type from URL for immediate UI feedback
+      const url = newCalendarUrl.toLowerCase()
+      let type: "calendly" | "hubspot" | "ghl" | "unknown" = "unknown"
+      if (url.includes("calendly.com")) type = "calendly"
+      else if (url.includes("hubspot") || url.includes("/meetings/")) type = "hubspot"
+      else if (url.includes("leadconnectorhq") || url.includes("gohighlevel") || url.includes("msgsndr")) type = "ghl"
+
+      const isFirstCalendar = calendarLinks.length === 0
+      setCalendarLinks(prev => [{
+        id: result.calendarLinkId!,
+        name: newCalendarName.trim(),
+        url: newCalendarUrl.trim(),
+        type,
+        isDefault: isFirstCalendar,
+        createdAt: new Date(),
+      }, ...prev])
+      setNewCalendarName("")
+      setNewCalendarUrl("")
+      toast.success("Calendar link added")
+    } else {
+      toast.error(result.error || "Failed to add calendar link")
+    }
+  }, [activeWorkspace, newCalendarName, newCalendarUrl, calendarLinks.length])
+
+  const handleDeleteCalendarLink = useCallback(async (calendarLinkId: string) => {
+    const result = await deleteCalendarLink(calendarLinkId)
+    if (result.success) {
+      setCalendarLinks(prev => {
+        const filtered = prev.filter(c => c.id !== calendarLinkId)
+        // If we deleted the default and there are other calendars, make the first one default
+        const wasDefault = prev.find(c => c.id === calendarLinkId)?.isDefault
+        if (wasDefault && filtered.length > 0) {
+          filtered[0].isDefault = true
+        }
+        return filtered
+      })
+      toast.success("Calendar link deleted")
+    } else {
+      toast.error(result.error || "Failed to delete calendar link")
+    }
+  }, [])
+
+  const handleSetDefaultCalendar = useCallback(async (calendarLinkId: string) => {
+    const result = await setDefaultCalendarLink(activeWorkspace, calendarLinkId)
+    if (result.success) {
+      setCalendarLinks(prev => prev.map(c => ({
+        ...c,
+        isDefault: c.id === calendarLinkId,
+      })))
+      toast.success("Default calendar updated")
+    } else {
+      toast.error(result.error || "Failed to set default calendar")
+    }
+  }, [activeWorkspace])
 
   // Get user display info
   const userDisplayName = user?.fullName || user?.email?.split("@")[0] || "User"
@@ -418,6 +513,166 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
                         handleChange()
                       }}
                     />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Calendar Links */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Calendar className="h-5 w-5" />
+                  Calendar Links
+                </CardTitle>
+                <CardDescription>
+                  Add your booking calendar links (Calendly, HubSpot, GoHighLevel) to automatically include availability in AI-generated follow-ups
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Existing calendar links */}
+                {calendarLinks.length > 0 && (
+                  <div className="space-y-2">
+                    {calendarLinks.map((calendar) => (
+                      <div key={calendar.id} className="flex items-center gap-3 p-3 rounded-lg border">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium truncate">{calendar.name}</p>
+                            {calendar.isDefault && (
+                              <Badge variant="outline" className="text-amber-500 border-amber-500/30 bg-amber-500/10 text-xs">
+                                <Star className="h-3 w-3 mr-1" />
+                                Default
+                              </Badge>
+                            )}
+                            <Badge variant="outline" className="text-xs capitalize">
+                              {calendar.type}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground truncate mt-0.5">
+                            {calendar.url}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                            onClick={() => window.open(calendar.url, "_blank")}
+                            title="Open calendar link"
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                          </Button>
+                          {!calendar.isDefault && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-amber-500"
+                              onClick={() => handleSetDefaultCalendar(calendar.id)}
+                              title="Set as default"
+                            >
+                              <Star className="h-4 w-4" />
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            onClick={() => handleDeleteCalendarLink(calendar.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Add new calendar link */}
+                <div className="space-y-3 p-4 rounded-lg border border-dashed">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Calendar Name</Label>
+                      <Input
+                        placeholder="e.g., Sales Calendar"
+                        value={newCalendarName}
+                        onChange={(e) => setNewCalendarName(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Calendar URL</Label>
+                      <Input
+                        placeholder="https://calendly.com/you/30min"
+                        value={newCalendarUrl}
+                        onChange={(e) => setNewCalendarUrl(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={handleAddCalendarLink}
+                    disabled={!newCalendarName.trim() || !newCalendarUrl.trim()}
+                  >
+                    <Plus className="h-4 w-4 mr-1.5" />
+                    Add Calendar
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    Supported: Calendly, HubSpot Meetings, GoHighLevel. Calendar type is auto-detected from the URL.
+                  </p>
+                </div>
+
+                <Separator />
+
+                {/* Calendar settings */}
+                <div className="space-y-4">
+                  <h4 className="font-medium text-sm">Calendar Settings</h4>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Slots to Show in Emails</Label>
+                      <Select
+                        value={String(calendarSettings.slotsToShow)}
+                        onValueChange={(v) => {
+                          setCalendarSettings({ ...calendarSettings, slotsToShow: parseInt(v) })
+                          handleChange()
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="2">2 slots</SelectItem>
+                          <SelectItem value="3">3 slots</SelectItem>
+                          <SelectItem value="4">4 slots</SelectItem>
+                          <SelectItem value="5">5 slots</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        Number of availability options in AI emails
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Look-Ahead Period</Label>
+                      <Select
+                        value={String(calendarSettings.lookAheadDays)}
+                        onValueChange={(v) => {
+                          setCalendarSettings({ ...calendarSettings, lookAheadDays: parseInt(v) })
+                          handleChange()
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="7">7 days</SelectItem>
+                          <SelectItem value="14">14 days</SelectItem>
+                          <SelectItem value="21">21 days</SelectItem>
+                          <SelectItem value="28">28 days</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        How far ahead to fetch availability
+                      </p>
+                    </div>
                   </div>
                 </div>
               </CardContent>

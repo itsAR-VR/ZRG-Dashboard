@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { detectCalendarType } from "@/lib/calendar-availability";
 
 export interface UserSettingsData {
   id: string;
@@ -23,6 +24,18 @@ export interface UserSettingsData {
   timezone: string | null;
   workStartTime: string | null;
   workEndTime: string | null;
+  // Calendar Settings
+  calendarSlotsToShow: number | null;
+  calendarLookAheadDays: number | null;
+}
+
+export interface CalendarLinkData {
+  id: string;
+  name: string;
+  url: string;
+  type: "calendly" | "hubspot" | "ghl" | "unknown";
+  isDefault: boolean;
+  createdAt: Date;
 }
 
 export interface KnowledgeAssetData {
@@ -50,6 +63,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
   success: boolean;
   data?: UserSettingsData;
   knowledgeAssets?: KnowledgeAssetData[];
+  calendarLinks?: CalendarLinkData[];
   error?: string;
 }> {
   try {
@@ -76,8 +90,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           timezone: "America/Los_Angeles",
           workStartTime: "09:00",
           workEndTime: "17:00",
+          calendarSlotsToShow: 3,
+          calendarLookAheadDays: 28,
         },
         knowledgeAssets: [],
+        calendarLinks: [],
       };
     }
 
@@ -108,12 +125,20 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           slackAlerts: true,
           workStartTime: "09:00",
           workEndTime: "17:00",
+          calendarSlotsToShow: 3,
+          calendarLookAheadDays: 28,
         },
         include: {
           knowledgeAssets: true,
         },
       });
     }
+
+    // Fetch calendar links for this workspace
+    const calendarLinksRaw = await prisma.calendarLink.findMany({
+      where: { clientId },
+      orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+    });
 
     const knowledgeAssets: KnowledgeAssetData[] = settings.knowledgeAssets.map((asset) => ({
       id: asset.id,
@@ -124,6 +149,15 @@ export async function getUserSettings(clientId?: string | null): Promise<{
       originalFileName: asset.originalFileName,
       mimeType: asset.mimeType,
       createdAt: asset.createdAt,
+    }));
+
+    const calendarLinks: CalendarLinkData[] = calendarLinksRaw.map((link) => ({
+      id: link.id,
+      name: link.name,
+      url: link.url,
+      type: link.type as "calendly" | "hubspot" | "ghl" | "unknown",
+      isDefault: link.isDefault,
+      createdAt: link.createdAt,
     }));
 
     return {
@@ -147,8 +181,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         timezone: settings.timezone,
         workStartTime: settings.workStartTime,
         workEndTime: settings.workEndTime,
+        calendarSlotsToShow: settings.calendarSlotsToShow,
+        calendarLookAheadDays: settings.calendarLookAheadDays,
       },
       knowledgeAssets,
+      calendarLinks,
     };
   } catch (error) {
     console.error("Failed to fetch workspace settings:", error);
@@ -189,6 +226,8 @@ export async function updateUserSettings(
         timezone: data.timezone,
         workStartTime: data.workStartTime,
         workEndTime: data.workEndTime,
+        calendarSlotsToShow: data.calendarSlotsToShow,
+        calendarLookAheadDays: data.calendarLookAheadDays,
       },
       create: {
         clientId,
@@ -208,6 +247,8 @@ export async function updateUserSettings(
         timezone: data.timezone,
         workStartTime: data.workStartTime ?? "09:00",
         workEndTime: data.workEndTime ?? "17:00",
+        calendarSlotsToShow: data.calendarSlotsToShow ?? 3,
+        calendarLookAheadDays: data.calendarLookAheadDays ?? 28,
       },
     });
 
@@ -483,5 +524,204 @@ export async function getKnowledgeAssetsForAI(
   } catch (error) {
     console.error("Failed to get knowledge assets:", error);
     return [];
+  }
+}
+
+// =============================================================================
+// Calendar Link Management
+// =============================================================================
+
+/**
+ * Get all calendar links for a workspace
+ */
+export async function getCalendarLinks(
+  clientId: string | null | undefined
+): Promise<{ success: boolean; data?: CalendarLinkData[]; error?: string }> {
+  try {
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    const links = await prisma.calendarLink.findMany({
+      where: { clientId },
+      orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
+    });
+
+    return {
+      success: true,
+      data: links.map((link) => ({
+        id: link.id,
+        name: link.name,
+        url: link.url,
+        type: link.type as "calendly" | "hubspot" | "ghl" | "unknown",
+        isDefault: link.isDefault,
+        createdAt: link.createdAt,
+      })),
+    };
+  } catch (error) {
+    console.error("Failed to get calendar links:", error);
+    return { success: false, error: "Failed to fetch calendar links" };
+  }
+}
+
+/**
+ * Add a new calendar link
+ */
+export async function addCalendarLink(
+  clientId: string | null | undefined,
+  data: {
+    name: string;
+    url: string;
+    isDefault?: boolean;
+  }
+): Promise<{ success: boolean; calendarLinkId?: string; error?: string }> {
+  try {
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    // Auto-detect calendar type from URL
+    const calendarType = detectCalendarType(data.url);
+
+    // If this is being set as default, unset other defaults first
+    if (data.isDefault) {
+      await prisma.calendarLink.updateMany({
+        where: { clientId, isDefault: true },
+        data: { isDefault: false },
+      });
+    }
+
+    // If this is the first calendar, make it default
+    const existingCount = await prisma.calendarLink.count({
+      where: { clientId },
+    });
+    const shouldBeDefault = data.isDefault || existingCount === 0;
+
+    const link = await prisma.calendarLink.create({
+      data: {
+        clientId,
+        name: data.name,
+        url: data.url,
+        type: calendarType,
+        isDefault: shouldBeDefault,
+      },
+    });
+
+    revalidatePath("/");
+    return { success: true, calendarLinkId: link.id };
+  } catch (error) {
+    console.error("Failed to add calendar link:", error);
+    return { success: false, error: "Failed to add calendar link" };
+  }
+}
+
+/**
+ * Update an existing calendar link
+ */
+export async function updateCalendarLink(
+  calendarLinkId: string,
+  data: {
+    name?: string;
+    url?: string;
+  }
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const updateData: { name?: string; url?: string; type?: string } = {};
+
+    if (data.name !== undefined) {
+      updateData.name = data.name;
+    }
+
+    if (data.url !== undefined) {
+      updateData.url = data.url;
+      // Re-detect calendar type if URL changed
+      updateData.type = detectCalendarType(data.url);
+    }
+
+    await prisma.calendarLink.update({
+      where: { id: calendarLinkId },
+      data: updateData,
+    });
+
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to update calendar link:", error);
+    return { success: false, error: "Failed to update calendar link" };
+  }
+}
+
+/**
+ * Delete a calendar link
+ */
+export async function deleteCalendarLink(
+  calendarLinkId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // Get the link to check if it's default
+    const link = await prisma.calendarLink.findUnique({
+      where: { id: calendarLinkId },
+    });
+
+    if (!link) {
+      return { success: false, error: "Calendar link not found" };
+    }
+
+    await prisma.calendarLink.delete({
+      where: { id: calendarLinkId },
+    });
+
+    // If we deleted the default, make another one default
+    if (link.isDefault) {
+      const nextLink = await prisma.calendarLink.findFirst({
+        where: { clientId: link.clientId },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (nextLink) {
+        await prisma.calendarLink.update({
+          where: { id: nextLink.id },
+          data: { isDefault: true },
+        });
+      }
+    }
+
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to delete calendar link:", error);
+    return { success: false, error: "Failed to delete calendar link" };
+  }
+}
+
+/**
+ * Set a calendar link as the default for a workspace
+ */
+export async function setDefaultCalendarLink(
+  clientId: string | null | undefined,
+  calendarLinkId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    // Unset current default
+    await prisma.calendarLink.updateMany({
+      where: { clientId, isDefault: true },
+      data: { isDefault: false },
+    });
+
+    // Set new default
+    await prisma.calendarLink.update({
+      where: { id: calendarLinkId },
+      data: { isDefault: true },
+    });
+
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to set default calendar link:", error);
+    return { success: false, error: "Failed to set default calendar" };
   }
 }

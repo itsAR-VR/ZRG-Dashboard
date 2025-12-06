@@ -12,53 +12,57 @@ datasource db {
 // Stores GHL API Keys per sub-account for multi-tenancy
 // Each workspace is tied to a user (from Supabase Auth)
 model Client {
-  id            String              @id @default(uuid())
-  name          String
-  ghlLocationId String              @unique // Used to identify which client sent the webhook
-  ghlPrivateKey String              // The generic API key for this sub-account
-  emailBisonApiKey     String?
-  userId        String              // Supabase Auth user ID - ties workspace to user
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
-  leads         Lead[]
-  campaigns     Campaign[]
-  emailCampaigns EmailCampaign[]
-  settings      WorkspaceSettings?  // One-to-one relation with settings
-  followUpSequences FollowUpSequence[]  // Follow-up sequence templates
+  id                String             @id @default(uuid())
+  name              String
+  ghlLocationId     String             @unique // Used to identify which client sent the webhook
+  ghlPrivateKey     String // The generic API key for this sub-account
+  emailBisonApiKey  String?
+  userId            String // Supabase Auth user ID - ties workspace to user
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  leads             Lead[]
+  campaigns         Campaign[]
+  emailCampaigns    EmailCampaign[]
+  settings          WorkspaceSettings? // One-to-one relation with settings
+  followUpSequences FollowUpSequence[] // Follow-up sequence templates
+  calendarLinks     CalendarLink[] // Calendar links for availability
 
   @@index([userId])
 }
 
 // Workspace-specific settings (AI personality, automation, etc.)
 model WorkspaceSettings {
-  id                   String   @id @default(uuid())
-  clientId             String   @unique // Links to workspace
-  client               Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  id                     String           @id @default(uuid())
+  clientId               String           @unique // Links to workspace
+  client                 Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
   // AI Personality Settings
-  aiPersonaName        String?
-  aiTone               String?  @default("friendly-professional")
-  aiGreeting           String?
-  aiSignature          String?  @db.Text
-  aiGoals              String?  @db.Text
+  aiPersonaName          String?
+  aiTone                 String?          @default("friendly-professional")
+  aiGreeting             String?
+  aiSignature            String?          @db.Text
+  aiGoals                String?          @db.Text
   // AI Context Fields (for better AI responses)
-  serviceDescription      String?  @db.Text  // Business/service description for AI context
-  qualificationQuestions  String?  @db.Text  // JSON array of qualification questions
+  serviceDescription     String?          @db.Text // Business/service description for AI context
+  qualificationQuestions String?          @db.Text // JSON array of qualification questions
   // Automation Rules
-  autoApproveMeetings  Boolean  @default(true)
-  flagUncertainReplies Boolean  @default(true)
-  pauseForOOO          Boolean  @default(true)
-  autoBlacklist        Boolean  @default(true)
+  autoApproveMeetings    Boolean          @default(true)
+  flagUncertainReplies   Boolean          @default(true)
+  pauseForOOO            Boolean          @default(true)
+  autoBlacklist          Boolean          @default(true)
   // Notification Settings
-  emailDigest          Boolean  @default(true)
-  slackAlerts          Boolean  @default(true)
+  emailDigest            Boolean          @default(true)
+  slackAlerts            Boolean          @default(true)
   // Schedule Settings
-  timezone             String?
-  workStartTime        String?  @default("09:00")
-  workEndTime          String?  @default("17:00")
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  timezone               String?
+  workStartTime          String?          @default("09:00")
+  workEndTime            String?          @default("17:00")
+  // Calendar Settings
+  calendarSlotsToShow    Int?             @default(3) // Number of availability slots in AI emails
+  calendarLookAheadDays  Int?             @default(28) // How far ahead to fetch availability
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
   // Relations
-  knowledgeAssets      KnowledgeAsset[]
+  knowledgeAssets        KnowledgeAsset[]
 }
 
 // GHL Workflows/Campaigns synced from the API
@@ -78,101 +82,106 @@ model Campaign {
 
 // Lead/Contact record - unified across SMS, Email, and LinkedIn channels
 model Lead {
-  id           String        @id @default(uuid())
+  id                      String             @id @default(uuid())
   // External system IDs (all optional for multi-channel support)
-  ghlContactId     String?   @unique // GoHighLevel contact ID (for SMS)
-  emailBisonLeadId String?   // Inboxxia/EmailBison lead ID (for Email)
-  linkedinId       String?   // Future: LinkedIn member ID
-  linkedinUrl      String?   // Future: LinkedIn profile URL
+  ghlContactId            String?            @unique // GoHighLevel contact ID (for SMS)
+  emailBisonLeadId        String? // Inboxxia/EmailBison lead ID (for Email)
+  linkedinId              String? // Future: LinkedIn member ID
+  linkedinUrl             String? // Future: LinkedIn profile URL
   // Contact information
-  firstName    String?
-  lastName     String?
-  email        String?
-  phone        String?       // Stored normalized (digits only)
+  firstName               String?
+  lastName                String?
+  email                   String?
+  phone                   String? // Stored normalized (digits only)
+  timezone                String? // Lead's timezone for availability display
   // Status and sentiment
-  status       String        @default("new")
-  sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.
-  snoozedUntil DateTime?     // When snoozed, hide from inbox until this date
+  status                  String             @default("new")
+  sentimentTag            String? // e.g., 'Meeting Requested', 'Not Interested', etc.
+  snoozedUntil            DateTime? // When snoozed, hide from inbox until this date
   // Automation settings
-  autoReplyEnabled Boolean   @default(false)
-  autoFollowUpEnabled Boolean @default(false)
+  autoReplyEnabled        Boolean            @default(false)
+  autoFollowUpEnabled     Boolean            @default(false)
   // Workspace and campaign associations
-  clientId     String
-  client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  campaignId   String?       // Optional link to SMS campaign
-  campaign     Campaign?     @relation(fields: [campaignId], references: [id])
-  emailCampaignId String?    // Optional link to EmailBison campaign
-  emailCampaign   EmailCampaign? @relation(fields: [emailCampaignId], references: [id])
-  senderAccountId String?    // EmailBison sender email account id
+  clientId                String
+  client                  Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  campaignId              String? // Optional link to SMS campaign
+  campaign                Campaign?          @relation(fields: [campaignId], references: [id])
+  emailCampaignId         String? // Optional link to EmailBison campaign
+  emailCampaign           EmailCampaign?     @relation(fields: [emailCampaignId], references: [id])
+  senderAccountId         String? // EmailBison sender email account id
+  // Calendar preference (overrides workspace default)
+  preferredCalendarLinkId String?
+  preferredCalendarLink   CalendarLink?      @relation(fields: [preferredCalendarLinkId], references: [id], onDelete: SetNull)
   // Relations
-  messages          Message[]
-  followUps         FollowUpTask[]
-  followUpInstances FollowUpInstance[]  // Active follow-up sequences for this lead
-  aiDrafts          AIDraft[]
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  messages                Message[]
+  followUps               FollowUpTask[]
+  followUpInstances       FollowUpInstance[] // Active follow-up sequences for this lead
+  aiDrafts                AIDraft[]
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
 
   @@index([clientId])
   @@index([campaignId])
   @@index([emailCampaignId])
   @@index([emailBisonLeadId])
   @@index([sentimentTag])
-  @@index([email])          // For cross-channel matching
-  @@index([phone])          // For cross-channel matching
+  @@index([email]) // For cross-channel matching
+  @@index([phone]) // For cross-channel matching
+  @@index([preferredCalendarLinkId])
 }
 
 // Conversation messages across all channels (SMS, Email, LinkedIn)
 model Message {
-  id        String   @id @default(uuid())
+  id                       String   @id @default(uuid())
   // External system IDs for deduplication
-  ghlId     String?  @unique // GoHighLevel Message ID (SMS)
-  emailBisonReplyId String?  @unique // EmailBison reply ID (Email)
-  inboxxiaScheduledEmailId String? @unique // Inboxxia scheduled email ID for EMAIL_SENT dedup
+  ghlId                    String?  @unique // GoHighLevel Message ID (SMS)
+  emailBisonReplyId        String?  @unique // EmailBison reply ID (Email)
+  inboxxiaScheduledEmailId String?  @unique // Inboxxia scheduled email ID for EMAIL_SENT dedup
   // Channel and source
-  channel   String   @default("sms") // 'sms' | 'email' | 'linkedin'
-  source    String   @default("zrg") // 'zrg' | 'inboxxia_campaign' - origin of the message
+  channel                  String   @default("sms") // 'sms' | 'email' | 'linkedin'
+  source                   String   @default("zrg") // 'zrg' | 'inboxxia_campaign' - origin of the message
   // Message content
-  body      String   @db.Text
-  rawText   String?  @db.Text // Original text body (if provided)
-  rawHtml   String?  @db.Text // Original HTML body (if provided)
-  subject   String?           // Email subject line
-  cc        String[] @default([])
-  bcc       String[] @default([])
+  body                     String   @db.Text
+  rawText                  String?  @db.Text // Original text body (if provided)
+  rawHtml                  String?  @db.Text // Original HTML body (if provided)
+  subject                  String? // Email subject line
+  cc                       String[] @default([])
+  bcc                      String[] @default([])
   // Status
-  isRead    Boolean  @default(false)
-  direction String   // 'inbound' or 'outbound'
+  isRead                   Boolean  @default(false)
+  direction                String // 'inbound' or 'outbound'
   // Lead association
-  leadId    String
-  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  leadId                   String
+  lead                     Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
   // Timestamps
-  sentAt    DateTime @default(now()) // Actual timestamp when message was sent/received
-  createdAt DateTime @default(now()) // When record was created in our database
+  sentAt                   DateTime @default(now()) // Actual timestamp when message was sent/received
+  createdAt                DateTime @default(now()) // When record was created in our database
 
   @@index([leadId])
   @@index([sentAt(sort: Desc)])
   @@index([source])
-  @@index([channel])         // For filtering messages by channel
+  @@index([channel]) // For filtering messages by channel
 }
 
 // Follow-up tasks for leads (individual scheduled tasks)
 model FollowUpTask {
-  id               String    @id @default(uuid())
+  id               String   @id @default(uuid())
   leadId           String
-  lead             Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  type             String    // 'email', 'call', 'sms', 'linkedin', 'ai_voice'
+  lead             Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  type             String // 'email', 'call', 'sms', 'linkedin', 'ai_voice'
   dueDate          DateTime
-  status           String    @default("pending") // pending, completed, skipped, cancelled
-  suggestedMessage String?   @db.Text
-  subject          String?   // For email tasks
+  status           String   @default("pending") // pending, completed, skipped, cancelled
+  suggestedMessage String?  @db.Text
+  subject          String? // For email tasks
   // Legacy fields (for backward compatibility)
-  sequenceStep     Int?      // Current step in campaign sequence
-  totalSteps       Int?      // Total steps in campaign
+  sequenceStep     Int? // Current step in campaign sequence
+  totalSteps       Int? // Total steps in campaign
   campaignName     String?
   // Link to follow-up sequence system (optional)
-  instanceId       String?   // Link to FollowUpInstance if part of a sequence
-  stepOrder        Int?      // Which step in the sequence this task represents
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  instanceId       String? // Link to FollowUpInstance if part of a sequence
+  stepOrder        Int? // Which step in the sequence this task represents
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   @@index([leadId])
   @@index([dueDate])
@@ -198,32 +207,50 @@ model AIDraft {
 
 // EmailBison campaigns synced per client
 model EmailCampaign {
-  id             String   @id @default(uuid())
+  id              String   @id @default(uuid())
   bisonCampaignId String
-  name           String
-  clientId       String
-  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  leads          Lead[]
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  name            String
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leads           Lead[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@unique([clientId, bisonCampaignId])
   @@index([clientId])
 }
 
+// Calendar links for fetching availability (Calendly, HubSpot, GoHighLevel)
+model CalendarLink {
+  id        String   @id @default(uuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name      String // Display name, e.g., "Sales Calendar"
+  url       String // Full calendar booking URL
+  type      String // 'calendly' | 'hubspot' | 'ghl' (auto-detected from URL)
+  isDefault Boolean  @default(false) // Default calendar for this workspace
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  // Leads using this specific calendar
+  leads     Lead[]
+
+  @@index([clientId])
+  @@index([isDefault])
+}
+
 // Knowledge assets for AI context (uploaded files, text snippets)
 model KnowledgeAsset {
-  id                  String   @id @default(uuid())
+  id                  String            @id @default(uuid())
   workspaceSettingsId String
   workspaceSettings   WorkspaceSettings @relation(fields: [workspaceSettingsId], references: [id], onDelete: Cascade)
-  name                String              // Display name for the asset
-  type                String              // 'file' | 'text' | 'url'
-  fileUrl             String?             // Supabase Storage URL (for files)
-  textContent         String?  @db.Text   // Extracted or direct text content
-  originalFileName    String?             // Original file name if uploaded
-  mimeType            String?             // File MIME type
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  name                String // Display name for the asset
+  type                String // 'file' | 'text' | 'url'
+  fileUrl             String? // Supabase Storage URL (for files)
+  textContent         String?           @db.Text // Extracted or direct text content
+  originalFileName    String? // Original file name if uploaded
+  mimeType            String? // File MIME type
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
 
   @@index([workspaceSettingsId])
 }
@@ -234,17 +261,17 @@ model KnowledgeAsset {
 
 // Client-level follow-up sequence template
 model FollowUpSequence {
-  id          String   @id @default(uuid())
+  id          String             @id @default(uuid())
   name        String
   description String?
   clientId    String
-  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  isActive    Boolean  @default(true)
-  triggerOn   String   @default("no_response")  // 'no_response' | 'meeting_selected' | 'manual'
+  client      Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  isActive    Boolean            @default(true)
+  triggerOn   String             @default("no_response") // 'no_response' | 'meeting_selected' | 'manual'
   steps       FollowUpStep[]
   instances   FollowUpInstance[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
 
   @@index([clientId])
   @@index([isActive])
@@ -252,17 +279,17 @@ model FollowUpSequence {
 
 // Individual step in a follow-up sequence
 model FollowUpStep {
-  id               String   @id @default(uuid())
+  id               String           @id @default(uuid())
   sequenceId       String
   sequence         FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
-  stepOrder        Int               // Order within the sequence (1, 2, 3...)
-  dayOffset        Int               // Days after sequence start (0 = same day, 2 = Day 2, etc.)
-  channel          String            // 'email' | 'sms' | 'linkedin' | 'ai_voice'
-  messageTemplate  String?  @db.Text // Template with {variables} like {firstName}, {company}
-  subject          String?           // For email subject lines
-  condition        String?  @db.Text // JSON condition: { "type": "phone_provided" | "linkedin_connected" | "no_response" }
-  requiresApproval Boolean  @default(false)
-  fallbackStepId   String?           // If condition fails, skip to this step order
+  stepOrder        Int // Order within the sequence (1, 2, 3...)
+  dayOffset        Int // Days after sequence start (0 = same day, 2 = Day 2, etc.)
+  channel          String // 'email' | 'sms' | 'linkedin' | 'ai_voice'
+  messageTemplate  String?          @db.Text // Template with {variables} like {firstName}, {company}
+  subject          String? // For email subject lines
+  condition        String?          @db.Text // JSON condition: { "type": "phone_provided" | "linkedin_connected" | "no_response" }
+  requiresApproval Boolean          @default(false)
+  fallbackStepId   String? // If condition fails, skip to this step order
 
   @@unique([sequenceId, stepOrder])
   @@index([sequenceId])
@@ -270,20 +297,20 @@ model FollowUpStep {
 
 // Per-lead follow-up sequence instance (tracks progress through a sequence)
 model FollowUpInstance {
-  id             String   @id @default(uuid())
-  leadId         String
-  lead           Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  sequenceId     String
-  sequence       FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
-  currentStep    Int      @default(0)    // Current step order (0 = not started yet)
-  status         String   @default("active")  // 'active' | 'paused' | 'completed' | 'cancelled'
-  pausedReason   String?                  // Reason for pause (e.g., "lead_replied", "manual")
-  startedAt      DateTime @default(now())
-  lastStepAt     DateTime?                // When the last step was executed
-  nextStepDue    DateTime?                // When the next step should run
-  completedAt    DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id           String           @id @default(uuid())
+  leadId       String
+  lead         Lead             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  sequenceId   String
+  sequence     FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  currentStep  Int              @default(0) // Current step order (0 = not started yet)
+  status       String           @default("active") // 'active' | 'paused' | 'completed' | 'cancelled'
+  pausedReason String? // Reason for pause (e.g., "lead_replied", "manual")
+  startedAt    DateTime         @default(now())
+  lastStepAt   DateTime? // When the last step was executed
+  nextStepDue  DateTime? // When the next step should run
+  completedAt  DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
   @@unique([leadId, sequenceId])
   @@index([leadId])

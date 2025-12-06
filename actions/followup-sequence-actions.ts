@@ -623,18 +623,18 @@ export async function getDueFollowUpInstances(): Promise<{
         currentStep: inst.currentStep,
         stepData: nextStep
           ? {
-              id: nextStep.id,
-              stepOrder: nextStep.stepOrder,
-              dayOffset: nextStep.dayOffset,
-              channel: nextStep.channel as FollowUpStepData["channel"],
-              messageTemplate: nextStep.messageTemplate,
-              subject: nextStep.subject,
-              condition: nextStep.condition
-                ? (JSON.parse(nextStep.condition) as StepCondition)
-                : null,
-              requiresApproval: nextStep.requiresApproval,
-              fallbackStepId: nextStep.fallbackStepId,
-            }
+            id: nextStep.id,
+            stepOrder: nextStep.stepOrder,
+            dayOffset: nextStep.dayOffset,
+            channel: nextStep.channel as FollowUpStepData["channel"],
+            messageTemplate: nextStep.messageTemplate,
+            subject: nextStep.subject,
+            condition: nextStep.condition
+              ? (JSON.parse(nextStep.condition) as StepCondition)
+              : null,
+            requiresApproval: nextStep.requiresApproval,
+            fallbackStepId: nextStep.fallbackStepId,
+          }
           : null,
       };
     });

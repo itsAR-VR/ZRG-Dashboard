@@ -66,6 +66,16 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - [x] **Settings Page** - Workspace management, API key configuration
 - [x] **Email Credential Management** - Inboxxia API key input per workspace
 
+### Calendar Availability Integration (New)
+- [x] **Multi-Calendar Support** — Add multiple calendar links (Calendly, HubSpot, GoHighLevel) per workspace
+- [x] **Auto-Detection** — Calendar type automatically detected from URL patterns
+- [x] **Default Calendar** — Set a workspace-wide default calendar for availability
+- [x] **Per-Lead Override** — Assign specific calendars to individual leads in CRM drawer
+- [x] **Real-Time Availability** — Fetches live availability slots when generating AI email drafts
+- [x] **Configurable Settings** — Adjust number of slots shown (2-5) and look-ahead period (7-28 days)
+- [x] **AI Integration** — Availability automatically injected into follow-up email drafts
+- [x] **Timezone Support** — Converts availability to lead timezone (if known) or workspace timezone
+
 ---
 
 ## 🔌 Core Integrations
@@ -119,6 +129,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   sentiment.ts              # Sentiment classification logic
   ai-drafts.ts              # AI draft generation
   emailbison-api.ts         # Inboxxia API client
+  calendar-availability.ts  # Calendar availability fetching (Calendly/HubSpot/GHL)
 
 /prisma
   schema.prisma             # Database schema
@@ -133,13 +144,14 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 | Model | Purpose |
 |-------|---------|
 | `Client` | Workspace/tenant with GHL + Inboxxia API keys |
-| `Lead` | Contact record with sentiment, status, campaign links |
+| `Lead` | Contact record with sentiment, status, campaign links, calendar preference |
 | `Message` | Conversation messages (SMS/Email, inbound/outbound) |
 | `Campaign` | GHL SMS campaigns |
 | `EmailCampaign` | Inboxxia email campaigns |
 | `AIDraft` | Pending AI-generated response drafts |
 | `FollowUpTask` | Scheduled follow-up tasks |
-| `WorkspaceSettings` | AI personality, automation rules |
+| `WorkspaceSettings` | AI personality, automation rules, calendar settings |
+| `CalendarLink` | Calendar booking URLs (Calendly/HubSpot/GHL) per workspace |
 
 ### Key Message Fields
 
@@ -224,6 +236,7 @@ npm run dev
 - [x] Auto-reply system for qualified leads
 - [x] Unified inbox for SMS + Email with channel tabs and cross-channel dedup
 - [x] Campaign sync and management
+- [x] **Calendar Availability** — Real-time availability from Calendly/HubSpot/GHL injected into AI email drafts
 
 ### 🚧 In Progress / Next Up
 - [ ] **AI Persona Enhancements** - Service description, qualification questions, knowledge assets for better AI context
@@ -234,7 +247,8 @@ npm run dev
 
 ### 📋 Future Phases
 - [ ] **Phase III: LinkedIn Integration** - Unipile API for LinkedIn messaging (channel = `linkedin`)
-- [ ] **Phase IV: Calendar Integration** - Google Calendar / Calendly / Cal.com for pulling availability into follow-ups
+- [x] **Phase IV: Calendar Availability** - ✅ Availability fetching from Calendly/HubSpot/GHL complete
+  - [ ] **Phase IV-B: Automated Booking** - Programmatic meeting scheduling via calendar APIs (pending)
 - [ ] **Phase V: AI Voice Caller** - Sora Media integration for AI-powered qualification calls and double-dial touchpoints
 - [ ] **Phase VI: Advanced Analytics** - Funnel visualization, A/B testing
 - [ ] **Phase VII: Team Features** - Multi-user access, assignment workflows
@@ -245,17 +259,24 @@ npm run dev
 ## 🔮 Future Integration Notes
 
 ### Calendar Integration (Phase IV)
-**Status:** Planned - Not yet implemented
+**Status:** Availability Fetching Complete ✅ | Automated Booking Pending
 
-The follow-up system will eventually need calendar integration to:
-- Pull real-time availability for "Day 5" reminder emails
-- Auto-suggest meeting times based on calendar availability
+**Completed:**
+- Real-time availability fetching from Calendly, HubSpot, and GoHighLevel calendars
+- Multiple calendar links per workspace with default selection
+- Per-lead calendar override in CRM drawer
+- AI email drafts automatically include availability slots
+- Configurable slot count and look-ahead days
+
+**Pending (Phase IV-B):**
+- Programmatic meeting booking via calendar APIs
 - Sync booked meetings back to the dashboard
+- Calendar event creation/updates
 
-**Potential integrations:**
-- Google Calendar API
-- Calendly API
-- Cal.com API
+**Supported Calendar Platforms:**
+- Calendly (standard and scheduling links)
+- HubSpot Meetings
+- GoHighLevel calendars
 
 ### AI Voice Caller (Phase V)
 **Status:** Planned - Sora Media scoping in progress

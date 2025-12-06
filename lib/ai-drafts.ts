@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { prisma } from "@/lib/prisma";
+import { getFormattedAvailabilityForLead } from "@/lib/calendar-availability";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -12,56 +13,10 @@ interface DraftGenerationResult {
   draftId?: string;
   content?: string;
   error?: string;
+  requiresManualReview?: boolean;
 }
 
 const EMAIL_FORBIDDEN_TERMS = ["tailored", "surface", "actionable", "synergy", "circle back"];
-
-function parseTimePart(value?: string, fallback = "00:00") {
-  const [hours, minutes] = (value || fallback).split(":").map((p) => parseInt(p, 10));
-  return { hours: Number.isFinite(hours) ? hours : 0, minutes: Number.isFinite(minutes) ? minutes : 0 };
-}
-
-function formatInTimezone(date: Date, timeZone: string, options: Intl.DateTimeFormatOptions) {
-  return new Intl.DateTimeFormat("en-US", { timeZone, ...options }).format(date);
-}
-
-function getAvailabilitySlots(settings?: {
-  timezone?: string | null;
-  workStartTime?: string | null;
-  workEndTime?: string | null;
-}): string[] {
-  const timezone = settings?.timezone || "UTC";
-  const { hours: startH, minutes: startM } = parseTimePart(settings?.workStartTime ?? undefined, "09:00");
-  const { hours: endH, minutes: endM } = parseTimePart(settings?.workEndTime ?? undefined, "17:00");
-
-  const slots: string[] = [];
-  const cursor = new Date();
-
-  while (slots.length < 3) {
-    cursor.setDate(cursor.getDate() + 1);
-
-    const localDate = new Date(cursor.toLocaleString("en-US", { timeZone: timezone }));
-    const day = localDate.getDay(); // 0 = Sun, 6 = Sat
-    if (day === 0 || day === 6) continue;
-
-    const start = new Date(localDate);
-    start.setHours(startH, startM, 0, 0);
-    const end = new Date(localDate);
-    end.setHours(endH, endM, 0, 0);
-
-    const dayPart = formatInTimezone(start, timezone, {
-      weekday: "short",
-      month: "short",
-      day: "numeric",
-    });
-    const startPart = formatInTimezone(start, timezone, { hour: "numeric", minute: "2-digit" });
-    const endPart = formatInTimezone(end, timezone, { hour: "numeric", minute: "2-digit" });
-
-    slots.push(`${dayPart} · ${startPart} - ${endPart} (${timezone})`);
-  }
-
-  return slots;
-}
 
 function buildSmsPrompt(opts: {
   aiName: string;
@@ -75,19 +30,19 @@ function buildSmsPrompt(opts: {
   knowledgeContext?: string;
 }) {
   const greeting = opts.aiGreeting.replace("{firstName}", opts.firstName);
-  
+
   // Build service context section
-  const serviceContext = opts.serviceDescription 
-    ? `\nAbout Our Business:\n${opts.serviceDescription}\n` 
+  const serviceContext = opts.serviceDescription
+    ? `\nAbout Our Business:\n${opts.serviceDescription}\n`
     : "";
-  
+
   // Build qualification guidance
   const qualificationGuidance = opts.qualificationQuestions && opts.qualificationQuestions.length > 0
     ? `\nQualification Questions to naturally weave into conversation when appropriate:\n${opts.qualificationQuestions.map(q => `- ${q}`).join("\n")}\n`
     : "";
-  
+
   // Build knowledge context
-  const knowledgeSection = opts.knowledgeContext 
+  const knowledgeSection = opts.knowledgeContext
     ? `\nReference Information:\n${opts.knowledgeContext}\n`
     : "";
 
@@ -136,17 +91,17 @@ function buildEmailPrompt(opts: {
   const signature = opts.signature ? `\nSignature block to use:\n${opts.signature}` : "";
 
   // Build service context section
-  const serviceContext = opts.serviceDescription 
-    ? `\nAbout Our Business:\n${opts.serviceDescription}\n` 
+  const serviceContext = opts.serviceDescription
+    ? `\nAbout Our Business:\n${opts.serviceDescription}\n`
     : "";
-  
+
   // Build qualification guidance
   const qualificationGuidance = opts.qualificationQuestions && opts.qualificationQuestions.length > 0
     ? `\nQualification Questions to naturally weave into the email when appropriate:\n${opts.qualificationQuestions.map(q => `- ${q}`).join("\n")}\n`
     : "";
-  
+
   // Build knowledge context
-  const knowledgeSection = opts.knowledgeContext 
+  const knowledgeSection = opts.knowledgeContext
     ? `\nReference Information (use when relevant to the conversation):\n${opts.knowledgeContext}\n`
     : "";
 
@@ -209,7 +164,7 @@ export async function generateResponseDraft(
     const aiGoals = settings?.aiGoals?.trim();
     const aiSignature = settings?.aiSignature?.trim();
     const serviceDescription = settings?.serviceDescription?.trim();
-    
+
     // Parse qualification questions from JSON
     let qualificationQuestions: string[] = [];
     if (settings?.qualificationQuestions) {
@@ -220,7 +175,7 @@ export async function generateResponseDraft(
         // Ignore parse errors
       }
     }
-    
+
     // Build knowledge context from assets (limit to avoid token overflow)
     let knowledgeContext = "";
     if (settings?.knowledgeAssets && settings.knowledgeAssets.length > 0) {
@@ -228,7 +183,7 @@ export async function generateResponseDraft(
         .filter(a => a.textContent)
         .slice(0, 3) // Limit to 3 most recent assets
         .map(a => `[${a.name}]: ${a.textContent!.slice(0, 500)}${a.textContent!.length > 500 ? "..." : ""}`);
-      
+
       if (assetSnippets.length > 0) {
         knowledgeContext = assetSnippets.join("\n\n");
       }
@@ -236,7 +191,23 @@ export async function generateResponseDraft(
 
     const firstName = lead?.firstName || "there";
     const responseStrategy = getResponseStrategy(sentimentTag);
-    const availability = channel === "email" ? getAvailabilitySlots(settings || undefined) : [];
+
+    // Fetch real calendar availability for email channel
+    let availability: string[] = [];
+    let requiresManualReview = false;
+
+    if (channel === "email") {
+      const availabilityResult = await getFormattedAvailabilityForLead(leadId);
+      if (availabilityResult.success && availabilityResult.slots.length > 0) {
+        availability = availabilityResult.slots;
+      } else if (availabilityResult.requiresManualReview) {
+        // Calendar fetch failed - flag for manual review
+        requiresManualReview = true;
+        console.warn(`Calendar availability fetch failed for lead ${leadId}:`, availabilityResult.error);
+      }
+      // If no calendar configured or no slots, availability stays empty
+      // and the email prompt will handle it gracefully
+    }
 
     const systemPrompt =
       channel === "email"
@@ -283,10 +254,15 @@ export async function generateResponseDraft(
       max_tokens: channel === "email" ? 320 : 100,
     });
 
-    const draftContent = completion.choices[0]?.message?.content?.trim();
+    let draftContent = completion.choices[0]?.message?.content?.trim();
 
     if (!draftContent) {
       return { success: false, error: "Failed to generate draft content" };
+    }
+
+    // Add a note if calendar availability couldn't be fetched
+    if (requiresManualReview && channel === "email") {
+      draftContent = `[⚠️ REVIEW: Calendar availability could not be fetched. Please verify/add meeting times manually.]\n\n${draftContent}`;
     }
 
     const draft = await prisma.aIDraft.create({
@@ -302,6 +278,7 @@ export async function generateResponseDraft(
       success: true,
       draftId: draft.id,
       content: draftContent,
+      requiresManualReview,
     };
   } catch (error) {
     console.error("Failed to generate AI draft:", error);
