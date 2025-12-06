@@ -43,8 +43,8 @@ import {
   bookMeetingOnGHL,
   getLeadBookingStatus,
   isGHLBookingConfigured,
+  getFormattedAvailabilityForLead,
 } from "@/actions/booking-actions"
-import { getFormattedAvailabilityForLead } from "@/lib/calendar-availability"
 import { toast } from "sonner"
 import {
   Dialog,

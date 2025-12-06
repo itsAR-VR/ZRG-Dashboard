@@ -12,6 +12,7 @@ import {
   type GHLUser,
   type GHLAppointment,
 } from "@/lib/ghl-api";
+import { getFormattedAvailabilityForLead as getFormattedAvailabilityForLeadImpl } from "@/lib/calendar-availability";
 
 // Re-export types for use in components
 export type { GHLCalendar, GHLUser, GHLAppointment };
@@ -479,5 +480,20 @@ export async function isGHLBookingConfigured(clientId: string): Promise<boolean>
   } catch {
     return false;
   }
+}
+
+// =============================================================================
+// Calendar Availability (Server Action Wrapper)
+// =============================================================================
+
+/**
+ * Get formatted availability slots for a lead (server action wrapper)
+ * This wraps the calendar-availability module function for use in client components
+ */
+export async function getFormattedAvailabilityForLead(
+  clientId: string,
+  leadId?: string
+): Promise<Array<{ datetime: string; label: string }>> {
+  return getFormattedAvailabilityForLeadImpl(clientId, leadId);
 }
 
