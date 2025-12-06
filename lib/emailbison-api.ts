@@ -12,6 +12,8 @@ export interface EmailBisonReplyPayload {
   bcc?: string[];
 }
 
+const INBOXXIA_BASE_URL = "https://send.meetinboxxia.com";
+
 async function parseJsonSafe(response: Response) {
   try {
     return await response.json();
@@ -21,10 +23,9 @@ async function parseJsonSafe(response: Response) {
 }
 
 export async function fetchEmailBisonCampaigns(
-  instanceUrl: string,
   apiKey: string
 ): Promise<{ success: boolean; data?: EmailBisonCampaign[]; error?: string }> {
-  const url = new URL("/api/campaigns", instanceUrl).toString();
+  const url = `${INBOXXIA_BASE_URL}/api/campaigns`;
 
   try {
     const response = await fetch(url, {
@@ -65,12 +66,11 @@ export async function fetchEmailBisonCampaigns(
 }
 
 export async function sendEmailBisonReply(
-  instanceUrl: string,
   apiKey: string,
   replyId: string,
   payload: EmailBisonReplyPayload
 ): Promise<{ success: boolean; data?: any; error?: string }> {
-  const url = new URL(`/api/replies/${replyId}/reply`, instanceUrl).toString();
+  const url = `${INBOXXIA_BASE_URL}/api/replies/${replyId}/reply`;
 
   try {
     const response = await fetch(url, {

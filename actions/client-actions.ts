@@ -9,7 +9,6 @@ export interface ClientData {
   ghlLocationId: string;
   ghlPrivateKey: string;
   emailBisonApiKey?: string;
-  emailBisonInstanceUrl?: string;
 }
 
 /**
@@ -32,7 +31,7 @@ async function getCurrentUserId(): Promise<string | null> {
 export async function getClients() {
   try {
     const userId = await getCurrentUserId();
-    
+
     if (!userId) {
       return { success: false, error: "Not authenticated" };
     }
@@ -45,7 +44,6 @@ export async function getClients() {
         name: true,
         ghlLocationId: true,
         emailBisonApiKey: true,
-        emailBisonInstanceUrl: true,
         createdAt: true,
         _count: {
           select: { leads: true },
@@ -65,7 +63,7 @@ export async function getClients() {
 export async function createClient(data: ClientData) {
   try {
     const userId = await getCurrentUserId();
-    
+
     if (!userId) {
       return { success: false, error: "Not authenticated" };
     }
@@ -91,7 +89,6 @@ export async function createClient(data: ClientData) {
         ghlLocationId: data.ghlLocationId,
         ghlPrivateKey: data.ghlPrivateKey,
         emailBisonApiKey: data.emailBisonApiKey || null,
-        emailBisonInstanceUrl: data.emailBisonInstanceUrl || null,
         userId, // Tie workspace to current user
       },
     });
@@ -117,7 +114,7 @@ export async function createClient(data: ClientData) {
 export async function updateClient(id: string, data: Partial<ClientData>) {
   try {
     const userId = await getCurrentUserId();
-    
+
     if (!userId) {
       return { success: false, error: "Not authenticated" };
     }
@@ -136,7 +133,6 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
     if (data.name !== undefined) updateData.name = data.name;
     if (data.ghlPrivateKey !== undefined) updateData.ghlPrivateKey = data.ghlPrivateKey;
     if (data.emailBisonApiKey !== undefined) updateData.emailBisonApiKey = data.emailBisonApiKey || null;
-    if (data.emailBisonInstanceUrl !== undefined) updateData.emailBisonInstanceUrl = data.emailBisonInstanceUrl || null;
 
     const updatedClient = await prisma.client.update({
       where: { id },
@@ -157,7 +153,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
 export async function deleteClient(id: string) {
   try {
     const userId = await getCurrentUserId();
-    
+
     if (!userId) {
       return { success: false, error: "Not authenticated" };
     }

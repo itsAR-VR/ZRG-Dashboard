@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useTransition } from "react";
-import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, Globe, ChevronDown, ChevronUp, MessageSquare } from "lucide-react";
+import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,7 +26,6 @@ interface Client {
   name: string;
   ghlLocationId: string;
   emailBisonApiKey: string | null;
-  emailBisonInstanceUrl: string | null;
   createdAt: Date;
   _count: {
     leads: number;
@@ -51,7 +50,6 @@ export function IntegrationsManager() {
     ghlLocationId: "",
     ghlPrivateKey: "",
     emailBisonApiKey: "",
-    emailBisonInstanceUrl: "",
   });
 
   // Fetch clients on mount
@@ -77,7 +75,7 @@ export function IntegrationsManager() {
     startTransition(async () => {
       const result = await createClient(formData);
       if (result.success) {
-        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonInstanceUrl: "" });
+        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "" });
         setShowForm(false);
         setShowEmailFields(false);
         toast.success("Workspace added successfully");
@@ -94,10 +92,9 @@ export function IntegrationsManager() {
     startTransition(async () => {
       const result = await updateClient(clientId, {
         emailBisonApiKey: formData.emailBisonApiKey,
-        emailBisonInstanceUrl: formData.emailBisonInstanceUrl,
       });
       if (result.success) {
-        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonInstanceUrl: "" });
+        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "" });
         setEditingClientId(null);
         toast.success("EmailBison credentials updated");
         await fetchClients();
@@ -238,7 +235,7 @@ export function IntegrationsManager() {
                   className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <Mail className="h-4 w-4" />
-                  EmailBison Integration (Optional)
+                  Email Integration (Optional)
                   {showEmailFields ? (
                     <ChevronUp className="h-4 w-4" />
                   ) : (
@@ -248,18 +245,6 @@ export function IntegrationsManager() {
                 
                 {showEmailFields && (
                   <div className="mt-4 space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="emailBisonInstanceUrl" className="flex items-center gap-2">
-                        <Globe className="h-4 w-4" />
-                        EmailBison Instance URL
-                      </Label>
-                      <Input
-                        id="emailBisonInstanceUrl"
-                        placeholder="https://your-instance.emailbison.com"
-                        value={formData.emailBisonInstanceUrl}
-                        onChange={(e) => setFormData({ ...formData, emailBisonInstanceUrl: e.target.value })}
-                      />
-                    </div>
                     <div className="space-y-2">
                       <Label htmlFor="emailBisonApiKey" className="flex items-center gap-2">
                         <Key className="h-4 w-4" />
@@ -322,7 +307,7 @@ export function IntegrationsManager() {
             </TableHeader>
             <TableBody>
               {clients.map((client) => {
-                const hasEmailBison = !!(client.emailBisonApiKey && client.emailBisonInstanceUrl);
+                const hasEmailBison = !!client.emailBisonApiKey;
                 const isEditingThis = editingClientId === client.id;
                 
                 return (
@@ -416,13 +401,12 @@ export function IntegrationsManager() {
                             onClick={() => {
                               if (isEditingThis) {
                                 setEditingClientId(null);
-                                setFormData({ ...formData, emailBisonApiKey: "", emailBisonInstanceUrl: "" });
+                                setFormData({ ...formData, emailBisonApiKey: "" });
                               } else {
                                 setEditingClientId(client.id);
                                 setFormData({
                                   ...formData,
                                   emailBisonApiKey: client.emailBisonApiKey || "",
-                                  emailBisonInstanceUrl: client.emailBisonInstanceUrl || "",
                                 });
                               }
                             }}
@@ -435,16 +419,6 @@ export function IntegrationsManager() {
                         {/* Inline edit form for EmailBison credentials */}
                         {isEditingThis && (
                           <div className="w-full mt-2 p-3 border rounded-lg bg-muted/30 space-y-3">
-                            <div className="space-y-2">
-                              <Label htmlFor={`emailUrl-${client.id}`} className="text-xs">Instance URL</Label>
-                              <Input
-                                id={`emailUrl-${client.id}`}
-                                placeholder="https://your-instance.emailbison.com"
-                                value={formData.emailBisonInstanceUrl}
-                                onChange={(e) => setFormData({ ...formData, emailBisonInstanceUrl: e.target.value })}
-                                className="h-8 text-sm"
-                              />
-                            </div>
                             <div className="space-y-2">
                               <Label htmlFor={`emailKey-${client.id}`} className="text-xs">API Key</Label>
                               <Input
@@ -459,7 +433,7 @@ export function IntegrationsManager() {
                             <Button
                               size="sm"
                               onClick={() => handleUpdateEmailCredentials(client.id)}
-                              disabled={isPending || !formData.emailBisonApiKey || !formData.emailBisonInstanceUrl}
+                              disabled={isPending || !formData.emailBisonApiKey}
                             >
                               {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Email Config"}
                             </Button>

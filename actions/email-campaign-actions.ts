@@ -64,14 +64,11 @@ export async function syncEmailCampaignsFromEmailBison(clientId: string): Promis
       return { success: false, error: "Client not found" };
     }
 
-    if (!client.emailBisonApiKey || !client.emailBisonInstanceUrl) {
+    if (!client.emailBisonApiKey) {
       return { success: false, error: "Client missing EmailBison credentials" };
     }
 
-    const campaignsResult = await fetchEmailBisonCampaigns(
-      client.emailBisonInstanceUrl,
-      client.emailBisonApiKey
-    );
+    const campaignsResult = await fetchEmailBisonCampaigns(client.emailBisonApiKey);
 
     if (!campaignsResult.success || !campaignsResult.data) {
       return { success: false, error: campaignsResult.error || "Failed to fetch EmailBison campaigns" };

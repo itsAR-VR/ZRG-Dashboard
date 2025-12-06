@@ -110,14 +110,6 @@ async function findClient(request: NextRequest, payload: EmailBisonWebhook) {
     if (client) return client;
   }
 
-  const instanceUrl = payload.event?.instance_url;
-  if (instanceUrl) {
-    const client = await prisma.client.findFirst({
-      where: { emailBisonInstanceUrl: instanceUrl },
-    });
-    if (client) return client;
-  }
-
   return null;
 }
 

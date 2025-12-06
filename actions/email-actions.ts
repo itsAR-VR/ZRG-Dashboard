@@ -81,7 +81,7 @@ export async function sendEmailReply(
     }
 
     const client = lead.client;
-    if (!client.emailBisonApiKey || !client.emailBisonInstanceUrl) {
+    if (!client.emailBisonApiKey) {
       return { success: false, error: "Client missing EmailBison credentials" };
     }
 
@@ -118,7 +118,6 @@ export async function sendEmailReply(
     const subject = latestInboundEmail?.subject || null;
 
     const sendResult = await sendEmailBisonReply(
-      client.emailBisonInstanceUrl,
       client.emailBisonApiKey,
       replyId,
       {
