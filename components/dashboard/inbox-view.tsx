@@ -6,6 +6,7 @@ import { ActionStation } from "./action-station";
 import { CrmDrawer } from "./crm-drawer";
 import { getConversations, getConversation, type ConversationData } from "@/actions/lead-actions";
 import { getCampaigns } from "@/actions/campaign-actions";
+import { getEmailCampaigns } from "@/actions/email-campaign-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff, Inbox } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
@@ -20,6 +21,7 @@ interface InboxViewProps {
 interface Campaign {
   id: string;
   name: string;
+  type: "sms" | "email";
 }
 
 // Polling interval in milliseconds (30 seconds)
@@ -39,6 +41,8 @@ function convertToComponentFormat(conv: ConversationData): Conversation & { camp
       website: "",
       timezone: "",
       leadScore: 50,
+      autoReplyEnabled: conv.lead.autoReplyEnabled,
+      autoFollowUpEnabled: conv.lead.autoFollowUpEnabled,
       status: conv.lead.status as Lead["status"],
       qualification: {
         budget: false,
@@ -50,11 +54,13 @@ function convertToComponentFormat(conv: ConversationData): Conversation & { camp
     platform: conv.platform,
     classification: (conv.sentimentTag?.toLowerCase().replace(/\s+/g, "-") || conv.classification) as Conversation["classification"],
     lastMessage: conv.lastMessage,
+    lastSubject: conv.lastSubject,
     lastMessageTime: new Date(conv.lastMessageTime),
     messages: [],
     hasAiDraft: conv.hasAiDraft,
     requiresAttention: conv.requiresAttention,
     campaignId: conv.campaignId,
+    emailCampaignId: conv.emailCampaignId,
   };
 }
 
@@ -78,12 +84,32 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
       return;
     }
     
-    const result = await getCampaigns(activeWorkspace);
-    if (result.success && result.data) {
-      setCampaigns(result.data.map(c => ({ id: c.id, name: c.name })));
-    } else {
-      setCampaigns([]);
+    const [smsResult, emailResult] = await Promise.all([
+      getCampaigns(activeWorkspace),
+      getEmailCampaigns(activeWorkspace),
+    ]);
+
+    const combined: Campaign[] = [];
+    if (smsResult.success && smsResult.data) {
+      combined.push(
+        ...smsResult.data.map((c) => ({
+          id: c.id,
+          name: c.name,
+          type: "sms" as const,
+        }))
+      );
     }
+    if (emailResult.success && emailResult.data) {
+      combined.push(
+        ...emailResult.data.map((c) => ({
+          id: c.id,
+          name: c.name,
+          type: "email" as const,
+        }))
+      );
+    }
+
+    setCampaigns(combined);
   }, [activeWorkspace]);
 
   // Fetch conversations from database
@@ -207,7 +233,12 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     if (activeChannel !== "all" && conv.platform !== activeChannel) return false;
     if (activeFilter === "attention" && !conv.requiresAttention) return false;
     if (activeFilter === "drafts" && !conv.hasAiDraft) return false;
-    if (activeCampaign !== "all" && conv.campaignId !== activeCampaign) return false;
+    // Check both SMS campaigns (campaignId) and Email campaigns (emailCampaignId)
+    if (activeCampaign !== "all") {
+      const matchesSms = conv.campaignId === activeCampaign;
+      const matchesEmail = conv.emailCampaignId === activeCampaign;
+      if (!matchesSms && !matchesEmail) return false;
+    }
     return true;
   });
 

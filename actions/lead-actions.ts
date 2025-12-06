@@ -18,11 +18,13 @@ export interface ConversationData {
   platform: "email" | "sms" | "linkedin";
   classification: string;
   lastMessage: string;
+  lastSubject?: string | null;
   lastMessageTime: Date;
   hasAiDraft: boolean;
   requiresAttention: boolean;
   sentimentTag: string | null;
   campaignId: string | null;
+  emailCampaignId: string | null;
 }
 
 /**
@@ -31,6 +33,8 @@ export interface ConversationData {
 function mapSentimentToClassification(sentimentTag: string | null): string {
   const mapping: Record<string, string> = {
     "Meeting Requested": "meeting-requested",
+    "Meeting Booked": "meeting-requested",
+    "Call Requested": "call-requested",
     "Not Interested": "not-interested",
     "Out of Office": "out-of-office",
     "Follow Up": "follow-up",
@@ -48,6 +52,19 @@ function mapSentimentToClassification(sentimentTag: string | null): string {
 function requiresAttention(sentimentTag: string | null): boolean {
   const attentionTags = ["Meeting Requested", "Information Requested", "Follow Up"];
   return attentionTags.includes(sentimentTag || "");
+}
+
+function detectPlatform(
+  latestMessage: { emailBisonReplyId?: string | null; subject?: string | null; rawHtml?: string | null } | undefined,
+  lead: { senderAccountId?: string | null }
+): "email" | "sms" {
+  if (latestMessage?.emailBisonReplyId || latestMessage?.subject || latestMessage?.rawHtml) {
+    return "email";
+  }
+  if (lead.senderAccountId) {
+    return "email";
+  }
+  return "sms";
 }
 
 /**
@@ -86,6 +103,11 @@ export async function getConversations(clientId?: string | null): Promise<{
     const conversations: ConversationData[] = leads.map((lead) => {
       const latestMessage = lead.messages[0];
       const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
+      const platform = detectPlatform(latestMessage, lead);
+      const campaignId = platform === "email" ? lead.emailCampaignId ?? lead.campaignId : lead.campaignId;
+      const channelDrafts = lead.aiDrafts.filter(
+        (draft) => draft.channel === platform || (!draft.channel && platform === "sms")
+      );
 
       return {
         id: lead.id,
@@ -100,14 +122,16 @@ export async function getConversations(clientId?: string | null): Promise<{
           autoReplyEnabled: lead.autoReplyEnabled,
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
         },
-        platform: "sms" as const, // Currently only SMS is implemented
+        platform,
         classification: mapSentimentToClassification(lead.sentimentTag),
         lastMessage: latestMessage?.body || "No messages yet",
+        lastSubject: latestMessage?.subject || null,
         lastMessageTime: latestMessage?.sentAt || lead.createdAt, // Use sentAt for actual message time
-        hasAiDraft: lead.aiDrafts && lead.aiDrafts.length > 0,
+        hasAiDraft: channelDrafts.length > 0,
         requiresAttention: requiresAttention(lead.sentimentTag),
         sentimentTag: lead.sentimentTag,
-        campaignId: lead.campaignId,
+        campaignId,
+        emailCampaignId: lead.emailCampaignId,
       };
     });
 
@@ -131,7 +155,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
   try {
     const attentionTags = ["Meeting Requested", "Information Requested", "Follow Up"];
     const clientFilter = clientId ? { clientId } : {};
-    
+
     const [attention, drafts, total] = await Promise.all([
       prisma.lead.count({
         where: {
@@ -192,6 +216,8 @@ export async function getConversation(leadId: string) {
     }
 
     const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
+    const latestMessage = lead.messages[lead.messages.length - 1];
+    const platform = detectPlatform(latestMessage, lead);
 
     return {
       success: true,
@@ -209,10 +235,18 @@ export async function getConversation(leadId: string) {
           autoReplyEnabled: lead.autoReplyEnabled,
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
         },
+        platform,
         messages: lead.messages.map((msg) => ({
           id: msg.id,
           sender: msg.direction === "inbound" ? ("lead" as const) : ("ai" as const),
           content: msg.body,
+          subject: msg.subject || undefined,
+          rawHtml: msg.rawHtml || undefined,
+          rawText: msg.rawText || undefined,
+          cc: msg.cc,
+          bcc: msg.bcc,
+          channel: msg.emailBisonReplyId ? ("email" as const) : ("sms" as const),
+          direction: msg.direction as "inbound" | "outbound",
           timestamp: msg.sentAt, // Use sentAt for actual message time
         })),
       },

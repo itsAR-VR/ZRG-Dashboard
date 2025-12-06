@@ -10,6 +10,7 @@ import { Search } from "lucide-react"
 interface Campaign {
   id: string;
   name: string;
+  type?: "sms" | "email";
 }
 
 interface ConversationFeedProps {
@@ -35,7 +36,8 @@ export function ConversationFeed({
     (conv) =>
       conv.lead.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       conv.lead.company.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      conv.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()),
+      conv.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (conv.lastSubject && conv.lastSubject.toLowerCase().includes(searchQuery.toLowerCase())),
   )
 
   return (
@@ -74,7 +76,7 @@ export function ConversationFeed({
               <SelectItem value="all">All Campaigns</SelectItem>
               {campaigns.map((campaign) => (
                 <SelectItem key={campaign.id} value={campaign.id}>
-                  {campaign.name}
+                  [{campaign.type === "email" ? "Email" : "SMS"}] {campaign.name}
                 </SelectItem>
               ))}
             </SelectContent>

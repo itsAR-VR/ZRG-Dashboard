@@ -99,48 +99,6 @@ interface GHLExportResponse {
 }
 
 /**
- * Check if a message with similar content already exists
- * Uses fuzzy timestamp matching (within 60 seconds) to handle timing differences
- */
-async function messageExists(
-  leadId: string,
-  body: string,
-  direction: string,
-  timestamp?: Date
-): Promise<boolean> {
-  // If no timestamp provided, just check by body and direction
-  if (!timestamp) {
-    const existing = await prisma.message.findFirst({
-      where: {
-        leadId,
-        body,
-        direction,
-      },
-    });
-    return !!existing;
-  }
-
-  // Check with fuzzy timestamp (within 60 seconds) on sentAt (actual message time)
-  const windowStart = new Date(timestamp.getTime() - 60000); // 60 seconds before
-  const windowEnd = new Date(timestamp.getTime() + 60000); // 60 seconds after
-
-  // @ts-ignore sentAt is present on Message model
-  const existing = await prisma.message.findFirst({
-    where: {
-      leadId,
-      body,
-      direction,
-      sentAt: {
-        gte: windowStart,
-        lte: windowEnd,
-      },
-    },
-  } as any);
-
-  return !!existing;
-}
-
-/**
  * Fetch full conversation history from GHL using the export API
  * Endpoint: GET /conversations/messages/export
  * Docs: https://marketplace.gohighlevel.com/docs/ghl/conversations/export-messages-by-location
@@ -522,23 +480,24 @@ export async function POST(request: NextRequest) {
         const draftResult = await generateResponseDraft(
           lead.id,
           transcript || `Lead: ${messageBody}`,
-          sentimentTag
+          sentimentTag,
+          "sms"
         );
         if (draftResult.success) {
           draftId = draftResult.draftId;
           console.log(`Generated AI draft: ${draftId}`);
-          
+
           // Auto-Reply Logic: Check if enabled for this lead
           // lead.autoReplyEnabled comes from the database (via upsert)
           if (lead.autoReplyEnabled && draftId) {
-             console.log(`[Auto-Reply] Auto-approving draft ${draftId} for lead ${lead.id}`);
-             const sendResult = await approveAndSendDraft(draftId);
-             if (sendResult.success) {
-                 console.log(`[Auto-Reply] Sent message: ${sendResult.messageId}`);
-                 // Draft status is now 'approved' in DB
-             } else {
-                 console.error(`[Auto-Reply] Failed to send draft: ${sendResult.error}`);
-             }
+            console.log(`[Auto-Reply] Auto-approving draft ${draftId} for lead ${lead.id}`);
+            const sendResult = await approveAndSendDraft(draftId);
+            if (sendResult.success) {
+              console.log(`[Auto-Reply] Sent message: ${sendResult.messageId}`);
+              // Draft status is now 'approved' in DB
+            } else {
+              console.error(`[Auto-Reply] Failed to send draft: ${sendResult.error}`);
+            }
           }
         } else {
           console.error("Failed to generate AI draft:", draftResult.error);
@@ -549,6 +508,8 @@ export async function POST(request: NextRequest) {
     } else {
       console.log(`Skipping AI draft for sentiment: ${sentimentTag}`);
     }
+
+    // TODO: Auto-FollowUp feature - if lead.autoFollowUpEnabled is true, schedule follow-up tasks
 
     console.log("=== Webhook Processing Complete ===");
     console.log(`Lead ID: ${lead.id}`);

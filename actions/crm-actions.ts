@@ -49,7 +49,7 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
 
     const crmLeads: CRMLeadData[] = leads.map((lead) => {
       const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
-      
+
       // Calculate a simple lead score based on available data
       let score = 50; // Base score
       if (lead.email) score += 10;

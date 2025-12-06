@@ -5,6 +5,7 @@ import { sendSMS, exportMessages, type GHLExportedMessage } from "@/lib/ghl-api"
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
+import { sendEmailReply } from "@/actions/email-actions";
 
 interface SendMessageResult {
   success: boolean;
@@ -118,7 +119,7 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
     let importedCount = 0;
     let healedCount = 0;
     let skippedDuplicates = 0;
-    
+
     for (const msg of ghlMessages) {
       try {
         const msgTimestamp = new Date(msg.dateAdded); // Actual time from GHL
@@ -324,14 +325,15 @@ export async function sendMessage(
  * 
  * @param leadId - The internal lead ID
  */
-export async function getPendingDrafts(leadId: string) {
+export async function getPendingDrafts(leadId: string, channel?: "sms" | "email") {
   try {
     console.log("[getPendingDrafts] Fetching drafts for leadId:", leadId);
-    
+
     const drafts = await prisma.aIDraft.findMany({
       where: {
         leadId,
         status: "pending",
+        channel: channel || undefined,
       },
       orderBy: {
         createdAt: "desc",
@@ -339,7 +341,7 @@ export async function getPendingDrafts(leadId: string) {
     });
 
     console.log("[getPendingDrafts] Found drafts:", drafts.length, drafts.map(d => ({ id: d.id, status: d.status })));
-    
+
     return { success: true, data: drafts };
   } catch (error) {
     console.error("[getPendingDrafts] Failed to get drafts:", error);
@@ -380,6 +382,10 @@ export async function approveAndSendDraft(
 
     if (draft.status !== "pending") {
       return { success: false, error: "Draft is not pending" };
+    }
+
+    if (draft.channel === "email") {
+      return await sendEmailReply(draftId, editedContent);
     }
 
     const messageContent = editedContent || draft.content;
@@ -439,10 +445,13 @@ export async function rejectDraft(draftId: string): Promise<{ success: boolean; 
  * 
  * @param leadId - The lead ID
  */
-export async function regenerateDraft(leadId: string): Promise<{ 
-  success: boolean; 
-  data?: { id: string; content: string }; 
-  error?: string 
+export async function regenerateDraft(
+  leadId: string,
+  channel: "sms" | "email" = "sms"
+): Promise<{
+  success: boolean;
+  data?: { id: string; content: string };
+  error?: string
 }> {
   try {
     // Get the lead with messages for context
@@ -465,6 +474,7 @@ export async function regenerateDraft(leadId: string): Promise<{
       where: {
         leadId,
         status: "pending",
+        channel,
       },
       data: { status: "rejected" },
     });
@@ -483,7 +493,7 @@ export async function regenerateDraft(leadId: string): Promise<{
     }
 
     // Generate new draft
-    const draftResult = await generateResponseDraft(leadId, transcript, sentimentTag);
+    const draftResult = await generateResponseDraft(leadId, transcript, sentimentTag, channel);
 
     if (!draftResult.success || !draftResult.draftId || !draftResult.content) {
       return { success: false, error: draftResult.error || "Failed to generate draft" };
@@ -491,12 +501,12 @@ export async function regenerateDraft(leadId: string): Promise<{
 
     revalidatePath("/");
 
-    return { 
-      success: true, 
-      data: { 
-        id: draftResult.draftId, 
-        content: draftResult.content 
-      } 
+    return {
+      success: true,
+      data: {
+        id: draftResult.draftId,
+        content: draftResult.content
+      }
     };
   } catch (error) {
     console.error("Failed to regenerate draft:", error);

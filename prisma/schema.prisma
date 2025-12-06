@@ -16,11 +16,14 @@ model Client {
   name          String
   ghlLocationId String              @unique // Used to identify which client sent the webhook
   ghlPrivateKey String              // The generic API key for this sub-account
+  emailBisonApiKey     String?
+  emailBisonInstanceUrl String?
   userId        String              // Supabase Auth user ID - ties workspace to user
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
   leads         Lead[]
   campaigns     Campaign[]
+  emailCampaigns EmailCampaign[]
   settings      WorkspaceSettings?  // One-to-one relation with settings
 
   @@index([userId])
@@ -72,6 +75,7 @@ model Campaign {
 model Lead {
   id           String        @id @default(uuid())
   ghlContactId String        @unique
+  emailBisonLeadId String?
   firstName    String?
   lastName     String?
   email        String?
@@ -85,6 +89,9 @@ model Lead {
   client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
   campaignId   String?       // Optional link to the originating campaign
   campaign     Campaign?     @relation(fields: [campaignId], references: [id])
+  emailCampaignId String?    // Optional link to EmailBison campaign
+  emailCampaign   EmailCampaign? @relation(fields: [emailCampaignId], references: [id])
+  senderAccountId String?    // EmailBison sender email account id
   messages     Message[]
   followUps    FollowUpTask[]
   aiDrafts     AIDraft[]
@@ -93,14 +100,23 @@ model Lead {
 
   @@index([clientId])
   @@index([campaignId])
+  @@index([emailCampaignId])
+  @@index([emailBisonLeadId])
   @@index([sentimentTag])
 }
 
-// SMS messages synced from GHL
+// Conversation messages (SMS or Email)
 model Message {
   id        String   @id @default(uuid())
   ghlId     String?  @unique // GoHighLevel Message ID - source of truth for deduplication
+  emailBisonReplyId String?  @unique // EmailBison reply ID for deduplication
   body      String   @db.Text
+  rawText   String?  @db.Text // Original text body (if provided)
+  rawHtml   String?  @db.Text // Original HTML body (if provided)
+  subject   String?
+  cc        String[] @default([])
+  bcc       String[] @default([])
+  isRead    Boolean  @default(false)
   direction String   // 'inbound' or 'outbound'
   leadId    String
   lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
@@ -137,10 +153,27 @@ model AIDraft {
   leadId    String
   lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
   content   String   @db.Text
+  channel   String   @default("sms") // sms | email
   status    String   @default("pending") // pending, approved, rejected
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([leadId])
+  @@index([channel])
   @@index([status])
+}
+
+// EmailBison campaigns synced per client
+model EmailCampaign {
+  id             String   @id @default(uuid())
+  bisonCampaignId String
+  name           String
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leads          Lead[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([clientId, bisonCampaignId])
+  @@index([clientId])
 }

@@ -5,6 +5,7 @@ import type { Message } from "@/lib/mock-data"
 import { format } from "date-fns"
 import { Bot, User, UserCircle } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useState } from "react"
 
 interface ChatMessageProps {
   message: Message
@@ -17,6 +18,8 @@ export function ChatMessage({ message, leadName, userName = "You", userAvatar }:
   // Map sender types
   const isOutbound = message.sender === "ai" || message.sender === "human"
   const isLead = message.sender === "lead"
+  const isEmail = message.channel === "email" || !!message.subject
+  const [showOriginal, setShowOriginal] = useState(false)
 
   const config = isLead
     ? {
@@ -65,8 +68,28 @@ export function ChatMessage({ message, leadName, userName = "You", userAvatar }:
           </span>
           <span className="text-xs text-muted-foreground/60">{format(message.timestamp, "MMM d, h:mm a")}</span>
         </div>
-        <div className={cn("rounded-lg px-4 py-2.5", config.bubbleClass)}>
-          <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">{message.content}</p>
+        <div className={cn("rounded-lg px-4 py-2.5 space-y-1", config.bubbleClass)}>
+          {isEmail && message.subject && (
+            <p className="text-xs font-semibold text-foreground">Subject: {message.subject}</p>
+          )}
+          {showOriginal && (message.rawHtml || message.rawText) ? (
+            <pre className="text-xs text-muted-foreground whitespace-pre-wrap max-h-64 overflow-auto">
+              {message.rawHtml || message.rawText}
+            </pre>
+          ) : (
+            <div
+              className="text-sm leading-relaxed text-foreground whitespace-pre-wrap"
+              dangerouslySetInnerHTML={{ __html: (message.content || "").replace(/\n/g, "<br />") }}
+            />
+          )}
+          {isEmail && (message.rawHtml || message.rawText) && (
+            <button
+              className="text-[11px] text-primary hover:underline"
+              onClick={() => setShowOriginal((prev) => !prev)}
+            >
+              {showOriginal ? "Hide Original" : "Show Original"}
+            </button>
+          )}
         </div>
       </div>
     </div>

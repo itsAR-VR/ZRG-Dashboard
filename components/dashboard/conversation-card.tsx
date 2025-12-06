@@ -25,6 +25,10 @@ const classificationStyles: Record<string, { label: string; className: string }>
     label: "Meeting Requested",
     className: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
   },
+  "call-requested": {
+    label: "Call Requested",
+    className: "bg-indigo-500/10 text-indigo-500 border-indigo-500/20",
+  },
   "not-interested": {
     label: "Not Interested",
     className: "bg-muted text-muted-foreground border-muted",
@@ -79,6 +83,10 @@ function getClassificationStyle(classification: string) {
 export function ConversationCard({ conversation, isActive, onClick }: ConversationCardProps) {
   const PlatformIcon = platformIcons[conversation.platform]
   const classification = getClassificationStyle(conversation.classification)
+  const preview =
+    conversation.platform === "email" && conversation.lastSubject
+      ? `${conversation.lastSubject} — ${conversation.lastMessage}`
+      : conversation.lastMessage
 
   return (
     <button
@@ -105,9 +113,12 @@ export function ConversationCard({ conversation, isActive, onClick }: Conversati
         </div>
       </div>
 
-      <p className="mt-2 text-sm text-muted-foreground line-clamp-2">{conversation.lastMessage}</p>
+      <p className="mt-2 text-sm text-muted-foreground line-clamp-2">{preview}</p>
 
       <div className="mt-3 flex items-center gap-2">
+        <Badge variant="outline" className="text-xs border-border text-muted-foreground">
+          {conversation.platform === "email" ? "Email" : conversation.platform.toUpperCase()}
+        </Badge>
         <Badge variant="outline" className={cn("text-xs", classification.className)}>
           {classification.label}
         </Badge>

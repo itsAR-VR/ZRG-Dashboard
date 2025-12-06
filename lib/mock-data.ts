@@ -32,6 +32,14 @@ export interface Message {
   sender: "lead" | "ai" | "human"
   content: string
   timestamp: Date
+  subject?: string
+  rawHtml?: string
+  rawText?: string
+  cc?: string[]
+  bcc?: string[]
+  channel?: "email" | "sms"
+  direction?: "inbound" | "outbound"
+  isRead?: boolean
 }
 
 export interface Conversation {
@@ -40,10 +48,12 @@ export interface Conversation {
   platform: "email" | "sms" | "linkedin"
   classification: "meeting-requested" | "not-interested" | "out-of-office" | "follow-up" | "new" | "information-requested" | "call-requested" | "blacklist" | "positive" | "neutral"
   lastMessage: string
+  lastSubject?: string | null
   lastMessageTime: Date
   messages: Message[]
   hasAiDraft: boolean
   requiresAttention: boolean
+  emailCampaignId?: string | null
 }
 
 export interface FollowUpTask {

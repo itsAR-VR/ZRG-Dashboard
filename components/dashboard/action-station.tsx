@@ -23,6 +23,7 @@ interface AIDraft {
   content: string
   status: string
   createdAt: Date
+  channel?: "sms" | "email"
 }
 
 export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionStationProps) {
@@ -36,6 +37,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
   const [hasAiDraft, setHasAiDraft] = useState(false)
   const [originalDraft, setOriginalDraft] = useState("")
   const { user } = useUser()
+  const isEmail = conversation?.platform === "email"
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -54,7 +56,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
 
       console.log("[ActionStation] Fetching drafts for conversation:", conversation.id, "hasAiDraft from props:", conversation.hasAiDraft)
       setIsLoadingDrafts(true)
-      const result = await getPendingDrafts(conversation.id)
+      const result = await getPendingDrafts(conversation.id, isEmail ? "email" : "sms")
       console.log("[ActionStation] Draft fetch result:", result)
       
       if (result.success && result.data && result.data.length > 0) {
@@ -77,10 +79,14 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
     }
 
     fetchDrafts()
-  }, [conversation?.id])
+  }, [conversation?.id, isEmail])
 
   const handleSendMessage = async () => {
     if (!composeMessage.trim() || !conversation) return
+    if (isEmail) {
+      toast.error("Approve and send the email draft instead.")
+      return
+    }
 
     setIsSending(true)
     
@@ -101,6 +107,11 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
 
   const handleApproveAndSend = async () => {
     if (!composeMessage.trim() || !conversation) return
+
+    if (isEmail && drafts.length === 0) {
+      toast.error("No email draft available to approve.")
+      return
+    }
 
     setIsSending(true)
     
@@ -157,7 +168,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
       await rejectDraft(drafts[0].id)
     }
     
-    const result = await regenerateDraft(conversation.id)
+    const result = await regenerateDraft(conversation.id, isEmail ? "email" : "sms")
     
     if (result.success && result.data) {
       toast.success("New AI draft generated!")
@@ -183,6 +194,10 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
 
   const handleSyncHistory = async () => {
     if (!conversation) return
+    if (isEmail) {
+      toast.message("Email conversations sync automatically from EmailBison.")
+      return
+    }
 
     setIsSyncing(true)
     const result = await syncConversationHistory(conversation.id)
@@ -224,6 +239,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
   }
 
   const { lead } = conversation
+  const subjectLine = conversation.lastSubject
 
   const getScoreColor = (score: number) => {
     if (score >= 80) return "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"
@@ -259,6 +275,9 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
                 <span>{lead.company}</span>
               )}
             </p>
+            {subjectLine && (
+              <p className="text-xs text-muted-foreground mt-1">Subject: {subjectLine}</p>
+            )}
           </div>
         </div>
 
@@ -281,8 +300,8 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
             variant="outline" 
             size="sm" 
             onClick={handleSyncHistory}
-            disabled={isSyncing}
-            title="Sync conversation history from GHL"
+            disabled={isSyncing || isEmail}
+            title={isEmail ? "Email sync is handled via EmailBison webhooks" : "Sync conversation history from GHL"}
           >
             {isSyncing ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -439,7 +458,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
               /* Regular send button when no AI draft */
               <Button 
                 onClick={handleSendMessage} 
-                disabled={!composeMessage.trim() || isSending}
+                disabled={isEmail || !composeMessage.trim() || isSending || isRegenerating}
                 className="h-8 px-3"
               >
                 {isSending ? (
