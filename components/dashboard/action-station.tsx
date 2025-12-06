@@ -200,8 +200,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
         toast.success(`Synced: ${parts.join(", ")}`, {
           description: `Total messages in GHL: ${result.totalMessages}`
         })
-        // Trigger a page refresh to show updated messages
-        window.location.reload()
+        // No full-page reload; rely on realtime/polling to reflect updates
       } else {
         toast.info("No changes needed", {
           description: `All ${result.totalMessages} messages already synced correctly`

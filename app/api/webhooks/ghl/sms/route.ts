@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import OpenAI from "openai";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
+import { syncConversationHistory } from "@/actions/message-actions";
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -156,6 +157,7 @@ async function messageExists(
   const windowStart = new Date(timestamp.getTime() - 60000); // 60 seconds before
   const windowEnd = new Date(timestamp.getTime() + 60000); // 60 seconds after
 
+  // @ts-ignore sentAt is present on Message model
   const existing = await prisma.message.findFirst({
     where: {
       leadId,
@@ -166,7 +168,7 @@ async function messageExists(
         lte: windowEnd,
       },
     },
-  });
+  } as any);
 
   return !!existing;
 }
@@ -247,17 +249,18 @@ async function importHistoricalMessages(
       const ghlId = msg.id;
 
       // Step 1: Check if message exists by ghlId (definitive match)
+      // @ts-ignore ghlId exists on Message model
       const existingByGhlId = await prisma.message.findUnique({
         where: { ghlId },
-      });
+      } as any);
 
       if (existingByGhlId) {
         // Already imported with correct ghlId - just fix timestamp if needed
-        if (existingByGhlId.sentAt.getTime() !== msgTimestamp.getTime()) {
+        if ((existingByGhlId as any).sentAt.getTime() !== msgTimestamp.getTime()) {
           await prisma.message.update({
             where: { ghlId },
             data: { sentAt: msgTimestamp },
-          });
+          } as any);
           healedCount++;
           console.log(`[Import] Fixed timestamp for ghlId ${ghlId}`);
         }
@@ -272,7 +275,7 @@ async function importHistoricalMessages(
           direction: msg.direction,
           ghlId: null,
         },
-      });
+      } as any);
 
       if (existingByContent) {
         // Heal the legacy message
@@ -282,7 +285,7 @@ async function importHistoricalMessages(
             ghlId,
             sentAt: msgTimestamp,
           },
-        });
+        } as any);
         healedCount++;
         console.log(`[Import] Healed: "${msg.body.substring(0, 30)}..." -> ghlId: ${ghlId}`);
         continue;
@@ -297,7 +300,7 @@ async function importHistoricalMessages(
           leadId,
           sentAt: msgTimestamp,
         },
-      });
+      } as any);
       importedCount++;
       console.log(`[Import] Saved: "${msg.body.substring(0, 30)}..." (${msg.direction}) @ ${msgTimestamp.toISOString()}`);
     } catch (error) {
@@ -486,7 +489,7 @@ export async function POST(request: NextRequest) {
     // Try to extract message timestamp from webhook payload
     // GHL may include date/time in customData or date_created field
     let webhookMessageTime: Date | null = null;
-    
+
     // Try customData Date+Time fields
     if (payload.customData?.Date && payload.customData?.Time) {
       try {
@@ -501,7 +504,7 @@ export async function POST(request: NextRequest) {
         console.log(`[Webhook] Could not parse customData date: ${e}`);
       }
     }
-    
+
     // Fallback to date_created if available
     if (!webhookMessageTime && payload.date_created) {
       try {
@@ -514,7 +517,7 @@ export async function POST(request: NextRequest) {
         console.log(`[Webhook] Could not parse date_created: ${e}`);
       }
     }
-    
+
     // Final fallback to now
     if (!webhookMessageTime) {
       webhookMessageTime = new Date();
@@ -524,13 +527,15 @@ export async function POST(request: NextRequest) {
     // Import historical messages if this is a new lead or has no messages
     let importedMessagesCount = 0;
     let healedMessagesCount = 0;
-    if ((isNewLead || hasNoMessages) && historicalMessages.length > 0) {
+    const isFirstInbound = isNewLead || hasNoMessages;
+
+    if (isFirstInbound && historicalMessages.length > 0) {
       console.log(`[History Import] Importing ${historicalMessages.length} messages...`);
       const importResult = await importHistoricalMessages(lead.id, historicalMessages);
       importedMessagesCount = importResult.imported;
       healedMessagesCount = importResult.healed;
       console.log(`[History Import] Imported ${importedMessagesCount} new, healed ${healedMessagesCount}`);
-      
+
       // IMPORTANT: Check if the current webhook message was in the history
       // GHL's export API might not include the very latest message due to indexing delay
       // We save without ghlId here - it will be "healed" on next sync
@@ -539,7 +544,7 @@ export async function POST(request: NextRequest) {
         const currentMsgInHistory = historicalMessages.find(
           (m) => m.body === messageBody && m.direction === "inbound"
         );
-        
+
         if (currentMsgInHistory) {
           // Already imported with ghlId from history
           console.log(`[Webhook] Current message already in history with ghlId: ${currentMsgInHistory.id}`);
@@ -554,7 +559,7 @@ export async function POST(request: NextRequest) {
               sentAt: webhookMessageTime,
               // ghlId will be added on next sync
             },
-          });
+          } as any);
           importedMessagesCount++;
           console.log(`[Webhook] Saved current inbound message @ ${webhookMessageTime.toISOString()}`);
         }
@@ -570,7 +575,7 @@ export async function POST(request: NextRequest) {
           direction: "inbound",
         },
       });
-      
+
       if (!existingByContent) {
         const message = await prisma.message.create({
           data: {
@@ -580,11 +585,18 @@ export async function POST(request: NextRequest) {
             sentAt: webhookMessageTime,
             // ghlId will be added on next sync
           },
-        });
+        } as any);
         console.log(`Created message: ${message.id} @ ${webhookMessageTime.toISOString()}`);
       } else {
         console.log(`[Webhook] Message already exists (id: ${existingByContent.id})`);
       }
+    }
+
+    // Background auto-heal sync only for the first inbound message
+    if (isFirstInbound) {
+      syncConversationHistory(lead.id).catch((err) =>
+        console.error("[Webhook] Background sync failed:", err)
+      );
     }
 
     // Generate AI draft if appropriate for this sentiment
