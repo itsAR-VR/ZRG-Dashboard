@@ -5,7 +5,7 @@ import { ConversationFeed } from "./conversation-feed";
 import { ActionStation } from "./action-station";
 import { CrmDrawer } from "./crm-drawer";
 import { getConversations, getConversation, type ConversationData } from "@/actions/lead-actions";
-import { syncConversationHistory, syncAllConversations } from "@/actions/message-actions";
+import { syncConversationHistory, syncAllConversations, syncEmailConversationHistory, syncAllEmailConversations } from "@/actions/message-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff, Inbox } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
@@ -143,13 +143,22 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     }
   }, [activeConversationId, conversations]);
 
-  // Sync a single conversation
+  // Sync a single conversation (SMS or Email)
   const handleSyncConversation = useCallback(async (leadId: string) => {
     // Add to syncing set
     setSyncingLeadIds(prev => new Set(prev).add(leadId));
     
+    // Determine if this is an email or SMS conversation
+    const conversation = conversations.find(c => c.id === leadId);
+    const isEmailPrimary = conversation?.primaryChannel === "email";
+    
     try {
-      const result = await syncConversationHistory(leadId);
+      // Call the appropriate sync function based on channel
+      const result = isEmailPrimary 
+        ? await syncEmailConversationHistory(leadId)
+        : await syncConversationHistory(leadId);
+      
+      const source = isEmailPrimary ? "EmailBison" : "GHL";
       
       if (result.success) {
         const imported = result.importedCount || 0;
@@ -162,7 +171,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
           if (healed > 0) parts.push(`${healed} fixed`);
           
           toast.success(`Synced: ${parts.join(", ")}`, {
-            description: `Total messages in GHL: ${result.totalMessages}`
+            description: `Total messages in ${source}: ${result.totalMessages}`
           });
           // Refresh the active conversation if it's the one we synced
           if (leadId === activeConversationId) {
@@ -186,7 +195,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
         return next;
       });
     }
-  }, [activeConversationId, fetchActiveConversation]);
+  }, [activeConversationId, fetchActiveConversation, conversations]);
 
   // Sync all SMS conversations
   const handleSyncAll = useCallback(async () => {

@@ -242,12 +242,8 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
 
   const handleSyncHistory = async () => {
     if (!conversation) return
-    if (isEmail) {
-      toast.message("Email conversations sync automatically from EmailBison.")
-      return
-    }
 
-    // Use parent's sync handler if provided
+    // Use parent's sync handler if provided (works for both SMS and Email)
     if (onSync) {
       await onSync(conversation.id)
     }
@@ -325,8 +321,8 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
             variant="outline" 
             size="sm" 
             onClick={handleSyncHistory}
-            disabled={isSyncing || isEmail}
-            title={isEmail ? "Email sync is handled via EmailBison webhooks" : "Sync conversation history from GHL"}
+            disabled={isSyncing}
+            title={isEmail ? "Sync email conversation from EmailBison" : "Sync conversation history from GHL"}
           >
             {isSyncing ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

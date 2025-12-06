@@ -356,6 +356,395 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
   }
 }
 
+// =============================================================================
+// Email Sync Functions
+// =============================================================================
+
+/**
+ * Helper to clean email body for comparison
+ */
+function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): string {
+  const source = textBody || htmlBody || "";
+  if (!source.trim()) return "";
+  
+  // Strip HTML tags and normalize whitespace
+  return source
+    .replace(/<[^>]+>/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .substring(0, 500); // Use first 500 chars for comparison
+}
+
+/**
+ * Sync email conversation history from EmailBison for a lead
+ * Uses emailBisonReplyId as the source of truth for deduplication
+ * Heals existing messages that were created without the reply ID
+ * 
+ * @param leadId - The internal lead ID
+ */
+export async function syncEmailConversationHistory(leadId: string): Promise<SyncHistoryResult> {
+  try {
+    // Get the lead with their client info
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      include: {
+        client: {
+          select: {
+            emailBisonApiKey: true,
+          },
+        },
+      },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    if (!lead.emailBisonLeadId) {
+      return { success: false, error: "Lead has no EmailBison lead ID" };
+    }
+
+    if (!lead.client.emailBisonApiKey) {
+      return { success: false, error: "Workspace is missing EmailBison credentials" };
+    }
+
+    console.log(`[EmailSync] Fetching conversation history for lead ${leadId} (EmailBison ID: ${lead.emailBisonLeadId})`);
+
+    // Fetch replies (inbound messages) from EmailBison
+    const repliesResult = await fetchEmailBisonReplies(
+      lead.client.emailBisonApiKey,
+      lead.emailBisonLeadId
+    );
+
+    if (!repliesResult.success) {
+      return { success: false, error: repliesResult.error || "Failed to fetch replies from EmailBison" };
+    }
+
+    // Fetch sent emails (outbound campaign messages) from EmailBison
+    const sentResult = await fetchEmailBisonSentEmails(
+      lead.client.emailBisonApiKey,
+      lead.emailBisonLeadId
+    );
+
+    const replies = repliesResult.data || [];
+    const sentEmails = sentResult.data || [];
+    
+    console.log(`[EmailSync] Found ${replies.length} replies and ${sentEmails.length} sent emails in EmailBison`);
+
+    let importedCount = 0;
+    let healedCount = 0;
+    let skippedDuplicates = 0;
+
+    // Process inbound replies
+    for (const reply of replies) {
+      try {
+        const emailBisonReplyId = String(reply.id);
+        const msgTimestamp = reply.date_received 
+          ? new Date(reply.date_received) 
+          : reply.created_at 
+            ? new Date(reply.created_at) 
+            : new Date();
+        const body = cleanEmailBody(reply.html_body, reply.text_body);
+        const subject = reply.email_subject || null;
+
+        // Skip if no body
+        if (!body) {
+          console.log(`[EmailSync] Skipping reply ${emailBisonReplyId}: empty body`);
+          continue;
+        }
+
+        // Step 1: Check if message exists by emailBisonReplyId (definitive match)
+        const existingByReplyId = await prisma.message.findUnique({
+          where: { emailBisonReplyId },
+        });
+
+        if (existingByReplyId) {
+          // Message already exists - just ensure timestamp is correct
+          if (existingByReplyId.sentAt.getTime() !== msgTimestamp.getTime()) {
+            await prisma.message.update({
+              where: { emailBisonReplyId },
+              data: { sentAt: msgTimestamp },
+            });
+            console.log(`[EmailSync] Fixed timestamp for replyId ${emailBisonReplyId}`);
+            healedCount++;
+          } else {
+            skippedDuplicates++;
+          }
+          continue;
+        }
+
+        // Step 2: Check for legacy message without emailBisonReplyId (match by body/subject)
+        const existingByContent = await prisma.message.findFirst({
+          where: {
+            leadId,
+            direction: "inbound",
+            channel: "email",
+            emailBisonReplyId: null,
+            OR: [
+              { body: { contains: body.substring(0, 100) } },
+              { subject: subject },
+            ],
+          },
+        });
+
+        if (existingByContent) {
+          // Heal the legacy message
+          await prisma.message.update({
+            where: { id: existingByContent.id },
+            data: {
+              emailBisonReplyId,
+              sentAt: msgTimestamp,
+              subject: subject || existingByContent.subject,
+            },
+          });
+          healedCount++;
+          console.log(`[EmailSync] Healed reply: "${body.substring(0, 30)}..." -> replyId: ${emailBisonReplyId}`);
+          continue;
+        }
+
+        // Step 3: Create new message
+        await prisma.message.create({
+          data: {
+            emailBisonReplyId,
+            channel: "email",
+            source: "zrg",
+            body,
+            rawHtml: reply.html_body ?? null,
+            rawText: reply.text_body ?? null,
+            subject,
+            direction: "inbound",
+            leadId,
+            sentAt: msgTimestamp,
+          },
+        });
+        importedCount++;
+        console.log(`[EmailSync] Imported reply: "${body.substring(0, 30)}..." @ ${msgTimestamp.toISOString()}`);
+      } catch (error) {
+        console.error(`[EmailSync] Error processing reply ${reply.id}:`, error);
+      }
+    }
+
+    // Process outbound sent emails
+    for (const sentEmail of sentEmails) {
+      try {
+        const inboxxiaScheduledEmailId = String(sentEmail.id);
+        const msgTimestamp = sentEmail.sent_at 
+          ? new Date(sentEmail.sent_at) 
+          : new Date();
+        const body = sentEmail.email_body || "";
+        const subject = sentEmail.email_subject || null;
+
+        // Skip if no body
+        if (!body) {
+          continue;
+        }
+
+        // Check if already exists by scheduled email ID
+        const existingByEmailId = await prisma.message.findUnique({
+          where: { inboxxiaScheduledEmailId },
+        });
+
+        if (existingByEmailId) {
+          skippedDuplicates++;
+          continue;
+        }
+
+        // Check for legacy message
+        const existingByContent = await prisma.message.findFirst({
+          where: {
+            leadId,
+            direction: "outbound",
+            channel: "email",
+            inboxxiaScheduledEmailId: null,
+            body: { contains: body.substring(0, 100) },
+          },
+        });
+
+        if (existingByContent) {
+          await prisma.message.update({
+            where: { id: existingByContent.id },
+            data: {
+              inboxxiaScheduledEmailId,
+              sentAt: msgTimestamp,
+            },
+          });
+          healedCount++;
+          continue;
+        }
+
+        // Create new message
+        await prisma.message.create({
+          data: {
+            inboxxiaScheduledEmailId,
+            channel: "email",
+            source: "inboxxia_campaign",
+            body,
+            rawHtml: body,
+            subject,
+            direction: "outbound",
+            isRead: true,
+            leadId,
+            sentAt: msgTimestamp,
+          },
+        });
+        importedCount++;
+        console.log(`[EmailSync] Imported sent email: "${body.substring(0, 30)}..."`);
+      } catch (error) {
+        console.error(`[EmailSync] Error processing sent email ${sentEmail.id}:`, error);
+      }
+    }
+
+    console.log(`[EmailSync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
+
+    // Re-run sentiment analysis using the refreshed conversation transcript
+    try {
+      const messages = await prisma.message.findMany({
+        where: { leadId, channel: "email" },
+        orderBy: { sentAt: "asc" },
+      });
+
+      const transcript = messages
+        .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
+        .join("\n");
+
+      if (transcript.trim().length > 0) {
+        const refreshedSentiment = await classifySentiment(transcript);
+        const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
+
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: {
+            sentimentTag: refreshedSentiment,
+            status: refreshedStatus,
+          },
+        });
+
+        console.log(`[EmailSync] Reclassified sentiment to ${refreshedSentiment}`);
+      }
+    } catch (reclassError) {
+      console.error("[EmailSync] Failed to refresh sentiment after sync:", reclassError);
+    }
+
+    revalidatePath("/");
+
+    return {
+      success: true,
+      importedCount,
+      healedCount,
+      totalMessages: replies.length + sentEmails.length,
+      skippedDuplicates,
+    };
+  } catch (error) {
+    console.error("[EmailSync] Failed to sync email conversation history:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
+ * Sync all email conversations for a workspace (client)
+ * Iterates through all leads with EmailBison lead IDs and syncs their history
+ * Also regenerates AI drafts for eligible leads
+ * 
+ * @param clientId - The workspace/client ID to sync
+ */
+export async function syncAllEmailConversations(clientId: string): Promise<SyncAllResult> {
+  try {
+    // Get all leads for this client that have EmailBison lead IDs
+    const leads = await prisma.lead.findMany({
+      where: {
+        clientId,
+        emailBisonLeadId: {
+          not: null,
+        },
+      },
+      select: {
+        id: true,
+        emailBisonLeadId: true,
+      },
+    });
+
+    console.log(`[EmailSyncAll] Starting sync for ${leads.length} email leads in client ${clientId}`);
+
+    let totalImported = 0;
+    let totalHealed = 0;
+    let totalDraftsGenerated = 0;
+    let errors = 0;
+
+    // Process leads in batches to avoid overwhelming the API
+    const BATCH_SIZE = 5;
+
+    for (let i = 0; i < leads.length; i += BATCH_SIZE) {
+      const batch = leads.slice(i, i + BATCH_SIZE);
+
+      const results = await Promise.allSettled(
+        batch.map(lead => syncEmailConversationHistory(lead.id))
+      );
+
+      for (let j = 0; j < results.length; j++) {
+        const result = results[j];
+        const leadId = batch[j].id;
+
+        if (result.status === "fulfilled" && result.value.success) {
+          totalImported += result.value.importedCount || 0;
+          totalHealed += result.value.healedCount || 0;
+
+          // After successful sync, regenerate AI draft if eligible
+          try {
+            const lead = await prisma.lead.findUnique({
+              where: { id: leadId },
+              select: { sentimentTag: true, status: true },
+            });
+
+            if (lead && shouldGenerateDraft(lead.sentimentTag || "Neutral")) {
+              const draftResult = await regenerateDraft(leadId, "email");
+              if (draftResult.success) {
+                totalDraftsGenerated++;
+                console.log(`[EmailSyncAll] Generated draft for lead ${leadId}`);
+              }
+            }
+          } catch (draftError) {
+            console.error(`[EmailSyncAll] Failed to generate draft for lead ${leadId}:`, draftError);
+          }
+        } else {
+          errors++;
+          if (result.status === "rejected") {
+            console.error(`[EmailSyncAll] Lead sync failed:`, result.reason);
+          } else if (!result.value.success) {
+            console.error(`[EmailSyncAll] Lead sync error:`, result.value.error);
+          }
+        }
+      }
+    }
+
+    console.log(`[EmailSyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalDraftsGenerated} drafts, ${errors} errors`);
+
+    revalidatePath("/");
+
+    return {
+      success: true,
+      totalLeads: leads.length,
+      totalImported,
+      totalHealed,
+      totalDraftsGenerated,
+      errors,
+    };
+  } catch (error) {
+    console.error("[EmailSyncAll] Failed to sync all email conversations:", error);
+    return {
+      success: false,
+      totalLeads: 0,
+      totalImported: 0,
+      totalHealed: 0,
+      totalDraftsGenerated: 0,
+      errors: 1,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
 /**
  * Send an SMS message to a lead via GHL and save to database
  * 
