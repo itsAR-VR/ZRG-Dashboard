@@ -174,6 +174,28 @@ model Message {
 | `DATABASE_URL` | Transaction pooler connection (port 6543, `?pgbouncer=true`) |
 | `DIRECT_URL` | Session pooler connection (port 5432) |
 | `SLACK_WEBHOOK_URL` | (Optional) Slack notifications for meetings booked |
+| `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |
+
+### Vercel Cron Setup
+
+Follow-up sequences are processed automatically via Vercel Cron. The cron job is configured in `vercel.json`:
+
+```json
+{
+  "crons": [{
+    "path": "/api/cron/followups",
+    "schedule": "*/10 * * * *"
+  }]
+}
+```
+
+This runs every 10 minutes. To set up:
+
+1. Generate a secure secret: `openssl rand -hex 32`
+2. Add `CRON_SECRET` to your Vercel project environment variables
+3. Vercel automatically calls `/api/cron/followups` with `Authorization: Bearer <CRON_SECRET>`
+
+**Note:** Vercel Cron is available on Pro and Enterprise plans. On Hobby, use an external service like [cron-job.org](https://cron-job.org) with the same endpoint.
 
 ### Database Migration
 

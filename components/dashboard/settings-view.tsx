@@ -23,6 +23,10 @@ import {
   Link2,
   HelpCircle,
   Briefcase,
+  Calendar,
+  Building2,
+  Target,
+  Star,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -42,9 +46,14 @@ import {
   updateUserSettings, 
   addKnowledgeAsset,
   deleteKnowledgeAsset,
+  getCalendarLinks,
+  addCalendarLink,
+  deleteCalendarLink,
+  setDefaultCalendarLink,
   type UserSettingsData,
   type KnowledgeAssetData,
   type QualificationQuestion,
+  type CalendarLinkData,
 } from "@/actions/settings-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
@@ -98,6 +107,18 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
   const [newAssetContent, setNewAssetContent] = useState("")
   const [newAssetType, setNewAssetType] = useState<"text" | "url">("text")
 
+  // Company/Outreach context state
+  const [companyContext, setCompanyContext] = useState({
+    companyName: "",
+    targetResult: "",
+  })
+
+  // Calendar links state
+  const [calendarLinks, setCalendarLinks] = useState<CalendarLinkData[]>([])
+  const [newCalendarName, setNewCalendarName] = useState("")
+  const [newCalendarUrl, setNewCalendarUrl] = useState("")
+  const [isAddingCalendar, setIsAddingCalendar] = useState(false)
+
   const [availability, setAvailability] = useState({
     timezone: "America/Los_Angeles",
     startTime: "09:00",
@@ -133,6 +154,10 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
           goals: result.data.aiGoals || "",
           serviceDescription: result.data.serviceDescription || "",
         })
+        setCompanyContext({
+          companyName: result.data.companyName || "",
+          targetResult: result.data.targetResult || "",
+        })
         setAvailability({
           timezone: result.data.timezone || "America/Los_Angeles",
           startTime: result.data.workStartTime || "09:00",
@@ -163,6 +188,16 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
           setKnowledgeAssets(result.knowledgeAssets)
         }
       }
+
+      // Load calendar links
+      if (activeWorkspace) {
+        const calendarResult = await getCalendarLinks(activeWorkspace)
+        if (calendarResult.success && calendarResult.data) {
+          setCalendarLinks(calendarResult.data)
+        }
+      } else {
+        setCalendarLinks([])
+      }
       
       setIsLoading(false)
     }
@@ -186,6 +221,8 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
       aiSignature: aiPersona.signature || undefined,
       aiGoals: aiPersona.goals || undefined,
       serviceDescription: aiPersona.serviceDescription || undefined,
+      companyName: companyContext.companyName || undefined,
+      targetResult: companyContext.targetResult || undefined,
       qualificationQuestions: qualificationQuestions.length > 0 
         ? JSON.stringify(qualificationQuestions) 
         : undefined,
@@ -280,6 +317,62 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
       toast.error(result.error || "Failed to delete asset")
     }
   }, [])
+
+  // Calendar link handlers
+  const handleAddCalendarLink = useCallback(async () => {
+    if (!newCalendarName.trim() || !newCalendarUrl.trim()) {
+      toast.error("Please provide both name and URL")
+      return
+    }
+
+    setIsAddingCalendar(true)
+    const result = await addCalendarLink(activeWorkspace, {
+      name: newCalendarName.trim(),
+      url: newCalendarUrl.trim(),
+      setAsDefault: calendarLinks.length === 0,
+    })
+
+    if (result.success) {
+      // Reload calendar links
+      const calendarResult = await getCalendarLinks(activeWorkspace)
+      if (calendarResult.success && calendarResult.data) {
+        setCalendarLinks(calendarResult.data)
+      }
+      setNewCalendarName("")
+      setNewCalendarUrl("")
+      toast.success("Calendar link added")
+    } else {
+      toast.error(result.error || "Failed to add calendar link")
+    }
+    setIsAddingCalendar(false)
+  }, [activeWorkspace, newCalendarName, newCalendarUrl, calendarLinks.length])
+
+  const handleDeleteCalendarLink = useCallback(async (linkId: string) => {
+    const result = await deleteCalendarLink(linkId)
+    if (result.success) {
+      // Reload calendar links
+      const calendarResult = await getCalendarLinks(activeWorkspace)
+      if (calendarResult.success && calendarResult.data) {
+        setCalendarLinks(calendarResult.data)
+      }
+      toast.success("Calendar link deleted")
+    } else {
+      toast.error(result.error || "Failed to delete calendar link")
+    }
+  }, [activeWorkspace])
+
+  const handleSetDefaultCalendarLink = useCallback(async (linkId: string) => {
+    const result = await setDefaultCalendarLink(activeWorkspace, linkId)
+    if (result.success) {
+      setCalendarLinks(prev => prev.map(link => ({
+        ...link,
+        isDefault: link.id === linkId,
+      })))
+      toast.success("Default calendar updated")
+    } else {
+      toast.error(result.error || "Failed to set default")
+    }
+  }, [activeWorkspace])
 
   // Get user display info
   const userDisplayName = user?.fullName || user?.email?.split("@")[0] || "User"
@@ -419,6 +512,157 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
                       }}
                     />
                   </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Company/Outreach Context */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Building2 className="h-5 w-5" />
+                  Company & Outreach Context
+                </CardTitle>
+                <CardDescription>Used in follow-up templates as {"{companyName}"} and {"{result}"}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="companyName">Company Name</Label>
+                  <Input
+                    id="companyName"
+                    placeholder="e.g., Acme Corp"
+                    value={companyContext.companyName}
+                    onChange={(e) => {
+                      setCompanyContext({ ...companyContext, companyName: e.target.value })
+                      handleChange()
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Used in messages as {"{companyName}"} - e.g., "Hey John - Sarah from {"{companyName}"} again"
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="targetResult" className="flex items-center gap-2">
+                    <Target className="h-4 w-4" />
+                    Target Result/Outcome
+                  </Label>
+                  <Input
+                    id="targetResult"
+                    placeholder="e.g., growing your client base"
+                    value={companyContext.targetResult}
+                    onChange={(e) => {
+                      setCompanyContext({ ...companyContext, targetResult: e.target.value })
+                      handleChange()
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Used in messages as {"{result}"} - e.g., "in case you were still interested in {"{result}"}"
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Calendar Links */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Calendar className="h-5 w-5" />
+                  Calendar Links
+                </CardTitle>
+                <CardDescription>
+                  Booking links used in follow-up messages as {"{calendarLink}"}. The default link is used for {"{availability}"} slots.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Existing calendar links */}
+                {calendarLinks.length > 0 ? (
+                  <div className="space-y-2">
+                    {calendarLinks.map((link) => (
+                      <div key={link.id} className="flex items-center gap-3 p-3 rounded-lg border">
+                        <Calendar className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-medium truncate">{link.name}</p>
+                            {link.isDefault && (
+                              <Badge variant="outline" className="text-xs text-primary border-primary/30">
+                                <Star className="h-3 w-3 mr-1" />
+                                Default
+                              </Badge>
+                            )}
+                            <Badge variant="secondary" className="text-xs capitalize">
+                              {link.type}
+                            </Badge>
+                          </div>
+                          <p className="text-xs text-muted-foreground truncate">{link.url}</p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {!link.isDefault && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-xs"
+                              onClick={() => handleSetDefaultCalendarLink(link.id)}
+                            >
+                              Set Default
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            onClick={() => handleDeleteCalendarLink(link.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-6 text-muted-foreground">
+                    <Calendar className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                    <p className="text-sm">No calendar links added yet</p>
+                    <p className="text-xs">Add a link below to enable {"{calendarLink}"} in follow-ups</p>
+                  </div>
+                )}
+
+                {/* Add new calendar link */}
+                <div className="space-y-3 p-4 rounded-lg border border-dashed">
+                  <p className="text-sm font-medium">Add Calendar Link</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Name</Label>
+                      <Input
+                        placeholder="e.g., Sales Call"
+                        value={newCalendarName}
+                        onChange={(e) => setNewCalendarName(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">URL</Label>
+                      <Input
+                        placeholder="https://calendly.com/..."
+                        value={newCalendarUrl}
+                        onChange={(e) => setNewCalendarUrl(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleAddCalendarLink}
+                    disabled={!newCalendarName.trim() || !newCalendarUrl.trim() || isAddingCalendar}
+                  >
+                    {isAddingCalendar ? (
+                      <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    ) : (
+                      <Plus className="h-4 w-4 mr-1.5" />
+                    )}
+                    Add Calendar
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    Supports Calendly, HubSpot Meetings, and GoHighLevel calendars
+                  </p>
                 </div>
               </CardContent>
             </Card>

@@ -50,6 +50,7 @@ import {
   deleteFollowUpSequence,
   toggleSequenceActive,
   createDefaultSequence,
+  createAllDefaultSequences,
   type FollowUpSequenceData,
   type FollowUpStepData,
   type StepCondition,
@@ -125,7 +126,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
     loadSequences();
   }, [loadSequences]);
 
-  // Create default sequence
+  // Create default sequence (No Response only)
   const handleCreateDefault = async () => {
     if (!clientId) return;
     setIsSaving(true);
@@ -135,6 +136,22 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
       loadSequences();
     } else {
       toast.error(result.error || "Failed to create sequence");
+    }
+    setIsSaving(false);
+  };
+
+  // Create all default sequences (No Response + Post-Booking)
+  const handleCreateAllDefaults = async () => {
+    if (!clientId) return;
+    setIsSaving(true);
+    const result = await createAllDefaultSequences(clientId);
+    if (result.success) {
+      const count = result.sequenceIds?.length || 0;
+      toast.success(`${count} default sequence${count !== 1 ? 's' : ''} created`);
+      loadSequences();
+    } else {
+      const errorMsg = result.errors?.join(", ") || "Failed to create sequences";
+      toast.error(errorMsg);
     }
     setIsSaving(false);
   };
@@ -326,11 +343,11 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
           {sequences.length === 0 && (
             <Button
               variant="outline"
-              onClick={handleCreateDefault}
+              onClick={handleCreateAllDefaults}
               disabled={isSaving}
             >
               {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Create Default Sequence
+              Create All Default Sequences
             </Button>
           )}
           <Button onClick={handleNewSequence}>
@@ -349,10 +366,19 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
             <p className="text-muted-foreground mb-4">
               Create your first follow-up sequence to automate lead engagement
             </p>
-            <Button onClick={handleCreateDefault} disabled={isSaving}>
-              {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Create Default Day 2/5/7 Sequence
-            </Button>
+            <div className="flex flex-col sm:flex-row gap-2 justify-center">
+              <Button onClick={handleCreateAllDefaults} disabled={isSaving}>
+                {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Create All Default Sequences
+              </Button>
+              <Button variant="outline" onClick={handleCreateDefault} disabled={isSaving}>
+                {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Create Day 2/5/7 Only
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-4">
+              "All Default" creates both No Response (Day 2/5/7) and Post-Booking Qualification sequences
+            </p>
           </CardContent>
         </Card>
       ) : (

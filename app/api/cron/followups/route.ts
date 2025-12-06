@@ -2,29 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 import { processFollowUpsDue } from "@/lib/followup-engine";
 
 /**
- * POST /api/cron/followups
+ * GET /api/cron/followups
  * 
  * Processes all due follow-up instances.
- * This endpoint should be called by an external cron service (e.g., cron-job.org, Upstash)
+ * Called automatically by Vercel Cron (configured in vercel.json)
  * 
- * Security: Requires CRON_SECRET header to match environment variable
+ * Security: Requires Authorization: Bearer <CRON_SECRET> header
+ * Vercel automatically adds this header when invoking cron jobs
  */
-export async function POST(request: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
-    // Verify cron secret
-    const cronSecret = request.headers.get("x-cron-secret");
+    // Verify cron secret using Vercel's Bearer token pattern
+    const authHeader = request.headers.get("Authorization");
     const expectedSecret = process.env.CRON_SECRET;
 
     if (!expectedSecret) {
-      console.warn("CRON_SECRET not configured - endpoint disabled");
+      console.warn("[Cron] CRON_SECRET not configured - endpoint disabled");
       return NextResponse.json(
         { error: "Cron endpoint not configured" },
         { status: 503 }
       );
     }
 
-    if (cronSecret !== expectedSecret) {
-      console.warn("Invalid cron secret attempt");
+    if (authHeader !== `Bearer ${expectedSecret}`) {
+      console.warn("[Cron] Invalid authorization attempt");
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
@@ -53,17 +54,55 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * GET /api/cron/followups
+ * POST /api/cron/followups
  * 
- * Health check endpoint for the cron job
+ * Alternative endpoint for manual triggering or external cron services
+ * Uses x-cron-secret header for backwards compatibility
  */
-export async function GET() {
-  return NextResponse.json({
-    status: "ok",
-    endpoint: "/api/cron/followups",
-    method: "POST",
-    description: "Process due follow-up instances",
-    timestamp: new Date().toISOString(),
-  });
-}
+export async function POST(request: NextRequest) {
+  try {
+    // Check both Authorization header (Vercel pattern) and x-cron-secret (legacy)
+    const authHeader = request.headers.get("Authorization");
+    const legacySecret = request.headers.get("x-cron-secret");
+    const expectedSecret = process.env.CRON_SECRET;
 
+    if (!expectedSecret) {
+      console.warn("[Cron] CRON_SECRET not configured - endpoint disabled");
+      return NextResponse.json(
+        { error: "Cron endpoint not configured" },
+        { status: 503 }
+      );
+    }
+
+    const isAuthorized = 
+      authHeader === `Bearer ${expectedSecret}` || 
+      legacySecret === expectedSecret;
+
+    if (!isAuthorized) {
+      console.warn("[Cron] Invalid authorization attempt");
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    console.log("[Cron] Processing follow-ups (POST)...");
+    const results = await processFollowUpsDue();
+    console.log("[Cron] Follow-up processing complete:", results);
+
+    return NextResponse.json({
+      success: true,
+      results,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("[Cron] Follow-up processing error:", error);
+    return NextResponse.json(
+      {
+        error: "Failed to process follow-ups",
+        message: error instanceof Error ? error.message : "Unknown error",
+      },
+      { status: 500 }
+    );
+  }
+}
