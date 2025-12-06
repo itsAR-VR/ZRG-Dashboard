@@ -131,9 +131,32 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
       return { success: false, error: "Workspace not found or access denied" };
     }
 
+    // If ghlLocationId is being changed, check for uniqueness
+    if (data.ghlLocationId !== undefined && data.ghlLocationId !== client.ghlLocationId) {
+      const existingWithLocationId = await prisma.client.findUnique({
+        where: { ghlLocationId: data.ghlLocationId },
+      });
+      if (existingWithLocationId) {
+        return { success: false, error: "A workspace with this Location ID already exists" };
+      }
+    }
+
+    // If emailBisonWorkspaceId is being changed, check for uniqueness
+    if (data.emailBisonWorkspaceId !== undefined && 
+        data.emailBisonWorkspaceId !== client.emailBisonWorkspaceId &&
+        data.emailBisonWorkspaceId !== "") {
+      const existingWithWorkspaceId = await prisma.client.findUnique({
+        where: { emailBisonWorkspaceId: data.emailBisonWorkspaceId },
+      });
+      if (existingWithWorkspaceId) {
+        return { success: false, error: "A workspace with this EmailBison Workspace ID already exists" };
+      }
+    }
+
     // Build update data, only including fields that are provided
     const updateData: Record<string, string | null> = {};
     if (data.name !== undefined) updateData.name = data.name;
+    if (data.ghlLocationId !== undefined) updateData.ghlLocationId = data.ghlLocationId;
     if (data.ghlPrivateKey !== undefined) updateData.ghlPrivateKey = data.ghlPrivateKey;
     if (data.emailBisonApiKey !== undefined) updateData.emailBisonApiKey = data.emailBisonApiKey || null;
     if (data.emailBisonWorkspaceId !== undefined) updateData.emailBisonWorkspaceId = data.emailBisonWorkspaceId || null;

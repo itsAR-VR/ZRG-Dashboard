@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useTransition } from "react";
-import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare } from "lucide-react";
+import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -91,11 +91,26 @@ export function IntegrationsManager() {
   async function handleUpdateEmailCredentials(clientId: string) {
     setError(null);
 
+    // Find the current client to check existing values
+    const currentClient = clients.find(c => c.id === clientId);
+
     startTransition(async () => {
-      const result = await updateClient(clientId, {
-        emailBisonApiKey: formData.emailBisonApiKey,
-        emailBisonWorkspaceId: formData.emailBisonWorkspaceId,
-      });
+      // Build update payload - only include fields that have values or are being explicitly changed
+      const updatePayload: { emailBisonApiKey?: string; emailBisonWorkspaceId?: string } = {};
+      
+      // Always update workspace ID if provided (even empty to clear it)
+      if (formData.emailBisonWorkspaceId !== (currentClient?.emailBisonWorkspaceId || "")) {
+        updatePayload.emailBisonWorkspaceId = formData.emailBisonWorkspaceId;
+      } else if (formData.emailBisonWorkspaceId) {
+        updatePayload.emailBisonWorkspaceId = formData.emailBisonWorkspaceId;
+      }
+      
+      // Only update API key if user entered a new one (not blank placeholder)
+      if (formData.emailBisonApiKey) {
+        updatePayload.emailBisonApiKey = formData.emailBisonApiKey;
+      }
+
+      const result = await updateClient(clientId, updatePayload);
       if (result.success) {
         setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonWorkspaceId: "" });
         setEditingClientId(null);
@@ -340,7 +355,12 @@ export function IntegrationsManager() {
                           {hasEmailBison ? (
                             <Badge variant="outline" className="text-blue-500 border-blue-500/30 bg-blue-500/10 text-[10px]">
                               <Mail className="h-3 w-3 mr-1" />
-                              Email
+                              Email {client.emailBisonWorkspaceId && `(#${client.emailBisonWorkspaceId})`}
+                            </Badge>
+                          ) : client.emailBisonWorkspaceId ? (
+                            <Badge variant="outline" className="text-amber-500 border-amber-500/30 bg-amber-500/10 text-[10px]">
+                              <Mail className="h-3 w-3 mr-1" />
+                              Email #{client.emailBisonWorkspaceId} (no API key)
                             </Badge>
                           ) : (
                             <Badge variant="outline" className="text-muted-foreground text-[10px]">
@@ -410,50 +430,70 @@ export function IntegrationsManager() {
                           </Button>
                         </div>
                         
-                        {/* Configure EmailBison button */}
-                        {!hasEmailBison && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-xs text-muted-foreground"
-                            onClick={() => {
-                              if (isEditingThis) {
-                                setEditingClientId(null);
-                                setFormData({ ...formData, emailBisonApiKey: "", emailBisonWorkspaceId: "" });
-                              } else {
-                                setEditingClientId(client.id);
-                                setFormData({
-                                  ...formData,
-                                  emailBisonApiKey: client.emailBisonApiKey || "",
-                                  emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
-                                });
-                              }
-                            }}
-                          >
-                            <Mail className="h-3 w-3 mr-1" />
-                            {isEditingThis ? "Cancel" : "Configure Email"}
-                          </Button>
-                        )}
+                        {/* Configure/Edit EmailBison button - always available */}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-xs text-muted-foreground"
+                          onClick={() => {
+                            if (isEditingThis) {
+                              setEditingClientId(null);
+                              setFormData({ ...formData, emailBisonApiKey: "", emailBisonWorkspaceId: "" });
+                            } else {
+                              setEditingClientId(client.id);
+                              setFormData({
+                                ...formData,
+                                emailBisonApiKey: client.emailBisonApiKey || "",
+                                emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
+                              });
+                            }
+                          }}
+                        >
+                          {isEditingThis ? (
+                            <>Cancel</>
+                          ) : hasEmailBison ? (
+                            <>
+                              <Pencil className="h-3 w-3 mr-1" />
+                              Edit Email
+                            </>
+                          ) : (
+                            <>
+                              <Mail className="h-3 w-3 mr-1" />
+                              Configure Email
+                            </>
+                          )}
+                        </Button>
                         
                         {/* Inline edit form for EmailBison credentials */}
                         {isEditingThis && (
                           <div className="w-full mt-2 p-3 border rounded-lg bg-muted/30 space-y-3">
+                            {/* Show current config if exists */}
+                            {(client.emailBisonWorkspaceId || client.emailBisonApiKey) && (
+                              <div className="text-xs text-muted-foreground pb-2 border-b">
+                                <p>Current config:</p>
+                                <p>Workspace ID: <code className="bg-background px-1 rounded">{client.emailBisonWorkspaceId || "Not set"}</code></p>
+                                <p>API Key: <code className="bg-background px-1 rounded">{client.emailBisonApiKey ? "••••••••" : "Not set"}</code></p>
+                              </div>
+                            )}
                             <div className="space-y-2">
                               <Label htmlFor={`workspaceId-${client.id}`} className="text-xs">Workspace ID (required for webhook routing)</Label>
                               <Input
                                 id={`workspaceId-${client.id}`}
-                                placeholder="e.g., 12345"
+                                placeholder="e.g., 78"
                                 value={formData.emailBisonWorkspaceId}
                                 onChange={(e) => setFormData({ ...formData, emailBisonWorkspaceId: e.target.value })}
                                 className="h-8 text-sm"
                               />
+                              <p className="text-[10px] text-muted-foreground">
+                                Found in Vercel logs as workspace_id when EmailBison sends a webhook
+                              </p>
                             </div>
                             <div className="space-y-2">
-                              <Label htmlFor={`emailKey-${client.id}`} className="text-xs">API Key</Label>
+                              <Label htmlFor={`emailKey-${client.id}`} className="text-xs">API Key {client.emailBisonApiKey && "(leave blank to keep current)"}</Label>
                               <Input
                                 id={`emailKey-${client.id}`}
                                 type="password"
-                                placeholder="eb_xxxxxxxxxxxxxxxx"
+                                placeholder={client.emailBisonApiKey ? "••••••••" : "eb_xxxxxxxxxxxxxxxx"}
                                 value={formData.emailBisonApiKey}
                                 onChange={(e) => setFormData({ ...formData, emailBisonApiKey: e.target.value })}
                                 className="h-8 text-sm"
@@ -462,7 +502,7 @@ export function IntegrationsManager() {
                             <Button
                               size="sm"
                               onClick={() => handleUpdateEmailCredentials(client.id)}
-                              disabled={isPending || (!formData.emailBisonApiKey && !formData.emailBisonWorkspaceId)}
+                              disabled={isPending}
                             >
                               {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Email Config"}
                             </Button>
