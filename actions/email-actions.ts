@@ -151,10 +151,8 @@ export async function sendEmailReply(
       data: { status: "approved" },
     });
 
-    await prisma.lead.update({
-      where: { id: lead.id },
-      data: { status: "replied" },
-    });
+    // Note: Lead status is determined by sentiment classification, not by sending a reply
+    // This matches the SMS flow behavior in approveAndSendDraft
 
     revalidatePath("/");
 

@@ -107,9 +107,7 @@ function buildEmailPrompt(opts: {
           .map((slot) => `- ${slot}`)
           .join("\n")}`
         : "Offer to propose a few time options and keep it concise.")
-      : opts.sentimentTag === "Meeting Booked"
-        ? "Do not propose times; confirm the booking and next steps."
-        : "Keep it short and helpful; only propose times if they asked.";
+      : "Keep it short and helpful; only propose times if they asked.";
 
   const banned = EMAIL_FORBIDDEN_TERMS.map((w) => `"${w}"`).join(", ");
   const signature = opts.signature ? `\nSignature block to use:\n${opts.signature}` : "";
@@ -128,7 +126,7 @@ Email constraints:
 - Be concise, decisive, and respectful.
 - ${availabilityBlock}
 - For objections, acknowledge then redirect with value.
-- For "Meeting Booked", send a short confirmation and any prep steps; no scheduling requests.
+- If the lead has already confirmed a meeting, send a short confirmation and any prep steps; no scheduling requests.
 - Close politely. Include signature if provided.
 ${signature ? "- Use the provided signature below the closing.\n" + signature : ""}`;
 }

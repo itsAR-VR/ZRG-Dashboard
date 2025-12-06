@@ -33,7 +33,6 @@ export interface ConversationData {
 function mapSentimentToClassification(sentimentTag: string | null): string {
   const mapping: Record<string, string> = {
     "Meeting Requested": "meeting-requested",
-    "Meeting Booked": "meeting-requested",
     "Call Requested": "call-requested",
     "Not Interested": "not-interested",
     "Out of Office": "out-of-office",
