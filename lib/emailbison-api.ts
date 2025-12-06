@@ -41,6 +41,10 @@ export interface EmailBisonReplyMessage {
   lead_id?: number | null;
   campaign_id?: number | null;
   sender_email_id?: number | null;
+  // Threading fields
+  thread_id?: string | null;
+  in_reply_to?: string | null;
+  message_id?: string | null;
 }
 
 export interface EmailBisonSentEmail {
@@ -195,7 +199,16 @@ export async function fetchEmailBisonReplies(
           ? data.replies 
           : [];
 
-    console.log(`[EmailBison] Found ${repliesArray.length} replies for lead ${bisonLeadId}`);
+    console.log(`[EmailBison] Found ${repliesArray.length} replies for lead ${bisonLeadId}:`, 
+      repliesArray.map(r => ({
+        id: r.id,
+        subject: r.email_subject?.substring(0, 30),
+        from: r.from_email_address,
+        folder: r.folder,
+        type: r.type,
+        date: r.date_received || r.created_at,
+      }))
+    );
     return { success: true, data: repliesArray };
   } catch (error) {
     console.error("[EmailBison] Failed to fetch replies:", error);

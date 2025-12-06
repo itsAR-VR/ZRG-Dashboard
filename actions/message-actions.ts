@@ -103,7 +103,7 @@ export async function getLeadSyncInfo(leadId: string): Promise<{
 export async function smartSyncConversation(leadId: string): Promise<SyncHistoryResult> {
   // First get the lead's sync capabilities
   const syncInfo = await getLeadSyncInfo(leadId);
-  
+
   if (!syncInfo.success || !syncInfo.data) {
     return { success: false, error: syncInfo.error || "Failed to get lead sync info" };
   }
@@ -113,20 +113,20 @@ export async function smartSyncConversation(leadId: string): Promise<SyncHistory
   // If neither sync is available, return appropriate error
   if (!canSyncSms && !canSyncEmail) {
     if (hasEmailMessages && !emailBisonLeadId) {
-      return { 
-        success: false, 
-        error: "This lead's emails cannot be synced (no EmailBison lead ID - may be from a bounce notification)" 
+      return {
+        success: false,
+        error: "This lead's emails cannot be synced (no EmailBison lead ID - may be from a bounce notification)"
       };
     }
     if (hasSmsMessages && !ghlContactId) {
-      return { 
-        success: false, 
-        error: "This lead's SMS messages cannot be synced (no GHL contact ID)" 
+      return {
+        success: false,
+        error: "This lead's SMS messages cannot be synced (no GHL contact ID)"
       };
     }
-    return { 
-      success: false, 
-      error: "No sync method available for this lead (missing external IDs or credentials)" 
+    return {
+      success: false,
+      error: "No sync method available for this lead (missing external IDs or credentials)"
     };
   }
 
@@ -240,7 +240,7 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
         _count: {
           select: {
             messages: {
-              where: { 
+              where: {
                 OR: [
                   { channel: "sms" },
                   { channel: null },
@@ -260,9 +260,9 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
       // Provide more helpful error message based on context
       const hasSmsMessages = lead._count.messages > 0;
       if (hasSmsMessages) {
-        return { 
-          success: false, 
-          error: "Cannot sync SMS: Lead was created from email only (no GHL contact ID)" 
+        return {
+          success: false,
+          error: "Cannot sync SMS: Lead was created from email only (no GHL contact ID)"
         };
       }
       return { success: false, error: "Lead has no GHL contact ID" };
@@ -429,39 +429,39 @@ interface SyncAllResult {
  */
 export async function syncAllConversations(clientId: string): Promise<SyncAllResult> {
   try {
-    // Get all leads for this client that have GHL contact IDs (SMS capable)
+    // Get ALL leads for this client (both SMS and Email capable)
     const leads = await prisma.lead.findMany({
       where: {
         clientId,
-        ghlContactId: {
-          not: null,
-        },
-        // Exclude email-only leads (those created from EmailBison)
-        NOT: {
-          ghlContactId: { startsWith: "emailbison-" },
-        },
+        // Must have at least one external ID to be syncable
+        OR: [
+          { ghlContactId: { not: null } },
+          { emailBisonLeadId: { not: null } },
+        ],
       },
       select: {
         id: true,
         ghlContactId: true,
+        emailBisonLeadId: true,
       },
     });
 
-    console.log(`[SyncAll] Starting sync for ${leads.length} SMS leads in client ${clientId}`);
+    console.log(`[SyncAll] Starting sync for ${leads.length} leads in client ${clientId}`);
 
     let totalImported = 0;
     let totalHealed = 0;
     let totalDraftsGenerated = 0;
     let errors = 0;
 
-    // Process leads in parallel with a concurrency limit
-    const BATCH_SIZE = 5; // Process 5 at a time to avoid overwhelming GHL API
+    // Process leads in parallel with a concurrency limit (5 at a time to avoid overwhelming APIs)
+    const BATCH_SIZE = 5;
 
     for (let i = 0; i < leads.length; i += BATCH_SIZE) {
       const batch = leads.slice(i, i + BATCH_SIZE);
 
+      // Use smartSyncConversation which handles both SMS and Email
       const results = await Promise.allSettled(
-        batch.map(lead => syncConversationHistory(lead.id))
+        batch.map(lead => smartSyncConversation(lead.id))
       );
 
       // Process sync results and generate drafts for eligible leads
@@ -475,7 +475,6 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
 
           // After successful sync, regenerate AI draft if eligible
           try {
-            // Fetch the lead's current sentiment after sync (sentiment was reclassified during sync)
             const lead = await prisma.lead.findUnique({
               where: { id: leadId },
               select: { sentimentTag: true, status: true },
@@ -483,10 +482,13 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
 
             // Only generate draft if not blacklisted
             if (lead && shouldGenerateDraft(lead.sentimentTag || "Neutral")) {
-              const draftResult = await regenerateDraft(leadId, "sms");
+              // Determine channel based on what IDs the lead has
+              const leadData = batch[j];
+              const channel = leadData.emailBisonLeadId ? "email" : "sms";
+              const draftResult = await regenerateDraft(leadId, channel);
               if (draftResult.success) {
                 totalDraftsGenerated++;
-                console.log(`[SyncAll] Generated draft for lead ${leadId}`);
+                console.log(`[SyncAll] Generated ${channel} draft for lead ${leadId}`);
               }
             }
           } catch (draftError) {
@@ -584,9 +586,9 @@ export async function syncEmailConversationHistory(leadId: string): Promise<Sync
       // Provide more helpful error message based on context
       const hasEmailMessages = lead._count.messages > 0;
       if (hasEmailMessages) {
-        return { 
-          success: false, 
-          error: "Cannot sync: Lead emails came from a bounce notification or external source (no EmailBison lead ID)" 
+        return {
+          success: false,
+          error: "Cannot sync: Lead emails came from a bounce notification or external source (no EmailBison lead ID)"
         };
       }
       return { success: false, error: "Lead has no EmailBison lead ID" };
@@ -1214,6 +1216,180 @@ export async function regenerateDraft(
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+// =============================================================================
+// Bounce Cleanup Functions
+// =============================================================================
+
+/**
+ * Detect if an email address is a bounce notification sender
+ */
+function isBounceEmailAddress(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const lowerEmail = email.toLowerCase();
+  return (
+    lowerEmail.includes("mailer-daemon") ||
+    lowerEmail.includes("postmaster") ||
+    lowerEmail.includes("mail-delivery") ||
+    lowerEmail.includes("maildelivery") ||
+    (lowerEmail.includes("noreply") && lowerEmail.includes("google")) ||
+    lowerEmail.startsWith("bounce")
+  );
+}
+
+/**
+ * Parse bounce email body to extract the original recipient
+ */
+function parseBounceRecipientFromBody(body: string | null | undefined): string | null {
+  if (!body) return null;
+
+  const patterns = [
+    /wasn't delivered to\s+([^\s<]+@[^\s>]+)/i,
+    /delivery to\s+([^\s<]+@[^\s>]+)\s+failed/i,
+    /couldn't be delivered to\s+([^\s<]+@[^\s>]+)/i,
+    /message wasn't delivered to\s+([^\s<]+@[^\s>]+)/i,
+    /550[- ]\d+\.\d+\.\d+\s+<?([^\s<>]+@[^\s<>]+)>?/i,
+    /recipient[:\s]+<?([^\s<>]+@[^\s<>]+)>?/i,
+    /failed recipient[:\s]+<?([^\s<>]+@[^\s<>]+)>?/i,
+    /Delivery has failed to these recipients[^<]*<?([^\s<>]+@[^\s<>]+)>?/i,
+    /couldn't reach\s+<?([^\s<>]+@[^\s<>]+)>?/i,
+    /failed:?\s+<?([^\s<>]+@[^\s<>]+)>?/i,
+    /(?:undeliverable|bounced|failed|rejected)[^<]*<([^\s<>]+@[^\s<>]+)>/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = body.match(pattern);
+    if (match && match[1]) {
+      const email = match[1].trim().toLowerCase();
+      if (email.includes("@") && !isBounceEmailAddress(email)) {
+        return email;
+      }
+    }
+  }
+  return null;
+}
+
+interface CleanupBounceResult {
+  success: boolean;
+  fakeLeadsFound: number;
+  messagesMigrated: number;
+  leadsDeleted: number;
+  leadsBlacklisted: number;
+  errors: string[];
+}
+
+/**
+ * Clean up fake bounce leads (like "Mail Delivery Subsystem")
+ * Migrates their messages to the correct original leads and deletes the fake leads
+ */
+export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounceResult> {
+  const result: CleanupBounceResult = {
+    success: true,
+    fakeLeadsFound: 0,
+    messagesMigrated: 0,
+    leadsDeleted: 0,
+    leadsBlacklisted: 0,
+    errors: [],
+  };
+
+  try {
+    // Find fake bounce leads (mailer-daemon, Mail Delivery Subsystem, etc.)
+    const fakeLeads = await prisma.lead.findMany({
+      where: {
+        clientId,
+        OR: [
+          { email: { contains: "mailer-daemon", mode: "insensitive" } },
+          { email: { contains: "postmaster", mode: "insensitive" } },
+          { firstName: { contains: "Mail Delivery", mode: "insensitive" } },
+          { firstName: { contains: "Mailer-Daemon", mode: "insensitive" } },
+        ],
+      },
+      include: {
+        messages: true,
+      },
+    });
+
+    result.fakeLeadsFound = fakeLeads.length;
+    console.log(`[CleanupBounce] Found ${fakeLeads.length} fake bounce leads`);
+
+    for (const fakeLead of fakeLeads) {
+      try {
+        for (const message of fakeLead.messages) {
+          // Try to find original recipient from message body
+          const originalRecipient = parseBounceRecipientFromBody(message.body) ||
+                                    parseBounceRecipientFromBody(message.rawText) ||
+                                    parseBounceRecipientFromBody(message.rawHtml);
+
+          if (originalRecipient) {
+            // Find the original lead
+            const originalLead = await prisma.lead.findFirst({
+              where: {
+                clientId,
+                email: { equals: originalRecipient, mode: "insensitive" },
+                id: { not: fakeLead.id }, // Not the fake lead itself
+              },
+            });
+
+            if (originalLead) {
+              // Migrate the message to the original lead
+              await prisma.message.update({
+                where: { id: message.id },
+                data: {
+                  leadId: originalLead.id,
+                  source: "bounce",
+                },
+              });
+              result.messagesMigrated++;
+
+              // Blacklist the original lead
+              await prisma.lead.update({
+                where: { id: originalLead.id },
+                data: {
+                  status: "blacklisted",
+                  sentimentTag: "Blacklist",
+                },
+              });
+              result.leadsBlacklisted++;
+
+              console.log(`[CleanupBounce] Migrated message to lead ${originalLead.id} (${originalRecipient})`);
+            } else {
+              console.log(`[CleanupBounce] Could not find original lead for: ${originalRecipient}`);
+              // Delete the orphaned message
+              await prisma.message.delete({ where: { id: message.id } });
+            }
+          } else {
+            // Can't determine original recipient - delete the message
+            console.log(`[CleanupBounce] Could not parse recipient, deleting message ${message.id}`);
+            await prisma.message.delete({ where: { id: message.id } });
+          }
+        }
+
+        // Delete the fake lead (messages have been migrated or deleted)
+        await prisma.lead.delete({ where: { id: fakeLead.id } });
+        result.leadsDeleted++;
+        console.log(`[CleanupBounce] Deleted fake lead: ${fakeLead.email}`);
+
+      } catch (leadError) {
+        const errorMsg = `Failed to process fake lead ${fakeLead.id}: ${leadError}`;
+        result.errors.push(errorMsg);
+        console.error(`[CleanupBounce] ${errorMsg}`);
+      }
+    }
+
+    revalidatePath("/");
+    
+    console.log(`[CleanupBounce] Complete: ${result.messagesMigrated} messages migrated, ${result.leadsDeleted} fake leads deleted, ${result.leadsBlacklisted} leads blacklisted`);
+    
+    return result;
+  } catch (error) {
+    console.error("[CleanupBounce] Failed:", error);
+    return {
+      ...result,
+      success: false,
+      errors: [...result.errors, error instanceof Error ? error.message : "Unknown error"],
     };
   }
 }

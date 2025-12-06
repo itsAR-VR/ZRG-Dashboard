@@ -85,8 +85,8 @@ export function ConversationFeed({
     }
   }, [filteredConversations, sortBy])
 
-  // Count SMS conversations for sync all button
-  const smsCount = conversations.filter(c => c.channels?.includes("sms")).length
+  // Count active conversations for sync all button
+  const activeCount = filteredConversations.length
 
   return (
     <div className="flex h-full w-80 flex-col border-r border-border bg-background">
@@ -130,7 +130,7 @@ export function ConversationFeed({
           </Select>
         </div>
         {/* Sync All Button */}
-        {onSyncAll && smsCount > 0 && (
+        {onSyncAll && activeCount > 0 && (
           <Button
             variant="outline"
             size="sm"
@@ -141,12 +141,12 @@ export function ConversationFeed({
             {isSyncingAll ? (
               <>
                 <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-                Syncing All SMS...
+                Syncing All...
               </>
             ) : (
               <>
                 <RefreshCw className="h-3 w-3 mr-1.5" />
-                Sync All SMS ({smsCount})
+                Sync All ({activeCount})
               </>
             )}
           </Button>

@@ -186,6 +186,66 @@ async function triggerSlackNotification(message: string) {
   }
 }
 
+/**
+ * Detect if an email is a bounce notification based on sender
+ */
+function isBounceEmail(fromEmail: string | null | undefined): boolean {
+  if (!fromEmail) return false;
+  const lowerEmail = fromEmail.toLowerCase();
+  return (
+    lowerEmail.includes("mailer-daemon") ||
+    lowerEmail.includes("postmaster") ||
+    lowerEmail.includes("mail-delivery") ||
+    lowerEmail.includes("maildelivery") ||
+    lowerEmail.includes("noreply") && lowerEmail.includes("google") ||
+    lowerEmail.startsWith("bounce")
+  );
+}
+
+/**
+ * Parse bounce email body to extract the original recipient email address
+ * Handles various bounce formats from different mail providers
+ */
+function parseBounceRecipient(htmlBody: string | null | undefined, textBody: string | null | undefined): string | null {
+  const body = textBody || htmlBody || "";
+  if (!body) return null;
+
+  // Common bounce patterns (case-insensitive)
+  const patterns = [
+    // Google/Gmail bounces
+    /wasn't delivered to\s+([^\s<]+@[^\s>]+)/i,
+    /delivery to\s+([^\s<]+@[^\s>]+)\s+failed/i,
+    /couldn't be delivered to\s+([^\s<]+@[^\s>]+)/i,
+    /message wasn't delivered to\s+([^\s<]+@[^\s>]+)/i,
+    // Generic SMTP bounces
+    /550[- ]\d+\.\d+\.\d+\s+<?([^\s<>]+@[^\s<>]+)>?/i,
+    /recipient[:\s]+<?([^\s<>]+@[^\s<>]+)>?/i,
+    /failed recipient[:\s]+<?([^\s<>]+@[^\s<>]+)>?/i,
+    // Microsoft/Outlook bounces
+    /Delivery has failed to these recipients[^<]*<?([^\s<>]+@[^\s<>]+)>?/i,
+    /couldn't reach\s+<?([^\s<>]+@[^\s<>]+)>?/i,
+    // Amazon SES bounces
+    /failed:?\s+<?([^\s<>]+@[^\s<>]+)>?/i,
+    // Catch-all pattern for email in angle brackets after error keywords
+    /(?:undeliverable|bounced|failed|rejected)[^<]*<([^\s<>]+@[^\s<>]+)>/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = body.match(pattern);
+    if (match && match[1]) {
+      const email = match[1].trim().toLowerCase();
+      // Validate it looks like an email and isn't a daemon address
+      if (email.includes("@") && !isBounceEmail(email)) {
+        console.log(`[Bounce Parser] Found recipient: ${email}`);
+        return email;
+      }
+    }
+  }
+
+  console.log("[Bounce Parser] Could not extract recipient from bounce body");
+  return null;
+}
+
 async function upsertCampaign(client: Client, campaignData?: { id?: number | string; name?: string }) {
   if (!campaignData?.id) return null;
 
@@ -526,7 +586,6 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     return NextResponse.json({ success: true, deduped: true, eventType: "UNTRACKED_REPLY_RECEIVED" });
   }
 
-  // For untracked replies, lead data is null - create from reply sender info
   const fromEmail = reply.from_email_address;
   const fromName = reply.from_name;
 
@@ -536,7 +595,78 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 
   const senderAccountId = data?.sender_email?.id ? String(data.sender_email.id) : undefined;
 
-  // Create lead from reply sender info (no campaign association)
+  // Check if this is a bounce notification
+  if (isBounceEmail(fromEmail)) {
+    console.log(`[UNTRACKED_REPLY] Detected bounce email from: ${fromEmail}`);
+    
+    // Try to parse the original recipient from the bounce body
+    const originalRecipient = parseBounceRecipient(reply.html_body, reply.text_body);
+    
+    if (originalRecipient) {
+      // Find the original lead by the recipient email
+      const originalLead = await prisma.lead.findFirst({
+        where: {
+          clientId: client.id,
+          email: { equals: originalRecipient, mode: "insensitive" },
+        },
+      });
+
+      if (originalLead) {
+        console.log(`[BOUNCE] Linking bounce to original lead: ${originalLead.id} (${originalRecipient})`);
+        
+        const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
+        const sentAt = parseDate(reply.date_received, reply.created_at);
+
+        // Create bounce message attached to the ORIGINAL lead
+        await prisma.message.create({
+          data: {
+            emailBisonReplyId,
+            channel: "email",
+            source: "bounce",
+            body: cleaned.cleaned || `Email delivery failed to ${originalRecipient}`,
+            rawText: cleaned.rawText ?? null,
+            rawHtml: cleaned.rawHtml ?? null,
+            subject: reply.email_subject ?? "Delivery Status Notification (Failure)",
+            isRead: false,
+            direction: "inbound",
+            leadId: originalLead.id,
+            sentAt,
+          },
+        });
+
+        // Mark the original lead as blacklisted (email is invalid)
+        await prisma.lead.update({
+          where: { id: originalLead.id },
+          data: { 
+            status: "blacklisted",
+            sentimentTag: "Blacklist",
+          },
+        });
+
+        console.log(`[BOUNCE] Marked lead ${originalLead.id} as blacklisted due to bounce`);
+
+        return NextResponse.json({
+          success: true,
+          eventType: "BOUNCE_HANDLED",
+          originalLeadId: originalLead.id,
+          bouncedEmail: originalRecipient,
+          status: "blacklisted",
+        });
+      } else {
+        console.log(`[BOUNCE] Could not find original lead for: ${originalRecipient}`);
+      }
+    }
+    
+    // If we couldn't parse recipient or find the lead, log but don't create fake lead
+    console.log(`[BOUNCE] Ignoring bounce - could not link to original lead`);
+    return NextResponse.json({
+      success: true,
+      eventType: "BOUNCE_IGNORED",
+      reason: "Could not identify original recipient",
+    });
+  }
+
+  // Regular untracked reply - create/find lead from sender info
   const lead = await upsertLead(
     client,
     {
