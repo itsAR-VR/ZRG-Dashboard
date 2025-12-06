@@ -1,7 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { sendEmailBisonReply, type EmailBisonRecipient } from "@/lib/emailbison-api";
+import { sendEmailBisonReply } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
 
 interface SendEmailResult {
@@ -81,7 +81,7 @@ export async function sendEmailReply(
     }
 
     const client = lead.client;
-    if (!client.emailBisonApiKey) {
+    if (!client.emailBisonApiKey || !client.emailBisonInstanceUrl) {
       return { success: false, error: "Client missing EmailBison credentials" };
     }
 
@@ -117,39 +117,16 @@ export async function sendEmailReply(
     const messageContent = editedContent || draft.content;
     const subject = latestInboundEmail?.subject || null;
 
-    // Build recipient list - the lead is the primary recipient
-    const toEmails: EmailBisonRecipient[] = [
-      {
-        name: lead.firstName && lead.lastName 
-          ? `${lead.firstName} ${lead.lastName}`.trim()
-          : lead.firstName || lead.lastName || null,
-        email_address: lead.email,
-      },
-    ];
-
-    // Convert CC/BCC from string arrays to recipient objects
-    const ccEmails: EmailBisonRecipient[] = (latestInboundEmail?.cc || []).map((email) => ({
-      name: null,
-      email_address: email,
-    }));
-
-    const bccEmails: EmailBisonRecipient[] = (latestInboundEmail?.bcc || []).map((email) => ({
-      name: null,
-      email_address: email,
-    }));
-
     const sendResult = await sendEmailBisonReply(
+      client.emailBisonInstanceUrl,
       client.emailBisonApiKey,
       replyId,
       {
         message: messageContent,
-        sender_email_id: parseInt(lead.senderAccountId, 10),
-        to_emails: toEmails,
+        sender_email_id: lead.senderAccountId,
         subject: subject || undefined,
-        cc_emails: ccEmails.length > 0 ? ccEmails : undefined,
-        bcc_emails: bccEmails.length > 0 ? bccEmails : undefined,
-        inject_previous_email_body: true,
-        content_type: "text",
+        cc: latestInboundEmail?.cc || [],
+        bcc: latestInboundEmail?.bcc || [],
       }
     );
 
@@ -185,4 +162,3 @@ export async function sendEmailReply(
     return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
   }
 }
-

@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { sendSMS, exportMessages, type GHLExportedMessage } from "@/lib/ghl-api";
+import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
