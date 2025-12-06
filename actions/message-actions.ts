@@ -23,6 +23,13 @@ interface SyncHistoryResult {
   error?: string;
 }
 
+// Extended result that tracks which channels were synced (for draft generation)
+interface SmartSyncResult extends SyncHistoryResult {
+  syncedSms?: boolean;
+  syncedEmail?: boolean;
+}
+
+
 export interface LeadSyncInfo {
   leadId: string;
   canSyncSms: boolean;
@@ -100,7 +107,7 @@ export async function getLeadSyncInfo(leadId: string): Promise<{
  * Smart sync that automatically determines which sync method to use
  * Based on lead's external IDs
  */
-export async function smartSyncConversation(leadId: string): Promise<SyncHistoryResult> {
+export async function smartSyncConversation(leadId: string): Promise<SmartSyncResult> {
   // First get the lead's sync capabilities
   const syncInfo = await getLeadSyncInfo(leadId);
 
@@ -136,6 +143,8 @@ export async function smartSyncConversation(leadId: string): Promise<SyncHistory
   let totalSkipped = 0;
   const errors: string[] = [];
 
+  let syncedSms = false;
+  let syncedEmail = false;
   // Sync SMS if available
   if (canSyncSms) {
     const smsResult = await syncConversationHistory(leadId);
@@ -144,6 +153,7 @@ export async function smartSyncConversation(leadId: string): Promise<SyncHistory
       totalHealed += smsResult.healedCount || 0;
       totalMessages += smsResult.totalMessages || 0;
       totalSkipped += smsResult.skippedDuplicates || 0;
+      syncedSms = true;
     } else if (smsResult.error) {
       errors.push(`SMS: ${smsResult.error}`);
     }
@@ -157,6 +167,7 @@ export async function smartSyncConversation(leadId: string): Promise<SyncHistory
       totalHealed += emailResult.healedCount || 0;
       totalMessages += emailResult.totalMessages || 0;
       totalSkipped += emailResult.skippedDuplicates || 0;
+      syncedEmail = true;
     } else if (emailResult.error) {
       errors.push(`Email: ${emailResult.error}`);
     }
@@ -173,6 +184,8 @@ export async function smartSyncConversation(leadId: string): Promise<SyncHistory
     healedCount: totalHealed,
     totalMessages,
     skippedDuplicates: totalSkipped,
+    syncedSms,
+    syncedEmail,
   };
 }
 
@@ -482,13 +495,22 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
 
             // Only generate draft if not blacklisted
             if (lead && shouldGenerateDraft(lead.sentimentTag || "Neutral")) {
-              // Determine channel based on what IDs the lead has
-              const leadData = batch[j];
-              const channel = leadData.emailBisonLeadId ? "email" : "sms";
-              const draftResult = await regenerateDraft(leadId, channel);
-              if (draftResult.success) {
-                totalDraftsGenerated++;
-                console.log(`[SyncAll] Generated ${channel} draft for lead ${leadId}`);
+              const syncResult = result.value as SmartSyncResult;
+              
+              // BUG FIX: Generate drafts for BOTH channels that were synced
+              if (syncResult.syncedSms) {
+                const smsDraftResult = await regenerateDraft(leadId, "sms");
+                if (smsDraftResult.success) {
+                  totalDraftsGenerated++;
+                  console.log(`[SyncAll] Generated SMS draft for lead ${leadId}`);
+                }
+              }
+              if (syncResult.syncedEmail) {
+                const emailDraftResult = await regenerateDraft(leadId, "email");
+                if (emailDraftResult.success) {
+                  totalDraftsGenerated++;
+                  console.log(`[SyncAll] Generated Email draft for lead ${leadId}`);
+                }
               }
             }
           } catch (draftError) {
@@ -1295,6 +1317,9 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
     errors: [],
   };
 
+
+  // BUG FIX: Track unique leads that have been blacklisted to avoid double-counting
+  const blacklistedLeadIds = new Set<string>();
   try {
     // Find fake bounce leads (mailer-daemon, Mail Delivery Subsystem, etc.)
     const fakeLeads = await prisma.lead.findMany({
@@ -1344,16 +1369,20 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
               });
               result.messagesMigrated++;
 
-              // Blacklist the original lead
-              await prisma.lead.update({
-                where: { id: originalLead.id },
-                data: {
-                  status: "blacklisted",
-                  sentimentTag: "Blacklist",
-                },
-              });
-              result.leadsBlacklisted++;
 
+              // BUG FIX: Only blacklist and count if not already blacklisted
+              if (!blacklistedLeadIds.has(originalLead.id)) {
+                await prisma.lead.update({
+                  where: { id: originalLead.id },
+                  data: {
+                    status: "blacklisted",
+                    sentimentTag: "Blacklist",
+                  },
+                });
+                blacklistedLeadIds.add(originalLead.id);
+                result.leadsBlacklisted++;
+                console.log(`[CleanupBounce] Blacklisted lead ${originalLead.id} (${originalRecipient})`);
+              }
               console.log(`[CleanupBounce] Migrated message to lead ${originalLead.id} (${originalRecipient})`);
             } else {
               console.log(`[CleanupBounce] Could not find original lead for: ${originalRecipient}`);
@@ -1381,7 +1410,7 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
 
     revalidatePath("/");
     
-    console.log(`[CleanupBounce] Complete: ${result.messagesMigrated} messages migrated, ${result.leadsDeleted} fake leads deleted, ${result.leadsBlacklisted} leads blacklisted`);
+    console.log(`[CleanupBounce] Complete: ${result.messagesMigrated} messages migrated, ${result.leadsDeleted} fake leads deleted, ${result.leadsBlacklisted} unique leads blacklisted`);
     
     return result;
   } catch (error) {
@@ -1393,4 +1422,3 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
     };
   }
 }
-
