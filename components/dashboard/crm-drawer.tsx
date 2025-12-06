@@ -5,6 +5,7 @@ import type { Lead } from "@/lib/mock-data"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
 import { 
   Mail, 
   Phone, 
@@ -16,10 +17,11 @@ import {
   X, 
   Loader2,
   Check,
-  AlarmClock
+  AlarmClock,
+  Bot
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { updateLeadStatus, snoozeLead, bookMeeting } from "@/actions/crm-actions"
+import { updateLeadStatus, snoozeLead, bookMeeting, updateLeadAutomationSettings } from "@/actions/crm-actions"
 import { createFollowUpTask } from "@/actions/followup-actions"
 import { toast } from "sonner"
 import {
@@ -68,6 +70,10 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
   const [isBookingMeeting, setIsBookingMeeting] = useState(false)
   const [isSnoozing, setIsSnoozing] = useState(false)
   const [isCreatingFollowUp, setIsCreatingFollowUp] = useState(false)
+  
+  // Automation states
+  const [autoReplyEnabled, setAutoReplyEnabled] = useState(lead.autoReplyEnabled || false)
+  const [autoFollowUpEnabled, setAutoFollowUpEnabled] = useState(lead.autoFollowUpEnabled || false)
 
   if (!isOpen) return null
 
@@ -102,6 +108,25 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
       } else {
         toast.error(result.error || "Failed to update status")
         setCurrentStatus(lead.status) // Revert on error
+      }
+    })
+  }
+
+  const handleAutomationChange = async (key: "autoReplyEnabled" | "autoFollowUpEnabled", value: boolean) => {
+    // Optimistic update
+    if (key === "autoReplyEnabled") setAutoReplyEnabled(value)
+    if (key === "autoFollowUpEnabled") setAutoFollowUpEnabled(value)
+
+    startTransition(async () => {
+      const result = await updateLeadAutomationSettings(lead.id, { [key]: value })
+      if (result.success) {
+        toast.success(`${key === "autoReplyEnabled" ? "Auto-reply" : "Auto-follow-up"} settings updated`)
+        onLeadUpdate?.()
+      } else {
+        toast.error(result.error || "Failed to update settings")
+        // Revert
+        if (key === "autoReplyEnabled") setAutoReplyEnabled(!value)
+        if (key === "autoFollowUpEnabled") setAutoFollowUpEnabled(!value)
       }
     })
   }
@@ -238,6 +263,46 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          <Separator />
+
+          {/* Automation */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-primary" />
+              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Automation</h4>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label className="text-sm font-medium">Auto Replies</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Automatically send AI drafts
+                  </p>
+                </div>
+                <Switch 
+                  checked={autoReplyEnabled}
+                  onCheckedChange={(val) => handleAutomationChange("autoReplyEnabled", val)}
+                  disabled={isPending}
+                />
+              </div>
+              
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label className="text-sm font-medium">Auto Follow-ups</Label>
+                  <p className="text-xs text-muted-foreground">
+                    Enable automated follow-ups
+                  </p>
+                </div>
+                <Switch 
+                  checked={autoFollowUpEnabled}
+                  onCheckedChange={(val) => handleAutomationChange("autoFollowUpEnabled", val)}
+                  disabled={isPending}
+                />
+              </div>
+            </div>
           </div>
 
           <Separator />

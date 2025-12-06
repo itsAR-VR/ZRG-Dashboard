@@ -12,6 +12,8 @@ export interface ConversationData {
     company: string;
     title: string;
     status: string;
+    autoReplyEnabled: boolean;
+    autoFollowUpEnabled: boolean;
   };
   platform: "email" | "sms" | "linkedin";
   classification: string;
@@ -95,6 +97,8 @@ export async function getConversations(clientId?: string | null): Promise<{
           company: lead.client.name,
           title: "", // Not stored in current schema
           status: lead.status,
+          autoReplyEnabled: lead.autoReplyEnabled,
+          autoFollowUpEnabled: lead.autoFollowUpEnabled,
         },
         platform: "sms" as const, // Currently only SMS is implemented
         classification: mapSentimentToClassification(lead.sentimentTag),
@@ -202,6 +206,8 @@ export async function getConversation(leadId: string) {
           title: "",
           status: lead.status,
           sentimentTag: lead.sentimentTag,
+          autoReplyEnabled: lead.autoReplyEnabled,
+          autoFollowUpEnabled: lead.autoFollowUpEnabled,
         },
         messages: lead.messages.map((msg) => ({
           id: msg.id,
@@ -216,4 +222,3 @@ export async function getConversation(leadId: string) {
     return { success: false, error: "Failed to fetch conversation" };
   }
 }
-

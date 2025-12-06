@@ -16,6 +16,8 @@ export interface CRMLeadData {
   createdAt: Date;
   updatedAt: Date;
   messageCount: number;
+  autoReplyEnabled: boolean;
+  autoFollowUpEnabled: boolean;
 }
 
 /**
@@ -72,6 +74,8 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
         createdAt: lead.createdAt,
         updatedAt: lead.updatedAt,
         messageCount: lead._count.messages,
+        autoReplyEnabled: lead.autoReplyEnabled,
+        autoFollowUpEnabled: lead.autoFollowUpEnabled,
       };
     });
 
@@ -100,6 +104,30 @@ export async function updateLeadStatus(
   } catch (error) {
     console.error("Failed to update lead status:", error);
     return { success: false, error: "Failed to update status" };
+  }
+}
+
+/**
+ * Update lead automation settings
+ */
+export async function updateLeadAutomationSettings(
+  leadId: string,
+  settings: {
+    autoReplyEnabled?: boolean;
+    autoFollowUpEnabled?: boolean;
+  }
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: settings,
+    });
+
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to update lead automation settings:", error);
+    return { success: false, error: "Failed to update settings" };
   }
 }
 
@@ -158,6 +186,8 @@ export async function getLeadDetails(leadId: string) {
         messages: lead.messages,
         createdAt: lead.createdAt,
         updatedAt: lead.updatedAt,
+        autoReplyEnabled: lead.autoReplyEnabled,
+        autoFollowUpEnabled: lead.autoFollowUpEnabled,
       },
     };
   } catch (error) {
@@ -230,4 +260,3 @@ export async function bookMeeting(
     return { success: false, error: "Failed to book meeting" };
   }
 }
-

@@ -16,6 +16,8 @@ export interface Lead {
   website: string
   timezone: string
   leadScore: number
+  autoReplyEnabled: boolean
+  autoFollowUpEnabled: boolean
   status: "new" | "qualified" | "meeting-booked" | "blacklisted" | "not-interested" | "meeting-requested" | "information-requested" | "call-requested"
   qualification: {
     budget: boolean

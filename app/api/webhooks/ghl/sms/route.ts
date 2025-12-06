@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { syncConversationHistory } from "@/actions/message-actions";
+import { syncConversationHistory, approveAndSendDraft } from "@/actions/message-actions";
 import { classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
 
 /**
@@ -527,6 +527,19 @@ export async function POST(request: NextRequest) {
         if (draftResult.success) {
           draftId = draftResult.draftId;
           console.log(`Generated AI draft: ${draftId}`);
+          
+          // Auto-Reply Logic: Check if enabled for this lead
+          // lead.autoReplyEnabled comes from the database (via upsert)
+          if (lead.autoReplyEnabled && draftId) {
+             console.log(`[Auto-Reply] Auto-approving draft ${draftId} for lead ${lead.id}`);
+             const sendResult = await approveAndSendDraft(draftId);
+             if (sendResult.success) {
+                 console.log(`[Auto-Reply] Sent message: ${sendResult.messageId}`);
+                 // Draft status is now 'approved' in DB
+             } else {
+                 console.error(`[Auto-Reply] Failed to send draft: ${sendResult.error}`);
+             }
+          }
         } else {
           console.error("Failed to generate AI draft:", draftResult.error);
         }
