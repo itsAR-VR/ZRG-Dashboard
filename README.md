@@ -66,16 +66,6 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - [x] **Settings Page** - Workspace management, API key configuration
 - [x] **Email Credential Management** - Inboxxia API key input per workspace
 
-### Calendar Availability Integration (New)
-- [x] **Multi-Calendar Support** — Add multiple calendar links (Calendly, HubSpot, GoHighLevel) per workspace
-- [x] **Auto-Detection** — Calendar type automatically detected from URL patterns
-- [x] **Default Calendar** — Set a workspace-wide default calendar for availability
-- [x] **Per-Lead Override** — Assign specific calendars to individual leads in CRM drawer
-- [x] **Real-Time Availability** — Fetches live availability slots when generating AI email drafts
-- [x] **Configurable Settings** — Adjust number of slots shown (2-5) and look-ahead period (7-28 days)
-- [x] **AI Integration** — Availability automatically injected into follow-up email drafts
-- [x] **Timezone Support** — Converts availability to lead timezone (if known) or workspace timezone
-
 ---
 
 ## 🔌 Core Integrations
@@ -129,7 +119,6 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   sentiment.ts              # Sentiment classification logic
   ai-drafts.ts              # AI draft generation
   emailbison-api.ts         # Inboxxia API client
-  calendar-availability.ts  # Calendar availability fetching (Calendly/HubSpot/GHL)
 
 /prisma
   schema.prisma             # Database schema
@@ -144,14 +133,13 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 | Model | Purpose |
 |-------|---------|
 | `Client` | Workspace/tenant with GHL + Inboxxia API keys |
-| `Lead` | Contact record with sentiment, status, campaign links, calendar preference |
+| `Lead` | Contact record with sentiment, status, campaign links |
 | `Message` | Conversation messages (SMS/Email, inbound/outbound) |
 | `Campaign` | GHL SMS campaigns |
 | `EmailCampaign` | Inboxxia email campaigns |
 | `AIDraft` | Pending AI-generated response drafts |
 | `FollowUpTask` | Scheduled follow-up tasks |
-| `WorkspaceSettings` | AI personality, automation rules, calendar settings |
-| `CalendarLink` | Calendar booking URLs (Calendly/HubSpot/GHL) per workspace |
+| `WorkspaceSettings` | AI personality, automation rules |
 
 ### Key Message Fields
 
@@ -236,20 +224,20 @@ npm run dev
 - [x] Auto-reply system for qualified leads
 - [x] Unified inbox for SMS + Email with channel tabs and cross-channel dedup
 - [x] Campaign sync and management
-- [x] **Calendar Availability** — Real-time availability from Calendly/HubSpot/GHL injected into AI email drafts
+- [x] Follow-Up Sequences - Multi-step, multi-channel follow-up chains with Day 2/5/7 templates
+- [x] Calendar Link Management - Multiple calendar links per workspace with availability fetching
+- [x] Template Variables - {senderName}, {companyName}, {result}, {calendarLink}, {qualificationQuestion1/2}
 
 ### 🚧 In Progress / Next Up
 - [ ] **AI Persona Enhancements** - Service description, qualification questions, knowledge assets for better AI context
-- [ ] **Follow-Up Sequences** - Multi-step, multi-channel follow-up chains with Day 2/5/7 templates
 - [ ] **Channel-Aware Analytics** - Open/reply rates by channel, sentiment trends
 - [ ] **Email Opens Persistence** - Store EMAIL_OPENED events for analytics
 - [ ] **Lead Scoring** - AI-powered prioritization across channels
 
-### 📋 Future Phases
+### 📋 Future Phases (see `lib/future-integrations.ts` for detailed specs)
 - [ ] **Phase III: LinkedIn Integration** - Unipile API for LinkedIn messaging (channel = `linkedin`)
-- [x] **Phase IV: Calendar Availability** - ✅ Availability fetching from Calendly/HubSpot/GHL complete
-  - [ ] **Phase IV-B: Automated Booking** - Programmatic meeting scheduling via calendar APIs (pending)
-- [ ] **Phase V: AI Voice Caller** - Sora Media integration for AI-powered qualification calls and double-dial touchpoints
+- [ ] **Phase IV: Calendar Automation** - Automated meeting booking when lead selects a time
+- [ ] **Phase V: AI Voice Caller** - Retell AI via SIP trunking for qualification calls and double-dial touchpoints
 - [ ] **Phase VI: Advanced Analytics** - Funnel visualization, A/B testing
 - [ ] **Phase VII: Team Features** - Multi-user access, assignment workflows
 - [ ] **EmailGuard Integration** - Email validation before sending
@@ -258,50 +246,45 @@ npm run dev
 
 ## 🔮 Future Integration Notes
 
-### Calendar Integration (Phase IV)
-**Status:** Availability Fetching Complete ✅ | Automated Booking Pending
+> **Detailed specifications for future integrations are documented in [`lib/future-integrations.ts`](lib/future-integrations.ts)**
 
-**Completed:**
-- Real-time availability fetching from Calendly, HubSpot, and GoHighLevel calendars
-- Multiple calendar links per workspace with default selection
-- Per-lead calendar override in CRM drawer
-- AI email drafts automatically include availability slots
-- Configurable slot count and look-ahead days
+### Calendar Availability (Phase IV - Partially Complete)
+**Status:** Availability fetching implemented, automated booking pending
 
-**Pending (Phase IV-B):**
-- Programmatic meeting booking via calendar APIs
-- Sync booked meetings back to the dashboard
-- Calendar event creation/updates
+**What's working:**
+- Multiple calendar links per workspace (`CalendarLink` model)
+- Auto-detection of calendar type (Calendly, HubSpot, GoHighLevel)
+- Real-time availability slot fetching via `lib/calendar-availability.ts`
+- `{availability}` and `{calendarLink}` template variables in follow-ups
 
-**Supported Calendar Platforms:**
-- Calendly (standard and scheduling links)
-- HubSpot Meetings
-- GoHighLevel calendars
+**Still needed:**
+- Automated booking when lead selects a time
+- Meeting confirmation sync back to dashboard
 
 ### AI Voice Caller (Phase V)
-**Status:** Planned - Sora Media scoping in progress
+**Status:** Channel scaffolded, API integration pending
+**Provider:** Retell AI via SIP trunking
 
-AI-powered voice calling for:
-- Qualification calls after lead selects meeting time
-- Double-dial touchpoints when leads don't respond to email/SMS
-- Automated follow-up calls with handoff to human if needed
+**Use cases in follow-up sequences:**
+- Post-booking qualification calls (ask qualification questions before meeting)
+- Double-dial touchpoints (Day 2 if phone provided, immediate AI call)
+- Fallback: If AI call not answered, system sends SMS instead
 
-**Use cases:**
-- Day 2: If phone provided, AI caller attempts qualification questions
-- Fallback: If AI call not answered, send SMS instead
+**Channel:** `ai_voice` in `FollowUpStep.channel`
 
 ### LinkedIn Integration (Phase III)
 **Status:** Schema scaffolded, API integration pending
+**Provider:** Unipile API
 
-Database fields ready:
+**Database fields ready:**
 - `Lead.linkedinId` - LinkedIn member ID
 - `Lead.linkedinUrl` - Profile URL
 - `Message.channel = 'linkedin'` - Message channel support
 
-**Planned integration:** Unipile API for:
-- Sending LinkedIn messages/InMails
+**Planned integration:**
+- Check if lead has connected on LinkedIn (`linkedin_connected` condition)
+- Send follow-up messages via LinkedIn if connected
 - Connection request automation
-- Message sync to unified inbox
 
 ---
 

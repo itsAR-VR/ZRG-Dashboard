@@ -727,3 +727,4 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
     </div>
   );
 }
+

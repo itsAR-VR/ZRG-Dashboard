@@ -719,67 +719,110 @@ export async function advanceFollowUpInstance(
 // =============================================================================
 
 /**
- * Create the default Day 2/5/7 follow-up sequence for a workspace
+ * Create the default "No Response" Day 2/5/7 follow-up sequence for a workspace
+ * Triggered when lead doesn't respond to initial outreach
  */
 export async function createDefaultSequence(
   clientId: string
 ): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
-  const defaultSteps: Omit<FollowUpStepData, "id">[] = [
+  const noResponseSteps: Omit<FollowUpStepData, "id">[] = [
+    // DAY 2 - Ask for phone number
     {
       stepOrder: 1,
       dayOffset: 2,
       channel: "email",
-      messageTemplate: "Hi {firstName},\n\nJust following up on my previous message. Would love to connect and learn more about your needs.\n\nDo you have 15 minutes this week for a quick call?",
-      subject: "Following up - quick question",
+      messageTemplate: `Hi {firstName},
+
+Could I get the best number to reach you on so we can give you a call?
+
+Looking forward to connecting.
+
+{senderName}`,
+      subject: "Quick question",
       condition: { type: "always" },
       requiresApproval: false,
       fallbackStepId: null,
     },
+    // DAY 2 - AI Voice call if phone provided (immediate engagement)
     {
       stepOrder: 2,
       dayOffset: 2,
-      channel: "sms",
-      messageTemplate: "Hi {firstName}, sent you an email - let me know if you'd like to chat!",
+      channel: "ai_voice",
+      messageTemplate: `Call lead to ask qualification questions and book them in. 
+Context: Lead provided phone number, this is a double-dial touchpoint for immediate engagement.`,
       subject: null,
       condition: { type: "phone_provided" },
       requiresApproval: false,
       fallbackStepId: null,
     },
+    // DAY 2 - SMS fallback asking for good time to call
     {
       stepOrder: 3,
-      dayOffset: 5,
-      channel: "email",
-      messageTemplate: "Hi {firstName},\n\nI wanted to share some availability in case you'd like to connect:\n\n{availability}\n\nLet me know what works for you!",
-      subject: "Re: Following up - quick question",
-      condition: { type: "always" },
+      dayOffset: 2,
+      channel: "sms",
+      messageTemplate: `Hey {firstName} - when is a good time to give you a call?`,
+      subject: null,
+      condition: { type: "phone_provided" },
       requiresApproval: false,
       fallbackStepId: null,
     },
+    // DAY 5 - Email with availability (in case they were busy)
     {
       stepOrder: 4,
       dayOffset: 5,
+      channel: "email",
+      messageTemplate: `Hi {firstName}, just had time to get back to you.
+
+I'm currently reviewing the slots I have left for new clients and just wanted to give you a fair shot in case you were still interested in {result}.
+
+No problem if not but just let me know. I have {availability} and if it's easier here's my calendar link for you to choose a time that works for you: {calendarLink}
+
+{senderName}`,
+      subject: "Re: Quick question",
+      condition: { type: "always" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 5 - SMS with times
+    {
+      stepOrder: 5,
+      dayOffset: 5,
       channel: "sms",
-      messageTemplate: "Hi {firstName}, shared some times that work for a call. Check your email when you have a chance!",
+      messageTemplate: `Hey {firstName} - {senderName} from {companyName} again
+
+Just sent over an email about getting {result}
+
+I have {availability} for you
+
+Here's the link to choose a time to talk if those don't work: {calendarLink}`,
       subject: null,
       condition: { type: "phone_provided" },
       requiresApproval: false,
       fallbackStepId: null,
     },
+    // DAY 7 - Final email
     {
-      stepOrder: 5,
+      stepOrder: 6,
       dayOffset: 7,
       channel: "email",
-      messageTemplate: "Hi {firstName},\n\nI don't want to be a pest, so this will be my last follow-up. If you're ever interested in connecting, feel free to reach out.\n\nBest of luck!",
-      subject: "Re: Following up - quick question",
+      messageTemplate: `Hey {firstName}, tried to reach you a few times but didn't hear back...
+
+Where should we go from here?
+
+{senderName}`,
+      subject: "Re: Quick question",
       condition: { type: "always" },
       requiresApproval: false,
       fallbackStepId: null,
     },
+    // DAY 7 - Final SMS
     {
-      stepOrder: 6,
+      stepOrder: 7,
       dayOffset: 7,
       channel: "sms",
-      messageTemplate: "Hi {firstName}, just sent my final follow-up. No pressure - reach out anytime if interested!",
+      messageTemplate: `Hey {firstName}, tried to reach you a few times but didn't hear back...
+
+Where should we go from here?`,
       subject: null,
       condition: { type: "phone_provided" },
       requiresApproval: false,
@@ -789,9 +832,88 @@ export async function createDefaultSequence(
 
   return createFollowUpSequence({
     clientId,
-    name: "Default Day 2/5/7 Sequence",
-    description: "Standard follow-up sequence: Day 2 (email + SMS), Day 5 (availability + SMS), Day 7 (final + SMS)",
+    name: "No Response Day 2/5/7",
+    description: "Triggered when lead doesn't respond: Day 2 (ask for phone + AI call), Day 5 (availability reminder), Day 7 (final check-in)",
     triggerOn: "no_response",
-    steps: defaultSteps,
+    steps: noResponseSteps,
   });
 }
+
+/**
+ * Create the "Post-Booking Qualification" sequence for a workspace
+ * Triggered after lead selects a meeting time
+ */
+export async function createPostBookingSequence(
+  clientId: string
+): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
+  const postBookingSteps: Omit<FollowUpStepData, "id">[] = [
+    // DAY 0 - Booking confirmation + qualification questions
+    {
+      stepOrder: 1,
+      dayOffset: 0,
+      channel: "email",
+      messageTemplate: `Great, I've booked you in and you should get a reminder to your email.
+
+Before the call would you be able to let me know {qualificationQuestion1} and {qualificationQuestion2} just so I'm able to prepare properly for the call.
+
+Looking forward to speaking with you!
+
+{senderName}`,
+      subject: "You're booked in!",
+      condition: { type: "always" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 1 - AI Voice call if no qualification info provided
+    {
+      stepOrder: 2,
+      dayOffset: 1,
+      channel: "ai_voice",
+      messageTemplate: `Call lead to ask for qualification information before the scheduled meeting.
+Context: Lead booked a meeting but hasn't provided qualification answers yet.
+Questions to ask: {qualificationQuestion1}, {qualificationQuestion2}`,
+      subject: null,
+      condition: { type: "no_response" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+  ];
+
+  return createFollowUpSequence({
+    clientId,
+    name: "Post-Booking Qualification",
+    description: "Triggered after meeting booked: Confirmation + request qualification info, AI call if not provided",
+    triggerOn: "meeting_selected",
+    steps: postBookingSteps,
+  });
+}
+
+/**
+ * Create both default sequences for a workspace
+ */
+export async function createAllDefaultSequences(
+  clientId: string
+): Promise<{ success: boolean; sequenceIds?: string[]; errors?: string[] }> {
+  const results = await Promise.all([
+    createDefaultSequence(clientId),
+    createPostBookingSequence(clientId),
+  ]);
+
+  const sequenceIds: string[] = [];
+  const errors: string[] = [];
+
+  for (const result of results) {
+    if (result.success && result.sequenceId) {
+      sequenceIds.push(result.sequenceId);
+    } else if (result.error) {
+      errors.push(result.error);
+    }
+  }
+
+  return {
+    success: errors.length === 0,
+    sequenceIds: sequenceIds.length > 0 ? sequenceIds : undefined,
+    errors: errors.length > 0 ? errors : undefined,
+  };
+}
+

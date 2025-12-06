@@ -246,3 +246,4 @@ export function getAvailableChannels(lead: { phone?: string | null; email?: stri
 
   return channels;
 }
+

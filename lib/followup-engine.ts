@@ -22,6 +22,17 @@ interface WorkspaceSettings {
   timezone: string | null;
   workStartTime: string | null;
   workEndTime: string | null;
+  // New fields for template variables
+  aiPersonaName: string | null;
+  companyName: string | null;
+  targetResult: string | null;
+  qualificationQuestions: string | null; // JSON array of questions
+  calendarSlotsToShow: number | null;
+}
+
+interface CalendarLinkData {
+  url: string;
+  name: string;
 }
 
 interface ExecutionResult {
@@ -190,26 +201,72 @@ export async function canSendFollowUp(leadId: string): Promise<boolean> {
 // =============================================================================
 
 /**
+ * Parse qualification questions from JSON string
+ */
+function parseQualificationQuestions(json: string | null): Array<{ id: string; question: string }> {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Get default calendar link for a workspace
+ */
+async function getDefaultCalendarLink(clientId: string): Promise<CalendarLinkData | null> {
+  try {
+    const calendarLink = await prisma.calendarLink.findFirst({
+      where: {
+        clientId,
+        isDefault: true,
+      },
+      select: {
+        url: true,
+        name: true,
+      },
+    });
+    return calendarLink;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Generate a follow-up message from template
+ * Supports variables: {firstName}, {lastName}, {email}, {phone}, {availability},
+ * {senderName}, {companyName}, {result}, {calendarLink}, {qualificationQuestion1}, {qualificationQuestion2}
  */
 export async function generateFollowUpMessage(
   step: FollowUpStepData,
   lead: LeadContext,
   settings: WorkspaceSettings | null
 ): Promise<{ content: string; subject: string | null }> {
+  // Fetch calendar link for the workspace
+  const calendarLink = await getDefaultCalendarLink(lead.clientId);
+
+  // Parse qualification questions
+  const qualificationQuestions = parseQualificationQuestions(settings?.qualificationQuestions || null);
+  const question1 = qualificationQuestions[0]?.question || "[qualification question 1]";
+  const question2 = qualificationQuestions[1]?.question || "[qualification question 2]";
+
   // Replace template variables
   const replaceVariables = (template: string | null): string => {
     if (!template) return "";
 
     // Get availability slots for email
     let availability = "";
+    const slotsToShow = settings?.calendarSlotsToShow || 3;
+    
     if (settings?.timezone) {
       const { hours: startH, minutes: startM } = parseTime(settings.workStartTime, "09:00");
       const { hours: endH, minutes: endM } = parseTime(settings.workEndTime, "17:00");
 
       const slots: string[] = [];
       const cursor = new Date();
-      while (slots.length < 3) {
+      while (slots.length < slotsToShow) {
         cursor.setDate(cursor.getDate() + 1);
         if (cursor.getDay() === 0 || cursor.getDay() === 6) continue;
 
@@ -220,18 +277,29 @@ export async function generateFollowUpMessage(
           timeZone: settings.timezone || "UTC",
         });
         slots.push(
-          `• ${dayStr}: ${startH}:${startM.toString().padStart(2, "0")} - ${endH}:${endM.toString().padStart(2, "0")}`
+          `${dayStr} ${startH}:${startM.toString().padStart(2, "0")} - ${endH}:${endM.toString().padStart(2, "0")}`
         );
       }
-      availability = slots.join("\n");
+      // Format as "Monday Dec 9, Tuesday Dec 10" style
+      availability = slots.join(" or ");
     }
 
     return template
+      // Lead variables
       .replace(/\{firstName\}/g, lead.firstName || "there")
       .replace(/\{lastName\}/g, lead.lastName || "")
       .replace(/\{email\}/g, lead.email || "")
       .replace(/\{phone\}/g, lead.phone || "")
-      .replace(/\{availability\}/g, availability);
+      // Workspace/company variables
+      .replace(/\{senderName\}/g, settings?.aiPersonaName || "")
+      .replace(/\{companyName\}/g, settings?.companyName || "")
+      .replace(/\{result\}/g, settings?.targetResult || "achieving your goals")
+      // Calendar/availability variables
+      .replace(/\{availability\}/g, availability)
+      .replace(/\{calendarLink\}/g, calendarLink?.url || "[calendar link]")
+      // Qualification questions
+      .replace(/\{qualificationQuestion1\}/g, question1)
+      .replace(/\{qualificationQuestion2\}/g, question2);
   };
 
   const content = replaceVariables(step.messageTemplate);
@@ -616,3 +684,4 @@ export async function pauseFollowUpsOnReply(leadId: string): Promise<void> {
     console.error("Failed to pause follow-ups on reply:", error);
   }
 }
+
