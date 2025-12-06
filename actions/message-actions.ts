@@ -426,6 +426,10 @@ export async function syncEmailConversationHistory(leadId: string): Promise<Sync
       lead.emailBisonLeadId
     );
 
+    if (!sentResult.success) {
+      return { success: false, error: sentResult.error || "Failed to fetch sent emails from EmailBison" };
+    }
+
     const replies = repliesResult.data || [];
     const sentEmails = sentResult.data || [];
     
