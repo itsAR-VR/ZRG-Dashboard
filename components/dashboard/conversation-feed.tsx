@@ -86,7 +86,7 @@ export function ConversationFeed({
   }, [filteredConversations, sortBy])
 
   // Count SMS conversations for sync all button
-  const smsCount = conversations.filter(c => c.platform === "sms").length
+  const smsCount = conversations.filter(c => c.channels?.includes("sms")).length
 
   return (
     <div className="flex h-full w-80 flex-col border-r border-border bg-background">

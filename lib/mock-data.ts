@@ -27,6 +27,8 @@ export interface Lead {
   }
 }
 
+export type Channel = "sms" | "email" | "linkedin";
+
 export interface Message {
   id: string
   sender: "lead" | "ai" | "human"
@@ -37,7 +39,7 @@ export interface Message {
   rawText?: string
   cc?: string[]
   bcc?: string[]
-  channel?: "email" | "sms"
+  channel: Channel
   direction?: "inbound" | "outbound"
   isRead?: boolean
 }
@@ -45,7 +47,10 @@ export interface Message {
 export interface Conversation {
   id: string
   lead: Lead
-  platform: "email" | "sms" | "linkedin"
+  channels: Channel[]           // All channels this lead has messages on
+  availableChannels: Channel[]  // Channels available based on contact info
+  primaryChannel: Channel       // Most recent/active channel
+  platform?: Channel            // @deprecated - use primaryChannel instead
   classification: "meeting-requested" | "not-interested" | "out-of-office" | "follow-up" | "new" | "information-requested" | "call-requested" | "blacklist" | "positive" | "neutral"
   lastMessage: string
   lastSubject?: string | null

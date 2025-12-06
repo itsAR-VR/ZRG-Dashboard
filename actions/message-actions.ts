@@ -261,8 +261,10 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
         clientId,
         ghlContactId: {
           not: null,
-          // Exclude email-only leads (those created from EmailBison)
-          not: { startsWith: "emailbison-" },
+        },
+        // Exclude email-only leads (those created from EmailBison)
+        NOT: {
+          ghlContactId: { startsWith: "emailbison-" },
         },
       },
       select: {
@@ -442,7 +444,7 @@ export async function sendMessage(
  * 
  * @param leadId - The internal lead ID
  */
-export async function getPendingDrafts(leadId: string, channel?: "sms" | "email") {
+export async function getPendingDrafts(leadId: string, channel?: "sms" | "email" | "linkedin") {
   try {
     console.log("[getPendingDrafts] Fetching drafts for leadId:", leadId);
 
@@ -564,7 +566,7 @@ export async function rejectDraft(draftId: string): Promise<{ success: boolean; 
  */
 export async function regenerateDraft(
   leadId: string,
-  channel: "sms" | "email" = "sms"
+  channel: "sms" | "email" | "linkedin" = "sms"
 ): Promise<{
   success: boolean;
   data?: { id: string; content: string };

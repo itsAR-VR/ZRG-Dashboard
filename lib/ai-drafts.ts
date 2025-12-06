@@ -5,7 +5,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-type DraftChannel = "sms" | "email";
+type DraftChannel = "sms" | "email" | "linkedin";
 
 interface DraftGenerationResult {
   success: boolean;

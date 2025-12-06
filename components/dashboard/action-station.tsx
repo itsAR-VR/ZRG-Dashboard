@@ -1,12 +1,13 @@
 "use client"
 
-import { useRef, useEffect, useState } from "react"
-import type { Conversation } from "@/lib/mock-data"
+import { useRef, useEffect, useState, useMemo } from "react"
+import type { Conversation, Channel } from "@/lib/mock-data"
 import { ChatMessage } from "./chat-message"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
-import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History } from "lucide-react"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { sendMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft } from "@/actions/message-actions"
 import { toast } from "sonner"
@@ -28,6 +29,18 @@ interface AIDraft {
   channel?: "sms" | "email"
 }
 
+const CHANNEL_ICONS = {
+  sms: MessageSquare,
+  email: Mail,
+  linkedin: Linkedin,
+} as const;
+
+const CHANNEL_LABELS = {
+  sms: "SMS",
+  email: "Email",
+  linkedin: "LinkedIn",
+} as const;
+
 export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing = false, onSync }: ActionStationProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [composeMessage, setComposeMessage] = useState("")
@@ -37,14 +50,48 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(false)
   const [hasAiDraft, setHasAiDraft] = useState(false)
   const [originalDraft, setOriginalDraft] = useState("")
+  const [activeChannel, setActiveChannel] = useState<Channel>("sms")
   const { user } = useUser()
-  const isEmail = conversation?.platform === "email"
+  
+  // Determine if current channel is email
+  const isEmail = activeChannel === "email"
+  
+  // Get available channels for this conversation
+  const channels = conversation?.channels || ["sms"]
+  const availableChannels = conversation?.availableChannels || ["sms"]
+  
+  // Calculate message counts per channel
+  const messageCounts = useMemo(() => {
+    const counts: Record<Channel, number> = { sms: 0, email: 0, linkedin: 0 }
+    if (!conversation?.messages) return counts
+    
+    for (const msg of conversation.messages) {
+      const ch = msg.channel || "sms"
+      counts[ch] = (counts[ch] || 0) + 1
+    }
+    return counts
+  }, [conversation?.messages])
+  
+  // Filter messages by active channel
+  const filteredMessages = useMemo(() => {
+    if (!conversation?.messages) return []
+    return conversation.messages.filter(msg => (msg.channel || "sms") === activeChannel)
+  }, [conversation?.messages, activeChannel])
+  
+  // Reset active channel when conversation changes
+  useEffect(() => {
+    if (conversation?.primaryChannel) {
+      setActiveChannel(conversation.primaryChannel)
+    } else if (channels.length > 0) {
+      setActiveChannel(channels[0])
+    }
+  }, [conversation?.id, conversation?.primaryChannel, channels])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [conversation?.messages])
 
-  // Fetch real AI drafts when conversation changes and auto-populate compose box
+  // Fetch real AI drafts when conversation or active channel changes
   useEffect(() => {
     async function fetchDrafts() {
       if (!conversation) {
@@ -55,9 +102,9 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
         return
       }
 
-      console.log("[ActionStation] Fetching drafts for conversation:", conversation.id, "hasAiDraft from props:", conversation.hasAiDraft)
+      console.log("[ActionStation] Fetching drafts for conversation:", conversation.id, "channel:", activeChannel)
       setIsLoadingDrafts(true)
-      const result = await getPendingDrafts(conversation.id, isEmail ? "email" : "sms")
+      const result = await getPendingDrafts(conversation.id, activeChannel)
       console.log("[ActionStation] Draft fetch result:", result)
       
       if (result.success && result.data && result.data.length > 0) {
@@ -80,7 +127,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
     }
 
     fetchDrafts()
-  }, [conversation?.id, isEmail])
+  }, [conversation?.id, activeChannel])
 
   const handleSendMessage = async () => {
     if (!composeMessage.trim() || !conversation) return
@@ -169,7 +216,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
       await rejectDraft(drafts[0].id)
     }
     
-    const result = await regenerateDraft(conversation.id, isEmail ? "email" : "sms")
+    const result = await regenerateDraft(conversation.id, activeChannel)
     
     if (result.success && result.data) {
       toast.success("New AI draft generated!")
@@ -295,10 +342,52 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
         </div>
       </header>
 
+      {/* Channel Tabs */}
+      {channels.length > 0 && (
+        <div className="border-b border-border px-6 py-2 bg-muted/30">
+          <Tabs value={activeChannel} onValueChange={(v) => setActiveChannel(v as Channel)}>
+            <TabsList className="h-8">
+              {availableChannels.map((ch) => {
+                const Icon = CHANNEL_ICONS[ch]
+                const count = messageCounts[ch]
+                const hasMessages = count > 0
+                const isActive = channels.includes(ch)
+                
+                return (
+                  <TabsTrigger 
+                    key={ch} 
+                    value={ch}
+                    disabled={!isActive && ch !== activeChannel}
+                    className={cn(
+                      "text-xs gap-1.5 px-3",
+                      !isActive && "opacity-50"
+                    )}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                    {CHANNEL_LABELS[ch]}
+                    {hasMessages && (
+                      <Badge 
+                        variant="secondary" 
+                        className="ml-1 h-4 px-1 text-[10px] font-normal"
+                      >
+                        {count}
+                      </Badge>
+                    )}
+                    {!isActive && ch === "linkedin" && (
+                      <span className="text-[10px] text-muted-foreground ml-1">(soon)</span>
+                    )}
+                  </TabsTrigger>
+                )
+              })}
+            </TabsList>
+          </Tabs>
+        </div>
+      )}
+
       {/* Chat Messages */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
-        {conversation.messages && conversation.messages.length > 0 ? (
-          conversation.messages.map((message) => (
+        {filteredMessages.length > 0 ? (
+          filteredMessages.map((message) => (
             <ChatMessage 
               key={message.id} 
               message={message} 
@@ -309,7 +398,14 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
           ))
         ) : (
           <div className="text-center text-muted-foreground py-8">
-            No messages yet
+            <div className="space-y-2">
+              <p>No {CHANNEL_LABELS[activeChannel]} messages yet</p>
+              {channels.length > 1 && (
+                <p className="text-xs">
+                  Try switching to another channel to see other messages
+                </p>
+              )}
+            </div>
           </div>
         )}
         <div ref={messagesEndRef} />

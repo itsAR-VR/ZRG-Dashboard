@@ -70,27 +70,35 @@ model Campaign {
   @@index([clientId])
 }
 
-// Lead/Contact record synced from GHL
+// Lead/Contact record - unified across SMS, Email, and LinkedIn channels
 model Lead {
   id           String        @id @default(uuid())
-  ghlContactId String        @unique
-  emailBisonLeadId String?
+  // External system IDs (all optional for multi-channel support)
+  ghlContactId     String?   @unique // GoHighLevel contact ID (for SMS)
+  emailBisonLeadId String?   // Inboxxia/EmailBison lead ID (for Email)
+  linkedinId       String?   // Future: LinkedIn member ID
+  linkedinUrl      String?   // Future: LinkedIn profile URL
+  // Contact information
   firstName    String?
   lastName     String?
   email        String?
-  phone        String?
+  phone        String?       // Stored normalized (digits only)
+  // Status and sentiment
   status       String        @default("new")
   sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.
   snoozedUntil DateTime?     // When snoozed, hide from inbox until this date
+  // Automation settings
   autoReplyEnabled Boolean   @default(false)
   autoFollowUpEnabled Boolean @default(false)
+  // Workspace and campaign associations
   clientId     String
   client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  campaignId   String?       // Optional link to the originating campaign
+  campaignId   String?       // Optional link to SMS campaign
   campaign     Campaign?     @relation(fields: [campaignId], references: [id])
   emailCampaignId String?    // Optional link to EmailBison campaign
   emailCampaign   EmailCampaign? @relation(fields: [emailCampaignId], references: [id])
   senderAccountId String?    // EmailBison sender email account id
+  // Relations
   messages     Message[]
   followUps    FollowUpTask[]
   aiDrafts     AIDraft[]
@@ -102,31 +110,41 @@ model Lead {
   @@index([emailCampaignId])
   @@index([emailBisonLeadId])
   @@index([sentimentTag])
+  @@index([email])          // For cross-channel matching
+  @@index([phone])          // For cross-channel matching
 }
 
-// Conversation messages (SMS or Email)
+// Conversation messages across all channels (SMS, Email, LinkedIn)
 model Message {
   id        String   @id @default(uuid())
-  ghlId     String?  @unique // GoHighLevel Message ID - source of truth for deduplication
-  emailBisonReplyId String?  @unique // EmailBison reply ID for deduplication
+  // External system IDs for deduplication
+  ghlId     String?  @unique // GoHighLevel Message ID (SMS)
+  emailBisonReplyId String?  @unique // EmailBison reply ID (Email)
   inboxxiaScheduledEmailId String? @unique // Inboxxia scheduled email ID for EMAIL_SENT dedup
+  // Channel and source
+  channel   String   @default("sms") // 'sms' | 'email' | 'linkedin'
   source    String   @default("zrg") // 'zrg' | 'inboxxia_campaign' - origin of the message
+  // Message content
   body      String   @db.Text
   rawText   String?  @db.Text // Original text body (if provided)
   rawHtml   String?  @db.Text // Original HTML body (if provided)
-  subject   String?
+  subject   String?           // Email subject line
   cc        String[] @default([])
   bcc       String[] @default([])
+  // Status
   isRead    Boolean  @default(false)
   direction String   // 'inbound' or 'outbound'
+  // Lead association
   leadId    String
   lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  sentAt    DateTime @default(now()) // Actual timestamp from GHL when message was sent/received
+  // Timestamps
+  sentAt    DateTime @default(now()) // Actual timestamp when message was sent/received
   createdAt DateTime @default(now()) // When record was created in our database
 
   @@index([leadId])
   @@index([sentAt(sort: Desc)])
   @@index([source])
+  @@index([channel])         // For filtering messages by channel
 }
 
 // Follow-up tasks for leads

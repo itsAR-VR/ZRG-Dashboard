@@ -82,10 +82,13 @@ function getClassificationStyle(classification: string) {
 }
 
 export function ConversationCard({ conversation, isActive, onClick, isSyncing = false }: ConversationCardProps) {
-  const PlatformIcon = platformIcons[conversation.platform]
+  // Use primaryChannel with fallback to platform for backward compatibility
+  const primaryChannel = conversation.primaryChannel || conversation.platform || "sms"
+  const PrimaryIcon = platformIcons[primaryChannel]
+  const channels = conversation.channels || [primaryChannel]
   const classification = getClassificationStyle(conversation.classification)
   const preview =
-    conversation.platform === "email" && conversation.lastSubject
+    (primaryChannel === "email" || channels.includes("email")) && conversation.lastSubject
       ? `${conversation.lastSubject} — ${conversation.lastMessage}`
       : conversation.lastMessage
 
@@ -115,7 +118,15 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
           <p className="text-sm text-muted-foreground truncate">{conversation.lead.company}</p>
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
-          {!isSyncing && <PlatformIcon className="h-4 w-4 text-muted-foreground" />}
+          {/* Show all channel icons if multiple channels */}
+          {!isSyncing && (
+            <div className="flex gap-0.5">
+              {channels.map((ch) => {
+                const Icon = platformIcons[ch]
+                return <Icon key={ch} className="h-3.5 w-3.5 text-muted-foreground" />
+              })}
+            </div>
+          )}
           <span className="text-xs text-muted-foreground">
             {formatDistanceToNow(conversation.lastMessageTime, { addSuffix: true })}
           </span>
@@ -124,10 +135,17 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
 
       <p className="mt-2 text-sm text-muted-foreground line-clamp-2">{preview}</p>
 
-      <div className="mt-3 flex items-center gap-2">
-        <Badge variant="outline" className="text-xs border-border text-muted-foreground">
-          {conversation.platform === "email" ? "Email" : conversation.platform.toUpperCase()}
-        </Badge>
+      <div className="mt-3 flex items-center gap-2 flex-wrap">
+        {/* Show channel badges for all active channels */}
+        {channels.map((ch) => (
+          <Badge 
+            key={ch}
+            variant="outline" 
+            className="text-xs border-border text-muted-foreground"
+          >
+            {ch === "email" ? "Email" : ch.toUpperCase()}
+          </Badge>
+        ))}
         <Badge variant="outline" className={cn("text-xs", classification.className)}>
           {classification.label}
         </Badge>

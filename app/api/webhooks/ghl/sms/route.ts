@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { syncConversationHistory, approveAndSendDraft } from "@/actions/message-actions";
 import { classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
+import { findOrCreateLead, normalizePhone } from "@/lib/lead-matching";
 
 /**
  * GHL Workflow Webhook Payload Structure
@@ -222,6 +223,7 @@ async function importHistoricalMessages(
           ghlId,
           body: msg.body,
           direction: msg.direction,
+          channel: "sms",
           leadId,
           sentAt: msgTimestamp,
         },
@@ -289,21 +291,31 @@ export async function POST(request: NextRequest) {
     const lastName = payload.last_name || payload.customData?.["Last Name"] || null;
     const email = payload.email || payload.customData?.Email || null;
     const phone = payload.phone || payload.customData?.["Phone Number"] || null;
+    const normalizedPhone = normalizePhone(phone);
 
     // Get the message body from current webhook
     const messageBody =
       payload.message?.body || payload.customData?.Message || "";
 
     console.log(`Processing message from ${firstName} ${lastName}: "${messageBody}"`);
+    console.log(`Contact info - Email: ${email}, Phone: ${phone} (normalized: ${normalizedPhone})`);
 
-    // Check if this is a new lead (first time seeing this contact)
-    const existingLead = await prisma.lead.findUnique({
-      where: { ghlContactId: contactId },
-      include: { _count: { select: { messages: true } } },
+    // Use findOrCreateLead for cross-channel deduplication
+    // This will match by email OR phone to find existing leads from other channels
+    const leadResult = await findOrCreateLead(
+      client.id,
+      { email, phone, firstName, lastName },
+      { ghlContactId: contactId }
+    );
+
+    const isNewLead = leadResult.isNew;
+    console.log(`Lead ${leadResult.lead.id}: ${isNewLead ? "NEW" : "EXISTING"} (matched by ${leadResult.matchedBy})`);
+
+    // Check if this lead has existing messages
+    const messageCount = await prisma.message.count({
+      where: { leadId: leadResult.lead.id },
     });
-
-    const isNewLead = !existingLead;
-    const hasNoMessages = !existingLead || existingLead._count.messages === 0;
+    const hasNoMessages = messageCount === 0;
 
     console.log(`Lead status: ${isNewLead ? "NEW" : "EXISTING"}, hasMessages: ${!hasNoMessages}`);
 
@@ -335,30 +347,16 @@ export async function POST(request: NextRequest) {
     const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || "new";
     console.log(`Lead status: ${leadStatus}`);
 
-    // Upsert the lead with auto-updated status
-    const lead = await prisma.lead.upsert({
-      where: { ghlContactId: contactId },
-      create: {
-        ghlContactId: contactId,
-        firstName,
-        lastName,
-        email,
-        phone,
+    // Update lead with sentiment classification
+    const lead = await prisma.lead.update({
+      where: { id: leadResult.lead.id },
+      data: {
+        sentimentTag,
         status: leadStatus,
-        sentimentTag,
-        clientId: client.id,
-      },
-      update: {
-        firstName: firstName || undefined,
-        lastName: lastName || undefined,
-        email: email || undefined,
-        phone: phone || undefined,
-        sentimentTag,
-        status: leadStatus, // Auto-update status based on sentiment
       },
     });
 
-    console.log(`Upserted lead: ${lead.id}`);
+    console.log(`Updated lead ${lead.id} with sentiment: ${sentimentTag}`);
 
     // Try to extract message timestamp from webhook payload
     // GHL may include date/time in customData or date_created field
@@ -429,6 +427,7 @@ export async function POST(request: NextRequest) {
             data: {
               body: messageBody,
               direction: "inbound",
+              channel: "sms",
               leadId: lead.id,
               sentAt: webhookMessageTime,
               // ghlId will be added on next sync
@@ -455,6 +454,7 @@ export async function POST(request: NextRequest) {
           data: {
             body: messageBody,
             direction: "inbound",
+            channel: "sms",
             leadId: lead.id,
             sentAt: webhookMessageTime,
             // ghlId will be added on next sync

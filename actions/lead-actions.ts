@@ -1,6 +1,9 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { getAvailableChannels } from "@/lib/lead-matching";
+
+export type Channel = "sms" | "email" | "linkedin";
 
 export interface ConversationData {
   id: string;
@@ -15,7 +18,9 @@ export interface ConversationData {
     autoReplyEnabled: boolean;
     autoFollowUpEnabled: boolean;
   };
-  platform: "email" | "sms" | "linkedin";
+  channels: Channel[];           // All channels this lead has messages on
+  availableChannels: Channel[];  // Channels available based on contact info
+  primaryChannel: Channel;       // Most recent/active channel
   classification: string;
   lastMessage: string;
   lastSubject?: string | null;
@@ -53,10 +58,18 @@ function requiresAttention(sentimentTag: string | null): boolean {
   return attentionTags.includes(sentimentTag || "");
 }
 
-function detectPlatform(
-  latestMessage: { emailBisonReplyId?: string | null; subject?: string | null; rawHtml?: string | null } | undefined,
+/**
+ * Detect the primary channel from the latest message
+ */
+function detectPrimaryChannel(
+  latestMessage: { channel?: string | null; emailBisonReplyId?: string | null; subject?: string | null; rawHtml?: string | null } | undefined,
   lead: { senderAccountId?: string | null }
-): "email" | "sms" {
+): Channel {
+  // Use explicit channel field if present
+  if (latestMessage?.channel) {
+    return latestMessage.channel as Channel;
+  }
+  // Fall back to heuristic detection for legacy messages
   if (latestMessage?.emailBisonReplyId || latestMessage?.subject || latestMessage?.rawHtml) {
     return "email";
   }
@@ -64,6 +77,22 @@ function detectPlatform(
     return "email";
   }
   return "sms";
+}
+
+/**
+ * Get unique channels from messages
+ */
+function getChannelsFromMessages(messages: { channel?: string | null }[]): Channel[] {
+  const channelSet = new Set<Channel>();
+  for (const msg of messages) {
+    if (msg.channel) {
+      channelSet.add(msg.channel as Channel);
+    } else {
+      // Legacy messages without channel field default to "sms"
+      channelSet.add("sms");
+    }
+  }
+  return Array.from(channelSet);
 }
 
 /**
@@ -87,7 +116,15 @@ export async function getConversations(clientId?: string | null): Promise<{
         },
         messages: {
           orderBy: { sentAt: "desc" },
-          take: 1,
+          select: {
+            id: true,
+            body: true,
+            subject: true,
+            channel: true,
+            emailBisonReplyId: true,
+            rawHtml: true,
+            sentAt: true,
+          },
         },
         aiDrafts: {
           where: { status: "pending" },
@@ -102,10 +139,12 @@ export async function getConversations(clientId?: string | null): Promise<{
     const conversations: ConversationData[] = leads.map((lead) => {
       const latestMessage = lead.messages[0];
       const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
-      const platform = detectPlatform(latestMessage, lead);
-      const campaignId = platform === "email" ? lead.emailCampaignId ?? lead.campaignId : lead.campaignId;
+      const primaryChannel = detectPrimaryChannel(latestMessage, lead);
+      const channels = getChannelsFromMessages(lead.messages);
+      const availableChannels = getAvailableChannels({ phone: lead.phone, email: lead.email });
+      const campaignId = primaryChannel === "email" ? lead.emailCampaignId ?? lead.campaignId : lead.campaignId;
       const channelDrafts = lead.aiDrafts.filter(
-        (draft) => draft.channel === platform || (!draft.channel && platform === "sms")
+        (draft) => draft.channel === primaryChannel || (!draft.channel && primaryChannel === "sms")
       );
 
       return {
@@ -121,7 +160,9 @@ export async function getConversations(clientId?: string | null): Promise<{
           autoReplyEnabled: lead.autoReplyEnabled,
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
         },
-        platform,
+        channels,
+        availableChannels,
+        primaryChannel,
         classification: mapSentimentToClassification(lead.sentimentTag),
         lastMessage: latestMessage?.body || "No messages yet",
         lastSubject: latestMessage?.subject || null,
@@ -202,7 +243,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
 /**
  * Get a single conversation with full message history
  */
-export async function getConversation(leadId: string) {
+export async function getConversation(leadId: string, channelFilter?: Channel) {
   try {
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
@@ -214,6 +255,7 @@ export async function getConversation(leadId: string) {
           },
         },
         messages: {
+          where: channelFilter ? { channel: channelFilter } : undefined,
           orderBy: { sentAt: "asc" }, // Order by actual message time
         },
       },
@@ -225,7 +267,9 @@ export async function getConversation(leadId: string) {
 
     const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
     const latestMessage = lead.messages[lead.messages.length - 1];
-    const platform = detectPlatform(latestMessage, lead);
+    const primaryChannel = detectPrimaryChannel(latestMessage, lead);
+    const channels = getChannelsFromMessages(lead.messages);
+    const availableChannels = getAvailableChannels({ phone: lead.phone, email: lead.email });
 
     return {
       success: true,
@@ -243,7 +287,9 @@ export async function getConversation(leadId: string) {
           autoReplyEnabled: lead.autoReplyEnabled,
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
         },
-        platform,
+        channels,
+        availableChannels,
+        primaryChannel,
         messages: lead.messages.map((msg) => ({
           id: msg.id,
           sender: msg.direction === "inbound" ? ("lead" as const) : ("ai" as const),
@@ -253,7 +299,7 @@ export async function getConversation(leadId: string) {
           rawText: msg.rawText || undefined,
           cc: msg.cc,
           bcc: msg.bcc,
-          channel: msg.emailBisonReplyId ? ("email" as const) : ("sms" as const),
+          channel: (msg.channel || "sms") as Channel,
           direction: msg.direction as "inbound" | "outbound",
           timestamp: msg.sentAt, // Use sentAt for actual message time
         })),

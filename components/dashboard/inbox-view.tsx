@@ -50,7 +50,10 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
         timing: false,
       },
     },
-    platform: conv.platform,
+    channels: conv.channels,
+    availableChannels: conv.availableChannels,
+    primaryChannel: conv.primaryChannel,
+    platform: conv.primaryChannel, // For backward compatibility
     classification: (conv.sentimentTag?.toLowerCase().replace(/\s+/g, "-") || conv.classification) as Conversation["classification"],
     lastMessage: conv.lastMessage,
     lastSubject: conv.lastSubject,
@@ -194,7 +197,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     
     // Get all SMS conversation IDs and mark them as syncing
     const smsLeadIds = conversations
-      .filter(c => c.platform === "sms")
+      .filter(c => c.channels.includes("sms"))
       .map(c => c.id);
     
     setSyncingLeadIds(new Set(smsLeadIds));
@@ -298,7 +301,8 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
 
   // Filter conversations by channel, filter, and sentiment
   const filteredConversations = conversations.filter((conv) => {
-    if (activeChannel !== "all" && conv.platform !== activeChannel) return false;
+    // Filter by channel - check if the lead has messages on that channel
+    if (activeChannel !== "all" && !conv.channels.includes(activeChannel as any)) return false;
     if (activeFilter === "attention" && !conv.requiresAttention) return false;
     if (activeFilter === "drafts" && !conv.hasAiDraft) return false;
     // Filter by sentiment tag

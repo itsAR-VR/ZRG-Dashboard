@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
+import { classifySentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraft } from "@/actions/message-actions";
+import { findOrCreateLead } from "@/lib/lead-matching";
 
 // =============================================================================
 // Type Definitions
@@ -197,47 +198,22 @@ async function upsertLead(
 
   const emailBisonLeadId = leadData?.id ? String(leadData.id) : undefined;
 
-  const existingLead = await prisma.lead.findFirst({
-    where: {
-      clientId: client.id,
-      OR: [
-        emailBisonLeadId ? { emailBisonLeadId } : undefined,
-        { email },
-      ].filter(Boolean) as any,
-    },
-  });
-
-  const placeholderContactId = emailBisonLeadId
-    ? `emailbison-${emailBisonLeadId}`
-    : `emailbison-${email.toLowerCase()}`;
-
-  if (existingLead) {
-    return prisma.lead.update({
-      where: { id: existingLead.id },
-      data: {
-        firstName: leadData?.first_name ?? existingLead.firstName ?? undefined,
-        lastName: leadData?.last_name ?? existingLead.lastName ?? undefined,
-        email,
-        emailBisonLeadId,
-        emailCampaignId: emailCampaignId ?? existingLead.emailCampaignId ?? undefined,
-        senderAccountId: senderAccountId ?? existingLead.senderAccountId ?? undefined,
-      },
-    });
-  }
-
-  return prisma.lead.create({
-    data: {
-      ghlContactId: placeholderContactId,
+  // Use findOrCreateLead for cross-channel deduplication
+  // This will match by email OR phone to find existing leads from SMS channel
+  const result = await findOrCreateLead(
+    client.id,
+    {
+      email,
       firstName: leadData?.first_name || null,
       lastName: leadData?.last_name || null,
-      email,
-      status: leadData?.status || "new",
-      clientId: client.id,
-      emailBisonLeadId,
-      emailCampaignId,
-      senderAccountId: senderAccountId ?? null,
     },
-  });
+    { emailBisonLeadId },
+    { emailCampaignId, senderAccountId }
+  );
+
+  console.log(`[Email Webhook] Lead ${result.lead.id}: ${result.isNew ? "NEW" : "EXISTING"} (matched by ${result.matchedBy})`);
+
+  return result.lead;
 }
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
@@ -300,7 +276,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   const contentForClassification = cleaned.cleaned || cleaned.rawText || cleaned.rawHtml || "";
 
   // If Inboxxia already marked as interested, use that; otherwise classify with AI
-  let sentimentTag: string;
+  let sentimentTag: SentimentTag;
   if (reply.interested === true) {
     sentimentTag = "Interested";
   } else {
@@ -320,6 +296,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   await prisma.message.create({
     data: {
       emailBisonReplyId,
+      channel: "email",
       source: "zrg", // Inbound replies are processed by ZRG
       body: cleaned.cleaned || contentForClassification,
       rawText: cleaned.rawText ?? null,
@@ -463,6 +440,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   await prisma.message.create({
     data: {
       emailBisonReplyId,
+      channel: "email",
       source: "zrg",
       body: cleaned.cleaned || contentForClassification,
       rawText: cleaned.rawText ?? null,
@@ -568,6 +546,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   await prisma.message.create({
     data: {
       emailBisonReplyId,
+      channel: "email",
       source: "zrg",
       body: cleaned.cleaned || contentForClassification,
       rawText: cleaned.rawText ?? null,
@@ -656,6 +635,7 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
   await prisma.message.create({
     data: {
       inboxxiaScheduledEmailId,
+      channel: "email",
       source: "inboxxia_campaign",
       body: scheduledEmail.email_body || "",
       rawHtml: scheduledEmail.email_body ?? null,
@@ -737,6 +717,7 @@ async function handleEmailBounced(request: NextRequest, payload: InboxxiaWebhook
 
   await prisma.message.create({
     data: {
+      channel: "email",
       source: "zrg",
       body: `[BOUNCED] ${cleaned.cleaned || bounceBody}`,
       rawHtml: reply?.html_body ?? null,

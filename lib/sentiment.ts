@@ -11,6 +11,7 @@ export const SENTIMENT_TAGS = [
   "Out of Office",
   "Positive",
   "Neutral",
+  "Interested", // From EmailBison LEAD_INTERESTED events
 ] as const;
 
 export type SentimentTag = (typeof SENTIMENT_TAGS)[number];
@@ -26,6 +27,7 @@ export const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
   "Out of Office": "new",
   "Positive": "qualified",
   "Neutral": "new",
+  "Interested": "qualified", // From EmailBison
 };
 
 const openai = new OpenAI({
