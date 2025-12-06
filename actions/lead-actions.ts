@@ -166,10 +166,15 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
           sentimentTag: { in: attentionTags },
         },
       }),
+      // Exclude drafts for blacklisted leads
       prisma.aIDraft.count({
         where: {
           status: "pending",
-          lead: clientId ? { clientId } : undefined,
+          lead: {
+            ...(clientId ? { clientId } : {}),
+            sentimentTag: { not: "Blacklist" },
+            status: { not: "blacklisted" },
+          },
         },
       }),
       prisma.lead.count({

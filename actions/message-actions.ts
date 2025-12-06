@@ -241,6 +241,7 @@ interface SyncAllResult {
   totalLeads: number;
   totalImported: number;
   totalHealed: number;
+  totalDraftsGenerated: number;
   errors: number;
   error?: string;
 }
@@ -248,6 +249,7 @@ interface SyncAllResult {
 /**
  * Sync all SMS conversations for a workspace (client)
  * Iterates through all leads with GHL contact IDs and syncs their history
+ * Also regenerates AI drafts for eligible leads (non-blacklisted)
  * 
  * @param clientId - The workspace/client ID to sync
  */
@@ -273,22 +275,47 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
 
     let totalImported = 0;
     let totalHealed = 0;
+    let totalDraftsGenerated = 0;
     let errors = 0;
 
     // Process leads in parallel with a concurrency limit
     const BATCH_SIZE = 5; // Process 5 at a time to avoid overwhelming GHL API
-    
+
     for (let i = 0; i < leads.length; i += BATCH_SIZE) {
       const batch = leads.slice(i, i + BATCH_SIZE);
-      
+
       const results = await Promise.allSettled(
         batch.map(lead => syncConversationHistory(lead.id))
       );
 
-      for (const result of results) {
+      // Process sync results and generate drafts for eligible leads
+      for (let j = 0; j < results.length; j++) {
+        const result = results[j];
+        const leadId = batch[j].id;
+
         if (result.status === "fulfilled" && result.value.success) {
           totalImported += result.value.importedCount || 0;
           totalHealed += result.value.healedCount || 0;
+
+          // After successful sync, regenerate AI draft if eligible
+          try {
+            // Fetch the lead's current sentiment after sync (sentiment was reclassified during sync)
+            const lead = await prisma.lead.findUnique({
+              where: { id: leadId },
+              select: { sentimentTag: true, status: true },
+            });
+
+            // Only generate draft if not blacklisted
+            if (lead && shouldGenerateDraft(lead.sentimentTag || "Neutral")) {
+              const draftResult = await regenerateDraft(leadId, "sms");
+              if (draftResult.success) {
+                totalDraftsGenerated++;
+                console.log(`[SyncAll] Generated draft for lead ${leadId}`);
+              }
+            }
+          } catch (draftError) {
+            console.error(`[SyncAll] Failed to generate draft for lead ${leadId}:`, draftError);
+          }
         } else {
           errors++;
           if (result.status === "rejected") {
@@ -300,7 +327,7 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
       }
     }
 
-    console.log(`[SyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${errors} errors`);
+    console.log(`[SyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalDraftsGenerated} drafts, ${errors} errors`);
 
     revalidatePath("/");
 
@@ -309,6 +336,7 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
       totalLeads: leads.length,
       totalImported,
       totalHealed,
+      totalDraftsGenerated,
       errors,
     };
   } catch (error) {
@@ -318,6 +346,7 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
       totalLeads: 0,
       totalImported: 0,
       totalHealed: 0,
+      totalDraftsGenerated: 0,
       errors: 1,
       error: error instanceof Error ? error.message : "Unknown error",
     };

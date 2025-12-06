@@ -5,8 +5,6 @@ import { ConversationFeed } from "./conversation-feed";
 import { ActionStation } from "./action-station";
 import { CrmDrawer } from "./crm-drawer";
 import { getConversations, getConversation, type ConversationData } from "@/actions/lead-actions";
-import { getCampaigns } from "@/actions/campaign-actions";
-import { getEmailCampaigns } from "@/actions/email-campaign-actions";
 import { syncConversationHistory, syncAllConversations } from "@/actions/message-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff, Inbox } from "lucide-react";
@@ -20,17 +18,16 @@ interface InboxViewProps {
   activeWorkspace: string | null;
 }
 
-interface Campaign {
-  id: string;
-  name: string;
-  type: "sms" | "email";
-}
-
 // Polling interval in milliseconds (30 seconds)
 const POLLING_INTERVAL = 30000;
 
+// Extended Conversation type with sentimentTag
+type ConversationWithSentiment = Conversation & { 
+  sentimentTag?: string | null;
+};
+
 // Convert DB conversation to component format
-function convertToComponentFormat(conv: ConversationData): Conversation & { campaignId?: string | null } {
+function convertToComponentFormat(conv: ConversationData): ConversationWithSentiment {
   return {
     id: conv.id,
     lead: {
@@ -61,20 +58,18 @@ function convertToComponentFormat(conv: ConversationData): Conversation & { camp
     messages: [],
     hasAiDraft: conv.hasAiDraft,
     requiresAttention: conv.requiresAttention,
-    campaignId: conv.campaignId,
-    emailCampaignId: conv.emailCampaignId,
+    sentimentTag: conv.sentimentTag, // Keep original sentiment tag for filtering
   };
 }
 
 export function InboxView({ activeChannel, activeFilter, activeWorkspace }: InboxViewProps) {
-  const [conversations, setConversations] = useState<(Conversation & { campaignId?: string | null })[]>([]);
+  const [conversations, setConversations] = useState<ConversationWithSentiment[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [isCrmOpen, setIsCrmOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isLive, setIsLive] = useState(false);
-  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [activeCampaign, setActiveCampaign] = useState<string>("all");
+  const [activeSentiment, setActiveSentiment] = useState<string>("all");
   const [error, setError] = useState<string | null>(null);
   
   // Sync state management - track which leads are currently syncing
@@ -83,41 +78,6 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
   
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const realtimeConnectedRef = useRef(false);
-
-  // Fetch campaigns for the active workspace
-  const fetchCampaigns = useCallback(async () => {
-    if (!activeWorkspace) {
-      setCampaigns([]);
-      return;
-    }
-    
-    const [smsResult, emailResult] = await Promise.all([
-      getCampaigns(activeWorkspace),
-      getEmailCampaigns(activeWorkspace),
-    ]);
-
-    const combined: Campaign[] = [];
-    if (smsResult.success && smsResult.data) {
-      combined.push(
-        ...smsResult.data.map((c) => ({
-          id: c.id,
-          name: c.name,
-          type: "sms" as const,
-        }))
-      );
-    }
-    if (emailResult.success && emailResult.data) {
-      combined.push(
-        ...emailResult.data.map((c) => ({
-          id: c.id,
-          name: c.name,
-          type: "email" as const,
-        }))
-      );
-    }
-
-    setCampaigns(combined);
-  }, [activeWorkspace]);
 
   // Fetch conversations from database
   const fetchConversations = useCallback(async (showLoading = false) => {
@@ -243,11 +203,17 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
       const result = await syncAllConversations(activeWorkspace);
       
       if (result.success) {
-        const { totalLeads, totalImported, totalHealed, errors } = result;
+        const { totalLeads, totalImported, totalHealed, totalDraftsGenerated, errors } = result;
         
-        if (totalImported > 0 || totalHealed > 0) {
+        if (totalImported > 0 || totalHealed > 0 || totalDraftsGenerated > 0) {
+          const parts = [];
+          if (totalImported > 0) parts.push(`${totalImported} new messages`);
+          if (totalHealed > 0) parts.push(`${totalHealed} fixed`);
+          if (totalDraftsGenerated > 0) parts.push(`${totalDraftsGenerated} AI drafts`);
+          if (errors > 0) parts.push(`${errors} errors`);
+          
           toast.success(`Synced ${totalLeads} conversations`, {
-            description: `${totalImported} new messages, ${totalHealed} fixed${errors > 0 ? `, ${errors} errors` : ""}`
+            description: parts.join(", ")
           });
           // Refresh conversations list
           fetchConversations();
@@ -271,8 +237,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
   // Refetch when workspace changes
   useEffect(() => {
     fetchConversations(true);
-    fetchCampaigns();
-    setActiveCampaign("all"); // Reset campaign filter when workspace changes
+    setActiveSentiment("all"); // Reset sentiment filter when workspace changes
   }, [activeWorkspace]);
 
   // Fetch active conversation when selection changes
@@ -331,17 +296,13 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     };
   }, [fetchConversations]);
 
-  // Filter conversations by channel, filter, and campaign
+  // Filter conversations by channel, filter, and sentiment
   const filteredConversations = conversations.filter((conv) => {
     if (activeChannel !== "all" && conv.platform !== activeChannel) return false;
     if (activeFilter === "attention" && !conv.requiresAttention) return false;
     if (activeFilter === "drafts" && !conv.hasAiDraft) return false;
-    // Check both SMS campaigns (campaignId) and Email campaigns (emailCampaignId)
-    if (activeCampaign !== "all") {
-      const matchesSms = conv.campaignId === activeCampaign;
-      const matchesEmail = conv.emailCampaignId === activeCampaign;
-      if (!matchesSms && !matchesEmail) return false;
-    }
+    // Filter by sentiment tag
+    if (activeSentiment !== "all" && conv.sentimentTag !== activeSentiment) return false;
     return true;
   });
 
@@ -428,9 +389,8 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
         conversations={filteredConversations}
         activeConversationId={activeConversationId}
         onSelectConversation={setActiveConversationId}
-        campaigns={campaigns}
-        activeCampaign={activeCampaign}
-        onCampaignChange={setActiveCampaign}
+        activeSentiment={activeSentiment}
+        onSentimentChange={setActiveSentiment}
         syncingLeadIds={syncingLeadIds}
         onSyncAll={handleSyncAll}
         isSyncingAll={isSyncingAll}

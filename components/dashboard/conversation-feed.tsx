@@ -8,21 +8,28 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Search, RefreshCw, Loader2 } from "lucide-react"
 
-interface Campaign {
-  id: string;
-  name: string;
-  type?: "sms" | "email";
-}
-
 type SortOption = "recent" | "oldest" | "name-az" | "name-za"
+
+// Available sentiment tags for filtering
+const SENTIMENT_OPTIONS = [
+  { value: "all", label: "All Sentiments" },
+  { value: "Meeting Requested", label: "Meeting Requested" },
+  { value: "Call Requested", label: "Call Requested" },
+  { value: "Information Requested", label: "Info Requested" },
+  { value: "Not Interested", label: "Not Interested" },
+  { value: "Blacklist", label: "Blacklist" },
+  { value: "Follow Up", label: "Follow Up" },
+  { value: "Out of Office", label: "Out of Office" },
+  { value: "Positive", label: "Positive" },
+  { value: "Neutral", label: "Neutral" },
+] as const
 
 interface ConversationFeedProps {
   conversations: Conversation[]
   activeConversationId: string | null
   onSelectConversation: (id: string) => void
-  campaigns?: Campaign[]
-  activeCampaign?: string
-  onCampaignChange?: (campaignId: string) => void
+  activeSentiment?: string
+  onSentimentChange?: (sentiment: string) => void
   syncingLeadIds?: Set<string>
   onSyncAll?: () => Promise<void>
   isSyncingAll?: boolean
@@ -32,9 +39,8 @@ export function ConversationFeed({
   conversations, 
   activeConversationId, 
   onSelectConversation,
-  campaigns = [],
-  activeCampaign = "all",
-  onCampaignChange,
+  activeSentiment = "all",
+  onSentimentChange,
   syncingLeadIds = new Set(),
   onSyncAll,
   isSyncingAll = false,
@@ -108,17 +114,16 @@ export function ConversationFeed({
             </SelectContent>
           </Select>
           <Select 
-            value={activeCampaign} 
-            onValueChange={onCampaignChange}
+            value={activeSentiment} 
+            onValueChange={onSentimentChange}
           >
             <SelectTrigger className="flex-1 text-xs">
-              <SelectValue placeholder="Campaign" />
+              <SelectValue placeholder="Sentiment" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Campaigns</SelectItem>
-              {campaigns.map((campaign) => (
-                <SelectItem key={campaign.id} value={campaign.id}>
-                  [{campaign.type === "email" ? "Email" : "SMS"}] {campaign.name}
+              {SENTIMENT_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
                 </SelectItem>
               ))}
             </SelectContent>
