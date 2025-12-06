@@ -226,16 +226,61 @@ npm run dev
 - [x] Campaign sync and management
 
 ### 🚧 In Progress / Next Up
+- [ ] **AI Persona Enhancements** - Service description, qualification questions, knowledge assets for better AI context
+- [ ] **Follow-Up Sequences** - Multi-step, multi-channel follow-up chains with Day 2/5/7 templates
 - [ ] **Channel-Aware Analytics** - Open/reply rates by channel, sentiment trends
-- [ ] **Auto-Follow-Up Logic** - Channel-aware follow-ups based on lead status/sentiment
 - [ ] **Email Opens Persistence** - Store EMAIL_OPENED events for analytics
 - [ ] **Lead Scoring** - AI-powered prioritization across channels
 
 ### 📋 Future Phases
 - [ ] **Phase III: LinkedIn Integration** - Unipile API for LinkedIn messaging (channel = `linkedin`)
-- [ ] **Phase IV: Advanced Analytics** - Funnel visualization, A/B testing
-- [ ] **Phase V: Team Features** - Multi-user access, assignment workflows
+- [ ] **Phase IV: Calendar Integration** - Google Calendar / Calendly / Cal.com for pulling availability into follow-ups
+- [ ] **Phase V: AI Voice Caller** - Sora Media integration for AI-powered qualification calls and double-dial touchpoints
+- [ ] **Phase VI: Advanced Analytics** - Funnel visualization, A/B testing
+- [ ] **Phase VII: Team Features** - Multi-user access, assignment workflows
 - [ ] **EmailGuard Integration** - Email validation before sending
+
+---
+
+## 🔮 Future Integration Notes
+
+### Calendar Integration (Phase IV)
+**Status:** Planned - Not yet implemented
+
+The follow-up system will eventually need calendar integration to:
+- Pull real-time availability for "Day 5" reminder emails
+- Auto-suggest meeting times based on calendar availability
+- Sync booked meetings back to the dashboard
+
+**Potential integrations:**
+- Google Calendar API
+- Calendly API
+- Cal.com API
+
+### AI Voice Caller (Phase V)
+**Status:** Planned - Sora Media scoping in progress
+
+AI-powered voice calling for:
+- Qualification calls after lead selects meeting time
+- Double-dial touchpoints when leads don't respond to email/SMS
+- Automated follow-up calls with handoff to human if needed
+
+**Use cases:**
+- Day 2: If phone provided, AI caller attempts qualification questions
+- Fallback: If AI call not answered, send SMS instead
+
+### LinkedIn Integration (Phase III)
+**Status:** Schema scaffolded, API integration pending
+
+Database fields ready:
+- `Lead.linkedinId` - LinkedIn member ID
+- `Lead.linkedinUrl` - Profile URL
+- `Message.channel = 'linkedin'` - Message channel support
+
+**Planned integration:** Unipile API for:
+- Sending LinkedIn messages/InMails
+- Connection request automation
+- Message sync to unified inbox
 
 ---
 

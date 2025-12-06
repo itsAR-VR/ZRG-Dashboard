@@ -24,6 +24,7 @@ model Client {
   campaigns     Campaign[]
   emailCampaigns EmailCampaign[]
   settings      WorkspaceSettings?  // One-to-one relation with settings
+  followUpSequences FollowUpSequence[]  // Follow-up sequence templates
 
   @@index([userId])
 }
@@ -39,6 +40,9 @@ model WorkspaceSettings {
   aiGreeting           String?
   aiSignature          String?  @db.Text
   aiGoals              String?  @db.Text
+  // AI Context Fields (for better AI responses)
+  serviceDescription      String?  @db.Text  // Business/service description for AI context
+  qualificationQuestions  String?  @db.Text  // JSON array of qualification questions
   // Automation Rules
   autoApproveMeetings  Boolean  @default(true)
   flagUncertainReplies Boolean  @default(true)
@@ -53,6 +57,8 @@ model WorkspaceSettings {
   workEndTime          String?  @default("17:00")
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+  // Relations
+  knowledgeAssets      KnowledgeAsset[]
 }
 
 // GHL Workflows/Campaigns synced from the API
@@ -99,11 +105,12 @@ model Lead {
   emailCampaign   EmailCampaign? @relation(fields: [emailCampaignId], references: [id])
   senderAccountId String?    // EmailBison sender email account id
   // Relations
-  messages     Message[]
-  followUps    FollowUpTask[]
-  aiDrafts     AIDraft[]
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  messages          Message[]
+  followUps         FollowUpTask[]
+  followUpInstances FollowUpInstance[]  // Active follow-up sequences for this lead
+  aiDrafts          AIDraft[]
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
   @@index([clientId])
   @@index([campaignId])
@@ -147,24 +154,30 @@ model Message {
   @@index([channel])         // For filtering messages by channel
 }
 
-// Follow-up tasks for leads
+// Follow-up tasks for leads (individual scheduled tasks)
 model FollowUpTask {
   id               String    @id @default(uuid())
   leadId           String
   lead             Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  type             String    // 'email', 'call', 'sms', 'linkedin'
+  type             String    // 'email', 'call', 'sms', 'linkedin', 'ai_voice'
   dueDate          DateTime
-  status           String    @default("pending") // pending, completed, skipped
+  status           String    @default("pending") // pending, completed, skipped, cancelled
   suggestedMessage String?   @db.Text
+  subject          String?   // For email tasks
+  // Legacy fields (for backward compatibility)
   sequenceStep     Int?      // Current step in campaign sequence
   totalSteps       Int?      // Total steps in campaign
   campaignName     String?
+  // Link to follow-up sequence system (optional)
+  instanceId       String?   // Link to FollowUpInstance if part of a sequence
+  stepOrder        Int?      // Which step in the sequence this task represents
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
   @@index([leadId])
   @@index([dueDate])
   @@index([status])
+  @@index([instanceId])
 }
 
 // AI-generated draft messages pending approval
@@ -196,4 +209,85 @@ model EmailCampaign {
 
   @@unique([clientId, bisonCampaignId])
   @@index([clientId])
+}
+
+// Knowledge assets for AI context (uploaded files, text snippets)
+model KnowledgeAsset {
+  id                  String   @id @default(uuid())
+  workspaceSettingsId String
+  workspaceSettings   WorkspaceSettings @relation(fields: [workspaceSettingsId], references: [id], onDelete: Cascade)
+  name                String              // Display name for the asset
+  type                String              // 'file' | 'text' | 'url'
+  fileUrl             String?             // Supabase Storage URL (for files)
+  textContent         String?  @db.Text   // Extracted or direct text content
+  originalFileName    String?             // Original file name if uploaded
+  mimeType            String?             // File MIME type
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([workspaceSettingsId])
+}
+
+// =============================================================================
+// Follow-Up Sequence System
+// =============================================================================
+
+// Client-level follow-up sequence template
+model FollowUpSequence {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  isActive    Boolean  @default(true)
+  triggerOn   String   @default("no_response")  // 'no_response' | 'meeting_selected' | 'manual'
+  steps       FollowUpStep[]
+  instances   FollowUpInstance[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([clientId])
+  @@index([isActive])
+}
+
+// Individual step in a follow-up sequence
+model FollowUpStep {
+  id               String   @id @default(uuid())
+  sequenceId       String
+  sequence         FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  stepOrder        Int               // Order within the sequence (1, 2, 3...)
+  dayOffset        Int               // Days after sequence start (0 = same day, 2 = Day 2, etc.)
+  channel          String            // 'email' | 'sms' | 'linkedin' | 'ai_voice'
+  messageTemplate  String?  @db.Text // Template with {variables} like {firstName}, {company}
+  subject          String?           // For email subject lines
+  condition        String?  @db.Text // JSON condition: { "type": "phone_provided" | "linkedin_connected" | "no_response" }
+  requiresApproval Boolean  @default(false)
+  fallbackStepId   String?           // If condition fails, skip to this step order
+
+  @@unique([sequenceId, stepOrder])
+  @@index([sequenceId])
+}
+
+// Per-lead follow-up sequence instance (tracks progress through a sequence)
+model FollowUpInstance {
+  id             String   @id @default(uuid())
+  leadId         String
+  lead           Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  sequenceId     String
+  sequence       FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  currentStep    Int      @default(0)    // Current step order (0 = not started yet)
+  status         String   @default("active")  // 'active' | 'paused' | 'completed' | 'cancelled'
+  pausedReason   String?                  // Reason for pause (e.g., "lead_replied", "manual")
+  startedAt      DateTime @default(now())
+  lastStepAt     DateTime?                // When the last step was executed
+  nextStepDue    DateTime?                // When the next step should run
+  completedAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([leadId, sequenceId])
+  @@index([leadId])
+  @@index([sequenceId])
+  @@index([status])
+  @@index([nextStepDue])
 }

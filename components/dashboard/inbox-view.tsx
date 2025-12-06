@@ -42,6 +42,7 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
       leadScore: 50,
       autoReplyEnabled: conv.lead.autoReplyEnabled,
       autoFollowUpEnabled: conv.lead.autoFollowUpEnabled,
+      clientId: conv.lead.clientId,
       status: conv.lead.status as Lead["status"],
       qualification: {
         budget: false,

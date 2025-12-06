@@ -18,6 +18,7 @@ export interface Lead {
   leadScore: number
   autoReplyEnabled: boolean
   autoFollowUpEnabled: boolean
+  clientId: string  // Workspace/client ID for follow-up sequence management
   status: "new" | "qualified" | "meeting-booked" | "blacklisted" | "not-interested" | "meeting-requested" | "information-requested" | "call-requested"
   qualification: {
     budget: boolean

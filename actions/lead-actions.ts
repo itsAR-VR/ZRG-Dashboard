@@ -17,6 +17,7 @@ export interface ConversationData {
     status: string;
     autoReplyEnabled: boolean;
     autoFollowUpEnabled: boolean;
+    clientId: string;  // For follow-up sequence management
   };
   channels: Channel[];           // All channels this lead has messages on
   availableChannels: Channel[];  // Channels available based on contact info
@@ -159,6 +160,7 @@ export async function getConversations(clientId?: string | null): Promise<{
           status: lead.status,
           autoReplyEnabled: lead.autoReplyEnabled,
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
+          clientId: lead.clientId,
         },
         channels,
         availableChannels,
@@ -286,6 +288,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           sentimentTag: lead.sentimentTag,
           autoReplyEnabled: lead.autoReplyEnabled,
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
+          clientId: lead.clientId,
         },
         channels,
         availableChannels,

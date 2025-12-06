@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import {
   Mail,
   Phone,
@@ -13,14 +13,26 @@ import {
   Clock4,
   SkipForward,
   Loader2,
+  Pause,
+  XCircle,
+  ListTodo,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Separator } from "@/components/ui/separator"
 import { getFollowUpTasks, completeFollowUpTask, skipFollowUpTask, snoozeFollowUpTask } from "@/actions/followup-actions"
+import {
+  getWorkspaceFollowUpInstances,
+  pauseFollowUpInstance,
+  resumeFollowUpInstance,
+  cancelFollowUpInstance,
+  type FollowUpInstanceData,
+} from "@/actions/followup-sequence-actions"
 import { toast } from "sonner"
+import { cn } from "@/lib/utils"
 
 const typeIcons = {
   email: Mail,
@@ -80,6 +92,119 @@ interface TaskCardProps {
   onExecute: (id: string) => void
   onSnooze: (id: string) => void
   onSkip: (id: string) => void
+}
+
+// Sequence Instance Card Component
+interface SequenceInstanceCardProps {
+  instance: FollowUpInstanceData
+  onPause: (id: string) => void
+  onResume: (id: string) => void
+  onCancel: (id: string) => void
+  actionInProgress: string | null
+}
+
+function SequenceInstanceCard({ instance, onPause, onResume, onCancel, actionInProgress }: SequenceInstanceCardProps) {
+  const progress = (instance.currentStep / instance.totalSteps) * 100
+  const isActionInProgress = actionInProgress === instance.id
+
+  return (
+    <Card className={cn(
+      "transition-colors",
+      instance.status === "paused" && "border-amber-500/30 bg-amber-500/5"
+    )}>
+      <CardContent className="p-4">
+        <div className="flex items-start gap-4">
+          <div className="mt-1 rounded-lg bg-muted p-2">
+            <ListTodo className="h-5 w-5 text-primary" />
+          </div>
+
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-semibold truncate">{instance.leadName}</span>
+              <Badge
+                variant={instance.status === "active" ? "default" : "secondary"}
+                className="text-xs"
+              >
+                {instance.status}
+              </Badge>
+            </div>
+
+            <p className="text-sm text-muted-foreground truncate">
+              {instance.sequenceName}
+            </p>
+
+            {/* Progress bar */}
+            <div className="mt-2 space-y-1">
+              <div className="flex items-center justify-between text-xs">
+                <span>Step {instance.currentStep}/{instance.totalSteps}</span>
+                {instance.nextStepDue && instance.status === "active" && (
+                  <span className="text-muted-foreground">
+                    Next: {new Date(instance.nextStepDue).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+              <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                <div
+                  className={cn(
+                    "h-full transition-all duration-300",
+                    instance.status === "active" ? "bg-primary" : "bg-amber-500"
+                  )}
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+            </div>
+
+            {instance.pausedReason === "lead_replied" && (
+              <p className="text-xs text-amber-500 mt-2">Lead replied - awaiting review</p>
+            )}
+
+            {/* Actions */}
+            <div className="flex items-center gap-2 mt-3">
+              {instance.status === "active" ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onPause(instance.id)}
+                  disabled={isActionInProgress}
+                >
+                  {isActionInProgress ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                  ) : (
+                    <Pause className="h-4 w-4 mr-1" />
+                  )}
+                  Pause
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onResume(instance.id)}
+                  disabled={isActionInProgress}
+                >
+                  {isActionInProgress ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                  ) : (
+                    <Play className="h-4 w-4 mr-1" />
+                  )}
+                  Resume
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={() => onCancel(instance.id)}
+                disabled={isActionInProgress}
+              >
+                <XCircle className="h-4 w-4 mr-1" />
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 function TaskCard({ task, onExecute, onSnooze, onSkip }: TaskCardProps) {
@@ -164,15 +289,27 @@ interface FollowUpsViewProps {
 
 export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
   const [tasks, setTasks] = useState<UnifiedTask[]>([])
+  const [instances, setInstances] = useState<FollowUpInstanceData[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [instanceActionInProgress, setInstanceActionInProgress] = useState<string | null>(null)
 
-  useEffect(() => {
-    async function fetchTasks() {
-      setIsLoading(true)
-      const result = await getFollowUpTasks("all", activeWorkspace)
+  const fetchData = useCallback(async () => {
+    if (!activeWorkspace) {
+      setTasks([])
+      setInstances([])
+      setIsLoading(false)
+      return
+    }
+
+    setIsLoading(true)
+    try {
+      const [tasksResult, instancesResult] = await Promise.all([
+        getFollowUpTasks("all", activeWorkspace),
+        getWorkspaceFollowUpInstances(activeWorkspace, "active"),
+      ])
       
-      if (result.success && result.data) {
-        const dbTasks: UnifiedTask[] = result.data.map((t) => ({
+      if (tasksResult.success && tasksResult.data) {
+        const dbTasks: UnifiedTask[] = tasksResult.data.map((t) => ({
           id: t.id,
           type: t.type,
           dueDate: new Date(t.dueDate),
@@ -187,12 +324,108 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
       } else {
         setTasks([])
       }
-      
-      setIsLoading(false)
+
+      if (instancesResult.success && instancesResult.data) {
+        setInstances(instancesResult.data)
+      } else {
+        setInstances([])
+      }
+    } catch (error) {
+      console.error("Failed to fetch follow-up data:", error)
+      setTasks([])
+      setInstances([])
+    }
+    
+    setIsLoading(false)
+  }, [activeWorkspace])
+
+  useEffect(() => {
+    fetchData()
+  }, [fetchData])
+
+  // Instance handlers
+  const handlePauseInstance = async (instanceId: string) => {
+    setInstanceActionInProgress(instanceId)
+    const result = await pauseFollowUpInstance(instanceId, "manual")
+    if (result.success) {
+      toast.success("Sequence paused")
+      fetchData()
+    } else {
+      toast.error(result.error || "Failed to pause sequence")
+    }
+    setInstanceActionInProgress(null)
+  }
+
+  const handleResumeInstance = async (instanceId: string) => {
+    setInstanceActionInProgress(instanceId)
+    const result = await resumeFollowUpInstance(instanceId)
+    if (result.success) {
+      toast.success("Sequence resumed")
+      fetchData()
+    } else {
+      toast.error(result.error || "Failed to resume sequence")
+    }
+    setInstanceActionInProgress(null)
+  }
+
+  const handleCancelInstance = async (instanceId: string) => {
+    setInstanceActionInProgress(instanceId)
+    const result = await cancelFollowUpInstance(instanceId)
+    if (result.success) {
+      toast.success("Sequence cancelled")
+      fetchData()
+    } else {
+      toast.error(result.error || "Failed to cancel sequence")
+    }
+    setInstanceActionInProgress(null)
+  }
+
+  // Group instances by next step due date
+  const groupInstancesByDay = (instances: FollowUpInstanceData[]) => {
+    const groups: { [key: string]: FollowUpInstanceData[] } = {
+      today: [],
+      tomorrow: [],
+      thisWeek: [],
+      later: [],
+      paused: [],
     }
 
-    fetchTasks()
-  }, [activeWorkspace])
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const tomorrow = new Date(today)
+    tomorrow.setDate(tomorrow.getDate() + 1)
+    const nextWeek = new Date(today)
+    nextWeek.setDate(nextWeek.getDate() + 7)
+
+    for (const inst of instances) {
+      if (inst.status === "paused") {
+        groups.paused.push(inst)
+        continue
+      }
+
+      if (!inst.nextStepDue) {
+        groups.later.push(inst)
+        continue
+      }
+
+      const dueDate = new Date(inst.nextStepDue)
+      dueDate.setHours(0, 0, 0, 0)
+
+      if (dueDate.getTime() === today.getTime()) {
+        groups.today.push(inst)
+      } else if (dueDate.getTime() === tomorrow.getTime()) {
+        groups.tomorrow.push(inst)
+      } else if (dueDate < nextWeek) {
+        groups.thisWeek.push(inst)
+      } else {
+        groups.later.push(inst)
+      }
+    }
+
+    return groups
+  }
+
+  const groupedInstances = groupInstancesByDay(instances)
 
   const overdueTasks = tasks.filter((t) => isOverdue(t.dueDate))
   const todayTasks = tasks.filter((t) => isToday(t.dueDate))
@@ -324,6 +557,9 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
             </TabsTrigger>
             <TabsTrigger value="today">Today ({todayTasks.length})</TabsTrigger>
             <TabsTrigger value="upcoming">Upcoming ({upcomingTasks.length})</TabsTrigger>
+            <TabsTrigger value="sequences">
+              Sequences ({instances.length})
+            </TabsTrigger>
           </TabsList>
 
           <ScrollArea className="h-[calc(100%-48px)] mt-4">
@@ -390,6 +626,119 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
                   <Calendar className="h-12 w-12 mx-auto mb-4 opacity-50" />
                   <p>No upcoming tasks</p>
                 </div>
+              )}
+            </TabsContent>
+
+            {/* Active Sequences Tab */}
+            <TabsContent value="sequences" className="mt-0 space-y-6">
+              {instances.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <ListTodo className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                  <p>No active sequences</p>
+                  <p className="text-sm mt-2">Start a sequence from a lead&apos;s CRM drawer</p>
+                </div>
+              ) : (
+                <>
+                  {/* Today */}
+                  {groupedInstances.today.length > 0 && (
+                    <div className="space-y-3">
+                      <h3 className="font-semibold text-sm flex items-center gap-2">
+                        <Clock className="h-4 w-4 text-primary" />
+                        Due Today ({groupedInstances.today.length})
+                      </h3>
+                      {groupedInstances.today.map((inst) => (
+                        <SequenceInstanceCard
+                          key={inst.id}
+                          instance={inst}
+                          onPause={handlePauseInstance}
+                          onResume={handleResumeInstance}
+                          onCancel={handleCancelInstance}
+                          actionInProgress={instanceActionInProgress}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Tomorrow */}
+                  {groupedInstances.tomorrow.length > 0 && (
+                    <div className="space-y-3">
+                      <h3 className="font-semibold text-sm flex items-center gap-2">
+                        <Calendar className="h-4 w-4 text-muted-foreground" />
+                        Tomorrow ({groupedInstances.tomorrow.length})
+                      </h3>
+                      {groupedInstances.tomorrow.map((inst) => (
+                        <SequenceInstanceCard
+                          key={inst.id}
+                          instance={inst}
+                          onPause={handlePauseInstance}
+                          onResume={handleResumeInstance}
+                          onCancel={handleCancelInstance}
+                          actionInProgress={instanceActionInProgress}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* This Week */}
+                  {groupedInstances.thisWeek.length > 0 && (
+                    <div className="space-y-3">
+                      <h3 className="font-semibold text-sm flex items-center gap-2">
+                        <Calendar className="h-4 w-4 text-muted-foreground" />
+                        This Week ({groupedInstances.thisWeek.length})
+                      </h3>
+                      {groupedInstances.thisWeek.map((inst) => (
+                        <SequenceInstanceCard
+                          key={inst.id}
+                          instance={inst}
+                          onPause={handlePauseInstance}
+                          onResume={handleResumeInstance}
+                          onCancel={handleCancelInstance}
+                          actionInProgress={instanceActionInProgress}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Later */}
+                  {groupedInstances.later.length > 0 && (
+                    <div className="space-y-3">
+                      <h3 className="font-semibold text-sm flex items-center gap-2">
+                        <Calendar className="h-4 w-4 text-muted-foreground" />
+                        Later ({groupedInstances.later.length})
+                      </h3>
+                      {groupedInstances.later.map((inst) => (
+                        <SequenceInstanceCard
+                          key={inst.id}
+                          instance={inst}
+                          onPause={handlePauseInstance}
+                          onResume={handleResumeInstance}
+                          onCancel={handleCancelInstance}
+                          actionInProgress={instanceActionInProgress}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Paused */}
+                  {groupedInstances.paused.length > 0 && (
+                    <div className="space-y-3">
+                      <h3 className="font-semibold text-sm flex items-center gap-2 text-amber-500">
+                        <Pause className="h-4 w-4" />
+                        Paused ({groupedInstances.paused.length})
+                      </h3>
+                      {groupedInstances.paused.map((inst) => (
+                        <SequenceInstanceCard
+                          key={inst.id}
+                          instance={inst}
+                          onPause={handlePauseInstance}
+                          onResume={handleResumeInstance}
+                          onCancel={handleCancelInstance}
+                          actionInProgress={instanceActionInProgress}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </TabsContent>
           </ScrollArea>

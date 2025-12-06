@@ -1,11 +1,12 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect, useCallback } from "react"
 import type { Lead } from "@/lib/mock-data"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
+import { Badge } from "@/components/ui/badge"
 import { 
   Mail, 
   Phone, 
@@ -18,11 +19,25 @@ import {
   Loader2,
   Check,
   AlarmClock,
-  Bot
+  Bot,
+  Play,
+  Pause,
+  XCircle,
+  ListTodo,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { updateLeadStatus, snoozeLead, bookMeeting, updateLeadAutomationSettings } from "@/actions/crm-actions"
 import { createFollowUpTask } from "@/actions/followup-actions"
+import {
+  getLeadFollowUpInstances,
+  getFollowUpSequences,
+  startFollowUpSequence,
+  pauseFollowUpInstance,
+  resumeFollowUpInstance,
+  cancelFollowUpInstance,
+  type FollowUpInstanceData,
+  type FollowUpSequenceData,
+} from "@/actions/followup-sequence-actions"
 import { toast } from "sonner"
 import {
   Dialog,
@@ -74,6 +89,89 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
   // Automation states
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(lead.autoReplyEnabled || false)
   const [autoFollowUpEnabled, setAutoFollowUpEnabled] = useState(lead.autoFollowUpEnabled || false)
+
+  // Follow-up sequence states
+  const [followUpInstances, setFollowUpInstances] = useState<FollowUpInstanceData[]>([])
+  const [availableSequences, setAvailableSequences] = useState<FollowUpSequenceData[]>([])
+  const [isLoadingSequences, setIsLoadingSequences] = useState(false)
+  const [sequenceActionInProgress, setSequenceActionInProgress] = useState<string | null>(null)
+
+  // Load follow-up instances and sequences
+  const loadFollowUpData = useCallback(async () => {
+    if (!lead.clientId) return
+    setIsLoadingSequences(true)
+    try {
+      const [instancesResult, sequencesResult] = await Promise.all([
+        getLeadFollowUpInstances(lead.id),
+        getFollowUpSequences(lead.clientId),
+      ])
+      if (instancesResult.success && instancesResult.data) {
+        setFollowUpInstances(instancesResult.data)
+      }
+      if (sequencesResult.success && sequencesResult.data) {
+        setAvailableSequences(sequencesResult.data.filter(s => s.isActive))
+      }
+    } catch (error) {
+      console.error("Failed to load follow-up data:", error)
+    } finally {
+      setIsLoadingSequences(false)
+    }
+  }, [lead.id, lead.clientId])
+
+  useEffect(() => {
+    if (isOpen) {
+      loadFollowUpData()
+    }
+  }, [isOpen, loadFollowUpData])
+
+  // Sequence handlers
+  const handleStartSequence = async (sequenceId: string) => {
+    setSequenceActionInProgress(sequenceId)
+    const result = await startFollowUpSequence(lead.id, sequenceId)
+    if (result.success) {
+      toast.success("Follow-up sequence started")
+      loadFollowUpData()
+    } else {
+      toast.error(result.error || "Failed to start sequence")
+    }
+    setSequenceActionInProgress(null)
+  }
+
+  const handlePauseInstance = async (instanceId: string) => {
+    setSequenceActionInProgress(instanceId)
+    const result = await pauseFollowUpInstance(instanceId, "manual")
+    if (result.success) {
+      toast.success("Sequence paused")
+      loadFollowUpData()
+    } else {
+      toast.error(result.error || "Failed to pause sequence")
+    }
+    setSequenceActionInProgress(null)
+  }
+
+  const handleResumeInstance = async (instanceId: string) => {
+    setSequenceActionInProgress(instanceId)
+    const result = await resumeFollowUpInstance(instanceId)
+    if (result.success) {
+      toast.success("Sequence resumed")
+      loadFollowUpData()
+    } else {
+      toast.error(result.error || "Failed to resume sequence")
+    }
+    setSequenceActionInProgress(null)
+  }
+
+  const handleCancelInstance = async (instanceId: string) => {
+    setSequenceActionInProgress(instanceId)
+    const result = await cancelFollowUpInstance(instanceId)
+    if (result.success) {
+      toast.success("Sequence cancelled")
+      loadFollowUpData()
+    } else {
+      toast.error(result.error || "Failed to cancel sequence")
+    }
+    setSequenceActionInProgress(null)
+  }
 
   if (!isOpen) return null
 
@@ -307,6 +405,145 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                 />
               </div>
             </div>
+          </div>
+
+          <Separator />
+
+          {/* Follow-Up Sequences */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <ListTodo className="h-4 w-4 text-primary" />
+              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Follow-Up Sequences</h4>
+            </div>
+
+            {isLoadingSequences ? (
+              <div className="flex items-center justify-center py-4">
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {/* Active instances */}
+                {followUpInstances.length > 0 && (
+                  <div className="space-y-2">
+                    {followUpInstances.map((instance) => (
+                      <div key={instance.id} className="p-2.5 rounded-lg border bg-muted/50 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium truncate">{instance.sequenceName}</span>
+                          <Badge
+                            variant={instance.status === "active" ? "default" : instance.status === "paused" ? "secondary" : "outline"}
+                            className="text-xs"
+                          >
+                            {instance.status}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>Step {instance.currentStep + 1}/{instance.totalSteps}</span>
+                          {instance.nextStepDue && instance.status === "active" && (
+                            <span>Next: {new Date(instance.nextStepDue).toLocaleDateString()}</span>
+                          )}
+                          {instance.pausedReason === "lead_replied" && (
+                            <span className="text-amber-500">Paused: Lead replied</span>
+                          )}
+                        </div>
+                        {/* Progress bar */}
+                        <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                          <div
+                            className={cn(
+                              "h-full transition-all duration-300",
+                              instance.status === "completed" ? "bg-emerald-500" :
+                              instance.status === "active" ? "bg-primary" : "bg-muted-foreground"
+                            )}
+                            style={{ width: `${((instance.currentStep) / instance.totalSteps) * 100}%` }}
+                          />
+                        </div>
+                        {/* Actions */}
+                        {instance.status !== "completed" && instance.status !== "cancelled" && (
+                          <div className="flex items-center gap-1.5 pt-1">
+                            {instance.status === "active" ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => handlePauseInstance(instance.id)}
+                                disabled={sequenceActionInProgress === instance.id}
+                              >
+                                {sequenceActionInProgress === instance.id ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <Pause className="h-3 w-3 mr-1" />
+                                )}
+                                Pause
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={() => handleResumeInstance(instance.id)}
+                                disabled={sequenceActionInProgress === instance.id}
+                              >
+                                {sequenceActionInProgress === instance.id ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <Play className="h-3 w-3 mr-1" />
+                                )}
+                                Resume
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs text-destructive hover:text-destructive"
+                              onClick={() => handleCancelInstance(instance.id)}
+                              disabled={sequenceActionInProgress === instance.id}
+                            >
+                              <XCircle className="h-3 w-3 mr-1" />
+                              Cancel
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Start new sequence */}
+                {availableSequences.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-muted-foreground">Start a sequence:</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {availableSequences
+                        .filter(seq => !followUpInstances.some(
+                          inst => inst.sequenceId === seq.id && inst.status === "active"
+                        ))
+                        .map((sequence) => (
+                          <Button
+                            key={sequence.id}
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => handleStartSequence(sequence.id)}
+                            disabled={sequenceActionInProgress === sequence.id}
+                          >
+                            {sequenceActionInProgress === sequence.id ? (
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                              <Play className="h-3 w-3 mr-1" />
+                            )}
+                            {sequence.name}
+                          </Button>
+                        ))}
+                    </div>
+                  </div>
+                )}
+
+                {followUpInstances.length === 0 && availableSequences.length === 0 && (
+                  <p className="text-xs text-muted-foreground italic">
+                    No sequences available. Create one in Settings → Follow-Ups.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           <Separator />

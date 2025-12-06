@@ -70,14 +70,33 @@ function buildSmsPrompt(opts: {
   firstName: string;
   responseStrategy: string;
   aiGoals?: string | null;
+  serviceDescription?: string | null;
+  qualificationQuestions?: string[];
+  knowledgeContext?: string;
 }) {
   const greeting = opts.aiGreeting.replace("{firstName}", opts.firstName);
+  
+  // Build service context section
+  const serviceContext = opts.serviceDescription 
+    ? `\nAbout Our Business:\n${opts.serviceDescription}\n` 
+    : "";
+  
+  // Build qualification guidance
+  const qualificationGuidance = opts.qualificationQuestions && opts.qualificationQuestions.length > 0
+    ? `\nQualification Questions to naturally weave into conversation when appropriate:\n${opts.qualificationQuestions.map(q => `- ${q}`).join("\n")}\n`
+    : "";
+  
+  // Build knowledge context
+  const knowledgeSection = opts.knowledgeContext 
+    ? `\nReference Information:\n${opts.knowledgeContext}\n`
+    : "";
+
   return `You are ${opts.aiName}, a professional sales representative. Generate a brief SMS response (under 160 characters) based on the conversation context and sentiment.
 
 Tone: ${opts.aiTone}
 Strategy: ${opts.responseStrategy}
 Primary Goal/Strategy: ${opts.aiGoals || "Use good judgment to advance the conversation while respecting user intent."}
-
+${serviceContext}${qualificationGuidance}${knowledgeSection}
 Guidelines:
 - Keep responses concise and SMS-friendly (under 160 characters)
 - Be professional but personable
@@ -85,6 +104,7 @@ Guidelines:
 - For meeting requests, offer specific times or ask for their availability
 - For objections, acknowledge and redirect professionally
 - Never be pushy or aggressive
+- If appropriate, naturally incorporate a qualification question
 - Start with: ${greeting}`;
 }
 
@@ -98,6 +118,9 @@ function buildEmailPrompt(opts: {
   availability: string[];
   sentimentTag: string;
   signature?: string | null;
+  serviceDescription?: string | null;
+  qualificationQuestions?: string[];
+  knowledgeContext?: string;
 }) {
   const greeting = opts.aiGreeting.replace("{firstName}", opts.firstName);
   const availabilityBlock =
@@ -112,12 +135,27 @@ function buildEmailPrompt(opts: {
   const banned = EMAIL_FORBIDDEN_TERMS.map((w) => `"${w}"`).join(", ");
   const signature = opts.signature ? `\nSignature block to use:\n${opts.signature}` : "";
 
+  // Build service context section
+  const serviceContext = opts.serviceDescription 
+    ? `\nAbout Our Business:\n${opts.serviceDescription}\n` 
+    : "";
+  
+  // Build qualification guidance
+  const qualificationGuidance = opts.qualificationQuestions && opts.qualificationQuestions.length > 0
+    ? `\nQualification Questions to naturally weave into the email when appropriate:\n${opts.qualificationQuestions.map(q => `- ${q}`).join("\n")}\n`
+    : "";
+  
+  // Build knowledge context
+  const knowledgeSection = opts.knowledgeContext 
+    ? `\nReference Information (use when relevant to the conversation):\n${opts.knowledgeContext}\n`
+    : "";
+
   return `You are ${opts.aiName}, a professional sales representative responding by email.
 
 Tone: ${opts.aiTone}
 Strategy: ${opts.responseStrategy}
 Primary Goal/Strategy: ${opts.aiGoals || "Advance the conversation while respecting user intent."}
-
+${serviceContext}${qualificationGuidance}${knowledgeSection}
 Email constraints:
 - 120-220 words, clear paragraphs, no fluff.
 - Start with: ${greeting}
@@ -127,6 +165,7 @@ Email constraints:
 - ${availabilityBlock}
 - For objections, acknowledge then redirect with value.
 - If the lead has already confirmed a meeting, send a short confirmation and any prep steps; no scheduling requests.
+- If appropriate, naturally incorporate a qualification question to better understand the lead's needs.
 - Close politely. Include signature if provided.
 ${signature ? "- Use the provided signature below the closing.\n" + signature : ""}`;
 }
@@ -148,7 +187,16 @@ export async function generateResponseDraft(
         client: {
           select: {
             name: true,
-            settings: true,
+            settings: {
+              include: {
+                knowledgeAssets: {
+                  select: {
+                    name: true,
+                    textContent: true,
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -160,6 +208,31 @@ export async function generateResponseDraft(
     const aiGreeting = settings?.aiGreeting || (channel === "email" ? "Hi {firstName}," : "Hi {firstName},");
     const aiGoals = settings?.aiGoals?.trim();
     const aiSignature = settings?.aiSignature?.trim();
+    const serviceDescription = settings?.serviceDescription?.trim();
+    
+    // Parse qualification questions from JSON
+    let qualificationQuestions: string[] = [];
+    if (settings?.qualificationQuestions) {
+      try {
+        const parsed = JSON.parse(settings.qualificationQuestions);
+        qualificationQuestions = parsed.map((q: { question: string }) => q.question);
+      } catch {
+        // Ignore parse errors
+      }
+    }
+    
+    // Build knowledge context from assets (limit to avoid token overflow)
+    let knowledgeContext = "";
+    if (settings?.knowledgeAssets && settings.knowledgeAssets.length > 0) {
+      const assetSnippets = settings.knowledgeAssets
+        .filter(a => a.textContent)
+        .slice(0, 3) // Limit to 3 most recent assets
+        .map(a => `[${a.name}]: ${a.textContent!.slice(0, 500)}${a.textContent!.length > 500 ? "..." : ""}`);
+      
+      if (assetSnippets.length > 0) {
+        knowledgeContext = assetSnippets.join("\n\n");
+      }
+    }
 
     const firstName = lead?.firstName || "there";
     const responseStrategy = getResponseStrategy(sentimentTag);
@@ -177,6 +250,9 @@ export async function generateResponseDraft(
           availability,
           sentimentTag,
           signature: aiSignature,
+          serviceDescription,
+          qualificationQuestions,
+          knowledgeContext,
         })
         : buildSmsPrompt({
           aiName,
@@ -185,6 +261,9 @@ export async function generateResponseDraft(
           firstName,
           responseStrategy,
           aiGoals,
+          serviceDescription,
+          qualificationQuestions,
+          knowledgeContext,
         });
 
     const completion = await openai.chat.completions.create({
