@@ -235,5 +235,270 @@ export async function exportMessages(
   );
 }
 
-export type { GHLConversation, GHLMessage, GHLWorkflow, GHLSendMessageResponse };
+// =============================================================================
+// Calendar & Appointment Management
+// =============================================================================
 
+/**
+ * GHL Calendar structure
+ */
+export interface GHLCalendar {
+  id: string;
+  locationId: string;
+  name: string;
+  description?: string;
+  slug?: string;
+  isActive: boolean;
+  calendarType?: string;
+  teamMembers?: Array<{
+    id: string;
+    name: string;
+    email: string;
+  }>;
+}
+
+/**
+ * GHL User/Team Member structure
+ */
+export interface GHLUser {
+  id: string;
+  name: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+  role: string;
+  permissions?: Record<string, unknown>;
+}
+
+/**
+ * GHL Contact structure
+ */
+export interface GHLContact {
+  id: string;
+  locationId: string;
+  firstName?: string;
+  lastName?: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  companyName?: string;
+  tags?: string[];
+  source?: string;
+  dateAdded?: string;
+  dateUpdated?: string;
+}
+
+/**
+ * GHL Appointment structure
+ */
+export interface GHLAppointment {
+  id: string;
+  calendarId: string;
+  locationId: string;
+  contactId: string;
+  title: string;
+  startTime: string;
+  endTime: string;
+  appointmentStatus: string;
+  assignedUserId?: string;
+  notes?: string;
+  address?: string;
+  dateAdded?: string;
+  dateUpdated?: string;
+}
+
+/**
+ * Parameters for creating an appointment
+ */
+export interface CreateAppointmentParams {
+  calendarId: string;
+  locationId: string;
+  contactId: string;
+  startTime: string;      // ISO format
+  endTime: string;        // ISO format
+  title: string;
+  appointmentStatus?: string;  // Default: "confirmed"
+  assignedUserId?: string;
+  notes?: string;
+}
+
+/**
+ * Parameters for creating a contact
+ */
+export interface CreateContactParams {
+  locationId: string;
+  firstName?: string;
+  lastName?: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  companyName?: string;
+  source?: string;
+  tags?: string[];
+}
+
+/**
+ * Get all calendars for a location
+ * 
+ * @param locationId - The GHL location ID
+ * @param privateKey - The GHL private integration key
+ */
+export async function getGHLCalendars(
+  locationId: string,
+  privateKey: string
+): Promise<GHLApiResponse<{ calendars: GHLCalendar[] }>> {
+  return ghlRequest<{ calendars: GHLCalendar[] }>(
+    `/calendars/?locationId=${encodeURIComponent(locationId)}`,
+    privateKey
+  );
+}
+
+/**
+ * Get all users/team members for a location
+ * 
+ * @param locationId - The GHL location ID
+ * @param privateKey - The GHL private integration key
+ */
+export async function getGHLUsers(
+  locationId: string,
+  privateKey: string
+): Promise<GHLApiResponse<{ users: GHLUser[] }>> {
+  return ghlRequest<{ users: GHLUser[] }>(
+    `/users/?locationId=${encodeURIComponent(locationId)}`,
+    privateKey
+  );
+}
+
+/**
+ * Create a new contact in GHL
+ * 
+ * @param params - Contact creation parameters
+ * @param privateKey - The GHL private integration key
+ */
+export async function createGHLContact(
+  params: CreateContactParams,
+  privateKey: string
+): Promise<GHLApiResponse<{ contact: GHLContact }>> {
+  return ghlRequest<{ contact: GHLContact }>(
+    "/contacts/",
+    privateKey,
+    {
+      method: "POST",
+      body: JSON.stringify(params),
+    }
+  );
+}
+
+/**
+ * Get a contact by ID
+ * 
+ * @param contactId - The GHL contact ID
+ * @param privateKey - The GHL private integration key
+ */
+export async function getGHLContact(
+  contactId: string,
+  privateKey: string
+): Promise<GHLApiResponse<{ contact: GHLContact }>> {
+  return ghlRequest<{ contact: GHLContact }>(
+    `/contacts/${encodeURIComponent(contactId)}`,
+    privateKey
+  );
+}
+
+/**
+ * Create a new appointment in GHL
+ * 
+ * @param params - Appointment creation parameters
+ * @param privateKey - The GHL private integration key
+ */
+export async function createGHLAppointment(
+  params: CreateAppointmentParams,
+  privateKey: string
+): Promise<GHLApiResponse<GHLAppointment>> {
+  const body = {
+    ...params,
+    appointmentStatus: params.appointmentStatus || "confirmed",
+  };
+
+  return ghlRequest<GHLAppointment>(
+    "/calendars/events/appointments",
+    privateKey,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+/**
+ * Update an existing appointment in GHL
+ * 
+ * @param eventId - The appointment/event ID
+ * @param params - Partial appointment parameters to update
+ * @param privateKey - The GHL private integration key
+ */
+export async function updateGHLAppointment(
+  eventId: string,
+  params: Partial<CreateAppointmentParams>,
+  privateKey: string
+): Promise<GHLApiResponse<GHLAppointment>> {
+  return ghlRequest<GHLAppointment>(
+    `/calendars/events/appointments/${encodeURIComponent(eventId)}`,
+    privateKey,
+    {
+      method: "PUT",
+      body: JSON.stringify(params),
+    }
+  );
+}
+
+/**
+ * Delete/cancel an appointment in GHL
+ * 
+ * @param eventId - The appointment/event ID
+ * @param privateKey - The GHL private integration key
+ */
+export async function deleteGHLAppointment(
+  eventId: string,
+  privateKey: string
+): Promise<GHLApiResponse<{ message: string }>> {
+  return ghlRequest<{ message: string }>(
+    `/calendars/events/${encodeURIComponent(eventId)}`,
+    privateKey,
+    {
+      method: "DELETE",
+    }
+  );
+}
+
+/**
+ * Test GHL connection by fetching calendars
+ * Returns success if API key is valid
+ * 
+ * @param locationId - The GHL location ID
+ * @param privateKey - The GHL private integration key
+ */
+export async function testGHLConnection(
+  locationId: string,
+  privateKey: string
+): Promise<GHLApiResponse<{ valid: boolean; calendarCount: number }>> {
+  const result = await getGHLCalendars(locationId, privateKey);
+  
+  if (result.success && result.data) {
+    return {
+      success: true,
+      data: {
+        valid: true,
+        calendarCount: result.data.calendars?.length || 0,
+      },
+    };
+  }
+  
+  return {
+    success: false,
+    error: result.error || "Failed to connect to GHL",
+  };
+}
+
+export type { GHLConversation, GHLMessage, GHLWorkflow, GHLSendMessageResponse };

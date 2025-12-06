@@ -38,6 +38,13 @@ import {
   type FollowUpInstanceData,
   type FollowUpSequenceData,
 } from "@/actions/followup-sequence-actions"
+import {
+  updateLeadAutoBookSetting,
+  bookMeetingOnGHL,
+  getLeadBookingStatus,
+  isGHLBookingConfigured,
+} from "@/actions/booking-actions"
+import { getFormattedAvailabilityForLead } from "@/lib/calendar-availability"
 import { toast } from "sonner"
 import {
   Dialog,
@@ -96,6 +103,18 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
   const [isLoadingSequences, setIsLoadingSequences] = useState(false)
   const [sequenceActionInProgress, setSequenceActionInProgress] = useState<string | null>(null)
 
+  // GHL Booking states
+  const [autoBookMeetingsEnabled, setAutoBookMeetingsEnabled] = useState(lead.autoBookMeetingsEnabled ?? true)
+  const [isBookingDialogOpen, setIsBookingDialogOpen] = useState(false)
+  const [availableSlots, setAvailableSlots] = useState<Array<{ datetime: string; label: string }>>([])
+  const [isLoadingSlots, setIsLoadingSlots] = useState(false)
+  const [selectedSlot, setSelectedSlot] = useState<string | null>(null)
+  const [isGHLConfigured, setIsGHLConfigured] = useState(false)
+  const [existingAppointment, setExistingAppointment] = useState<{
+    hasAppointment: boolean;
+    bookedSlot?: string;
+  }>({ hasAppointment: false })
+
   // Load follow-up instances and sequences
   const loadFollowUpData = useCallback(async () => {
     if (!lead.clientId) return
@@ -121,8 +140,88 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
   useEffect(() => {
     if (isOpen) {
       loadFollowUpData()
+      loadBookingData()
     }
   }, [isOpen, loadFollowUpData])
+
+  // Load booking configuration and status
+  const loadBookingData = useCallback(async () => {
+    if (!lead.clientId) return
+    try {
+      const [configResult, statusResult] = await Promise.all([
+        isGHLBookingConfigured(lead.clientId),
+        getLeadBookingStatus(lead.id),
+      ])
+      setIsGHLConfigured(configResult)
+      setExistingAppointment({
+        hasAppointment: statusResult.hasAppointment,
+        bookedSlot: statusResult.bookedSlot,
+      })
+    } catch (error) {
+      console.error("Failed to load booking data:", error)
+    }
+  }, [lead.id, lead.clientId])
+
+  // Load available time slots for booking dialog
+  const loadAvailableSlots = async () => {
+    if (!lead.clientId) return
+    setIsLoadingSlots(true)
+    try {
+      const slots = await getFormattedAvailabilityForLead(lead.clientId, lead.id)
+      setAvailableSlots(slots)
+    } catch (error) {
+      console.error("Failed to load available slots:", error)
+      toast.error("Failed to load available time slots")
+    } finally {
+      setIsLoadingSlots(false)
+    }
+  }
+
+  // Handle auto-book toggle
+  const handleAutoBookToggle = async (enabled: boolean) => {
+    setAutoBookMeetingsEnabled(enabled)
+    const result = await updateLeadAutoBookSetting(lead.id, enabled)
+    if (result.success) {
+      toast.success(`Auto-booking ${enabled ? "enabled" : "disabled"} for this lead`)
+      onLeadUpdate?.()
+    } else {
+      setAutoBookMeetingsEnabled(!enabled) // Revert
+      toast.error(result.error || "Failed to update setting")
+    }
+  }
+
+  // Handle booking via GHL
+  const handleBookViaGHL = async () => {
+    if (!selectedSlot) {
+      toast.error("Please select a time slot")
+      return
+    }
+
+    setIsBookingMeeting(true)
+    try {
+      const result = await bookMeetingOnGHL(lead.id, selectedSlot)
+      if (result.success) {
+        toast.success("Meeting booked successfully!", {
+          description: `Appointment ID: ${result.appointmentId}`,
+        })
+        setCurrentStatus("meeting-booked")
+        setIsBookingDialogOpen(false)
+        setSelectedSlot(null)
+        loadBookingData()
+        onLeadUpdate?.()
+      } else {
+        toast.error(result.error || "Failed to book meeting")
+      }
+    } finally {
+      setIsBookingMeeting(false)
+    }
+  }
+
+  // Open booking dialog
+  const handleOpenBookingDialog = () => {
+    setIsBookingDialogOpen(true)
+    loadAvailableSlots()
+  }
 
   // Sequence handlers
   const handleStartSequence = async (sequenceId: string) => {
@@ -404,6 +503,22 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                   disabled={isPending}
                 />
               </div>
+
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label className="text-sm font-medium">Auto-Book Meetings</Label>
+                  <p className="text-xs text-muted-foreground">
+                    {isGHLConfigured 
+                      ? "Auto-book when time is accepted"
+                      : "Configure GHL in Settings first"}
+                  </p>
+                </div>
+                <Switch 
+                  checked={autoBookMeetingsEnabled}
+                  onCheckedChange={handleAutoBookToggle}
+                  disabled={isPending || !isGHLConfigured}
+                />
+              </div>
             </div>
           </div>
 
@@ -571,21 +686,42 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
           <div className="space-y-3">
             <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Actions</h4>
             <div className="space-y-2">
-              <Button 
-                className="w-full justify-start" 
-                size="sm"
-                onClick={handleBookMeeting}
-                disabled={isBookingMeeting || currentStatus === "meeting-booked"}
-              >
-                {isBookingMeeting ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : currentStatus === "meeting-booked" ? (
-                  <Check className="mr-2 h-4 w-4" />
-                ) : (
-                  <Calendar className="mr-2 h-4 w-4" />
-                )}
-                {currentStatus === "meeting-booked" ? "Meeting Booked" : "Book Meeting"}
-              </Button>
+              {/* GHL Booking Button */}
+              {isGHLConfigured ? (
+                <Button 
+                  className="w-full justify-start" 
+                  size="sm"
+                  onClick={handleOpenBookingDialog}
+                  disabled={isBookingMeeting || existingAppointment.hasAppointment}
+                >
+                  {isBookingMeeting ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : existingAppointment.hasAppointment ? (
+                    <Check className="mr-2 h-4 w-4" />
+                  ) : (
+                    <Calendar className="mr-2 h-4 w-4" />
+                  )}
+                  {existingAppointment.hasAppointment 
+                    ? `Booked: ${existingAppointment.bookedSlot ? new Date(existingAppointment.bookedSlot).toLocaleDateString() : "Meeting Scheduled"}`
+                    : "Book Meeting (GHL)"}
+                </Button>
+              ) : (
+                <Button 
+                  className="w-full justify-start" 
+                  size="sm"
+                  onClick={handleBookMeeting}
+                  disabled={isBookingMeeting || currentStatus === "meeting-booked"}
+                >
+                  {isBookingMeeting ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : currentStatus === "meeting-booked" ? (
+                    <Check className="mr-2 h-4 w-4" />
+                  ) : (
+                    <Calendar className="mr-2 h-4 w-4" />
+                  )}
+                  {currentStatus === "meeting-booked" ? "Meeting Booked" : "Book Meeting"}
+                </Button>
+              )}
               <Button 
                 variant="outline" 
                 className="w-full justify-start bg-transparent" 
@@ -677,6 +813,78 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                 <Calendar className="mr-2 h-4 w-4" />
               )}
               Create Task
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* GHL Booking Dialog */}
+      <Dialog open={isBookingDialogOpen} onOpenChange={setIsBookingDialogOpen}>
+        <DialogContent className="sm:max-w-[450px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Calendar className="h-5 w-5" />
+              Book Meeting for {lead.name}
+            </DialogTitle>
+            <DialogDescription>
+              Select an available time slot to book the meeting on GoHighLevel.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            {isLoadingSlots ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : availableSlots.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <Calendar className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p>No available time slots found.</p>
+                <p className="text-xs mt-1">Check calendar link settings.</p>
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                {availableSlots.map((slot, index) => (
+                  <button
+                    key={index}
+                    onClick={() => setSelectedSlot(slot.datetime)}
+                    className={cn(
+                      "w-full p-3 rounded-lg border text-left transition-all",
+                      selectedSlot === slot.datetime
+                        ? "border-primary bg-primary/10 ring-1 ring-primary"
+                        : "border-border hover:border-primary/50 hover:bg-muted/50"
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Clock className="h-4 w-4 text-muted-foreground" />
+                        <span className="font-medium">{slot.label}</span>
+                      </div>
+                      {selectedSlot === slot.datetime && (
+                        <Check className="h-4 w-4 text-primary" />
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1 ml-6">
+                      {new Date(slot.datetime).toLocaleString()}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsBookingDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleBookViaGHL} 
+              disabled={isBookingMeeting || !selectedSlot}
+            >
+              {isBookingMeeting ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Calendar className="mr-2 h-4 w-4" />
+              )}
+              Book Appointment
             </Button>
           </DialogFooter>
         </DialogContent>

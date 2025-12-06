@@ -30,6 +30,12 @@ export interface UserSettingsData {
   // Calendar Settings
   calendarSlotsToShow: number | null;
   calendarLookAheadDays: number | null;
+  // GHL Meeting Booking Settings
+  ghlDefaultCalendarId: string | null;
+  ghlAssignedUserId: string | null;
+  autoBookMeetings: boolean;
+  meetingDurationMinutes: number;
+  meetingTitle: string | null;
 }
 
 export interface KnowledgeAssetData {
@@ -96,6 +102,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           workEndTime: "17:00",
           calendarSlotsToShow: 3,
           calendarLookAheadDays: 28,
+          ghlDefaultCalendarId: null,
+          ghlAssignedUserId: null,
+          autoBookMeetings: false,
+          meetingDurationMinutes: 30,
+          meetingTitle: "Intro to {companyName}",
         },
         knowledgeAssets: [],
       };
@@ -171,6 +182,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         workEndTime: settings.workEndTime,
         calendarSlotsToShow: settings.calendarSlotsToShow,
         calendarLookAheadDays: settings.calendarLookAheadDays,
+        ghlDefaultCalendarId: settings.ghlDefaultCalendarId,
+        ghlAssignedUserId: settings.ghlAssignedUserId,
+        autoBookMeetings: settings.autoBookMeetings,
+        meetingDurationMinutes: settings.meetingDurationMinutes,
+        meetingTitle: settings.meetingTitle,
       },
       knowledgeAssets,
     };
@@ -217,6 +233,11 @@ export async function updateUserSettings(
         workEndTime: data.workEndTime,
         calendarSlotsToShow: data.calendarSlotsToShow,
         calendarLookAheadDays: data.calendarLookAheadDays,
+        ghlDefaultCalendarId: data.ghlDefaultCalendarId,
+        ghlAssignedUserId: data.ghlAssignedUserId,
+        autoBookMeetings: data.autoBookMeetings,
+        meetingDurationMinutes: data.meetingDurationMinutes,
+        meetingTitle: data.meetingTitle,
       },
       create: {
         clientId,
@@ -240,6 +261,11 @@ export async function updateUserSettings(
         workEndTime: data.workEndTime ?? "17:00",
         calendarSlotsToShow: data.calendarSlotsToShow ?? 3,
         calendarLookAheadDays: data.calendarLookAheadDays ?? 28,
+        ghlDefaultCalendarId: data.ghlDefaultCalendarId,
+        ghlAssignedUserId: data.ghlAssignedUserId,
+        autoBookMeetings: data.autoBookMeetings ?? false,
+        meetingDurationMinutes: data.meetingDurationMinutes ?? 30,
+        meetingTitle: data.meetingTitle ?? "Intro to {companyName}",
       },
     });
 

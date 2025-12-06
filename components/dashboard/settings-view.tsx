@@ -55,6 +55,14 @@ import {
   type QualificationQuestion,
   type CalendarLinkData,
 } from "@/actions/settings-actions"
+import {
+  fetchGHLCalendarsForWorkspace,
+  fetchGHLUsersForWorkspace,
+  testGHLConnectionForWorkspace,
+  setWorkspaceAutoBookEnabled,
+  type GHLCalendar,
+  type GHLUser,
+} from "@/actions/booking-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
 
@@ -118,6 +126,19 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
   const [newCalendarName, setNewCalendarName] = useState("")
   const [newCalendarUrl, setNewCalendarUrl] = useState("")
   const [isAddingCalendar, setIsAddingCalendar] = useState(false)
+
+  // GHL Meeting Booking state
+  const [meetingBooking, setMeetingBooking] = useState({
+    ghlDefaultCalendarId: "",
+    ghlAssignedUserId: "",
+    autoBookMeetings: false,
+    meetingDurationMinutes: 30,
+    meetingTitle: "Intro to {companyName}",
+  })
+  const [ghlCalendars, setGhlCalendars] = useState<GHLCalendar[]>([])
+  const [ghlUsers, setGhlUsers] = useState<GHLUser[]>([])
+  const [isLoadingGhlData, setIsLoadingGhlData] = useState(false)
+  const [ghlConnectionStatus, setGhlConnectionStatus] = useState<"unknown" | "connected" | "error">("unknown")
 
   const [availability, setAvailability] = useState({
     timezone: "America/Los_Angeles",
@@ -187,6 +208,14 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
         if (result.knowledgeAssets) {
           setKnowledgeAssets(result.knowledgeAssets)
         }
+        // Set meeting booking settings
+        setMeetingBooking({
+          ghlDefaultCalendarId: result.data.ghlDefaultCalendarId || "",
+          ghlAssignedUserId: result.data.ghlAssignedUserId || "",
+          autoBookMeetings: result.data.autoBookMeetings,
+          meetingDurationMinutes: result.data.meetingDurationMinutes,
+          meetingTitle: result.data.meetingTitle || "Intro to {companyName}",
+        })
       }
 
       // Load calendar links
@@ -195,6 +224,9 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
         if (calendarResult.success && calendarResult.data) {
           setCalendarLinks(calendarResult.data)
         }
+
+        // Load GHL calendars and users for meeting booking config
+        loadGHLData(activeWorkspace)
       } else {
         setCalendarLinks([])
       }
@@ -204,6 +236,54 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
 
     loadSettings()
   }, [activeWorkspace])
+
+  // Load GHL calendars and users for booking config
+  const loadGHLData = async (clientId: string) => {
+    setIsLoadingGhlData(true)
+    try {
+      // Test connection first
+      const connectionResult = await testGHLConnectionForWorkspace(clientId)
+      if (connectionResult.success) {
+        setGhlConnectionStatus("connected")
+        
+        // Load calendars and users in parallel
+        const [calendarsResult, usersResult] = await Promise.all([
+          fetchGHLCalendarsForWorkspace(clientId),
+          fetchGHLUsersForWorkspace(clientId),
+        ])
+
+        if (calendarsResult.success && calendarsResult.calendars) {
+          setGhlCalendars(calendarsResult.calendars)
+        }
+        if (usersResult.success && usersResult.users) {
+          setGhlUsers(usersResult.users)
+        }
+      } else {
+        setGhlConnectionStatus("error")
+      }
+    } catch (error) {
+      console.error("Failed to load GHL data:", error)
+      setGhlConnectionStatus("error")
+    } finally {
+      setIsLoadingGhlData(false)
+    }
+  }
+
+  // Handle auto-book toggle with workspace-level update
+  const handleAutoBookToggle = async (enabled: boolean) => {
+    if (!activeWorkspace) return
+    
+    setMeetingBooking(prev => ({ ...prev, autoBookMeetings: enabled }))
+    handleChange()
+
+    // When enabling workspace auto-book, set all leads to enabled
+    if (enabled) {
+      const result = await setWorkspaceAutoBookEnabled(activeWorkspace, true)
+      if (result.success) {
+        toast.success(`Auto-booking enabled for ${result.updatedCount} leads`)
+      }
+    }
+  }
 
   // Track changes
   const handleChange = () => {
@@ -235,6 +315,12 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
       timezone: availability.timezone,
       workStartTime: availability.startTime,
       workEndTime: availability.endTime,
+      // GHL Meeting Booking settings
+      ghlDefaultCalendarId: meetingBooking.ghlDefaultCalendarId || null,
+      ghlAssignedUserId: meetingBooking.ghlAssignedUserId || null,
+      autoBookMeetings: meetingBooking.autoBookMeetings,
+      meetingDurationMinutes: meetingBooking.meetingDurationMinutes,
+      meetingTitle: meetingBooking.meetingTitle || null,
     })
 
     if (result.success) {
@@ -711,6 +797,181 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
           <TabsContent value="integrations" className="space-y-6">
             {/* GHL Workspaces - Dynamic Multi-Tenancy */}
             <IntegrationsManager />
+
+            {/* Meeting Booking Configuration */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Calendar className="h-5 w-5" />
+                  Meeting Booking
+                </CardTitle>
+                <CardDescription>
+                  Configure automatic meeting booking via GoHighLevel
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* Connection Status */}
+                <div className="flex items-center justify-between p-3 rounded-lg border">
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-lg ${
+                      ghlConnectionStatus === "connected" ? "bg-green-500/10" : 
+                      ghlConnectionStatus === "error" ? "bg-red-500/10" : "bg-muted"
+                    }`}>
+                      {isLoadingGhlData ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                      ) : ghlConnectionStatus === "connected" ? (
+                        <Check className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <HelpCircle className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium">
+                        {ghlConnectionStatus === "connected" 
+                          ? "GHL Connected" 
+                          : ghlConnectionStatus === "error"
+                          ? "GHL Connection Error"
+                          : "GHL Connection Unknown"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {ghlConnectionStatus === "connected" 
+                          ? `${ghlCalendars.length} calendar(s) available`
+                          : "Configure GHL credentials in workspace settings"}
+                      </p>
+                    </div>
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => activeWorkspace && loadGHLData(activeWorkspace)}
+                    disabled={!activeWorkspace || isLoadingGhlData}
+                  >
+                    {isLoadingGhlData ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      "Test Connection"
+                    )}
+                  </Button>
+                </div>
+
+                {ghlConnectionStatus === "connected" && (
+                  <>
+                    <Separator />
+
+                    {/* Calendar Selection */}
+                    <div className="space-y-2">
+                      <Label>Default GHL Calendar</Label>
+                      <Select
+                        value={meetingBooking.ghlDefaultCalendarId}
+                        onValueChange={(v) => {
+                          setMeetingBooking(prev => ({ ...prev, ghlDefaultCalendarId: v }))
+                          handleChange()
+                        }}
+                        disabled={ghlCalendars.length === 0}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select a calendar for booking" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ghlCalendars.map((cal) => (
+                            <SelectItem key={cal.id} value={cal.id}>
+                              {cal.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        Appointments will be created on this calendar
+                      </p>
+                    </div>
+
+                    {/* Assigned User */}
+                    <div className="space-y-2">
+                      <Label>Assigned Team Member</Label>
+                      <Select
+                        value={meetingBooking.ghlAssignedUserId}
+                        onValueChange={(v) => {
+                          setMeetingBooking(prev => ({ ...prev, ghlAssignedUserId: v }))
+                          handleChange()
+                        }}
+                        disabled={ghlUsers.length === 0}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select team member" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ghlUsers.map((user) => (
+                            <SelectItem key={user.id} value={user.id}>
+                              {user.name || `${user.firstName} ${user.lastName}`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        This person will be assigned to all booked appointments
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* Meeting Duration */}
+                      <div className="space-y-2">
+                        <Label>Meeting Duration</Label>
+                        <Select
+                          value={String(meetingBooking.meetingDurationMinutes)}
+                          onValueChange={(v) => {
+                            setMeetingBooking(prev => ({ ...prev, meetingDurationMinutes: parseInt(v) }))
+                            handleChange()
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="15">15 minutes</SelectItem>
+                            <SelectItem value="30">30 minutes</SelectItem>
+                            <SelectItem value="45">45 minutes</SelectItem>
+                            <SelectItem value="60">60 minutes</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      {/* Meeting Title */}
+                      <div className="space-y-2">
+                        <Label>Meeting Title Template</Label>
+                        <Input
+                          value={meetingBooking.meetingTitle}
+                          onChange={(e) => {
+                            setMeetingBooking(prev => ({ ...prev, meetingTitle: e.target.value }))
+                            handleChange()
+                          }}
+                          placeholder="Intro to {companyName}"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Use {"{companyName}"} for your company name
+                        </p>
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    {/* Auto-Book Toggle */}
+                    <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
+                      <div className="space-y-1">
+                        <Label className="text-base font-medium">Auto-Book Meetings</Label>
+                        <p className="text-sm text-muted-foreground">
+                          Automatically book meetings when leads accept a time slot.
+                          When enabled, all leads will have auto-booking on by default.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={meetingBooking.autoBookMeetings}
+                        onCheckedChange={handleAutoBookToggle}
+                      />
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
 
             {/* Other Channel Integrations */}
             <Card>

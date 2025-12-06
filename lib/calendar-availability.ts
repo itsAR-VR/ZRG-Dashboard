@@ -604,8 +604,126 @@ export async function getAvailabilityForLead(leadId: string): Promise<Availabili
 
 /**
  * Get formatted availability strings for a lead (ready for AI prompts)
+ * Now includes filtering of booked slots
  */
-export async function getFormattedAvailabilityForLead(leadId: string): Promise<{
+export async function getFormattedAvailabilityForLead(
+  clientId: string,
+  leadId?: string
+): Promise<Array<{ datetime: string; label: string }>> {
+  try {
+    // Determine which calendar to use
+    const calendarLink = await prisma.calendarLink.findFirst({
+      where: {
+        clientId,
+        isDefault: true,
+      },
+      select: {
+        url: true,
+        type: true,
+        name: true,
+      },
+    });
+
+    if (!calendarLink) {
+      return [];
+    }
+
+    // Get workspace settings
+    const settings = await prisma.workspaceSettings.findUnique({
+      where: { clientId },
+      select: {
+        timezone: true,
+        calendarSlotsToShow: true,
+        calendarLookAheadDays: true,
+      },
+    });
+
+    const lookAheadDays = settings?.calendarLookAheadDays || 28;
+    const slotsToShow = settings?.calendarSlotsToShow || 3;
+    const timezone = settings?.timezone || "America/Los_Angeles";
+
+    // Fetch availability based on calendar type
+    const calendarType = calendarLink.type as CalendarType;
+    let rawSlots: AvailabilitySlot[] = [];
+
+    switch (calendarType) {
+      case "calendly":
+        rawSlots = await fetchCalendlyAvailability(calendarLink.url, lookAheadDays);
+        break;
+      case "hubspot":
+        rawSlots = await fetchHubSpotAvailability(calendarLink.url, lookAheadDays);
+        break;
+      case "ghl":
+        rawSlots = await fetchGHLAvailability(calendarLink.url, lookAheadDays);
+        break;
+      default:
+        return [];
+    }
+
+    if (rawSlots.length === 0) {
+      return [];
+    }
+
+    // Get booked slots from leads to filter out
+    const bookedSlots = await prisma.lead.findMany({
+      where: {
+        clientId,
+        bookedSlot: { not: null },
+      },
+      select: {
+        bookedSlot: true,
+      },
+    });
+
+    const bookedDatetimes = new Set(
+      bookedSlots
+        .filter(l => l.bookedSlot)
+        .map(l => new Date(l.bookedSlot!).toISOString())
+    );
+
+    // Filter out booked slots
+    const availableSlots = rawSlots.filter(
+      slot => !bookedDatetimes.has(slot.startTime.toISOString())
+    );
+
+    // Sort by date
+    availableSlots.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+
+    // Format slots for display
+    const formattedSlots = availableSlots.slice(0, slotsToShow * 2).map(slot => {
+      const date = slot.startTime;
+      
+      const dayPart = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        weekday: "long",
+        month: "short",
+        day: "numeric",
+      }).format(date);
+
+      const timePart = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+      }).format(date);
+
+      return {
+        datetime: date.toISOString(),
+        label: `${timePart} on ${dayPart}`,
+      };
+    });
+
+    return formattedSlots.slice(0, slotsToShow);
+  } catch (error) {
+    console.error("Failed to get formatted availability:", error);
+    return [];
+  }
+}
+
+/**
+ * Legacy function for backward compatibility
+ */
+export async function getFormattedAvailabilityForLeadLegacy(leadId: string): Promise<{
   success: boolean;
   slots: string[];
   calendarUrl?: string;
@@ -653,4 +771,3 @@ export async function getFormattedAvailabilityForLead(leadId: string): Promise<{
     calendarUrl: result.calendarUrl,
   };
 }
-

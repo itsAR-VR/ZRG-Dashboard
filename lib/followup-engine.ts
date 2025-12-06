@@ -1,6 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import { generateResponseDraft } from "@/lib/ai-drafts";
 import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequence-actions";
+import {
+  shouldAutoBook,
+  bookMeetingOnGHL,
+  getOfferedSlots,
+  type OfferedSlot,
+} from "@/actions/booking-actions";
+import { sendSlackNotification } from "@/lib/slack-notifications";
 
 // =============================================================================
 // Types
@@ -685,3 +692,271 @@ export async function pauseFollowUpsOnReply(leadId: string): Promise<void> {
   }
 }
 
+// =============================================================================
+// AI Time Parsing & Auto-Booking
+// =============================================================================
+
+/**
+ * Parse a time/date expression from a message using OpenAI
+ * Returns the best matching slot from offered slots, or null if no match
+ */
+export async function parseAcceptedTimeFromMessage(
+  message: string,
+  offeredSlots: OfferedSlot[]
+): Promise<OfferedSlot | null> {
+  if (!message || offeredSlots.length === 0) return null;
+
+  try {
+    // Use OpenAI to parse the time expression
+    const openaiApiKey = process.env.OPENAI_API_KEY;
+    if (!openaiApiKey) {
+      console.error("OpenAI API key not configured");
+      return null;
+    }
+
+    // Build slot context for the AI
+    const slotContext = offeredSlots
+      .map((slot, i) => `${i + 1}. ${slot.label} (${slot.datetime})`)
+      .join("\n");
+
+    const systemPrompt = `You are a time parsing assistant. Given a user message and a list of available time slots, determine which slot (if any) the user is accepting.
+
+Available slots:
+${slotContext}
+
+Rules:
+- If the user clearly accepts one of the slots, respond with just the slot number (1, 2, 3, etc.)
+- If the user says something like "Thursday works" or "the first one", match to the appropriate slot
+- If the user accepts multiple slots or is ambiguous, pick the earliest/first matching slot
+- If the user doesn't seem to be accepting any time slot, respond with "NONE"
+- Only respond with a number or "NONE", nothing else`;
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openaiApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: message },
+        ],
+        max_tokens: 10,
+        temperature: 0,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("OpenAI API error:", await response.text());
+      return null;
+    }
+
+    const data = await response.json();
+    const aiResponse = data.choices?.[0]?.message?.content?.trim();
+
+    if (!aiResponse || aiResponse === "NONE") {
+      return null;
+    }
+
+    const slotIndex = parseInt(aiResponse, 10) - 1;
+    if (Number.isFinite(slotIndex) && slotIndex >= 0 && slotIndex < offeredSlots.length) {
+      return offeredSlots[slotIndex];
+    }
+
+    return null;
+  } catch (error) {
+    console.error("Failed to parse time from message:", error);
+    return null;
+  }
+}
+
+/**
+ * Detect "meeting accepted" intent from a message
+ * Returns true if the message indicates acceptance of a meeting time
+ */
+export async function detectMeetingAcceptedIntent(message: string): Promise<boolean> {
+  if (!message) return false;
+
+  try {
+    const openaiApiKey = process.env.OPENAI_API_KEY;
+    if (!openaiApiKey) return false;
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${openaiApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `You are an intent classifier. Determine if the following message indicates that the person is accepting/confirming a meeting time.
+
+Examples of acceptance:
+- "Yes, Thursday at 3pm works"
+- "That time is perfect"
+- "Let's do the 11am slot"
+- "The second option works for me"
+- "I can make Friday work"
+- "Thursday works"
+
+Examples of non-acceptance:
+- "What times are available?"
+- "I'm not interested"
+- "Can we reschedule?"
+- "What is this about?"
+- "Tell me more"
+
+Respond with only "YES" or "NO".`,
+          },
+          { role: "user", content: message },
+        ],
+        max_tokens: 5,
+        temperature: 0,
+      }),
+    });
+
+    if (!response.ok) return false;
+
+    const data = await response.json();
+    const result = data.choices?.[0]?.message?.content?.trim()?.toUpperCase();
+    return result === "YES";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Process an incoming message for auto-booking
+ * Called when a new inbound message is received
+ */
+export async function processMessageForAutoBooking(
+  leadId: string,
+  messageBody: string
+): Promise<{
+  booked: boolean;
+  appointmentId?: string;
+  error?: string;
+}> {
+  try {
+    // Check if lead should auto-book
+    const autoBookResult = await shouldAutoBook(leadId);
+    if (!autoBookResult.shouldBook) {
+      return { booked: false };
+    }
+
+    // Detect if the message indicates meeting acceptance
+    const isMeetingAccepted = await detectMeetingAcceptedIntent(messageBody);
+    if (!isMeetingAccepted) {
+      return { booked: false };
+    }
+
+    // Get offered slots for this lead
+    const offeredSlots = await getOfferedSlots(leadId);
+    if (offeredSlots.length === 0) {
+      return { booked: false, error: "No offered slots found for lead" };
+    }
+
+    // Parse which slot they accepted
+    const acceptedSlot = await parseAcceptedTimeFromMessage(messageBody, offeredSlots);
+    if (!acceptedSlot) {
+      // Fallback: pick the first available slot if they said "yes" to meeting
+      // This handles cases like "Thursday works" when we offered Thursday
+      const firstSlot = offeredSlots[0];
+      console.log(`Auto-booking fallback: using first offered slot for lead ${leadId}`);
+
+      const bookingResult = await bookMeetingOnGHL(leadId, firstSlot.datetime);
+      if (bookingResult.success) {
+        // Send Slack notification for auto-booking
+        await sendAutoBookingSlackNotification(leadId, firstSlot);
+        
+        return {
+          booked: true,
+          appointmentId: bookingResult.appointmentId,
+        };
+      }
+      return { booked: false, error: bookingResult.error };
+    }
+
+    // Book the accepted slot
+    const bookingResult = await bookMeetingOnGHL(leadId, acceptedSlot.datetime);
+    if (bookingResult.success) {
+      // Send Slack notification for auto-booking
+      await sendAutoBookingSlackNotification(leadId, acceptedSlot);
+      
+      return {
+        booked: true,
+        appointmentId: bookingResult.appointmentId,
+      };
+    }
+
+    return { booked: false, error: bookingResult.error };
+  } catch (error) {
+    console.error("Failed to process message for auto-booking:", error);
+    return {
+      booked: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
+ * Send Slack notification for auto-booked meeting
+ */
+async function sendAutoBookingSlackNotification(
+  leadId: string,
+  slot: OfferedSlot
+): Promise<void> {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      include: { client: { include: { settings: true } } },
+    });
+
+    if (!lead || !lead.client.settings?.slackAlerts) return;
+
+    const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown Lead";
+    const slotTime = new Date(slot.datetime).toLocaleString();
+
+    await sendSlackNotification({
+      text: `🗓️ Auto-Booked Meeting`,
+      blocks: [
+        {
+          type: "header",
+          text: {
+            type: "plain_text",
+            text: "🗓️ Meeting Auto-Booked",
+            emoji: true,
+          },
+        },
+        {
+          type: "section",
+          fields: [
+            {
+              type: "mrkdwn",
+              text: `*Lead:*\n${leadName}`,
+            },
+            {
+              type: "mrkdwn",
+              text: `*Workspace:*\n${lead.client.name}`,
+            },
+            {
+              type: "mrkdwn",
+              text: `*Time:*\n${slotTime}`,
+            },
+            {
+              type: "mrkdwn",
+              text: `*Slot Label:*\n${slot.label}`,
+            },
+          ],
+        },
+      ],
+    });
+  } catch (error) {
+    console.error("Failed to send auto-booking Slack notification:", error);
+  }
+}

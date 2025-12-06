@@ -62,6 +62,12 @@ model WorkspaceSettings {
   // Calendar Settings
   calendarSlotsToShow    Int?     @default(3)   // Number of availability slots to show
   calendarLookAheadDays  Int?     @default(28)  // Days to look ahead for availability
+  // GHL Meeting Booking Settings
+  ghlDefaultCalendarId   String?              // Selected GHL calendar for booking appointments
+  ghlAssignedUserId      String?              // Default team member assigned to appointments
+  autoBookMeetings       Boolean  @default(false)  // Workspace-level auto-book toggle
+  meetingDurationMinutes Int      @default(30)     // Default meeting duration in minutes
+  meetingTitle           String?  @default("Intro to {companyName}")  // Title template for appointments
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
   // Relations
@@ -104,6 +110,12 @@ model Lead {
   // Automation settings
   autoReplyEnabled Boolean   @default(false)
   autoFollowUpEnabled Boolean @default(false)
+  // Meeting booking settings
+  autoBookMeetingsEnabled Boolean   @default(true)   // Lead-level auto-book toggle
+  offeredSlots            String?   @db.Text         // JSON array of offered time slots
+  bookedSlot              String?                    // ISO datetime of booked slot (for filtering availability)
+  ghlAppointmentId        String?                    // GHL appointment ID after booking
+  appointmentBookedAt     DateTime?                  // When the appointment was booked
   // Workspace and campaign associations
   clientId     String
   client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
