@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useTransition } from "react";
-import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil } from "lucide-react";
+import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil, Eraser } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,7 @@ import { Separator } from "@/components/ui/separator";
 import { getClients, createClient, deleteClient, updateClient } from "@/actions/client-actions";
 import { syncCampaignsFromGHL } from "@/actions/campaign-actions";
 import { syncEmailCampaignsFromEmailBison } from "@/actions/email-campaign-actions";
+import { cleanupBounceLeads } from "@/actions/message-actions";
 import { toast } from "sonner";
 
 interface Client {
@@ -40,6 +41,7 @@ export function IntegrationsManager() {
   const [isPending, startTransition] = useTransition();
   const [syncingClientId, setSyncingClientId] = useState<string | null>(null);
   const [syncingEmailClientId, setSyncingEmailClientId] = useState<string | null>(null);
+  const [cleaningUpClientId, setCleaningUpClientId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [showEmailFields, setShowEmailFields] = useState(false);
@@ -135,6 +137,35 @@ export function IntegrationsManager() {
     }
     
     setSyncingEmailClientId(null);
+  }
+
+  async function handleCleanupBounceLeads(clientId: string) {
+    setCleaningUpClientId(clientId);
+    
+    try {
+      const result = await cleanupBounceLeads(clientId);
+      
+      if (result.success) {
+        if (result.fakeLeadsFound > 0) {
+          let message = `Cleaned up ${result.fakeLeadsFound} bounce leads: ${result.messagesMigrated} messages migrated, ${result.leadsBlacklisted} blacklisted`;
+          if (result.leadsMarkedForReview > 0) {
+            message += `, ${result.leadsMarkedForReview} marked for review`;
+            toast.warning(message);
+          } else {
+            toast.success(message);
+          }
+        } else {
+          toast.info("No bounce leads found to clean up");
+        }
+        await fetchClients();
+      } else {
+        toast.error(result.errors.join(", ") || "Failed to clean up bounce leads");
+      }
+    } catch (err) {
+      toast.error("Failed to clean up bounce leads");
+    }
+    
+    setCleaningUpClientId(null);
   }
 
   async function handleDelete(id: string) {
@@ -403,21 +434,39 @@ export function IntegrationsManager() {
                             )}
                           </Button>
                           {hasEmailBison && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleSyncEmailCampaigns(client.id)}
-                              disabled={syncingEmailClientId === client.id}
-                            >
-                              {syncingEmailClientId === client.id ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <>
-                                  <Mail className="h-4 w-4 mr-1" />
-                                  Sync Email
-                                </>
-                              )}
-                            </Button>
+                            <>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleSyncEmailCampaigns(client.id)}
+                                disabled={syncingEmailClientId === client.id}
+                              >
+                                {syncingEmailClientId === client.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Mail className="h-4 w-4 mr-1" />
+                                    Sync Email
+                                  </>
+                                )}
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleCleanupBounceLeads(client.id)}
+                                disabled={cleaningUpClientId === client.id}
+                                title="Clean up bounce email leads (Mail Delivery Subsystem, etc.)"
+                              >
+                                {cleaningUpClientId === client.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <>
+                                    <Eraser className="h-4 w-4 mr-1" />
+                                    Clean Bounces
+                                  </>
+                                )}
+                              </Button>
+                            </>
                           )}
                           <Button
                             variant="ghost"

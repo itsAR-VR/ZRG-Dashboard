@@ -496,7 +496,7 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
             // Only generate draft if not blacklisted
             if (lead && shouldGenerateDraft(lead.sentimentTag || "Neutral")) {
               const syncResult = result.value as SmartSyncResult;
-              
+
               // BUG FIX: Generate drafts for BOTH channels that were synced
               if (syncResult.syncedSms) {
                 const smsDraftResult = await regenerateDraft(leadId, "sms");
@@ -528,6 +528,17 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
     }
 
     console.log(`[SyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalDraftsGenerated} drafts, ${errors} errors`);
+
+    // Auto-run bounce cleanup after syncing
+    console.log(`[SyncAll] Running bounce cleanup for client ${clientId}...`);
+    try {
+      const cleanupResult = await cleanupBounceLeads(clientId);
+      if (cleanupResult.fakeLeadsFound > 0) {
+        console.log(`[SyncAll] Bounce cleanup: ${cleanupResult.fakeLeadsFound} fake leads found, ${cleanupResult.leadsDeleted} deleted, ${cleanupResult.leadsBlacklisted} blacklisted`);
+      }
+    } catch (cleanupError) {
+      console.error("[SyncAll] Bounce cleanup failed:", cleanupError);
+    }
 
     revalidatePath("/");
 
@@ -1300,12 +1311,14 @@ interface CleanupBounceResult {
   messagesMigrated: number;
   leadsDeleted: number;
   leadsBlacklisted: number;
+  leadsMarkedForReview: number;
   errors: string[];
 }
 
 /**
  * Clean up fake bounce leads (like "Mail Delivery Subsystem")
- * Migrates their messages to the correct original leads and deletes the fake leads
+ * Migrates their messages to the correct original leads and deletes the fake leads.
+ * If original recipient can't be determined, marks the bounce lead for manual review.
  */
 export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounceResult> {
   const result: CleanupBounceResult = {
@@ -1314,6 +1327,7 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
     messagesMigrated: 0,
     leadsDeleted: 0,
     leadsBlacklisted: 0,
+    leadsMarkedForReview: 0,
     errors: [],
   };
 
@@ -1342,11 +1356,14 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
 
     for (const fakeLead of fakeLeads) {
       try {
+        let messagesProcessed = 0;
+        let couldNotMatch = false;
+        
         for (const message of fakeLead.messages) {
           // Try to find original recipient from message body
           const originalRecipient = parseBounceRecipientFromBody(message.body) ||
-                                    parseBounceRecipientFromBody(message.rawText) ||
-                                    parseBounceRecipientFromBody(message.rawHtml);
+            parseBounceRecipientFromBody(message.rawText) ||
+            parseBounceRecipientFromBody(message.rawHtml);
 
           if (originalRecipient) {
             // Find the original lead
@@ -1368,10 +1385,11 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
                 },
               });
               result.messagesMigrated++;
-
+              messagesProcessed++;
 
               // BUG FIX: Only blacklist and count if not already blacklisted
               if (!blacklistedLeadIds.has(originalLead.id)) {
+                // Blacklist the lead
                 await prisma.lead.update({
                   where: { id: originalLead.id },
                   data: {
@@ -1379,27 +1397,51 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
                     sentimentTag: "Blacklist",
                   },
                 });
+                
+                // Auto-reject any pending drafts for this lead
+                await prisma.aIDraft.updateMany({
+                  where: {
+                    leadId: originalLead.id,
+                    status: "pending",
+                  },
+                  data: { status: "rejected" },
+                });
+                
                 blacklistedLeadIds.add(originalLead.id);
                 result.leadsBlacklisted++;
-                console.log(`[CleanupBounce] Blacklisted lead ${originalLead.id} (${originalRecipient})`);
+                console.log(`[CleanupBounce] Blacklisted lead ${originalLead.id} (${originalRecipient}) and rejected pending drafts`);
               }
               console.log(`[CleanupBounce] Migrated message to lead ${originalLead.id} (${originalRecipient})`);
             } else {
+              // Could not find original lead - mark for review
               console.log(`[CleanupBounce] Could not find original lead for: ${originalRecipient}`);
-              // Delete the orphaned message
-              await prisma.message.delete({ where: { id: message.id } });
+              couldNotMatch = true;
             }
           } else {
-            // Can't determine original recipient - delete the message
-            console.log(`[CleanupBounce] Could not parse recipient, deleting message ${message.id}`);
-            await prisma.message.delete({ where: { id: message.id } });
+            // Can't determine original recipient - mark for review
+            console.log(`[CleanupBounce] Could not parse recipient from message ${message.id}`);
+            couldNotMatch = true;
           }
         }
 
-        // Delete the fake lead (messages have been migrated or deleted)
-        await prisma.lead.delete({ where: { id: fakeLead.id } });
-        result.leadsDeleted++;
-        console.log(`[CleanupBounce] Deleted fake lead: ${fakeLead.email}`);
+        // If all messages were successfully migrated, delete the fake lead
+        // Otherwise, mark the lead for manual review
+        if (messagesProcessed > 0 && !couldNotMatch) {
+          await prisma.lead.delete({ where: { id: fakeLead.id } });
+          result.leadsDeleted++;
+          console.log(`[CleanupBounce] Deleted fake lead: ${fakeLead.email}`);
+        } else if (couldNotMatch) {
+          // Mark for manual review - update status to needs_review
+          await prisma.lead.update({
+            where: { id: fakeLead.id },
+            data: { 
+              status: "needs_review",
+              sentimentTag: "Blacklist", // Still mark as blacklist sentiment
+            },
+          });
+          result.leadsMarkedForReview++;
+          console.log(`[CleanupBounce] Marked for review: ${fakeLead.email} (could not match all messages)`);
+        }
 
       } catch (leadError) {
         const errorMsg = `Failed to process fake lead ${fakeLead.id}: ${leadError}`;
@@ -1409,9 +1451,9 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
     }
 
     revalidatePath("/");
-    
-    console.log(`[CleanupBounce] Complete: ${result.messagesMigrated} messages migrated, ${result.leadsDeleted} fake leads deleted, ${result.leadsBlacklisted} unique leads blacklisted`);
-    
+
+    console.log(`[CleanupBounce] Complete: ${result.messagesMigrated} messages migrated, ${result.leadsDeleted} fake leads deleted, ${result.leadsBlacklisted} unique leads blacklisted, ${result.leadsMarkedForReview} marked for review`);
+
     return result;
   } catch (error) {
     console.error("[CleanupBounce] Failed:", error);

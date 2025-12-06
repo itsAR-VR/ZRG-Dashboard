@@ -328,7 +328,29 @@ function getResponseStrategy(sentimentTag: string): string {
   return strategies[sentimentTag] || "Respond professionally and try to move the conversation forward.";
 }
 
-export function shouldGenerateDraft(sentimentTag: string): boolean {
+/**
+ * Check if an email address is a bounce notification sender
+ * (mailer-daemon, postmaster, etc.) - should never get AI drafts
+ */
+export function isBounceEmailAddress(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const lowerEmail = email.toLowerCase();
+  return (
+    lowerEmail.includes("mailer-daemon") ||
+    lowerEmail.includes("postmaster") ||
+    lowerEmail.includes("mail-delivery") ||
+    lowerEmail.includes("maildelivery") ||
+    (lowerEmail.includes("noreply") && lowerEmail.includes("google")) ||
+    lowerEmail.startsWith("bounce") ||
+    lowerEmail.includes("mail delivery subsystem")
+  );
+}
+
+export function shouldGenerateDraft(sentimentTag: string, email?: string | null): boolean {
+  // Never generate drafts for bounce email addresses
+  if (isBounceEmailAddress(email)) {
+    return false;
+  }
   const noResponseSentiments = ["Blacklist"];
   return !noResponseSentiments.includes(sentimentTag);
 }

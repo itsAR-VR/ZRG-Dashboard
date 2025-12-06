@@ -405,11 +405,11 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     );
   }
 
-  // Generate AI draft if appropriate
+  // Generate AI draft if appropriate (skip bounce emails)
   let draftId: string | undefined;
   let autoReplySent = false;
 
-  if (shouldGenerateDraft(sentimentTag)) {
+  if (shouldGenerateDraft(sentimentTag, fromEmail)) {
     const draftResult = await generateResponseDraft(
       lead.id,
       `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,
@@ -643,7 +643,16 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
           },
         });
 
-        console.log(`[BOUNCE] Marked lead ${originalLead.id} as blacklisted due to bounce`);
+        // Auto-reject any pending drafts for this lead
+        await prisma.aIDraft.updateMany({
+          where: {
+            leadId: originalLead.id,
+            status: "pending",
+          },
+          data: { status: "rejected" },
+        });
+
+        console.log(`[BOUNCE] Marked lead ${originalLead.id} as blacklisted due to bounce (rejected pending drafts)`);
 
         return NextResponse.json({
           success: true,
@@ -718,9 +727,9 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     data: { sentimentTag, status: leadStatus },
   });
 
-  // Generate AI draft
+  // Generate AI draft (skip bounce emails)
   let draftId: string | undefined;
-  if (shouldGenerateDraft(sentimentTag)) {
+  if (shouldGenerateDraft(sentimentTag, fromEmail)) {
     const draftResult = await generateResponseDraft(
       lead.id,
       `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,

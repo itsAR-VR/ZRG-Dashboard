@@ -53,9 +53,17 @@ function mapSentimentToClassification(sentimentTag: string | null): string {
 
 /**
  * Check if a conversation requires attention based on sentiment
+ * Includes all positive response types that need user action
  */
 function requiresAttention(sentimentTag: string | null): boolean {
-  const attentionTags = ["Meeting Requested", "Information Requested", "Follow Up"];
+  const attentionTags = [
+    "Meeting Requested",
+    "Call Requested",
+    "Information Requested",
+    "Positive",
+    "Interested",
+    "Follow Up"
+  ];
   return attentionTags.includes(sentimentTag || "");
 }
 
@@ -169,8 +177,10 @@ export async function getConversations(clientId?: string | null): Promise<{
         lastMessage: latestMessage?.body || "No messages yet",
         lastSubject: latestMessage?.subject || null,
         lastMessageTime: latestMessage?.sentAt || lead.createdAt, // Use sentAt for actual message time
-        hasAiDraft: channelDrafts.length > 0,
-        requiresAttention: requiresAttention(lead.sentimentTag),
+        // Hide drafts for blacklisted leads
+        hasAiDraft: lead.status !== "blacklisted" && lead.sentimentTag !== "Blacklist" && channelDrafts.length > 0,
+        // Don't mark blacklisted leads as requiring attention
+        requiresAttention: lead.status !== "blacklisted" && lead.sentimentTag !== "Blacklist" && requiresAttention(lead.sentimentTag),
         sentimentTag: lead.sentimentTag,
         campaignId,
         emailCampaignId: lead.emailCampaignId,
@@ -199,14 +209,24 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
   total: number;
 }> {
   try {
-    const attentionTags = ["Meeting Requested", "Information Requested", "Follow Up"];
+    // Must match the attentionTags in requiresAttention function
+    const attentionTags = [
+      "Meeting Requested",
+      "Call Requested",
+      "Information Requested",
+      "Positive",
+      "Interested",
+      "Follow Up"
+    ];
     const clientFilter = clientId ? { clientId } : {};
 
-    const [attention, drafts, total] = await Promise.all([
+    const [attention, drafts, total, blacklisted] = await Promise.all([
+      // Count leads requiring attention (excluding blacklisted)
       prisma.lead.count({
         where: {
           ...clientFilter,
           sentimentTag: { in: attentionTags },
+          status: { not: "blacklisted" },
         },
       }),
       // Exclude drafts for blacklisted leads
@@ -220,8 +240,19 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
           },
         },
       }),
+      // Total leads (excluding blacklisted)
       prisma.lead.count({
-        where: clientFilter,
+        where: {
+          ...clientFilter,
+          status: { not: "blacklisted" },
+        },
+      }),
+      // Count blacklisted separately for debugging
+      prisma.lead.count({
+        where: {
+          ...clientFilter,
+          status: "blacklisted",
+        },
       }),
     ]);
 
@@ -229,7 +260,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       requiresAttention: attention,
       draftsForApproval: drafts,
       awaitingReply: Math.max(0, total - attention),
-      total,
+      total: total + blacklisted, // Include blacklisted in total for reference
     };
   } catch (error) {
     console.error("Failed to get inbox counts:", error);
