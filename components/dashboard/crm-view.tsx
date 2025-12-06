@@ -78,7 +78,7 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox }:
           </div>
         </SheetHeader>
 
-        <div className="mt-6 space-y-6 px-1">
+        <div className="mt-6 space-y-6 px-6">
           <div>
             <p className="text-muted-foreground">{lead.title || "No title"}</p>
             <p className="flex items-center gap-1 text-primary">

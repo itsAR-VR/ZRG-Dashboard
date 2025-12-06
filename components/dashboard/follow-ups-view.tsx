@@ -481,11 +481,11 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
   if (tasks.length === 0) {
     return (
       <div className="flex flex-col h-full">
-        <div className="border-b px-6 py-4">
+        <div className="border-b px-8 py-4">
           <h1 className="text-2xl font-bold">Follow-ups</h1>
           <p className="text-muted-foreground">Manage your scheduled outreach tasks</p>
         </div>
-        <div className="flex-1 flex items-center justify-center">
+        <div className="flex-1 flex items-center justify-center px-8">
           <div className="text-center space-y-4">
             <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
               <Calendar className="h-12 w-12 text-muted-foreground" />
@@ -507,12 +507,12 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="border-b px-6 py-4">
+      <div className="border-b px-8 py-4">
         <h1 className="text-2xl font-bold">Follow-ups</h1>
         <p className="text-muted-foreground">Manage your scheduled outreach tasks</p>
       </div>
 
-      <div className="flex-1 overflow-hidden p-6">
+      <div className="flex-1 overflow-hidden p-8">
         <div className="grid grid-cols-3 gap-4 mb-6">
           <Card>
             <CardContent className="p-4 flex items-center gap-3">
