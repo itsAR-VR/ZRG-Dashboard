@@ -236,6 +236,94 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
   }
 }
 
+interface SyncAllResult {
+  success: boolean;
+  totalLeads: number;
+  totalImported: number;
+  totalHealed: number;
+  errors: number;
+  error?: string;
+}
+
+/**
+ * Sync all SMS conversations for a workspace (client)
+ * Iterates through all leads with GHL contact IDs and syncs their history
+ * 
+ * @param clientId - The workspace/client ID to sync
+ */
+export async function syncAllConversations(clientId: string): Promise<SyncAllResult> {
+  try {
+    // Get all leads for this client that have GHL contact IDs (SMS capable)
+    const leads = await prisma.lead.findMany({
+      where: {
+        clientId,
+        ghlContactId: {
+          not: null,
+          // Exclude email-only leads (those created from EmailBison)
+          not: { startsWith: "emailbison-" },
+        },
+      },
+      select: {
+        id: true,
+        ghlContactId: true,
+      },
+    });
+
+    console.log(`[SyncAll] Starting sync for ${leads.length} SMS leads in client ${clientId}`);
+
+    let totalImported = 0;
+    let totalHealed = 0;
+    let errors = 0;
+
+    // Process leads in parallel with a concurrency limit
+    const BATCH_SIZE = 5; // Process 5 at a time to avoid overwhelming GHL API
+    
+    for (let i = 0; i < leads.length; i += BATCH_SIZE) {
+      const batch = leads.slice(i, i + BATCH_SIZE);
+      
+      const results = await Promise.allSettled(
+        batch.map(lead => syncConversationHistory(lead.id))
+      );
+
+      for (const result of results) {
+        if (result.status === "fulfilled" && result.value.success) {
+          totalImported += result.value.importedCount || 0;
+          totalHealed += result.value.healedCount || 0;
+        } else {
+          errors++;
+          if (result.status === "rejected") {
+            console.error(`[SyncAll] Lead sync failed:`, result.reason);
+          } else if (!result.value.success) {
+            console.error(`[SyncAll] Lead sync error:`, result.value.error);
+          }
+        }
+      }
+    }
+
+    console.log(`[SyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${errors} errors`);
+
+    revalidatePath("/");
+
+    return {
+      success: true,
+      totalLeads: leads.length,
+      totalImported,
+      totalHealed,
+      errors,
+    };
+  } catch (error) {
+    console.error("[SyncAll] Failed to sync all conversations:", error);
+    return {
+      success: false,
+      totalLeads: 0,
+      totalImported: 0,
+      totalHealed: 0,
+      errors: 1,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
 /**
  * Send an SMS message to a lead via GHL and save to database
  * 

@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { sendMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, syncConversationHistory } from "@/actions/message-actions"
+import { sendMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft } from "@/actions/message-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
 
@@ -16,6 +16,8 @@ interface ActionStationProps {
   conversation: Conversation | null
   onToggleCrm: () => void
   isCrmOpen: boolean
+  isSyncing?: boolean
+  onSync?: (leadId: string) => Promise<void>
 }
 
 interface AIDraft {
@@ -26,12 +28,11 @@ interface AIDraft {
   channel?: "sms" | "email"
 }
 
-export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionStationProps) {
+export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing = false, onSync }: ActionStationProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [composeMessage, setComposeMessage] = useState("")
   const [isSending, setIsSending] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
-  const [isSyncing, setIsSyncing] = useState(false)
   const [drafts, setDrafts] = useState<AIDraft[]>([])
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(false)
   const [hasAiDraft, setHasAiDraft] = useState(false)
@@ -199,33 +200,10 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen }: ActionSt
       return
     }
 
-    setIsSyncing(true)
-    const result = await syncConversationHistory(conversation.id)
-    
-    if (result.success) {
-      const imported = result.importedCount || 0
-      const healed = result.healedCount || 0
-      const hasChanges = imported > 0 || healed > 0
-
-      if (hasChanges) {
-        const parts = []
-        if (imported > 0) parts.push(`${imported} new`)
-        if (healed > 0) parts.push(`${healed} fixed`)
-        
-        toast.success(`Synced: ${parts.join(", ")}`, {
-          description: `Total messages in GHL: ${result.totalMessages}`
-        })
-        // No full-page reload; rely on realtime/polling to reflect updates
-      } else {
-        toast.info("No changes needed", {
-          description: `All ${result.totalMessages} messages already synced correctly`
-        })
-      }
-    } else {
-      toast.error(result.error || "Failed to sync history")
+    // Use parent's sync handler if provided
+    if (onSync) {
+      await onSync(conversation.id)
     }
-    
-    setIsSyncing(false)
   }
 
   const isEdited = hasAiDraft && composeMessage !== originalDraft

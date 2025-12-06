@@ -138,9 +138,9 @@ export async function getConversations(clientId?: string | null): Promise<{
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "Unknown error";
     console.error("Failed to fetch conversations:", errorMessage, error);
-    return { 
-      success: false, 
-      error: `Failed to fetch conversations: ${errorMessage}` 
+    return {
+      success: false,
+      error: `Failed to fetch conversations: ${errorMessage}`
     };
   }
 }

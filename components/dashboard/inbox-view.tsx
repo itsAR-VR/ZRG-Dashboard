@@ -7,10 +7,12 @@ import { CrmDrawer } from "./crm-drawer";
 import { getConversations, getConversation, type ConversationData } from "@/actions/lead-actions";
 import { getCampaigns } from "@/actions/campaign-actions";
 import { getEmailCampaigns } from "@/actions/email-campaign-actions";
+import { syncConversationHistory, syncAllConversations } from "@/actions/message-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff, Inbox } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
 
 interface InboxViewProps {
   activeChannel: string;
@@ -74,6 +76,10 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [activeCampaign, setActiveCampaign] = useState<string>("all");
   const [error, setError] = useState<string | null>(null);
+  
+  // Sync state management - track which leads are currently syncing
+  const [syncingLeadIds, setSyncingLeadIds] = useState<Set<string>>(new Set());
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
   
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const realtimeConnectedRef = useRef(false);
@@ -172,6 +178,96 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     }
   }, [activeConversationId, conversations]);
 
+  // Sync a single conversation
+  const handleSyncConversation = useCallback(async (leadId: string) => {
+    // Add to syncing set
+    setSyncingLeadIds(prev => new Set(prev).add(leadId));
+    
+    try {
+      const result = await syncConversationHistory(leadId);
+      
+      if (result.success) {
+        const imported = result.importedCount || 0;
+        const healed = result.healedCount || 0;
+        const hasChanges = imported > 0 || healed > 0;
+
+        if (hasChanges) {
+          const parts = [];
+          if (imported > 0) parts.push(`${imported} new`);
+          if (healed > 0) parts.push(`${healed} fixed`);
+          
+          toast.success(`Synced: ${parts.join(", ")}`, {
+            description: `Total messages in GHL: ${result.totalMessages}`
+          });
+          // Refresh the active conversation if it's the one we synced
+          if (leadId === activeConversationId) {
+            fetchActiveConversation();
+          }
+        } else {
+          toast.info("No changes needed", {
+            description: `All ${result.totalMessages} messages already synced`
+          });
+        }
+      } else {
+        toast.error(result.error || "Failed to sync history");
+      }
+    } catch (err) {
+      toast.error("Failed to sync conversation");
+    } finally {
+      // Remove from syncing set
+      setSyncingLeadIds(prev => {
+        const next = new Set(prev);
+        next.delete(leadId);
+        return next;
+      });
+    }
+  }, [activeConversationId, fetchActiveConversation]);
+
+  // Sync all SMS conversations
+  const handleSyncAll = useCallback(async () => {
+    if (!activeWorkspace) {
+      toast.error("No workspace selected");
+      return;
+    }
+
+    setIsSyncingAll(true);
+    
+    // Get all SMS conversation IDs and mark them as syncing
+    const smsLeadIds = conversations
+      .filter(c => c.platform === "sms")
+      .map(c => c.id);
+    
+    setSyncingLeadIds(new Set(smsLeadIds));
+    
+    try {
+      const result = await syncAllConversations(activeWorkspace);
+      
+      if (result.success) {
+        const { totalLeads, totalImported, totalHealed, errors } = result;
+        
+        if (totalImported > 0 || totalHealed > 0) {
+          toast.success(`Synced ${totalLeads} conversations`, {
+            description: `${totalImported} new messages, ${totalHealed} fixed${errors > 0 ? `, ${errors} errors` : ""}`
+          });
+          // Refresh conversations list
+          fetchConversations();
+          fetchActiveConversation();
+        } else {
+          toast.info("All conversations already synced", {
+            description: `Checked ${totalLeads} SMS conversations`
+          });
+        }
+      } else {
+        toast.error(result.error || "Failed to sync all conversations");
+      }
+    } catch (err) {
+      toast.error("Failed to sync all conversations");
+    } finally {
+      setIsSyncingAll(false);
+      setSyncingLeadIds(new Set());
+    }
+  }, [activeWorkspace, conversations, fetchConversations, fetchActiveConversation]);
+
   // Refetch when workspace changes
   useEffect(() => {
     fetchConversations(true);
@@ -248,6 +344,11 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     }
     return true;
   });
+
+  // Check if current conversation is syncing
+  const isCurrentConversationSyncing = activeConversationId 
+    ? syncingLeadIds.has(activeConversationId) 
+    : false;
 
   if (isLoading) {
     return (
@@ -330,11 +431,16 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
         campaigns={campaigns}
         activeCampaign={activeCampaign}
         onCampaignChange={setActiveCampaign}
+        syncingLeadIds={syncingLeadIds}
+        onSyncAll={handleSyncAll}
+        isSyncingAll={isSyncingAll}
       />
       <ActionStation
         conversation={activeConversation}
         onToggleCrm={() => setIsCrmOpen(!isCrmOpen)}
         isCrmOpen={isCrmOpen}
+        isSyncing={isCurrentConversationSyncing}
+        onSync={handleSyncConversation}
       />
       {activeConversation && (
         <CrmDrawer

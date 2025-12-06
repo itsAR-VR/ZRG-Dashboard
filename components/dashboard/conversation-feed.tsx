@@ -1,17 +1,20 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import type { Conversation } from "@/lib/mock-data"
 import { ConversationCard } from "./conversation-card"
 import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Search } from "lucide-react"
+import { Search, RefreshCw, Loader2 } from "lucide-react"
 
 interface Campaign {
   id: string;
   name: string;
   type?: "sms" | "email";
 }
+
+type SortOption = "recent" | "oldest" | "name-az" | "name-za"
 
 interface ConversationFeedProps {
   conversations: Conversation[]
@@ -20,6 +23,9 @@ interface ConversationFeedProps {
   campaigns?: Campaign[]
   activeCampaign?: string
   onCampaignChange?: (campaignId: string) => void
+  syncingLeadIds?: Set<string>
+  onSyncAll?: () => Promise<void>
+  isSyncingAll?: boolean
 }
 
 export function ConversationFeed({ 
@@ -29,16 +35,52 @@ export function ConversationFeed({
   campaigns = [],
   activeCampaign = "all",
   onCampaignChange,
+  syncingLeadIds = new Set(),
+  onSyncAll,
+  isSyncingAll = false,
 }: ConversationFeedProps) {
   const [searchQuery, setSearchQuery] = useState("")
+  const [sortBy, setSortBy] = useState<SortOption>("recent")
 
-  const filteredConversations = conversations.filter(
-    (conv) =>
-      conv.lead.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      conv.lead.company.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      conv.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (conv.lastSubject && conv.lastSubject.toLowerCase().includes(searchQuery.toLowerCase())),
-  )
+  // Filter conversations by search query
+  const filteredConversations = useMemo(() => {
+    return conversations.filter(
+      (conv) =>
+        conv.lead.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        conv.lead.company.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        conv.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (conv.lastSubject && conv.lastSubject.toLowerCase().includes(searchQuery.toLowerCase())),
+    )
+  }, [conversations, searchQuery])
+
+  // Sort filtered conversations
+  const sortedConversations = useMemo(() => {
+    const sorted = [...filteredConversations]
+    
+    switch (sortBy) {
+      case "recent":
+        return sorted.sort((a, b) => 
+          new Date(b.lastMessageTime).getTime() - new Date(a.lastMessageTime).getTime()
+        )
+      case "oldest":
+        return sorted.sort((a, b) => 
+          new Date(a.lastMessageTime).getTime() - new Date(b.lastMessageTime).getTime()
+        )
+      case "name-az":
+        return sorted.sort((a, b) => 
+          a.lead.name.localeCompare(b.lead.name)
+        )
+      case "name-za":
+        return sorted.sort((a, b) => 
+          b.lead.name.localeCompare(a.lead.name)
+        )
+      default:
+        return sorted
+    }
+  }, [filteredConversations, sortBy])
+
+  // Count SMS conversations for sync all button
+  const smsCount = conversations.filter(c => c.platform === "sms").length
 
   return (
     <div className="flex h-full w-80 flex-col border-r border-border bg-background">
@@ -54,15 +96,15 @@ export function ConversationFeed({
           />
         </div>
         <div className="flex gap-2">
-          <Select defaultValue="all">
+          <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
             <SelectTrigger className="flex-1 text-xs">
-              <SelectValue placeholder="Date" />
+              <SelectValue placeholder="Sort by" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Time</SelectItem>
-              <SelectItem value="today">Today</SelectItem>
-              <SelectItem value="week">This Week</SelectItem>
-              <SelectItem value="month">This Month</SelectItem>
+              <SelectItem value="recent">Most Recent</SelectItem>
+              <SelectItem value="oldest">Oldest First</SelectItem>
+              <SelectItem value="name-az">Name A-Z</SelectItem>
+              <SelectItem value="name-za">Name Z-A</SelectItem>
             </SelectContent>
           </Select>
           <Select 
@@ -82,19 +124,42 @@ export function ConversationFeed({
             </SelectContent>
           </Select>
         </div>
+        {/* Sync All Button */}
+        {onSyncAll && smsCount > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full text-xs"
+            onClick={onSyncAll}
+            disabled={isSyncingAll}
+          >
+            {isSyncingAll ? (
+              <>
+                <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                Syncing All SMS...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="h-3 w-3 mr-1.5" />
+                Sync All SMS ({smsCount})
+              </>
+            )}
+          </Button>
+        )}
       </div>
 
       {/* Conversation List */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
-        {filteredConversations.length === 0 ? (
+        {sortedConversations.length === 0 ? (
           <div className="flex h-full items-center justify-center text-muted-foreground">No conversations found</div>
         ) : (
-          filteredConversations.map((conversation) => (
+          sortedConversations.map((conversation) => (
             <ConversationCard
               key={conversation.id}
               conversation={conversation}
               isActive={activeConversationId === conversation.id}
               onClick={() => onSelectConversation(conversation.id)}
+              isSyncing={syncingLeadIds.has(conversation.id)}
             />
           ))
         )}
