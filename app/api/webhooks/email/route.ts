@@ -788,7 +788,7 @@ async function handleLeadUnsubscribed(request: NextRequest, payload: InboxxiaWeb
     where: { id: lead.id },
     data: {
       status: "blacklisted",
-      sentimentTag: "Unsubscribed",
+      sentimentTag: "Blacklist",
     },
   });
 
