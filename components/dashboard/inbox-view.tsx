@@ -73,6 +73,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
   const [isLive, setIsLive] = useState(false);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [activeCampaign, setActiveCampaign] = useState<string>("all");
+  const [error, setError] = useState<string | null>(null);
   
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const realtimeConnectedRef = useRef(false);
@@ -115,12 +116,14 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
   // Fetch conversations from database
   const fetchConversations = useCallback(async (showLoading = false) => {
     if (showLoading) setIsLoading(true);
+    setError(null);
     
     try {
       const result = await getConversations(activeWorkspace);
       if (result.success && result.data) {
         const converted = result.data.map(convertToComponentFormat);
         setConversations(converted);
+        setError(null);
         
         // Set first conversation as active if none selected or current selection not in list
         if (converted.length > 0) {
@@ -133,13 +136,17 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
           setActiveConversation(null);
         }
       } else {
-        // No data - show empty state
+        // Query failed or no data
+        console.error("[InboxView] getConversations failed:", result.error);
+        setError(result.error || "Failed to load conversations");
         setConversations([]);
         setActiveConversationId(null);
         setActiveConversation(null);
       }
     } catch (error) {
-      console.error("Error fetching conversations:", error);
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      console.error("[InboxView] Error fetching conversations:", errorMsg);
+      setError(errorMsg);
       setConversations([]);
     } finally {
       setIsLoading(false);
@@ -246,6 +253,28 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace }: Inbo
     return (
       <div className="flex flex-1 items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className="flex flex-1 items-center justify-center">
+        <div className="text-center space-y-4">
+          <div className="p-4 rounded-full bg-destructive/10 w-fit mx-auto">
+            <WifiOff className="h-12 w-12 text-destructive" />
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold text-destructive">Error loading conversations</h3>
+            <p className="text-sm text-muted-foreground max-w-md font-mono bg-muted p-2 rounded mt-2">
+              {error}
+            </p>
+            <p className="text-xs text-muted-foreground mt-4">
+              If you recently updated the schema, run: <code className="bg-muted px-1 rounded">npx prisma db push</code>
+            </p>
+          </div>
+        </div>
       </div>
     );
   }

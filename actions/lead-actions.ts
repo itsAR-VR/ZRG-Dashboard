@@ -136,8 +136,12 @@ export async function getConversations(clientId?: string | null): Promise<{
 
     return { success: true, data: conversations };
   } catch (error) {
-    console.error("Failed to fetch conversations:", error);
-    return { success: false, error: "Failed to fetch conversations" };
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    console.error("Failed to fetch conversations:", errorMessage, error);
+    return { 
+      success: false, 
+      error: `Failed to fetch conversations: ${errorMessage}` 
+    };
   }
 }
 
