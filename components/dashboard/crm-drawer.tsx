@@ -98,7 +98,7 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
     }
   }
 
-  const handleStatusChange = async (newStatus: string) => {
+  const handleStatusChange = async (newStatus: Lead["status"]) => {
     setCurrentStatus(newStatus)
     startTransition(async () => {
       const result = await updateLeadStatus(lead.id, newStatus)
@@ -248,7 +248,11 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
           {/* Status */}
           <div className="space-y-3">
             <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Status</h4>
-            <Select value={currentStatus} onValueChange={handleStatusChange} disabled={isPending}>
+            <Select
+              value={currentStatus}
+              onValueChange={(value) => handleStatusChange(value as Lead["status"])}
+              disabled={isPending}
+            >
               <SelectTrigger className={cn("w-full", getStatusColor(currentStatus))}>
                 {isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin mr-2" />
