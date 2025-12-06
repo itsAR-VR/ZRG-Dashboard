@@ -109,6 +109,8 @@ model Message {
   id        String   @id @default(uuid())
   ghlId     String?  @unique // GoHighLevel Message ID - source of truth for deduplication
   emailBisonReplyId String?  @unique // EmailBison reply ID for deduplication
+  inboxxiaScheduledEmailId String? @unique // Inboxxia scheduled email ID for EMAIL_SENT dedup
+  source    String   @default("zrg") // 'zrg' | 'inboxxia_campaign' - origin of the message
   body      String   @db.Text
   rawText   String?  @db.Text // Original text body (if provided)
   rawHtml   String?  @db.Text // Original HTML body (if provided)
@@ -124,6 +126,7 @@ model Message {
 
   @@index([leadId])
   @@index([sentAt(sort: Desc)])
+  @@index([source])
 }
 
 // Follow-up tasks for leads
