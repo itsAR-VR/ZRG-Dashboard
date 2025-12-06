@@ -240,9 +240,14 @@ async function upsertLead(
   });
 }
 
-function parseDate(dateStr?: string | null): Date {
-  if (dateStr && !Number.isNaN(new Date(dateStr).getTime())) {
-    return new Date(dateStr);
+function parseDate(...dateStrs: (string | null | undefined)[]): Date {
+  for (const dateStr of dateStrs) {
+    if (dateStr) {
+      const parsed = new Date(dateStr);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
   }
   return new Date();
 }
@@ -306,7 +311,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
 
   const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
 
-  const sentAt = parseDate(reply.date_received) || parseDate(reply.created_at);
+  const sentAt = parseDate(reply.date_received, reply.created_at);
 
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
@@ -451,7 +456,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   const sentimentTag = "Interested";
   const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || "engaged";
 
-  const sentAt = parseDate(reply.date_received) || parseDate(reply.created_at);
+  const sentAt = parseDate(reply.date_received, reply.created_at);
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
 
@@ -556,7 +561,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   );
   const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
 
-  const sentAt = parseDate(reply.date_received) || parseDate(reply.created_at);
+  const sentAt = parseDate(reply.date_received, reply.created_at);
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
 
