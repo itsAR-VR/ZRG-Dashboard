@@ -4,12 +4,20 @@ export interface EmailBisonCampaign {
   status?: string;
 }
 
+export interface EmailBisonRecipient {
+  name: string | null;
+  email_address: string;
+}
+
 export interface EmailBisonReplyPayload {
   message: string;
-  sender_email_id: string;
+  sender_email_id: number;
+  to_emails: EmailBisonRecipient[];
   subject?: string;
-  cc?: string[];
-  bcc?: string[];
+  cc_emails?: EmailBisonRecipient[];
+  bcc_emails?: EmailBisonRecipient[];
+  inject_previous_email_body?: boolean;
+  content_type?: "text" | "html";
 }
 
 const INBOXXIA_BASE_URL = "https://send.meetinboxxia.com";
@@ -72,6 +80,13 @@ export async function sendEmailBisonReply(
 ): Promise<{ success: boolean; data?: any; error?: string }> {
   const url = `${INBOXXIA_BASE_URL}/api/replies/${replyId}/reply`;
 
+  console.log(`[EmailBison] Sending reply to ${replyId}:`, {
+    to: payload.to_emails.map(e => e.email_address),
+    sender_email_id: payload.sender_email_id,
+    subject: payload.subject,
+    messagePreview: payload.message.substring(0, 50) + "...",
+  });
+
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -85,14 +100,15 @@ export async function sendEmailBisonReply(
 
     if (!response.ok) {
       const body = await parseJsonSafe(response);
+      console.error(`[EmailBison] Reply send failed (${response.status}):`, body);
       return {
         success: false,
-        error: `EmailBison reply send failed (${response.status}): ${body?.error || body?.message || "Unknown error"
-          }`,
+        error: `EmailBison reply send failed (${response.status}): ${body?.error || body?.message || JSON.stringify(body) || "Unknown error"}`,
       };
     }
 
     const body = await parseJsonSafe(response);
+    console.log(`[EmailBison] Reply sent successfully:`, body);
     return { success: true, data: body };
   } catch (error) {
     console.error("[EmailBison] Failed to send reply:", error);
