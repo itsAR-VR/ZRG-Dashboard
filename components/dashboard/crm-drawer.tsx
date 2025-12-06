@@ -98,7 +98,7 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
     }
   }
 
-  const handleStatusChange = async (newStatus: string) => {
+  const handleStatusChange = async (newStatus: Lead["status"]) => {
     setCurrentStatus(newStatus)
     startTransition(async () => {
       const result = await updateLeadStatus(lead.id, newStatus)

@@ -170,9 +170,10 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
   }
 
   // Get user display info
-  const userDisplayName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "User"
+  const userDisplayName = user?.fullName || user?.email?.split("@")[0] || "User"
   const userEmail = user?.email || ""
-  const userAvatar = user?.user_metadata?.avatar_url || ""
+  const userAvatar = user?.avatarUrl || ""
+  const userProviderLabel = "email"
   const userInitials = userDisplayName
     .split(" ")
     .map((n: string) => n[0])
@@ -245,7 +246,7 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
                     <p className="font-semibold text-lg">{userDisplayName}</p>
                     <p className="text-sm text-muted-foreground">{userEmail}</p>
                     <p className="text-xs text-muted-foreground mt-1">
-                      Profile managed by {user?.app_metadata?.provider || "email"} login
+                      Profile managed by {userProviderLabel} login
                     </p>
                   </div>
                 </div>
