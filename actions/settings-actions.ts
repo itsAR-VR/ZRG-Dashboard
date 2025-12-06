@@ -10,6 +10,7 @@ export interface UserSettingsData {
   aiTone: string | null;
   aiGreeting: string | null;
   aiSignature: string | null;
+  aiGoals: string | null;
   autoApproveMeetings: boolean;
   flagUncertainReplies: boolean;
   pauseForOOO: boolean;
@@ -42,6 +43,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           aiTone: "friendly-professional",
           aiGreeting: "Hi {firstName},",
           aiSignature: null,
+          aiGoals: null,
           autoApproveMeetings: true,
           flagUncertainReplies: true,
           pauseForOOO: true,
@@ -66,6 +68,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         data: {
           clientId,
           aiTone: "friendly-professional",
+          aiGoals: null,
           autoApproveMeetings: true,
           flagUncertainReplies: true,
           pauseForOOO: true,
@@ -112,6 +115,7 @@ export async function updateUserSettings(
         aiTone: data.aiTone,
         aiGreeting: data.aiGreeting,
         aiSignature: data.aiSignature,
+        aiGoals: data.aiGoals,
         autoApproveMeetings: data.autoApproveMeetings,
         flagUncertainReplies: data.flagUncertainReplies,
         pauseForOOO: data.pauseForOOO,
@@ -128,6 +132,7 @@ export async function updateUserSettings(
         aiTone: data.aiTone ?? "friendly-professional",
         aiGreeting: data.aiGreeting,
         aiSignature: data.aiSignature,
+        aiGoals: data.aiGoals,
         autoApproveMeetings: data.autoApproveMeetings ?? true,
         flagUncertainReplies: data.flagUncertainReplies ?? true,
         pauseForOOO: data.pauseForOOO ?? true,

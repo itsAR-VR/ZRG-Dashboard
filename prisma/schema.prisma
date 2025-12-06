@@ -36,6 +36,7 @@ model WorkspaceSettings {
   aiTone               String?  @default("friendly-professional")
   aiGreeting           String?
   aiSignature          String?  @db.Text
+  aiGoals              String?  @db.Text
   // Automation Rules
   autoApproveMeetings  Boolean  @default(true)
   flagUncertainReplies Boolean  @default(true)

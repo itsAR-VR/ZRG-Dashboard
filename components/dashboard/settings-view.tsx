@@ -69,6 +69,7 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
     tone: "friendly-professional",
     greeting: "Hi {firstName},",
     signature: "",
+    goals: "",
   })
 
   const [availability, setAvailability] = useState({
@@ -103,6 +104,7 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
           tone: result.data.aiTone || "friendly-professional",
           greeting: result.data.aiGreeting || "Hi {firstName},",
           signature: result.data.aiSignature || "",
+          goals: result.data.aiGoals || "",
         })
         setAvailability({
           timezone: result.data.timezone || "America/Los_Angeles",
@@ -141,6 +143,7 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
       aiTone: aiPersona.tone,
       aiGreeting: aiPersona.greeting,
       aiSignature: aiPersona.signature || undefined,
+      aiGoals: aiPersona.goals || undefined,
       autoApproveMeetings: automationRules.autoApproveMeetings,
       flagUncertainReplies: automationRules.flagUncertainReplies,
       pauseForOOO: automationRules.pauseForOOO,
@@ -467,6 +470,23 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
                     rows={4}
                     placeholder="Best regards,&#10;Your Name&#10;Company Name"
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="aiGoals">AI Goals & Strategy</Label>
+                  <Textarea
+                    id="aiGoals"
+                    value={aiPersona.goals}
+                    onChange={(e) => {
+                      setAiPersona({ ...aiPersona, goals: e.target.value })
+                      handleChange()
+                    }}
+                    rows={4}
+                    placeholder="Example: Prioritize booking intro calls within 7 days; keep tone consultative; surface upsell opportunities."
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Describe the goals/strategy the AI should prioritize. Combined with sentiment to choose responses.
+                  </p>
                 </div>
 
                 <Separator />

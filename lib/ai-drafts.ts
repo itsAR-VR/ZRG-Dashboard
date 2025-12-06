@@ -32,6 +32,7 @@ export async function generateResponseDraft(
         firstName: true,
         client: {
           select: {
+            name: true,
             settings: true,
           },
         },
@@ -41,8 +42,9 @@ export async function generateResponseDraft(
     // Get settings from the lead's workspace
     const settings = lead?.client?.settings;
     const aiTone = settings?.aiTone || "friendly-professional";
-    const aiName = settings?.aiPersonaName || "Alex";
+    const aiName = settings?.aiPersonaName || lead?.client?.name || "Your Sales Rep";
     const aiGreeting = settings?.aiGreeting || "Hi {firstName},";
+    const aiGoals = settings?.aiGoals?.trim();
 
     const firstName = lead?.firstName || "there";
 
@@ -59,6 +61,7 @@ export async function generateResponseDraft(
 
 Tone: ${aiTone}
 Strategy: ${responseStrategy}
+Primary Goal/Strategy: ${aiGoals || "Use good judgment to advance the conversation while respecting user intent."}
 
 Guidelines:
 - Keep responses concise and SMS-friendly (under 160 characters)

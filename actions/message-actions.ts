@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { sendSMS, exportMessages, type GHLExportedMessage } from "@/lib/ghl-api";
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
+import { classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
 
 interface SendMessageResult {
   success: boolean;
@@ -186,6 +187,35 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
     }
 
     console.log(`[Sync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
+
+    // Re-run sentiment analysis using the refreshed conversation transcript
+    try {
+      const messages = await prisma.message.findMany({
+        where: { leadId },
+        orderBy: { sentAt: "asc" },
+      });
+
+      const transcript = messages
+        .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
+        .join("\n");
+
+      if (transcript.trim().length > 0) {
+        const refreshedSentiment = await classifySentiment(transcript);
+        const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
+
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: {
+            sentimentTag: refreshedSentiment,
+            status: refreshedStatus,
+          },
+        });
+
+        console.log(`[Sync] Reclassified sentiment to ${refreshedSentiment} and status to ${refreshedStatus}`);
+      }
+    } catch (reclassError) {
+      console.error("[Sync] Failed to refresh sentiment after sync:", reclassError);
+    }
 
     revalidatePath("/");
 
