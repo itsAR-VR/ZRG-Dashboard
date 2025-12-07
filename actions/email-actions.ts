@@ -118,6 +118,13 @@ export async function sendEmailReply(
     const messageContent = editedContent || draft.content;
     const subject = latestInboundEmail?.subject || null;
 
+    // Convert plain text newlines to HTML <br> tags for proper email formatting
+    const htmlMessage = messageContent
+      .replace(/\n\n/g, '</p><p>')  // Double newlines become paragraph breaks
+      .replace(/\n/g, '<br>')       // Single newlines become line breaks
+      .replace(/^/, '<p>')          // Wrap in paragraph tags
+      .replace(/$/, '</p>');
+
     // Construct to_emails array (required by EmailBison API)
     const toEmails = lead.email
       ? [{ name: lead.firstName || null, email_address: lead.email }]
@@ -132,13 +139,14 @@ export async function sendEmailReply(
       client.emailBisonApiKey,
       replyId,
       {
-        message: messageContent,
+        message: htmlMessage,
         sender_email_id: parseInt(lead.senderAccountId), // Must be number
         to_emails: toEmails, // Required field
         subject: subject || undefined,
         cc_emails: ccEmails, // Correct field name
         bcc_emails: bccEmails, // Correct field name
         inject_previous_email_body: true,
+        content_type: "html", // Send as HTML to preserve formatting
       }
     );
 

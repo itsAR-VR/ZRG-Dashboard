@@ -189,17 +189,17 @@ export async function fetchEmailBisonReplies(
     }
 
     const data = await response.json();
-    
+
     // Handle both array response and object with replies property
-    const repliesArray: EmailBisonReplyMessage[] = Array.isArray(data) 
-      ? data 
-      : Array.isArray(data?.data) 
-        ? data.data 
-        : Array.isArray(data?.replies) 
-          ? data.replies 
+    const repliesArray: EmailBisonReplyMessage[] = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.replies)
+          ? data.replies
           : [];
 
-    console.log(`[EmailBison] Found ${repliesArray.length} replies for lead ${bisonLeadId}:`, 
+    console.log(`[EmailBison] Found ${repliesArray.length} replies for lead ${bisonLeadId}:`,
       repliesArray.map(r => ({
         id: r.id,
         subject: r.email_subject?.substring(0, 30),
@@ -250,14 +250,14 @@ export async function fetchEmailBisonSentEmails(
     }
 
     const data = await response.json();
-    
+
     // Handle both array response and object with sent_emails property
-    const sentEmailsArray: EmailBisonSentEmail[] = Array.isArray(data) 
-      ? data 
-      : Array.isArray(data?.data) 
-        ? data.data 
-        : Array.isArray(data?.sent_emails) 
-          ? data.sent_emails 
+    const sentEmailsArray: EmailBisonSentEmail[] = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.sent_emails)
+          ? data.sent_emails
           : [];
 
     console.log(`[EmailBison] Found ${sentEmailsArray.length} sent emails for lead ${bisonLeadId}`);
@@ -313,10 +313,10 @@ export async function createEmailBisonLead(
     }
 
     const data = await response.json();
-    
+
     // The response should contain the created lead with its ID
     const leadId = data?.id || data?.lead?.id || data?.data?.id;
-    
+
     if (!leadId) {
       console.error("[EmailBison] Lead created but no ID returned:", data);
       return {

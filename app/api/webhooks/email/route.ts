@@ -697,7 +697,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   // Create the lead in EmailBison to get an ID for future syncing
   if (!lead.emailBisonLeadId && client.emailBisonApiKey) {
     console.log(`[UNTRACKED_REPLY] Lead ${lead.id} has no emailBisonLeadId, creating in EmailBison...`);
-    
+
     const createResult = await createEmailBisonLead(client.emailBisonApiKey, {
       email: fromEmail,
       first_name: fromName?.split(" ")[0] || null,
