@@ -299,7 +299,8 @@ function calculateLeadScore(lead: {
 
   // Recency boost - more recent activity = higher score
   if (lead.messages.length > 0) {
-    const lastMessage = lead.messages[lead.messages.length - 1];
+    // messages are fetched newest-first (orderBy: createdAt desc), so index 0 is most recent
+    const lastMessage = lead.messages[0];
     const daysSinceLastMessage = Math.floor(
       (Date.now() - new Date(lastMessage.createdAt).getTime()) / (1000 * 60 * 60 * 24)
     );
@@ -350,7 +351,7 @@ export async function getFollowUpTaggedLeads(
     const formattedLeads: FollowUpTaggedLeadData[] = leads.map((lead) => {
       // Find the last message (any direction) for preview
       const lastMessage = lead.messages[0] || null;
-      
+
       // Find the last outbound message for "time since last follow-up"
       const lastOutbound = lead.messages.find((m) => m.direction === "outbound");
 
@@ -405,11 +406,11 @@ export async function getFollowUpTaggedLeadsCount(
 /**
  * Outcome options for marking a follow-up lead as done
  */
-export type FollowUpOutcome = 
-  | "no-response" 
-  | "replied" 
-  | "meeting-booked" 
-  | "not-interested" 
+export type FollowUpOutcome =
+  | "no-response"
+  | "replied"
+  | "meeting-booked"
+  | "not-interested"
   | "snoozed";
 
 /**
