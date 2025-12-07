@@ -735,7 +735,8 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
   // Computed values
   const overdueTasks = tasks.filter((t) => isOverdue(t.dueDate))
   const todayTasks = tasks.filter((t) => isToday(t.dueDate))
-  const needsFollowUpCount = followUpLeads.filter((l) => l.sentimentTag === "Follow Up").length
+  // Use total followUpLeads count (includes both "Follow Up" and "Snoozed") to match tab badge
+  const needsFollowUpCount = followUpLeads.length
 
   if (isLoading) {
     return (

@@ -241,7 +241,7 @@ async function messageExists(
  */
 export async function syncConversationHistory(leadId: string): Promise<SyncHistoryResult> {
   try {
-    // Get the lead with their client info and SMS message count
+    // Get the lead with their client info
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       include: {
@@ -251,18 +251,6 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
             ghlLocationId: true,
           },
         },
-        _count: {
-          select: {
-            messages: {
-              where: {
-                OR: [
-                  { channel: "sms" },
-                  { channel: null },
-                ],
-              },
-            },
-          },
-        },
       },
     });
 
@@ -270,9 +258,17 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
       return { success: false, error: "Lead not found" };
     }
 
+    // Count SMS messages separately (Prisma _count doesn't support OR with null in include)
+    const smsMessageCount = await prisma.message.count({
+      where: {
+        leadId,
+        OR: [{ channel: "sms" }, { channel: null }],
+      },
+    });
+
     if (!lead.ghlContactId) {
       // Provide more helpful error message based on context
-      const hasSmsMessages = lead._count.messages > 0;
+      const hasSmsMessages = smsMessageCount > 0;
       if (hasSmsMessages) {
         return {
           success: false,
