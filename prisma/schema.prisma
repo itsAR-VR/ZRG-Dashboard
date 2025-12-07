@@ -39,7 +39,8 @@ model WorkspaceSettings {
   // AI Personality Settings
   aiPersonaName        String?
   aiTone               String?  @default("friendly-professional")
-  aiGreeting           String?
+  aiGreeting           String?  // Default greeting for Email channel
+  aiSmsGreeting        String?  // Default greeting for SMS channel (falls back to aiGreeting if null)
   aiSignature          String?  @db.Text
   aiGoals              String?  @db.Text
   // AI Context Fields (for better AI responses)

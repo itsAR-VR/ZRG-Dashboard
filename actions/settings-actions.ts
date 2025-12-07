@@ -8,7 +8,8 @@ export interface UserSettingsData {
   clientId: string;
   aiPersonaName: string | null;
   aiTone: string | null;
-  aiGreeting: string | null;
+  aiGreeting: string | null;  // Email greeting template
+  aiSmsGreeting: string | null;  // SMS greeting template (falls back to aiGreeting if null)
   aiSignature: string | null;
   aiGoals: string | null;
   // AI Context Fields
@@ -85,6 +86,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           aiPersonaName: null,
           aiTone: "friendly-professional",
           aiGreeting: "Hi {firstName},",
+          aiSmsGreeting: "Hi {firstName},",
           aiSignature: null,
           aiGoals: null,
           serviceDescription: null,
@@ -165,6 +167,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         aiPersonaName: settings.aiPersonaName,
         aiTone: settings.aiTone,
         aiGreeting: settings.aiGreeting,
+        aiSmsGreeting: settings.aiSmsGreeting,
         aiSignature: settings.aiSignature,
         aiGoals: settings.aiGoals,
         serviceDescription: settings.serviceDescription,
@@ -216,6 +219,7 @@ export async function updateUserSettings(
         aiPersonaName: data.aiPersonaName,
         aiTone: data.aiTone,
         aiGreeting: data.aiGreeting,
+        aiSmsGreeting: data.aiSmsGreeting,
         aiSignature: data.aiSignature,
         aiGoals: data.aiGoals,
         serviceDescription: data.serviceDescription,
@@ -244,6 +248,7 @@ export async function updateUserSettings(
         aiPersonaName: data.aiPersonaName,
         aiTone: data.aiTone ?? "friendly-professional",
         aiGreeting: data.aiGreeting,
+        aiSmsGreeting: data.aiSmsGreeting,
         aiSignature: data.aiSignature,
         aiGoals: data.aiGoals,
         serviceDescription: data.serviceDescription,

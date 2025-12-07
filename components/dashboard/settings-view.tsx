@@ -99,7 +99,8 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
   const [aiPersona, setAiPersona] = useState({
     name: "",
     tone: "friendly-professional",
-    greeting: "Hi {firstName},",
+    greeting: "Hi {firstName},",  // Email greeting
+    smsGreeting: "Hi {firstName},",  // SMS greeting
     signature: "",
     goals: "",
     serviceDescription: "",
@@ -171,6 +172,7 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
           name: result.data.aiPersonaName || "",
           tone: result.data.aiTone || "friendly-professional",
           greeting: result.data.aiGreeting || "Hi {firstName},",
+          smsGreeting: result.data.aiSmsGreeting || result.data.aiGreeting || "Hi {firstName},",
           signature: result.data.aiSignature || "",
           goals: result.data.aiGoals || "",
           serviceDescription: result.data.serviceDescription || "",
@@ -298,6 +300,7 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
       aiPersonaName: aiPersona.name || undefined,
       aiTone: aiPersona.tone,
       aiGreeting: aiPersona.greeting,
+      aiSmsGreeting: aiPersona.smsGreeting,
       aiSignature: aiPersona.signature || undefined,
       aiGoals: aiPersona.goals || undefined,
       serviceDescription: aiPersona.serviceDescription || undefined,
@@ -1061,20 +1064,47 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="greeting">Default Greeting Template</Label>
-                  <Input
-                    id="greeting"
-                    value={aiPersona.greeting}
-                    onChange={(e) => {
-                      setAiPersona({ ...aiPersona, greeting: e.target.value })
-                      handleChange()
-                    }}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Use {"{firstName}"}, {"{lastName}"}, {"{company}"} as variables
-                  </p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="greeting" className="flex items-center gap-2">
+                      <Mail className="h-4 w-4" />
+                      Email Greeting
+                    </Label>
+                    <Input
+                      id="greeting"
+                      value={aiPersona.greeting}
+                      onChange={(e) => {
+                        setAiPersona({ ...aiPersona, greeting: e.target.value })
+                        handleChange()
+                      }}
+                      placeholder="Hi {firstName},"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Opening line for email messages
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="smsGreeting" className="flex items-center gap-2">
+                      <MessageSquare className="h-4 w-4" />
+                      SMS Greeting
+                    </Label>
+                    <Input
+                      id="smsGreeting"
+                      value={aiPersona.smsGreeting}
+                      onChange={(e) => {
+                        setAiPersona({ ...aiPersona, smsGreeting: e.target.value })
+                        handleChange()
+                      }}
+                      placeholder="Hi {firstName},"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Opening line for SMS messages
+                    </p>
+                  </div>
                 </div>
+                <p className="text-xs text-muted-foreground -mt-2">
+                  Use {"{firstName}"}, {"{lastName}"} as variables in greetings
+                </p>
 
                 <div className="space-y-2">
                   <Label htmlFor="signature">Email Signature</Label>

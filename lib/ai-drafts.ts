@@ -73,8 +73,20 @@ function buildSmsPrompt(opts: {
   serviceDescription?: string | null;
   qualificationQuestions?: string[];
   knowledgeContext?: string;
+  companyName?: string | null;
+  targetResult?: string | null;
 }) {
   const greeting = opts.aiGreeting.replace("{firstName}", opts.firstName);
+
+  // Build company context section
+  const companyContext = opts.companyName
+    ? `Company: ${opts.companyName}\n`
+    : "";
+
+  // Build value proposition context
+  const valueProposition = opts.targetResult
+    ? `Value Proposition: We help clients with ${opts.targetResult}\n`
+    : "";
 
   // Build service context section
   const serviceContext = opts.serviceDescription
@@ -91,9 +103,9 @@ function buildSmsPrompt(opts: {
     ? `\nReference Information:\n${opts.knowledgeContext}\n`
     : "";
 
-  return `You are ${opts.aiName}, a professional sales representative. Generate a brief SMS response (under 160 characters) based on the conversation context and sentiment.
+  return `You are ${opts.aiName}, a professional sales representative${opts.companyName ? ` from ${opts.companyName}` : ""}. Generate a brief SMS response (under 160 characters) based on the conversation context and sentiment.
 
-Tone: ${opts.aiTone}
+${companyContext}${valueProposition}Tone: ${opts.aiTone}
 Strategy: ${opts.responseStrategy}
 Primary Goal/Strategy: ${opts.aiGoals || "Use good judgment to advance the conversation while respecting user intent."}
 ${serviceContext}${qualificationGuidance}${knowledgeSection}
@@ -105,6 +117,7 @@ Guidelines:
 - For objections, acknowledge and redirect professionally
 - Never be pushy or aggressive
 - If appropriate, naturally incorporate a qualification question
+- When contextually appropriate, you may mention your company name naturally (don't force it into every message)
 - Start with: ${greeting}`;
 }
 
@@ -121,6 +134,8 @@ function buildEmailPrompt(opts: {
   serviceDescription?: string | null;
   qualificationQuestions?: string[];
   knowledgeContext?: string;
+  companyName?: string | null;
+  targetResult?: string | null;
 }) {
   const greeting = opts.aiGreeting.replace("{firstName}", opts.firstName);
   const availabilityBlock =
@@ -134,6 +149,16 @@ function buildEmailPrompt(opts: {
 
   const banned = EMAIL_FORBIDDEN_TERMS.map((w) => `"${w}"`).join(", ");
   const signature = opts.signature ? `\nSignature block to use:\n${opts.signature}` : "";
+
+  // Build company context section
+  const companyContext = opts.companyName
+    ? `Company: ${opts.companyName}\n`
+    : "";
+
+  // Build value proposition context
+  const valueProposition = opts.targetResult
+    ? `Value Proposition: We help clients with ${opts.targetResult}\n`
+    : "";
 
   // Build service context section
   const serviceContext = opts.serviceDescription
@@ -150,9 +175,9 @@ function buildEmailPrompt(opts: {
     ? `\nReference Information (use when relevant to the conversation):\n${opts.knowledgeContext}\n`
     : "";
 
-  return `You are ${opts.aiName}, a professional sales representative responding by email.
+  return `You are ${opts.aiName}, a professional sales representative${opts.companyName ? ` from ${opts.companyName}` : ""} responding by email.
 
-Tone: ${opts.aiTone}
+${companyContext}${valueProposition}Tone: ${opts.aiTone}
 Strategy: ${opts.responseStrategy}
 Primary Goal/Strategy: ${opts.aiGoals || "Advance the conversation while respecting user intent."}
 ${serviceContext}${qualificationGuidance}${knowledgeSection}
@@ -162,6 +187,7 @@ Email constraints:
 - Avoid these words/phrases: ${banned}
 - Keep subject/previous context consistent; do not invent new topics.
 - Be concise, decisive, and respectful.
+- When contextually appropriate, you may mention your company name naturally (don't force it into every message).
 - ${availabilityBlock}
 - For objections, acknowledge then redirect with value.
 - If the lead has already confirmed a meeting, send a short confirmation and any prep steps; no scheduling requests.
@@ -205,10 +231,19 @@ export async function generateResponseDraft(
     const settings = lead?.client?.settings;
     const aiTone = settings?.aiTone || "friendly-professional";
     const aiName = settings?.aiPersonaName || lead?.client?.name || "Your Sales Rep";
-    const aiGreeting = settings?.aiGreeting || (channel === "email" ? "Hi {firstName}," : "Hi {firstName},");
+    // Use channel-specific greeting with fallback chain:
+    // SMS: aiSmsGreeting -> aiGreeting -> default
+    // Email: aiGreeting -> default
+    const defaultGreeting = "Hi {firstName},";
+    const aiGreeting = channel === "sms"
+      ? (settings?.aiSmsGreeting?.trim() || settings?.aiGreeting?.trim() || defaultGreeting)
+      : (settings?.aiGreeting?.trim() || defaultGreeting);
     const aiGoals = settings?.aiGoals?.trim();
     const aiSignature = settings?.aiSignature?.trim();
     const serviceDescription = settings?.serviceDescription?.trim();
+    // Company context - fallback to workspace name if not set
+    const companyName = settings?.companyName?.trim() || lead?.client?.name || null;
+    const targetResult = settings?.targetResult?.trim() || null;
 
     // Parse qualification questions from JSON
     let qualificationQuestions: string[] = [];
@@ -253,6 +288,8 @@ export async function generateResponseDraft(
           serviceDescription,
           qualificationQuestions,
           knowledgeContext,
+          companyName,
+          targetResult,
         })
         : buildSmsPrompt({
           aiName,
@@ -264,6 +301,8 @@ export async function generateResponseDraft(
           serviceDescription,
           qualificationQuestions,
           knowledgeContext,
+          companyName,
+          targetResult,
         });
 
     const completion = await openai.chat.completions.create({
