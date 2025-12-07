@@ -486,9 +486,11 @@ function TaskCard({ task, onExecute, onSnooze, onSkip }: TaskCardProps) {
 
 interface FollowUpsViewProps {
   activeWorkspace?: string | null
+  activeTab?: string
+  onTabChange?: (tab: string) => void
 }
 
-export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
+export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", onTabChange }: FollowUpsViewProps) {
   const router = useRouter()
   const [tasks, setTasks] = useState<UnifiedTask[]>([])
   const [instances, setInstances] = useState<FollowUpInstanceData[]>([])
@@ -812,7 +814,7 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
         </div>
 
         {/* Tabs */}
-        <Tabs defaultValue="needs-followup" className="h-[calc(100%-120px)]">
+        <Tabs value={activeTab} onValueChange={onTabChange} className="h-[calc(100%-120px)]">
           <TabsList>
             <TabsTrigger value="needs-followup">
               Needs Follow-Up ({followUpLeads.length})

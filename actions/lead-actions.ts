@@ -354,3 +354,29 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
     return { success: false, error: "Failed to fetch conversation" };
   }
 }
+
+/**
+ * Get a lead's workspace (client) ID
+ * Used for URL validation and auto-switching workspaces
+ */
+export async function getLeadWorkspaceId(leadId: string): Promise<{
+  success: boolean;
+  workspaceId?: string;
+  error?: string;
+}> {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: { clientId: true },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    return { success: true, workspaceId: lead.clientId };
+  } catch (error) {
+    console.error("Failed to get lead workspace:", error);
+    return { success: false, error: "Failed to get lead workspace" };
+  }
+}

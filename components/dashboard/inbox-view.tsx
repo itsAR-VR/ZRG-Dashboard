@@ -17,6 +17,7 @@ interface InboxViewProps {
   activeFilter: string;
   activeWorkspace: string | null;
   initialConversationId?: string | null;
+  onLeadSelect?: (leadId: string | null) => void;
 }
 
 // Polling interval in milliseconds (30 seconds)
@@ -67,12 +68,19 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
   };
 }
 
-export function InboxView({ activeChannel, activeFilter, activeWorkspace, initialConversationId }: InboxViewProps) {
+export function InboxView({ activeChannel, activeFilter, activeWorkspace, initialConversationId, onLeadSelect }: InboxViewProps) {
   const [conversations, setConversations] = useState<ConversationWithSentiment[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+
+  // Wrapper to update both local state and notify parent
+  const handleLeadSelect = useCallback((leadId: string | null) => {
+    setActiveConversationId(leadId);
+    onLeadSelect?.(leadId);
+  }, [onLeadSelect]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [isCrmOpen, setIsCrmOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isLive, setIsLive] = useState(false);
   const [activeSentiment, setActiveSentiment] = useState<string>("all");
   const [error, setError] = useState<string | null>(null);
@@ -100,10 +108,10 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
         if (converted.length > 0) {
           const currentExists = converted.some(c => c.id === activeConversationId);
           if (!activeConversationId || !currentExists) {
-            setActiveConversationId(converted[0].id);
+            handleLeadSelect(converted[0].id);
           }
         } else {
-          setActiveConversationId(null);
+          handleLeadSelect(null);
           setActiveConversation(null);
         }
       } else {
@@ -111,7 +119,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
         console.error("[InboxView] getConversations failed:", result.error);
         setError(result.error || "Failed to load conversations");
         setConversations([]);
-        setActiveConversationId(null);
+        handleLeadSelect(null);
         setActiveConversation(null);
       }
     } catch (error) {
@@ -122,18 +130,32 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     } finally {
       setIsLoading(false);
     }
-  }, [activeConversationId, activeWorkspace]);
+  }, [activeConversationId, activeWorkspace, handleLeadSelect]);
 
   // Fetch full conversation when active conversation changes
+  // Uses optimistic UI: show lead info immediately, load messages in background
   const fetchActiveConversation = useCallback(async () => {
     if (!activeConversationId) {
       setActiveConversation(null);
+      setIsLoadingMessages(false);
       return;
     }
 
+    // Optimistic UI: Immediately show conversation with data from list
+    const baseConv = conversations.find((c) => c.id === activeConversationId);
+    if (baseConv) {
+      // Set conversation immediately with empty messages (will show spinner)
+      setActiveConversation({
+        ...baseConv,
+        messages: [], // Empty initially, will load
+      });
+      setIsLoadingMessages(true);
+    }
+
+    // Fetch full messages in background
     const result = await getConversation(activeConversationId);
     if (result.success && result.data) {
-      const baseConv = conversations.find((c) => c.id === activeConversationId);
+      // Update with full message data
       if (baseConv) {
         setActiveConversation({
           ...baseConv,
@@ -141,6 +163,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
         });
       }
     }
+    setIsLoadingMessages(false);
   }, [activeConversationId, conversations]);
 
   // Sync a single conversation (SMS and/or Email based on lead's external IDs)
@@ -403,7 +426,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
       <ConversationFeed
         conversations={filteredConversations}
         activeConversationId={activeConversationId}
-        onSelectConversation={setActiveConversationId}
+        onSelectConversation={handleLeadSelect}
         activeSentiment={activeSentiment}
         onSentimentChange={setActiveSentiment}
         syncingLeadIds={syncingLeadIds}
@@ -416,6 +439,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
         isCrmOpen={isCrmOpen}
         isSyncing={isCurrentConversationSyncing}
         onSync={handleSyncConversation}
+        isLoadingMessages={isLoadingMessages}
       />
       {activeConversation && (
         <CrmDrawer

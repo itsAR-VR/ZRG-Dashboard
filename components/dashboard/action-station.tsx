@@ -19,6 +19,7 @@ interface ActionStationProps {
   isCrmOpen: boolean
   isSyncing?: boolean
   onSync?: (leadId: string) => Promise<void>
+  isLoadingMessages?: boolean
 }
 
 interface AIDraft {
@@ -41,7 +42,7 @@ const CHANNEL_LABELS = {
   linkedin: "LinkedIn",
 } as const;
 
-export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing = false, onSync }: ActionStationProps) {
+export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing = false, onSync, isLoadingMessages = false }: ActionStationProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const [composeMessage, setComposeMessage] = useState("")
   const [isSending, setIsSending] = useState(false)
@@ -382,11 +383,15 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
 
       {/* Chat Messages */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
-        {filteredMessages.length > 0 ? (
+        {isLoadingMessages ? (
+          <div className="flex items-center justify-center h-full">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : filteredMessages.length > 0 ? (
           filteredMessages.map((message) => (
-            <ChatMessage 
-              key={message.id} 
-              message={message} 
+            <ChatMessage
+              key={message.id}
+              message={message}
               leadName={lead.name}
               userName={user?.fullName || "You"}
               userAvatar={user?.avatarUrl}

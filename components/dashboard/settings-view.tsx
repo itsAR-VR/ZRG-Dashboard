@@ -84,9 +84,11 @@ const integrations: Integration[] = [
 
 interface SettingsViewProps {
   activeWorkspace?: string | null
+  activeTab?: string
+  onTabChange?: (tab: string) => void
 }
 
-export function SettingsView({ activeWorkspace }: SettingsViewProps) {
+export function SettingsView({ activeWorkspace, activeTab = "general", onTabChange }: SettingsViewProps) {
   const { user, isLoading: isUserLoading } = useUser()
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
@@ -510,7 +512,7 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
       </div>
 
       <div className="p-6">
-        <Tabs defaultValue="general" className="space-y-6">
+        <Tabs value={activeTab} onValueChange={onTabChange} className="space-y-6">
           <TabsList className="grid w-full max-w-3xl grid-cols-4">
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="integrations">Integrations</TabsTrigger>
