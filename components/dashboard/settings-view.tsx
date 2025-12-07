@@ -40,7 +40,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { IntegrationsManager } from "./settings/integrations-manager"
-import { FollowUpSequenceManager } from "./settings/followup-sequence-manager"
+// Note: FollowUpSequenceManager moved to Follow-ups view
 import { 
   getUserSettings, 
   updateUserSettings, 
@@ -508,11 +508,10 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
 
       <div className="p-6">
         <Tabs defaultValue="general" className="space-y-6">
-          <TabsList className="grid w-full max-w-3xl grid-cols-5">
+          <TabsList className="grid w-full max-w-3xl grid-cols-4">
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="integrations">Integrations</TabsTrigger>
             <TabsTrigger value="ai">AI Personality</TabsTrigger>
-            <TabsTrigger value="followups">Follow-Ups</TabsTrigger>
             <TabsTrigger value="team">Team</TabsTrigger>
           </TabsList>
 
@@ -1346,11 +1345,6 @@ export function SettingsView({ activeWorkspace }: SettingsViewProps) {
                 </div>
               </CardContent>
             </Card>
-          </TabsContent>
-
-          {/* Follow-Up Sequences */}
-          <TabsContent value="followups" className="space-y-6">
-            <FollowUpSequenceManager clientId={activeWorkspace || null} />
           </TabsContent>
 
           {/* Team Management */}

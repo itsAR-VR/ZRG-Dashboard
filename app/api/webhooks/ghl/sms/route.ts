@@ -339,9 +339,19 @@ export async function POST(request: NextRequest) {
       transcript = `Lead: ${messageBody}`;
     }
 
+    // Track if we're clearing a "Follow Up" or "Snoozed" tag (for logging)
+    const previousSentiment = leadResult.lead.sentimentTag;
+    const wasFollowUp = previousSentiment === "Follow Up" || previousSentiment === "Snoozed";
+
     // Classify sentiment using AI
+    // Note: Any inbound reply will reclassify sentiment, clearing "Follow Up" or "Snoozed" tags
     const sentimentTag = await classifySentiment(transcript || messageBody);
     console.log(`AI Classification: ${sentimentTag}`);
+
+    // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
+    if (wasFollowUp) {
+      console.log(`[FOLLOWUP_CLEARED] Lead ${leadResult.lead.id} replied via SMS - clearing "${previousSentiment}" tag, new sentiment: ${sentimentTag}`);
+    }
 
     // Determine lead status based on sentiment
     const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || "new";

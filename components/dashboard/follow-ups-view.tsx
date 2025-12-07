@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
+import { useRouter } from "next/navigation"
 import {
   Mail,
   Phone,
@@ -16,14 +17,41 @@ import {
   Pause,
   XCircle,
   ListTodo,
+  Settings2,
+  MessageCircle,
+  Send,
+  CheckCircle2,
+  ChevronDown,
+  Zap,
 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Separator } from "@/components/ui/separator"
-import { getFollowUpTasks, completeFollowUpTask, skipFollowUpTask, snoozeFollowUpTask } from "@/actions/followup-actions"
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  getFollowUpTasks,
+  completeFollowUpTask,
+  skipFollowUpTask,
+  snoozeFollowUpTask,
+  getFollowUpTaggedLeads,
+  updateLeadFollowUpStatus,
+  type FollowUpTaggedLeadData,
+  type FollowUpOutcome,
+} from "@/actions/followup-actions"
 import {
   getWorkspaceFollowUpInstances,
   pauseFollowUpInstance,
@@ -31,6 +59,7 @@ import {
   cancelFollowUpInstance,
   type FollowUpInstanceData,
 } from "@/actions/followup-sequence-actions"
+import { FollowUpSequenceManager } from "./followup-sequence-manager"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
@@ -72,6 +101,23 @@ function formatDueDate(date: Date): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" })
 }
 
+function formatTimeSince(date: Date | null): string {
+  if (!date) return "No messages"
+  const now = new Date()
+  const d = new Date(date)
+  const diffMs = now.getTime() - d.getTime()
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
+  
+  if (diffDays === 0) {
+    if (diffHours === 0) return "Just now"
+    return `${diffHours}h ago`
+  }
+  if (diffDays === 1) return "Yesterday"
+  if (diffDays < 7) return `${diffDays} days ago`
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+}
+
 // Unified task type
 interface UnifiedTask {
   id: string
@@ -94,7 +140,154 @@ interface TaskCardProps {
   onSkip: (id: string) => void
 }
 
+// ============================================================================
+// Follow-Up Conversation Card (for leads tagged with "Follow Up")
+// ============================================================================
+
+interface FollowUpConversationCardProps {
+  lead: FollowUpTaggedLeadData
+  onSendFollowUp: (leadId: string) => void
+  onMarkDone: (leadId: string, outcome: FollowUpOutcome) => void
+  onSnooze: (leadId: string) => void
+  onStartSequence: (leadId: string) => void
+  actionInProgress: string | null
+}
+
+function FollowUpConversationCard({
+  lead,
+  onSendFollowUp,
+  onMarkDone,
+  onSnooze,
+  onStartSequence,
+  actionInProgress,
+}: FollowUpConversationCardProps) {
+  const isLoading = actionInProgress === lead.id
+  const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown"
+  const isSnoozed = lead.sentimentTag === "Snoozed"
+
+  return (
+    <Card className={cn(
+      "transition-colors",
+      isSnoozed && "border-amber-500/30 bg-amber-500/5"
+    )}>
+      <CardContent className="p-4">
+        <div className="flex items-start gap-4">
+          <div className={cn(
+            "mt-1 rounded-lg p-2",
+            isSnoozed ? "bg-amber-500/10" : "bg-primary/10"
+          )}>
+            <MessageCircle className={cn(
+              "h-5 w-5",
+              isSnoozed ? "text-amber-500" : "text-primary"
+            )} />
+          </div>
+
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="font-semibold truncate">{leadName}</span>
+              <Badge variant="outline" className="text-xs shrink-0">
+                Score: {lead.leadScore}
+              </Badge>
+              {isSnoozed && (
+                <Badge variant="secondary" className="text-xs shrink-0 text-amber-600">
+                  Snoozed
+                </Badge>
+              )}
+            </div>
+
+            <p className="text-sm text-muted-foreground truncate">
+              {lead.company}
+            </p>
+
+            {lead.lastMessagePreview && (
+              <p className="mt-2 text-sm bg-muted/50 rounded-md p-2 line-clamp-2">
+                {lead.lastMessagePreview}
+              </p>
+            )}
+
+            <div className="flex items-center justify-between mt-3">
+              <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                <Clock className="h-3 w-3" />
+                {lead.lastOutboundAt 
+                  ? `Sent ${formatTimeSince(lead.lastOutboundAt)}`
+                  : "No outbound messages"
+                }
+              </span>
+
+              <div className="flex items-center gap-2">
+                {/* Send Follow-Up */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onSendFollowUp(lead.id)}
+                  disabled={isLoading}
+                >
+                  <Send className="h-4 w-4 mr-1" />
+                  Send
+                </Button>
+
+                {/* Mark as Done (Dropdown) */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="sm" disabled={isLoading}>
+                      {isLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin mr-1" />
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4 mr-1" />
+                      )}
+                      Done
+                      <ChevronDown className="h-3 w-3 ml-1" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => onMarkDone(lead.id, "no-response")}>
+                      No Response (keep following up)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onMarkDone(lead.id, "replied")}>
+                      Replied
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onMarkDone(lead.id, "meeting-booked")}>
+                      Meeting Booked
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onMarkDone(lead.id, "not-interested")}>
+                      Not Interested
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+
+                {/* Snooze */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onSnooze(lead.id)}
+                  disabled={isLoading || isSnoozed}
+                >
+                  <Clock4 className="h-4 w-4 mr-1" />
+                  Snooze
+                </Button>
+
+                {/* Start Sequence */}
+                <Button
+                  size="sm"
+                  onClick={() => onStartSequence(lead.id)}
+                  disabled={isLoading}
+                >
+                  <Zap className="h-4 w-4 mr-1" />
+                  Sequence
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// ============================================================================
 // Sequence Instance Card Component
+// ============================================================================
+
 interface SequenceInstanceCardProps {
   instance: FollowUpInstanceData
   onPause: (id: string) => void
@@ -207,6 +400,10 @@ function SequenceInstanceCard({ instance, onPause, onResume, onCancel, actionInP
   )
 }
 
+// ============================================================================
+// Task Card Component
+// ============================================================================
+
 function TaskCard({ task, onExecute, onSnooze, onSkip }: TaskCardProps) {
   const Icon = typeIcons[task.type]
   const overdue = isOverdue(task.dueDate)
@@ -283,29 +480,39 @@ function TaskCard({ task, onExecute, onSnooze, onSkip }: TaskCardProps) {
   )
 }
 
+// ============================================================================
+// Main Follow-Ups View Component
+// ============================================================================
+
 interface FollowUpsViewProps {
   activeWorkspace?: string | null
 }
 
 export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
+  const router = useRouter()
   const [tasks, setTasks] = useState<UnifiedTask[]>([])
   const [instances, setInstances] = useState<FollowUpInstanceData[]>([])
+  const [followUpLeads, setFollowUpLeads] = useState<FollowUpTaggedLeadData[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [instanceActionInProgress, setInstanceActionInProgress] = useState<string | null>(null)
+  const [leadActionInProgress, setLeadActionInProgress] = useState<string | null>(null)
+  const [showSequenceManager, setShowSequenceManager] = useState(false)
 
   const fetchData = useCallback(async () => {
     if (!activeWorkspace) {
       setTasks([])
       setInstances([])
+      setFollowUpLeads([])
       setIsLoading(false)
       return
     }
 
     setIsLoading(true)
     try {
-      const [tasksResult, instancesResult] = await Promise.all([
+      const [tasksResult, instancesResult, leadsResult] = await Promise.all([
         getFollowUpTasks("all", activeWorkspace),
         getWorkspaceFollowUpInstances(activeWorkspace, "active"),
+        getFollowUpTaggedLeads(activeWorkspace),
       ])
       
       if (tasksResult.success && tasksResult.data) {
@@ -330,10 +537,17 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
       } else {
         setInstances([])
       }
+
+      if (leadsResult.success && leadsResult.data) {
+        setFollowUpLeads(leadsResult.data)
+      } else {
+        setFollowUpLeads([])
+      }
     } catch (error) {
       console.error("Failed to fetch follow-up data:", error)
       setTasks([])
       setInstances([])
+      setFollowUpLeads([])
     }
     
     setIsLoading(false)
@@ -343,7 +557,56 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
     fetchData()
   }, [fetchData])
 
-  // Instance handlers
+  // ============================================================================
+  // Follow-Up Lead Handlers
+  // ============================================================================
+
+  const handleSendFollowUp = (leadId: string) => {
+    // Navigate to inbox with this lead's conversation selected
+    router.push(`/?view=inbox&leadId=${leadId}`)
+  }
+
+  const handleMarkDone = async (leadId: string, outcome: FollowUpOutcome) => {
+    setLeadActionInProgress(leadId)
+    const result = await updateLeadFollowUpStatus(leadId, outcome)
+    if (result.success) {
+      const outcomeMessages: Record<FollowUpOutcome, string> = {
+        "no-response": "Marked as no response - keeping in follow-up list",
+        "replied": "Marked as replied",
+        "meeting-booked": "Meeting booked!",
+        "not-interested": "Marked as not interested",
+        "snoozed": "Snoozed",
+      }
+      toast.success(outcomeMessages[outcome])
+      fetchData()
+    } else {
+      toast.error(result.error || "Failed to update status")
+    }
+    setLeadActionInProgress(null)
+  }
+
+  const handleSnoozeLead = async (leadId: string) => {
+    setLeadActionInProgress(leadId)
+    const result = await updateLeadFollowUpStatus(leadId, "snoozed")
+    if (result.success) {
+      toast.success("Lead snoozed - change sentiment tag to bring it back")
+      fetchData()
+    } else {
+      toast.error(result.error || "Failed to snooze lead")
+    }
+    setLeadActionInProgress(null)
+  }
+
+  const handleStartSequence = (leadId: string) => {
+    // Navigate to inbox with CRM drawer open for this lead to start sequence
+    router.push(`/?view=inbox&leadId=${leadId}&action=sequence`)
+    toast.info("Opening lead to start sequence...")
+  }
+
+  // ============================================================================
+  // Instance Handlers
+  // ============================================================================
+
   const handlePauseInstance = async (instanceId: string) => {
     setInstanceActionInProgress(instanceId)
     const result = await pauseFollowUpInstance(instanceId, "manual")
@@ -380,7 +643,49 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
     setInstanceActionInProgress(null)
   }
 
-  // Group instances by next step due date
+  // ============================================================================
+  // Task Handlers
+  // ============================================================================
+
+  const handleExecute = async (id: string) => {
+    setTasks(tasks.filter((t) => t.id !== id))
+    const result = await completeFollowUpTask(id)
+    if (result.success) {
+      toast.success("Task completed")
+    } else {
+      toast.error(result.error || "Failed to complete task")
+    }
+  }
+
+  const handleSnooze = async (id: string) => {
+    const newDueDate = new Date()
+    newDueDate.setDate(newDueDate.getDate() + 1)
+    newDueDate.setHours(9, 0, 0, 0)
+    
+    setTasks(tasks.map((t) => (t.id === id ? { ...t, dueDate: newDueDate } : t)))
+    
+    const result = await snoozeFollowUpTask(id, 1)
+    if (result.success) {
+      toast.success("Task snoozed until tomorrow at 9 AM")
+    } else {
+      toast.error(result.error || "Failed to snooze task")
+    }
+  }
+
+  const handleSkip = async (id: string) => {
+    setTasks(tasks.filter((t) => t.id !== id))
+    const result = await skipFollowUpTask(id)
+    if (result.success) {
+      toast.success("Task skipped")
+    } else {
+      toast.error(result.error || "Failed to skip task")
+    }
+  }
+
+  // ============================================================================
+  // Group Instances by Day
+  // ============================================================================
+
   const groupInstancesByDay = (instances: FollowUpInstanceData[]) => {
     const groups: { [key: string]: FollowUpInstanceData[] } = {
       today: [],
@@ -427,47 +732,10 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
 
   const groupedInstances = groupInstancesByDay(instances)
 
+  // Computed values
   const overdueTasks = tasks.filter((t) => isOverdue(t.dueDate))
   const todayTasks = tasks.filter((t) => isToday(t.dueDate))
-  const upcomingTasks = tasks.filter((t) => !isOverdue(t.dueDate) && !isToday(t.dueDate))
-
-  const handleExecute = async (id: string) => {
-    // Optimistic update
-    setTasks(tasks.filter((t) => t.id !== id))
-    const result = await completeFollowUpTask(id)
-    if (result.success) {
-      toast.success("Task completed")
-    } else {
-      toast.error(result.error || "Failed to complete task")
-    }
-  }
-
-  const handleSnooze = async (id: string) => {
-    // Optimistic update - snooze for 1 day
-    const newDueDate = new Date()
-    newDueDate.setDate(newDueDate.getDate() + 1)
-    newDueDate.setHours(9, 0, 0, 0)
-    
-    setTasks(tasks.map((t) => (t.id === id ? { ...t, dueDate: newDueDate } : t)))
-    
-    const result = await snoozeFollowUpTask(id, 1)
-    if (result.success) {
-      toast.success("Task snoozed until tomorrow at 9 AM")
-    } else {
-      toast.error(result.error || "Failed to snooze task")
-    }
-  }
-
-  const handleSkip = async (id: string) => {
-    // Optimistic update
-    setTasks(tasks.filter((t) => t.id !== id))
-    const result = await skipFollowUpTask(id)
-    if (result.success) {
-      toast.success("Task skipped")
-    } else {
-      toast.error(result.error || "Failed to skip task")
-    }
-  }
+  const needsFollowUpCount = followUpLeads.filter((l) => l.sentimentTag === "Follow Up").length
 
   if (isLoading) {
     return (
@@ -477,43 +745,36 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
     )
   }
 
-  // Empty state when no tasks
-  if (tasks.length === 0) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="border-b px-8 py-4">
-          <h1 className="text-2xl font-bold">Follow-ups</h1>
-          <p className="text-muted-foreground">Manage your scheduled outreach tasks</p>
-        </div>
-        <div className="flex-1 flex items-center justify-center px-8">
-          <div className="text-center space-y-4">
-            <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
-              <Calendar className="h-12 w-12 text-muted-foreground" />
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold">No follow-up tasks</h3>
-              <p className="text-sm text-muted-foreground max-w-sm">
-                {activeWorkspace 
-                  ? "This workspace doesn't have any follow-up tasks. Tasks will appear when leads need follow-ups."
-                  : "Select a workspace to view its follow-up tasks."
-                }
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div className="flex flex-col h-full">
+      {/* Header */}
       <div className="border-b px-8 py-4">
-        <h1 className="text-2xl font-bold">Follow-ups</h1>
-        <p className="text-muted-foreground">Manage your scheduled outreach tasks</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">Follow-ups</h1>
+            <p className="text-muted-foreground">Manage conversations and scheduled tasks</p>
+          </div>
+          <Button variant="outline" onClick={() => setShowSequenceManager(true)}>
+            <Settings2 className="h-4 w-4 mr-2" />
+            Manage Sequences
+          </Button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-hidden p-8">
-        <div className="grid grid-cols-3 gap-4 mb-6">
+        {/* Stats Cards */}
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          <Card>
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="rounded-full bg-primary/10 p-2">
+                <MessageCircle className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{needsFollowUpCount}</p>
+                <p className="text-sm text-muted-foreground">Needs Follow-Up</p>
+              </div>
+            </CardContent>
+          </Card>
           <Card>
             <CardContent className="p-4 flex items-center gap-3">
               <div className="rounded-full bg-destructive/10 p-2">
@@ -521,14 +782,14 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
               </div>
               <div>
                 <p className="text-2xl font-bold">{overdueTasks.length}</p>
-                <p className="text-sm text-muted-foreground">Overdue</p>
+                <p className="text-sm text-muted-foreground">Overdue Tasks</p>
               </div>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="p-4 flex items-center gap-3">
-              <div className="rounded-full bg-primary/10 p-2">
-                <Clock className="h-5 w-5 text-primary" />
+              <div className="rounded-full bg-amber-500/10 p-2">
+                <Clock className="h-5 w-5 text-amber-500" />
               </div>
               <div>
                 <p className="text-2xl font-bold">{todayTasks.length}</p>
@@ -539,97 +800,83 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
           <Card>
             <CardContent className="p-4 flex items-center gap-3">
               <div className="rounded-full bg-muted p-2">
-                <Calendar className="h-5 w-5 text-muted-foreground" />
+                <ListTodo className="h-5 w-5 text-muted-foreground" />
               </div>
               <div>
-                <p className="text-2xl font-bold">{upcomingTasks.length}</p>
-                <p className="text-sm text-muted-foreground">Upcoming</p>
+                <p className="text-2xl font-bold">{instances.length}</p>
+                <p className="text-sm text-muted-foreground">Active Sequences</p>
               </div>
             </CardContent>
           </Card>
         </div>
 
-        <Tabs defaultValue="all" className="h-[calc(100%-120px)]">
+        {/* Tabs */}
+        <Tabs defaultValue="needs-followup" className="h-[calc(100%-120px)]">
           <TabsList>
-            <TabsTrigger value="all">All ({tasks.length})</TabsTrigger>
-            <TabsTrigger value="overdue" className="text-destructive">
-              Overdue ({overdueTasks.length})
+            <TabsTrigger value="needs-followup">
+              Needs Follow-Up ({followUpLeads.length})
             </TabsTrigger>
-            <TabsTrigger value="today">Today ({todayTasks.length})</TabsTrigger>
-            <TabsTrigger value="upcoming">Upcoming ({upcomingTasks.length})</TabsTrigger>
+            <TabsTrigger value="tasks">
+              Tasks ({tasks.length})
+            </TabsTrigger>
             <TabsTrigger value="sequences">
               Sequences ({instances.length})
             </TabsTrigger>
           </TabsList>
 
           <ScrollArea className="h-[calc(100%-48px)] mt-4">
-            <TabsContent value="all" className="mt-0 space-y-3 pr-4">
-              {tasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  onExecute={handleExecute}
-                  onSnooze={handleSnooze}
-                  onSkip={handleSkip}
-                />
-              ))}
-            </TabsContent>
-
-            <TabsContent value="overdue" className="mt-0 space-y-3 pr-4">
-              {overdueTasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  onExecute={handleExecute}
-                  onSnooze={handleSnooze}
-                  onSkip={handleSkip}
-                />
-              ))}
-              {overdueTasks.length === 0 && (
+            {/* Needs Follow-Up Tab */}
+            <TabsContent value="needs-followup" className="mt-0 space-y-3 pr-4">
+              {followUpLeads.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
-                  <AlertCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No overdue tasks</p>
+                  <MessageCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                  <p>No conversations need follow-up</p>
+                  <p className="text-sm mt-2">
+                    Leads tagged with "Follow Up" sentiment will appear here
+                  </p>
                 </div>
+              ) : (
+                followUpLeads.map((lead) => (
+                  <FollowUpConversationCard
+                    key={lead.id}
+                    lead={lead}
+                    onSendFollowUp={handleSendFollowUp}
+                    onMarkDone={handleMarkDone}
+                    onSnooze={handleSnoozeLead}
+                    onStartSequence={handleStartSequence}
+                    actionInProgress={leadActionInProgress}
+                  />
+                ))
               )}
             </TabsContent>
 
-            <TabsContent value="today" className="mt-0 space-y-3 pr-4">
-              {todayTasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  onExecute={handleExecute}
-                  onSnooze={handleSnooze}
-                  onSkip={handleSkip}
-                />
-              ))}
-              {todayTasks.length === 0 && (
-                <div className="text-center py-12 text-muted-foreground">
-                  <Clock className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No tasks due today</p>
-                </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="upcoming" className="mt-0 space-y-3 pr-4">
-              {upcomingTasks.map((task) => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  onExecute={handleExecute}
-                  onSnooze={handleSnooze}
-                  onSkip={handleSkip}
-                />
-              ))}
-              {upcomingTasks.length === 0 && (
+            {/* Tasks Tab */}
+            <TabsContent value="tasks" className="mt-0 space-y-3 pr-4">
+              {tasks.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <Calendar className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>No upcoming tasks</p>
+                  <p>No scheduled tasks</p>
+                  <p className="text-sm mt-2">
+                    {activeWorkspace 
+                      ? "Tasks from sequences will appear here"
+                      : "Select a workspace to view tasks"
+                    }
+                  </p>
                 </div>
+              ) : (
+                tasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    onExecute={handleExecute}
+                    onSnooze={handleSnooze}
+                    onSkip={handleSkip}
+                  />
+                ))
               )}
             </TabsContent>
 
-            {/* Active Sequences Tab */}
+            {/* Sequences Tab */}
             <TabsContent value="sequences" className="mt-0 space-y-6 pr-4">
               {instances.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
@@ -744,6 +991,24 @@ export function FollowUpsView({ activeWorkspace }: FollowUpsViewProps) {
           </ScrollArea>
         </Tabs>
       </div>
+
+      {/* Full-Screen Sheet for Sequence Manager */}
+      <Sheet open={showSequenceManager} onOpenChange={setShowSequenceManager}>
+        <SheetContent 
+          side="right" 
+          className="w-full sm:max-w-none sm:w-[90vw] lg:w-[80vw] overflow-y-auto"
+        >
+          <SheetHeader>
+            <SheetTitle>Manage Follow-Up Sequences</SheetTitle>
+            <SheetDescription>
+              Create and edit sequence templates for automated follow-ups
+            </SheetDescription>
+          </SheetHeader>
+          <div className="mt-6">
+            <FollowUpSequenceManager clientId={activeWorkspace || null} />
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }

@@ -358,7 +358,12 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
   const contentForClassification = cleaned.cleaned || cleaned.rawText || cleaned.rawHtml || "";
 
+  // Track if we're clearing a "Follow Up" or "Snoozed" tag (for logging)
+  const previousSentiment = lead.sentimentTag;
+  const wasFollowUp = previousSentiment === "Follow Up" || previousSentiment === "Snoozed";
+
   // If Inboxxia already marked as interested, use that; otherwise classify with AI
+  // Note: Any inbound reply will reclassify sentiment, clearing "Follow Up" or "Snoozed" tags
   let sentimentTag: SentimentTag;
   if (reply.interested === true) {
     sentimentTag = "Interested";
@@ -366,6 +371,11 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     sentimentTag = await classifySentiment(
       `Subject: ${reply.email_subject ?? ""}\n${contentForClassification}`
     );
+  }
+
+  // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
+  if (wasFollowUp) {
+    console.log(`[FOLLOWUP_CLEARED] Lead ${lead.id} replied - clearing "${previousSentiment}" tag, new sentiment: ${sentimentTag}`);
   }
 
   const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
@@ -724,9 +734,20 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
   const contentForClassification = cleaned.cleaned || cleaned.rawText || cleaned.rawHtml || "";
 
+  // Track if we're clearing a "Follow Up" or "Snoozed" tag (for logging)
+  const previousSentiment = lead.sentimentTag;
+  const wasFollowUp = previousSentiment === "Follow Up" || previousSentiment === "Snoozed";
+
+  // Classify sentiment - any inbound reply clears "Follow Up" or "Snoozed" tags
   const sentimentTag = await classifySentiment(
     `Subject: ${reply.email_subject ?? ""}\n${contentForClassification}`
   );
+
+  // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
+  if (wasFollowUp) {
+    console.log(`[FOLLOWUP_CLEARED] Lead ${lead.id} replied (untracked) - clearing "${previousSentiment}" tag, new sentiment: ${sentimentTag}`);
+  }
+
   const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
 
   const sentAt = parseDate(reply.date_received, reply.created_at);
