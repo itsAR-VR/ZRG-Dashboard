@@ -44,46 +44,47 @@ function DashboardContent() {
   // Fetch workspaces on mount and validate URL state
   useEffect(() => {
     async function initialize() {
-      const result = await getClients()
-      if (result.success && result.data) {
-        const loadedWorkspaces = result.data as Client[]
-        setWorkspaces(loadedWorkspaces)
+      try {
+        const result = await getClients()
+        if (result.success && result.data) {
+          const loadedWorkspaces = result.data as Client[]
+          setWorkspaces(loadedWorkspaces)
 
-        // Validate workspace from URL
-        if (workspace && !isValidWorkspace(workspace, loadedWorkspaces)) {
-          toast.error("Workspace not found", {
-            description: "Redirecting to default workspace",
-          })
-          // Set to first workspace or null
-          const defaultWorkspace = loadedWorkspaces.length > 0 ? loadedWorkspaces[0].id : null
-          setWorkspace(defaultWorkspace)
-          return
-        }
-
-        // If no workspace set and we have workspaces, use first one
-        if (!workspace && loadedWorkspaces.length > 0) {
-          setWorkspace(loadedWorkspaces[0].id)
-          return
-        }
-
-        // Validate lead from URL
-        if (leadId) {
-          const leadResult = await getLeadWorkspaceId(leadId)
-          if (!leadResult.success) {
-            toast.error("Lead not found", {
-              description: "The lead may have been deleted",
+          // Validate workspace from URL
+          if (workspace && !isValidWorkspace(workspace, loadedWorkspaces)) {
+            toast.error("Workspace not found", {
+              description: "Redirecting to default workspace",
             })
-            setLeadId(null)
-          } else if (leadResult.workspaceId && leadResult.workspaceId !== workspace) {
-            // Lead belongs to different workspace - auto-switch
-            toast.info("Switching workspace", {
-              description: "Following lead to its workspace",
-            })
-            setMultiple({ workspace: leadResult.workspaceId }, { replace: true })
+            // Set to first workspace or null
+            const defaultWorkspace = loadedWorkspaces.length > 0 ? loadedWorkspaces[0].id : null
+            setWorkspace(defaultWorkspace)
+          } else if (!workspace && loadedWorkspaces.length > 0) {
+            // If no workspace set and we have workspaces, use first one
+            setWorkspace(loadedWorkspaces[0].id)
+          } else if (leadId) {
+            // Validate lead from URL (only if workspace is already valid)
+            const leadResult = await getLeadWorkspaceId(leadId)
+            if (!leadResult.success) {
+              toast.error("Lead not found", {
+                description: "The lead may have been deleted",
+              })
+              setLeadId(null)
+            } else if (leadResult.workspaceId && leadResult.workspaceId !== workspace) {
+              // Lead belongs to different workspace - auto-switch
+              toast.info("Switching workspace", {
+                description: "Following lead to its workspace",
+              })
+              setMultiple({ workspace: leadResult.workspaceId }, { replace: true })
+            }
           }
         }
+      } catch (error) {
+        console.error("Failed to initialize dashboard:", error)
+        toast.error("Failed to load workspaces")
+      } finally {
+        // ALWAYS set initialized to true, even on error
+        setIsInitialized(true)
       }
-      setIsInitialized(true)
     }
 
     initialize()
