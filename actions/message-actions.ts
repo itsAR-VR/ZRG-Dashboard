@@ -258,11 +258,11 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
       return { success: false, error: "Lead not found" };
     }
 
-    // Count SMS messages separately (Prisma _count doesn't support OR with null in include)
+    // Count SMS messages for this lead
     const smsMessageCount = await prisma.message.count({
       where: {
         leadId,
-        OR: [{ channel: "sms" }, { channel: null }],
+        channel: "sms",
       },
     });
 
@@ -359,6 +359,7 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
             ghlId,
             body: msg.body,
             direction: msg.direction,
+            channel: "sms",
             leadId,
             sentAt: msgTimestamp,
           },
@@ -1027,6 +1028,7 @@ export async function sendMessage(
         ghlId: ghlMessageId, // Store GHL message ID for deduplication
         body: message,
         direction: "outbound",
+        channel: "sms",
         leadId: lead.id,
         sentAt: ghlDateAdded, // Use GHL timestamp for accuracy
       },
