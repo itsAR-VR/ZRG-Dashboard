@@ -315,6 +315,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     if (activeChannel !== "all" && !conv.channels.includes(activeChannel as any)) return false;
     if (activeFilter === "attention" && !conv.requiresAttention) return false;
     if (activeFilter === "drafts" && !conv.hasAiDraft) return false;
+    if (activeFilter === "needs_repair" && conv.lead.status !== "needs_repair") return false;
     // Filter by sentiment tag
     if (activeSentiment !== "all" && conv.sentimentTag !== activeSentiment) return false;
     return true;

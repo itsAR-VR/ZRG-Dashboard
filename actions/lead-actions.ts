@@ -206,6 +206,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
   requiresAttention: number;
   draftsForApproval: number;
   awaitingReply: number;
+  needsRepair: number;
   total: number;
 }> {
   try {
@@ -220,7 +221,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     ];
     const clientFilter = clientId ? { clientId } : {};
 
-    const [attention, drafts, total, blacklisted] = await Promise.all([
+    const [attention, drafts, total, blacklisted, needsRepair] = await Promise.all([
       // Count leads requiring attention (excluding blacklisted)
       prisma.lead.count({
         where: {
@@ -254,12 +255,20 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
           status: "blacklisted",
         },
       }),
+      // Count leads that need repair (failed EmailBison lead creation)
+      prisma.lead.count({
+        where: {
+          ...clientFilter,
+          status: "needs_repair",
+        },
+      }),
     ]);
 
     return {
       requiresAttention: attention,
       draftsForApproval: drafts,
       awaitingReply: Math.max(0, total - attention),
+      needsRepair,
       total: total + blacklisted, // Include blacklisted in total for reference
     };
   } catch (error) {
@@ -268,6 +277,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       requiresAttention: 0,
       draftsForApproval: 0,
       awaitingReply: 0,
+      needsRepair: 0,
       total: 0,
     };
   }

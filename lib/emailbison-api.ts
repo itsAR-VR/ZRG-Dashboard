@@ -271,3 +271,68 @@ export async function fetchEmailBisonSentEmails(
   }
 }
 
+/**
+ * Create a new lead in EmailBison
+ * Used for UNTRACKED_REPLY events where the sender isn't in any campaign
+ * Returns the created lead's ID which becomes emailBisonLeadId
+ */
+export async function createEmailBisonLead(
+  apiKey: string,
+  leadData: {
+    email: string;
+    first_name?: string | null;
+    last_name?: string | null;
+  }
+): Promise<{ success: boolean; leadId?: string; error?: string }> {
+  const url = `${INBOXXIA_BASE_URL}/api/leads`;
+
+  console.log(`[EmailBison] Creating lead for email: ${leadData.email}`);
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email: leadData.email,
+        first_name: leadData.first_name || undefined,
+        last_name: leadData.last_name || undefined,
+      }),
+    });
+
+    if (!response.ok) {
+      const body = await parseJsonSafe(response);
+      console.error(`[EmailBison] Lead creation failed (${response.status}):`, body);
+      return {
+        success: false,
+        error: `EmailBison lead creation failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+      };
+    }
+
+    const data = await response.json();
+    
+    // The response should contain the created lead with its ID
+    const leadId = data?.id || data?.lead?.id || data?.data?.id;
+    
+    if (!leadId) {
+      console.error("[EmailBison] Lead created but no ID returned:", data);
+      return {
+        success: false,
+        error: "Lead created but no ID returned from EmailBison",
+      };
+    }
+
+    console.log(`[EmailBison] Created lead with ID: ${leadId}`);
+    return { success: true, leadId: String(leadId) };
+  } catch (error) {
+    console.error("[EmailBison] Failed to create lead:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+

@@ -4,6 +4,7 @@ import { classifySentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraft } from "@/actions/message-actions";
 import { findOrCreateLead } from "@/lib/lead-matching";
+import { createEmailBisonLead } from "@/lib/emailbison-api";
 
 // =============================================================================
 // Type Definitions
@@ -598,10 +599,10 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   // Check if this is a bounce notification
   if (isBounceEmail(fromEmail)) {
     console.log(`[UNTRACKED_REPLY] Detected bounce email from: ${fromEmail}`);
-    
+
     // Try to parse the original recipient from the bounce body
     const originalRecipient = parseBounceRecipient(reply.html_body, reply.text_body);
-    
+
     if (originalRecipient) {
       // Find the original lead by the recipient email
       const originalLead = await prisma.lead.findFirst({
@@ -613,7 +614,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 
       if (originalLead) {
         console.log(`[BOUNCE] Linking bounce to original lead: ${originalLead.id} (${originalRecipient})`);
-        
+
         const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
         const sentAt = parseDate(reply.date_received, reply.created_at);
 
@@ -637,7 +638,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
         // Mark the original lead as blacklisted (email is invalid)
         await prisma.lead.update({
           where: { id: originalLead.id },
-          data: { 
+          data: {
             status: "blacklisted",
             sentimentTag: "Blacklist",
           },
@@ -665,7 +666,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
         console.log(`[BOUNCE] Could not find original lead for: ${originalRecipient}`);
       }
     }
-    
+
     // If we couldn't parse recipient or find the lead, log but don't create fake lead
     console.log(`[BOUNCE] Ignoring bounce - could not link to original lead`);
     return NextResponse.json({
@@ -676,7 +677,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   }
 
   // Regular untracked reply - create/find lead from sender info
-  const lead = await upsertLead(
+  let lead = await upsertLead(
     client,
     {
       email: fromEmail,
@@ -690,6 +691,34 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 
   if (!lead) {
     return NextResponse.json({ error: "Failed to create/find lead" }, { status: 500 });
+  }
+
+  // For untracked replies, the lead won't have an emailBisonLeadId
+  // Create the lead in EmailBison to get an ID for future syncing
+  if (!lead.emailBisonLeadId && client.emailBisonApiKey) {
+    console.log(`[UNTRACKED_REPLY] Lead ${lead.id} has no emailBisonLeadId, creating in EmailBison...`);
+    
+    const createResult = await createEmailBisonLead(client.emailBisonApiKey, {
+      email: fromEmail,
+      first_name: fromName?.split(" ")[0] || null,
+      last_name: fromName?.split(" ").slice(1).join(" ") || null,
+    });
+
+    if (createResult.success && createResult.leadId) {
+      // Update local lead with the EmailBison lead ID
+      lead = await prisma.lead.update({
+        where: { id: lead.id },
+        data: { emailBisonLeadId: createResult.leadId },
+      });
+      console.log(`[UNTRACKED_REPLY] Created EmailBison lead ${createResult.leadId} for local lead ${lead.id}`);
+    } else {
+      // API call failed - flag lead as needs_repair so it can be fixed later
+      lead = await prisma.lead.update({
+        where: { id: lead.id },
+        data: { status: "needs_repair" },
+      });
+      console.error(`[UNTRACKED_REPLY] Failed to create EmailBison lead: ${createResult.error}. Marked lead ${lead.id} as needs_repair`);
+    }
   }
 
   const cleaned = cleanEmailBody(reply.html_body, reply.text_body);

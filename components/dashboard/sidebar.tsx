@@ -17,6 +17,7 @@ import {
   Building2,
   ChevronDown,
   LogOut,
+  Wrench,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -66,6 +67,7 @@ interface FilterCounts {
   attention: number
   drafts: number
   awaiting: number
+  needsRepair: number
 }
 
 export function Sidebar({
@@ -83,6 +85,7 @@ export function Sidebar({
     attention: 0,
     drafts: 0,
     awaiting: 0,
+    needsRepair: 0,
   })
   const { user } = useUser()
 
@@ -94,6 +97,7 @@ export function Sidebar({
         attention: result.requiresAttention,
         drafts: result.draftsForApproval,
         awaiting: result.awaitingReply,
+        needsRepair: result.needsRepair,
       })
     }
 
@@ -108,6 +112,7 @@ export function Sidebar({
     { id: "attention", label: "Requires Attention", icon: AlertCircle, count: counts.attention, variant: "destructive" as const },
     { id: "drafts", label: "Drafts for Approval", icon: FileEdit, count: counts.drafts, variant: "warning" as const },
     { id: "awaiting", label: "Awaiting Reply", icon: Send, count: counts.awaiting, variant: "secondary" as const },
+    { id: "needs_repair", label: "Needs Repair", icon: Wrench, count: counts.needsRepair, variant: "outline" as const },
   ]
 
   const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)

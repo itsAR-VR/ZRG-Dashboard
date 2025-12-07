@@ -173,8 +173,9 @@ export async function smartSyncConversation(leadId: string): Promise<SmartSyncRe
     }
   }
 
-  // If all attempted syncs failed, return error
-  if (errors.length > 0 && totalImported === 0 && totalHealed === 0) {
+  // If all attempted syncs failed and no messages were processed at all, return error
+  // Include totalSkipped check - if we skipped duplicates, that means sync worked but messages already existed
+  if (errors.length > 0 && totalImported === 0 && totalHealed === 0 && totalSkipped === 0) {
     return { success: false, error: errors.join("; ") };
   }
 
@@ -1358,7 +1359,7 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
       try {
         let messagesProcessed = 0;
         let couldNotMatch = false;
-        
+
         for (const message of fakeLead.messages) {
           // Try to find original recipient from message body
           const originalRecipient = parseBounceRecipientFromBody(message.body) ||
@@ -1397,7 +1398,7 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
                     sentimentTag: "Blacklist",
                   },
                 });
-                
+
                 // Auto-reject any pending drafts for this lead
                 await prisma.aIDraft.updateMany({
                   where: {
@@ -1406,7 +1407,7 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
                   },
                   data: { status: "rejected" },
                 });
-                
+
                 blacklistedLeadIds.add(originalLead.id);
                 result.leadsBlacklisted++;
                 console.log(`[CleanupBounce] Blacklisted lead ${originalLead.id} (${originalRecipient}) and rejected pending drafts`);
@@ -1434,7 +1435,7 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
           // Mark for manual review - update status to needs_review
           await prisma.lead.update({
             where: { id: fakeLead.id },
-            data: { 
+            data: {
               status: "needs_review",
               sentimentTag: "Blacklist", // Still mark as blacklist sentiment
             },
