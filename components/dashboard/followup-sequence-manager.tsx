@@ -330,7 +330,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 px-6 sm:px-8 pb-10">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
