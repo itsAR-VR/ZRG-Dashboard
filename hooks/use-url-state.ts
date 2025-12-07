@@ -198,7 +198,7 @@ export async function validateLeadWorkspace(
   getLeadClientId: (leadId: string) => Promise<string | null>
 ): Promise<{ valid: boolean; workspaceId: string | null }> {
   if (!leadId) return { valid: true, workspaceId: null };
-  
+
   const workspaceId = await getLeadClientId(leadId);
   return {
     valid: workspaceId !== null,
