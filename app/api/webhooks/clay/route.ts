@@ -26,20 +26,20 @@ interface ClayEnrichmentCallback {
 export async function POST(request: NextRequest) {
   try {
     const rawBody = await request.text();
-    
+
     // Verify webhook signature
-    const signature = request.headers.get("x-clay-signature") || 
-                      request.headers.get("x-webhook-signature") || "";
-    
+    const signature = request.headers.get("x-clay-signature") ||
+      request.headers.get("x-webhook-signature") || "";
+
     if (!verifyClayWebhookSignature(rawBody, signature)) {
       console.error("[Clay Webhook] Invalid signature");
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
-    
+
     const payload: ClayEnrichmentCallback = JSON.parse(rawBody);
-    
+
     console.log(`[Clay Webhook] Received ${payload.enrichmentType} enrichment result for lead ${payload.leadId}: ${payload.status}`);
-    
+
     // Validate required fields
     if (!payload.leadId || !payload.enrichmentType) {
       return NextResponse.json(
@@ -47,20 +47,20 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    
+
     // Find the lead
     const lead = await prisma.lead.findUnique({
       where: { id: payload.leadId },
     });
-    
+
     if (!lead) {
       console.error(`[Clay Webhook] Lead not found: ${payload.leadId}`);
       return NextResponse.json({ error: "Lead not found" }, { status: 404 });
     }
-    
+
     // Prepare update data based on enrichment type and status
     const updateData: Record<string, unknown> = {};
-    
+
     if (payload.status === "success") {
       if (payload.enrichmentType === "linkedin" && payload.linkedinUrl) {
         const normalizedUrl = normalizeLinkedInUrl(payload.linkedinUrl);
@@ -76,25 +76,25 @@ export async function POST(request: NextRequest) {
           updateData.phone = normalizedPhone;
         }
       }
-      
+
       // Update enrichment status
       updateData.enrichmentStatus = "enriched";
       updateData.enrichmentSource = "clay";
       updateData.enrichedAt = new Date();
-      
+
       console.log(`[Clay Webhook] Enriched lead ${payload.leadId} with ${payload.enrichmentType} data`);
     } else if (payload.status === "not_found") {
       // Only update status if no data was found (avoid overwriting successful enrichments)
       if (!lead.enrichmentStatus || lead.enrichmentStatus === "pending") {
         updateData.enrichmentStatus = "not_found";
       }
-      
+
       console.log(`[Clay Webhook] No ${payload.enrichmentType} data found for lead ${payload.leadId}`);
     } else if (payload.status === "error") {
       console.error(`[Clay Webhook] Enrichment error for lead ${payload.leadId}: ${payload.error}`);
       // Leave as pending for retry
     }
-    
+
     // Apply updates if any
     if (Object.keys(updateData).length > 0) {
       await prisma.lead.update({
@@ -102,7 +102,7 @@ export async function POST(request: NextRequest) {
         data: updateData,
       });
     }
-    
+
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("[Clay Webhook] Error processing callback:", error);

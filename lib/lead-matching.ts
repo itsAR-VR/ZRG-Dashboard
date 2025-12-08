@@ -275,10 +275,10 @@ export async function getLeadChannels(leadId: string): Promise<("sms" | "email" 
  * Get available channels for a lead based on contact info
  * (channels they CAN use, even if no messages yet)
  */
-export function getAvailableChannels(lead: { 
-  phone?: string | null; 
-  email?: string | null; 
-  linkedinUrl?: string | null; 
+export function getAvailableChannels(lead: {
+  phone?: string | null;
+  email?: string | null;
+  linkedinUrl?: string | null;
   linkedinId?: string | null;
 }): ("sms" | "email" | "linkedin")[] {
   const channels: ("sms" | "email" | "linkedin")[] = [];

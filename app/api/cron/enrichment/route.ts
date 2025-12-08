@@ -15,12 +15,12 @@ const BATCH_SIZE = 10;
 function verifyCronSecret(request: NextRequest): boolean {
   const authHeader = request.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
-  
+
   if (!cronSecret) {
     console.warn("[Enrichment Cron] CRON_SECRET not configured");
     return true; // Allow in development
   }
-  
+
   return authHeader === `Bearer ${cronSecret}`;
 }
 
@@ -29,9 +29,9 @@ export async function GET(request: NextRequest) {
   if (!verifyCronSecret(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  
+
   console.log("[Enrichment Cron] Starting batch enrichment job");
-  
+
   try {
     // Find leads that need enrichment
     // Only email leads (has email), not SMS-only (would have phone but no email)
@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
       take: BATCH_SIZE,
       orderBy: { createdAt: "asc" }, // Process oldest first
     });
-    
+
     if (leadsToEnrich.length === 0) {
       console.log("[Enrichment Cron] No leads to process");
       return NextResponse.json({
@@ -57,16 +57,16 @@ export async function GET(request: NextRequest) {
         message: "No pending enrichments",
       });
     }
-    
+
     console.log(`[Enrichment Cron] Processing ${leadsToEnrich.length} leads`);
-    
+
     let successCount = 0;
     let errorCount = 0;
-    
+
     for (const lead of leadsToEnrich) {
       const missingLinkedIn = !lead.linkedinUrl;
       const missingPhone = !lead.phone;
-      
+
       if (!missingLinkedIn && !missingPhone) {
         // Lead no longer needs enrichment, update status
         await prisma.lead.update({
@@ -75,7 +75,7 @@ export async function GET(request: NextRequest) {
         });
         continue;
       }
-      
+
       try {
         const result = await triggerEnrichmentForLead(
           lead.id,
@@ -86,7 +86,7 @@ export async function GET(request: NextRequest) {
           missingLinkedIn,
           missingPhone
         );
-        
+
         if (result.linkedInSent || result.phoneSent) {
           successCount++;
           console.log(`[Enrichment Cron] Triggered enrichment for lead ${lead.id} (linkedin: ${result.linkedInSent}, phone: ${result.phoneSent})`);
@@ -100,9 +100,9 @@ export async function GET(request: NextRequest) {
         console.error(`[Enrichment Cron] Error processing lead ${lead.id}:`, error);
       }
     }
-    
+
     console.log(`[Enrichment Cron] Batch complete - Success: ${successCount}, Errors: ${errorCount}`);
-    
+
     return NextResponse.json({
       success: true,
       processed: successCount,
@@ -123,12 +123,12 @@ export async function POST(request: NextRequest) {
   // Verify authentication (either cron secret or admin auth)
   const authHeader = request.headers.get("authorization");
   const cronSecret = process.env.CRON_SECRET;
-  
+
   if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
     // Could add additional admin auth check here
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  
+
   // Process same as GET but can be triggered manually
   return GET(request);
 }

@@ -3,10 +3,10 @@
  * Supports DMs, InMails, and Connection Requests with waterfall logic
  */
 
-import crypto from "crypto";
+import { NextRequest } from "next/server";
 
 // Base URL for Unipile API
-const UNIPILE_BASE_URL = "https://api6.unipile.com:13443/api/v1";
+const UNIPILE_BASE_URL = "https://1api15.unipile.com:14509/api/v1";
 
 // Connection status types
 export type LinkedInConnectionStatus = "CONNECTED" | "PENDING" | "NOT_CONNECTED";
@@ -40,7 +40,7 @@ function getHeaders(): HeadersInit {
   if (!apiKey) {
     throw new Error("UNIPILE_API_KEY not configured");
   }
-  
+
   return {
     "X-API-KEY": apiKey,
     "Content-Type": "application/json",
@@ -71,7 +71,7 @@ export async function checkLinkedInConnection(
   linkedinUrl: string
 ): Promise<ConnectionCheckResult> {
   const identifier = extractLinkedInIdentifier(linkedinUrl);
-  
+
   try {
     // Unipile uses POST /users/provider_id to get user profile
     const response = await fetch(`${UNIPILE_BASE_URL}/users/provider_id`, {
@@ -83,11 +83,11 @@ export async function checkLinkedInConnection(
         linkedin_url: linkedinUrl,
       }),
     });
-    
+
     if (!response.ok) {
       const error = await response.text();
       console.error(`[Unipile] Connection check failed (${response.status}):`, error);
-      
+
       // If user not found, they're not connected
       return {
         status: "NOT_CONNECTED",
@@ -96,21 +96,21 @@ export async function checkLinkedInConnection(
         hasOpenProfile: false,
       };
     }
-    
+
     const data = await response.json();
-    
+
     // Determine connection status from response
     const isConnected = data.is_connection === true || data.connection_degree === 1;
     const isPending = data.pending_connection === true;
     const hasOpenProfile = data.open_profile === true || data.is_open_profile === true;
-    
+
     let status: LinkedInConnectionStatus = "NOT_CONNECTED";
     if (isConnected) {
       status = "CONNECTED";
     } else if (isPending) {
       status = "PENDING";
     }
-    
+
     return {
       status,
       canSendDM: isConnected,
@@ -139,7 +139,7 @@ export async function sendLinkedInDM(
   linkedinMemberId?: string
 ): Promise<SendResult> {
   console.log(`[Unipile] Sending DM to ${linkedinUrl}`);
-  
+
   try {
     const response = await fetch(`${UNIPILE_BASE_URL}/chats`, {
       method: "POST",
@@ -151,7 +151,7 @@ export async function sendLinkedInDM(
         text: message,
       }),
     });
-    
+
     if (!response.ok) {
       const error = await response.text();
       console.error(`[Unipile] DM send failed (${response.status}):`, error);
@@ -160,10 +160,10 @@ export async function sendLinkedInDM(
         error: `Failed to send DM (${response.status}): ${error}`,
       };
     }
-    
+
     const data = await response.json();
     console.log(`[Unipile] DM sent successfully, message ID: ${data.id || data.message_id}`);
-    
+
     return {
       success: true,
       messageId: data.id || data.message_id,
@@ -189,7 +189,7 @@ export async function sendLinkedInInMail(
   linkedinMemberId?: string
 ): Promise<SendResult> {
   console.log(`[Unipile] Sending InMail to ${linkedinUrl}`);
-  
+
   try {
     const response = await fetch(`${UNIPILE_BASE_URL}/messages/inmail`, {
       method: "POST",
@@ -202,11 +202,11 @@ export async function sendLinkedInInMail(
         body: message,
       }),
     });
-    
+
     if (!response.ok) {
       const error = await response.text();
       console.error(`[Unipile] InMail send failed (${response.status}):`, error);
-      
+
       // Check if failure is due to no credits
       if (error.includes("credit") || error.includes("balance") || response.status === 402) {
         return {
@@ -214,16 +214,16 @@ export async function sendLinkedInInMail(
           error: "NO_INMAIL_CREDITS",
         };
       }
-      
+
       return {
         success: false,
         error: `Failed to send InMail (${response.status}): ${error}`,
       };
     }
-    
+
     const data = await response.json();
     console.log(`[Unipile] InMail sent successfully, message ID: ${data.id || data.message_id}`);
-    
+
     return {
       success: true,
       messageId: data.id || data.message_id,
@@ -248,7 +248,7 @@ export async function sendLinkedInConnectionRequest(
   linkedinMemberId?: string
 ): Promise<SendResult> {
   console.log(`[Unipile] Sending connection request to ${linkedinUrl}`);
-  
+
   try {
     const response = await fetch(`${UNIPILE_BASE_URL}/users/invite`, {
       method: "POST",
@@ -260,7 +260,7 @@ export async function sendLinkedInConnectionRequest(
         message: note.slice(0, 300), // LinkedIn limits connection notes to 300 chars
       }),
     });
-    
+
     if (!response.ok) {
       const error = await response.text();
       console.error(`[Unipile] Connection request failed (${response.status}):`, error);
@@ -269,10 +269,10 @@ export async function sendLinkedInConnectionRequest(
         error: `Failed to send connection request (${response.status}): ${error}`,
       };
     }
-    
+
     const data = await response.json();
     console.log(`[Unipile] Connection request sent successfully`);
-    
+
     return {
       success: true,
       messageId: data.id || data.invitation_id,
@@ -296,14 +296,14 @@ export async function checkInMailBalance(accountId: string): Promise<InMailBalan
       method: "GET",
       headers: getHeaders(),
     });
-    
+
     if (!response.ok) {
       console.error(`[Unipile] InMail balance check failed (${response.status})`);
       return null;
     }
-    
+
     const data = await response.json();
-    
+
     return {
       available: data.available || data.remaining || 0,
       used: data.used || 0,
@@ -327,18 +327,18 @@ export async function sendLinkedInMessageWithWaterfall(
   inMailSubject?: string
 ): Promise<SendResult & { attemptedMethods: string[] }> {
   const attemptedMethods: string[] = [];
-  
+
   // 1. Check connection status
   const connectionStatus = await checkLinkedInConnection(accountId, linkedinUrl);
   const memberId = connectionStatus.linkedinMemberId;
-  
+
   // 2. If connected, send DM
   if (connectionStatus.canSendDM) {
     attemptedMethods.push("dm");
     const dmResult = await sendLinkedInDM(accountId, linkedinUrl, message, memberId);
     return { ...dmResult, attemptedMethods };
   }
-  
+
   // 3. If pending connection, can't do anything yet
   if (connectionStatus.status === "PENDING") {
     return {
@@ -347,60 +347,50 @@ export async function sendLinkedInMessageWithWaterfall(
       attemptedMethods: ["pending_check"],
     };
   }
-  
+
   // 4. If not connected, try InMail (if Open Profile or has credits)
   if (connectionStatus.canSendInMail) {
     attemptedMethods.push("inmail");
     const subject = inMailSubject || "Quick question";
     const inMailResult = await sendLinkedInInMail(accountId, linkedinUrl, message, subject, memberId);
-    
+
     if (inMailResult.success) {
       return { ...inMailResult, attemptedMethods };
     }
-    
+
     // If InMail failed due to no credits, fall through to connection request
     if (inMailResult.error !== "NO_INMAIL_CREDITS") {
       return { ...inMailResult, attemptedMethods };
     }
   }
-  
+
   // 5. Fallback: Send connection request
   attemptedMethods.push("connection_request");
   const note = connectionNote || message.slice(0, 300);
   const connectionResult = await sendLinkedInConnectionRequest(accountId, linkedinUrl, note, memberId);
-  
+
   return { ...connectionResult, attemptedMethods };
 }
 
 /**
- * Verify HMAC signature from Unipile webhook
+ * Verify Unipile webhook using custom header authentication
+ * Unipile sends a custom header (x-unipile-secret) that you define when creating the webhook
  */
-export function verifyUnipileWebhookSignature(
-  payload: string,
-  signature: string
-): boolean {
+export function verifyUnipileWebhookSecret(request: NextRequest): boolean {
   const secret = process.env.UNIPILE_WEBHOOK_SECRET;
-  
+
   if (!secret) {
-    console.warn("[Unipile] UNIPILE_WEBHOOK_SECRET not configured, skipping signature verification");
+    console.warn("[Unipile] UNIPILE_WEBHOOK_SECRET not configured, skipping verification");
     return true; // Allow in development
   }
-  
-  const expectedSignature = crypto
-    .createHmac("sha256", secret)
-    .update(payload)
-    .digest("hex");
-  
-  // Handle signature formats (with or without algorithm prefix)
-  const cleanSignature = signature.replace(/^sha256=/, "");
-  
-  // Timing-safe comparison
-  try {
-    return crypto.timingSafeEqual(
-      Buffer.from(cleanSignature),
-      Buffer.from(expectedSignature)
-    );
-  } catch {
+
+  // Unipile sends the secret in a custom header you define when creating the webhook
+  const receivedSecret = request.headers.get("x-unipile-secret");
+
+  if (!receivedSecret) {
+    console.error("[Unipile] Missing x-unipile-secret header");
     return false;
   }
+
+  return receivedSecret === secret;
 }

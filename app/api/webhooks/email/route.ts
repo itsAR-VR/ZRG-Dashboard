@@ -214,8 +214,8 @@ async function enrichLeadFromEmailBison(
 
     // Extract LinkedIn URL from custom variables
     const linkedinUrlRaw = getCustomVariable(customVars, "linkedin url") ||
-                           getCustomVariable(customVars, "linkedin_url") ||
-                           getCustomVariable(customVars, "linkedinurl");
+      getCustomVariable(customVars, "linkedin_url") ||
+      getCustomVariable(customVars, "linkedinurl");
 
     if (linkedinUrlRaw) {
       const normalized = normalizeLinkedInUrl(linkedinUrlRaw);
@@ -227,8 +227,8 @@ async function enrichLeadFromEmailBison(
 
     // Extract phone from custom variables
     const phoneRaw = getCustomVariable(customVars, "phone") ||
-                     getCustomVariable(customVars, "mobile") ||
-                     getCustomVariable(customVars, "phone number");
+      getCustomVariable(customVars, "mobile") ||
+      getCustomVariable(customVars, "phone number");
 
     if (phoneRaw && phoneRaw !== "-") {
       const normalized = normalizePhone(phoneRaw);

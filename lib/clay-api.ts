@@ -33,17 +33,17 @@ let windowStart = Date.now();
  */
 function checkRateLimit(): boolean {
   const now = Date.now();
-  
+
   // Reset window if expired
   if (now - windowStart > RATE_LIMIT_WINDOW_MS) {
     requestCount = 0;
     windowStart = now;
   }
-  
+
   if (requestCount >= RATE_LIMIT_MAX) {
     return false;
   }
-  
+
   requestCount++;
   return true;
 }
@@ -56,17 +56,17 @@ export async function sendToClayForLinkedInEnrichment(
   request: ClayEnrichmentRequest
 ): Promise<ClayEnrichmentResult> {
   const webhookUrl = process.env.CLAY_LINKEDIN_TABLE_WEBHOOK_URL;
-  
+
   if (!webhookUrl) {
     console.error("[Clay] CLAY_LINKEDIN_TABLE_WEBHOOK_URL not configured");
     return { success: false, error: "Clay LinkedIn webhook URL not configured" };
   }
-  
+
   if (!checkRateLimit()) {
     console.warn(`[Clay] Rate limit exceeded for LinkedIn enrichment, lead ${request.leadId} will be processed by cron`);
     return { success: false, error: "Rate limit exceeded - queued for batch processing" };
   }
-  
+
   return sendToClayTable(webhookUrl, request, "LinkedIn");
 }
 
@@ -78,17 +78,17 @@ export async function sendToClayForPhoneEnrichment(
   request: ClayEnrichmentRequest
 ): Promise<ClayEnrichmentResult> {
   const webhookUrl = process.env.CLAY_PHONE_TABLE_WEBHOOK_URL;
-  
+
   if (!webhookUrl) {
     console.error("[Clay] CLAY_PHONE_TABLE_WEBHOOK_URL not configured");
     return { success: false, error: "Clay Phone webhook URL not configured" };
   }
-  
+
   if (!checkRateLimit()) {
     console.warn(`[Clay] Rate limit exceeded for Phone enrichment, lead ${request.leadId} will be processed by cron`);
     return { success: false, error: "Rate limit exceeded - queued for batch processing" };
   }
-  
+
   return sendToClayTable(webhookUrl, request, "Phone");
 }
 
@@ -101,7 +101,7 @@ async function sendToClayTable(
   tableType: "LinkedIn" | "Phone"
 ): Promise<ClayEnrichmentResult> {
   console.log(`[Clay] Sending lead ${request.leadId} (${request.email}) to ${tableType} table`);
-  
+
   try {
     const payload = {
       leadId: request.leadId,
@@ -113,7 +113,7 @@ async function sendToClayTable(
       callbackUrl: `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/clay`,
       enrichmentType: tableType.toLowerCase(), // 'linkedin' or 'phone'
     };
-    
+
     const response = await fetch(webhookUrl, {
       method: "POST",
       headers: {
@@ -121,7 +121,7 @@ async function sendToClayTable(
       },
       body: JSON.stringify(payload),
     });
-    
+
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`[Clay] ${tableType} enrichment request failed (${response.status}):`, errorText);
@@ -130,7 +130,7 @@ async function sendToClayTable(
         error: `Clay ${tableType} enrichment failed (${response.status})`,
       };
     }
-    
+
     console.log(`[Clay] Successfully sent lead ${request.leadId} to ${tableType} table`);
     return { success: true };
   } catch (error) {
@@ -164,19 +164,19 @@ export async function triggerEnrichmentForLead(
     lastName,
     company,
   };
-  
+
   const results = { linkedInSent: false, phoneSent: false };
-  
+
   if (missingLinkedIn) {
     const linkedInResult = await sendToClayForLinkedInEnrichment(request);
     results.linkedInSent = linkedInResult.success;
   }
-  
+
   if (missingPhone) {
     const phoneResult = await sendToClayForPhoneEnrichment(request);
     results.phoneSent = phoneResult.success;
   }
-  
+
   return results;
 }
 
@@ -188,17 +188,17 @@ export function verifyClayWebhookSignature(
   signature: string
 ): boolean {
   const secret = process.env.CLAY_CALLBACK_SECRET;
-  
+
   if (!secret) {
     console.warn("[Clay] CLAY_CALLBACK_SECRET not configured, skipping signature verification");
     return true; // Allow in development
   }
-  
+
   const expectedSignature = crypto
     .createHmac("sha256", secret)
     .update(payload)
     .digest("hex");
-  
+
   // Timing-safe comparison
   try {
     return crypto.timingSafeEqual(
