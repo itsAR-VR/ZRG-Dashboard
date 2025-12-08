@@ -46,13 +46,18 @@ export async function classifySentiment(transcript: string): Promise<SentimentTa
   }
 
   try {
+    // GPT-5.1 with low reasoning effort for sentiment classification
+    // @ts-expect-error - GPT-5.1 uses reasoning parameter instead of temperature
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-5.1",
       messages: [
         {
           role: "system",
-          content: `You are a sales conversation classifier. Analyze the conversation transcript and classify it into ONE of these categories:
+          content: `<task>
+You are a sales conversation classifier. Analyze the conversation transcript and classify it into ONE category.
+</task>
 
+<categories>
 - "Meeting Requested" - Lead wants to schedule a meeting or video call
 - "Call Requested" - Lead provides a phone number or explicitly asks for a phone call
 - "Information Requested" - Lead asks for more details/information, or signals openness to continue the conversation (e.g., "let's talk", "let's connect", "let's chat", "tell me more", "what do you have?")
@@ -62,23 +67,31 @@ export async function classifySentiment(transcript: string): Promise<SentimentTa
 - "Out of Office" - Lead mentions being away/unavailable
 - "Positive" - Lead shows general openness/interest without a specific request (e.g., "sure", "sounds good", "I'm interested", "okay", "yes", "listening to offers", "open to suggestions")
 - "Neutral" - Pure acknowledgment with no clear positive or negative intent (e.g., "ok", "got it", "received")
+</categories>
 
-IMPORTANT Clarifications:
-- Short affirmative responses like "sure", "sounds good", "I'm interested", "yes", "okay" should be "Positive", NOT "Neutral".
-- Responses like "let's talk", "let's connect", "let's chat" indicate the lead wants to continue the conversation and should be "Information Requested".
-- Treat "always listening to offers", "open to suggestions", "give me your offer" as "Positive" (or "Follow Up" if they explicitly defer timing).
-- Only use "Not Interested" when the lead clearly declines or asks to stop; otherwise prefer "Follow Up" or "Positive".
-- Only use "Neutral" for pure acknowledgments with no sentiment signal. When in doubt, prefer "Positive" over "Neutral".
-- Use "Blacklist" only when the lead requests no further contact or uses abusive language.
+<classification_rules>
+- Short affirmative responses like "sure", "sounds good", "I'm interested", "yes", "okay" → "Positive", NOT "Neutral"
+- Responses like "let's talk", "let's connect", "let's chat" → "Information Requested"
+- "always listening to offers", "open to suggestions", "give me your offer" → "Positive" (or "Follow Up" if they defer)
+- Only use "Not Interested" when the lead clearly declines or asks to stop
+- Only use "Neutral" for pure acknowledgments with no sentiment signal
+- Use "Blacklist" only for explicit opt-out requests or abusive language
+- When in doubt between "Neutral" and "Positive", prefer "Positive"
+</classification_rules>
 
-Respond with ONLY the category name, nothing else.`,
+<output_format>
+Respond with ONLY the category name, nothing else.
+</output_format>`,
         },
         {
           role: "user",
-          content: `Classify this SMS conversation:\n\n${transcript}`,
+          content: `<conversation>
+${transcript}
+</conversation>`,
         },
       ],
-      temperature: 0.2,
+      // GPT-5 family uses reasoning effort instead of temperature
+      reasoning: { effort: "low" },
       max_tokens: 50,
     });
 

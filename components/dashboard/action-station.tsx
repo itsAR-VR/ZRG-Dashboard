@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { sendMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft } from "@/actions/message-actions"
+import { sendMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft } from "@/actions/message-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
 
@@ -27,7 +27,7 @@ interface AIDraft {
   content: string
   status: string
   createdAt: Date
-  channel?: "sms" | "email"
+  channel?: "sms" | "email" | "linkedin"
 }
 
 const CHANNEL_ICONS = {
@@ -54,12 +54,16 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
   const [activeChannel, setActiveChannel] = useState<Channel>("sms")
   const { user } = useUser()
   
-  // Determine if current channel is email
+  // Determine current channel type
   const isEmail = activeChannel === "email"
+  const isLinkedIn = activeChannel === "linkedin"
   
   // Get available channels for this conversation
   const channels = conversation?.channels || ["sms"]
   const availableChannels = conversation?.availableChannels || ["sms"]
+  
+  // Check if LinkedIn is available (lead has linkedinUrl)
+  const hasLinkedIn = conversation?.lead?.linkedinUrl !== undefined && conversation?.lead?.linkedinUrl !== null
   
   // Calculate message counts per channel
   const messageCounts = useMemo(() => {
@@ -139,10 +143,25 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
 
     setIsSending(true)
     
-    // Regular send (no draft approval needed, user composed manually)
-    const result = await sendMessage(conversation.id, composeMessage)
+    let result
+    if (isLinkedIn) {
+      // Send via LinkedIn/Unipile
+      result = await sendLinkedInMessage(conversation.id, composeMessage)
+      if (result.success) {
+        const messageType = result.messageType === "dm" ? "DM" : 
+                           result.messageType === "inmail" ? "InMail" : 
+                           result.messageType === "connection_request" ? "Connection Request" : "message"
+        toast.success(`LinkedIn ${messageType} sent!`)
+      }
+    } else {
+      // Regular SMS send
+      result = await sendMessage(conversation.id, composeMessage)
+      if (result.success) {
+        toast.success("Message sent!")
+      }
+    }
+    
     if (result.success) {
-      toast.success("Message sent!")
       setComposeMessage("")
       setDrafts([])
       setHasAiDraft(false)
@@ -350,14 +369,17 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
                 const hasMessages = count > 0
                 const isActive = channels.includes(ch)
                 
+                // LinkedIn is now enabled if lead has linkedinUrl
+                const linkedInEnabled = ch === "linkedin" ? (hasLinkedIn || hasMessages) : true
+                
                 return (
                   <TabsTrigger 
                     key={ch} 
                     value={ch}
-                    disabled={!isActive && ch !== activeChannel}
+                    disabled={!isActive && ch !== activeChannel && !linkedInEnabled}
                     className={cn(
                       "text-xs gap-1.5 px-3",
-                      !isActive && "opacity-50"
+                      !isActive && !linkedInEnabled && "opacity-50"
                     )}
                   >
                     <Icon className="h-3.5 w-3.5" />
@@ -370,8 +392,8 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
                         {count}
                       </Badge>
                     )}
-                    {!isActive && ch === "linkedin" && (
-                      <span className="text-[10px] text-muted-foreground ml-1">(soon)</span>
+                    {ch === "linkedin" && !linkedInEnabled && (
+                      <span className="text-[10px] text-muted-foreground ml-1">(no profile)</span>
                     )}
                   </TabsTrigger>
                 )
@@ -540,7 +562,8 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <>
-                    <Send className="h-4 w-4 mr-2" />
+                    {isLinkedIn && <Linkedin className="h-4 w-4 mr-2" />}
+                    {!isLinkedIn && <Send className="h-4 w-4 mr-2" />}
                     Send
                   </>
                 )}

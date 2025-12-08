@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 
 /**
  * Normalize phone number by stripping all non-digit characters
@@ -25,12 +26,14 @@ export interface ContactInfo {
   phone?: string | null;
   firstName?: string | null;
   lastName?: string | null;
+  linkedinUrl?: string | null;
 }
 
 export interface ExternalIds {
   ghlContactId?: string | null;
   emailBisonLeadId?: string | null;
   linkedinId?: string | null;
+  linkedinUrl?: string | null;
 }
 
 export interface CampaignIds {
@@ -44,6 +47,8 @@ export interface FindOrCreateLeadResult {
     id: string;
     ghlContactId: string | null;
     emailBisonLeadId: string | null;
+    linkedinId: string | null;
+    linkedinUrl: string | null;
     firstName: string | null;
     lastName: string | null;
     email: string | null;
@@ -53,9 +58,10 @@ export interface FindOrCreateLeadResult {
     clientId: string;
     autoReplyEnabled: boolean;
     autoFollowUpEnabled: boolean;
+    enrichmentStatus: string | null;
   };
   isNew: boolean;
-  matchedBy: "email" | "phone" | "ghlContactId" | "emailBisonLeadId" | "new";
+  matchedBy: "email" | "phone" | "ghlContactId" | "emailBisonLeadId" | "linkedinUrl" | "linkedinId" | "new";
 }
 
 /**
@@ -78,6 +84,7 @@ export async function findOrCreateLead(
 ): Promise<FindOrCreateLeadResult> {
   const normalizedEmail = normalizeEmail(contactInfo.email);
   const normalizedPhone = normalizePhone(contactInfo.phone);
+  const normalizedLinkedInUrl = normalizeLinkedInUrl(contactInfo.linkedinUrl || externalIds?.linkedinUrl);
 
   // Build search conditions
   const searchConditions: any[] = [];
@@ -92,12 +99,22 @@ export async function findOrCreateLead(
     searchConditions.push({ emailBisonLeadId: externalIds.emailBisonLeadId });
   }
 
-  // Priority 3: Match by email (case-insensitive via normalized comparison)
+  // Priority 3: Match by linkedinId if provided
+  if (externalIds?.linkedinId) {
+    searchConditions.push({ linkedinId: externalIds.linkedinId });
+  }
+
+  // Priority 4: Match by linkedinUrl (normalized)
+  if (normalizedLinkedInUrl) {
+    searchConditions.push({ linkedinUrl: normalizedLinkedInUrl });
+  }
+
+  // Priority 5: Match by email (case-insensitive via normalized comparison)
   if (normalizedEmail) {
     searchConditions.push({ email: { equals: normalizedEmail, mode: "insensitive" } });
   }
 
-  // Priority 4: Match by phone (we store normalized, but also check raw)
+  // Priority 6: Match by phone (we store normalized, but also check raw)
   if (normalizedPhone) {
     searchConditions.push({ phone: normalizedPhone });
   }
@@ -120,6 +137,10 @@ export async function findOrCreateLead(
         matchedBy = "ghlContactId";
       } else if (externalIds?.emailBisonLeadId && existingLead.emailBisonLeadId === externalIds.emailBisonLeadId) {
         matchedBy = "emailBisonLeadId";
+      } else if (externalIds?.linkedinId && existingLead.linkedinId === externalIds.linkedinId) {
+        matchedBy = "linkedinId";
+      } else if (normalizedLinkedInUrl && existingLead.linkedinUrl === normalizedLinkedInUrl) {
+        matchedBy = "linkedinUrl";
       } else if (normalizedEmail && existingLead.email?.toLowerCase() === normalizedEmail) {
         matchedBy = "email";
       } else if (normalizedPhone && existingLead.phone === normalizedPhone) {
@@ -152,6 +173,12 @@ export async function findOrCreateLead(
     }
     if (!existingLead.emailBisonLeadId && externalIds?.emailBisonLeadId) {
       updates.emailBisonLeadId = externalIds.emailBisonLeadId;
+    }
+    if (!existingLead.linkedinId && externalIds?.linkedinId) {
+      updates.linkedinId = externalIds.linkedinId;
+    }
+    if (!existingLead.linkedinUrl && normalizedLinkedInUrl) {
+      updates.linkedinUrl = normalizedLinkedInUrl;
     }
 
     // Add campaign associations if not present
@@ -190,12 +217,26 @@ export async function findOrCreateLead(
     };
   }
 
+  // Determine enrichment status for new lead
+  // SMS-only leads (no email) don't need enrichment
+  // Email leads need enrichment if missing LinkedIn or phone
+  let enrichmentStatus: string | null = null;
+  if (!normalizedEmail && normalizedPhone) {
+    // SMS-only lead
+    enrichmentStatus = "not_needed";
+  } else if (normalizedEmail && (!normalizedLinkedInUrl || !normalizedPhone)) {
+    // Email lead missing some data
+    enrichmentStatus = "pending";
+  }
+
   // Create new lead
   const newLead = await prisma.lead.create({
     data: {
       clientId,
       email: normalizedEmail,
       phone: normalizedPhone,
+      linkedinUrl: normalizedLinkedInUrl,
+      linkedinId: externalIds?.linkedinId || null,
       firstName: contactInfo.firstName || null,
       lastName: contactInfo.lastName || null,
       ghlContactId: externalIds?.ghlContactId || null,
@@ -204,10 +245,11 @@ export async function findOrCreateLead(
       emailCampaignId: campaignIds?.emailCampaignId || null,
       senderAccountId: campaignIds?.senderAccountId || null,
       status: "new",
+      enrichmentStatus,
     },
   });
 
-  console.log(`[Lead Matching] Created new lead ${newLead.id} (email: ${normalizedEmail}, phone: ${normalizedPhone})`);
+  console.log(`[Lead Matching] Created new lead ${newLead.id} (email: ${normalizedEmail}, phone: ${normalizedPhone}, linkedin: ${normalizedLinkedInUrl})`);
 
   return {
     lead: newLead,
@@ -233,7 +275,12 @@ export async function getLeadChannels(leadId: string): Promise<("sms" | "email" 
  * Get available channels for a lead based on contact info
  * (channels they CAN use, even if no messages yet)
  */
-export function getAvailableChannels(lead: { phone?: string | null; email?: string | null }): ("sms" | "email" | "linkedin")[] {
+export function getAvailableChannels(lead: { 
+  phone?: string | null; 
+  email?: string | null; 
+  linkedinUrl?: string | null; 
+  linkedinId?: string | null;
+}): ("sms" | "email" | "linkedin")[] {
   const channels: ("sms" | "email" | "linkedin")[] = [];
 
   if (lead.phone) {
@@ -242,7 +289,9 @@ export function getAvailableChannels(lead: { phone?: string | null; email?: stri
   if (lead.email) {
     channels.push("email");
   }
-  // LinkedIn will be added when we have linkedinId integration
+  if (lead.linkedinUrl || lead.linkedinId) {
+    channels.push("linkedin");
+  }
 
   return channels;
 }

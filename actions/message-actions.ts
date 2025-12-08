@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
 import { sendEmailReply } from "@/actions/email-actions";
+import { sendLinkedInMessageWithWaterfall, type SendResult as UnipileSendResult } from "@/lib/unipile-api";
 
 interface SendMessageResult {
   success: boolean;
@@ -1056,6 +1057,105 @@ export async function sendMessage(
 }
 
 /**
+ * Send a LinkedIn message to a lead via Unipile with waterfall logic
+ * Waterfall: Try DM (if connected) -> InMail (if Open Profile) -> Connection Request
+ * 
+ * @param leadId - The internal lead ID
+ * @param message - The message content
+ * @param connectionNote - Optional personalized note for connection request
+ * @param inMailSubject - Optional subject for InMail
+ */
+export async function sendLinkedInMessage(
+  leadId: string,
+  message: string,
+  connectionNote?: string,
+  inMailSubject?: string
+): Promise<SendMessageResult & { messageType?: "dm" | "inmail" | "connection_request"; attemptedMethods?: string[] }> {
+  try {
+    // Get the lead with their client (for Unipile account)
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      include: {
+        client: {
+          select: {
+            id: true,
+            unipileAccountId: true,
+          },
+        },
+      },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    if (!lead.linkedinUrl && !lead.linkedinId) {
+      return { success: false, error: "Lead has no LinkedIn profile linked" };
+    }
+
+    if (!lead.client.unipileAccountId) {
+      return { success: false, error: "Workspace has no LinkedIn account configured" };
+    }
+
+    const linkedinUrl = lead.linkedinUrl || "";
+
+    console.log(`[sendLinkedInMessage] Sending to lead ${leadId} via LinkedIn (${linkedinUrl})`);
+
+    // Use waterfall send logic
+    const result = await sendLinkedInMessageWithWaterfall(
+      lead.client.unipileAccountId,
+      linkedinUrl,
+      message,
+      connectionNote,
+      inMailSubject
+    );
+
+    if (!result.success) {
+      return {
+        success: false,
+        error: result.error,
+        attemptedMethods: result.attemptedMethods,
+      };
+    }
+
+    // Save the outbound message to our database
+    const savedMessage = await prisma.message.create({
+      data: {
+        body: message,
+        direction: "outbound",
+        channel: "linkedin",
+        source: "zrg",
+        leadId: lead.id,
+        sentAt: new Date(),
+      },
+    });
+
+    // Update the lead's updatedAt timestamp
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: { updatedAt: new Date() },
+    });
+
+    revalidatePath("/");
+
+    console.log(`[sendLinkedInMessage] Sent via ${result.messageType} - message ID: ${savedMessage.id}`);
+
+    return {
+      success: true,
+      messageId: savedMessage.id,
+      messageType: result.messageType,
+      attemptedMethods: result.attemptedMethods,
+    };
+  } catch (error) {
+    console.error("Failed to send LinkedIn message:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
  * Get pending AI drafts for a lead
  * 
  * @param leadId - The internal lead ID
@@ -1123,9 +1223,29 @@ export async function approveAndSendDraft(
       return await sendEmailReply(draftId, editedContent);
     }
 
+    if (draft.channel === "linkedin") {
+      // Send LinkedIn message via Unipile
+      const messageContent = editedContent || draft.content;
+      const linkedInResult = await sendLinkedInMessage(draft.leadId, messageContent);
+
+      if (!linkedInResult.success) {
+        return linkedInResult;
+      }
+
+      // Mark draft as approved
+      await prisma.aIDraft.update({
+        where: { id: draftId },
+        data: { status: "approved" },
+      });
+
+      revalidatePath("/");
+
+      return { success: true, messageId: linkedInResult.messageId };
+    }
+
     const messageContent = editedContent || draft.content;
 
-    // Send the message
+    // Send the message (SMS)
     const sendResult = await sendMessage(draft.leadId, messageContent);
 
     if (!sendResult.success) {

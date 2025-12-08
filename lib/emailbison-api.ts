@@ -4,6 +4,24 @@ export interface EmailBisonCampaign {
   status?: string;
 }
 
+// Custom variable from EmailBison lead
+export interface EmailBisonCustomVariable {
+  name: string;
+  value: string;
+}
+
+// Full lead details from EmailBison API
+export interface EmailBisonLeadDetails {
+  id: number;
+  email: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  company?: string | null;
+  title?: string | null;
+  status?: string | null;
+  custom_variables?: EmailBisonCustomVariable[];
+}
+
 export interface EmailBisonRecipient {
   name: string | null;
   email_address: string;
@@ -334,5 +352,78 @@ export async function createEmailBisonLead(
       error: error instanceof Error ? error.message : "Unknown error",
     };
   }
+}
+
+/**
+ * Fetch full lead details from EmailBison including custom variables
+ * Used to extract LinkedIn URL and other enrichment data
+ */
+export async function fetchEmailBisonLead(
+  apiKey: string,
+  bisonLeadId: string
+): Promise<{ success: boolean; data?: EmailBisonLeadDetails; error?: string }> {
+  const url = `${INBOXXIA_BASE_URL}/api/leads/${bisonLeadId}`;
+
+  console.log(`[EmailBison] Fetching lead details for ID: ${bisonLeadId}`);
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const body = await parseJsonSafe(response);
+      console.error(`[EmailBison] Lead fetch failed (${response.status}):`, body);
+      return {
+        success: false,
+        error: `EmailBison lead fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+      };
+    }
+
+    const data = await response.json();
+
+    // Handle response format - could be direct lead object or wrapped
+    const leadData: EmailBisonLeadDetails = data?.lead || data?.data || data;
+
+    if (!leadData?.id) {
+      console.error("[EmailBison] Lead fetch returned no data:", data);
+      return {
+        success: false,
+        error: "Lead fetch returned no data from EmailBison",
+      };
+    }
+
+    console.log(`[EmailBison] Fetched lead ${leadData.id} with ${leadData.custom_variables?.length || 0} custom variables`);
+
+    return { success: true, data: leadData };
+  } catch (error) {
+    console.error("[EmailBison] Failed to fetch lead:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+}
+
+/**
+ * Extract specific custom variable value from EmailBison lead data
+ * Variable names are case-insensitive
+ */
+export function getCustomVariable(
+  customVars: EmailBisonCustomVariable[] | undefined,
+  variableName: string
+): string | null {
+  if (!customVars || customVars.length === 0) return null;
+
+  const lowerName = variableName.toLowerCase();
+  const found = customVars.find(
+    (cv) => cv.name.toLowerCase() === lowerName || cv.name.toLowerCase().replace(/[_\s]/g, "") === lowerName.replace(/[_\s]/g, "")
+  );
+
+  return found?.value?.trim() || null;
 }
 

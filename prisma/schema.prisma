@@ -19,6 +19,8 @@ model Client {
   emailBisonApiKey     String?
   emailBisonWorkspaceId String?     @unique // EmailBison workspace ID for webhook matching
   userId        String              // Supabase Auth user ID - ties workspace to user
+  // LinkedIn/Unipile integration (per-workspace account)
+  unipileAccountId     String?      // Unipile account ID for LinkedIn messaging
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
   leads         Lead[]
@@ -97,8 +99,8 @@ model Lead {
   // External system IDs (all optional for multi-channel support)
   ghlContactId     String?   @unique // GoHighLevel contact ID (for SMS)
   emailBisonLeadId String?   // Inboxxia/EmailBison lead ID (for Email)
-  linkedinId       String?   // Future: LinkedIn member ID
-  linkedinUrl      String?   // Future: LinkedIn profile URL
+  linkedinId       String?   // Unipile LinkedIn member ID (populated after connection)
+  linkedinUrl      String?   // LinkedIn profile URL (normalized format)
   // Contact information
   firstName    String?
   lastName     String?
@@ -109,6 +111,10 @@ model Lead {
   status       String        @default("new")
   sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.
   snoozedUntil DateTime?     // When snoozed, hide from inbox until this date
+  // Enrichment tracking (for Clay/EmailBison/signature extraction)
+  enrichmentStatus   String?   // 'pending' | 'enriched' | 'not_found' | 'not_needed'
+  enrichmentSource   String?   // 'emailbison' | 'clay' | 'signature' | null
+  enrichedAt         DateTime? // When enrichment was last completed
   // Automation settings
   autoReplyEnabled Boolean   @default(false)
   autoFollowUpEnabled Boolean @default(false)
@@ -144,6 +150,8 @@ model Lead {
   @@index([sentimentTag])
   @@index([email])          // For cross-channel matching
   @@index([phone])          // For cross-channel matching
+  @@index([linkedinUrl])    // For LinkedIn matching
+  @@index([enrichmentStatus]) // For batch enrichment queries
   @@index([preferredCalendarLinkId])
 }
 

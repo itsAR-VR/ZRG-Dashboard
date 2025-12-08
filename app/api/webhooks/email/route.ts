@@ -4,7 +4,11 @@ import { classifySentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraft } from "@/actions/message-actions";
 import { findOrCreateLead } from "@/lib/lead-matching";
-import { createEmailBisonLead } from "@/lib/emailbison-api";
+import { createEmailBisonLead, fetchEmailBisonLead, getCustomVariable } from "@/lib/emailbison-api";
+import { extractContactFromSignature } from "@/lib/signature-extractor";
+import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { triggerEnrichmentForLead } from "@/lib/clay-api";
+import { normalizePhone } from "@/lib/lead-matching";
 
 // =============================================================================
 // Type Definitions
@@ -184,6 +188,207 @@ async function triggerSlackNotification(message: string) {
     });
   } catch (error) {
     console.error("[Slack] Failed to send notification:", error);
+  }
+}
+
+/**
+ * Fetch EmailBison lead data and extract LinkedIn URL and phone from custom variables
+ * Updates lead with enriched data if found
+ */
+async function enrichLeadFromEmailBison(
+  leadId: string,
+  emailBisonLeadId: string,
+  apiKey: string
+): Promise<{ linkedinUrl?: string; phone?: string }> {
+  const result: { linkedinUrl?: string; phone?: string } = {};
+
+  try {
+    const leadDetails = await fetchEmailBisonLead(apiKey, emailBisonLeadId);
+
+    if (!leadDetails.success || !leadDetails.data) {
+      console.log(`[EmailBison Enrichment] Failed to fetch lead ${emailBisonLeadId}: ${leadDetails.error}`);
+      return result;
+    }
+
+    const customVars = leadDetails.data.custom_variables;
+
+    // Extract LinkedIn URL from custom variables
+    const linkedinUrlRaw = getCustomVariable(customVars, "linkedin url") ||
+                           getCustomVariable(customVars, "linkedin_url") ||
+                           getCustomVariable(customVars, "linkedinurl");
+
+    if (linkedinUrlRaw) {
+      const normalized = normalizeLinkedInUrl(linkedinUrlRaw);
+      if (normalized) {
+        result.linkedinUrl = normalized;
+        console.log(`[EmailBison Enrichment] Found LinkedIn URL for lead ${leadId}: ${normalized}`);
+      }
+    }
+
+    // Extract phone from custom variables
+    const phoneRaw = getCustomVariable(customVars, "phone") ||
+                     getCustomVariable(customVars, "mobile") ||
+                     getCustomVariable(customVars, "phone number");
+
+    if (phoneRaw && phoneRaw !== "-") {
+      const normalized = normalizePhone(phoneRaw);
+      if (normalized) {
+        result.phone = normalized;
+        console.log(`[EmailBison Enrichment] Found phone for lead ${leadId}: ${normalized}`);
+      }
+    }
+
+    // Update lead with enriched data
+    if (result.linkedinUrl || result.phone) {
+      const updates: Record<string, unknown> = {};
+
+      // Get current lead to check what's missing
+      const currentLead = await prisma.lead.findUnique({ where: { id: leadId } });
+
+      if (result.linkedinUrl && !currentLead?.linkedinUrl) {
+        updates.linkedinUrl = result.linkedinUrl;
+      }
+      if (result.phone && !currentLead?.phone) {
+        updates.phone = result.phone;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        updates.enrichmentStatus = "enriched";
+        updates.enrichmentSource = "emailbison";
+        updates.enrichedAt = new Date();
+
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: updates,
+        });
+        console.log(`[EmailBison Enrichment] Updated lead ${leadId} with EmailBison data`);
+      }
+    }
+  } catch (error) {
+    console.error(`[EmailBison Enrichment] Error enriching lead ${leadId}:`, error);
+  }
+
+  return result;
+}
+
+/**
+ * Extract contact info from email signature using AI
+ * Only updates lead if extraction is confident and from actual lead
+ */
+async function enrichLeadFromSignature(
+  leadId: string,
+  leadName: string,
+  leadEmail: string,
+  emailBody: string
+): Promise<{ phone?: string; linkedinUrl?: string }> {
+  const result: { phone?: string; linkedinUrl?: string } = {};
+
+  try {
+    // Get current lead to check what's missing
+    const currentLead = await prisma.lead.findUnique({ where: { id: leadId } });
+
+    // Only extract if lead is missing phone or LinkedIn
+    if (currentLead?.phone && currentLead?.linkedinUrl) {
+      console.log(`[Signature Extraction] Lead ${leadId} already has phone and LinkedIn, skipping`);
+      return result;
+    }
+
+    const extraction = await extractContactFromSignature(emailBody, leadName, leadEmail);
+
+    // Only use extraction if from actual lead and high confidence
+    if (!extraction.isFromLead) {
+      console.log(`[Signature Extraction] Email not from lead (possibly assistant), skipping`);
+      return result;
+    }
+
+    if (extraction.confidence === "low") {
+      console.log(`[Signature Extraction] Low confidence extraction, skipping`);
+      return result;
+    }
+
+    const updates: Record<string, unknown> = {};
+
+    // Extract phone if missing
+    if (!currentLead?.phone && extraction.phone) {
+      updates.phone = extraction.phone;
+      result.phone = extraction.phone;
+      console.log(`[Signature Extraction] Extracted phone for lead ${leadId}: ${extraction.phone}`);
+    }
+
+    // Extract LinkedIn if missing
+    if (!currentLead?.linkedinUrl && extraction.linkedinUrl) {
+      updates.linkedinUrl = extraction.linkedinUrl;
+      result.linkedinUrl = extraction.linkedinUrl;
+      console.log(`[Signature Extraction] Extracted LinkedIn for lead ${leadId}: ${extraction.linkedinUrl}`);
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updates.enrichmentStatus = "enriched";
+      updates.enrichmentSource = "signature";
+      updates.enrichedAt = new Date();
+
+      await prisma.lead.update({
+        where: { id: leadId },
+        data: updates,
+      });
+      console.log(`[Signature Extraction] Updated lead ${leadId} from signature`);
+    }
+  } catch (error) {
+    console.error(`[Signature Extraction] Error extracting from signature for lead ${leadId}:`, error);
+  }
+
+  return result;
+}
+
+/**
+ * Trigger Clay enrichment for leads missing LinkedIn or phone
+ * Only for email leads (not SMS-only)
+ */
+async function triggerClayEnrichmentIfNeeded(leadId: string): Promise<void> {
+  try {
+    const lead = await prisma.lead.findUnique({ where: { id: leadId } });
+
+    if (!lead || !lead.email) {
+      // SMS-only lead or invalid, skip enrichment
+      return;
+    }
+
+    // Skip if already enriched or processing
+    if (lead.enrichmentStatus && lead.enrichmentStatus !== "pending") {
+      return;
+    }
+
+    const missingLinkedIn = !lead.linkedinUrl;
+    const missingPhone = !lead.phone;
+
+    if (!missingLinkedIn && !missingPhone) {
+      // Nothing to enrich
+      await prisma.lead.update({
+        where: { id: leadId },
+        data: { enrichmentStatus: "not_needed" },
+      });
+      return;
+    }
+
+    // Mark as pending and trigger enrichment
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: { enrichmentStatus: "pending" },
+    });
+
+    await triggerEnrichmentForLead(
+      lead.id,
+      lead.email,
+      lead.firstName || undefined,
+      lead.lastName || undefined,
+      undefined, // company not stored on lead
+      missingLinkedIn,
+      missingPhone
+    );
+
+    console.log(`[Clay Enrichment] Triggered for lead ${leadId} (linkedin: ${missingLinkedIn}, phone: ${missingPhone})`);
+  } catch (error) {
+    console.error(`[Clay Enrichment] Error triggering enrichment for lead ${leadId}:`, error);
   }
 }
 
@@ -415,6 +620,21 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
       `Meeting booked via Inboxxia for lead ${lead.email || lead.id} (client ${client.name})`
     );
   }
+
+  // Enrichment: Fetch EmailBison lead data for custom variables (LinkedIn URL, phone)
+  // Only if we have an emailBisonLeadId
+  if (lead.emailBisonLeadId && client.emailBisonApiKey) {
+    await enrichLeadFromEmailBison(lead.id, lead.emailBisonLeadId, client.emailBisonApiKey);
+  }
+
+  // Enrichment: Extract contact info from email signature (AI-powered)
+  // Use the full raw body for signature extraction
+  const fullEmailBody = cleaned.rawText || cleaned.rawHtml || cleaned.cleaned || "";
+  const leadFullName = `${lead.firstName || ""} ${lead.lastName || ""}`.trim() || "Lead";
+  await enrichLeadFromSignature(lead.id, leadFullName, fromEmail, fullEmailBody);
+
+  // Trigger Clay enrichment if still missing LinkedIn or phone after other enrichment
+  await triggerClayEnrichmentIfNeeded(lead.id);
 
   // Generate AI draft if appropriate (skip bounce emails)
   let draftId: string | undefined;
@@ -776,6 +996,15 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     where: { id: lead.id },
     data: { sentimentTag, status: leadStatus },
   });
+
+  // Enrichment: Extract contact info from email signature (AI-powered)
+  // For untracked replies, we can still extract from signature
+  const fullEmailBody = cleaned.rawText || cleaned.rawHtml || cleaned.cleaned || "";
+  const leadFullName = fromName || `${lead.firstName || ""} ${lead.lastName || ""}`.trim() || "Lead";
+  await enrichLeadFromSignature(lead.id, leadFullName, fromEmail, fullEmailBody);
+
+  // Trigger Clay enrichment if still missing LinkedIn or phone
+  await triggerClayEnrichmentIfNeeded(lead.id);
 
   // Generate AI draft (skip bounce emails)
   let draftId: string | undefined;
