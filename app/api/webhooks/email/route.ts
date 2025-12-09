@@ -192,15 +192,28 @@ async function triggerSlackNotification(message: string) {
 }
 
 /**
- * Fetch EmailBison lead data and extract LinkedIn URL and phone from custom variables
+ * Result from EmailBison enrichment including data for Clay
+ */
+interface EmailBisonEnrichmentResult {
+  linkedinUrl?: string;
+  phone?: string;
+  // Additional data for Clay enrichment
+  clayData: EmailBisonEnrichmentData;
+}
+
+/**
+ * Fetch EmailBison lead data and extract LinkedIn URL, phone, and other data from custom variables
  * Updates lead with enriched data if found
+ * Returns additional data needed for Clay enrichment
  */
 async function enrichLeadFromEmailBison(
   leadId: string,
   emailBisonLeadId: string,
   apiKey: string
-): Promise<{ linkedinUrl?: string; phone?: string }> {
-  const result: { linkedinUrl?: string; phone?: string } = {};
+): Promise<EmailBisonEnrichmentResult> {
+  const result: EmailBisonEnrichmentResult = {
+    clayData: {},
+  };
 
   try {
     const leadDetails = await fetchEmailBisonLead(apiKey, emailBisonLeadId);
@@ -210,7 +223,8 @@ async function enrichLeadFromEmailBison(
       return result;
     }
 
-    const customVars = leadDetails.data.custom_variables;
+    const leadData = leadDetails.data;
+    const customVars = leadData.custom_variables;
 
     // Extract LinkedIn URL from custom variables
     const linkedinUrlRaw = getCustomVariable(customVars, "linkedin url") ||
@@ -221,6 +235,7 @@ async function enrichLeadFromEmailBison(
       const normalized = normalizeLinkedInUrl(linkedinUrlRaw);
       if (normalized) {
         result.linkedinUrl = normalized;
+        result.clayData.linkedInProfile = normalized;
         console.log(`[EmailBison Enrichment] Found LinkedIn URL for lead ${leadId}: ${normalized}`);
       }
     }
@@ -234,8 +249,27 @@ async function enrichLeadFromEmailBison(
       const normalized = normalizePhone(phoneRaw);
       if (normalized) {
         result.phone = normalized;
+        result.clayData.existingPhone = normalized;
         console.log(`[EmailBison Enrichment] Found phone for lead ${leadId}: ${normalized}`);
       }
+    }
+
+    // Extract additional data for Clay enrichment
+    // Company name from main lead data
+    if (leadData.company) {
+      result.clayData.companyName = leadData.company;
+    }
+
+    // Company domain from 'website' custom variable (full URL)
+    const website = getCustomVariable(customVars, "website");
+    if (website && website !== "-") {
+      result.clayData.companyDomain = website;
+    }
+
+    // State from 'company state' custom variable
+    const companyState = getCustomVariable(customVars, "company state");
+    if (companyState && companyState !== "-") {
+      result.clayData.state = companyState;
     }
 
     // Update lead with enriched data
@@ -341,10 +375,25 @@ async function enrichLeadFromSignature(
 }
 
 /**
+ * Data extracted from EmailBison for Clay enrichment
+ */
+interface EmailBisonEnrichmentData {
+  companyName?: string;
+  companyDomain?: string;  // From 'website' custom var
+  state?: string;          // From 'company state' custom var
+  linkedInProfile?: string; // From 'linkedin url' custom var
+  existingPhone?: string;  // From 'phone' custom var (to skip enrichment if exists)
+}
+
+/**
  * Trigger Clay enrichment for leads missing LinkedIn or phone
  * Only for email leads (not SMS-only)
+ * Uses smart logic to skip enrichment if valid data already exists in EmailBison
  */
-async function triggerClayEnrichmentIfNeeded(leadId: string): Promise<void> {
+async function triggerClayEnrichmentIfNeeded(
+  leadId: string,
+  emailBisonData?: EmailBisonEnrichmentData
+): Promise<void> {
   try {
     const lead = await prisma.lead.findUnique({ where: { id: leadId } });
 
@@ -358,8 +407,15 @@ async function triggerClayEnrichmentIfNeeded(leadId: string): Promise<void> {
       return;
     }
 
-    const missingLinkedIn = !lead.linkedinUrl;
-    const missingPhone = !lead.phone;
+    // Determine what's missing
+    // For LinkedIn: check lead record
+    const missingLinkedIn = !lead.linkedinUrl && !emailBisonData?.linkedInProfile;
+    
+    // For phone: check lead record AND EmailBison custom var
+    // Skip phone enrichment if we already have a valid phone from EmailBison
+    const existingPhone = lead.phone || emailBisonData?.existingPhone;
+    const hasValidPhone = existingPhone && normalizePhone(existingPhone);
+    const missingPhone = !hasValidPhone;
 
     if (!missingLinkedIn && !missingPhone) {
       // Nothing to enrich
@@ -376,12 +432,23 @@ async function triggerClayEnrichmentIfNeeded(leadId: string): Promise<void> {
       data: { enrichmentStatus: "pending" },
     });
 
+    // Build the full enrichment request with all available data
+    const fullName = `${lead.firstName || ""} ${lead.lastName || ""}`.trim();
+    
+    const enrichmentRequest = {
+      leadId: lead.id,
+      emailAddress: lead.email,
+      firstName: lead.firstName || undefined,
+      lastName: lead.lastName || undefined,
+      fullName: fullName || undefined,
+      companyName: emailBisonData?.companyName,
+      companyDomain: emailBisonData?.companyDomain,
+      state: emailBisonData?.state,
+      linkedInProfile: emailBisonData?.linkedInProfile || lead.linkedinUrl || undefined,
+    };
+
     await triggerEnrichmentForLead(
-      lead.id,
-      lead.email,
-      lead.firstName || undefined,
-      lead.lastName || undefined,
-      undefined, // company not stored on lead
+      enrichmentRequest,
       missingLinkedIn,
       missingPhone
     );
@@ -623,8 +690,10 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
 
   // Enrichment: Fetch EmailBison lead data for custom variables (LinkedIn URL, phone)
   // Only if we have an emailBisonLeadId
+  let emailBisonData: EmailBisonEnrichmentData | undefined;
   if (lead.emailBisonLeadId && client.emailBisonApiKey) {
-    await enrichLeadFromEmailBison(lead.id, lead.emailBisonLeadId, client.emailBisonApiKey);
+    const enrichResult = await enrichLeadFromEmailBison(lead.id, lead.emailBisonLeadId, client.emailBisonApiKey);
+    emailBisonData = enrichResult.clayData;
   }
 
   // Enrichment: Extract contact info from email signature (AI-powered)
@@ -634,7 +703,8 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   await enrichLeadFromSignature(lead.id, leadFullName, fromEmail, fullEmailBody);
 
   // Trigger Clay enrichment if still missing LinkedIn or phone after other enrichment
-  await triggerClayEnrichmentIfNeeded(lead.id);
+  // Pass EmailBison data for additional context (company, state, etc.)
+  await triggerClayEnrichmentIfNeeded(lead.id, emailBisonData);
 
   // Generate AI draft if appropriate (skip bounce emails)
   let draftId: string | undefined;

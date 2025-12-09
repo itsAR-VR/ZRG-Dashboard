@@ -7,11 +7,15 @@
 import crypto from "crypto";
 
 export interface ClayEnrichmentRequest {
-  leadId: string;        // For callback matching
-  email: string;
+  leadId: string;           // For callback matching
+  emailAddress: string;     // Lead's email address
   firstName?: string;
   lastName?: string;
-  company?: string;
+  fullName?: string;        // Computed: firstName + lastName
+  companyName?: string;     // From EmailBison company field
+  companyDomain?: string;   // From EmailBison 'website' custom var (full URL)
+  state?: string;           // From EmailBison 'company state' custom var
+  linkedInProfile?: string; // From EmailBison 'linkedin url' custom var or Lead.linkedinUrl
 }
 
 export interface ClayEnrichmentResult {
@@ -93,6 +97,42 @@ export async function sendToClayForPhoneEnrichment(
 }
 
 /**
+ * Build payload for Clay table based on table type
+ * Phone table includes linkedInProfile, LinkedIn table does not
+ */
+function buildClayPayload(
+  request: ClayEnrichmentRequest,
+  tableType: "LinkedIn" | "Phone"
+): Record<string, string> {
+  // Compute fullName if not provided
+  const fullName = request.fullName || 
+    `${request.firstName || ""} ${request.lastName || ""}`.trim();
+
+  // Base payload for both tables
+  const basePayload = {
+    leadId: request.leadId,
+    emailAddress: request.emailAddress,
+    firstName: request.firstName || "",
+    lastName: request.lastName || "",
+    fullName,
+    companyName: request.companyName || "",
+    companyDomain: request.companyDomain || "",
+    state: request.state || "",
+  };
+
+  // Phone table includes linkedInProfile (if we have it, helps with enrichment)
+  if (tableType === "Phone") {
+    return {
+      ...basePayload,
+      linkedInProfile: request.linkedInProfile || "",
+    };
+  }
+
+  // LinkedIn table does not include linkedInProfile (that's what we're looking for)
+  return basePayload;
+}
+
+/**
  * Generic function to send data to a Clay table webhook
  */
 async function sendToClayTable(
@@ -100,19 +140,10 @@ async function sendToClayTable(
   request: ClayEnrichmentRequest,
   tableType: "LinkedIn" | "Phone"
 ): Promise<ClayEnrichmentResult> {
-  console.log(`[Clay] Sending lead ${request.leadId} (${request.email}) to ${tableType} table`);
+  console.log(`[Clay] Sending lead ${request.leadId} (${request.emailAddress}) to ${tableType} table`);
 
   try {
-    const payload = {
-      leadId: request.leadId,
-      email: request.email,
-      firstName: request.firstName || "",
-      lastName: request.lastName || "",
-      company: request.company || "",
-      // Add callback URL for Clay to send results back
-      callbackUrl: `${process.env.NEXT_PUBLIC_APP_URL}/api/webhooks/clay`,
-      enrichmentType: tableType.toLowerCase(), // 'linkedin' or 'phone'
-    };
+    const payload = buildClayPayload(request, tableType);
 
     const response = await fetch(webhookUrl, {
       method: "POST",
@@ -149,22 +180,10 @@ async function sendToClayTable(
  * - Missing both -> Send to both tables
  */
 export async function triggerEnrichmentForLead(
-  leadId: string,
-  email: string,
-  firstName?: string,
-  lastName?: string,
-  company?: string,
+  request: ClayEnrichmentRequest,
   missingLinkedIn: boolean = true,
   missingPhone: boolean = true
 ): Promise<{ linkedInSent: boolean; phoneSent: boolean }> {
-  const request: ClayEnrichmentRequest = {
-    leadId,
-    email,
-    firstName,
-    lastName,
-    company,
-  };
-
   const results = { linkedInSent: false, phoneSent: false };
 
   if (missingLinkedIn) {
