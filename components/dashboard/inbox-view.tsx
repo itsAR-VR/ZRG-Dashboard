@@ -1,15 +1,23 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { ConversationFeed } from "./conversation-feed";
 import { ActionStation } from "./action-station";
 import { CrmDrawer } from "./crm-drawer";
-import { getConversations, getConversation, type ConversationData } from "@/actions/lead-actions";
+import { 
+  getConversationsCursor, 
+  getConversation, 
+  type ConversationData,
+  type Channel,
+  type ConversationsCursorOptions 
+} from "@/actions/lead-actions";
 import { syncConversationHistory, syncAllConversations, syncEmailConversationHistory, syncAllEmailConversations, smartSyncConversation } from "@/actions/message-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
-import { Loader2, Wifi, WifiOff, Inbox } from "lucide-react";
+import { Loader2, Wifi, WifiOff, Inbox, RefreshCw } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 interface InboxViewProps {
@@ -69,69 +77,80 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
 }
 
 export function InboxView({ activeChannel, activeFilter, activeWorkspace, initialConversationId, onLeadSelect }: InboxViewProps) {
-  const [conversations, setConversations] = useState<ConversationWithSentiment[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   // Wrapper to update both local state and notify parent
   const handleLeadSelect = useCallback((leadId: string | null) => {
     setActiveConversationId(leadId);
     onLeadSelect?.(leadId);
   }, [onLeadSelect]);
+  
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [isCrmOpen, setIsCrmOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isLive, setIsLive] = useState(false);
   const [activeSentiment, setActiveSentiment] = useState<string>("all");
-  const [error, setError] = useState<string | null>(null);
+  const [newConversationCount, setNewConversationCount] = useState(0);
   
   // Sync state management - track which leads are currently syncing
   const [syncingLeadIds, setSyncingLeadIds] = useState<Set<string>>(new Set());
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   
-  const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const realtimeConnectedRef = useRef(false);
   const prevConversationIdRef = useRef<string | null>(null);
 
-  // Fetch conversations from database
-  const fetchConversations = useCallback(async (showLoading = false) => {
-    if (showLoading) setIsLoading(true);
-    setError(null);
-    
-    try {
-      const result = await getConversations(activeWorkspace);
-      if (result.success && result.data) {
-        const converted = result.data.map(convertToComponentFormat);
-        setConversations(converted);
-        setError(null);
-        
-        // Set first conversation as active if none selected or current selection not in list
-        if (converted.length > 0) {
-          const currentExists = converted.some(c => c.id === activeConversationId);
-          if (!activeConversationId || !currentExists) {
-            handleLeadSelect(converted[0].id);
-          }
-        } else {
-          handleLeadSelect(null);
-          setActiveConversation(null);
-        }
-      } else {
-        // Query failed or no data
-        console.error("[InboxView] getConversations failed:", result.error);
-        setError(result.error || "Failed to load conversations");
-        setConversations([]);
-        handleLeadSelect(null);
-        setActiveConversation(null);
+  // Build query options for cursor-based pagination
+  const queryOptions: ConversationsCursorOptions = useMemo(() => ({
+    clientId: activeWorkspace,
+    channel: activeChannel !== "all" ? activeChannel as Channel : undefined,
+    sentimentTag: activeSentiment !== "all" ? activeSentiment : undefined,
+    filter: activeFilter as "attention" | "drafts" | "needs_repair" | "all" | undefined,
+    limit: 50,
+  }), [activeWorkspace, activeChannel, activeSentiment, activeFilter]);
+
+  // Infinite query for conversations
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useInfiniteQuery({
+    queryKey: ["conversations", queryOptions],
+    queryFn: async ({ pageParam }) => {
+      const result = await getConversationsCursor({
+        ...queryOptions,
+        cursor: pageParam as string | null,
+      });
+      if (!result.success) {
+        throw new Error(result.error || "Failed to fetch conversations");
       }
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : "Unknown error";
-      console.error("[InboxView] Error fetching conversations:", errorMsg);
-      setError(errorMsg);
-      setConversations([]);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [activeConversationId, activeWorkspace, handleLeadSelect]);
+      return result;
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    staleTime: 30000,
+    refetchInterval: 30000, // Poll every 30 seconds as fallback
+  });
+
+  // Flatten all pages into conversations array
+  const allConversations = useMemo(() => {
+    return data?.pages.flatMap((page) => page.conversations) || [];
+  }, [data]);
+
+  // Convert to component format
+  const conversations: ConversationWithSentiment[] = useMemo(() => {
+    return allConversations.map(convertToComponentFormat);
+  }, [allConversations]);
+
+  // Legacy fetchConversations for sync operations (just triggers refetch)
+  const fetchConversations = useCallback(async () => {
+    await refetch();
+  }, [refetch]);
 
   // Fetch full conversation when active conversation changes
   // Uses optimistic UI: show lead info immediately, load messages in background
@@ -270,10 +289,9 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     }
   }, [activeWorkspace, conversations, fetchConversations, fetchActiveConversation]);
 
-  // Refetch when workspace changes
+  // Reset sentiment filter when workspace changes
   useEffect(() => {
-    fetchConversations(true);
-    setActiveSentiment("all"); // Reset sentiment filter when workspace changes
+    setActiveSentiment("all");
   }, [activeWorkspace]);
 
   // Handle initial conversation selection (e.g., from CRM "Open in Master Inbox")
@@ -293,7 +311,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     fetchActiveConversation(isNewConversation);
   }, [fetchActiveConversation, activeConversationId]);
 
-  // Set up realtime subscriptions
+  // Set up realtime subscriptions for new conversation badge
   useEffect(() => {
     console.log("[Realtime] Setting up subscriptions...");
 
@@ -301,14 +319,19 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
       console.log("[Realtime] New message received:", payload);
       realtimeConnectedRef.current = true;
       setIsLive(true);
-      fetchConversations();
+      // Increment new conversation count instead of immediate refetch
+      if (payload.eventType === "INSERT") {
+        setNewConversationCount((prev) => prev + 1);
+      }
     });
 
     const leadsChannel = subscribeToLeads((payload) => {
       console.log("[Realtime] Lead updated:", payload);
       realtimeConnectedRef.current = true;
       setIsLive(true);
-      fetchConversations();
+      if (payload.eventType === "INSERT") {
+        setNewConversationCount((prev) => prev + 1);
+      }
     });
 
     const checkConnection = setTimeout(() => {
@@ -324,46 +347,32 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
       unsubscribe(messagesChannel);
       unsubscribe(leadsChannel);
     };
-  }, [fetchConversations]);
+  }, []);
 
-  // Set up polling as fallback
-  useEffect(() => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-    }
+  // Handle new conversations badge click
+  const handleNewConversationsClick = useCallback(() => {
+    setNewConversationCount(0);
+    refetch();
+  }, [refetch]);
 
-    pollingRef.current = setInterval(() => {
-      console.log("[Polling] Refreshing conversations...");
-      fetchConversations();
-      // Silently refresh active conversation messages (no loading spinner)
-      if (activeConversationId) {
-        fetchActiveConversation(false);
-      }
-    }, POLLING_INTERVAL);
-
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-      }
-    };
-  }, [fetchConversations, activeConversationId, fetchActiveConversation]);
-
-  // Filter conversations by channel, filter, and sentiment
-  const filteredConversations = conversations.filter((conv) => {
-    // Filter by channel - check if the lead has messages on that channel
-    if (activeChannel !== "all" && !conv.channels.includes(activeChannel as any)) return false;
-    if (activeFilter === "attention" && !conv.requiresAttention) return false;
-    if (activeFilter === "drafts" && !conv.hasAiDraft) return false;
-    if (activeFilter === "needs_repair" && conv.lead.status !== "needs_repair") return false;
-    // Filter by sentiment tag
-    if (activeSentiment !== "all" && conv.sentimentTag !== activeSentiment) return false;
-    return true;
-  });
+  // Conversations are already filtered by the server via queryOptions
+  // Just use the conversations directly
+  const filteredConversations = conversations;
 
   // Check if current conversation is syncing
   const isCurrentConversationSyncing = activeConversationId 
     ? syncingLeadIds.has(activeConversationId) 
     : false;
+
+  // Auto-select first conversation when list loads
+  useEffect(() => {
+    if (conversations.length > 0 && !activeConversationId) {
+      const firstConversation = conversations[0];
+      if (firstConversation) {
+        handleLeadSelect(firstConversation.id);
+      }
+    }
+  }, [conversations, activeConversationId, handleLeadSelect]);
 
   if (isLoading) {
     return (
@@ -374,7 +383,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
   }
 
   // Error state
-  if (error) {
+  if (isError) {
     return (
       <div className="flex flex-1 items-center justify-center">
         <div className="text-center space-y-4">
@@ -384,11 +393,12 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
           <div>
             <h3 className="text-lg font-semibold text-destructive">Error loading conversations</h3>
             <p className="text-sm text-muted-foreground max-w-md font-mono bg-muted p-2 rounded mt-2">
-              {error}
+              {error?.message || "Unknown error"}
             </p>
-            <p className="text-xs text-muted-foreground mt-4">
-              If you recently updated the schema, run: <code className="bg-muted px-1 rounded">npx prisma db push</code>
-            </p>
+            <Button variant="outline" onClick={() => refetch()} className="mt-4">
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Retry
+            </Button>
           </div>
         </div>
       </div>
@@ -419,8 +429,22 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
 
   return (
     <>
-      {/* Live indicator */}
-      <div className="absolute top-2 right-2 z-10">
+      {/* Status indicators */}
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
+        {/* New conversations badge */}
+        {newConversationCount > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleNewConversationsClick}
+            className="bg-primary/10 border-primary/30 text-primary text-xs"
+          >
+            <RefreshCw className="h-3 w-3 mr-1" />
+            {newConversationCount} new
+          </Button>
+        )}
+        
+        {/* Live indicator */}
         <Badge 
           variant="outline" 
           className={`text-xs ${isLive ? "bg-green-500/10 text-green-500 border-green-500/30" : "bg-muted text-muted-foreground"}`}
@@ -448,6 +472,9 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
         syncingLeadIds={syncingLeadIds}
         onSyncAll={handleSyncAll}
         isSyncingAll={isSyncingAll}
+        hasMore={hasNextPage}
+        isLoadingMore={isFetchingNextPage}
+        onLoadMore={() => fetchNextPage()}
       />
       <ActionStation
         conversation={activeConversation}

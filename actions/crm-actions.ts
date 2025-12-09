@@ -281,3 +281,265 @@ export async function bookMeeting(
     return { success: false, error: "Failed to book meeting" };
   }
 }
+
+// =============================================================================
+// Cursor-Based Pagination for CRM (Performance Optimized)
+// =============================================================================
+
+export interface CRMLeadsCursorOptions {
+  clientId?: string | null;
+  cursor?: string | null; // Lead ID to start after
+  limit?: number;
+  search?: string;
+  status?: string;
+  sortField?: "updatedAt" | "firstName" | "leadScore";
+  sortDirection?: "asc" | "desc";
+}
+
+export interface CRMLeadsCursorResult {
+  success: boolean;
+  leads: CRMLeadData[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  error?: string;
+}
+
+/**
+ * Helper function to calculate lead score
+ */
+function calculateLeadScore(lead: {
+  email: string | null;
+  phone: string | null;
+  sentimentTag: string | null;
+}): number {
+  let score = 50; // Base score
+  if (lead.email) score += 10;
+  if (lead.phone) score += 10;
+  if (lead.sentimentTag === "Meeting Requested") score += 20;
+  if (lead.sentimentTag === "Positive") score += 15;
+  if (lead.sentimentTag === "Information Requested") score += 10;
+  if (lead.sentimentTag === "Not Interested") score -= 20;
+  if (lead.sentimentTag === "Blacklist") score -= 40;
+  return Math.max(0, Math.min(100, score)); // Clamp between 0-100
+}
+
+/**
+ * Transform Prisma lead to CRMLeadData
+ */
+function transformLeadToCRM(lead: any): CRMLeadData {
+  const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
+  
+  return {
+    id: lead.id,
+    name: fullName,
+    email: lead.email,
+    phone: lead.phone,
+    company: lead.client.name,
+    title: "", // Not in current schema
+    status: lead.status,
+    leadScore: calculateLeadScore(lead),
+    sentimentTag: lead.sentimentTag,
+    createdAt: lead.createdAt,
+    updatedAt: lead.updatedAt,
+    messageCount: lead._count.messages,
+    autoReplyEnabled: lead.autoReplyEnabled,
+    autoFollowUpEnabled: lead.autoFollowUpEnabled,
+    // Enrichment data
+    linkedinUrl: lead.linkedinUrl,
+    companyName: lead.companyName,
+    companyWebsite: lead.companyWebsite,
+    companyState: lead.companyState,
+    emailBisonLeadId: lead.emailBisonLeadId,
+    enrichmentStatus: lead.enrichmentStatus,
+    // GHL integration data
+    ghlContactId: lead.ghlContactId,
+    ghlLocationId: lead.client.ghlLocationId,
+  };
+}
+
+/**
+ * Get CRM leads with cursor-based pagination
+ * Optimized for large datasets (50,000+ leads)
+ */
+export async function getCRMLeadsCursor(
+  options: CRMLeadsCursorOptions
+): Promise<CRMLeadsCursorResult> {
+  try {
+    const {
+      clientId,
+      cursor,
+      limit = 50,
+      search,
+      status,
+      sortField = "updatedAt",
+      sortDirection = "desc",
+    } = options;
+
+    // Build the where clause for filtering
+    const whereConditions: any[] = [];
+    
+    if (clientId) {
+      whereConditions.push({ clientId });
+    }
+    
+    if (status && status !== "all") {
+      whereConditions.push({ status });
+    }
+    
+    if (search && search.trim()) {
+      const searchTerm = search.trim();
+      whereConditions.push({
+        OR: [
+          { firstName: { contains: searchTerm, mode: "insensitive" } },
+          { lastName: { contains: searchTerm, mode: "insensitive" } },
+          { email: { contains: searchTerm, mode: "insensitive" } },
+          { companyName: { contains: searchTerm, mode: "insensitive" } },
+        ],
+      });
+    }
+
+    const where = whereConditions.length > 0
+      ? { AND: whereConditions }
+      : undefined;
+
+    // Build query with cursor pagination
+    const queryOptions: any = {
+      where,
+      take: limit + 1, // Fetch one extra to check if there are more
+      orderBy: { [sortField]: sortDirection },
+      include: {
+        client: {
+          select: {
+            name: true,
+            ghlLocationId: true,
+          },
+        },
+        _count: {
+          select: { messages: true },
+        },
+      },
+    };
+
+    // Add cursor if provided (for subsequent pages)
+    if (cursor) {
+      queryOptions.cursor = { id: cursor };
+      queryOptions.skip = 1; // Skip the cursor record itself
+    }
+
+    const leads = await prisma.lead.findMany(queryOptions);
+
+    // Check if there are more records
+    const hasMore = leads.length > limit;
+    const resultLeads = hasMore ? leads.slice(0, -1) : leads;
+    const nextCursor = hasMore && resultLeads.length > 0
+      ? resultLeads[resultLeads.length - 1].id
+      : null;
+
+    // Transform to CRM format
+    const crmLeads = resultLeads.map(transformLeadToCRM);
+
+    return {
+      success: true,
+      leads: crmLeads,
+      nextCursor,
+      hasMore,
+    };
+  } catch (error) {
+    console.error("Failed to fetch CRM leads with cursor:", error);
+    return {
+      success: false,
+      leads: [],
+      nextCursor: null,
+      hasMore: false,
+      error: "Failed to fetch leads",
+    };
+  }
+}
+
+/**
+ * Get CRM leads from the end of the list (for "Jump to Bottom" feature)
+ * Returns leads in reverse order (most recent at bottom)
+ */
+export async function getCRMLeadsFromEnd(
+  options: Omit<CRMLeadsCursorOptions, "cursor" | "sortDirection">
+): Promise<CRMLeadsCursorResult> {
+  try {
+    const {
+      clientId,
+      limit = 50,
+      search,
+      status,
+      sortField = "updatedAt",
+    } = options;
+
+    // Build the where clause
+    const whereConditions: any[] = [];
+    
+    if (clientId) {
+      whereConditions.push({ clientId });
+    }
+    
+    if (status && status !== "all") {
+      whereConditions.push({ status });
+    }
+    
+    if (search && search.trim()) {
+      const searchTerm = search.trim();
+      whereConditions.push({
+        OR: [
+          { firstName: { contains: searchTerm, mode: "insensitive" } },
+          { lastName: { contains: searchTerm, mode: "insensitive" } },
+          { email: { contains: searchTerm, mode: "insensitive" } },
+          { companyName: { contains: searchTerm, mode: "insensitive" } },
+        ],
+      });
+    }
+
+    const where = whereConditions.length > 0
+      ? { AND: whereConditions }
+      : undefined;
+
+    // Fetch from the "end" by reversing sort order
+    const leads = await prisma.lead.findMany({
+      where,
+      take: limit,
+      orderBy: { [sortField]: "asc" }, // Reverse order to get oldest/lowest first
+      include: {
+        client: {
+          select: {
+            name: true,
+            ghlLocationId: true,
+          },
+        },
+        _count: {
+          select: { messages: true },
+        },
+      },
+    });
+
+    // Reverse to get correct display order (most recent/highest at bottom)
+    const reversedLeads = leads.reverse();
+    
+    // Transform to CRM format
+    const crmLeads = reversedLeads.map(transformLeadToCRM);
+
+    // The first item becomes the cursor for loading more (going "up")
+    const nextCursor = reversedLeads.length > 0 ? reversedLeads[0].id : null;
+
+    return {
+      success: true,
+      leads: crmLeads,
+      nextCursor,
+      hasMore: leads.length === limit, // If we got full page, there might be more
+    };
+  } catch (error) {
+    console.error("Failed to fetch CRM leads from end:", error);
+    return {
+      success: false,
+      leads: [],
+      nextCursor: null,
+      hasMore: false,
+      error: "Failed to fetch leads",
+    };
+  }
+}

@@ -411,3 +411,373 @@ export async function getLeadWorkspaceId(leadId: string): Promise<{
     return { success: false, error: "Failed to get lead workspace" };
   }
 }
+
+// =============================================================================
+// Cursor-Based Pagination for Conversations (Performance Optimized)
+// =============================================================================
+
+export interface ConversationsCursorOptions {
+  clientId?: string | null;
+  cursor?: string | null; // Lead ID to start after
+  limit?: number;
+  search?: string;
+  channel?: Channel | "all";
+  sentimentTag?: string;
+  filter?: "attention" | "drafts" | "needs_repair" | "all";
+}
+
+export interface ConversationsCursorResult {
+  success: boolean;
+  conversations: ConversationData[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  error?: string;
+}
+
+/**
+ * Transform a lead to ConversationData format
+ */
+function transformLeadToConversation(lead: any): ConversationData {
+  const latestMessage = lead.messages[0];
+  const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
+  const primaryChannel = detectPrimaryChannel(latestMessage, lead);
+  const channels = getChannelsFromMessages(lead.messages);
+  const availableChannels = getAvailableChannels({ phone: lead.phone, email: lead.email });
+  const campaignId = primaryChannel === "email" ? lead.emailCampaignId ?? lead.campaignId : lead.campaignId;
+  const channelDrafts = lead.aiDrafts?.filter(
+    (draft: any) => draft.channel === primaryChannel || (!draft.channel && primaryChannel === "sms")
+  ) || [];
+
+  return {
+    id: lead.id,
+    lead: {
+      id: lead.id,
+      name: fullName,
+      email: lead.email,
+      phone: lead.phone,
+      company: lead.client.name,
+      title: "",
+      status: lead.status,
+      autoReplyEnabled: lead.autoReplyEnabled,
+      autoFollowUpEnabled: lead.autoFollowUpEnabled,
+      autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
+      clientId: lead.clientId,
+      linkedinUrl: lead.linkedinUrl,
+      companyName: lead.companyName,
+      companyWebsite: lead.companyWebsite,
+      companyState: lead.companyState,
+      emailBisonLeadId: lead.emailBisonLeadId,
+      enrichmentStatus: lead.enrichmentStatus,
+      ghlContactId: lead.ghlContactId,
+      ghlLocationId: lead.client.ghlLocationId,
+    },
+    channels,
+    availableChannels,
+    primaryChannel,
+    classification: mapSentimentToClassification(lead.sentimentTag),
+    lastMessage: latestMessage?.body || "No messages yet",
+    lastSubject: latestMessage?.subject || null,
+    lastMessageTime: latestMessage?.sentAt || lead.createdAt,
+    hasAiDraft: lead.status !== "blacklisted" && lead.sentimentTag !== "Blacklist" && channelDrafts.length > 0,
+    requiresAttention: lead.status !== "blacklisted" && lead.sentimentTag !== "Blacklist" && requiresAttention(lead.sentimentTag),
+    sentimentTag: lead.sentimentTag,
+    campaignId,
+    emailCampaignId: lead.emailCampaignId,
+  };
+}
+
+/**
+ * Get conversations with cursor-based pagination
+ * Optimized for large datasets (50,000+ leads)
+ */
+export async function getConversationsCursor(
+  options: ConversationsCursorOptions
+): Promise<ConversationsCursorResult> {
+  try {
+    const {
+      clientId,
+      cursor,
+      limit = 50,
+      search,
+      channel,
+      sentimentTag,
+      filter,
+    } = options;
+
+    // Build the where clause for filtering
+    const whereConditions: any[] = [];
+    
+    if (clientId) {
+      whereConditions.push({ clientId });
+    }
+    
+    // Search filter
+    if (search && search.trim()) {
+      const searchTerm = search.trim();
+      whereConditions.push({
+        OR: [
+          { firstName: { contains: searchTerm, mode: "insensitive" } },
+          { lastName: { contains: searchTerm, mode: "insensitive" } },
+          { email: { contains: searchTerm, mode: "insensitive" } },
+          { companyName: { contains: searchTerm, mode: "insensitive" } },
+        ],
+      });
+    }
+
+    // Channel filter - filter by messages having that channel
+    if (channel && channel !== "all") {
+      whereConditions.push({
+        messages: {
+          some: { channel },
+        },
+      });
+    }
+
+    // Sentiment tag filter
+    if (sentimentTag && sentimentTag !== "all") {
+      whereConditions.push({ sentimentTag });
+    }
+
+    // Special filter presets
+    if (filter === "attention") {
+      const attentionTags = [
+        "Meeting Requested",
+        "Call Requested",
+        "Information Requested",
+        "Positive",
+        "Interested",
+        "Follow Up"
+      ];
+      whereConditions.push({
+        sentimentTag: { in: attentionTags },
+        status: { not: "blacklisted" },
+      });
+    } else if (filter === "drafts") {
+      whereConditions.push({
+        aiDrafts: {
+          some: { status: "pending" },
+        },
+        sentimentTag: { not: "Blacklist" },
+        status: { not: "blacklisted" },
+      });
+    } else if (filter === "needs_repair") {
+      whereConditions.push({ status: "needs_repair" });
+    }
+
+    const where = whereConditions.length > 0
+      ? { AND: whereConditions }
+      : undefined;
+
+    // Build query with cursor pagination
+    const queryOptions: any = {
+      where,
+      take: limit + 1,
+      orderBy: { updatedAt: "desc" },
+      include: {
+        client: {
+          select: {
+            id: true,
+            name: true,
+            ghlLocationId: true,
+          },
+        },
+        messages: {
+          orderBy: { sentAt: "desc" },
+          take: 1, // Only get latest message for list view
+          select: {
+            id: true,
+            body: true,
+            subject: true,
+            channel: true,
+            emailBisonReplyId: true,
+            rawHtml: true,
+            sentAt: true,
+          },
+        },
+        aiDrafts: {
+          where: { status: "pending" },
+          take: 1,
+          select: {
+            id: true,
+            channel: true,
+          },
+        },
+      },
+    };
+
+    // Add cursor if provided
+    if (cursor) {
+      queryOptions.cursor = { id: cursor };
+      queryOptions.skip = 1;
+    }
+
+    const leads = await prisma.lead.findMany(queryOptions);
+
+    // Check if there are more records
+    const hasMore = leads.length > limit;
+    const resultLeads = hasMore ? leads.slice(0, -1) : leads;
+    const nextCursor = hasMore && resultLeads.length > 0
+      ? resultLeads[resultLeads.length - 1].id
+      : null;
+
+    // Transform to conversation format
+    const conversations = resultLeads.map(transformLeadToConversation);
+
+    return {
+      success: true,
+      conversations,
+      nextCursor,
+      hasMore,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    console.error("Failed to fetch conversations with cursor:", errorMessage, error);
+    return {
+      success: false,
+      conversations: [],
+      nextCursor: null,
+      hasMore: false,
+      error: `Failed to fetch conversations: ${errorMessage}`,
+    };
+  }
+}
+
+/**
+ * Get conversations from the end of the list (for "Jump to Bottom" feature)
+ */
+export async function getConversationsFromEnd(
+  options: Omit<ConversationsCursorOptions, "cursor">
+): Promise<ConversationsCursorResult> {
+  try {
+    const {
+      clientId,
+      limit = 50,
+      search,
+      channel,
+      sentimentTag,
+      filter,
+    } = options;
+
+    // Build the where clause (same as cursor version)
+    const whereConditions: any[] = [];
+    
+    if (clientId) {
+      whereConditions.push({ clientId });
+    }
+    
+    if (search && search.trim()) {
+      const searchTerm = search.trim();
+      whereConditions.push({
+        OR: [
+          { firstName: { contains: searchTerm, mode: "insensitive" } },
+          { lastName: { contains: searchTerm, mode: "insensitive" } },
+          { email: { contains: searchTerm, mode: "insensitive" } },
+          { companyName: { contains: searchTerm, mode: "insensitive" } },
+        ],
+      });
+    }
+
+    if (channel && channel !== "all") {
+      whereConditions.push({
+        messages: {
+          some: { channel },
+        },
+      });
+    }
+
+    if (sentimentTag && sentimentTag !== "all") {
+      whereConditions.push({ sentimentTag });
+    }
+
+    if (filter === "attention") {
+      const attentionTags = [
+        "Meeting Requested",
+        "Call Requested",
+        "Information Requested",
+        "Positive",
+        "Interested",
+        "Follow Up"
+      ];
+      whereConditions.push({
+        sentimentTag: { in: attentionTags },
+        status: { not: "blacklisted" },
+      });
+    } else if (filter === "drafts") {
+      whereConditions.push({
+        aiDrafts: {
+          some: { status: "pending" },
+        },
+        sentimentTag: { not: "Blacklist" },
+        status: { not: "blacklisted" },
+      });
+    } else if (filter === "needs_repair") {
+      whereConditions.push({ status: "needs_repair" });
+    }
+
+    const where = whereConditions.length > 0
+      ? { AND: whereConditions }
+      : undefined;
+
+    // Fetch from the "end" by reversing sort order
+    const leads = await prisma.lead.findMany({
+      where,
+      take: limit,
+      orderBy: { updatedAt: "asc" }, // Reverse order
+      include: {
+        client: {
+          select: {
+            id: true,
+            name: true,
+            ghlLocationId: true,
+          },
+        },
+        messages: {
+          orderBy: { sentAt: "desc" },
+          take: 1,
+          select: {
+            id: true,
+            body: true,
+            subject: true,
+            channel: true,
+            emailBisonReplyId: true,
+            rawHtml: true,
+            sentAt: true,
+          },
+        },
+        aiDrafts: {
+          where: { status: "pending" },
+          take: 1,
+          select: {
+            id: true,
+            channel: true,
+          },
+        },
+      },
+    });
+
+    // Reverse to get correct display order
+    const reversedLeads = leads.reverse();
+    
+    // Transform to conversation format
+    const conversations = reversedLeads.map(transformLeadToConversation);
+
+    const nextCursor = reversedLeads.length > 0 ? reversedLeads[0].id : null;
+
+    return {
+      success: true,
+      conversations,
+      nextCursor,
+      hasMore: leads.length === limit,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    console.error("Failed to fetch conversations from end:", errorMessage, error);
+    return {
+      success: false,
+      conversations: [],
+      nextCursor: null,
+      hasMore: false,
+      error: `Failed to fetch conversations: ${errorMessage}`,
+    };
+  }
+}

@@ -1,14 +1,19 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useRef, useCallback } from "react"
+import { useVirtualizer } from "@tanstack/react-virtual"
+import { useDebouncedCallback } from "use-debounce"
 import type { Conversation } from "@/lib/mock-data"
 import { ConversationCard } from "./conversation-card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Search, RefreshCw, Loader2 } from "lucide-react"
+import { Search, RefreshCw, Loader2, ChevronsUp, ChevronsDown } from "lucide-react"
 
 type SortOption = "recent" | "oldest" | "name-az" | "name-za"
+
+// Card height for virtualization (approximate)
+const CARD_HEIGHT = 100
 
 // Available sentiment tags for filtering
 const SENTIMENT_OPTIONS = [
@@ -33,6 +38,9 @@ interface ConversationFeedProps {
   syncingLeadIds?: Set<string>
   onSyncAll?: () => Promise<void>
   isSyncingAll?: boolean
+  hasMore?: boolean
+  isLoadingMore?: boolean
+  onLoadMore?: () => void
 }
 
 export function ConversationFeed({ 
@@ -44,20 +52,40 @@ export function ConversationFeed({
   syncingLeadIds = new Set(),
   onSyncAll,
   isSyncingAll = false,
+  hasMore = false,
+  isLoadingMore = false,
+  onLoadMore,
 }: ConversationFeedProps) {
-  const [searchQuery, setSearchQuery] = useState("")
+  const [searchInput, setSearchInput] = useState("")
+  const [debouncedSearch, setDebouncedSearch] = useState("")
   const [sortBy, setSortBy] = useState<SortOption>("recent")
+  
+  // Ref for virtualization
+  const parentRef = useRef<HTMLDivElement>(null)
+
+  // Debounced search
+  const debouncedSetSearch = useDebouncedCallback((value: string) => {
+    setDebouncedSearch(value)
+  }, 300)
+
+  const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchInput(e.target.value)
+    debouncedSetSearch(e.target.value)
+  }, [debouncedSetSearch])
 
   // Filter conversations by search query
   const filteredConversations = useMemo(() => {
+    if (!debouncedSearch) return conversations
+    
+    const searchLower = debouncedSearch.toLowerCase()
     return conversations.filter(
       (conv) =>
-        conv.lead.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        conv.lead.company.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        conv.lastMessage.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (conv.lastSubject && conv.lastSubject.toLowerCase().includes(searchQuery.toLowerCase())),
+        conv.lead.name.toLowerCase().includes(searchLower) ||
+        conv.lead.company.toLowerCase().includes(searchLower) ||
+        conv.lastMessage.toLowerCase().includes(searchLower) ||
+        (conv.lastSubject && conv.lastSubject.toLowerCase().includes(searchLower)),
     )
-  }, [conversations, searchQuery])
+  }, [conversations, debouncedSearch])
 
   // Sort filtered conversations
   const sortedConversations = useMemo(() => {
@@ -85,6 +113,23 @@ export function ConversationFeed({
     }
   }, [filteredConversations, sortBy])
 
+  // Setup virtualizer
+  const rowVirtualizer = useVirtualizer({
+    count: hasMore ? sortedConversations.length + 1 : sortedConversations.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => CARD_HEIGHT,
+    overscan: 5,
+  })
+
+  // Quick jump functions
+  const jumpToTop = useCallback(() => {
+    rowVirtualizer.scrollToIndex(0)
+  }, [rowVirtualizer])
+
+  const jumpToBottom = useCallback(() => {
+    rowVirtualizer.scrollToIndex(sortedConversations.length - 1)
+  }, [rowVirtualizer, sortedConversations.length])
+
   // Count active conversations for sync all button
   const activeCount = filteredConversations.length
 
@@ -96,8 +141,8 @@ export function ConversationFeed({
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             placeholder="Search conversations..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            value={searchInput}
+            onChange={handleSearchChange}
             className="pl-9"
           />
         </div>
@@ -129,6 +174,34 @@ export function ConversationFeed({
             </SelectContent>
           </Select>
         </div>
+        
+        {/* Quick jump buttons */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1">
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              className="h-7 w-7"
+              onClick={jumpToTop} 
+              title="Jump to top"
+            >
+              <ChevronsUp className="h-4 w-4" />
+            </Button>
+            <Button 
+              variant="ghost" 
+              size="icon"
+              className="h-7 w-7" 
+              onClick={jumpToBottom} 
+              title="Jump to bottom"
+            >
+              <ChevronsDown className="h-4 w-4" />
+            </Button>
+            <span className="text-xs text-muted-foreground ml-2">
+              {sortedConversations.length} conversations
+            </span>
+          </div>
+        </div>
+        
         {/* Sync All Button */}
         {onSyncAll && activeCount > 0 && (
           <Button
@@ -153,20 +226,74 @@ export function ConversationFeed({
         )}
       </div>
 
-      {/* Conversation List */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+      {/* Virtualized Conversation List */}
+      <div 
+        ref={parentRef}
+        className="flex-1 overflow-y-auto p-3"
+      >
         {sortedConversations.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-muted-foreground">No conversations found</div>
+          <div className="flex h-full items-center justify-center text-muted-foreground">
+            No conversations found
+          </div>
         ) : (
-          sortedConversations.map((conversation) => (
-            <ConversationCard
-              key={conversation.id}
-              conversation={conversation}
-              isActive={activeConversationId === conversation.id}
-              onClick={() => onSelectConversation(conversation.id)}
-              isSyncing={syncingLeadIds.has(conversation.id)}
-            />
-          ))
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: "100%",
+              position: "relative",
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const isLoadMoreRow = virtualRow.index >= sortedConversations.length
+              const conversation = sortedConversations[virtualRow.index]
+
+              if (isLoadMoreRow) {
+                return (
+                  <div
+                    key="load-more"
+                    className="absolute top-0 left-0 w-full flex items-center justify-center py-4"
+                    style={{
+                      height: `${virtualRow.size}px`,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                  >
+                    {isLoadingMore ? (
+                      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                    ) : hasMore && onLoadMore ? (
+                      <Button 
+                        variant="ghost" 
+                        size="sm"
+                        onClick={onLoadMore}
+                      >
+                        Load more
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">End of list</span>
+                    )}
+                  </div>
+                )
+              }
+
+              return (
+                <div
+                  key={conversation.id}
+                  className="absolute top-0 left-0 w-full"
+                  style={{
+                    height: `${virtualRow.size}px`,
+                    transform: `translateY(${virtualRow.start}px)`,
+                    padding: "4px 0",
+                  }}
+                >
+                  <ConversationCard
+                    conversation={conversation}
+                    isActive={activeConversationId === conversation.id}
+                    onClick={() => onSelectConversation(conversation.id)}
+                    isSyncing={syncingLeadIds.has(conversation.id)}
+                  />
+                </div>
+              )
+            })}
+          </div>
         )}
       </div>
     </div>

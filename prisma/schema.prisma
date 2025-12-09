@@ -157,6 +157,14 @@ model Lead {
   @@index([linkedinUrl])    // For LinkedIn matching
   @@index([enrichmentStatus]) // For batch enrichment queries
   @@index([preferredCalendarLinkId])
+  
+  // Composite indexes for CRM/Inbox cursor pagination and filtering
+  @@index([clientId, status])                    // CRM status filter
+  @@index([clientId, updatedAt(sort: Desc)])     // CRM/Inbox default sort
+  @@index([clientId, status, updatedAt(sort: Desc)]) // Combined filter + sort
+  @@index([clientId, sentimentTag, updatedAt(sort: Desc)]) // Sentiment filter + sort
+  @@index([clientId, firstName])                 // Name search
+  @@index([clientId, lastName])                  // Name search
 }
 
 // Conversation messages across all channels (SMS, Email, LinkedIn)

@@ -1,6 +1,9 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useMemo, useCallback } from "react"
+import { useInfiniteQuery } from "@tanstack/react-query"
+import { useVirtualizer } from "@tanstack/react-virtual"
+import { useDebouncedCallback } from "use-debounce"
 import {
   Search,
   Filter,
@@ -21,18 +24,30 @@ import {
   Globe,
   MapPin,
   Sparkles,
+  ArrowUp,
+  ArrowDown,
+  ChevronsUp,
+  ChevronsDown,
+  RefreshCw,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Separator } from "@/components/ui/separator"
-import { getCRMLeads, updateLeadStatus, deleteLead, type CRMLeadData } from "@/actions/crm-actions"
+import { 
+  getCRMLeadsCursor, 
+  getCRMLeadsFromEnd,
+  updateLeadStatus, 
+  deleteLead, 
+  type CRMLeadData,
+  type CRMLeadsCursorOptions 
+} from "@/actions/crm-actions"
 import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
+import { subscribeToLeads, unsubscribe } from "@/lib/supabase"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
@@ -251,7 +266,6 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
           </div>
 
           <div className="pt-4 space-y-2">
-            {/* Open in Go High-Level Button */}
             <Button 
               className="w-full" 
               onClick={() => {
@@ -300,66 +314,118 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
   )
 }
 
+// Row height for virtualization
+const ROW_HEIGHT = 72
+
 interface CRMViewProps {
   activeWorkspace?: string | null
   onOpenInInbox?: (leadId: string) => void
 }
 
 export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
-  const [leads, setLeads] = useState<CRMLeadData[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [searchQuery, setSearchQuery] = useState("")
+  // Search state with debouncing
+  const [searchInput, setSearchInput] = useState("")
+  const [debouncedSearch, setDebouncedSearch] = useState("")
+  
+  // Filter states
   const [statusFilter, setStatusFilter] = useState<string>("all")
-  const [sortField, setSortField] = useState<"name" | "leadScore" | "company">("leadScore")
+  const [sortField, setSortField] = useState<"firstName" | "leadScore" | "updatedAt">("updatedAt")
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc")
+  
+  // UI states
   const [selectedLead, setSelectedLead] = useState<CRMLeadData | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [newLeadCount, setNewLeadCount] = useState(0)
+  
+  // Refs for virtualization
+  const parentRef = useRef<HTMLDivElement>(null)
 
-  // Fetch leads function - extracted for reuse
-  const fetchLeads = async () => {
-    setIsLoading(true)
-    const result = await getCRMLeads(activeWorkspace)
-    
-    if (result.success && result.data) {
-      setLeads(result.data)
-      // Update selected lead if it's still open
-      if (selectedLead) {
-        const updated = result.data.find(l => l.id === selectedLead.id)
-        if (updated) setSelectedLead(updated)
-      }
-    } else {
-      setLeads([])
-    }
-    
-    setIsLoading(false)
+  // Debounced search callback
+  const debouncedSetSearch = useDebouncedCallback((value: string) => {
+    setDebouncedSearch(value)
+  }, 300)
+
+  // Handle search input change
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchInput(e.target.value)
+    debouncedSetSearch(e.target.value)
   }
 
-  // Fetch leads on mount and when workspace changes
+  // Query options for infinite query
+  const queryOptions: CRMLeadsCursorOptions = useMemo(() => ({
+    clientId: activeWorkspace,
+    search: debouncedSearch || undefined,
+    status: statusFilter !== "all" ? statusFilter : undefined,
+    sortField,
+    sortDirection,
+    limit: 50,
+  }), [activeWorkspace, debouncedSearch, statusFilter, sortField, sortDirection])
+
+  // Infinite query for leads
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useInfiniteQuery({
+    queryKey: ["crm-leads", queryOptions],
+    queryFn: async ({ pageParam }) => {
+      const result = await getCRMLeadsCursor({
+        ...queryOptions,
+        cursor: pageParam as string | null,
+      })
+      if (!result.success) {
+        throw new Error(result.error || "Failed to fetch leads")
+      }
+      return result
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    staleTime: 30000, // 30 seconds
+  })
+
+  // Flatten all pages into a single array
+  const allLeads = useMemo(() => {
+    return data?.pages.flatMap((page) => page.leads) || []
+  }, [data])
+
+  // Setup virtualizer
+  const rowVirtualizer = useVirtualizer({
+    count: hasNextPage ? allLeads.length + 1 : allLeads.length, // +1 for load more row
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 10,
+  })
+
+  // Load more when scrolling near the end
   useEffect(() => {
-    fetchLeads()
-  }, [activeWorkspace])
+    const lastItem = rowVirtualizer.getVirtualItems().at(-1)
+    if (!lastItem) return
 
-  const filteredLeads = leads
-    .filter((lead) => {
-      const matchesSearch =
-        lead.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        lead.company.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (lead.email?.toLowerCase().includes(searchQuery.toLowerCase()) ?? false)
-      const matchesStatus = statusFilter === "all" || lead.status === statusFilter
-      return matchesSearch && matchesStatus
-    })
-    .sort((a, b) => {
-      const aVal = a[sortField]
-      const bVal = b[sortField]
-      if (typeof aVal === "string" && typeof bVal === "string") {
-        return sortDirection === "asc" ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal)
-      }
-      if (typeof aVal === "number" && typeof bVal === "number") {
-        return sortDirection === "asc" ? aVal - bVal : bVal - aVal
-      }
-      return 0
-    })
+    if (
+      lastItem.index >= allLeads.length - 1 &&
+      hasNextPage &&
+      !isFetchingNextPage
+    ) {
+      fetchNextPage()
+    }
+  }, [rowVirtualizer.getVirtualItems(), hasNextPage, isFetchingNextPage, allLeads.length, fetchNextPage])
 
+  // Subscribe to realtime lead updates
+  useEffect(() => {
+    const channel = subscribeToLeads((payload) => {
+      if (payload.eventType === "INSERT") {
+        setNewLeadCount((prev) => prev + 1)
+      }
+    })
+    return () => unsubscribe(channel)
+  }, [])
+
+  // Handle sort change
   const handleSort = (field: typeof sortField) => {
     if (sortField === field) {
       setSortDirection(sortDirection === "asc" ? "desc" : "asc")
@@ -369,28 +435,46 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
     }
   }
 
+  // Handle status change
   const handleStatusChange = async (id: string, status: LeadStatus) => {
-    // Optimistic update
-    setLeads(leads.map((l) => (l.id === id ? { ...l, status } : l)))
-    if (selectedLead?.id === id) {
-      setSelectedLead({ ...selectedLead, status })
-    }
-    
     await updateLeadStatus(id, status)
+    refetch()
   }
 
+  // Handle delete
   const handleDelete = async (id: string) => {
     if (!confirm("Are you sure you want to delete this lead?")) return
-    
-    setLeads(leads.filter((l) => l.id !== id))
     await deleteLead(id)
+    refetch()
   }
 
+  // Open lead detail sheet
   const openLeadDetail = (lead: CRMLeadData) => {
     setSelectedLead(lead)
     setSheetOpen(true)
   }
 
+  // Quick jump functions
+  const jumpToTop = () => {
+    rowVirtualizer.scrollToIndex(0)
+  }
+
+  const jumpToBottom = async () => {
+    // Fetch from end and scroll to last item
+    const result = await getCRMLeadsFromEnd(queryOptions)
+    if (result.success) {
+      rowVirtualizer.scrollToIndex(allLeads.length - 1)
+    }
+  }
+
+  // Handle new leads badge click
+  const handleNewLeadsClick = () => {
+    setNewLeadCount(0)
+    refetch()
+    jumpToTop()
+  }
+
+  // Sort icon component
   const SortIcon = ({ field }: { field: typeof sortField }) => {
     if (sortField !== field) return null
     return sortDirection === "asc" ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />
@@ -404,8 +488,20 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
     )
   }
 
-  // Empty state when no leads
-  if (leads.length === 0) {
+  if (isError) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center">
+        <p className="text-destructive">Error: {error?.message}</p>
+        <Button variant="outline" onClick={() => refetch()} className="mt-4">
+          <RefreshCw className="h-4 w-4 mr-2" />
+          Retry
+        </Button>
+      </div>
+    )
+  }
+
+  // Empty state
+  if (allLeads.length === 0 && !debouncedSearch && statusFilter === "all") {
     return (
       <div className="flex flex-col h-full">
         <div className="border-b px-6 py-4">
@@ -439,10 +535,22 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
           <div>
             <h1 className="text-2xl font-bold">CRM / Leads</h1>
             <p className="text-muted-foreground">
-              {leads.length} {leads.length === 1 ? 'lead' : 'leads'}
+              {allLeads.length} leads loaded {hasNextPage && "(scroll for more)"}
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {/* New leads badge */}
+            {newLeadCount > 0 && (
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={handleNewLeadsClick}
+                className="bg-primary/10 border-primary/30 text-primary"
+              >
+                <RefreshCw className="h-4 w-4 mr-2" />
+                {newLeadCount} new lead{newLeadCount > 1 ? "s" : ""} - Click to refresh
+              </Button>
+            )}
             <Button variant="outline">
               <Download className="h-4 w-4 mr-2" />
               Export
@@ -456,14 +564,15 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
       </div>
 
       <div className="p-6 space-y-4 flex-1 overflow-hidden flex flex-col">
+        {/* Search and filters */}
         <div className="flex items-center gap-4">
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder="Search leads..."
               className="pl-9"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              value={searchInput}
+              onChange={handleSearchChange}
             />
           </div>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -480,133 +589,188 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
               <SelectItem value="blacklisted">Blacklisted</SelectItem>
             </SelectContent>
           </Select>
+          
+          {/* Quick jump buttons */}
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" onClick={jumpToTop} title="Jump to top">
+              <ChevronsUp className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={jumpToBottom} title="Jump to bottom">
+              <ChevronsDown className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
+        {/* Virtualized table */}
         <Card className="flex-1 overflow-hidden">
-          <div className="overflow-auto h-full">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="cursor-pointer hover:bg-muted/50 pl-4" onClick={() => handleSort("name")}>
-                    <div className="flex items-center gap-1">
-                      Name <SortIcon field="name" />
-                    </div>
-                  </TableHead>
-                  <TableHead className="cursor-pointer hover:bg-muted/50" onClick={() => handleSort("company")}>
-                    <div className="flex items-center gap-1">
-                      Company <SortIcon field="company" />
-                    </div>
-                  </TableHead>
-                  <TableHead>Sentiment</TableHead>
-                  <TableHead className="cursor-pointer hover:bg-muted/50" onClick={() => handleSort("leadScore")}>
-                    <div className="flex items-center gap-1">
-                      Score <SortIcon field="leadScore" />
-                    </div>
-                  </TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right pr-4">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredLeads.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                      No leads match your search
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  filteredLeads.map((lead) => (
-                    <TableRow
-                      key={lead.id}
-                      className="cursor-pointer hover:bg-muted/50"
-                      onClick={() => openLeadDetail(lead)}
+          {/* Table header */}
+          <div className="border-b bg-muted/30">
+            <div className="flex items-center h-12 px-4">
+              <div 
+                className="flex-[2] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
+                onClick={() => handleSort("firstName")}
+              >
+                Name <SortIcon field="firstName" />
+              </div>
+              <div className="flex-[1.5]">Company</div>
+              <div className="flex-1">Sentiment</div>
+              <div 
+                className="w-20 cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
+                onClick={() => handleSort("leadScore")}
+              >
+                Score <SortIcon field="leadScore" />
+              </div>
+              <div className="w-[160px]">Status</div>
+              <div className="w-12 text-right">Actions</div>
+            </div>
+          </div>
+          
+          {/* Virtualized rows */}
+          <div
+            ref={parentRef}
+            className="overflow-auto"
+            style={{ height: "calc(100% - 48px)" }}
+          >
+            <div
+              style={{
+                height: `${rowVirtualizer.getTotalSize()}px`,
+                width: "100%",
+                position: "relative",
+              }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const isLoadMoreRow = virtualRow.index >= allLeads.length
+                const lead = allLeads[virtualRow.index]
+
+                if (isLoadMoreRow) {
+                  return (
+                    <div
+                      key="load-more"
+                      className="absolute top-0 left-0 w-full flex items-center justify-center"
+                      style={{
+                        height: `${virtualRow.size}px`,
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
                     >
-                      <TableCell className="pl-4">
-                        <div>
-                          <p className="font-medium">{lead.name}</p>
-                          <p className="text-sm text-muted-foreground">{lead.email || "No email"}</p>
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Building2 className="h-4 w-4 text-muted-foreground" />
-                          {lead.company}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {lead.sentimentTag ? (
-                          <Badge variant="outline" className="text-xs">
-                            {lead.sentimentTag}
-                          </Badge>
-                        ) : (
-                          <span className="text-muted-foreground text-sm">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <LeadScoreBadge score={lead.leadScore} />
-                      </TableCell>
-                      <TableCell>
-                        <Select
-                          value={lead.status}
-                          onValueChange={(value) => {
-                            handleStatusChange(lead.id, value as LeadStatus)
-                          }}
+                      {isFetchingNextPage ? (
+                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                      ) : hasNextPage ? (
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={() => fetchNextPage()}
                         >
-                          <SelectTrigger
-                            className={`w-[140px] h-8 text-xs ${statusColors[lead.status as LeadStatus] || statusColors.new}`}
-                            onClick={(e) => e.stopPropagation()}
+                          Load more
+                        </Button>
+                      ) : (
+                        <span className="text-sm text-muted-foreground">End of list</span>
+                      )}
+                    </div>
+                  )
+                }
+
+                return (
+                  <div
+                    key={lead.id}
+                    className="absolute top-0 left-0 w-full flex items-center px-4 border-b hover:bg-muted/50 cursor-pointer"
+                    style={{
+                      height: `${virtualRow.size}px`,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                    onClick={() => openLeadDetail(lead)}
+                  >
+                    {/* Name */}
+                    <div className="flex-[2] pr-2">
+                      <p className="font-medium truncate">{lead.name}</p>
+                      <p className="text-sm text-muted-foreground truncate">{lead.email || "No email"}</p>
+                    </div>
+                    
+                    {/* Company */}
+                    <div className="flex-[1.5] flex items-center gap-2">
+                      <Building2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                      <span className="truncate">{lead.company}</span>
+                    </div>
+                    
+                    {/* Sentiment */}
+                    <div className="flex-1">
+                      {lead.sentimentTag ? (
+                        <Badge variant="outline" className="text-xs">
+                          {lead.sentimentTag}
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground text-sm">—</span>
+                      )}
+                    </div>
+                    
+                    {/* Score */}
+                    <div className="w-20">
+                      <LeadScoreBadge score={lead.leadScore} />
+                    </div>
+                    
+                    {/* Status */}
+                    <div className="w-[160px]" onClick={(e) => e.stopPropagation()}>
+                      <Select
+                        value={lead.status}
+                        onValueChange={(value) => handleStatusChange(lead.id, value as LeadStatus)}
+                      >
+                        <SelectTrigger
+                          className={`w-[140px] h-8 text-xs ${statusColors[lead.status as LeadStatus] || statusColors.new}`}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="new">New</SelectItem>
+                          <SelectItem value="qualified">Qualified</SelectItem>
+                          <SelectItem value="meeting-booked">Meeting Booked</SelectItem>
+                          <SelectItem value="not-interested">Not Interested</SelectItem>
+                          <SelectItem value="blacklisted">Blacklisted</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    
+                    {/* Actions */}
+                    <div className="w-12 text-right" onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => openLeadDetail(lead)}>
+                            View Details
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => onOpenInInbox?.(lead.id)}>
+                            <ExternalLink className="h-4 w-4 mr-2" />
+                            Open in Master Inbox
+                          </DropdownMenuItem>
+                          <DropdownMenuItem 
+                            className="text-destructive"
+                            onClick={() => handleDelete(lead.id)}
                           >
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="new">New</SelectItem>
-                            <SelectItem value="qualified">Qualified</SelectItem>
-                            <SelectItem value="meeting-booked">Meeting Booked</SelectItem>
-                            <SelectItem value="not-interested">Not Interested</SelectItem>
-                            <SelectItem value="blacklisted">Blacklisted</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                      <TableCell className="text-right pr-4">
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                            <Button variant="ghost" size="icon">
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => openLeadDetail(lead)}>View Details</DropdownMenuItem>
-                            <DropdownMenuItem 
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                onOpenInInbox?.(lead.id)
-                              }}
-                            >
-                              <ExternalLink className="h-4 w-4 mr-2" />
-                              Open in Master Inbox
-                            </DropdownMenuItem>
-                            <DropdownMenuItem 
-                              className="text-destructive"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleDelete(lead.id)
-                              }}
-                            >
-                              Remove
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+                            Remove
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         </Card>
 
-        <div className="text-sm text-muted-foreground">
-          Showing {filteredLeads.length} of {leads.length} leads
+        {/* Footer info */}
+        <div className="text-sm text-muted-foreground flex items-center justify-between">
+          <span>
+            Showing {allLeads.length} leads {hasNextPage && "(more available)"}
+          </span>
+          {isFetchingNextPage && (
+            <span className="flex items-center gap-2">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading more...
+            </span>
+          )}
         </div>
       </div>
 
@@ -616,7 +780,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
         onClose={() => setSheetOpen(false)}
         onStatusChange={handleStatusChange}
         onOpenInInbox={onOpenInInbox}
-        onLeadUpdate={fetchLeads}
+        onLeadUpdate={() => refetch()}
       />
     </div>
   )
