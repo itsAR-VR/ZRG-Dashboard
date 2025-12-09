@@ -311,8 +311,8 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
   )
 }
 
-// Row height for virtualization
-const ROW_HEIGHT = 72
+// Row height for virtualization (increased for better spacing with two-line content)
+const ROW_HEIGHT = 80
 
 interface CRMViewProps {
   activeWorkspace?: string | null
@@ -615,15 +615,15 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
               >
                 Name <SortIcon field="firstName" />
               </div>
-              <div className="flex-[1.5]">Company</div>
-              <div className="flex-1">Sentiment</div>
+              <div className="flex-[2]">Company</div>
+              <div className="w-[120px]">Sentiment</div>
               <div 
                 className="w-20 cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
                 onClick={() => handleSort("leadScore")}
               >
                 Score <SortIcon field="leadScore" />
               </div>
-              <div className="w-[160px]">Status</div>
+              <div className="w-[140px]">Status</div>
               <div className="w-12 text-right">Actions</div>
             </div>
           </div>
@@ -690,13 +690,13 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                     </div>
                     
                     {/* Company */}
-                    <div className="flex-[1.5] flex items-center gap-2">
+                    <div className="flex-[2] flex items-center gap-2">
                       <Building2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                       <span className="truncate">{lead.company}</span>
                     </div>
                     
                     {/* Sentiment */}
-                    <div className="flex-1">
+                    <div className="w-[120px]">
                       {lead.sentimentTag ? (
                         <Badge variant="outline" className="text-xs">
                           {lead.sentimentTag}
@@ -712,13 +712,13 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                     </div>
                     
                     {/* Status */}
-                    <div className="w-[160px]" onClick={(e) => e.stopPropagation()}>
+                    <div className="w-[140px]" onClick={(e) => e.stopPropagation()}>
                       <Select
                         value={lead.status}
                         onValueChange={(value) => handleStatusChange(lead.id, value as LeadStatus)}
                       >
                         <SelectTrigger
-                          className={`w-[140px] h-8 text-xs ${statusColors[lead.status as LeadStatus] || statusColors.new}`}
+                          className={`w-[120px] h-8 text-xs ${statusColors[lead.status as LeadStatus] || statusColors.new}`}
                         >
                           <SelectValue />
                         </SelectTrigger>

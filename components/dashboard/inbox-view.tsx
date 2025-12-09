@@ -97,6 +97,9 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
   const [syncingLeadIds, setSyncingLeadIds] = useState<Set<string>>(new Set());
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   
+  // Delayed loading state - only show spinner after 300ms to avoid flicker on fast loads
+  const [showDelayedSpinner, setShowDelayedSpinner] = useState(false);
+  
   const realtimeConnectedRef = useRef(false);
   const prevConversationIdRef = useRef<string | null>(null);
 
@@ -116,6 +119,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     hasNextPage,
     isFetchingNextPage,
     isLoading,
+    isFetching,
     isError,
     error,
     refetch,
@@ -136,6 +140,16 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     staleTime: 30000,
     refetchInterval: 30000, // Poll every 30 seconds as fallback
   });
+
+  // Manage delayed loading spinner (only show after 300ms)
+  useEffect(() => {
+    if (isLoading && !data) {
+      const timer = setTimeout(() => setShowDelayedSpinner(true), 300);
+      return () => clearTimeout(timer);
+    } else {
+      setShowDelayedSpinner(false);
+    }
+  }, [isLoading, data]);
 
   // Flatten all pages into conversations array
   const allConversations = useMemo(() => {
@@ -374,7 +388,9 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     }
   }, [conversations, activeConversationId, handleLeadSelect]);
 
-  if (isLoading) {
+  // Only show full-page loading spinner on initial load after 300ms delay
+  // This prevents blocking when switching workspaces (cached data shows immediately)
+  if (showDelayedSpinner) {
     return (
       <div className="flex flex-1 items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -405,8 +421,8 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     );
   }
 
-  // Empty state when no conversations
-  if (conversations.length === 0) {
+  // Empty state when no conversations (only show if not loading)
+  if (conversations.length === 0 && !isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center">
         <div className="text-center space-y-4">
@@ -431,6 +447,14 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     <>
       {/* Status indicators */}
       <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
+        {/* Subtle fetching indicator for background refreshes */}
+        {isFetching && data && (
+          <Badge variant="outline" className="text-xs bg-muted/50 text-muted-foreground">
+            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+            Updating...
+          </Badge>
+        )}
+        
         {/* New conversations badge */}
         {newConversationCount > 0 && (
           <Button

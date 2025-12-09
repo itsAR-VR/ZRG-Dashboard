@@ -12,8 +12,8 @@ import { Search, RefreshCw, Loader2, ChevronsUp, ChevronsDown } from "lucide-rea
 
 type SortOption = "recent" | "oldest" | "name-az" | "name-za"
 
-// Card height for virtualization (approximate)
-const CARD_HEIGHT = 100
+// Estimated card height for virtualization (actual height is measured dynamically)
+const ESTIMATED_CARD_HEIGHT = 160
 
 // Available sentiment tags for filtering
 const SENTIMENT_OPTIONS = [
@@ -113,11 +113,12 @@ export function ConversationFeed({
     }
   }, [filteredConversations, sortBy])
 
-  // Setup virtualizer
+  // Setup virtualizer with dynamic height measurement
   const rowVirtualizer = useVirtualizer({
     count: hasMore ? sortedConversations.length + 1 : sortedConversations.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => CARD_HEIGHT,
+    estimateSize: () => ESTIMATED_CARD_HEIGHT,
+    measureElement: (element) => element.getBoundingClientRect().height,
     overscan: 5,
   })
 
@@ -250,9 +251,10 @@ export function ConversationFeed({
                 return (
                   <div
                     key="load-more"
+                    ref={rowVirtualizer.measureElement}
+                    data-index={virtualRow.index}
                     className="absolute top-0 left-0 w-full flex items-center justify-center py-4"
                     style={{
-                      height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
                   >
@@ -278,9 +280,10 @@ export function ConversationFeed({
               return (
                 <div
                   key={conversation.id}
+                  ref={rowVirtualizer.measureElement}
+                  data-index={virtualRow.index}
                   className="absolute top-0 left-0 w-full"
                   style={{
-                    height: `${virtualRow.size}px`,
                     transform: `translateY(${virtualRow.start}px)`,
                     padding: "4px 0",
                   }}
