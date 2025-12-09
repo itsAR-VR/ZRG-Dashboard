@@ -22,6 +22,7 @@ export default function DashboardPage() {
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null)
   const [workspaces, setWorkspaces] = useState<Client[]>([])
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
+  const [settingsTab, setSettingsTab] = useState("general")
 
   // Handler to open a lead in the Master Inbox from CRM
   const handleOpenInInbox = (leadId: string) => {
@@ -53,7 +54,13 @@ export default function DashboardPage() {
       case "analytics":
         return <AnalyticsView activeWorkspace={activeWorkspace} />
       case "settings":
-        return <SettingsView activeWorkspace={activeWorkspace} />
+        return (
+          <SettingsView 
+            activeWorkspace={activeWorkspace}
+            activeTab={settingsTab}
+            onTabChange={setSettingsTab}
+          />
+        )
       case "inbox":
       default:
         return (
