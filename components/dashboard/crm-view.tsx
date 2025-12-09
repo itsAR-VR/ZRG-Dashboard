@@ -251,7 +251,25 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
           </div>
 
           <div className="pt-4 space-y-2">
+            {/* Open in Go High-Level Button */}
             <Button 
+              className="w-full" 
+              onClick={() => {
+                if (lead.ghlContactId && lead.ghlLocationId) {
+                  window.open(
+                    `https://app.gohighlevel.com/v2/location/${lead.ghlLocationId}/contacts/detail/${lead.ghlContactId}`,
+                    '_blank'
+                  )
+                }
+              }}
+              disabled={!lead.ghlContactId || !lead.ghlLocationId}
+              title={!lead.ghlContactId ? "No GHL contact linked" : !lead.ghlLocationId ? "No GHL location configured" : undefined}
+            >
+              <ExternalLink className="h-4 w-4 mr-2" />
+              Open in Go High-Level
+            </Button>
+            <Button 
+              variant="outline"
               className="w-full" 
               onClick={() => {
                 onOpenInInbox?.(lead.id)

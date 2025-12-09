@@ -34,6 +34,9 @@ export interface Lead {
   emailBisonLeadId?: string | null
   enrichmentStatus?: string | null  // 'pending' | 'enriched' | 'not_found' | 'not_needed'
   autoBookMeetingsEnabled?: boolean
+  // GHL integration data
+  ghlContactId?: string | null
+  ghlLocationId?: string | null
 }
 
 export type Channel = "sms" | "email" | "linkedin";

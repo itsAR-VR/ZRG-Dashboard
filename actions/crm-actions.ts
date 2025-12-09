@@ -25,6 +25,9 @@ export interface CRMLeadData {
   companyState: string | null;
   emailBisonLeadId: string | null;
   enrichmentStatus: string | null;
+  // GHL integration data
+  ghlContactId: string | null;
+  ghlLocationId: string | null;
 }
 
 /**
@@ -43,6 +46,7 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
         client: {
           select: {
             name: true,
+            ghlLocationId: true,
           },
         },
         _count: {
@@ -90,6 +94,9 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
         companyState: lead.companyState,
         emailBisonLeadId: lead.emailBisonLeadId,
         enrichmentStatus: lead.enrichmentStatus,
+        // GHL integration data
+        ghlContactId: lead.ghlContactId,
+        ghlLocationId: lead.client.ghlLocationId,
       };
     });
 

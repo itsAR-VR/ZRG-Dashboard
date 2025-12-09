@@ -28,6 +28,7 @@ import {
   Sparkles,
   Building2,
   MapPin,
+  ExternalLink,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { updateLeadStatus, snoozeLead, bookMeeting, updateLeadAutomationSettings } from "@/actions/crm-actions"
@@ -802,6 +803,25 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
           <div className="space-y-3">
             <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Actions</h4>
             <div className="space-y-2">
+              {/* Open in Go High-Level Button */}
+              <Button 
+                className="w-full justify-start" 
+                size="sm"
+                onClick={() => {
+                  if (lead.ghlContactId && lead.ghlLocationId) {
+                    window.open(
+                      `https://app.gohighlevel.com/v2/location/${lead.ghlLocationId}/contacts/detail/${lead.ghlContactId}`,
+                      '_blank'
+                    )
+                  }
+                }}
+                disabled={!lead.ghlContactId || !lead.ghlLocationId}
+                title={!lead.ghlContactId ? "No GHL contact linked" : !lead.ghlLocationId ? "No GHL location configured" : undefined}
+              >
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Open in Go High-Level
+              </Button>
+
               {/* GHL Booking Button */}
               {isGHLConfigured ? (
                 <Button 
