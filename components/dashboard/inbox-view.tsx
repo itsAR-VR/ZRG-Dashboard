@@ -91,6 +91,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
   
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const realtimeConnectedRef = useRef(false);
+  const prevConversationIdRef = useRef<string | null>(null);
 
   // Fetch conversations from database
   const fetchConversations = useCallback(async (showLoading = false) => {
@@ -134,7 +135,8 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
 
   // Fetch full conversation when active conversation changes
   // Uses optimistic UI: show lead info immediately, load messages in background
-  const fetchActiveConversation = useCallback(async () => {
+  // showLoading: true for initial loads (shows spinner), false for background polling (silent refresh)
+  const fetchActiveConversation = useCallback(async (showLoading = true) => {
     if (!activeConversationId) {
       setActiveConversation(null);
       setIsLoadingMessages(false);
@@ -144,12 +146,15 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     // Optimistic UI: Immediately show conversation with data from list
     const baseConv = conversations.find((c) => c.id === activeConversationId);
     if (baseConv) {
-      // Set conversation immediately with empty messages (will show spinner)
-      setActiveConversation({
-        ...baseConv,
-        messages: [], // Empty initially, will load
-      });
-      setIsLoadingMessages(true);
+      // Only show loading state and clear messages for initial/explicit loads
+      // For background polling, keep existing messages visible
+      if (showLoading) {
+        setActiveConversation({
+          ...baseConv,
+          messages: [], // Empty initially, will load
+        });
+        setIsLoadingMessages(true);
+      }
     }
 
     // Fetch full messages in background
@@ -163,7 +168,9 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
         });
       }
     }
-    setIsLoadingMessages(false);
+    if (showLoading) {
+      setIsLoadingMessages(false);
+    }
   }, [activeConversationId, conversations]);
 
   // Sync a single conversation (SMS and/or Email based on lead's external IDs)
@@ -278,8 +285,13 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
 
   // Fetch active conversation when selection changes
   useEffect(() => {
-    fetchActiveConversation();
-  }, [fetchActiveConversation]);
+    // Only show loading spinner when the conversation ID actually changes (user switched conversations)
+    // For background updates triggered by conversations list changes, do silent refresh
+    const isNewConversation = activeConversationId !== prevConversationIdRef.current;
+    prevConversationIdRef.current = activeConversationId;
+    
+    fetchActiveConversation(isNewConversation);
+  }, [fetchActiveConversation, activeConversationId]);
 
   // Set up realtime subscriptions
   useEffect(() => {
@@ -323,6 +335,10 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     pollingRef.current = setInterval(() => {
       console.log("[Polling] Refreshing conversations...");
       fetchConversations();
+      // Silently refresh active conversation messages (no loading spinner)
+      if (activeConversationId) {
+        fetchActiveConversation(false);
+      }
     }, POLLING_INTERVAL);
 
     return () => {
@@ -330,7 +346,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
         clearInterval(pollingRef.current);
       }
     };
-  }, [fetchConversations]);
+  }, [fetchConversations, activeConversationId, fetchActiveConversation]);
 
   // Filter conversations by channel, filter, and sentiment
   const filteredConversations = conversations.filter((conv) => {

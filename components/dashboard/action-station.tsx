@@ -44,6 +44,9 @@ const CHANNEL_LABELS = {
 
 export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing = false, onSync, isLoadingMessages = false }: ActionStationProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const shouldScrollRef = useRef(true)
+  const prevConversationIdRef = useRef<string | null>(null)
+  const prevMessageCountRef = useRef(0)
   const [composeMessage, setComposeMessage] = useState("")
   const [isSending, setIsSending] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
@@ -92,9 +95,32 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
     }
   }, [conversation?.id, conversation?.primaryChannel, channels])
 
+  // Scroll to bottom only on initial load or when user sends a message
+  // NOT during background polling updates to preserve scroll position
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [conversation?.messages])
+    const currentConversationId = conversation?.id || null
+    const currentMessageCount = conversation?.messages?.length || 0
+    
+    // Scroll when:
+    // 1. Conversation changed (user switched conversations)
+    // 2. Message count increased AND shouldScrollRef is true (user sent a message)
+    const conversationChanged = currentConversationId !== prevConversationIdRef.current
+    const messageAdded = currentMessageCount > prevMessageCountRef.current
+    
+    if (conversationChanged) {
+      // Always scroll when switching conversations
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+      shouldScrollRef.current = false
+    } else if (messageAdded && shouldScrollRef.current) {
+      // Only scroll for new messages if explicitly requested (e.g., user sent a message)
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
+      shouldScrollRef.current = false
+    }
+    
+    // Update refs for next comparison
+    prevConversationIdRef.current = currentConversationId
+    prevMessageCountRef.current = currentMessageCount
+  }, [conversation?.id, conversation?.messages])
 
   // Fetch real AI drafts when conversation or active channel changes
   useEffect(() => {
@@ -166,6 +192,8 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
       setDrafts([])
       setHasAiDraft(false)
       setOriginalDraft("")
+      // Scroll to bottom to show the sent message
+      shouldScrollRef.current = true
     } else {
       toast.error(result.error || "Failed to send message")
     }
@@ -192,6 +220,8 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
         setDrafts([])
         setHasAiDraft(false)
         setOriginalDraft("")
+        // Scroll to bottom to show the sent message
+        shouldScrollRef.current = true
       } else {
         toast.error(result.error || "Failed to send message")
       }
@@ -203,6 +233,8 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
         setComposeMessage("")
         setHasAiDraft(false)
         setOriginalDraft("")
+        // Scroll to bottom to show the sent message
+        shouldScrollRef.current = true
       } else {
         toast.error(result.error || "Failed to send message")
       }
