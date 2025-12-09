@@ -262,7 +262,7 @@ export async function generateResponseDraft(
       const assetSnippets = settings.knowledgeAssets
         .filter(a => a.textContent)
         .slice(0, 3) // Limit to 3 most recent assets
-        .map(a => `[${a.name}]: ${a.textContent!.slice(0, 500)}${a.textContent!.length > 500 ? "..." : ""}`);
+        .map(a => `[${a.name}]: ${a.textContent!.slice(0, 1000)}${a.textContent!.length > 1000 ? "..." : ""}`);
 
       if (assetSnippets.length > 0) {
         knowledgeContext = assetSnippets.join("\n\n");
@@ -319,7 +319,7 @@ ${conversationTranscript}
 Generate an appropriate ${channel === "email" ? "email" : "SMS"} response following the guidelines above.
 </task>`,
       reasoning: { effort: "low" },
-      max_output_tokens: channel === "email" ? 320 : 100,
+      max_output_tokens: channel === "email" ? 1000 : 160,
     });
 
     const draftContent = response.output_text?.trim();

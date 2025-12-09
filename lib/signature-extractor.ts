@@ -90,7 +90,7 @@ Respond with ONLY valid JSON, no explanation:
 Expected lead name: ${leadName}
 
 Email body:
-${emailBody.slice(0, 3000)}`,
+${emailBody.slice(0, 5000)}`,
       max_output_tokens: 200,
     });
 
