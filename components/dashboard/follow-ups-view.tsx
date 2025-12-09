@@ -499,6 +499,13 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
   const [instanceActionInProgress, setInstanceActionInProgress] = useState<string | null>(null)
   const [leadActionInProgress, setLeadActionInProgress] = useState<string | null>(null)
   const [showSequenceManager, setShowSequenceManager] = useState(false)
+  
+  // Local state for tab management (fallback when onTabChange is not provided)
+  const [localTab, setLocalTab] = useState(activeTab)
+  
+  // Use prop values if provided, otherwise use local state
+  const currentTab = onTabChange ? activeTab : localTab
+  const handleTabChange = onTabChange ?? setLocalTab
 
   const fetchData = useCallback(async () => {
     if (!activeWorkspace) {
@@ -814,7 +821,7 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
         </div>
 
         {/* Tabs */}
-        <Tabs value={activeTab} onValueChange={onTabChange} className="h-[calc(100%-120px)]">
+        <Tabs value={currentTab} onValueChange={handleTabChange} className="h-[calc(100%-120px)]">
           <TabsList>
             <TabsTrigger value="needs-followup">
               Needs Follow-Up ({followUpLeads.length})
