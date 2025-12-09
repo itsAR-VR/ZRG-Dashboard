@@ -26,6 +26,14 @@ export interface Lead {
     need: boolean
     timing: boolean
   }
+  // Enrichment data (from EmailBison/Clay)
+  linkedinUrl?: string | null
+  companyName?: string | null
+  companyWebsite?: string | null
+  companyState?: string | null
+  emailBisonLeadId?: string | null
+  enrichmentStatus?: string | null  // 'pending' | 'enriched' | 'not_found' | 'not_needed'
+  autoBookMeetingsEnabled?: boolean
 }
 
 export type Channel = "sms" | "email" | "linkedin";

@@ -107,6 +107,10 @@ model Lead {
   email        String?
   phone        String?       // Stored normalized (digits only)
   timezone     String?       // Lead's timezone for availability slot formatting
+  // Company information (from EmailBison custom variables)
+  companyName      String?   // Lead's actual company name
+  companyWebsite   String?   // Company website URL
+  companyState     String?   // Company state/region
   // Status and sentiment
   status       String        @default("new")
   sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.

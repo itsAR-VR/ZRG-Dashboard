@@ -17,6 +17,10 @@ import {
   MessageSquare,
   Users,
   ExternalLink,
+  Linkedin,
+  Globe,
+  MapPin,
+  Sparkles,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -28,6 +32,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Separator } from "@/components/ui/separator"
 import { getCRMLeads, updateLeadStatus, deleteLead, type CRMLeadData } from "@/actions/crm-actions"
+import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
+import { toast } from "sonner"
+import { cn } from "@/lib/utils"
 
 type LeadStatus = "new" | "qualified" | "meeting-booked" | "not-interested" | "blacklisted"
 
@@ -63,10 +70,54 @@ interface LeadDetailSheetProps {
   onClose: () => void
   onStatusChange: (id: string, status: LeadStatus) => void
   onOpenInInbox?: (leadId: string) => void
+  onLeadUpdate?: () => void
 }
 
-function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox }: LeadDetailSheetProps) {
+function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, onLeadUpdate }: LeadDetailSheetProps) {
+  const [isEnriching, setIsEnriching] = useState(false)
+
   if (!lead) return null
+
+  const canEnrich = !!lead.emailBisonLeadId && (!lead.linkedinUrl || !lead.phone)
+  const enrichmentDisabledReason = !lead.emailBisonLeadId 
+    ? "No EmailBison lead ID" 
+    : (lead.linkedinUrl && lead.phone) 
+      ? "Already enriched" 
+      : null
+
+  const handleEnrichLead = async () => {
+    setIsEnriching(true)
+    try {
+      const result = await refreshAndEnrichLead(lead.id)
+      
+      if (result.success) {
+        const updates: string[] = []
+        if (result.fromEmailBison.linkedinUrl) updates.push("LinkedIn URL")
+        if (result.fromEmailBison.phone) updates.push("Phone")
+        if (result.fromEmailBison.companyName) updates.push("Company")
+        
+        const clayTriggers: string[] = []
+        if (result.clayTriggered.linkedin) clayTriggers.push("LinkedIn")
+        if (result.clayTriggered.phone) clayTriggers.push("Phone")
+        
+        let message = ""
+        if (updates.length > 0) message += `Found: ${updates.join(", ")}. `
+        if (clayTriggers.length > 0) message += `Clay enrichment triggered for: ${clayTriggers.join(", ")}`
+        if (!message) message = "Lead data is up to date"
+        
+        toast.success("Enrichment complete", { description: message })
+        onLeadUpdate?.()
+      } else {
+        toast.error("Enrichment failed", { description: result.error })
+      }
+    } catch (error) {
+      toast.error("Enrichment failed", { 
+        description: error instanceof Error ? error.message : "Unknown error" 
+      })
+    } finally {
+      setIsEnriching(false)
+    }
+  }
 
   return (
     <Sheet open={open} onOpenChange={onClose}>
@@ -89,7 +140,26 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox }:
           <Separator />
 
           <div className="space-y-4">
-            <h4 className="font-semibold text-sm uppercase text-muted-foreground tracking-wider">Contact Info</h4>
+            <div className="flex items-center justify-between">
+              <h4 className="font-semibold text-sm uppercase text-muted-foreground tracking-wider">Contact Info</h4>
+              {lead.enrichmentStatus && (
+                <Badge 
+                  variant="outline" 
+                  className={cn(
+                    "text-[10px]",
+                    lead.enrichmentStatus === "enriched" && "text-green-500 border-green-500/30 bg-green-500/10",
+                    lead.enrichmentStatus === "pending" && "text-amber-500 border-amber-500/30 bg-amber-500/10",
+                    lead.enrichmentStatus === "not_found" && "text-red-500 border-red-500/30 bg-red-500/10",
+                    lead.enrichmentStatus === "not_needed" && "text-muted-foreground"
+                  )}
+                >
+                  {lead.enrichmentStatus === "enriched" ? "Enriched" :
+                   lead.enrichmentStatus === "pending" ? "Pending" :
+                   lead.enrichmentStatus === "not_found" ? "Not Found" :
+                   lead.enrichmentStatus === "not_needed" ? "Complete" : lead.enrichmentStatus}
+                </Badge>
+              )}
+            </div>
             <div className="space-y-3">
               <div className="flex items-center gap-3">
                 <Mail className="h-4 w-4 text-muted-foreground" />
@@ -99,6 +169,44 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox }:
                 <Phone className="h-4 w-4 text-muted-foreground" />
                 <span className="text-sm">{lead.phone || "No phone"}</span>
               </div>
+              {lead.linkedinUrl && (
+                <div className="flex items-center gap-3">
+                  <Linkedin className="h-4 w-4 text-[#0A66C2]" />
+                  <a
+                    href={lead.linkedinUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-primary hover:underline truncate"
+                  >
+                    {lead.linkedinUrl.replace("https://linkedin.com/in/", "")}
+                  </a>
+                </div>
+              )}
+              {lead.companyWebsite && (
+                <div className="flex items-center gap-3">
+                  <Globe className="h-4 w-4 text-muted-foreground" />
+                  <a
+                    href={lead.companyWebsite}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-primary hover:underline truncate"
+                  >
+                    {lead.companyWebsite.replace("https://", "").replace("http://", "")}
+                  </a>
+                </div>
+              )}
+              {lead.companyName && (
+                <div className="flex items-center gap-3">
+                  <Building2 className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm">{lead.companyName}</span>
+                </div>
+              )}
+              {lead.companyState && (
+                <div className="flex items-center gap-3">
+                  <MapPin className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm">{lead.companyState}</span>
+                </div>
+              )}
               <div className="flex items-center gap-3">
                 <MessageSquare className="h-4 w-4 text-muted-foreground" />
                 <span className="text-sm">{lead.messageCount} messages</span>
@@ -142,7 +250,7 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox }:
             </Select>
           </div>
 
-          <div className="pt-4">
+          <div className="pt-4 space-y-2">
             <Button 
               className="w-full" 
               onClick={() => {
@@ -152,6 +260,20 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox }:
             >
               <ExternalLink className="h-4 w-4 mr-2" />
               Open in Master Inbox
+            </Button>
+            <Button 
+              variant="outline"
+              className="w-full" 
+              onClick={handleEnrichLead}
+              disabled={isEnriching || !canEnrich}
+              title={enrichmentDisabledReason || undefined}
+            >
+              {isEnriching ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4 mr-2" />
+              )}
+              {isEnriching ? "Enriching..." : "Enrich Lead"}
             </Button>
           </div>
         </div>
@@ -175,21 +297,27 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
   const [selectedLead, setSelectedLead] = useState<CRMLeadData | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
 
+  // Fetch leads function - extracted for reuse
+  const fetchLeads = async () => {
+    setIsLoading(true)
+    const result = await getCRMLeads(activeWorkspace)
+    
+    if (result.success && result.data) {
+      setLeads(result.data)
+      // Update selected lead if it's still open
+      if (selectedLead) {
+        const updated = result.data.find(l => l.id === selectedLead.id)
+        if (updated) setSelectedLead(updated)
+      }
+    } else {
+      setLeads([])
+    }
+    
+    setIsLoading(false)
+  }
+
   // Fetch leads on mount and when workspace changes
   useEffect(() => {
-    async function fetchLeads() {
-      setIsLoading(true)
-      const result = await getCRMLeads(activeWorkspace)
-      
-      if (result.success && result.data) {
-        setLeads(result.data)
-      } else {
-        setLeads([])
-      }
-      
-      setIsLoading(false)
-    }
-
     fetchLeads()
   }, [activeWorkspace])
 
@@ -470,6 +598,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
         onClose={() => setSheetOpen(false)}
         onStatusChange={handleStatusChange}
         onOpenInInbox={onOpenInInbox}
+        onLeadUpdate={fetchLeads}
       />
     </div>
   )

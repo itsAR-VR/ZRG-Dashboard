@@ -17,7 +17,15 @@ export interface ConversationData {
     status: string;
     autoReplyEnabled: boolean;
     autoFollowUpEnabled: boolean;
+    autoBookMeetingsEnabled: boolean;
     clientId: string;  // For follow-up sequence management
+    // Enrichment data
+    linkedinUrl: string | null;
+    companyName: string | null;
+    companyWebsite: string | null;
+    companyState: string | null;
+    emailBisonLeadId: string | null;
+    enrichmentStatus: string | null;
   };
   channels: Channel[];           // All channels this lead has messages on
   availableChannels: Channel[];  // Channels available based on contact info
@@ -168,7 +176,15 @@ export async function getConversations(clientId?: string | null): Promise<{
           status: lead.status,
           autoReplyEnabled: lead.autoReplyEnabled,
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
+          autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
           clientId: lead.clientId,
+          // Enrichment data
+          linkedinUrl: lead.linkedinUrl,
+          companyName: lead.companyName,
+          companyWebsite: lead.companyWebsite,
+          companyState: lead.companyState,
+          emailBisonLeadId: lead.emailBisonLeadId,
+          enrichmentStatus: lead.enrichmentStatus,
         },
         channels,
         availableChannels,
@@ -329,7 +345,15 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           sentimentTag: lead.sentimentTag,
           autoReplyEnabled: lead.autoReplyEnabled,
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
+          autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
           clientId: lead.clientId,
+          // Enrichment data
+          linkedinUrl: lead.linkedinUrl,
+          companyName: lead.companyName,
+          companyWebsite: lead.companyWebsite,
+          companyState: lead.companyState,
+          emailBisonLeadId: lead.emailBisonLeadId,
+          enrichmentStatus: lead.enrichmentStatus,
         },
         channels,
         availableChannels,

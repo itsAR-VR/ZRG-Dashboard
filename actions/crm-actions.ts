@@ -18,6 +18,13 @@ export interface CRMLeadData {
   messageCount: number;
   autoReplyEnabled: boolean;
   autoFollowUpEnabled: boolean;
+  // Enrichment data
+  linkedinUrl: string | null;
+  companyName: string | null;
+  companyWebsite: string | null;
+  companyState: string | null;
+  emailBisonLeadId: string | null;
+  enrichmentStatus: string | null;
 }
 
 /**
@@ -76,6 +83,13 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
         messageCount: lead._count.messages,
         autoReplyEnabled: lead.autoReplyEnabled,
         autoFollowUpEnabled: lead.autoFollowUpEnabled,
+        // Enrichment data
+        linkedinUrl: lead.linkedinUrl,
+        companyName: lead.companyName,
+        companyWebsite: lead.companyWebsite,
+        companyState: lead.companyState,
+        emailBisonLeadId: lead.emailBisonLeadId,
+        enrichmentStatus: lead.enrichmentStatus,
       };
     });
 

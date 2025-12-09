@@ -24,6 +24,10 @@ import {
   Pause,
   XCircle,
   ListTodo,
+  Linkedin,
+  Sparkles,
+  Building2,
+  MapPin,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { updateLeadStatus, snoozeLead, bookMeeting, updateLeadAutomationSettings } from "@/actions/crm-actions"
@@ -45,6 +49,7 @@ import {
   isGHLBookingConfigured,
   getFormattedAvailabilityForLead,
 } from "@/actions/booking-actions"
+import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
 import { toast } from "sonner"
 import {
   Dialog,
@@ -114,6 +119,9 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
     hasAppointment: boolean;
     bookedSlot?: string;
   }>({ hasAppointment: false })
+
+  // Enrichment state
+  const [isEnriching, setIsEnriching] = useState(false)
 
   // Load follow-up instances and sequences
   const loadFollowUpData = useCallback(async () => {
@@ -387,6 +395,70 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
     }
   }
 
+  // Enrichment handler
+  const handleEnrichLead = async () => {
+    setIsEnriching(true)
+    try {
+      const result = await refreshAndEnrichLead(lead.id)
+      
+      if (result.success) {
+        // Build success message
+        const updates: string[] = []
+        
+        if (result.fromEmailBison.linkedinUrl) {
+          updates.push("LinkedIn URL")
+        }
+        if (result.fromEmailBison.phone) {
+          updates.push("Phone")
+        }
+        if (result.fromEmailBison.companyName) {
+          updates.push("Company")
+        }
+        if (result.fromEmailBison.companyWebsite) {
+          updates.push("Website")
+        }
+        
+        const clayTriggers: string[] = []
+        if (result.clayTriggered.linkedin) {
+          clayTriggers.push("LinkedIn")
+        }
+        if (result.clayTriggered.phone) {
+          clayTriggers.push("Phone")
+        }
+        
+        let message = ""
+        if (updates.length > 0) {
+          message += `Found: ${updates.join(", ")}. `
+        }
+        if (clayTriggers.length > 0) {
+          message += `Clay enrichment triggered for: ${clayTriggers.join(", ")}`
+        }
+        if (!message) {
+          message = "Lead data is up to date"
+        }
+        
+        toast.success("Enrichment complete", { description: message })
+        onLeadUpdate?.() // Refresh the lead data in the UI
+      } else {
+        toast.error("Enrichment failed", { description: result.error })
+      }
+    } catch (error) {
+      toast.error("Enrichment failed", { 
+        description: error instanceof Error ? error.message : "Unknown error" 
+      })
+    } finally {
+      setIsEnriching(false)
+    }
+  }
+
+  // Check if enrichment is available (has emailBisonLeadId and missing data)
+  const canEnrich = !!lead.emailBisonLeadId && (!lead.linkedinUrl || !lead.phone)
+  const enrichmentDisabledReason = !lead.emailBisonLeadId 
+    ? "No EmailBison lead ID" 
+    : (lead.linkedinUrl && lead.phone) 
+      ? "Already enriched" 
+      : null
+
   return (
     <>
       <aside className="w-80 shrink-0 border-l border-border bg-card overflow-y-auto">
@@ -401,7 +473,26 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
         <div className="p-4 space-y-6">
           {/* Contact Info */}
           <div className="space-y-3">
-            <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Contact</h4>
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Contact</h4>
+              {lead.enrichmentStatus && (
+                <Badge 
+                  variant="outline" 
+                  className={cn(
+                    "text-[10px]",
+                    lead.enrichmentStatus === "enriched" && "text-green-500 border-green-500/30 bg-green-500/10",
+                    lead.enrichmentStatus === "pending" && "text-amber-500 border-amber-500/30 bg-amber-500/10",
+                    lead.enrichmentStatus === "not_found" && "text-red-500 border-red-500/30 bg-red-500/10",
+                    lead.enrichmentStatus === "not_needed" && "text-muted-foreground"
+                  )}
+                >
+                  {lead.enrichmentStatus === "enriched" ? "Enriched" :
+                   lead.enrichmentStatus === "pending" ? "Pending" :
+                   lead.enrichmentStatus === "not_found" ? "Not Found" :
+                   lead.enrichmentStatus === "not_needed" ? "Complete" : lead.enrichmentStatus}
+                </Badge>
+              )}
+            </div>
             <div className="space-y-2.5">
               {lead.email && (
                 <div className="flex items-center gap-3 text-sm">
@@ -415,17 +506,42 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                   <span className="text-foreground">{lead.phone}</span>
                 </div>
               )}
-              {lead.website && (
+              {lead.linkedinUrl && (
                 <div className="flex items-center gap-3 text-sm">
-                  <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <Linkedin className="h-4 w-4 text-[#0A66C2] shrink-0" />
                   <a
-                    href={lead.website}
+                    href={lead.linkedinUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary hover:underline truncate"
                   >
-                    {lead.website.replace("https://", "")}
+                    {lead.linkedinUrl.replace("https://linkedin.com/in/", "")}
                   </a>
+                </div>
+              )}
+              {(lead.website || lead.companyWebsite) && (
+                <div className="flex items-center gap-3 text-sm">
+                  <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <a
+                    href={lead.companyWebsite || lead.website}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline truncate"
+                  >
+                    {(lead.companyWebsite || lead.website).replace("https://", "").replace("http://", "")}
+                  </a>
+                </div>
+              )}
+              {lead.companyName && (
+                <div className="flex items-center gap-3 text-sm">
+                  <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="text-foreground">{lead.companyName}</span>
+                </div>
+              )}
+              {lead.companyState && (
+                <div className="flex items-center gap-3 text-sm">
+                  <MapPin className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="text-foreground">{lead.companyState}</span>
                 </div>
               )}
               {lead.timezone && (
@@ -434,7 +550,7 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                   <span className="text-foreground">{lead.timezone}</span>
                 </div>
               )}
-              {!lead.email && !lead.phone && !lead.website && !lead.timezone && (
+              {!lead.email && !lead.phone && !lead.linkedinUrl && !lead.website && !lead.companyWebsite && !lead.timezone && (
                 <p className="text-sm text-muted-foreground italic">No contact info available</p>
               )}
             </div>
@@ -739,6 +855,21 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
               >
                 <Edit3 className="mr-2 h-4 w-4" />
                 Manual Follow-up
+              </Button>
+              <Button 
+                variant="outline" 
+                className="w-full justify-start bg-transparent" 
+                size="sm"
+                onClick={handleEnrichLead}
+                disabled={isEnriching || !canEnrich}
+                title={enrichmentDisabledReason || undefined}
+              >
+                {isEnriching ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="mr-2 h-4 w-4" />
+                )}
+                {isEnriching ? "Enriching..." : "Enrich Lead"}
               </Button>
             </div>
           </div>
