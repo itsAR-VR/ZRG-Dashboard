@@ -1,6 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { generateResponseDraft } from "@/lib/ai-drafts";
 import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequence-actions";
+import OpenAI from "openai";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 import {
   shouldAutoBook,
   bookMeetingOnGHL,
@@ -707,9 +712,8 @@ export async function parseAcceptedTimeFromMessage(
   if (!message || offeredSlots.length === 0) return null;
 
   try {
-    // Use OpenAI to parse the time expression
-    const openaiApiKey = process.env.OPENAI_API_KEY;
-    if (!openaiApiKey) {
+    // Validate OpenAI API key is configured
+    if (!process.env.OPENAI_API_KEY) {
       console.error("OpenAI API key not configured");
       return null;
     }
@@ -731,30 +735,16 @@ Rules:
 - If the user doesn't seem to be accepting any time slot, respond with "NONE"
 - Only respond with a number or "NONE", nothing else`;
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${openaiApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: message },
-        ],
-        max_tokens: 10,
-        temperature: 0,
-      }),
+    // GPT-5-mini with low reasoning effort for time parsing using Responses API
+    const response = await openai.responses.create({
+      model: "gpt-5-mini",
+      instructions: systemPrompt,
+      input: message,
+      reasoning: { effort: "low" },
+      max_output_tokens: 10,
     });
 
-    if (!response.ok) {
-      console.error("OpenAI API error:", await response.text());
-      return null;
-    }
-
-    const data = await response.json();
-    const aiResponse = data.choices?.[0]?.message?.content?.trim();
+    const aiResponse = response.output_text?.trim();
 
     if (!aiResponse || aiResponse === "NONE") {
       return null;
@@ -780,21 +770,13 @@ export async function detectMeetingAcceptedIntent(message: string): Promise<bool
   if (!message) return false;
 
   try {
-    const openaiApiKey = process.env.OPENAI_API_KEY;
-    if (!openaiApiKey) return false;
+    // Validate OpenAI API key is configured
+    if (!process.env.OPENAI_API_KEY) return false;
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${openaiApiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `You are an intent classifier. Determine if the following message indicates that the person is accepting/confirming a meeting time.
+    // GPT-5-mini with low reasoning effort for intent detection using Responses API
+    const response = await openai.responses.create({
+      model: "gpt-5-mini",
+      instructions: `You are an intent classifier. Determine if the following message indicates that the person is accepting/confirming a meeting time.
 
 Examples of acceptance:
 - "Yes, Thursday at 3pm works"
@@ -812,18 +794,12 @@ Examples of non-acceptance:
 - "Tell me more"
 
 Respond with only "YES" or "NO".`,
-          },
-          { role: "user", content: message },
-        ],
-        max_tokens: 5,
-        temperature: 0,
-      }),
+      input: message,
+      reasoning: { effort: "low" },
+      max_output_tokens: 5,
     });
 
-    if (!response.ok) return false;
-
-    const data = await response.json();
-    const result = data.choices?.[0]?.message?.content?.trim()?.toUpperCase();
+    const result = response.output_text?.trim()?.toUpperCase();
     return result === "YES";
   } catch {
     return false;

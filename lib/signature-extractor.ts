@@ -47,12 +47,11 @@ export async function extractContactFromSignature(
   }
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5-mini",
-      messages: [
-        {
-          role: "system",
-          content: `<task>
+    // GPT-5-nano for signature extraction using Responses API
+    // Note: GPT-5-nano does not support reasoning parameter
+    const response = await openai.responses.create({
+      model: "gpt-5-nano",
+      instructions: `<task>
 Analyze this email to extract contact information from the signature.
 </task>
 
@@ -87,23 +86,15 @@ Respond with ONLY valid JSON, no explanation:
   "reasoning": "brief 1-sentence explanation"
 }
 </output_format>`,
-        },
-        {
-          role: "user",
-          content: `Email from: ${leadEmail}
+      input: `Email from: ${leadEmail}
 Expected lead name: ${leadName}
 
 Email body:
-${emailBody.slice(0, 3000)}`, // Limit to avoid token overflow
-        },
-      ],
-      // GPT-5 family uses reasoning effort instead of temperature
-      // @ts-expect-error - GPT-5 uses reasoning parameter
-      reasoning: { effort: "low" },
-      max_tokens: 200,
+${emailBody.slice(0, 3000)}`,
+      max_output_tokens: 200,
     });
 
-    const content = completion.choices[0]?.message?.content?.trim();
+    const content = response.output_text?.trim();
 
     if (!content) {
       console.log("[SignatureExtractor] No response from AI");

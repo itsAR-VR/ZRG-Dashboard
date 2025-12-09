@@ -46,14 +46,10 @@ export async function classifySentiment(transcript: string): Promise<SentimentTa
   }
 
   try {
-    // GPT-5.1 with low reasoning effort for sentiment classification
-    // @ts-expect-error - GPT-5.1 uses reasoning parameter instead of temperature
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5.1",
-      messages: [
-        {
-          role: "system",
-          content: `<task>
+    // GPT-5-mini with low reasoning effort for sentiment classification using Responses API
+    const response = await openai.responses.create({
+      model: "gpt-5-mini",
+      instructions: `<task>
 You are a sales conversation classifier. Analyze the conversation transcript and classify it into ONE category.
 </task>
 
@@ -82,20 +78,14 @@ You are a sales conversation classifier. Analyze the conversation transcript and
 <output_format>
 Respond with ONLY the category name, nothing else.
 </output_format>`,
-        },
-        {
-          role: "user",
-          content: `<conversation>
+      input: `<conversation>
 ${transcript}
 </conversation>`,
-        },
-      ],
-      // GPT-5 family uses reasoning effort instead of temperature
       reasoning: { effort: "low" },
-      max_tokens: 50,
+      max_output_tokens: 50,
     });
 
-    const result = completion.choices[0]?.message?.content?.trim() as SentimentTag;
+    const result = response.output_text?.trim() as SentimentTag;
 
     if (result && SENTIMENT_TAGS.includes(result)) {
       return result;

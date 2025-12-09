@@ -305,18 +305,11 @@ export async function generateResponseDraft(
           targetResult,
         });
 
-    // GPT-5.1 with low reasoning effort for draft generation
-    // @ts-expect-error - GPT-5.1 uses reasoning parameter instead of temperature
-    const completion = await openai.chat.completions.create({
+    // GPT-5.1 with low reasoning effort for draft generation using Responses API
+    const response = await openai.responses.create({
       model: "gpt-5.1",
-      messages: [
-        {
-          role: "system",
-          content: systemPrompt,
-        },
-        {
-          role: "user",
-          content: `<conversation_transcript>
+      instructions: systemPrompt,
+      input: `<conversation_transcript>
 ${conversationTranscript}
 </conversation_transcript>
 
@@ -325,15 +318,11 @@ ${conversationTranscript}
 <task>
 Generate an appropriate ${channel === "email" ? "email" : "SMS"} response following the guidelines above.
 </task>`,
-        },
-      ],
-      // GPT-5 family uses reasoning effort instead of temperature
       reasoning: { effort: "low" },
-      text: { verbosity: "low" },
-      max_tokens: channel === "email" ? 320 : 100,
+      max_output_tokens: channel === "email" ? 320 : 100,
     });
 
-    const draftContent = completion.choices[0]?.message?.content?.trim();
+    const draftContent = response.output_text?.trim();
 
     if (!draftContent) {
       return { success: false, error: "Failed to generate draft content" };
