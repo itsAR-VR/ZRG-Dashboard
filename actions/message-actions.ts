@@ -122,7 +122,7 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
   const syncInfo = await getLeadSyncInfo(leadId);
 
   if (!syncInfo.success || !syncInfo.data) {
-    return { success: false, error: syncInfo.error || "Failed to get lead sync info" };
+    return { success: false, error: syncInfo.error || "Failed to get lead sync info", reclassifiedSentiment: false };
   }
 
   const { canSyncSms, canSyncEmail, hasEmailMessages, hasSmsMessages, emailBisonLeadId, ghlContactId } = syncInfo.data;
@@ -132,18 +132,21 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
     if (hasEmailMessages && !emailBisonLeadId) {
       return {
         success: false,
-        error: "This lead's emails cannot be synced (no EmailBison lead ID - may be from a bounce notification)"
+        error: "This lead's emails cannot be synced (no EmailBison lead ID - may be from a bounce notification)",
+        reclassifiedSentiment: false,
       };
     }
     if (hasSmsMessages && !ghlContactId) {
       return {
         success: false,
-        error: "This lead's SMS messages cannot be synced (no GHL contact ID)"
+        error: "This lead's SMS messages cannot be synced (no GHL contact ID)",
+        reclassifiedSentiment: false,
       };
     }
     return {
       success: false,
-      error: "No sync method available for this lead (missing external IDs or credentials)"
+      error: "No sync method available for this lead (missing external IDs or credentials)",
+      reclassifiedSentiment: false,
     };
   }
 
@@ -188,8 +191,9 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
 
   // If all attempted syncs failed and no messages were processed at all, return error
   // Include totalSkipped check - if we skipped duplicates, that means sync worked but messages already existed
-  if (errors.length > 0 && totalImported === 0 && totalHealed === 0 && totalSkipped === 0) {
-    return { success: false, error: errors.join("; ") };
+  // Also check reclassifiedSentiment - if we reclassified, the sync was at least partially successful
+  if (errors.length > 0 && totalImported === 0 && totalHealed === 0 && totalSkipped === 0 && !reclassifiedSentiment) {
+    return { success: false, error: errors.join("; "), reclassifiedSentiment: false };
   }
 
   return {
@@ -394,7 +398,7 @@ export async function syncConversationHistory(leadId: string, options: SyncOptio
     // 2. forceReclassify option is enabled (user explicitly requested re-analysis)
     let reclassifiedSentiment = false;
     const shouldReclassify = importedCount > 0 || healedCount > 0 || options.forceReclassify;
-    
+
     if (shouldReclassify) {
       try {
         const messages = await prisma.message.findMany({
@@ -861,7 +865,7 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
     // 2. forceReclassify option is enabled (user explicitly requested re-analysis)
     let reclassifiedSentiment = false;
     const shouldReclassify = importedCount > 0 || healedCount > 0 || options.forceReclassify;
-    
+
     if (shouldReclassify) {
       try {
         const messages = await prisma.message.findMany({
