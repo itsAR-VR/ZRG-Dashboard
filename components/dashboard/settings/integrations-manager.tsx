@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useTransition } from "react";
-import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil, Eraser } from "lucide-react";
+import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil, Eraser, Linkedin } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,6 +28,7 @@ interface Client {
   ghlLocationId: string;
   emailBisonApiKey: string | null;
   emailBisonWorkspaceId: string | null;
+  unipileAccountId: string | null;
   createdAt: Date;
   _count: {
     leads: number;
@@ -54,6 +55,7 @@ export function IntegrationsManager() {
     ghlPrivateKey: "",
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
+    unipileAccountId: "",
   });
 
   // Fetch clients on mount
@@ -79,7 +81,7 @@ export function IntegrationsManager() {
     startTransition(async () => {
       const result = await createClient(formData);
       if (result.success) {
-        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonWorkspaceId: "" });
+        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonWorkspaceId: "", unipileAccountId: "" });
         setShowForm(false);
         setShowEmailFields(false);
         toast.success("Workspace added successfully");
@@ -98,7 +100,7 @@ export function IntegrationsManager() {
 
     startTransition(async () => {
       // Build update payload - only include fields that have values or are being explicitly changed
-      const updatePayload: { emailBisonApiKey?: string; emailBisonWorkspaceId?: string } = {};
+      const updatePayload: { emailBisonApiKey?: string; emailBisonWorkspaceId?: string; unipileAccountId?: string } = {};
       
       // Always update workspace ID if provided (even empty to clear it)
       if (formData.emailBisonWorkspaceId !== (currentClient?.emailBisonWorkspaceId || "")) {
@@ -111,12 +113,17 @@ export function IntegrationsManager() {
       if (formData.emailBisonApiKey) {
         updatePayload.emailBisonApiKey = formData.emailBisonApiKey;
       }
+      
+      // Update Unipile Account ID if changed
+      if (formData.unipileAccountId !== (currentClient?.unipileAccountId || "")) {
+        updatePayload.unipileAccountId = formData.unipileAccountId;
+      }
 
       const result = await updateClient(clientId, updatePayload);
       if (result.success) {
-        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonWorkspaceId: "" });
+        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonWorkspaceId: "", unipileAccountId: "" });
         setEditingClientId(null);
-        toast.success("EmailBison credentials updated");
+        toast.success("Credentials updated");
         await fetchClients();
       } else {
         setError(result.error || "Failed to update credentials");
@@ -325,6 +332,23 @@ export function IntegrationsManager() {
                         Found in your EmailBison instance → Settings → API Keys
                       </p>
                     </div>
+                    
+                    {/* LinkedIn/Unipile Integration */}
+                    <div className="border-t pt-4 mt-4">
+                      <Label htmlFor="unipileAccountId" className="flex items-center gap-2 mb-2">
+                        <Linkedin className="h-4 w-4" />
+                        LinkedIn Account ID (Unipile)
+                      </Label>
+                      <Input
+                        id="unipileAccountId"
+                        placeholder="e.g., Asdq-j08dsqQS89QSD"
+                        value={formData.unipileAccountId}
+                        onChange={(e) => setFormData({ ...formData, unipileAccountId: e.target.value })}
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Found in Unipile dashboard under your connected LinkedIn account
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
@@ -372,6 +396,7 @@ export function IntegrationsManager() {
             <TableBody>
               {clients.map((client) => {
                 const hasEmailBison = !!client.emailBisonApiKey;
+                const hasLinkedIn = !!client.unipileAccountId;
                 const isEditingThis = editingClientId === client.id;
                 
                 return (
@@ -397,6 +422,17 @@ export function IntegrationsManager() {
                             <Badge variant="outline" className="text-muted-foreground text-[10px]">
                               <Mail className="h-3 w-3 mr-1" />
                               No Email
+                            </Badge>
+                          )}
+                          {hasLinkedIn ? (
+                            <Badge variant="outline" className="text-[#0A66C2] border-[#0A66C2]/30 bg-[#0A66C2]/10 text-[10px]">
+                              <Linkedin className="h-3 w-3 mr-1" />
+                              LinkedIn
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-muted-foreground text-[10px]">
+                              <Linkedin className="h-3 w-3 mr-1" />
+                              No LinkedIn
                             </Badge>
                           )}
                         </div>
@@ -494,21 +530,22 @@ export function IntegrationsManager() {
                                 ...formData,
                                 emailBisonApiKey: client.emailBisonApiKey || "",
                                 emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
+                                unipileAccountId: client.unipileAccountId || "",
                               });
                             }
                           }}
                         >
                           {isEditingThis ? (
                             <>Cancel</>
-                          ) : hasEmailBison ? (
+                          ) : (hasEmailBison || hasLinkedIn) ? (
                             <>
                               <Pencil className="h-3 w-3 mr-1" />
-                              Edit Email
+                              Edit Integrations
                             </>
                           ) : (
                             <>
-                              <Mail className="h-3 w-3 mr-1" />
-                              Configure Email
+                              <Key className="h-3 w-3 mr-1" />
+                              Configure Integrations
                             </>
                           )}
                         </Button>
@@ -548,12 +585,31 @@ export function IntegrationsManager() {
                                 className="h-8 text-sm"
                               />
                             </div>
+                            
+                            {/* LinkedIn/Unipile Account ID */}
+                            <div className="space-y-2 border-t pt-3 mt-3">
+                              <Label htmlFor={`linkedinId-${client.id}`} className="text-xs flex items-center gap-1">
+                                <Linkedin className="h-3 w-3" />
+                                LinkedIn Account ID (Unipile)
+                              </Label>
+                              <Input
+                                id={`linkedinId-${client.id}`}
+                                placeholder="e.g., Asdq-j08dsqQS89QSD"
+                                value={formData.unipileAccountId}
+                                onChange={(e) => setFormData({ ...formData, unipileAccountId: e.target.value })}
+                                className="h-8 text-sm"
+                              />
+                              <p className="text-[10px] text-muted-foreground">
+                                Found in Unipile dashboard under your connected LinkedIn account
+                              </p>
+                            </div>
+                            
                             <Button
                               size="sm"
                               onClick={() => handleUpdateEmailCredentials(client.id)}
                               disabled={isPending}
                             >
-                              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Email Config"}
+                              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Config"}
                             </Button>
                           </div>
                         )}
@@ -599,6 +655,23 @@ export function IntegrationsManager() {
                 </p>
                 <p className="text-xs text-muted-foreground mt-2">
                   <strong>Important:</strong> Set your EmailBison Workspace ID above to enable automatic webhook routing. The system matches incoming webhooks by the <code className="bg-background px-1 py-0.5 rounded">workspace_id</code> in the payload.
+                </p>
+              </div>
+
+              {/* LinkedIn/Unipile Webhook */}
+              <div className="p-4 rounded-lg bg-muted/50 space-y-2">
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Linkedin className="h-4 w-4" />
+                  Webhook URL for LinkedIn (Unipile)
+                </p>
+                <code className="block text-xs bg-background p-2 rounded border break-all">
+                  {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/linkedin
+                </code>
+                <p className="text-xs text-muted-foreground">
+                  Configure this URL in Unipile when creating webhooks for message_received and new_relation events.
+                </p>
+                <p className="text-xs text-muted-foreground mt-2">
+                  <strong>Important:</strong> Set your LinkedIn Account ID above for each workspace. Include the <code className="bg-background px-1 py-0.5 rounded">x-unipile-secret</code> header when creating webhooks.
                 </p>
               </div>
             </div>

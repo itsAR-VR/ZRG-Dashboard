@@ -5,8 +5,16 @@
 
 import { NextRequest } from "next/server";
 
-// Base URL for Unipile API
-const UNIPILE_BASE_URL = "https://1api15.unipile.com:14509/api/v1";
+/**
+ * Get Unipile API base URL from environment
+ */
+function getBaseUrl(): string {
+  const dsn = process.env.UNIPILE_DSN;
+  if (!dsn) {
+    throw new Error("UNIPILE_DSN not configured");
+  }
+  return `${dsn}/api/v1`;
+}
 
 // Connection status types
 export type LinkedInConnectionStatus = "CONNECTED" | "PENDING" | "NOT_CONNECTED";
@@ -74,7 +82,7 @@ export async function checkLinkedInConnection(
 
   try {
     // Unipile uses POST /users/provider_id to get user profile
-    const response = await fetch(`${UNIPILE_BASE_URL}/users/provider_id`, {
+    const response = await fetch(`${getBaseUrl()}/users/provider_id`, {
       method: "POST",
       headers: getHeaders(),
       body: JSON.stringify({
@@ -141,7 +149,7 @@ export async function sendLinkedInDM(
   console.log(`[Unipile] Sending DM to ${linkedinUrl}`);
 
   try {
-    const response = await fetch(`${UNIPILE_BASE_URL}/chats`, {
+    const response = await fetch(`${getBaseUrl()}/chats`, {
       method: "POST",
       headers: getHeaders(),
       body: JSON.stringify({
@@ -191,7 +199,7 @@ export async function sendLinkedInInMail(
   console.log(`[Unipile] Sending InMail to ${linkedinUrl}`);
 
   try {
-    const response = await fetch(`${UNIPILE_BASE_URL}/messages/inmail`, {
+    const response = await fetch(`${getBaseUrl()}/messages/inmail`, {
       method: "POST",
       headers: getHeaders(),
       body: JSON.stringify({
@@ -250,7 +258,7 @@ export async function sendLinkedInConnectionRequest(
   console.log(`[Unipile] Sending connection request to ${linkedinUrl}`);
 
   try {
-    const response = await fetch(`${UNIPILE_BASE_URL}/users/invite`, {
+    const response = await fetch(`${getBaseUrl()}/users/invite`, {
       method: "POST",
       headers: getHeaders(),
       body: JSON.stringify({
@@ -292,7 +300,7 @@ export async function sendLinkedInConnectionRequest(
  */
 export async function checkInMailBalance(accountId: string): Promise<InMailBalanceResult | null> {
   try {
-    const response = await fetch(`${UNIPILE_BASE_URL}/accounts/${accountId}/inmail_balance`, {
+    const response = await fetch(`${getBaseUrl()}/accounts/${accountId}/inmail_balance`, {
       method: "GET",
       headers: getHeaders(),
     });

@@ -410,7 +410,7 @@ async function triggerClayEnrichmentIfNeeded(
     // Determine what's missing
     // For LinkedIn: check lead record
     const missingLinkedIn = !lead.linkedinUrl && !emailBisonData?.linkedInProfile;
-    
+
     // For phone: check lead record AND EmailBison custom var
     // Skip phone enrichment if we already have a valid phone from EmailBison
     const existingPhone = lead.phone || emailBisonData?.existingPhone;
@@ -434,7 +434,7 @@ async function triggerClayEnrichmentIfNeeded(
 
     // Build the full enrichment request with all available data
     const fullName = `${lead.firstName || ""} ${lead.lastName || ""}`.trim();
-    
+
     const enrichmentRequest = {
       leadId: lead.id,
       emailAddress: lead.email,

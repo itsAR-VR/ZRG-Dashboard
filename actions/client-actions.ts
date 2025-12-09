@@ -10,6 +10,7 @@ export interface ClientData {
   ghlPrivateKey: string;
   emailBisonApiKey?: string;
   emailBisonWorkspaceId?: string;
+  unipileAccountId?: string;
 }
 
 /**
@@ -46,6 +47,7 @@ export async function getClients() {
         ghlLocationId: true,
         emailBisonApiKey: true,
         emailBisonWorkspaceId: true,
+        unipileAccountId: true,
         createdAt: true,
         _count: {
           select: { leads: true },
@@ -142,9 +144,9 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
     }
 
     // If emailBisonWorkspaceId is being changed, check for uniqueness
-    if (data.emailBisonWorkspaceId !== undefined && 
-        data.emailBisonWorkspaceId !== client.emailBisonWorkspaceId &&
-        data.emailBisonWorkspaceId !== "") {
+    if (data.emailBisonWorkspaceId !== undefined &&
+      data.emailBisonWorkspaceId !== client.emailBisonWorkspaceId &&
+      data.emailBisonWorkspaceId !== "") {
       const existingWithWorkspaceId = await prisma.client.findUnique({
         where: { emailBisonWorkspaceId: data.emailBisonWorkspaceId },
       });

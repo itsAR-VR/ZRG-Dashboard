@@ -105,7 +105,7 @@ function buildClayPayload(
   tableType: "LinkedIn" | "Phone"
 ): Record<string, string> {
   // Compute fullName if not provided
-  const fullName = request.fullName || 
+  const fullName = request.fullName ||
     `${request.firstName || ""} ${request.lastName || ""}`.trim();
 
   // Base payload for both tables
