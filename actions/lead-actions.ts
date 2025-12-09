@@ -26,6 +26,9 @@ export interface ConversationData {
     companyState: string | null;
     emailBisonLeadId: string | null;
     enrichmentStatus: string | null;
+    // GHL integration data
+    ghlContactId: string | null;
+    ghlLocationId: string | null;
   };
   channels: Channel[];           // All channels this lead has messages on
   availableChannels: Channel[];  // Channels available based on contact info
@@ -129,6 +132,7 @@ export async function getConversations(clientId?: string | null): Promise<{
           select: {
             id: true,
             name: true,
+            ghlLocationId: true,
           },
         },
         messages: {
@@ -185,6 +189,9 @@ export async function getConversations(clientId?: string | null): Promise<{
           companyState: lead.companyState,
           emailBisonLeadId: lead.emailBisonLeadId,
           enrichmentStatus: lead.enrichmentStatus,
+          // GHL integration data
+          ghlContactId: lead.ghlContactId,
+          ghlLocationId: lead.client.ghlLocationId,
         },
         channels,
         availableChannels,

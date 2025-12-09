@@ -375,33 +375,38 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
 
     console.log(`[Sync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
 
-    // Re-run sentiment analysis using the refreshed conversation transcript
-    try {
-      const messages = await prisma.message.findMany({
-        where: { leadId },
-        orderBy: { sentAt: "asc" },
-      });
-
-      const transcript = messages
-        .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
-        .join("\n");
-
-      if (transcript.trim().length > 0) {
-        const refreshedSentiment = await classifySentiment(transcript);
-        const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
-
-        await prisma.lead.update({
-          where: { id: leadId },
-          data: {
-            sentimentTag: refreshedSentiment,
-            status: refreshedStatus,
-          },
+    // Only re-run sentiment analysis if messages were actually imported or healed
+    // This prevents overwriting manually-set sentiment tags when nothing changed
+    if (importedCount > 0 || healedCount > 0) {
+      try {
+        const messages = await prisma.message.findMany({
+          where: { leadId },
+          orderBy: { sentAt: "asc" },
         });
 
-        console.log(`[Sync] Reclassified sentiment to ${refreshedSentiment} and status to ${refreshedStatus}`);
+        const transcript = messages
+          .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
+          .join("\n");
+
+        if (transcript.trim().length > 0) {
+          const refreshedSentiment = await classifySentiment(transcript);
+          const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
+
+          await prisma.lead.update({
+            where: { id: leadId },
+            data: {
+              sentimentTag: refreshedSentiment,
+              status: refreshedStatus,
+            },
+          });
+
+          console.log(`[Sync] Reclassified sentiment to ${refreshedSentiment} and status to ${refreshedStatus}`);
+        }
+      } catch (reclassError) {
+        console.error("[Sync] Failed to refresh sentiment after sync:", reclassError);
       }
-    } catch (reclassError) {
-      console.error("[Sync] Failed to refresh sentiment after sync:", reclassError);
+    } else {
+      console.log(`[Sync] Skipping sentiment reclassification - no new or healed messages`);
     }
 
     revalidatePath("/");
@@ -822,33 +827,38 @@ export async function syncEmailConversationHistory(leadId: string): Promise<Sync
 
     console.log(`[EmailSync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
 
-    // Re-run sentiment analysis using the refreshed conversation transcript
-    try {
-      const messages = await prisma.message.findMany({
-        where: { leadId, channel: "email" },
-        orderBy: { sentAt: "asc" },
-      });
-
-      const transcript = messages
-        .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
-        .join("\n");
-
-      if (transcript.trim().length > 0) {
-        const refreshedSentiment = await classifySentiment(transcript);
-        const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
-
-        await prisma.lead.update({
-          where: { id: leadId },
-          data: {
-            sentimentTag: refreshedSentiment,
-            status: refreshedStatus,
-          },
+    // Only re-run sentiment analysis if messages were actually imported or healed
+    // This prevents overwriting manually-set sentiment tags when nothing changed
+    if (importedCount > 0 || healedCount > 0) {
+      try {
+        const messages = await prisma.message.findMany({
+          where: { leadId, channel: "email" },
+          orderBy: { sentAt: "asc" },
         });
 
-        console.log(`[EmailSync] Reclassified sentiment to ${refreshedSentiment}`);
+        const transcript = messages
+          .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
+          .join("\n");
+
+        if (transcript.trim().length > 0) {
+          const refreshedSentiment = await classifySentiment(transcript);
+          const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
+
+          await prisma.lead.update({
+            where: { id: leadId },
+            data: {
+              sentimentTag: refreshedSentiment,
+              status: refreshedStatus,
+            },
+          });
+
+          console.log(`[EmailSync] Reclassified sentiment to ${refreshedSentiment}`);
+        }
+      } catch (reclassError) {
+        console.error("[EmailSync] Failed to refresh sentiment after sync:", reclassError);
       }
-    } catch (reclassError) {
-      console.error("[EmailSync] Failed to refresh sentiment after sync:", reclassError);
+    } else {
+      console.log(`[EmailSync] Skipping sentiment reclassification - no new or healed messages`);
     }
 
     revalidatePath("/");
