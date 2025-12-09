@@ -643,7 +643,6 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
             >
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                 const isLoadMoreRow = virtualRow.index >= allLeads.length
-                const lead = allLeads[virtualRow.index]
 
                 if (isLoadMoreRow) {
                   return (
@@ -671,6 +670,8 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                     </div>
                   )
                 }
+
+                const lead = allLeads[virtualRow.index]
 
                 return (
                   <div

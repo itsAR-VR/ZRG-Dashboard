@@ -245,7 +245,6 @@ export function ConversationFeed({
           >
             {rowVirtualizer.getVirtualItems().map((virtualRow) => {
               const isLoadMoreRow = virtualRow.index >= sortedConversations.length
-              const conversation = sortedConversations[virtualRow.index]
 
               if (isLoadMoreRow) {
                 return (
@@ -273,6 +272,8 @@ export function ConversationFeed({
                   </div>
                 )
               }
+
+              const conversation = sortedConversations[virtualRow.index]
 
               return (
                 <div
