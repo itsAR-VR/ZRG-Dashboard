@@ -8,6 +8,8 @@ import { ConversationCard } from "./conversation-card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
 import { Search, RefreshCw, Loader2, ChevronsUp, ChevronsDown } from "lucide-react"
 
 type SortOption = "recent" | "oldest" | "name-az" | "name-za"
@@ -36,7 +38,7 @@ interface ConversationFeedProps {
   activeSentiment?: string
   onSentimentChange?: (sentiment: string) => void
   syncingLeadIds?: Set<string>
-  onSyncAll?: () => Promise<void>
+  onSyncAll?: (forceReclassify: boolean) => Promise<void>
   isSyncingAll?: boolean
   hasMore?: boolean
   isLoadingMore?: boolean
@@ -59,6 +61,7 @@ export function ConversationFeed({
   const [searchInput, setSearchInput] = useState("")
   const [debouncedSearch, setDebouncedSearch] = useState("")
   const [sortBy, setSortBy] = useState<SortOption>("recent")
+  const [reanalyzeSentiments, setReanalyzeSentiments] = useState(false)
   
   // Ref for virtualization
   const parentRef = useRef<HTMLDivElement>(null)
@@ -203,27 +206,43 @@ export function ConversationFeed({
           </div>
         </div>
         
-        {/* Sync All Button */}
+        {/* Sync All Button with Re-analyze option */}
         {onSyncAll && activeCount > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full text-xs"
-            onClick={onSyncAll}
-            disabled={isSyncingAll}
-          >
-            {isSyncingAll ? (
-              <>
-                <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-                Syncing All...
-              </>
-            ) : (
-              <>
-                <RefreshCw className="h-3 w-3 mr-1.5" />
-                Sync All ({activeCount})
-              </>
-            )}
-          </Button>
+          <div className="space-y-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full text-xs"
+              onClick={() => onSyncAll(reanalyzeSentiments)}
+              disabled={isSyncingAll}
+            >
+              {isSyncingAll ? (
+                <>
+                  <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                  Syncing All...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-3 w-3 mr-1.5" />
+                  Sync All ({activeCount})
+                </>
+              )}
+            </Button>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="reanalyze-sentiments"
+                checked={reanalyzeSentiments}
+                onCheckedChange={(checked) => setReanalyzeSentiments(checked === true)}
+                disabled={isSyncingAll}
+              />
+              <Label 
+                htmlFor="reanalyze-sentiments" 
+                className="text-xs text-muted-foreground cursor-pointer"
+              >
+                Re-analyze sentiments
+              </Label>
+            </div>
+          </div>
         )}
       </div>
 

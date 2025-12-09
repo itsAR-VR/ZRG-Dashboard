@@ -253,7 +253,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
   }, [activeConversationId, fetchActiveConversation]);
 
   // Sync all SMS conversations
-  const handleSyncAll = useCallback(async () => {
+  const handleSyncAll = useCallback(async (forceReclassify: boolean = false) => {
     if (!activeWorkspace) {
       toast.error("No workspace selected");
       return;
@@ -269,15 +269,16 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     setSyncingLeadIds(new Set(smsLeadIds));
     
     try {
-      const result = await syncAllConversations(activeWorkspace);
+      const result = await syncAllConversations(activeWorkspace, { forceReclassify });
       
       if (result.success) {
-        const { totalLeads, totalImported, totalHealed, totalDraftsGenerated, errors } = result;
+        const { totalLeads, totalImported, totalHealed, totalDraftsGenerated, totalReclassified, errors } = result;
         
-        if (totalImported > 0 || totalHealed > 0 || totalDraftsGenerated > 0) {
+        if (totalImported > 0 || totalHealed > 0 || totalDraftsGenerated > 0 || totalReclassified > 0) {
           const parts = [];
           if (totalImported > 0) parts.push(`${totalImported} new messages`);
           if (totalHealed > 0) parts.push(`${totalHealed} fixed`);
+          if (totalReclassified > 0) parts.push(`${totalReclassified} sentiments re-analyzed`);
           if (totalDraftsGenerated > 0) parts.push(`${totalDraftsGenerated} AI drafts`);
           if (errors > 0) parts.push(`${errors} errors`);
           

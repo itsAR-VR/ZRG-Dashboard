@@ -21,7 +21,13 @@ interface SyncHistoryResult {
   healedCount?: number;  // Messages with corrected ghlId/timestamp
   totalMessages?: number;
   skippedDuplicates?: number;
+  reclassifiedSentiment?: boolean;  // Whether sentiment was re-analyzed
   error?: string;
+}
+
+// Options for sync operations
+interface SyncOptions {
+  forceReclassify?: boolean;  // Force sentiment re-analysis even if no new messages
 }
 
 // Extended result that tracks which channels were synced (for draft generation)
@@ -107,8 +113,11 @@ export async function getLeadSyncInfo(leadId: string): Promise<{
 /**
  * Smart sync that automatically determines which sync method to use
  * Based on lead's external IDs
+ * 
+ * @param leadId - The lead ID to sync
+ * @param options - Sync options including forceReclassify to re-analyze sentiment
  */
-export async function smartSyncConversation(leadId: string): Promise<SmartSyncResult> {
+export async function smartSyncConversation(leadId: string, options: SyncOptions = {}): Promise<SmartSyncResult> {
   // First get the lead's sync capabilities
   const syncInfo = await getLeadSyncInfo(leadId);
 
@@ -142,18 +151,20 @@ export async function smartSyncConversation(leadId: string): Promise<SmartSyncRe
   let totalHealed = 0;
   let totalMessages = 0;
   let totalSkipped = 0;
+  let reclassifiedSentiment = false;
   const errors: string[] = [];
 
   let syncedSms = false;
   let syncedEmail = false;
   // Sync SMS if available
   if (canSyncSms) {
-    const smsResult = await syncConversationHistory(leadId);
+    const smsResult = await syncConversationHistory(leadId, options);
     if (smsResult.success) {
       totalImported += smsResult.importedCount || 0;
       totalHealed += smsResult.healedCount || 0;
       totalMessages += smsResult.totalMessages || 0;
       totalSkipped += smsResult.skippedDuplicates || 0;
+      reclassifiedSentiment = reclassifiedSentiment || smsResult.reclassifiedSentiment || false;
       syncedSms = true;
     } else if (smsResult.error) {
       errors.push(`SMS: ${smsResult.error}`);
@@ -162,12 +173,13 @@ export async function smartSyncConversation(leadId: string): Promise<SmartSyncRe
 
   // Sync Email if available
   if (canSyncEmail) {
-    const emailResult = await syncEmailConversationHistory(leadId);
+    const emailResult = await syncEmailConversationHistory(leadId, options);
     if (emailResult.success) {
       totalImported += emailResult.importedCount || 0;
       totalHealed += emailResult.healedCount || 0;
       totalMessages += emailResult.totalMessages || 0;
       totalSkipped += emailResult.skippedDuplicates || 0;
+      reclassifiedSentiment = reclassifiedSentiment || emailResult.reclassifiedSentiment || false;
       syncedEmail = true;
     } else if (emailResult.error) {
       errors.push(`Email: ${emailResult.error}`);
@@ -186,6 +198,7 @@ export async function smartSyncConversation(leadId: string): Promise<SmartSyncRe
     healedCount: totalHealed,
     totalMessages,
     skippedDuplicates: totalSkipped,
+    reclassifiedSentiment,
     syncedSms,
     syncedEmail,
   };
@@ -239,8 +252,9 @@ async function messageExists(
  * Heals existing messages that were created without ghlId by matching body+direction
  * 
  * @param leadId - The internal lead ID
+ * @param options - Sync options including forceReclassify to re-analyze sentiment
  */
-export async function syncConversationHistory(leadId: string): Promise<SyncHistoryResult> {
+export async function syncConversationHistory(leadId: string, options: SyncOptions = {}): Promise<SyncHistoryResult> {
   try {
     // Get the lead with their client info
     const lead = await prisma.lead.findUnique({
@@ -375,9 +389,13 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
 
     console.log(`[Sync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
 
-    // Only re-run sentiment analysis if messages were actually imported or healed
-    // This prevents overwriting manually-set sentiment tags when nothing changed
-    if (importedCount > 0 || healedCount > 0) {
+    // Re-run sentiment analysis if:
+    // 1. Messages were actually imported or healed, OR
+    // 2. forceReclassify option is enabled (user explicitly requested re-analysis)
+    let reclassifiedSentiment = false;
+    const shouldReclassify = importedCount > 0 || healedCount > 0 || options.forceReclassify;
+    
+    if (shouldReclassify) {
       try {
         const messages = await prisma.message.findMany({
           where: { leadId },
@@ -400,7 +418,8 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
             },
           });
 
-          console.log(`[Sync] Reclassified sentiment to ${refreshedSentiment} and status to ${refreshedStatus}`);
+          reclassifiedSentiment = true;
+          console.log(`[Sync] Reclassified sentiment to ${refreshedSentiment} and status to ${refreshedStatus}${options.forceReclassify ? " (forced)" : ""}`);
         }
       } catch (reclassError) {
         console.error("[Sync] Failed to refresh sentiment after sync:", reclassError);
@@ -417,6 +436,7 @@ export async function syncConversationHistory(leadId: string): Promise<SyncHisto
       healedCount,
       totalMessages: ghlMessages.length,
       skippedDuplicates,
+      reclassifiedSentiment,
     };
   } catch (error) {
     console.error("[Sync] Failed to sync conversation history:", error);
@@ -433,6 +453,7 @@ interface SyncAllResult {
   totalImported: number;
   totalHealed: number;
   totalDraftsGenerated: number;
+  totalReclassified: number;
   errors: number;
   error?: string;
 }
@@ -443,8 +464,9 @@ interface SyncAllResult {
  * Also regenerates AI drafts for eligible leads (non-blacklisted)
  * 
  * @param clientId - The workspace/client ID to sync
+ * @param options - Sync options including forceReclassify to re-analyze sentiment for all leads
  */
-export async function syncAllConversations(clientId: string): Promise<SyncAllResult> {
+export async function syncAllConversations(clientId: string, options: SyncOptions = {}): Promise<SyncAllResult> {
   try {
     // Get ALL leads for this client (both SMS and Email capable)
     const leads = await prisma.lead.findMany({
@@ -463,11 +485,12 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
       },
     });
 
-    console.log(`[SyncAll] Starting sync for ${leads.length} leads in client ${clientId}`);
+    console.log(`[SyncAll] Starting sync for ${leads.length} leads in client ${clientId}${options.forceReclassify ? " (with sentiment re-analysis)" : ""}`);
 
     let totalImported = 0;
     let totalHealed = 0;
     let totalDraftsGenerated = 0;
+    let totalReclassified = 0;
     let errors = 0;
 
     // Process leads in parallel with a concurrency limit (5 at a time to avoid overwhelming APIs)
@@ -478,7 +501,7 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
 
       // Use smartSyncConversation which handles both SMS and Email
       const results = await Promise.allSettled(
-        batch.map(lead => smartSyncConversation(lead.id))
+        batch.map(lead => smartSyncConversation(lead.id, options))
       );
 
       // Process sync results and generate drafts for eligible leads
@@ -489,6 +512,9 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
         if (result.status === "fulfilled" && result.value.success) {
           totalImported += result.value.importedCount || 0;
           totalHealed += result.value.healedCount || 0;
+          if (result.value.reclassifiedSentiment) {
+            totalReclassified++;
+          }
 
           // After successful sync, regenerate AI draft if eligible
           try {
@@ -531,7 +557,7 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
       }
     }
 
-    console.log(`[SyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalDraftsGenerated} drafts, ${errors} errors`);
+    console.log(`[SyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalReclassified} reclassified, ${totalDraftsGenerated} drafts, ${errors} errors`);
 
     // Auto-run bounce cleanup after syncing
     console.log(`[SyncAll] Running bounce cleanup for client ${clientId}...`);
@@ -552,6 +578,7 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
       totalImported,
       totalHealed,
       totalDraftsGenerated,
+      totalReclassified,
       errors,
     };
   } catch (error) {
@@ -562,6 +589,7 @@ export async function syncAllConversations(clientId: string): Promise<SyncAllRes
       totalImported: 0,
       totalHealed: 0,
       totalDraftsGenerated: 0,
+      totalReclassified: 0,
       errors: 1,
       error: error instanceof Error ? error.message : "Unknown error",
     };
@@ -591,10 +619,11 @@ function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): str
  * Sync email conversation history from EmailBison for a lead
  * Uses emailBisonReplyId as the source of truth for deduplication
  * Heals existing messages that were created without the reply ID
- * 
+ *
  * @param leadId - The internal lead ID
+ * @param options - Sync options including forceReclassify to re-analyze sentiment
  */
-export async function syncEmailConversationHistory(leadId: string): Promise<SyncHistoryResult> {
+export async function syncEmailConversationHistory(leadId: string, options: SyncOptions = {}): Promise<SyncHistoryResult> {
   try {
     // Get the lead with their client info and message count
     const lead = await prisma.lead.findUnique({
@@ -827,9 +856,13 @@ export async function syncEmailConversationHistory(leadId: string): Promise<Sync
 
     console.log(`[EmailSync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
 
-    // Only re-run sentiment analysis if messages were actually imported or healed
-    // This prevents overwriting manually-set sentiment tags when nothing changed
-    if (importedCount > 0 || healedCount > 0) {
+    // Re-run sentiment analysis if:
+    // 1. Messages were actually imported or healed, OR
+    // 2. forceReclassify option is enabled (user explicitly requested re-analysis)
+    let reclassifiedSentiment = false;
+    const shouldReclassify = importedCount > 0 || healedCount > 0 || options.forceReclassify;
+    
+    if (shouldReclassify) {
       try {
         const messages = await prisma.message.findMany({
           where: { leadId, channel: "email" },
@@ -852,7 +885,8 @@ export async function syncEmailConversationHistory(leadId: string): Promise<Sync
             },
           });
 
-          console.log(`[EmailSync] Reclassified sentiment to ${refreshedSentiment}`);
+          reclassifiedSentiment = true;
+          console.log(`[EmailSync] Reclassified sentiment to ${refreshedSentiment}${options.forceReclassify ? " (forced)" : ""}`);
         }
       } catch (reclassError) {
         console.error("[EmailSync] Failed to refresh sentiment after sync:", reclassError);
@@ -869,6 +903,7 @@ export async function syncEmailConversationHistory(leadId: string): Promise<Sync
       healedCount,
       totalMessages: replies.length + sentEmails.length,
       skippedDuplicates,
+      reclassifiedSentiment,
     };
   } catch (error) {
     console.error("[EmailSync] Failed to sync email conversation history:", error);
