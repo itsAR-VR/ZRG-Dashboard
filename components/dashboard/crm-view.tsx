@@ -24,8 +24,6 @@ import {
   Globe,
   MapPin,
   Sparkles,
-  ArrowUp,
-  ArrowDown,
   ChevronsUp,
   ChevronsDown,
   RefreshCw,
@@ -40,7 +38,6 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Separator } from "@/components/ui/separator"
 import { 
   getCRMLeadsCursor, 
-  getCRMLeadsFromEnd,
   updateLeadStatus, 
   deleteLead, 
   type CRMLeadData,
@@ -402,18 +399,21 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
   })
 
   // Load more when scrolling near the end
+  // Note: We use virtualItems length change as a proxy for scroll position changes
+  const virtualItems = rowVirtualizer.getVirtualItems()
+  const lastVirtualItem = virtualItems.at(-1)
+  
   useEffect(() => {
-    const lastItem = rowVirtualizer.getVirtualItems().at(-1)
-    if (!lastItem) return
+    if (!lastVirtualItem) return
 
     if (
-      lastItem.index >= allLeads.length - 1 &&
+      lastVirtualItem.index >= allLeads.length - 1 &&
       hasNextPage &&
       !isFetchingNextPage
     ) {
       fetchNextPage()
     }
-  }, [rowVirtualizer.getVirtualItems(), hasNextPage, isFetchingNextPage, allLeads.length, fetchNextPage])
+  }, [lastVirtualItem?.index, hasNextPage, isFetchingNextPage, allLeads.length, fetchNextPage])
 
   // Subscribe to realtime lead updates
   useEffect(() => {
@@ -459,11 +459,14 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
     rowVirtualizer.scrollToIndex(0)
   }
 
-  const jumpToBottom = async () => {
-    // Fetch from end and scroll to last item
-    const result = await getCRMLeadsFromEnd(queryOptions)
-    if (result.success) {
+  const jumpToBottom = () => {
+    // Scroll to the last currently loaded item
+    // With cursor pagination, we can't efficiently jump to the absolute end
+    // of a 50K+ dataset, so we scroll to whatever is currently loaded
+    if (allLeads.length > 0) {
       rowVirtualizer.scrollToIndex(allLeads.length - 1)
+      // If there are more pages, the infinite scroll will automatically load them
+      // as the user continues scrolling
     }
   }
 
