@@ -23,11 +23,11 @@ const SENTIMENT_OPTIONS = [
   { value: "Meeting Requested", label: "Meeting Requested" },
   { value: "Call Requested", label: "Call Requested" },
   { value: "Information Requested", label: "Info Requested" },
+  { value: "Interested", label: "Interested" },
   { value: "Not Interested", label: "Not Interested" },
   { value: "Blacklist", label: "Blacklist" },
   { value: "Follow Up", label: "Follow Up" },
   { value: "Out of Office", label: "Out of Office" },
-  { value: "Positive", label: "Positive" },
   { value: "Neutral", label: "Neutral" },
 ] as const
 

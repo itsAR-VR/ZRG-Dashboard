@@ -55,8 +55,9 @@ function mapSentimentToClassification(sentimentTag: string | null): string {
     "Out of Office": "out-of-office",
     "Follow Up": "follow-up",
     "Information Requested": "follow-up",
+    "Interested": "interested",
     Blacklist: "not-interested",
-    Positive: "new",
+    Positive: "interested", // Legacy - maps to same as "Interested"
     Neutral: "new",
   };
   return mapping[sentimentTag || ""] || "new";

@@ -914,8 +914,10 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
 
     if (shouldReclassify) {
       try {
+        // IMPORTANT: Get ALL messages across all channels (SMS, email, LinkedIn)
+        // to ensure sentiment classification considers the full conversation history
         const messages = await prisma.message.findMany({
-          where: { leadId, channel: "email" },
+          where: { leadId },
           orderBy: { sentAt: "asc" },
         });
 
