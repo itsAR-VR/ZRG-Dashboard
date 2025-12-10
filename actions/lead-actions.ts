@@ -162,8 +162,8 @@ export async function getConversations(clientId?: string | null): Promise<{
       const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
       const primaryChannel = detectPrimaryChannel(latestMessage, lead);
       const channels = getChannelsFromMessages(lead.messages);
-      const availableChannels = getAvailableChannels({ 
-        phone: lead.phone, 
+      const availableChannels = getAvailableChannels({
+        phone: lead.phone,
         email: lead.email,
         linkedinUrl: lead.linkedinUrl,
         linkedinId: lead.linkedinId,
@@ -341,8 +341,8 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
     const latestMessage = lead.messages[lead.messages.length - 1];
     const primaryChannel = detectPrimaryChannel(latestMessage, lead);
     const channels = getChannelsFromMessages(lead.messages);
-    const availableChannels = getAvailableChannels({ 
-      phone: lead.phone, 
+    const availableChannels = getAvailableChannels({
+      phone: lead.phone,
       email: lead.email,
       linkedinUrl: lead.linkedinUrl,
       linkedinId: lead.linkedinId,
@@ -456,8 +456,8 @@ function transformLeadToConversation(lead: any): ConversationData {
   const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
   const primaryChannel = detectPrimaryChannel(latestMessage, lead);
   const channels = getChannelsFromMessages(lead.messages);
-  const availableChannels = getAvailableChannels({ 
-    phone: lead.phone, 
+  const availableChannels = getAvailableChannels({
+    phone: lead.phone,
     email: lead.email,
     linkedinUrl: lead.linkedinUrl,
     linkedinId: lead.linkedinId,
@@ -797,6 +797,99 @@ export async function getConversationsFromEnd(
       nextCursor: null,
       hasMore: false,
       error: `Failed to fetch conversations: ${errorMessage}`,
+    };
+  }
+}
+
+// =============================================================================
+// Diagnostic Functions for Debugging
+// =============================================================================
+
+/**
+ * Diagnostic function to analyze sentiment tag distribution for a workspace
+ * Helps debug issues with "requires attention" counts and filter functionality
+ */
+export async function diagnoseSentimentTags(clientId?: string | null): Promise<{
+  success: boolean;
+  data?: {
+    totalLeads: number;
+    sentimentDistribution: Record<string, number>;
+    attentionTagsCount: number;
+    blacklistedCount: number;
+    leadsWithNullSentiment: number;
+    sampleLeadsNeedingAttention: Array<{ id: string; name: string; sentimentTag: string | null; status: string }>;
+  };
+  error?: string;
+}> {
+  try {
+    const clientFilter = clientId ? { clientId } : {};
+    const attentionTags = [
+      "Meeting Requested",
+      "Call Requested",
+      "Information Requested",
+      "Positive",
+      "Interested",
+      "Follow Up"
+    ];
+
+    // Get all leads for the workspace
+    const leads = await prisma.lead.findMany({
+      where: clientFilter,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        sentimentTag: true,
+        status: true,
+      },
+    });
+
+    // Calculate sentiment distribution
+    const sentimentDistribution: Record<string, number> = {};
+    let leadsWithNullSentiment = 0;
+
+    for (const lead of leads) {
+      if (lead.sentimentTag === null) {
+        leadsWithNullSentiment++;
+        sentimentDistribution["(null)"] = (sentimentDistribution["(null)"] || 0) + 1;
+      } else {
+        sentimentDistribution[lead.sentimentTag] = (sentimentDistribution[lead.sentimentTag] || 0) + 1;
+      }
+    }
+
+    // Count leads that should require attention
+    const attentionLeads = leads.filter(
+      (lead) => attentionTags.includes(lead.sentimentTag || "") && lead.status !== "blacklisted"
+    );
+
+    // Count blacklisted
+    const blacklistedCount = leads.filter((lead) => lead.status === "blacklisted").length;
+
+    // Get sample leads that require attention
+    const sampleLeadsNeedingAttention = attentionLeads.slice(0, 5).map((lead) => ({
+      id: lead.id,
+      name: [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown",
+      sentimentTag: lead.sentimentTag,
+      status: lead.status,
+    }));
+
+    return {
+      success: true,
+      data: {
+        totalLeads: leads.length,
+        sentimentDistribution,
+        attentionTagsCount: attentionLeads.length,
+        blacklistedCount,
+        leadsWithNullSentiment,
+        sampleLeadsNeedingAttention,
+      },
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    console.error("Failed to diagnose sentiment tags:", errorMessage, error);
+    return {
+      success: false,
+      error: `Failed to diagnose sentiment tags: ${errorMessage}`,
     };
   }
 }

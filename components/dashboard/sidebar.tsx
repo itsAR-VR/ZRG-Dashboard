@@ -10,7 +10,6 @@ import {
   Settings,
   AlertCircle,
   FileEdit,
-  Send,
   Mail,
   MessageSquare,
   Linkedin,
@@ -66,7 +65,6 @@ const navItems = [
 interface FilterCounts {
   attention: number
   drafts: number
-  awaiting: number
   needsRepair: number
 }
 
@@ -81,38 +79,47 @@ export function Sidebar({
   onWorkspaceChange,
   workspaces,
 }: SidebarProps) {
-  const [counts, setCounts] = useState<FilterCounts>({
-    attention: 0,
-    drafts: 0,
-    awaiting: 0,
-    needsRepair: 0,
-  })
+  const [counts, setCounts] = useState<FilterCounts | null>(null)
+  const [isLoadingCounts, setIsLoadingCounts] = useState(true)
   const { user } = useUser()
 
-  // Fetch counts on mount, when workspace changes, and periodically
+  // Fetch counts when workspace changes and periodically
+  // Don't fetch until workspace is set to avoid showing all-workspace counts
   useEffect(() => {
+    let cancelled = false
+
     async function fetchCounts() {
+      // Only start loading indicator on initial fetch, not periodic refreshes
+      if (counts === null) {
+        setIsLoadingCounts(true)
+      }
+
       const result = await getInboxCounts(activeWorkspace)
-      setCounts({
-        attention: result.requiresAttention,
-        drafts: result.draftsForApproval,
-        awaiting: result.awaitingReply,
-        needsRepair: result.needsRepair,
-      })
+      
+      if (!cancelled) {
+        setCounts({
+          attention: result.requiresAttention,
+          drafts: result.draftsForApproval,
+          needsRepair: result.needsRepair,
+        })
+        setIsLoadingCounts(false)
+      }
     }
 
     fetchCounts()
     
     // Refresh counts every 30 seconds
     const interval = setInterval(fetchCounts, 30000)
-    return () => clearInterval(interval)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
   }, [activeWorkspace])
 
   const filterItems = [
-    { id: "attention", label: "Requires Attention", icon: AlertCircle, count: counts.attention, variant: "destructive" as const },
-    { id: "drafts", label: "Drafts for Approval", icon: FileEdit, count: counts.drafts, variant: "warning" as const },
-    { id: "awaiting", label: "Awaiting Reply", icon: Send, count: counts.awaiting, variant: "secondary" as const },
-    { id: "needs_repair", label: "Needs Repair", icon: Wrench, count: counts.needsRepair, variant: "outline" as const },
+    { id: "attention", label: "Requires Attention", icon: AlertCircle, count: counts?.attention ?? 0, variant: "destructive" as const },
+    { id: "drafts", label: "Drafts for Approval", icon: FileEdit, count: counts?.drafts ?? 0, variant: "warning" as const },
+    { id: "needs_repair", label: "Needs Repair", icon: Wrench, count: counts?.needsRepair ?? 0, variant: "outline" as const },
   ]
 
   const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)
@@ -206,7 +213,8 @@ export function Sidebar({
                     <item.icon className="h-4 w-4" />
                     <span className="text-sm">{item.label}</span>
                   </span>
-                  {item.count > 0 && (
+                  {/* Hide counts while loading to avoid showing stale/incorrect data */}
+                  {!isLoadingCounts && item.count > 0 && (
                     <Badge
                       variant={item.variant === "warning" ? "outline" : item.variant}
                       className={cn(

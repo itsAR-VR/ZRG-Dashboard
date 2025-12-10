@@ -30,6 +30,13 @@ export default function DashboardPage() {
     setActiveView("inbox")
   }
 
+  // Handler to clear all filters (channel and sidebar filter)
+  // Note: sentiment filter is managed inside InboxView
+  const handleClearFilters = () => {
+    setActiveChannel("all")
+    setActiveFilter("")
+  }
+
   // Fetch workspaces on mount
   useEffect(() => {
     async function fetchWorkspaces() {
@@ -69,6 +76,7 @@ export default function DashboardPage() {
             activeFilter={activeFilter}
             activeWorkspace={activeWorkspace}
             initialConversationId={selectedLeadId}
+            onClearFilters={handleClearFilters}
           />
         )
     }

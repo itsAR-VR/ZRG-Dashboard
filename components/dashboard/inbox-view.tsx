@@ -14,7 +14,7 @@ import {
 } from "@/actions/lead-actions";
 import { syncConversationHistory, syncAllConversations, syncEmailConversationHistory, syncAllEmailConversations, smartSyncConversation } from "@/actions/message-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
-import { Loader2, Wifi, WifiOff, Inbox, RefreshCw } from "lucide-react";
+import { Loader2, Wifi, WifiOff, Inbox, RefreshCw, FilterX } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ interface InboxViewProps {
   activeWorkspace: string | null;
   initialConversationId?: string | null;
   onLeadSelect?: (leadId: string | null) => void;
+  onClearFilters?: () => void;
 }
 
 // Polling interval in milliseconds (30 seconds)
@@ -76,7 +77,7 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
   };
 }
 
-export function InboxView({ activeChannel, activeFilter, activeWorkspace, initialConversationId, onLeadSelect }: InboxViewProps) {
+export function InboxView({ activeChannel, activeFilter, activeWorkspace, initialConversationId, onLeadSelect, onClearFilters }: InboxViewProps) {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -374,6 +375,15 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
   // Just use the conversations directly
   const filteredConversations = conversations;
 
+  // Check if any filters are currently active
+  const hasActiveFilters = activeFilter !== "" || activeSentiment !== "all" || activeChannel !== "all";
+
+  // Handle clearing all filters (resets sentiment locally and calls parent for channel/filter)
+  const handleClearAllFilters = useCallback(() => {
+    setActiveSentiment("all");
+    onClearFilters?.();
+  }, [onClearFilters]);
+
   // Check if current conversation is syncing
   const isCurrentConversationSyncing = activeConversationId 
     ? syncingLeadIds.has(activeConversationId) 
@@ -424,6 +434,33 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
 
   // Empty state when no conversations (only show if not loading)
   if (conversations.length === 0 && !isLoading) {
+    // Show different message if filters are active vs no conversations at all
+    if (hasActiveFilters) {
+      return (
+        <div className="flex flex-1 items-center justify-center">
+          <div className="text-center space-y-4">
+            <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
+              <FilterX className="h-12 w-12 text-muted-foreground" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold">No matching conversations</h3>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                No conversations match your current filters. Try adjusting your filters or clear them to see all conversations.
+              </p>
+              <Button 
+                variant="outline" 
+                onClick={handleClearAllFilters} 
+                className="mt-4"
+              >
+                <FilterX className="h-4 w-4 mr-2" />
+                Clear all filters
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-1 items-center justify-center">
         <div className="text-center space-y-4">
