@@ -5,9 +5,55 @@ import { sendSMS, exportMessages, type GHLExportedMessage } from "@/lib/ghl-api"
 import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
+import { classifySentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply } from "@/actions/email-actions";
 import { sendLinkedInMessageWithWaterfall, type SendResult as UnipileSendResult } from "@/lib/unipile-api";
+
+/**
+ * Pre-classification check for sentiment analysis.
+ * Returns a sentiment tag directly if we can determine it without AI,
+ * or null if AI classification is needed.
+ * 
+ * Rules:
+ * - If lead has never responded (no inbound messages) → "Neutral"
+ * - If agent sent last message AND lead hasn't responded in 7+ days → "Neutral"
+ * - Otherwise → null (use AI classification)
+ */
+function preClassifySentiment(
+  messages: { direction: string; sentAt: Date }[]
+): SentimentTag | null {
+  if (messages.length === 0) {
+    return "Neutral";
+  }
+
+  // Find the last inbound (lead) message
+  const inboundMessages = messages.filter(m => m.direction === "inbound");
+  const lastMessage = messages[messages.length - 1];
+
+  // If lead has never responded, classify as Neutral
+  if (inboundMessages.length === 0) {
+    console.log("[PreClassify] Lead has never responded → Neutral");
+    return "Neutral";
+  }
+
+  // Get the last inbound message
+  const lastInboundMessage = inboundMessages[inboundMessages.length - 1];
+
+  // If agent sent the last message and lead hasn't responded in 7+ days
+  if (lastMessage.direction === "outbound") {
+    const daysSinceLastInbound = Math.floor(
+      (Date.now() - new Date(lastInboundMessage.sentAt).getTime()) / (1000 * 60 * 60 * 24)
+    );
+
+    if (daysSinceLastInbound > 7) {
+      console.log(`[PreClassify] Agent sent last message, lead hasn't responded in ${daysSinceLastInbound} days → Neutral`);
+      return "Neutral";
+    }
+  }
+
+  // AI classification needed
+  return null;
+}
 
 interface SendMessageResult {
   success: boolean;
@@ -406,25 +452,39 @@ export async function syncConversationHistory(leadId: string, options: SyncOptio
           orderBy: { sentAt: "asc" },
         });
 
-        const transcript = messages
-          .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
-          .join("\n");
+        // First, check if we can determine sentiment without AI (pre-classification)
+        const preClassified = preClassifySentiment(messages);
+        
+        let refreshedSentiment: SentimentTag;
+        
+        if (preClassified !== null) {
+          // Pre-classification determined the sentiment
+          refreshedSentiment = preClassified;
+        } else {
+          // Need AI classification - build transcript
+          const transcript = messages
+            .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
+            .join("\n");
 
-        if (transcript.trim().length > 0) {
-          const refreshedSentiment = await classifySentiment(transcript);
-          const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
-
-          await prisma.lead.update({
-            where: { id: leadId },
-            data: {
-              sentimentTag: refreshedSentiment,
-              status: refreshedStatus,
-            },
-          });
-
-          reclassifiedSentiment = true;
-          console.log(`[Sync] Reclassified sentiment to ${refreshedSentiment} and status to ${refreshedStatus}${options.forceReclassify ? " (forced)" : ""}`);
+          if (transcript.trim().length === 0) {
+            refreshedSentiment = "Neutral";
+          } else {
+            refreshedSentiment = await classifySentiment(transcript);
+          }
         }
+
+        const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
+
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: {
+            sentimentTag: refreshedSentiment,
+            status: refreshedStatus,
+          },
+        });
+
+        reclassifiedSentiment = true;
+        console.log(`[Sync] Reclassified sentiment to ${refreshedSentiment} and status to ${refreshedStatus}${options.forceReclassify ? " (forced)" : ""}`);
       } catch (reclassError) {
         console.error("[Sync] Failed to refresh sentiment after sync:", reclassError);
       }
@@ -873,25 +933,39 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
           orderBy: { sentAt: "asc" },
         });
 
-        const transcript = messages
-          .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
-          .join("\n");
+        // First, check if we can determine sentiment without AI (pre-classification)
+        const preClassified = preClassifySentiment(messages);
+        
+        let refreshedSentiment: SentimentTag;
+        
+        if (preClassified !== null) {
+          // Pre-classification determined the sentiment
+          refreshedSentiment = preClassified;
+        } else {
+          // Need AI classification - build transcript
+          const transcript = messages
+            .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
+            .join("\n");
 
-        if (transcript.trim().length > 0) {
-          const refreshedSentiment = await classifySentiment(transcript);
-          const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
-
-          await prisma.lead.update({
-            where: { id: leadId },
-            data: {
-              sentimentTag: refreshedSentiment,
-              status: refreshedStatus,
-            },
-          });
-
-          reclassifiedSentiment = true;
-          console.log(`[EmailSync] Reclassified sentiment to ${refreshedSentiment}${options.forceReclassify ? " (forced)" : ""}`);
+          if (transcript.trim().length === 0) {
+            refreshedSentiment = "Neutral";
+          } else {
+            refreshedSentiment = await classifySentiment(transcript);
+          }
         }
+
+        const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
+
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: {
+            sentimentTag: refreshedSentiment,
+            status: refreshedStatus,
+          },
+        });
+
+        reclassifiedSentiment = true;
+        console.log(`[EmailSync] Reclassified sentiment to ${refreshedSentiment}${options.forceReclassify ? " (forced)" : ""}`);
       } catch (reclassError) {
         console.error("[EmailSync] Failed to refresh sentiment after sync:", reclassError);
       }

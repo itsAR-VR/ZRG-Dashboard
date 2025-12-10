@@ -9,9 +9,8 @@ export const SENTIMENT_TAGS = [
   "Blacklist",
   "Follow Up",
   "Out of Office",
-  "Positive",
+  "Interested",
   "Neutral",
-  "Interested", // From EmailBison LEAD_INTERESTED events
   "Snoozed", // Temporarily hidden from follow-up list
 ] as const;
 
@@ -26,10 +25,9 @@ export const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
   "Blacklist": "blacklisted",
   "Follow Up": "new",
   "Out of Office": "new",
-  "Positive": "qualified",
+  "Interested": "qualified",
   "Neutral": "new",
-  "Interested": "qualified", // From EmailBison
-  "Snoozed": "new", // Temporarily hidden from follow-up list
+  "Snoozed": "new",
 };
 
 const openai = new OpenAI({
@@ -38,7 +36,12 @@ const openai = new OpenAI({
 
 /**
  * Classify conversation sentiment using OpenAI
- * Explicitly handles nuanced “open to offers” cases to avoid false negatives.
+ * 
+ * IMPORTANT: This function should only be called AFTER pre-classification checks:
+ * - If lead has never responded → return "Neutral" (don't call this function)
+ * - If agent sent last message AND lead hasn't responded in 7+ days → return "Neutral"
+ * 
+ * This function analyzes the conversation content when the lead HAS responded.
  */
 export async function classifySentiment(transcript: string): Promise<SentimentTag> {
   if (!transcript || !process.env.OPENAI_API_KEY) {
@@ -50,29 +53,31 @@ export async function classifySentiment(transcript: string): Promise<SentimentTa
     const response = await openai.responses.create({
       model: "gpt-5-mini",
       instructions: `<task>
-You are a sales conversation classifier. Analyze the conversation transcript and classify it into ONE category.
+You are a sales conversation classifier. Analyze the conversation transcript and classify it into ONE category based on the LEAD's responses (not the Agent's messages).
 </task>
 
 <categories>
-- "Meeting Requested" - Lead wants to schedule a meeting or video call
-- "Call Requested" - Lead provides a phone number or explicitly asks for a phone call
-- "Information Requested" - Lead asks for more details/information, or signals openness to continue the conversation (e.g., "let's talk", "let's connect", "let's chat", "tell me more", "what do you have?")
-- "Not Interested" - Lead explicitly declines or wants no further contact
-- "Blacklist" - Lead explicitly asks to stop contact, unsubscribe, or uses profanity/threats
-- "Follow Up" - Lead is somewhat open but defers, asks to revisit later, or gives a soft "not now"
-- "Out of Office" - Lead mentions being away/unavailable
-- "Positive" - Lead shows general openness/interest without a specific request (e.g., "sure", "sounds good", "I'm interested", "okay", "yes", "listening to offers", "open to suggestions")
-- "Neutral" - Pure acknowledgment with no clear positive or negative intent (e.g., "ok", "got it", "received")
+- "Meeting Requested" - Lead explicitly asks for or confirms a meeting/video call time
+- "Call Requested" - Lead provides a phone number or explicitly asks to be called
+- "Information Requested" - Lead asks for more details ("tell me more", "what do you have?", "let's talk", "let's connect")
+- "Not Interested" - Lead explicitly declines or says no to further contact
+- "Blacklist" - Lead is hostile, demands removal, threatens legal action, or uses profanity
+- "Follow Up" - Lead responded but deferred action ("I'm busy right now", "contact me later", "not right now", "let me think about it", "I'll get back to you") OR gave a simple acknowledgment without commitment ("ok", "thanks", "got it")
+- "Out of Office" - Lead mentions being on vacation, traveling, or temporarily unavailable
+- "Interested" - Lead shows clear interest or openness ("sure", "sounds good", "I'm interested", "yes", "okay let's do it", "listening to offers", "open to suggestions")
+- "Neutral" - Lead's response is genuinely ambiguous with no clear intent
 </categories>
 
 <classification_rules>
-- Short affirmative responses like "sure", "sounds good", "I'm interested", "yes", "okay" → "Positive", NOT "Neutral"
-- Responses like "let's talk", "let's connect", "let's chat" → "Information Requested"
-- "always listening to offers", "open to suggestions", "give me your offer" → "Positive" (or "Follow Up" if they defer)
-- Only use "Not Interested" when the lead clearly declines or asks to stop
-- Only use "Neutral" for pure acknowledgments with no sentiment signal
-- Use "Blacklist" only for explicit opt-out requests or abusive language
-- When in doubt between "Neutral" and "Positive", prefer "Positive"
+CRITICAL RULES:
+1. "Follow Up" is ONLY for leads who HAVE responded - it means they acknowledged but want to be contacted later
+2. Simple acknowledgments like "ok", "thanks", "got it" without clear positive intent → "Follow Up" (they engaged but didn't commit)
+3. Affirmative responses like "sure", "sounds good", "yes", "I'm interested" → "Interested"
+4. Requests for more info like "tell me more", "let's talk", "what do you offer" → "Information Requested"
+5. Deferrals like "I'm busy", "not now", "maybe later", "let me think" → "Follow Up"
+6. Only use "Neutral" when the response is truly ambiguous (rare)
+7. Only use "Not Interested" for clear rejections, not just silence
+8. Only use "Blacklist" for explicit hostility or opt-out demands
 </classification_rules>
 
 <output_format>
@@ -91,10 +96,14 @@ ${transcript}
       return result;
     }
 
+    // Handle legacy "Positive" responses from AI by mapping to "Interested"
+    if (result === "Positive") {
+      return "Interested";
+    }
+
     return "Neutral";
   } catch (error) {
     console.error("OpenAI classification error:", error);
     return "Neutral";
   }
 }
-
