@@ -162,7 +162,12 @@ export async function getConversations(clientId?: string | null): Promise<{
       const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
       const primaryChannel = detectPrimaryChannel(latestMessage, lead);
       const channels = getChannelsFromMessages(lead.messages);
-      const availableChannels = getAvailableChannels({ phone: lead.phone, email: lead.email });
+      const availableChannels = getAvailableChannels({ 
+        phone: lead.phone, 
+        email: lead.email,
+        linkedinUrl: lead.linkedinUrl,
+        linkedinId: lead.linkedinId,
+      });
       const campaignId = primaryChannel === "email" ? lead.emailCampaignId ?? lead.campaignId : lead.campaignId;
       const channelDrafts = lead.aiDrafts.filter(
         (draft) => draft.channel === primaryChannel || (!draft.channel && primaryChannel === "sms")
@@ -336,7 +341,12 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
     const latestMessage = lead.messages[lead.messages.length - 1];
     const primaryChannel = detectPrimaryChannel(latestMessage, lead);
     const channels = getChannelsFromMessages(lead.messages);
-    const availableChannels = getAvailableChannels({ phone: lead.phone, email: lead.email });
+    const availableChannels = getAvailableChannels({ 
+      phone: lead.phone, 
+      email: lead.email,
+      linkedinUrl: lead.linkedinUrl,
+      linkedinId: lead.linkedinId,
+    });
 
     return {
       success: true,
@@ -446,7 +456,12 @@ function transformLeadToConversation(lead: any): ConversationData {
   const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
   const primaryChannel = detectPrimaryChannel(latestMessage, lead);
   const channels = getChannelsFromMessages(lead.messages);
-  const availableChannels = getAvailableChannels({ phone: lead.phone, email: lead.email });
+  const availableChannels = getAvailableChannels({ 
+    phone: lead.phone, 
+    email: lead.email,
+    linkedinUrl: lead.linkedinUrl,
+    linkedinId: lead.linkedinId,
+  });
   const campaignId = primaryChannel === "email" ? lead.emailCampaignId ?? lead.campaignId : lead.campaignId;
   const channelDrafts = lead.aiDrafts?.filter(
     (draft: any) => draft.channel === primaryChannel || (!draft.channel && primaryChannel === "sms")
@@ -510,11 +525,11 @@ export async function getConversationsCursor(
 
     // Build the where clause for filtering
     const whereConditions: any[] = [];
-    
+
     if (clientId) {
       whereConditions.push({ clientId });
     }
-    
+
     // Search filter
     if (search && search.trim()) {
       const searchTerm = search.trim();
@@ -664,11 +679,11 @@ export async function getConversationsFromEnd(
 
     // Build the where clause (same as cursor version)
     const whereConditions: any[] = [];
-    
+
     if (clientId) {
       whereConditions.push({ clientId });
     }
-    
+
     if (search && search.trim()) {
       const searchTerm = search.trim();
       whereConditions.push({
@@ -761,7 +776,7 @@ export async function getConversationsFromEnd(
 
     // Reverse to get correct display order
     const reversedLeads = leads.reverse();
-    
+
     // Transform to conversation format
     const conversations = reversedLeads.map(transformLeadToConversation);
 

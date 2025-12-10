@@ -77,12 +77,21 @@ export async function GET(request: NextRequest) {
       }
 
       try {
+        // Build ClayEnrichmentRequest object
+        const enrichmentRequest = {
+          leadId: lead.id,
+          emailAddress: lead.email!,
+          firstName: lead.firstName || undefined,
+          lastName: lead.lastName || undefined,
+          fullName: [lead.firstName, lead.lastName].filter(Boolean).join(" ") || undefined,
+          companyName: lead.companyName || undefined,
+          companyDomain: lead.companyWebsite || undefined,
+          state: lead.companyState || undefined,
+          linkedInProfile: lead.linkedinUrl || undefined,
+        };
+
         const result = await triggerEnrichmentForLead(
-          lead.id,
-          lead.email!,
-          lead.firstName || undefined,
-          lead.lastName || undefined,
-          undefined, // company not stored on lead
+          enrichmentRequest,
           missingLinkedIn,
           missingPhone
         );
