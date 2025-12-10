@@ -56,6 +56,7 @@ export async function markLeadsForEnrichment(clientId: string): Promise<{ marked
     },
     data: {
       enrichmentStatus: "pending",
+      enrichmentLastRetry: new Date(),
     },
   });
 
@@ -93,7 +94,10 @@ export async function enrichSingleLead(leadId: string): Promise<{
   // Mark as pending
   await prisma.lead.update({
     where: { id: leadId },
-    data: { enrichmentStatus: "pending" },
+    data: { 
+      enrichmentStatus: "pending",
+      enrichmentLastRetry: new Date(),
+    },
   });
 
   // Build enrichment request
@@ -140,6 +144,7 @@ export async function resetFailedEnrichments(clientId: string): Promise<{ reset:
     },
     data: {
       enrichmentStatus: "pending",
+      enrichmentLastRetry: new Date(),
       enrichedAt: null,
     },
   });

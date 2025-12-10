@@ -246,6 +246,7 @@ export async function findOrCreateLead(
       senderAccountId: campaignIds?.senderAccountId || null,
       status: "new",
       enrichmentStatus,
+      enrichmentLastRetry: enrichmentStatus === "pending" ? new Date() : null,
     },
   });
 
