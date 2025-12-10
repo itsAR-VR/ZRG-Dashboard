@@ -9,6 +9,7 @@ import { verifyUnipileWebhookSecret } from "@/lib/unipile-api";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { classifySentiment } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
+import { extractContactFromMessageContent } from "@/lib/signature-extractor";
 
 // Unipile webhook event types
 type UnipileEventType =
@@ -194,6 +195,31 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
   });
 
   console.log(`[LinkedIn Webhook] Created message ${newMessage.id} for lead ${lead.id}`);
+
+  // ENRICHMENT: Extract contact info from message content
+  // Leads often share their phone number in LinkedIn messages
+  const messageExtraction = extractContactFromMessageContent(message.text);
+  if (messageExtraction.foundInMessage) {
+    const currentLead = await prisma.lead.findUnique({ where: { id: lead.id } });
+    const messageUpdates: Record<string, unknown> = {};
+
+    // Phone is the main thing we'd find in LinkedIn messages
+    // (LinkedIn URL would already be known)
+    if (messageExtraction.phone && !currentLead?.phone) {
+      messageUpdates.phone = messageExtraction.phone;
+      console.log(`[LinkedIn Webhook] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
+    }
+
+    if (Object.keys(messageUpdates).length > 0) {
+      messageUpdates.enrichmentSource = "message_content";
+      messageUpdates.enrichedAt = new Date();
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: messageUpdates,
+      });
+      console.log(`[LinkedIn Webhook] Updated lead ${lead.id} from message content`);
+    }
+  }
 
   // Get conversation history for sentiment analysis
   const recentMessages = await prisma.message.findMany({

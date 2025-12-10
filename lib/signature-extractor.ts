@@ -168,3 +168,82 @@ export function extractPhoneFromText(text: string): string | null {
 
   return null;
 }
+
+/**
+ * Extract LinkedIn URL from text using regex
+ */
+export function extractLinkedInFromText(text: string): string | null {
+  if (!text) return null;
+
+  // LinkedIn URL patterns
+  const patterns = [
+    // Standard LinkedIn profile URL
+    /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/([a-zA-Z0-9_-]+)\/?/gi,
+    // LinkedIn company URL (less common for leads)
+    /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/company\/([a-zA-Z0-9_-]+)\/?/gi,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match && match[0]) {
+      return normalizeLinkedInUrl(match[0]);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Result from extracting contact info from message content
+ */
+export interface MessageContentExtractionResult {
+  phone: string | null;
+  linkedinUrl: string | null;
+  foundInMessage: boolean;
+}
+
+/**
+ * Extract phone number and LinkedIn URL from the FULL message content
+ * This should run BEFORE signature extraction and Clay enrichment
+ * 
+ * Looks for contact info anywhere in the message body, including:
+ * - Phone numbers mentioned in the text (e.g., "reach me at 555-123-4567")
+ * - LinkedIn URLs shared in the message
+ * 
+ * This is a quick regex-based extraction (no AI) that should be the first
+ * step in the enrichment sequence to avoid unnecessary API calls.
+ * 
+ * @param messageBody - The full message body text
+ * @returns Extracted phone and LinkedIn URL if found
+ */
+export function extractContactFromMessageContent(
+  messageBody: string
+): MessageContentExtractionResult {
+  const result: MessageContentExtractionResult = {
+    phone: null,
+    linkedinUrl: null,
+    foundInMessage: false,
+  };
+
+  if (!messageBody) {
+    return result;
+  }
+
+  // Extract phone from message body
+  const phone = extractPhoneFromText(messageBody);
+  if (phone) {
+    result.phone = phone;
+    result.foundInMessage = true;
+    console.log(`[MessageExtractor] Found phone in message: ${phone}`);
+  }
+
+  // Extract LinkedIn from message body
+  const linkedin = extractLinkedInFromText(messageBody);
+  if (linkedin) {
+    result.linkedinUrl = linkedin;
+    result.foundInMessage = true;
+    console.log(`[MessageExtractor] Found LinkedIn in message: ${linkedin}`);
+  }
+
+  return result;
+}

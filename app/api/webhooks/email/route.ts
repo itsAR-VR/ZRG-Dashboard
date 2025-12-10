@@ -5,7 +5,7 @@ import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraft } from "@/actions/message-actions";
 import { findOrCreateLead } from "@/lib/lead-matching";
 import { createEmailBisonLead, fetchEmailBisonLead, getCustomVariable } from "@/lib/emailbison-api";
-import { extractContactFromSignature } from "@/lib/signature-extractor";
+import { extractContactFromSignature, extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { normalizePhone } from "@/lib/lead-matching";
@@ -688,7 +688,44 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     );
   }
 
-  // Enrichment: Fetch EmailBison lead data for custom variables (LinkedIn URL, phone)
+  // ==========================================================================
+  // ENRICHMENT SEQUENCE (in order of priority)
+  // 1. Message content extraction (regex) - check if lead shared contact info in message
+  // 2. EmailBison custom variables - data from the lead record
+  // 3. Signature extraction (AI) - extract from email signature
+  // 4. Clay enrichment (external API) - only if still missing data
+  // ==========================================================================
+
+  const fullEmailBody = cleaned.rawText || cleaned.rawHtml || cleaned.cleaned || "";
+
+  // STEP 1: Extract contact info from message content FIRST
+  // This catches cases where the lead shares their phone/LinkedIn in the message itself
+  const messageExtraction = extractContactFromMessageContent(fullEmailBody);
+  if (messageExtraction.foundInMessage) {
+    const currentLead = await prisma.lead.findUnique({ where: { id: lead.id } });
+    const messageUpdates: Record<string, unknown> = {};
+
+    if (messageExtraction.phone && !currentLead?.phone) {
+      messageUpdates.phone = messageExtraction.phone;
+      console.log(`[Enrichment] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
+    }
+    if (messageExtraction.linkedinUrl && !currentLead?.linkedinUrl) {
+      messageUpdates.linkedinUrl = messageExtraction.linkedinUrl;
+      console.log(`[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${messageExtraction.linkedinUrl}`);
+    }
+
+    if (Object.keys(messageUpdates).length > 0) {
+      messageUpdates.enrichmentSource = "message_content";
+      messageUpdates.enrichedAt = new Date();
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: messageUpdates,
+      });
+      console.log(`[Enrichment] Updated lead ${lead.id} from message content`);
+    }
+  }
+
+  // STEP 2: Fetch EmailBison lead data for custom variables (LinkedIn URL, phone)
   // Only if we have an emailBisonLeadId
   let emailBisonData: EmailBisonEnrichmentData | undefined;
   if (lead.emailBisonLeadId && client.emailBisonApiKey) {
@@ -696,13 +733,11 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     emailBisonData = enrichResult.clayData;
   }
 
-  // Enrichment: Extract contact info from email signature (AI-powered)
-  // Use the full raw body for signature extraction
-  const fullEmailBody = cleaned.rawText || cleaned.rawHtml || cleaned.cleaned || "";
+  // STEP 3: Extract contact info from email signature (AI-powered)
   const leadFullName = `${lead.firstName || ""} ${lead.lastName || ""}`.trim() || "Lead";
   await enrichLeadFromSignature(lead.id, leadFullName, fromEmail, fullEmailBody);
 
-  // Trigger Clay enrichment if still missing LinkedIn or phone after other enrichment
+  // STEP 4: Trigger Clay enrichment if still missing LinkedIn or phone after other enrichment
   // Pass EmailBison data for additional context (company, state, etc.)
   await triggerClayEnrichmentIfNeeded(lead.id, emailBisonData);
 
@@ -1067,13 +1102,47 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     data: { sentimentTag, status: leadStatus },
   });
 
-  // Enrichment: Extract contact info from email signature (AI-powered)
-  // For untracked replies, we can still extract from signature
+  // ==========================================================================
+  // ENRICHMENT SEQUENCE (in order of priority)
+  // 1. Message content extraction (regex) - check if lead shared contact info in message
+  // 2. Signature extraction (AI) - extract from email signature
+  // 3. Clay enrichment (external API) - only if still missing data
+  // ==========================================================================
+
   const fullEmailBody = cleaned.rawText || cleaned.rawHtml || cleaned.cleaned || "";
+
+  // STEP 1: Extract contact info from message content FIRST
+  // This catches cases where the lead shares their phone/LinkedIn in the message itself
+  const messageExtraction = extractContactFromMessageContent(fullEmailBody);
+  if (messageExtraction.foundInMessage) {
+    const currentLead = await prisma.lead.findUnique({ where: { id: lead.id } });
+    const messageUpdates: Record<string, unknown> = {};
+
+    if (messageExtraction.phone && !currentLead?.phone) {
+      messageUpdates.phone = messageExtraction.phone;
+      console.log(`[Enrichment] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
+    }
+    if (messageExtraction.linkedinUrl && !currentLead?.linkedinUrl) {
+      messageUpdates.linkedinUrl = messageExtraction.linkedinUrl;
+      console.log(`[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${messageExtraction.linkedinUrl}`);
+    }
+
+    if (Object.keys(messageUpdates).length > 0) {
+      messageUpdates.enrichmentSource = "message_content";
+      messageUpdates.enrichedAt = new Date();
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: messageUpdates,
+      });
+      console.log(`[Enrichment] Updated lead ${lead.id} from message content`);
+    }
+  }
+
+  // STEP 2: Extract contact info from email signature (AI-powered)
   const leadFullName = fromName || `${lead.firstName || ""} ${lead.lastName || ""}`.trim() || "Lead";
   await enrichLeadFromSignature(lead.id, leadFullName, fromEmail, fullEmailBody);
 
-  // Trigger Clay enrichment if still missing LinkedIn or phone
+  // STEP 3: Trigger Clay enrichment if still missing LinkedIn or phone
   await triggerClayEnrichmentIfNeeded(lead.id);
 
   // Generate AI draft (skip bounce emails)
