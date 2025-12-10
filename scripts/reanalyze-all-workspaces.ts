@@ -311,7 +311,7 @@ async function main() {
     totalUnchanged += result.unchanged;
     totalErrors += result.errors;
     totalDraftsDeleted += result.draftsDeleted;
-    
+
     for (const change of result.changes) {
       allChanges.push({ workspace: client.name, ...change });
     }

@@ -5,7 +5,7 @@ import { sendSMS, exportMessages, type GHLExportedMessage } from "@/lib/ghl-api"
 import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { classifySentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
+import { classifySentiment, detectBounce, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply } from "@/actions/email-actions";
 import { sendLinkedInMessageWithWaterfall, type SendResult as UnipileSendResult } from "@/lib/unipile-api";
 
@@ -446,6 +446,10 @@ export async function syncConversationHistory(leadId: string, options: SyncOptio
         if (preClassified !== null) {
           // Pre-classification determined the sentiment
           refreshedSentiment = preClassified;
+        } else if (detectBounce(messages)) {
+          // Detect bounces using regex (faster and more reliable than AI for system messages)
+          refreshedSentiment = "Blacklist";
+          console.log("[Sync] Bounce detected via regex → Blacklist");
         } else {
           // Need AI classification - build transcript
           const transcript = messages
@@ -929,6 +933,10 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
         if (preClassified !== null) {
           // Pre-classification determined the sentiment
           refreshedSentiment = preClassified;
+        } else if (detectBounce(messages)) {
+          // Detect bounces using regex (faster and more reliable than AI for system messages)
+          refreshedSentiment = "Blacklist";
+          console.log("[EmailSync] Bounce detected via regex → Blacklist");
         } else {
           // Need AI classification - build transcript
           const transcript = messages

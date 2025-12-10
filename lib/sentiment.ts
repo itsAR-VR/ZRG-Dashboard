@@ -34,85 +34,148 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// ============================================================================
+// REGEX BOUNCE DETECTION
+// ============================================================================
+
 /**
- * Classify conversation sentiment using OpenAI
+ * Regex patterns for detecting email bounces and system messages
+ * These should be classified as "Blacklist" without calling AI
+ */
+const BOUNCE_PATTERNS = [
+  /mail delivery (failed|failure|subsystem)/i,
+  /delivery status notification/i,
+  /undeliverable/i,
+  /address not found/i,
+  /user unknown/i,
+  /mailbox (full|unavailable|not found)/i,
+  /quota exceeded/i,
+  /does not exist/i,
+  /rejected/i,
+  /access denied/i,
+  /blocked/i,
+  /spam/i,
+  /mailer-daemon/i,
+  /postmaster/i,
+  /550[\s-]/i,  // SMTP error codes
+  /554[\s-]/i,
+  /the email account.*does not exist/i,
+];
+
+/**
+ * Check if any inbound message matches bounce patterns
+ * Call this BEFORE classifySentiment to detect bounces without AI
+ */
+export function detectBounce(messages: { body: string; direction: string }[]): boolean {
+  const inboundMessages = messages.filter(m => m.direction === "inbound");
+  
+  for (const msg of inboundMessages) {
+    const body = msg.body.toLowerCase();
+    for (const pattern of BOUNCE_PATTERNS) {
+      if (pattern.test(body)) {
+        return true;
+      }
+    }
+  }
+  
+  return false;
+}
+
+// ============================================================================
+// RETRY LOGIC
+// ============================================================================
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Classify conversation sentiment using OpenAI with retry logic
  * 
  * IMPORTANT: This function should only be called AFTER pre-classification checks:
  * - If lead has never responded → return "Neutral" (don't call this function)
+ * - If detectBounce() returns true → return "Blacklist" (don't call this function)
  * 
  * This function analyzes the conversation content when the lead HAS responded.
  * It always uses AI classification regardless of how long ago the lead responded.
  */
-export async function classifySentiment(transcript: string): Promise<SentimentTag> {
+export async function classifySentiment(
+  transcript: string,
+  maxRetries: number = 3
+): Promise<SentimentTag> {
   if (!transcript || !process.env.OPENAI_API_KEY) {
     return "Neutral";
   }
 
-  try {
-    // GPT-5-mini with low reasoning effort for sentiment classification using Responses API
-    const response = await openai.responses.create({
-      model: "gpt-5-mini",
-      instructions: `<task>
-You are a sales conversation classifier. Analyze the conversation transcript and classify it into ONE category based on the LEAD's responses (not the Agent's messages).
-</task>
+  const systemPrompt = `You are a sales conversation classifier. Analyze the conversation transcript and classify it into ONE category based on the LEAD's responses (not the Agent's messages).
 
-<categories>
-- "Meeting Requested" - Lead explicitly asks for or confirms a meeting/video call time
+CATEGORIES:
+- "Meeting Requested" - Lead explicitly agrees to or confirms a meeting/call. Examples:
+  * "tomorrow works well"
+  * "yes, let's do it"
+  * "I'm free on Tuesday"
+  * "sounds good, when?"
+  * "let's set up a call"
+  * Any time/date confirmation
 - "Call Requested" - Lead provides a phone number or explicitly asks to be called
-- "Information Requested" - Lead asks questions or requests details about:
-  * General info: "tell me more", "what do you have?", "let's talk", "let's connect"
-  * Pricing/value: "how much?", "what does it cost?", "what's it worth?", "what's X go for?"
-  * Business inquiries: "what are you offering?", "what's the deal?", "what do you have in mind?"
-  * Process/timeline: "how does it work?", "what's the process?", "how long does it take?"
-- "Not Interested" - Lead explicitly declines or says no to further contact
-- "Blacklist" - Lead should be blacklisted if ANY of these apply:
-  * Hostile/abusive: profanity, threats, legal action threats
-  * Opt-out requests: "unsubscribe", "stop contacting", "remove me from list"
-  * EMAIL BOUNCE: "delivery failed", "undeliverable", "mailbox full", "user unknown", "address not found", "does not exist", "quota exceeded"
-  * FIREWALL/SPAM BLOCK: "message blocked", "rejected", "spam", "rejected by policy", "blocked by recipient"
-  * System messages from mailer-daemon, postmaster, or delivery subsystem
-- "Follow Up" - Lead responded but deferred action ("I'm busy right now", "contact me later", "not right now", "let me think about it", "I'll get back to you") OR gave a simple acknowledgment without commitment ("ok", "thanks", "got it")
-- "Out of Office" - Lead mentions being on vacation, traveling, or temporarily unavailable
-- "Interested" - Lead shows clear interest or openness ("sure", "sounds good", "I'm interested", "yes", "okay let's do it", "listening to offers", "open to suggestions")
-- "Neutral" - Lead's response is genuinely ambiguous with no clear intent (this should be RARE)
-</categories>
+- "Information Requested" - Lead asks questions or requests details about pricing, what's being offered, process, etc.
+- "Not Interested" - Lead explicitly declines or says no
+- "Blacklist" - Hostile/abusive messages, opt-out requests, or EMAIL BOUNCES
+- "Follow Up" - Lead deferred action ("busy right now", "later", "let me think")
+- "Out of Office" - Lead mentions being on vacation or temporarily unavailable
+- "Interested" - Lead shows clear interest without specific action ("sounds good", "I'm interested", "tell me more")
+- "Neutral" - Lead's response is genuinely ambiguous with no clear intent (RARE)
 
-<classification_rules>
 CRITICAL RULES:
-1. BLACKLIST DETECTION (highest priority): Any message indicating email bounce, delivery failure, spam block, or firewall rejection → "Blacklist". Look for: "delivery failed", "undeliverable", "mailbox full", "user unknown", "blocked", "rejected", "spam", "quota exceeded", "does not exist", "address not found"
-2. ANY question from the lead = engagement signal. Questions about pricing, value, cost, process, timeline, or what you're offering → "Information Requested"
-3. Curious questions like "what's X go for?", "what do you have in mind?", "how much for X?" → "Information Requested"
-4. "Follow Up" is ONLY for leads who responded with deferrals ("busy", "later", "not now") or simple acknowledgments ("ok", "thanks")
-5. Affirmative responses like "sure", "sounds good", "yes", "I'm interested" → "Interested"
-6. Only use "Neutral" when the response is truly ambiguous with zero intent signals (this is rare - most responses have some intent)
-7. Only use "Not Interested" for clear rejections ("no", "not interested", "don't contact me")
-8. When in doubt between "Information Requested" and "Neutral", prefer "Information Requested" - questions show engagement
-</classification_rules>
+1. SHORT CONFIRMATIONS like "tomorrow works well", "yes", "sounds good, when?", "let's do Tuesday" = "Meeting Requested"
+2. Any time/date confirmation or agreement to meet = "Meeting Requested"
+3. Phone number provided = "Call Requested"
+4. Questions about the offer = "Information Requested"
+5. Only use "Neutral" if truly ambiguous (very rare)
 
-<output_format>
-Respond with ONLY the category name, nothing else.
-</output_format>`,
-      input: `<conversation>
-${transcript}
-</conversation>`,
-      reasoning: { effort: "low" },
-      max_output_tokens: 50,
-    });
+Respond with ONLY the category name, nothing else.`;
 
-    const result = response.output_text?.trim() as SentimentTag;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `Classify this conversation:\n\n${transcript}` }
+        ],
+        max_tokens: 50,
+        temperature: 0,
+      });
 
-    if (result && SENTIMENT_TAGS.includes(result)) {
-      return result;
+      const result = response.choices[0]?.message?.content?.trim() as SentimentTag;
+
+      if (result && SENTIMENT_TAGS.includes(result)) {
+        return result;
+      }
+
+      // Handle legacy "Positive" responses from AI by mapping to "Interested"
+      if (result === "Positive") {
+        return "Interested";
+      }
+
+      return "Neutral";
+    } catch (error) {
+      const isRetryable = error instanceof Error && 
+        (error.message.includes("500") || 
+         error.message.includes("503") || 
+         error.message.includes("rate") ||
+         error.message.includes("timeout"));
+      
+      if (isRetryable && attempt < maxRetries) {
+        const backoffMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
+        console.log(`[Sentiment] Attempt ${attempt} failed, retrying in ${backoffMs/1000}s...`);
+        await sleep(backoffMs);
+      } else {
+        console.error("[Sentiment] Classification error after retries:", error);
+        return "Neutral";
+      }
     }
-
-    // Handle legacy "Positive" responses from AI by mapping to "Interested"
-    if (result === "Positive") {
-      return "Interested";
-    }
-
-    return "Neutral";
-  } catch (error) {
-    console.error("OpenAI classification error:", error);
-    return "Neutral";
   }
+
+  return "Neutral";
 }
