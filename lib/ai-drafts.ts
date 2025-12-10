@@ -359,8 +359,7 @@ function getResponseStrategy(sentimentTag: string): string {
     "Information Requested": "Provide the requested information clearly and concisely. Offer to schedule a call for more details.",
     "Follow Up": "Check in on their interest level. Reference any previous context and offer value.",
     "Out of Office": "Acknowledge and ask when would be a good time to reconnect. Be understanding.",
-    "Positive": "Build on the positive momentum. Move towards scheduling a conversation or next steps.",
-    "Neutral": "Engage with a question or valuable insight to spark interest.",
+    "Interested": "Build on the positive momentum. Move towards scheduling a conversation or next steps.",
     "Blacklist": "DO NOT GENERATE A RESPONSE - This contact has opted out.",
   };
 
@@ -385,12 +384,29 @@ export function isBounceEmailAddress(email: string | null | undefined): boolean 
   );
 }
 
+/**
+ * Determine if an AI draft should be generated for a lead.
+ * Uses a whitelist approach - only generate drafts for leads who have engaged.
+ * 
+ * Excludes: Neutral (no engagement), Blacklist (opted out), Snoozed (temporarily hidden)
+ */
 export function shouldGenerateDraft(sentimentTag: string, email?: string | null): boolean {
   // Never generate drafts for bounce email addresses
   if (isBounceEmailAddress(email)) {
     return false;
   }
-  const noResponseSentiments = ["Blacklist"];
-  return !noResponseSentiments.includes(sentimentTag);
+
+  // Only generate drafts for leads who have engaged positively or shown interest
+  const engagedSentiments = [
+    "Meeting Requested",
+    "Call Requested",
+    "Information Requested",
+    "Follow Up",
+    "Out of Office",
+    "Interested",
+    "Not Interested", // Try to win them back with a respectful response
+  ];
+
+  return engagedSentiments.includes(sentimentTag);
 }
 
