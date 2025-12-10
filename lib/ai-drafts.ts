@@ -360,6 +360,7 @@ function getResponseStrategy(sentimentTag: string): string {
     "Follow Up": "Check in on their interest level. Reference any previous context and offer value.",
     "Out of Office": "Acknowledge and ask when would be a good time to reconnect. Be understanding.",
     "Interested": "Build on the positive momentum. Move towards scheduling a conversation or next steps.",
+    "Positive": "Build on the positive momentum. Move towards scheduling a conversation or next steps.", // Legacy fallback
     "Blacklist": "DO NOT GENERATE A RESPONSE - This contact has opted out.",
   };
 
@@ -404,6 +405,7 @@ export function shouldGenerateDraft(sentimentTag: string, email?: string | null)
     "Follow Up",
     "Out of Office",
     "Interested",
+    "Positive", // Legacy fallback - maps to "Interested" in new system
     "Not Interested", // Try to win them back with a respectful response
   ];
 
