@@ -7,7 +7,14 @@ import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { classifySentiment, detectBounce, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply } from "@/actions/email-actions";
-import { sendLinkedInMessageWithWaterfall, type SendResult as UnipileSendResult } from "@/lib/unipile-api";
+import { 
+  sendLinkedInMessageWithWaterfall, 
+  checkLinkedInConnection, 
+  checkInMailBalance,
+  type SendResult as UnipileSendResult,
+  type LinkedInConnectionStatus,
+  type InMailBalanceResult,
+} from "@/lib/unipile-api";
 
 /**
  * Pre-classification check for sentiment analysis.
@@ -1699,6 +1706,81 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
       ...result,
       success: false,
       errors: [...result.errors, error instanceof Error ? error.message : "Unknown error"],
+    };
+  }
+}
+
+/**
+ * Check LinkedIn connection status and InMail balance for a lead
+ * Used to show connection status UI and determine messaging options
+ */
+export interface LinkedInStatusResult {
+  success: boolean;
+  error?: string;
+  connectionStatus: LinkedInConnectionStatus;
+  canSendDM: boolean;
+  canSendInMail: boolean;
+  hasOpenProfile: boolean;
+  inMailBalance: InMailBalanceResult | null;
+}
+
+export async function checkLinkedInStatus(leadId: string): Promise<LinkedInStatusResult> {
+  const defaultResult: LinkedInStatusResult = {
+    success: false,
+    connectionStatus: "NOT_CONNECTED",
+    canSendDM: false,
+    canSendInMail: false,
+    hasOpenProfile: false,
+    inMailBalance: null,
+  };
+
+  try {
+    // Get the lead with their client (for Unipile account)
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      include: {
+        client: {
+          select: {
+            unipileAccountId: true,
+          },
+        },
+      },
+    });
+
+    if (!lead) {
+      return { ...defaultResult, error: "Lead not found" };
+    }
+
+    if (!lead.linkedinUrl && !lead.linkedinId) {
+      return { ...defaultResult, error: "Lead has no LinkedIn profile linked" };
+    }
+
+    if (!lead.client.unipileAccountId) {
+      return { ...defaultResult, error: "Workspace has no LinkedIn account configured" };
+    }
+
+    const linkedinUrl = lead.linkedinUrl || "";
+    const accountId = lead.client.unipileAccountId;
+
+    // Check connection status and InMail balance in parallel
+    const [connectionResult, inMailBalance] = await Promise.all([
+      checkLinkedInConnection(accountId, linkedinUrl),
+      checkInMailBalance(accountId),
+    ]);
+
+    return {
+      success: true,
+      connectionStatus: connectionResult.status,
+      canSendDM: connectionResult.canSendDM,
+      canSendInMail: connectionResult.canSendInMail,
+      hasOpenProfile: connectionResult.hasOpenProfile,
+      inMailBalance,
+    };
+  } catch (error) {
+    console.error("[checkLinkedInStatus] Failed:", error);
+    return {
+      ...defaultResult,
+      error: error instanceof Error ? error.message : "Unknown error",
     };
   }
 }

@@ -48,7 +48,7 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
       phone: conv.lead.phone || "",
       company: conv.lead.company,
       title: conv.lead.title || "",
-      website: "",
+      website: conv.lead.companyWebsite || "",
       timezone: "",
       leadScore: 50,
       autoReplyEnabled: conv.lead.autoReplyEnabled,
@@ -61,6 +61,19 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
         need: false,
         timing: false,
       },
+      // Enrichment data
+      linkedinUrl: conv.lead.linkedinUrl,
+      companyName: conv.lead.companyName,
+      companyWebsite: conv.lead.companyWebsite,
+      companyState: conv.lead.companyState,
+      emailBisonLeadId: conv.lead.emailBisonLeadId,
+      enrichmentStatus: conv.lead.enrichmentStatus,
+      autoBookMeetingsEnabled: conv.lead.autoBookMeetingsEnabled,
+      // GHL integration data
+      ghlContactId: conv.lead.ghlContactId,
+      ghlLocationId: conv.lead.ghlLocationId,
+      // Sentiment tag (from conversation level)
+      sentimentTag: conv.sentimentTag,
     },
     channels: conv.channels,
     availableChannels: conv.availableChannels,

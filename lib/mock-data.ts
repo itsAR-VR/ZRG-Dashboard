@@ -37,6 +37,8 @@ export interface Lead {
   // GHL integration data
   ghlContactId?: string | null
   ghlLocationId?: string | null
+  // Sentiment/classification
+  sentimentTag?: string | null
 }
 
 export type Channel = "sms" | "email" | "linkedin";

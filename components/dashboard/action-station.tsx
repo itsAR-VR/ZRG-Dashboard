@@ -7,9 +7,9 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin } from "lucide-react"
+import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { sendMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft } from "@/actions/message-actions"
+import { sendMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
 
@@ -55,6 +55,9 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
   const [hasAiDraft, setHasAiDraft] = useState(false)
   const [originalDraft, setOriginalDraft] = useState("")
   const [activeChannel, setActiveChannel] = useState<Channel>("sms")
+  const [linkedInStatus, setLinkedInStatus] = useState<LinkedInStatusResult | null>(null)
+  const [isLoadingLinkedInStatus, setIsLoadingLinkedInStatus] = useState(false)
+  const [connectionNote, setConnectionNote] = useState("")
   const { user } = useUser()
   
   // Determine current channel type
@@ -122,6 +125,29 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
     prevMessageCountRef.current = currentMessageCount
   }, [conversation?.id, conversation?.messages])
 
+  // Fetch LinkedIn connection status when LinkedIn tab is active
+  useEffect(() => {
+    async function fetchLinkedInStatus() {
+      if (!conversation || activeChannel !== "linkedin" || !hasLinkedIn) {
+        setLinkedInStatus(null)
+        return
+      }
+
+      setIsLoadingLinkedInStatus(true)
+      try {
+        const result = await checkLinkedInStatus(conversation.id)
+        setLinkedInStatus(result)
+      } catch (error) {
+        console.error("[ActionStation] Failed to fetch LinkedIn status:", error)
+        setLinkedInStatus(null)
+      } finally {
+        setIsLoadingLinkedInStatus(false)
+      }
+    }
+
+    fetchLinkedInStatus()
+  }, [conversation?.id, activeChannel, hasLinkedIn])
+
   // Fetch real AI drafts when conversation or active channel changes
   useEffect(() => {
     async function fetchDrafts() {
@@ -171,13 +197,18 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
     
     let result
     if (isLinkedIn) {
-      // Send via LinkedIn/Unipile
-      result = await sendLinkedInMessage(conversation.id, composeMessage)
+      // Send via LinkedIn/Unipile with optional connection note
+      result = await sendLinkedInMessage(
+        conversation.id, 
+        composeMessage, 
+        connectionNote || undefined  // Use custom note if provided
+      )
       if (result.success) {
         const messageType = result.messageType === "dm" ? "DM" : 
                            result.messageType === "inmail" ? "InMail" : 
                            result.messageType === "connection_request" ? "Connection Request" : "message"
         toast.success(`LinkedIn ${messageType} sent!`)
+        setConnectionNote("") // Clear connection note after sending
       }
     } else {
       // Regular SMS send
@@ -435,6 +466,76 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
         </div>
       )}
 
+      {/* LinkedIn Status Bar */}
+      {isLinkedIn && hasLinkedIn && (
+        <div className="border-b border-border px-6 py-2 bg-muted/20 flex items-center gap-4 flex-wrap">
+          {isLoadingLinkedInStatus ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Checking connection status...
+            </div>
+          ) : linkedInStatus?.success ? (
+            <>
+              {/* Connection Status Badge */}
+              <Badge 
+                variant="outline" 
+                className={cn(
+                  "text-xs gap-1",
+                  linkedInStatus.connectionStatus === "CONNECTED" && "bg-green-500/10 text-green-600 border-green-500/30",
+                  linkedInStatus.connectionStatus === "PENDING" && "bg-yellow-500/10 text-yellow-600 border-yellow-500/30",
+                  linkedInStatus.connectionStatus === "NOT_CONNECTED" && "bg-muted text-muted-foreground"
+                )}
+              >
+                {linkedInStatus.connectionStatus === "CONNECTED" && (
+                  <>
+                    <UserCheck className="h-3 w-3" />
+                    Connected
+                  </>
+                )}
+                {linkedInStatus.connectionStatus === "PENDING" && (
+                  <>
+                    <Clock className="h-3 w-3" />
+                    Connection Pending
+                  </>
+                )}
+                {linkedInStatus.connectionStatus === "NOT_CONNECTED" && (
+                  <>
+                    <UserPlus className="h-3 w-3" />
+                    Not Connected
+                  </>
+                )}
+              </Badge>
+
+              {/* Open Profile Badge */}
+              {linkedInStatus.hasOpenProfile && (
+                <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-600 border-blue-500/30">
+                  Open Profile
+                </Badge>
+              )}
+
+              {/* InMail Balance */}
+              {linkedInStatus.inMailBalance && (
+                <span className="text-xs text-muted-foreground">
+                  {linkedInStatus.inMailBalance.available} InMails available
+                </span>
+              )}
+
+              {/* Messaging hint */}
+              <span className="text-xs text-muted-foreground ml-auto">
+                {linkedInStatus.canSendDM && "Will send DM"}
+                {!linkedInStatus.canSendDM && linkedInStatus.canSendInMail && "Will send InMail"}
+                {!linkedInStatus.canSendDM && !linkedInStatus.canSendInMail && "Will send Connection Request"}
+              </span>
+            </>
+          ) : linkedInStatus?.error ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
+              {linkedInStatus.error}
+            </div>
+          ) : null}
+        </div>
+      )}
+
       {/* Chat Messages */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {isLoadingMessages ? (
@@ -485,6 +586,31 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
               )}
               Compose with AI
             </Button>
+          </div>
+        )}
+
+        {/* Connection Note Field - shown when LinkedIn is active and not connected */}
+        {isLinkedIn && linkedInStatus?.success && linkedInStatus.connectionStatus === "NOT_CONNECTED" && (
+          <div className="mb-3 p-3 rounded-lg border border-dashed border-muted-foreground/30 bg-muted/30">
+            <div className="flex items-center gap-2 mb-2">
+              <UserPlus className="h-4 w-4 text-muted-foreground" />
+              <span className="text-xs font-medium text-muted-foreground">Connection Request Note</span>
+              <span className="text-[10px] text-muted-foreground">(max 300 chars)</span>
+            </div>
+            <Textarea
+              placeholder="Add a personalized note for your connection request... (optional - message will be used if empty)"
+              value={connectionNote}
+              onChange={(e) => setConnectionNote(e.target.value.slice(0, 300))}
+              className="min-h-[60px] text-sm resize-none bg-background"
+            />
+            <div className="flex justify-end mt-1">
+              <span className={cn(
+                "text-[10px]",
+                connectionNote.length > 280 ? "text-amber-500" : "text-muted-foreground"
+              )}>
+                {connectionNote.length}/300
+              </span>
+            </div>
           </div>
         )}
 
