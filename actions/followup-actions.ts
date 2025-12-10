@@ -459,8 +459,8 @@ export async function updateLeadFollowUpStatus(
     });
 
     revalidatePath("/");
-    return { 
-      success: true, 
+    return {
+      success: true,
       newSentimentTag,
       newStatus: updateData.status,
     };

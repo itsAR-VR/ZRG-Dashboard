@@ -90,7 +90,7 @@ const BOUNCE_PATTERNS = [
  */
 function detectBounce(messages: { body: string; direction: string }[]): boolean {
   const inboundMessages = messages.filter(m => m.direction === "inbound");
-  
+
   for (const msg of inboundMessages) {
     const body = msg.body.toLowerCase();
     for (const pattern of BOUNCE_PATTERNS) {
@@ -99,7 +99,7 @@ function detectBounce(messages: { body: string; direction: string }[]): boolean 
       }
     }
   }
-  
+
   return false;
 }
 
@@ -176,18 +176,18 @@ Respond with ONLY the category name, nothing else.`;
 
       return "Neutral";
     } catch (error) {
-      const isRetryable = error instanceof Error && 
-        (error.message.includes("500") || 
-         error.message.includes("503") || 
-         error.message.includes("rate") ||
-         error.message.includes("timeout"));
-      
+      const isRetryable = error instanceof Error &&
+        (error.message.includes("500") ||
+          error.message.includes("503") ||
+          error.message.includes("rate") ||
+          error.message.includes("timeout"));
+
       if (isRetryable && attempt < maxRetries) {
         const backoffMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
-        console.log(`   ⚠️  Attempt ${attempt} failed, retrying in ${backoffMs/1000}s...`);
+        console.log(`   ⚠️  Attempt ${attempt} failed, retrying in ${backoffMs / 1000}s...`);
         await sleep(backoffMs);
       } else {
-        console.error(`   ❌ Classification failed after ${attempt} attempts:`, 
+        console.error(`   ❌ Classification failed after ${attempt} attempts:`,
           error instanceof Error ? error.message : error);
         return null; // Return null instead of defaulting to Neutral
       }
@@ -269,7 +269,7 @@ async function main() {
           .join("\n");
 
         newSentiment = await classifySentimentWithRetry(transcript);
-        
+
         if (newSentiment === null) {
           // AI failed after all retries - don't update, mark as failed
           failed++;
@@ -277,7 +277,7 @@ async function main() {
           console.log(`   ❌ FAILED - keeping current sentiment: ${lead.sentimentTag || "null"}`);
           continue;
         }
-        
+
         aiClassified++;
       }
 
@@ -364,12 +364,12 @@ async function main() {
   console.log("\n" + "=".repeat(60));
   console.log("🔍 VERIFICATION: Sarah Barlow");
   console.log("=".repeat(60));
-  
+
   const sarah = await prisma.lead.findFirst({
     where: { email: "sarah@gomundo.uk" },
     select: { firstName: true, lastName: true, email: true, sentimentTag: true, status: true },
   });
-  
+
   if (sarah) {
     const expected = sarah.sentimentTag === "Meeting Requested" || sarah.sentimentTag === "Call Requested";
     console.log(`Email: ${sarah.email}`);

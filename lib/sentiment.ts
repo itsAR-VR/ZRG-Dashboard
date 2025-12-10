@@ -68,7 +68,7 @@ const BOUNCE_PATTERNS = [
  */
 export function detectBounce(messages: { body: string; direction: string }[]): boolean {
   const inboundMessages = messages.filter(m => m.direction === "inbound");
-  
+
   for (const msg of inboundMessages) {
     const body = msg.body.toLowerCase();
     for (const pattern of BOUNCE_PATTERNS) {
@@ -77,7 +77,7 @@ export function detectBounce(messages: { body: string; direction: string }[]): b
       }
     }
   }
-  
+
   return false;
 }
 
@@ -160,15 +160,15 @@ Respond with ONLY the category name, nothing else.`;
 
       return "Neutral";
     } catch (error) {
-      const isRetryable = error instanceof Error && 
-        (error.message.includes("500") || 
-         error.message.includes("503") || 
-         error.message.includes("rate") ||
-         error.message.includes("timeout"));
-      
+      const isRetryable = error instanceof Error &&
+        (error.message.includes("500") ||
+          error.message.includes("503") ||
+          error.message.includes("rate") ||
+          error.message.includes("timeout"));
+
       if (isRetryable && attempt < maxRetries) {
         const backoffMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
-        console.log(`[Sentiment] Attempt ${attempt} failed, retrying in ${backoffMs/1000}s...`);
+        console.log(`[Sentiment] Attempt ${attempt} failed, retrying in ${backoffMs / 1000}s...`);
         await sleep(backoffMs);
       } else {
         console.error("[Sentiment] Classification error after retries:", error);
