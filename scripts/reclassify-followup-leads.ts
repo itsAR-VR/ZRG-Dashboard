@@ -49,37 +49,24 @@ const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
 
 /**
  * Pre-classification check - returns sentiment if determinable without AI
+ * Only auto-classifies leads who have NEVER responded.
+ * If lead has responded at any point, always use AI classification.
  */
 function preClassifySentiment(
-  messages: { direction: string; sentAt: Date }[]
+  messages: { direction: string }[]
 ): SentimentTag | null {
   if (messages.length === 0) {
     return "Neutral";
   }
 
-  const inboundMessages = messages.filter((m) => m.direction === "inbound");
-  const lastMessage = messages[messages.length - 1];
-
-  // If lead has never responded → Neutral
-  if (inboundMessages.length === 0) {
+  // Only auto-classify if lead has NEVER responded
+  const hasInboundMessages = messages.some((m) => m.direction === "inbound");
+  if (!hasInboundMessages) {
     return "Neutral";
   }
 
-  const lastInboundMessage = inboundMessages[inboundMessages.length - 1];
-
-  // If agent sent last message AND lead hasn't responded in 7+ days → Neutral
-  if (lastMessage.direction === "outbound") {
-    const daysSinceLastInbound = Math.floor(
-      (Date.now() - new Date(lastInboundMessage.sentAt).getTime()) /
-        (1000 * 60 * 60 * 24)
-    );
-
-    if (daysSinceLastInbound > 7) {
-      return "Neutral";
-    }
-  }
-
-  return null; // Need AI classification
+  // Lead has responded - always use AI classification
+  return null;
 }
 
 /**
@@ -100,25 +87,29 @@ You are a sales conversation classifier. Analyze the conversation transcript and
 <categories>
 - "Meeting Requested" - Lead explicitly asks for or confirms a meeting/video call time
 - "Call Requested" - Lead provides a phone number or explicitly asks to be called
-- "Information Requested" - Lead asks for more details ("tell me more", "what do you have?", "let's talk", "let's connect")
+- "Information Requested" - Lead asks questions or requests details about:
+  * General info: "tell me more", "what do you have?", "let's talk", "let's connect"
+  * Pricing/value: "how much?", "what does it cost?", "what's it worth?", "what's X go for?"
+  * Business inquiries: "what are you offering?", "what's the deal?", "what do you have in mind?"
+  * Process/timeline: "how does it work?", "what's the process?", "how long does it take?"
 - "Not Interested" - Lead explicitly declines or says no to further contact
 - "Blacklist" - Lead is hostile, demands removal, threatens legal action, or uses profanity
 - "Follow Up" - Lead responded but deferred action ("I'm busy right now", "contact me later", "not right now", "let me think about it", "I'll get back to you") OR gave a simple acknowledgment without commitment ("ok", "thanks", "got it")
 - "Out of Office" - Lead mentions being on vacation, traveling, or temporarily unavailable
 - "Interested" - Lead shows clear interest or openness ("sure", "sounds good", "I'm interested", "yes", "okay let's do it", "listening to offers", "open to suggestions")
-- "Neutral" - Lead's response is genuinely ambiguous with no clear intent
+- "Neutral" - Lead's response is genuinely ambiguous with no clear intent (this should be RARE)
 </categories>
 
 <classification_rules>
 CRITICAL RULES:
-1. "Follow Up" is ONLY for leads who HAVE responded - it means they acknowledged but want to be contacted later
-2. Simple acknowledgments like "ok", "thanks", "got it" without clear positive intent → "Follow Up" (they engaged but didn't commit)
-3. Affirmative responses like "sure", "sounds good", "yes", "I'm interested" → "Interested"
-4. Requests for more info like "tell me more", "let's talk", "what do you offer" → "Information Requested"
-5. Deferrals like "I'm busy", "not now", "maybe later", "let me think" → "Follow Up"
-6. Only use "Neutral" when the response is truly ambiguous (rare)
-7. Only use "Not Interested" for clear rejections, not just silence
-8. Only use "Blacklist" for explicit hostility or opt-out demands
+1. ANY question from the lead = engagement signal. Questions about pricing, value, cost, process, timeline, or what you're offering → "Information Requested"
+2. Curious questions like "what's X go for?", "what do you have in mind?", "how much for X?" → "Information Requested"
+3. "Follow Up" is ONLY for leads who responded with deferrals ("busy", "later", "not now") or simple acknowledgments ("ok", "thanks")
+4. Affirmative responses like "sure", "sounds good", "yes", "I'm interested" → "Interested"
+5. Only use "Neutral" when the response is truly ambiguous with zero intent signals (this is rare - most responses have some intent)
+6. Only use "Not Interested" for clear rejections ("no", "not interested", "don't contact me")
+7. Only use "Blacklist" for explicit hostility, profanity, or opt-out demands
+8. When in doubt between "Information Requested" and "Neutral", prefer "Information Requested" - questions show engagement
 </classification_rules>
 
 <output_format>

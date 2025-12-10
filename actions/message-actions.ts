@@ -15,43 +15,29 @@ import { sendLinkedInMessageWithWaterfall, type SendResult as UnipileSendResult 
  * or null if AI classification is needed.
  * 
  * Rules:
+ * - If no messages at all → "Neutral"
  * - If lead has never responded (no inbound messages) → "Neutral"
- * - If agent sent last message AND lead hasn't responded in 7+ days → "Neutral"
- * - Otherwise → null (use AI classification)
+ * - Otherwise → null (always use AI classification when lead has responded)
+ * 
+ * NOTE: We intentionally DO NOT have a time-based threshold here.
+ * If a lead responded at any point, we always want AI to analyze what they said,
+ * regardless of how long ago it was or who sent the last message.
  */
 function preClassifySentiment(
-  messages: { direction: string; sentAt: Date }[]
+  messages: { direction: string }[]
 ): SentimentTag | null {
   if (messages.length === 0) {
     return "Neutral";
   }
 
-  // Find the last inbound (lead) message
-  const inboundMessages = messages.filter(m => m.direction === "inbound");
-  const lastMessage = messages[messages.length - 1];
-
-  // If lead has never responded, classify as Neutral
-  if (inboundMessages.length === 0) {
+  // Only auto-classify if lead has NEVER responded
+  const hasInboundMessages = messages.some(m => m.direction === "inbound");
+  if (!hasInboundMessages) {
     console.log("[PreClassify] Lead has never responded → Neutral");
     return "Neutral";
   }
 
-  // Get the last inbound message
-  const lastInboundMessage = inboundMessages[inboundMessages.length - 1];
-
-  // If agent sent the last message and lead hasn't responded in 7+ days
-  if (lastMessage.direction === "outbound") {
-    const daysSinceLastInbound = Math.floor(
-      (Date.now() - new Date(lastInboundMessage.sentAt).getTime()) / (1000 * 60 * 60 * 24)
-    );
-
-    if (daysSinceLastInbound > 7) {
-      console.log(`[PreClassify] Agent sent last message, lead hasn't responded in ${daysSinceLastInbound} days → Neutral`);
-      return "Neutral";
-    }
-  }
-
-  // AI classification needed
+  // Lead has responded at some point - always use AI to analyze what they said
   return null;
 }
 
@@ -454,9 +440,9 @@ export async function syncConversationHistory(leadId: string, options: SyncOptio
 
         // First, check if we can determine sentiment without AI (pre-classification)
         const preClassified = preClassifySentiment(messages);
-        
+
         let refreshedSentiment: SentimentTag;
-        
+
         if (preClassified !== null) {
           // Pre-classification determined the sentiment
           refreshedSentiment = preClassified;
@@ -935,9 +921,9 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
 
         // First, check if we can determine sentiment without AI (pre-classification)
         const preClassified = preClassifySentiment(messages);
-        
+
         let refreshedSentiment: SentimentTag;
-        
+
         if (preClassified !== null) {
           // Pre-classification determined the sentiment
           refreshedSentiment = preClassified;
