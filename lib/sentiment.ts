@@ -18,7 +18,7 @@ export type SentimentTag = (typeof SENTIMENT_TAGS)[number];
 
 // Map sentiment tags to lead statuses
 export const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
-  "Meeting Requested": "meeting-booked",
+  "Meeting Requested": "meeting-requested",
   "Call Requested": "qualified",
   "Information Requested": "qualified",
   "Not Interested": "not-interested",

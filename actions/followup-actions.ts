@@ -436,18 +436,34 @@ export async function updateLeadFollowUpStatus(
 ): Promise<{
   success: boolean;
   newSentimentTag?: string;
+  newStatus?: string;
   error?: string;
 }> {
   try {
     const newSentimentTag = OUTCOME_TO_SENTIMENT[outcome];
 
+    // Build update data - always update sentiment tag
+    const updateData: { sentimentTag: string; status?: string } = {
+      sentimentTag: newSentimentTag,
+    };
+
+    // When outcome is "meeting-booked", also set the lead status to "meeting-booked"
+    // This ensures the status reflects that a meeting was actually booked
+    if (outcome === "meeting-booked") {
+      updateData.status = "meeting-booked";
+    }
+
     await prisma.lead.update({
       where: { id: leadId },
-      data: { sentimentTag: newSentimentTag },
+      data: updateData,
     });
 
     revalidatePath("/");
-    return { success: true, newSentimentTag };
+    return { 
+      success: true, 
+      newSentimentTag,
+      newStatus: updateData.status,
+    };
   } catch (error) {
     console.error("Failed to update lead follow-up status:", error);
     return { success: false, error: "Failed to update follow-up status" };

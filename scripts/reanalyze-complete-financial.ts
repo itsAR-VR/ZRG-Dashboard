@@ -36,7 +36,7 @@ const SENTIMENT_TAGS = [
 type SentimentTag = (typeof SENTIMENT_TAGS)[number];
 
 const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
-  "Meeting Requested": "meeting-booked",
+  "Meeting Requested": "meeting-requested",
   "Call Requested": "qualified",
   "Information Requested": "qualified",
   "Not Interested": "not-interested",
