@@ -90,11 +90,18 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
 
   if (!lead) return null
 
-  const canEnrich = !!lead.emailBisonLeadId && (!lead.linkedinUrl || !lead.phone)
+  // Manual enrichment rules:
+  // - Available for EmailBison leads (has emailBisonLeadId)
+  // - DISABLED for sentiment tags: Not Interested, Blacklist, Neutral
+  // - ENABLED for all other sentiments including new/no sentiment
+  // - Can force re-enrich even if LinkedIn/phone already exist
+  const BLOCKED_SENTIMENTS = ["Not Interested", "Blacklist", "Neutral"]
+  const isBlockedSentiment = BLOCKED_SENTIMENTS.includes(lead.sentimentTag || "")
+  const canEnrich = !!lead.emailBisonLeadId && !isBlockedSentiment
   const enrichmentDisabledReason = !lead.emailBisonLeadId 
     ? "No EmailBison lead ID" 
-    : (lead.linkedinUrl && lead.phone) 
-      ? "Already enriched" 
+    : isBlockedSentiment 
+      ? `Enrichment blocked for "${lead.sentimentTag}" sentiment` 
       : null
 
   const handleEnrichLead = async () => {
@@ -390,6 +397,16 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
     return data?.pages.flatMap((page) => page.leads) || []
   }, [data])
 
+  // Sync selectedLead with latest data when allLeads changes
+  useEffect(() => {
+    if (selectedLead && allLeads.length > 0) {
+      const updated = allLeads.find(l => l.id === selectedLead.id)
+      if (updated && JSON.stringify(updated) !== JSON.stringify(selectedLead)) {
+        setSelectedLead(updated)
+      }
+    }
+  }, [allLeads, selectedLead?.id])
+
   // Setup virtualizer
   const rowVirtualizer = useVirtualizer({
     count: hasNextPage ? allLeads.length + 1 : allLeads.length, // +1 for load more row
@@ -610,21 +627,21 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
           <div className="border-b bg-muted/30">
             <div className="flex items-center h-12 px-4">
               <div 
-                className="flex-[2] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
+                className="flex-[3] min-w-[200px] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
                 onClick={() => handleSort("firstName")}
               >
                 Name <SortIcon field="firstName" />
               </div>
-              <div className="flex-[2]">Company</div>
-              <div className="w-[120px]">Sentiment</div>
+              <div className="flex-[2] min-w-[150px]">Company</div>
+              <div className="w-[150px]">Sentiment</div>
               <div 
-                className="w-20 cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
+                className="w-[80px] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
                 onClick={() => handleSort("leadScore")}
               >
                 Score <SortIcon field="leadScore" />
               </div>
-              <div className="w-[140px]">Status</div>
-              <div className="w-12 text-right">Actions</div>
+              <div className="w-[160px]">Status</div>
+              <div className="w-[50px] text-right">Actions</div>
             </div>
           </div>
           
@@ -684,19 +701,19 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                     onClick={() => openLeadDetail(lead)}
                   >
                     {/* Name */}
-                    <div className="flex-[2] pr-2">
+                    <div className="flex-[3] min-w-[200px] pr-2">
                       <p className="font-medium truncate">{lead.name}</p>
                       <p className="text-sm text-muted-foreground truncate">{lead.email || "No email"}</p>
                     </div>
                     
                     {/* Company */}
-                    <div className="flex-[2] flex items-center gap-2">
+                    <div className="flex-[2] min-w-[150px] flex items-center gap-2">
                       <Building2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                       <span className="truncate">{lead.company}</span>
                     </div>
                     
                     {/* Sentiment */}
-                    <div className="w-[120px]">
+                    <div className="w-[150px]">
                       {lead.sentimentTag ? (
                         <Badge variant="outline" className="text-xs">
                           {lead.sentimentTag}
@@ -707,18 +724,18 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                     </div>
                     
                     {/* Score */}
-                    <div className="w-20">
+                    <div className="w-[80px]">
                       <LeadScoreBadge score={lead.leadScore} />
                     </div>
                     
                     {/* Status */}
-                    <div className="w-[140px]" onClick={(e) => e.stopPropagation()}>
+                    <div className="w-[160px]" onClick={(e) => e.stopPropagation()}>
                       <Select
                         value={lead.status}
                         onValueChange={(value) => handleStatusChange(lead.id, value as LeadStatus)}
                       >
                         <SelectTrigger
-                          className={`w-[120px] h-8 text-xs ${statusColors[lead.status as LeadStatus] || statusColors.new}`}
+                          className={`w-[140px] h-8 text-xs ${statusColors[lead.status as LeadStatus] || statusColors.new}`}
                         >
                           <SelectValue />
                         </SelectTrigger>
@@ -733,7 +750,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                     </div>
                     
                     {/* Actions */}
-                    <div className="w-12 text-right" onClick={(e) => e.stopPropagation()}>
+                    <div className="w-[50px] text-right" onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button variant="ghost" size="icon">

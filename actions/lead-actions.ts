@@ -318,6 +318,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           select: {
             id: true,
             name: true,
+            ghlLocationId: true,
           },
         },
         messages: {
@@ -361,6 +362,9 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           companyState: lead.companyState,
           emailBisonLeadId: lead.emailBisonLeadId,
           enrichmentStatus: lead.enrichmentStatus,
+          // GHL integration data
+          ghlContactId: lead.ghlContactId,
+          ghlLocationId: lead.client.ghlLocationId,
         },
         channels,
         availableChannels,

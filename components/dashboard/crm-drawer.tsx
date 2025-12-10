@@ -452,12 +452,18 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
     }
   }
 
-  // Check if enrichment is available (has emailBisonLeadId and missing data)
-  const canEnrich = !!lead.emailBisonLeadId && (!lead.linkedinUrl || !lead.phone)
+  // Manual enrichment rules:
+  // - Available for EmailBison leads (has emailBisonLeadId)
+  // - DISABLED for sentiment tags: Not Interested, Blacklist, Neutral
+  // - ENABLED for all other sentiments including new/no sentiment
+  // - Can force re-enrich even if LinkedIn/phone already exist
+  const BLOCKED_SENTIMENTS = ["Not Interested", "Blacklist", "Neutral"]
+  const isBlockedSentiment = BLOCKED_SENTIMENTS.includes(lead.sentimentTag || "")
+  const canEnrich = !!lead.emailBisonLeadId && !isBlockedSentiment
   const enrichmentDisabledReason = !lead.emailBisonLeadId 
     ? "No EmailBison lead ID" 
-    : (lead.linkedinUrl && lead.phone) 
-      ? "Already enriched" 
+    : isBlockedSentiment 
+      ? `Enrichment blocked for "${lead.sentimentTag}" sentiment` 
       : null
 
   return (

@@ -162,6 +162,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
     if (data.ghlPrivateKey !== undefined) updateData.ghlPrivateKey = data.ghlPrivateKey;
     if (data.emailBisonApiKey !== undefined) updateData.emailBisonApiKey = data.emailBisonApiKey || null;
     if (data.emailBisonWorkspaceId !== undefined) updateData.emailBisonWorkspaceId = data.emailBisonWorkspaceId || null;
+    if (data.unipileAccountId !== undefined) updateData.unipileAccountId = data.unipileAccountId || null;
 
     const updatedClient = await prisma.client.update({
       where: { id },
