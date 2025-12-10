@@ -200,7 +200,10 @@ export async function triggerEnrichmentForLead(
 }
 
 /**
- * Verify HMAC signature from Clay webhook callback
+ * Verify webhook signature from Clay callback
+ * Supports two modes:
+ * 1. Static secret comparison (Clay sends x-clay-signature with a fixed secret)
+ * 2. HMAC verification (if CLAY_CALLBACK_USE_HMAC is set to "true")
  */
 export function verifyClayWebhookSignature(
   payload: string,
@@ -213,18 +216,34 @@ export function verifyClayWebhookSignature(
     return true; // Allow in development
   }
 
-  const expectedSignature = crypto
-    .createHmac("sha256", secret)
-    .update(payload)
-    .digest("hex");
+  // Check if we should use HMAC verification or simple secret comparison
+  const useHmac = process.env.CLAY_CALLBACK_USE_HMAC === "true";
 
-  // Timing-safe comparison
-  try {
-    return crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expectedSignature)
-    );
-  } catch {
-    return false;
+  if (useHmac) {
+    // HMAC-SHA256 verification
+    const expectedSignature = crypto
+      .createHmac("sha256", secret)
+      .update(payload)
+      .digest("hex");
+
+    try {
+      return crypto.timingSafeEqual(
+        Buffer.from(signature),
+        Buffer.from(expectedSignature)
+      );
+    } catch {
+      return false;
+    }
+  } else {
+    // Simple static secret comparison (timing-safe)
+    try {
+      return crypto.timingSafeEqual(
+        Buffer.from(signature),
+        Buffer.from(secret)
+      );
+    } catch {
+      // Length mismatch or other error
+      return false;
+    }
   }
 }
