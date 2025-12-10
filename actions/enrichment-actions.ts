@@ -311,10 +311,13 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
       linkedInProfile: currentLinkedIn || undefined,
     };
 
-    // Mark as pending enrichment
+    // Mark as pending enrichment with timestamp for timeout tracking
     await prisma.lead.update({
       where: { id: leadId },
-      data: { enrichmentStatus: "pending" },
+      data: { 
+        enrichmentStatus: "pending",
+        enrichmentLastRetry: new Date(), // Initialize for follow-up engine timeout calculations
+      },
     });
 
     // Trigger Clay enrichment (LinkedIn first, phone second as specified)

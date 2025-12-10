@@ -253,10 +253,13 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
       // Only enrich if we have an email (required for Clay) and missing phone
       // Skip if already enriched or processing
       if (!currentLead.enrichmentStatus || currentLead.enrichmentStatus === "pending") {
-        // Mark as pending
+        // Mark as pending with timestamp for timeout tracking
         await prisma.lead.update({
           where: { id: lead.id },
-          data: { enrichmentStatus: "pending" },
+          data: { 
+            enrichmentStatus: "pending",
+            enrichmentLastRetry: new Date(), // Initialize for follow-up engine timeout calculations
+          },
         });
 
         // Build enrichment request

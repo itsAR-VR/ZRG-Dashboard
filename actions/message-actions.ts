@@ -1219,11 +1219,16 @@ export async function sendLinkedInMessage(
       return { success: false, error: "Lead has no LinkedIn profile linked" };
     }
 
+    // Require linkedinUrl for Unipile API - linkedinId alone is not sufficient
+    if (!lead.linkedinUrl) {
+      return { success: false, error: "Lead has linkedinId but no LinkedIn URL - cannot send message" };
+    }
+
     if (!lead.client.unipileAccountId) {
       return { success: false, error: "Workspace has no LinkedIn account configured" };
     }
 
-    const linkedinUrl = lead.linkedinUrl || "";
+    const linkedinUrl = lead.linkedinUrl;
 
     console.log(`[sendLinkedInMessage] Sending to lead ${leadId} via LinkedIn (${linkedinUrl})`);
 
@@ -1755,11 +1760,16 @@ export async function checkLinkedInStatus(leadId: string): Promise<LinkedInStatu
       return { ...defaultResult, error: "Lead has no LinkedIn profile linked" };
     }
 
+    // Require linkedinUrl for Unipile API - linkedinId alone is not sufficient
+    if (!lead.linkedinUrl) {
+      return { ...defaultResult, error: "Lead has linkedinId but no LinkedIn URL - cannot check status" };
+    }
+
     if (!lead.client.unipileAccountId) {
       return { ...defaultResult, error: "Workspace has no LinkedIn account configured" };
     }
 
-    const linkedinUrl = lead.linkedinUrl || "";
+    const linkedinUrl = lead.linkedinUrl;
     const accountId = lead.client.unipileAccountId;
 
     // Check connection status and InMail balance in parallel

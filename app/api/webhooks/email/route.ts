@@ -438,10 +438,13 @@ async function triggerClayEnrichmentIfNeeded(
       return;
     }
 
-    // Mark as pending and trigger enrichment
+    // Mark as pending and trigger enrichment (with timestamp for timeout tracking)
     await prisma.lead.update({
       where: { id: leadId },
-      data: { enrichmentStatus: "pending" },
+      data: { 
+        enrichmentStatus: "pending",
+        enrichmentLastRetry: new Date(), // Initialize for follow-up engine timeout calculations
+      },
     });
 
     // Build the full enrichment request with all available data

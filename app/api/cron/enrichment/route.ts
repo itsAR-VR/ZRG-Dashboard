@@ -165,17 +165,24 @@ export async function GET(request: NextRequest) {
         }
       } catch (error) {
         errorCount++;
-        const newRetryCount = lead.enrichmentRetryCount + 1;
+        
+        // Retry tracking was already persisted at the start of the try block
+        // Fetch the current retry count from DB to get the updated value
+        const updatedLead = await prisma.lead.findUnique({
+          where: { id: lead.id },
+          select: { enrichmentRetryCount: true },
+        });
+        const currentRetryCount = updatedLead?.enrichmentRetryCount ?? lead.enrichmentRetryCount + 1;
         
         // Mark as failed if max retries exceeded
-        if (newRetryCount >= MAX_RETRIES) {
+        if (currentRetryCount >= MAX_RETRIES) {
           await prisma.lead.update({
             where: { id: lead.id },
             data: { enrichmentStatus: "failed" },
           });
           console.error(`[Enrichment Cron] Lead ${lead.id} failed permanently after ${MAX_RETRIES} attempts:`, error);
         } else {
-          console.error(`[Enrichment Cron] Error processing lead ${lead.id} (attempt ${newRetryCount}/${MAX_RETRIES}):`, error);
+          console.error(`[Enrichment Cron] Error processing lead ${lead.id} (attempt ${currentRetryCount}/${MAX_RETRIES}):`, error);
         }
       }
     }
