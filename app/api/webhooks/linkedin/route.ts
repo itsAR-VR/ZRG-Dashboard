@@ -251,8 +251,13 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
     
     if (currentLead && !currentLead.phone && currentLead.email) {
       // Only enrich if we have an email (required for Clay) and missing phone
-      // Skip if already enriched or processing
-      if (!currentLead.enrichmentStatus || currentLead.enrichmentStatus === "pending") {
+      // Skip if already enriched, pending, or not_needed
+      const shouldSkipEnrichment = 
+        currentLead.enrichmentStatus === "enriched" ||
+        currentLead.enrichmentStatus === "pending" ||
+        currentLead.enrichmentStatus === "not_needed";
+      
+      if (!shouldSkipEnrichment) {
         // Mark as pending with timestamp for timeout tracking
         await prisma.lead.update({
           where: { id: lead.id },
@@ -276,6 +281,8 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
         // Trigger Clay enrichment for phone only (we already have LinkedIn)
         await triggerEnrichmentForLead(enrichmentRequest, false, true);
         console.log(`[LinkedIn Webhook] Triggered Clay phone enrichment for lead ${lead.id} (positive sentiment: ${sentimentTag})`);
+      } else {
+        console.log(`[LinkedIn Webhook] Skipping phone enrichment for lead ${lead.id} - status: ${currentLead.enrichmentStatus}`);
       }
     } else if (currentLead && !currentLead.phone && !currentLead.email) {
       console.log(`[LinkedIn Webhook] Cannot enrich lead ${lead.id} for phone - no email address available`);

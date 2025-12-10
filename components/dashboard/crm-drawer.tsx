@@ -51,6 +51,7 @@ import {
   getFormattedAvailabilityForLead,
 } from "@/actions/booking-actions"
 import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
+import { useEnrichmentPolling } from "@/hooks/use-enrichment-polling"
 import { toast } from "sonner"
 import {
   Dialog,
@@ -123,6 +124,50 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
 
   // Enrichment state
   const [isEnriching, setIsEnriching] = useState(false)
+  
+  // Enrichment polling hook for manual enrichment
+  const { startPolling, isPolling } = useEnrichmentPolling({
+    leadId: lead.id,
+    onComplete: (result) => {
+      // Build toast message based on what was found
+      const found: string[] = []
+      const notFound: string[] = []
+      
+      if (result.phone) {
+        found.push(`Phone: ${result.phone}`)
+      } else {
+        notFound.push("phone")
+      }
+      
+      if (result.linkedinUrl) {
+        found.push(`LinkedIn: ${result.linkedinUrl.replace("https://linkedin.com/in/", "")}`)
+      } else {
+        notFound.push("LinkedIn")
+      }
+      
+      if (found.length > 0 && notFound.length > 0) {
+        // Partial results
+        toast.success("Enrichment complete", {
+          description: `Found ${found.join(". ")}. No ${notFound.join(" or ")} found.`
+        })
+      } else if (found.length > 0) {
+        // All found
+        toast.success("Enrichment complete", {
+          description: `Found ${found.join(". ")}`
+        })
+      } else {
+        // Nothing found
+        toast.info("No phone or LinkedIn found")
+      }
+      
+      onLeadUpdate?.() // Refresh lead data in UI
+    },
+    onTimeout: () => {
+      toast.warning("No results yet", {
+        description: "Check Clay table for details"
+      })
+    }
+  })
 
   // Load follow-up instances and sequences
   const loadFollowUpData = useCallback(async () => {
@@ -449,7 +494,8 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
           toast.success("Clay enrichment sent", {
             description: `Looking for: ${clayTriggers.join(", ")}. Results will update shortly.`
           })
-          // Note: Polling will be started by the polling hook when integrated
+          // Start polling for results
+          startPolling()
         } else if (updates.length > 0) {
           // Found data without needing Clay
           toast.success("Enrichment complete", {
@@ -945,15 +991,15 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                 className="w-full justify-start bg-transparent" 
                 size="sm"
                 onClick={handleEnrichLead}
-                disabled={isEnriching || !canEnrich}
-                title={enrichmentDisabledReason || undefined}
+                disabled={isEnriching || isPolling || !canEnrich}
+                title={enrichmentDisabledReason || (isPolling ? "Waiting for results..." : undefined)}
               >
-                {isEnriching ? (
+                {isEnriching || isPolling ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
                   <Sparkles className="mr-2 h-4 w-4" />
                 )}
-                {isEnriching ? "Enriching..." : "Enrich Lead"}
+                {isEnriching ? "Enriching..." : isPolling ? "Polling..." : "Enrich Lead"}
               </Button>
             </div>
           </div>
