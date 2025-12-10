@@ -319,7 +319,7 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
 
     // Trigger Clay enrichment (LinkedIn first, phone second as specified)
     const clayResult = await triggerEnrichmentForLead(enrichmentRequest, missingLinkedIn, missingPhone);
-    
+
     result.clayTriggered = {
       linkedin: clayResult.linkedInSent,
       phone: clayResult.phoneSent,
@@ -330,7 +330,7 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
     // Lead has all data, mark as not needed for enrichment
     await prisma.lead.update({
       where: { id: leadId },
-      data: { 
+      data: {
         enrichmentStatus: "not_needed",
         enrichedAt: new Date(),
       },

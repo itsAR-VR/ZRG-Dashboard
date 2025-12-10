@@ -155,11 +155,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       status: "queued",
       totalRecords: count,
-      message: `Export of ${count} leads has been queued. ${
-        email
+      message: `Export of ${count} leads has been queued. ${email
           ? `You will receive an email at ${email} when it's ready.`
           : "Check back in a few minutes for the download link."
-      }`,
+        }`,
       estimatedTime: `${Math.ceil(count / 500)} minutes`,
       // In production, return a job ID for status polling
       jobId: `export-${clientId}-${Date.now()}`,

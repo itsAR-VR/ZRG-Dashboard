@@ -7,9 +7,9 @@ import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { classifySentiment, detectBounce, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply } from "@/actions/email-actions";
-import { 
-  sendLinkedInMessageWithWaterfall, 
-  checkLinkedInConnection, 
+import {
+  sendLinkedInMessageWithWaterfall,
+  checkLinkedInConnection,
   checkInMailBalance,
   type SendResult as UnipileSendResult,
   type LinkedInConnectionStatus,
@@ -1219,17 +1219,11 @@ export async function sendLinkedInMessage(
       return { success: false, error: "Lead has no LinkedIn profile linked" };
     }
 
-    // LinkedIn URL is required for messaging (needed to check connection status first)
-    // linkedinId alone is not sufficient for the initial connection check
-    if (!lead.linkedinUrl) {
-      return { success: false, error: "Lead has LinkedIn ID but no profile URL - cannot send message" };
-    }
-
     if (!lead.client.unipileAccountId) {
       return { success: false, error: "Workspace has no LinkedIn account configured" };
     }
 
-    const linkedinUrl = lead.linkedinUrl;
+    const linkedinUrl = lead.linkedinUrl || "";
 
     console.log(`[sendLinkedInMessage] Sending to lead ${leadId} via LinkedIn (${linkedinUrl})`);
 
@@ -1761,17 +1755,11 @@ export async function checkLinkedInStatus(leadId: string): Promise<LinkedInStatu
       return { ...defaultResult, error: "Lead has no LinkedIn profile linked" };
     }
 
-    // LinkedIn URL is required for connection status check
-    // (linkedinId alone is not sufficient - it's only populated after connection)
-    if (!lead.linkedinUrl) {
-      return { ...defaultResult, error: "Lead has LinkedIn ID but no profile URL - cannot check connection status" };
-    }
-
     if (!lead.client.unipileAccountId) {
       return { ...defaultResult, error: "Workspace has no LinkedIn account configured" };
     }
 
-    const linkedinUrl = lead.linkedinUrl;
+    const linkedinUrl = lead.linkedinUrl || "";
     const accountId = lead.client.unipileAccountId;
 
     // Check connection status and InMail balance in parallel

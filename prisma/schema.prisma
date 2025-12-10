@@ -116,9 +116,11 @@ model Lead {
   sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.
   snoozedUntil DateTime?     // When snoozed, hide from inbox until this date
   // Enrichment tracking (for Clay/EmailBison/signature extraction)
-  enrichmentStatus   String?   // 'pending' | 'enriched' | 'not_found' | 'not_needed'
-  enrichmentSource   String?   // 'emailbison' | 'clay' | 'signature' | null
+  enrichmentStatus   String?   // 'pending' | 'enriched' | 'not_found' | 'not_needed' | 'failed'
+  enrichmentSource   String?   // 'emailbison' | 'clay' | 'signature' | 'message_content' | null
   enrichedAt         DateTime? // When enrichment was last completed
+  enrichmentRetryCount  Int       @default(0)  // Number of Clay enrichment retry attempts
+  enrichmentLastRetry   DateTime?              // When the last retry was attempted
   // Automation settings
   autoReplyEnabled Boolean   @default(false)
   autoFollowUpEnabled Boolean @default(false)

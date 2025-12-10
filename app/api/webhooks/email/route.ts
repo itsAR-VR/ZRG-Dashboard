@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { classifySentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
+import { classifySentiment, SENTIMENT_TO_STATUS, isPositiveSentiment, type SentimentTag } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraft } from "@/actions/message-actions";
 import { findOrCreateLead } from "@/lib/lead-matching";
@@ -387,14 +387,26 @@ interface EmailBisonEnrichmentData {
 
 /**
  * Trigger Clay enrichment for leads missing LinkedIn or phone
- * Only for email leads (not SMS-only)
+ * Only for email leads (not SMS-only) with POSITIVE sentiment
  * Uses smart logic to skip enrichment if valid data already exists in EmailBison
+ * 
+ * @param leadId - The lead ID to enrich
+ * @param sentimentTag - The lead's current sentiment (enrichment only triggers for positive sentiments)
+ * @param emailBisonData - Optional data from EmailBison for additional context
  */
 async function triggerClayEnrichmentIfNeeded(
   leadId: string,
+  sentimentTag: string | null,
   emailBisonData?: EmailBisonEnrichmentData
 ): Promise<void> {
   try {
+    // Only enrich leads with positive sentiment
+    // This saves costs by not enriching leads who are not interested
+    if (!isPositiveSentiment(sentimentTag)) {
+      console.log(`[Clay Enrichment] Skipping lead ${leadId} - sentiment "${sentimentTag}" is not positive`);
+      return;
+    }
+
     const lead = await prisma.lead.findUnique({ where: { id: leadId } });
 
     if (!lead || !lead.email) {
@@ -738,8 +750,9 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   await enrichLeadFromSignature(lead.id, leadFullName, fromEmail, fullEmailBody);
 
   // STEP 4: Trigger Clay enrichment if still missing LinkedIn or phone after other enrichment
+  // Only triggers for positive sentiments (Meeting Requested, Call Requested, Info Requested, Interested)
   // Pass EmailBison data for additional context (company, state, etc.)
-  await triggerClayEnrichmentIfNeeded(lead.id, emailBisonData);
+  await triggerClayEnrichmentIfNeeded(lead.id, sentimentTag, emailBisonData);
 
   // Generate AI draft if appropriate (skip bounce emails)
   let draftId: string | undefined;
@@ -1143,7 +1156,8 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   await enrichLeadFromSignature(lead.id, leadFullName, fromEmail, fullEmailBody);
 
   // STEP 3: Trigger Clay enrichment if still missing LinkedIn or phone
-  await triggerClayEnrichmentIfNeeded(lead.id);
+  // Only triggers for positive sentiments (Meeting Requested, Call Requested, Info Requested, Interested)
+  await triggerClayEnrichmentIfNeeded(lead.id, sentimentTag);
 
   // Generate AI draft (skip bounce emails)
   let draftId: string | undefined;

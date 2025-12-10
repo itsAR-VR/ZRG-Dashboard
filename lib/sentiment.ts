@@ -30,6 +30,26 @@ export const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
   "Snoozed": "new",
 };
 
+// Positive sentiments that trigger Clay enrichment
+// These indicate the lead is engaged and worth enriching for phone/LinkedIn
+export const POSITIVE_SENTIMENTS = [
+  "Meeting Requested",
+  "Call Requested",
+  "Information Requested",
+  "Interested",
+] as const;
+
+export type PositiveSentiment = (typeof POSITIVE_SENTIMENTS)[number];
+
+/**
+ * Check if a sentiment tag is positive (triggers enrichment)
+ * Used to determine when to auto-trigger Clay enrichment
+ */
+export function isPositiveSentiment(tag: string | null): tag is PositiveSentiment {
+  if (!tag) return false;
+  return POSITIVE_SENTIMENTS.includes(tag as PositiveSentiment);
+}
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });

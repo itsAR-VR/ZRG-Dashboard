@@ -395,6 +395,56 @@ export async function executeFollowUpStep(
       };
     }
 
+    // For SMS channel: check if lead has phone number
+    // If phone is missing and enrichment is pending, wait or pause
+    if (step.channel === "sms" && !lead.phone) {
+      // Fetch latest lead data to check enrichment status
+      const currentLead = await prisma.lead.findUnique({ where: { id: lead.id } });
+      
+      if (currentLead?.enrichmentStatus === "pending") {
+        // Check how long enrichment has been pending
+        // Use enrichedAt as baseline or createdAt if not available
+        const enrichmentStarted = currentLead.enrichmentLastRetry || currentLead.updatedAt;
+        const pendingDuration = Date.now() - enrichmentStarted.getTime();
+        const ENRICHMENT_WAIT_MS = 5 * 60 * 1000; // 5 minutes
+        
+        if (pendingDuration < ENRICHMENT_WAIT_MS) {
+          // Still within wait window - skip this execution, will retry on next cron run
+          console.log(`[FollowUp] SMS step skipped for lead ${lead.id} - waiting for enrichment (${Math.round(pendingDuration / 1000)}s / ${ENRICHMENT_WAIT_MS / 1000}s)`);
+          return {
+            success: true,
+            action: "skipped",
+            message: `Waiting for phone enrichment (${Math.round(pendingDuration / 1000)}s elapsed, ${ENRICHMENT_WAIT_MS / 1000}s max)`,
+          };
+        } else {
+          // Exceeded wait window - pause the sequence
+          await prisma.followUpInstance.update({
+            where: { id: instanceId },
+            data: {
+              status: "paused",
+              pausedReason: "awaiting_enrichment",
+            },
+          });
+          
+          console.log(`[FollowUp] SMS step paused for lead ${lead.id} - enrichment timeout (${Math.round(pendingDuration / 1000)}s)`);
+          return {
+            success: true,
+            action: "skipped",
+            message: "Sequence paused - phone enrichment timeout. Manual intervention required.",
+          };
+        }
+      } else {
+        // No phone and enrichment is not pending (failed, not_found, or not_needed)
+        // Skip SMS step - can't send without phone
+        console.log(`[FollowUp] SMS step skipped for lead ${lead.id} - no phone available (enrichment status: ${currentLead?.enrichmentStatus})`);
+        return {
+          success: true,
+          action: "skipped",
+          message: `SMS skipped - no phone number available (enrichment: ${currentLead?.enrichmentStatus || "none"})`,
+        };
+      }
+    }
+
     // Generate message content
     const { content, subject } = await generateFollowUpMessage(step, lead, settings);
 

@@ -7,9 +7,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyUnipileWebhookSecret } from "@/lib/unipile-api";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
-import { classifySentiment } from "@/lib/sentiment";
+import { classifySentiment, isPositiveSentiment } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { extractContactFromMessageContent } from "@/lib/signature-extractor";
+import { triggerEnrichmentForLead } from "@/lib/clay-api";
 
 // Unipile webhook event types
 type UnipileEventType =
@@ -240,6 +241,43 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
     where: { id: lead.id },
     data: { sentimentTag },
   });
+
+  // Trigger Clay enrichment for phone if:
+  // 1. Sentiment is positive (Meeting Requested, Call Requested, Info Requested, Interested)
+  // 2. Lead is missing phone number
+  // Note: LinkedIn leads already have linkedinUrl, so we only enrich for phone
+  if (isPositiveSentiment(sentimentTag)) {
+    const currentLead = await prisma.lead.findUnique({ where: { id: lead.id } });
+    
+    if (currentLead && !currentLead.phone && currentLead.email) {
+      // Only enrich if we have an email (required for Clay) and missing phone
+      // Skip if already enriched or processing
+      if (!currentLead.enrichmentStatus || currentLead.enrichmentStatus === "pending") {
+        // Mark as pending
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { enrichmentStatus: "pending" },
+        });
+
+        // Build enrichment request
+        const fullName = `${currentLead.firstName || ""} ${currentLead.lastName || ""}`.trim();
+        const enrichmentRequest = {
+          leadId: lead.id,
+          emailAddress: currentLead.email,
+          firstName: currentLead.firstName || undefined,
+          lastName: currentLead.lastName || undefined,
+          fullName: fullName || undefined,
+          linkedInProfile: currentLead.linkedinUrl || undefined,
+        };
+
+        // Trigger Clay enrichment for phone only (we already have LinkedIn)
+        await triggerEnrichmentForLead(enrichmentRequest, false, true);
+        console.log(`[LinkedIn Webhook] Triggered Clay phone enrichment for lead ${lead.id} (positive sentiment: ${sentimentTag})`);
+      }
+    } else if (currentLead && !currentLead.phone && !currentLead.email) {
+      console.log(`[LinkedIn Webhook] Cannot enrich lead ${lead.id} for phone - no email address available`);
+    }
+  }
 
   // Generate AI draft if appropriate
   if (shouldGenerateDraft(sentimentTag)) {

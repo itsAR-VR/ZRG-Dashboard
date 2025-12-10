@@ -52,11 +52,11 @@ export function useCRMFilters() {
 
     // Update each filter
     Object.entries(newFilters).forEach(([key, value]) => {
-      const paramKey = key === "search" ? "q" : 
-                       key === "direction" ? "dir" : 
-                       key === "workspace" ? "ws" : 
-                       key
-      
+      const paramKey = key === "search" ? "q" :
+        key === "direction" ? "dir" :
+          key === "workspace" ? "ws" :
+            key
+
       if (value && value !== DEFAULT_FILTERS[key as keyof CRMFilters]) {
         params.set(paramKey, value.toString())
       } else {
@@ -105,10 +105,10 @@ export function useCRMFilters() {
   // Check if any filters are active
   const hasActiveFilters = useMemo(() => {
     return filters.search !== DEFAULT_FILTERS.search ||
-           filters.status !== DEFAULT_FILTERS.status ||
-           filters.channel !== DEFAULT_FILTERS.channel ||
-           filters.sentiment !== DEFAULT_FILTERS.sentiment ||
-           filters.filter !== DEFAULT_FILTERS.filter
+      filters.status !== DEFAULT_FILTERS.status ||
+      filters.channel !== DEFAULT_FILTERS.channel ||
+      filters.sentiment !== DEFAULT_FILTERS.sentiment ||
+      filters.filter !== DEFAULT_FILTERS.filter
   }, [filters])
 
   return {

@@ -328,7 +328,7 @@ function calculateLeadScore(lead: {
  */
 function transformLeadToCRM(lead: any): CRMLeadData {
   const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
-  
+
   return {
     id: lead.id,
     name: fullName,
@@ -377,15 +377,15 @@ export async function getCRMLeadsCursor(
 
     // Build the where clause for filtering
     const whereConditions: any[] = [];
-    
+
     if (clientId) {
       whereConditions.push({ clientId });
     }
-    
+
     if (status && status !== "all") {
       whereConditions.push({ status });
     }
-    
+
     if (search && search.trim()) {
       const searchTerm = search.trim();
       whereConditions.push({
@@ -474,15 +474,15 @@ export async function getCRMLeadsFromEnd(
 
     // Build the where clause
     const whereConditions: any[] = [];
-    
+
     if (clientId) {
       whereConditions.push({ clientId });
     }
-    
+
     if (status && status !== "all") {
       whereConditions.push({ status });
     }
-    
+
     if (search && search.trim()) {
       const searchTerm = search.trim();
       whereConditions.push({
@@ -519,7 +519,7 @@ export async function getCRMLeadsFromEnd(
 
     // Reverse to get correct display order (most recent/highest at bottom)
     const reversedLeads = leads.reverse();
-    
+
     // Transform to CRM format
     const crmLeads = reversedLeads.map(transformLeadToCRM);
 

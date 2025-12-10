@@ -396,8 +396,24 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
     }
   }
 
-  // Enrichment handler
+  // Enrichment handler with status checking
   const handleEnrichLead = async () => {
+    // Check if already enriched or not_needed
+    if (lead.enrichmentStatus === "enriched" || lead.enrichmentStatus === "not_needed") {
+      toast.info("Lead already enriched", {
+        description: "Phone and LinkedIn data is already up to date."
+      })
+      return
+    }
+    
+    // Check if enrichment is already in progress
+    if (lead.enrichmentStatus === "pending") {
+      toast.info("Enrichment already in progress", {
+        description: "Results will update when Clay responds."
+      })
+      return
+    }
+    
     setIsEnriching(true)
     try {
       const result = await refreshAndEnrichLead(lead.id)
@@ -427,18 +443,23 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
           clayTriggers.push("Phone")
         }
         
-        let message = ""
-        if (updates.length > 0) {
-          message += `Found: ${updates.join(", ")}. `
-        }
+        // Show different toast based on what happened
         if (clayTriggers.length > 0) {
-          message += `Clay enrichment triggered for: ${clayTriggers.join(", ")}`
-        }
-        if (!message) {
-          message = "Lead data is up to date"
+          // Clay enrichment was triggered - show that it's been sent
+          toast.success("Clay enrichment sent", {
+            description: `Looking for: ${clayTriggers.join(", ")}. Results will update shortly.`
+          })
+          // Note: Polling will be started by the polling hook when integrated
+        } else if (updates.length > 0) {
+          // Found data without needing Clay
+          toast.success("Enrichment complete", {
+            description: `Found: ${updates.join(", ")}`
+          })
+        } else {
+          // Nothing new found
+          toast.info("Lead data is up to date")
         }
         
-        toast.success("Enrichment complete", { description: message })
         onLeadUpdate?.() // Refresh the lead data in the UI
       } else {
         toast.error("Enrichment failed", { description: result.error })
@@ -456,15 +477,21 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
   // - Available for EmailBison leads (has emailBisonLeadId)
   // - DISABLED for sentiment tags: Not Interested, Blacklist, Neutral
   // - ENABLED for all other sentiments including new/no sentiment
-  // - Can force re-enrich even if LinkedIn/phone already exist
+  // - Disabled if already enriched/pending (handled in handleEnrichLead)
   const BLOCKED_SENTIMENTS = ["Not Interested", "Blacklist", "Neutral"]
   const isBlockedSentiment = BLOCKED_SENTIMENTS.includes(lead.sentimentTag || "")
+  const isAlreadyEnriched = lead.enrichmentStatus === "enriched" || lead.enrichmentStatus === "not_needed"
+  const isEnrichmentPending = lead.enrichmentStatus === "pending"
   const canEnrich = !!lead.emailBisonLeadId && !isBlockedSentiment
   const enrichmentDisabledReason = !lead.emailBisonLeadId 
     ? "No EmailBison lead ID" 
     : isBlockedSentiment 
       ? `Enrichment blocked for "${lead.sentimentTag}" sentiment` 
-      : null
+      : isEnrichmentPending
+        ? "Enrichment in progress"
+        : isAlreadyEnriched
+          ? "Already enriched"
+          : null
 
   return (
     <>
@@ -490,32 +517,51 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                     lead.enrichmentStatus === "enriched" && "text-green-500 border-green-500/30 bg-green-500/10",
                     lead.enrichmentStatus === "pending" && "text-amber-500 border-amber-500/30 bg-amber-500/10",
                     lead.enrichmentStatus === "not_found" && "text-red-500 border-red-500/30 bg-red-500/10",
+                    lead.enrichmentStatus === "failed" && "text-red-500 border-red-500/30 bg-red-500/10",
                     lead.enrichmentStatus === "not_needed" && "text-muted-foreground"
                   )}
                 >
                   {lead.enrichmentStatus === "enriched" ? "Enriched" :
-                   lead.enrichmentStatus === "pending" ? "Pending" :
+                   lead.enrichmentStatus === "pending" ? (
+                     <span className="flex items-center gap-1">
+                       <Loader2 className="h-3 w-3 animate-spin" />
+                       Enriching...
+                     </span>
+                   ) :
                    lead.enrichmentStatus === "not_found" ? "Not Found" :
+                   lead.enrichmentStatus === "failed" ? "Failed" :
                    lead.enrichmentStatus === "not_needed" ? "Complete" : lead.enrichmentStatus}
                 </Badge>
               )}
             </div>
             <div className="space-y-2.5">
+              {/* Email - only show if present */}
               {lead.email && (
                 <div className="flex items-center gap-3 text-sm">
                   <Mail className="h-4 w-4 text-muted-foreground shrink-0" />
                   <span className="text-foreground truncate">{lead.email}</span>
                 </div>
               )}
-              {lead.phone && (
-                <div className="flex items-center gap-3 text-sm">
-                  <Phone className="h-4 w-4 text-muted-foreground shrink-0" />
+              
+              {/* Phone - ALWAYS show */}
+              <div className="flex items-center gap-3 text-sm">
+                <Phone className="h-4 w-4 text-muted-foreground shrink-0" />
+                {lead.phone ? (
                   <span className="text-foreground">{lead.phone}</span>
-                </div>
-              )}
-              {lead.linkedinUrl && (
-                <div className="flex items-center gap-3 text-sm">
-                  <Linkedin className="h-4 w-4 text-[#0A66C2] shrink-0" />
+                ) : (
+                  <span className="flex items-center gap-2">
+                    <span className="text-muted-foreground italic">No number found</span>
+                    {lead.enrichmentStatus === "pending" && (
+                      <Loader2 className="h-3 w-3 animate-spin text-amber-500" />
+                    )}
+                  </span>
+                )}
+              </div>
+              
+              {/* LinkedIn - ALWAYS show */}
+              <div className="flex items-center gap-3 text-sm">
+                <Linkedin className="h-4 w-4 text-[#0A66C2] shrink-0" />
+                {lead.linkedinUrl ? (
                   <a
                     href={lead.linkedinUrl}
                     target="_blank"
@@ -524,8 +570,17 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                   >
                     {lead.linkedinUrl.replace("https://linkedin.com/in/", "")}
                   </a>
-                </div>
-              )}
+                ) : (
+                  <span className="flex items-center gap-2">
+                    <span className="text-muted-foreground italic">No LinkedIn found</span>
+                    {lead.enrichmentStatus === "pending" && (
+                      <Loader2 className="h-3 w-3 animate-spin text-amber-500" />
+                    )}
+                  </span>
+                )}
+              </div>
+              
+              {/* Website - optional */}
               {(lead.website || lead.companyWebsite) && (
                 <div className="flex items-center gap-3 text-sm">
                   <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
@@ -539,26 +594,29 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                   </a>
                 </div>
               )}
+              
+              {/* Company Name - optional */}
               {lead.companyName && (
                 <div className="flex items-center gap-3 text-sm">
                   <Building2 className="h-4 w-4 text-muted-foreground shrink-0" />
                   <span className="text-foreground">{lead.companyName}</span>
                 </div>
               )}
+              
+              {/* Company State - optional */}
               {lead.companyState && (
                 <div className="flex items-center gap-3 text-sm">
                   <MapPin className="h-4 w-4 text-muted-foreground shrink-0" />
                   <span className="text-foreground">{lead.companyState}</span>
                 </div>
               )}
+              
+              {/* Timezone - optional */}
               {lead.timezone && (
                 <div className="flex items-center gap-3 text-sm">
                   <Clock className="h-4 w-4 text-muted-foreground shrink-0" />
                   <span className="text-foreground">{lead.timezone}</span>
                 </div>
-              )}
-              {!lead.email && !lead.phone && !lead.linkedinUrl && !lead.website && !lead.companyWebsite && !lead.timezone && (
-                <p className="text-sm text-muted-foreground italic">No contact info available</p>
               )}
             </div>
           </div>
