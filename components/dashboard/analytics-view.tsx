@@ -11,12 +11,9 @@ import {
   PieChart,
   Pie,
   Cell,
-  BarChart,
-  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
-  ResponsiveContainer,
   Legend,
   LineChart,
   Line,
@@ -177,26 +174,24 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                   }}
                   className="h-[250px]"
                 >
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={sentimentData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={60}
-                        outerRadius={100}
-                        paddingAngle={2}
-                        dataKey="value"
-                        label={({ name, value }) => `${name}: ${value}%`}
-                        labelLine={false}
-                      >
-                        {sentimentData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <ChartTooltip content={<ChartTooltipContent />} />
-                    </PieChart>
-                  </ResponsiveContainer>
+                  <PieChart>
+                    <Pie
+                      data={sentimentData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={100}
+                      paddingAngle={2}
+                      dataKey="value"
+                      label={({ name, value }) => `${name}: ${value}%`}
+                      labelLine={false}
+                    >
+                      {sentimentData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <ChartTooltip content={<ChartTooltipContent />} />
+                  </PieChart>
                 </ChartContainer>
               ) : (
                 <div className="h-[250px] flex items-center justify-center text-muted-foreground">
@@ -235,17 +230,15 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                 }}
                 className="h-[250px]"
               >
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={weeklyData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="day" />
-                    <YAxis />
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                    <Legend />
-                    <Line type="monotone" dataKey="inbound" stroke="#3B82F6" strokeWidth={2} dot={{ r: 4 }} name="Inbound" />
-                    <Line type="monotone" dataKey="outbound" stroke="#10B981" strokeWidth={2} dot={{ r: 4 }} name="Outbound" />
-                  </LineChart>
-                </ResponsiveContainer>
+                <LineChart data={weeklyData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="day" />
+                  <YAxis />
+                  <ChartTooltip content={<ChartTooltipContent />} />
+                  <Legend />
+                  <Line type="monotone" dataKey="inbound" stroke="#3B82F6" strokeWidth={2} dot={{ r: 4 }} name="Inbound" />
+                  <Line type="monotone" dataKey="outbound" stroke="#10B981" strokeWidth={2} dot={{ r: 4 }} name="Outbound" />
+                </LineChart>
               </ChartContainer>
             ) : (
               <div className="h-[250px] flex items-center justify-center text-muted-foreground">

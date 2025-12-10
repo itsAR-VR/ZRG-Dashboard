@@ -340,7 +340,7 @@ export async function getFollowUpTaggedLeads(
           take: 10, // Get recent messages for scoring and preview
           select: {
             id: true,
-            content: true,
+            body: true,
             direction: true,
             createdAt: true,
           },
@@ -367,7 +367,7 @@ export async function getFollowUpTaggedLeads(
           messages: lead.messages,
           sentimentTag: lead.sentimentTag,
         }),
-        lastMessagePreview: lastMessage?.content?.slice(0, 150) || null,
+        lastMessagePreview: lastMessage?.body?.slice(0, 150) || null,
         lastMessageAt: lastMessage?.createdAt || null,
         lastOutboundAt: lastOutbound?.createdAt || null,
       };

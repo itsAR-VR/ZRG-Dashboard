@@ -273,6 +273,7 @@ export function IntegrationsManager() {
                 <Input
                   id="privateKey"
                   type="password"
+                  autoComplete="off"
                   placeholder="pit_xxxxxxxxxxxxxxxx"
                   value={formData.ghlPrivateKey}
                   onChange={(e) => setFormData({ ...formData, ghlPrivateKey: e.target.value })}
@@ -324,6 +325,7 @@ export function IntegrationsManager() {
                       <Input
                         id="emailBisonApiKey"
                         type="password"
+                        autoComplete="off"
                         placeholder="eb_xxxxxxxxxxxxxxxx"
                         value={formData.emailBisonApiKey}
                         onChange={(e) => setFormData({ ...formData, emailBisonApiKey: e.target.value })}
@@ -579,6 +581,7 @@ export function IntegrationsManager() {
                               <Input
                                 id={`emailKey-${client.id}`}
                                 type="password"
+                                autoComplete="off"
                                 placeholder={client.emailBisonApiKey ? "••••••••" : "eb_xxxxxxxxxxxxxxxx"}
                                 value={formData.emailBisonApiKey}
                                 onChange={(e) => setFormData({ ...formData, emailBisonApiKey: e.target.value })}
