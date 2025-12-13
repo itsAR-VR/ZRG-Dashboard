@@ -476,12 +476,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Background auto-heal sync only for the first inbound message
-    if (isFirstInbound) {
-      syncConversationHistory(lead.id).catch((err) =>
-        console.error("[Webhook] Background sync failed:", err)
-      );
-    }
+    // Always trigger background sync to normalize conversation by date/time
+    // This runs as a fire-and-forget background job to:
+    // 1. Fetch full conversation from GHL with accurate timestamps
+    // 2. Heal any messages saved without ghlId
+    // 3. Re-order messages by actual GHL dateAdded timestamp
+    // 4. Re-classify sentiment based on complete conversation
+    syncConversationHistory(lead.id).catch((err) =>
+      console.error("[Webhook] Background sync failed:", err)
+    );
 
     // Generate AI draft if appropriate for this sentiment
     let draftId: string | undefined;
