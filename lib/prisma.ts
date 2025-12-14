@@ -1,3 +1,4 @@
+import "@/lib/server-dns";
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 

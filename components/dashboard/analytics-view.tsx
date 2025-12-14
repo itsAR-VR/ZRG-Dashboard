@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Users, MessageSquare, Calendar, TrendingUp, Clock, Bot, ArrowUpRight, ArrowDownRight, Loader2, BarChart3 } from "lucide-react"
+import { Users, MessageSquare, Calendar, Clock, ArrowUpRight, ArrowDownRight, Loader2, BarChart3 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -60,11 +60,11 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
 
   const kpiCards = [
     { label: "Total Leads", value: data?.overview.totalLeads.toLocaleString() || "0", icon: Users, change: 0, up: true },
+    { label: "Outbound Leads Contacted", value: data?.overview.outboundLeadsContacted.toLocaleString() || "0", icon: ArrowUpRight, change: 0, up: true },
+    { label: "Responses", value: data?.overview.responses.toLocaleString() || "0", icon: ArrowDownRight, change: 0, up: true },
     { label: "Response Rate", value: `${data?.overview.responseRate || 0}%`, icon: MessageSquare, change: 0, up: true },
     { label: "Meetings Booked", value: data?.overview.meetingsBooked.toString() || "0", icon: Calendar, change: 0, up: true },
-    { label: "Conversion Rate", value: data ? `${Math.round((data.overview.meetingsBooked / Math.max(data.overview.totalLeads, 1)) * 100)}%` : "0%", icon: TrendingUp, change: 0, up: true },
     { label: "Avg Response Time", value: data?.overview.avgResponseTime || "—", icon: Clock, change: 0, up: true },
-    { label: "AI Accuracy", value: "95%", icon: Bot, change: 0, up: true },
   ]
 
   // Prepare sentiment breakdown for pie chart
@@ -247,6 +247,50 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
             )}
           </CardContent>
         </Card>
+
+        {/* SMS Sub-clients (workspace only) */}
+        {activeWorkspace ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>SMS Sub-clients</CardTitle>
+              <CardDescription>Breakdown by SMS sub-client within this workspace</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {data.smsSubClients && data.smsSubClients.length > 0 ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Sub-client</TableHead>
+                      <TableHead className="text-right">Leads</TableHead>
+                      <TableHead className="text-right">Replies</TableHead>
+                      <TableHead className="text-right">Meetings</TableHead>
+                      <TableHead className="text-right">Reply Rate</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {data.smsSubClients.map((row) => (
+                      <TableRow key={row.name}>
+                        <TableCell className="font-medium">{row.name}</TableCell>
+                        <TableCell className="text-right">{row.leads}</TableCell>
+                        <TableCell className="text-right">{row.responses}</TableCell>
+                        <TableCell className="text-right">{row.meetingsBooked}</TableCell>
+                        <TableCell className="text-right">
+                          <Badge variant={row.responses > 0 ? "default" : "secondary"}>
+                            {row.leads > 0 ? Math.round((row.responses / row.leads) * 100) : 0}%
+                          </Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <div className="py-8 text-center text-muted-foreground">
+                  No sub-client data available
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        ) : null}
 
         {/* Top Clients */}
         <Card>

@@ -74,6 +74,13 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - **Webhook:** `/api/webhooks/ghl/sms?locationId={GHL_LOCATION_ID}`
 - **Features:** Inbound SMS processing, contact sync, conversation threading
 - **Auth:** Private Integration API Key per workspace
+- **Note:** Outbound SMS sent by GHL automations is not ingested yet, so any “Outbound leads contacted” KPI derived purely from our DB will be incomplete until outbound SMS webhooks or export syncing is added.
+
+#### SMS Sub-clients (Attribution)
+- Inbound SMS webhooks can include a sub-client/campaign label in `customData.Client` (stored per workspace as `SmsCampaign` and linked via `Lead.smsCampaignId`).
+- Optional backfill for legacy leads (tags-based): `npx tsx scripts/backfill-sms-campaign.ts --dry-run`
+  - Requires `DATABASE_URL`; uses each workspace’s `Client.ghlPrivateKey` to fetch contact tags.
+  - Uses `gpt-5-nano` by default (requires `OPENAI_API_KEY`); pass `--no-llm` for deterministic-only mode (supports tags like `<name> sms <date>`).
 
 ### Inboxxia / EmailBison (Email)
 - **Webhook:** `/api/webhooks/email?clientId={ZRG_CLIENT_ID}`

@@ -743,21 +743,9 @@ Looking forward to connecting.
       requiresApproval: false,
       fallbackStepId: null,
     },
-    // DAY 2 - AI Voice call if phone provided (immediate engagement)
-    {
-      stepOrder: 2,
-      dayOffset: 2,
-      channel: "ai_voice",
-      messageTemplate: `Call lead to ask qualification questions and book them in. 
-Context: Lead provided phone number, this is a double-dial touchpoint for immediate engagement.`,
-      subject: null,
-      condition: { type: "phone_provided" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
     // DAY 2 - SMS fallback asking for good time to call
     {
-      stepOrder: 3,
+      stepOrder: 2,
       dayOffset: 2,
       channel: "sms",
       messageTemplate: `Hey {firstName} - when is a good time to give you a call?`,
@@ -768,7 +756,7 @@ Context: Lead provided phone number, this is a double-dial touchpoint for immedi
     },
     // DAY 5 - Email with availability (in case they were busy)
     {
-      stepOrder: 4,
+      stepOrder: 3,
       dayOffset: 5,
       channel: "email",
       messageTemplate: `Hi {firstName}, just had time to get back to you.
@@ -785,7 +773,7 @@ No problem if not but just let me know. I have {availability} and if it's easier
     },
     // DAY 5 - SMS with times
     {
-      stepOrder: 5,
+      stepOrder: 4,
       dayOffset: 5,
       channel: "sms",
       messageTemplate: `Hey {firstName} - {senderName} from {companyName} again
@@ -802,7 +790,7 @@ Here's the link to choose a time to talk if those don't work: {calendarLink}`,
     },
     // DAY 7 - Final email
     {
-      stepOrder: 6,
+      stepOrder: 5,
       dayOffset: 7,
       channel: "email",
       messageTemplate: `Hey {firstName}, tried to reach you a few times but didn't hear back...
@@ -817,7 +805,7 @@ Where should we go from here?
     },
     // DAY 7 - Final SMS
     {
-      stepOrder: 7,
+      stepOrder: 6,
       dayOffset: 7,
       channel: "sms",
       messageTemplate: `Hey {firstName}, tried to reach you a few times but didn't hear back...
@@ -833,9 +821,106 @@ Where should we go from here?`,
   return createFollowUpSequence({
     clientId,
     name: "No Response Day 2/5/7",
-    description: "Triggered when lead doesn't respond: Day 2 (ask for phone + AI call), Day 5 (availability reminder), Day 7 (final check-in)",
+    description: "Triggered when lead doesn't respond: Day 2 (ask for phone), Day 5 (availability reminder), Day 7 (final check-in)",
     triggerOn: "no_response",
     steps: noResponseSteps,
+  });
+}
+
+/**
+ * Create the default "Meeting Requested" sequence for a workspace
+ * Triggered when sentiment becomes "Meeting Requested" (auto-started by automation)
+ */
+export async function createMeetingRequestedSequence(
+  clientId: string
+): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
+  const steps: Omit<FollowUpStepData, "id">[] = [
+    // DAY 1 - LinkedIn connection request (note)
+    {
+      stepOrder: 1,
+      dayOffset: 1,
+      channel: "linkedin",
+      messageTemplate: `Hi {firstName} — thanks for reaching out. Happy to connect and share details about {result}.`,
+      subject: null,
+      condition: { type: "always" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 1 - Email: confirm and offer calendar
+    {
+      stepOrder: 2,
+      dayOffset: 1,
+      channel: "email",
+      messageTemplate: `Hi {firstName},
+
+Great — happy to set up a quick call to talk through {result}.
+
+I have {availability}. If it’s easier, you can grab a time here: {calendarLink}
+
+{senderName}`,
+      subject: "Scheduling a quick call",
+      condition: { type: "always" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 2 - SMS nudge (only if phone provided)
+    {
+      stepOrder: 3,
+      dayOffset: 2,
+      channel: "sms",
+      messageTemplate: `Hey {firstName} — want to lock in a quick call about {result}? Here’s my calendar: {calendarLink}`,
+      subject: null,
+      condition: { type: "phone_provided" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 2 - LinkedIn DM after connection accepted
+    {
+      stepOrder: 4,
+      dayOffset: 2,
+      channel: "linkedin",
+      messageTemplate: `Thanks for connecting, {firstName}. If you’d like, here’s my calendar to grab a quick call: {calendarLink}`,
+      subject: null,
+      condition: { type: "linkedin_connected" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 5 - Email reminder with availability
+    {
+      stepOrder: 5,
+      dayOffset: 5,
+      channel: "email",
+      messageTemplate: `Hi {firstName},
+
+Just following up — still want to get a quick call scheduled?
+
+I have {availability} available. Calendar link here as well: {calendarLink}
+
+{senderName}`,
+      subject: "Re: Scheduling a quick call",
+      condition: { type: "always" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 7 - Final SMS check-in (only if phone provided)
+    {
+      stepOrder: 6,
+      dayOffset: 7,
+      channel: "sms",
+      messageTemplate: `Hey {firstName} — should I close the loop on this, or do you still want to chat about {result}?`,
+      subject: null,
+      condition: { type: "phone_provided" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+  ];
+
+  return createFollowUpSequence({
+    clientId,
+    name: "Meeting Requested Day 1/2/5/7",
+    description: "Triggered when sentiment becomes \"Meeting Requested\": Day 1 (email + LinkedIn connect), Day 2 (SMS + LinkedIn DM if connected), Day 5 (reminder), Day 7 (final check-in)",
+    triggerOn: "manual",
+    steps,
   });
 }
 
@@ -864,25 +949,12 @@ Looking forward to speaking with you!
       requiresApproval: false,
       fallbackStepId: null,
     },
-    // DAY 1 - AI Voice call if no qualification info provided
-    {
-      stepOrder: 2,
-      dayOffset: 1,
-      channel: "ai_voice",
-      messageTemplate: `Call lead to ask for qualification information before the scheduled meeting.
-Context: Lead booked a meeting but hasn't provided qualification answers yet.
-Questions to ask: {qualificationQuestion1}, {qualificationQuestion2}`,
-      subject: null,
-      condition: { type: "no_response" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
   ];
 
   return createFollowUpSequence({
     clientId,
     name: "Post-Booking Qualification",
-    description: "Triggered after meeting booked: Confirmation + request qualification info, AI call if not provided",
+    description: "Triggered after meeting booked: Confirmation + request qualification info",
     triggerOn: "meeting_selected",
     steps: postBookingSteps,
   });
@@ -896,6 +968,7 @@ export async function createAllDefaultSequences(
 ): Promise<{ success: boolean; sequenceIds?: string[]; errors?: string[] }> {
   const results = await Promise.all([
     createDefaultSequence(clientId),
+    createMeetingRequestedSequence(clientId),
     createPostBookingSequence(clientId),
   ]);
 
@@ -916,4 +989,3 @@ export async function createAllDefaultSequences(
     errors: errors.length > 0 ? errors : undefined,
   };
 }
-

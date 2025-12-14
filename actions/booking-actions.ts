@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { autoStartPostBookingSequenceIfEligible } from "@/lib/followup-automation";
 import {
     createGHLAppointment,
     createGHLContact,
@@ -418,6 +419,8 @@ export async function bookMeetingOnGHL(
             },
         });
 
+        await autoStartPostBookingSequenceIfEligible({ leadId });
+
         revalidatePath("/");
 
         return {
@@ -496,4 +499,3 @@ export async function getFormattedAvailabilityForLead(
 ): Promise<Array<{ datetime: string; label: string }>> {
     return getFormattedAvailabilityForLeadImpl(clientId, leadId);
 }
-

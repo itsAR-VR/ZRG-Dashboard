@@ -25,6 +25,7 @@ model Client {
   updatedAt     DateTime            @updatedAt
   leads         Lead[]
   campaigns     Campaign[]
+  smsCampaigns  SmsCampaign[]
   emailCampaigns EmailCampaign[]
   settings      WorkspaceSettings?  // One-to-one relation with settings
   followUpSequences FollowUpSequence[]  // Follow-up sequence templates
@@ -93,6 +94,21 @@ model Campaign {
   @@index([clientId])
 }
 
+// SMS sub-client attribution (scoped per workspace/client)
+model SmsCampaign {
+  id             String   @id @default(uuid())
+  clientId       String
+  client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name           String
+  nameNormalized String
+  leads          Lead[]
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([clientId, nameNormalized])
+  @@index([clientId])
+}
+
 // Lead/Contact record - unified across SMS, Email, and LinkedIn channels
 model Lead {
   id           String        @id @default(uuid())
@@ -135,6 +151,8 @@ model Lead {
   client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
   campaignId   String?       // Optional link to SMS campaign
   campaign     Campaign?     @relation(fields: [campaignId], references: [id])
+  smsCampaignId String?      // Optional link to SMS sub-client
+  smsCampaign   SmsCampaign? @relation(fields: [smsCampaignId], references: [id])
   emailCampaignId String?    // Optional link to EmailBison campaign
   emailCampaign   EmailCampaign? @relation(fields: [emailCampaignId], references: [id])
   senderAccountId String?    // EmailBison sender email account id
@@ -151,6 +169,7 @@ model Lead {
 
   @@index([clientId])
   @@index([campaignId])
+  @@index([smsCampaignId])
   @@index([emailCampaignId])
   @@index([emailBisonLeadId])
   @@index([sentimentTag])

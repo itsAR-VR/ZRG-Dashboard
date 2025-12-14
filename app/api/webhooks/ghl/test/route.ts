@@ -62,6 +62,7 @@ export async function POST(request: NextRequest) {
         "Last Name": body.lastName || "User",
         Email: body.email || "test@example.com",
         Message: body.message || "This is a test message",
+        Client: body.client || body.Client || "demo-subclient",
         Date: new Date().toLocaleDateString(),
         Time: new Date().toLocaleTimeString(),
       },
@@ -129,6 +130,7 @@ export async function GET() {
       lastName: "Doe",
       email: "john@example.com",
       phone: "+15551234567",
+      client: "demo-subclient",
       message: "Hello, I am interested in your services!",
     },
     curlExample: `curl -X POST ${process.env.NEXT_PUBLIC_APP_URL || "https://your-domain.com"}/api/webhooks/ghl/test \\
@@ -136,4 +138,3 @@ export async function GET() {
   -d '{"message": "Test message from curl"}'`,
   });
 }
-

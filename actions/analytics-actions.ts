@@ -5,6 +5,8 @@ import { prisma } from "@/lib/prisma";
 export interface AnalyticsData {
   overview: {
     totalLeads: number;
+    outboundLeadsContacted: number;
+    responses: number;
     responseRate: number;
     meetingsBooked: number;
     avgResponseTime: string;
@@ -28,6 +30,12 @@ export interface AnalyticsData {
     name: string;
     leads: number;
     meetings: number;
+  }[];
+  smsSubClients: {
+    name: string;
+    leads: number;
+    responses: number;
+    meetingsBooked: number;
   }[];
 }
 
@@ -117,8 +125,8 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       where: clientFilter,
     });
 
-    // Get leads we contacted (have outbound messages)
-    const leadsContacted = await prisma.lead.count({
+    // Outbound leads contacted (best-effort from DB only; outbound SMS from GHL automations isn't ingested yet)
+    const outboundLeadsContacted = await prisma.lead.count({
       where: {
         ...clientFilter,
         messages: {
@@ -129,8 +137,8 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       },
     });
 
-    // Get leads that replied (have inbound messages)
-    const leadsResponded = await prisma.lead.count({
+    // Responses = unique leads with inbound messages
+    const responses = await prisma.lead.count({
       where: {
         ...clientFilter,
         messages: {
@@ -141,16 +149,16 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       },
     });
 
-    // Calculate response rate: leads that replied / leads contacted
-    const responseRate = leadsContacted > 0
-      ? Math.round((leadsResponded / leadsContacted) * 100)
+    // Response rate = responses / outbound leads contacted
+    const responseRate = outboundLeadsContacted > 0
+      ? Math.round((responses / outboundLeadsContacted) * 100)
       : 0;
 
-    // Get meetings booked (leads with "Meeting Requested" sentiment)
+    // Meetings booked = leads with a booked appointment (created by our system)
     const meetingsBooked = await prisma.lead.count({
       where: {
         ...clientFilter,
-        sentimentTag: "Meeting Requested",
+        ghlAppointmentId: { not: null },
       },
     });
 
@@ -196,7 +204,14 @@ export async function getAnalytics(clientId?: string | null): Promise<{
 
     const messages = await prisma.message.findMany({
       where: {
-        sentAt: { // Use sentAt for accurate message timing
+        ...(clientId
+          ? {
+              lead: {
+                clientId,
+              },
+            }
+          : {}),
+        sentAt: {
           gte: sevenDaysAgo,
         },
       },
@@ -236,7 +251,7 @@ export async function getAnalytics(clientId?: string | null): Promise<{
         leads: {
           select: {
             id: true,
-            sentimentTag: true,
+            ghlAppointmentId: true,
           },
         },
       },
@@ -246,10 +261,79 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       .map((client) => ({
         name: client.name,
         leads: client.leads.length,
-        meetings: client.leads.filter((l) => l.sentimentTag === "Meeting Requested").length,
+        meetings: client.leads.filter((l) => l.ghlAppointmentId != null).length,
       }))
       .sort((a, b) => b.leads - a.leads)
       .slice(0, 5);
+
+    // SMS sub-client breakdown inside a workspace (Lead.smsCampaignId)
+    const smsSubClients: AnalyticsData["smsSubClients"] = [];
+    if (clientId) {
+      const [campaigns, leadsBySmsCampaign, responsesBySmsCampaign, meetingsBySmsCampaign] = await Promise.all([
+        prisma.smsCampaign.findMany({
+          where: { clientId },
+          select: { id: true, name: true },
+        }),
+        prisma.lead.groupBy({
+          by: ["smsCampaignId"],
+          where: { clientId },
+          _count: { _all: true },
+        }),
+        prisma.lead.groupBy({
+          by: ["smsCampaignId"],
+          where: {
+            clientId,
+            messages: { some: { direction: "inbound" } },
+          },
+          _count: { _all: true },
+        }),
+        prisma.lead.groupBy({
+          by: ["smsCampaignId"],
+          where: {
+            clientId,
+            ghlAppointmentId: { not: null },
+          },
+          _count: { _all: true },
+        }),
+      ]);
+
+      const nameById = new Map<string, string>(campaigns.map((c) => [c.id, c.name]));
+      const leadsCountByKey = new Map<string, number>();
+      const responsesCountByKey = new Map<string, number>();
+      const meetingsCountByKey = new Map<string, number>();
+
+      for (const row of leadsBySmsCampaign) {
+        leadsCountByKey.set(row.smsCampaignId ?? "__unattributed__", row._count._all);
+      }
+      for (const row of responsesBySmsCampaign) {
+        responsesCountByKey.set(row.smsCampaignId ?? "__unattributed__", row._count._all);
+      }
+      for (const row of meetingsBySmsCampaign) {
+        meetingsCountByKey.set(row.smsCampaignId ?? "__unattributed__", row._count._all);
+      }
+
+      const keys = new Set<string>([
+        ...leadsCountByKey.keys(),
+        ...responsesCountByKey.keys(),
+        ...meetingsCountByKey.keys(),
+      ]);
+
+      for (const key of keys) {
+        const name =
+          key === "__unattributed__"
+            ? "Unattributed"
+            : nameById.get(key) ?? "Unknown";
+
+        smsSubClients.push({
+          name,
+          leads: leadsCountByKey.get(key) ?? 0,
+          responses: responsesCountByKey.get(key) ?? 0,
+          meetingsBooked: meetingsCountByKey.get(key) ?? 0,
+        });
+      }
+
+      smsSubClients.sort((a, b) => b.leads - a.leads);
+    }
 
     // Calculate actual average response time
     const avgResponseTime = await calculateAvgResponseTime(clientId);
@@ -259,6 +343,8 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       data: {
         overview: {
           totalLeads,
+          outboundLeadsContacted,
+          responses,
           responseRate,
           meetingsBooked,
           avgResponseTime,
@@ -267,6 +353,7 @@ export async function getAnalytics(clientId?: string | null): Promise<{
         weeklyStats,
         leadsByStatus,
         topClients,
+        smsSubClients,
       },
     };
   } catch (error) {
@@ -274,4 +361,3 @@ export async function getAnalytics(clientId?: string | null): Promise<{
     return { success: false, error: "Failed to fetch analytics" };
   }
 }
-

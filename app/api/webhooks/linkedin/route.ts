@@ -11,6 +11,7 @@ import { classifySentiment, isPositiveSentiment } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
+import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
 
 // Unipile webhook event types
 type UnipileEventType =
@@ -240,6 +241,12 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
   await prisma.lead.update({
     where: { id: lead.id },
     data: { sentimentTag },
+  });
+
+  await autoStartMeetingRequestedSequenceIfEligible({
+    leadId: lead.id,
+    previousSentiment: lead.sentimentTag,
+    newSentiment: sentimentTag,
   });
 
   // Trigger Clay enrichment for phone if:

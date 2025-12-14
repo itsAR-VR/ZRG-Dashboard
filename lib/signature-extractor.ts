@@ -4,6 +4,7 @@
  * while verifying the email is from the actual lead (not an assistant)
  */
 
+import "@/lib/server-dns";
 import OpenAI from "openai";
 import { normalizeLinkedInUrl } from "./linkedin-utils";
 import { normalizePhone } from "./lead-matching";
@@ -48,7 +49,7 @@ export async function extractContactFromSignature(
 
   try {
     // GPT-5-nano for signature extraction using Responses API
-    // Note: GPT-5-nano does not support reasoning parameter
+    // Use low reasoning effort to ensure we get a textual JSON output within the token budget.
     const response = await openai.responses.create({
       model: "gpt-5-nano",
       instructions: `<task>
@@ -91,6 +92,7 @@ Expected lead name: ${leadName}
 
 Email body:
 ${emailBody.slice(0, 5000)}`,
+      reasoning: { effort: "low" },
       max_output_tokens: 200,
     });
 

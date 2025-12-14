@@ -1,3 +1,4 @@
+import "@/lib/server-dns";
 import OpenAI from "openai";
 
 // Sentiment tags for classification

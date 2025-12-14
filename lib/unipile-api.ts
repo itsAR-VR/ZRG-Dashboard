@@ -5,6 +5,7 @@
  * API Documentation: https://developer.unipile.com/reference
  */
 
+import "@/lib/server-dns";
 import { NextRequest } from "next/server";
 
 /**

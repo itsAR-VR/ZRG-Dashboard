@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { generateResponseDraft } from "@/lib/ai-drafts";
 import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequence-actions";
 import OpenAI from "openai";
+import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -52,6 +53,11 @@ interface ExecutionResult {
   action: "sent" | "skipped" | "queued_for_approval" | "error";
   message?: string;
   error?: string;
+  /**
+   * When true, the follow-up instance should advance past this step even though no send occurred.
+   * Use for permanent skips (e.g., condition not met like phone_provided).
+   */
+  advance?: boolean;
 }
 
 // =============================================================================
@@ -172,40 +178,45 @@ export function getNextBusinessHour(settings: WorkspaceSettings | null): Date {
 // =============================================================================
 
 /**
- * Check if we can send a follow-up to this lead today (max 1 per day)
+ * Check if we can send a follow-up to this lead today (max 1 per channel per day).
+ *
+ * This supports omni-channel sequences where Email + LinkedIn (or SMS) may occur on the same day,
+ * while still preventing repeated touches on the same channel within a day.
  */
-export async function canSendFollowUp(leadId: string): Promise<boolean> {
+export async function canSendFollowUp(
+  leadId: string,
+  channel: FollowUpStepData["channel"]
+): Promise<boolean> {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
   const endOfDay = new Date();
   endOfDay.setHours(23, 59, 59, 999);
 
-  // Check if we've already sent a follow-up task to this lead today
-  const todaysFollowUps = await prisma.followUpTask.count({
-    where: {
-      leadId,
-      status: "completed",
-      updatedAt: {
-        gte: startOfDay,
-        lte: endOfDay,
+  const [existingTask, existingMessage] = await Promise.all([
+    prisma.followUpTask.findFirst({
+      where: {
+        leadId,
+        type: channel,
+        status: "completed",
+        updatedAt: { gte: startOfDay, lte: endOfDay },
       },
-    },
-  });
+      select: { id: true },
+    }),
+    channel === "ai_voice"
+      ? Promise.resolve(null)
+      : prisma.message.findFirst({
+          where: {
+            leadId,
+            channel,
+            direction: "outbound",
+            source: "zrg",
+            sentAt: { gte: startOfDay, lte: endOfDay },
+          },
+          select: { id: true },
+        }),
+  ]);
 
-  // Also check messages sent today
-  const todaysMessages = await prisma.message.count({
-    where: {
-      leadId,
-      direction: "outbound",
-      source: "zrg", // Only count messages we sent, not campaign messages
-      sentAt: {
-        gte: startOfDay,
-        lte: endOfDay,
-      },
-    },
-  });
-
-  return todaysFollowUps + todaysMessages === 0;
+  return !existingTask && !existingMessage;
 }
 
 // =============================================================================
@@ -357,41 +368,23 @@ export async function executeFollowUpStep(
       };
     }
 
-    // Check rate limit
-    const canSend = await canSendFollowUp(lead.id);
-    if (!canSend) {
-      // Reschedule to tomorrow
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      tomorrow.setHours(9, 0, 0, 0);
-
-      await prisma.followUpInstance.update({
-        where: { id: instanceId },
-        data: { nextStepDue: tomorrow },
-      });
-
-      return {
-        success: true,
-        action: "skipped",
-        message: "Rate limited - already sent follow-up today. Rescheduled to tomorrow.",
-      };
-    }
-
-    // Evaluate step condition
-    if (!evaluateCondition(lead, step.condition)) {
-      return {
-        success: true,
-        action: "skipped",
-        message: `Condition not met: ${step.condition?.type}`,
-      };
-    }
-
     // Handle unsupported channels
-    if (step.channel === "linkedin" || step.channel === "ai_voice") {
+    if (step.channel === "ai_voice") {
       return {
         success: true,
         action: "skipped",
         message: `Channel "${step.channel}" not yet implemented - skipping step`,
+        advance: true,
+      };
+    }
+
+    // Evaluate step condition (LinkedIn steps re-check against current DB state below)
+    if (step.channel !== "linkedin" && !evaluateCondition(lead, step.condition)) {
+      return {
+        success: true,
+        action: "skipped",
+        message: `Condition not met: ${step.condition?.type}`,
+        advance: true,
       };
     }
 
@@ -441,8 +434,239 @@ export async function executeFollowUpStep(
           success: true,
           action: "skipped",
           message: `SMS skipped - no phone number available (enrichment: ${currentLead?.enrichmentStatus || "none"})`,
+          advance: true,
         };
       }
+    }
+
+    // LinkedIn steps: connection request (if not connected) and DMs once connected
+    if (step.channel === "linkedin") {
+      const currentLead = await prisma.lead.findUnique({
+        where: { id: lead.id },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          linkedinUrl: true,
+          linkedinId: true,
+          enrichmentStatus: true,
+          enrichmentLastRetry: true,
+          updatedAt: true,
+          client: { select: { unipileAccountId: true } },
+        },
+      });
+
+      if (!currentLead) {
+        return { success: false, action: "error", error: "Lead not found" };
+      }
+
+      const effectiveLead: LeadContext = {
+        ...lead,
+        firstName: currentLead.firstName ?? lead.firstName,
+        lastName: currentLead.lastName ?? lead.lastName,
+        email: currentLead.email ?? lead.email,
+        phone: currentLead.phone ?? lead.phone,
+        linkedinUrl: currentLead.linkedinUrl,
+        linkedinId: currentLead.linkedinId,
+      };
+
+      if (!evaluateCondition(effectiveLead, step.condition)) {
+        // Special-case: linkedin_connected should poll/wait rather than skipping permanently
+        if (step.condition?.type === "linkedin_connected" && !currentLead.linkedinId) {
+          const retryAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+          await prisma.followUpInstance.update({
+            where: { id: instanceId },
+            data: { nextStepDue: retryAt },
+          });
+
+          return {
+            success: true,
+            action: "skipped",
+            message: "Waiting for LinkedIn connection acceptance; rescheduled in 1 hour",
+          };
+        }
+
+        return {
+          success: true,
+          action: "skipped",
+          message: `Condition not met: ${step.condition?.type}`,
+          advance: true,
+        };
+      }
+
+      if (!currentLead.linkedinUrl) {
+        if (currentLead.enrichmentStatus === "pending") {
+          const enrichmentStarted = currentLead.enrichmentLastRetry || currentLead.updatedAt;
+          const pendingDuration = Date.now() - enrichmentStarted.getTime();
+          const ENRICHMENT_WAIT_MS = 30 * 60 * 1000; // 30 minutes
+
+          if (pendingDuration < ENRICHMENT_WAIT_MS) {
+            return {
+              success: true,
+              action: "skipped",
+              message: `Waiting for LinkedIn URL enrichment (${Math.round(pendingDuration / 1000)}s elapsed)`,
+            };
+          }
+
+          await prisma.followUpInstance.update({
+            where: { id: instanceId },
+            data: {
+              status: "paused",
+              pausedReason: "awaiting_enrichment",
+            },
+          });
+
+          return {
+            success: true,
+            action: "skipped",
+            message: "Sequence paused - LinkedIn enrichment timeout. Manual intervention required.",
+          };
+        }
+
+        return {
+          success: true,
+          action: "skipped",
+          message: "LinkedIn skipped - lead has no LinkedIn URL",
+          advance: true,
+        };
+      }
+
+      const accountId = currentLead.client?.unipileAccountId;
+      if (!accountId) {
+        return {
+          success: false,
+          action: "error",
+          error: "Workspace has no LinkedIn account configured (Unipile)",
+        };
+      }
+
+      const canSend = await canSendFollowUp(lead.id, step.channel);
+      if (!canSend) {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        tomorrow.setHours(9, 0, 0, 0);
+
+        await prisma.followUpInstance.update({
+          where: { id: instanceId },
+          data: { nextStepDue: tomorrow },
+        });
+
+        return {
+          success: true,
+          action: "skipped",
+          message: `Rate limited - already sent ${step.channel} follow-up today. Rescheduled to tomorrow.`,
+        };
+      }
+
+      const { content } = await generateFollowUpMessage(step, effectiveLead, settings);
+
+      // If connected, send a DM. If not connected, send a connection request with note.
+      if (currentLead.linkedinId) {
+        const dmResult = await sendLinkedInDM(
+          accountId,
+          currentLead.linkedinUrl,
+          content,
+          currentLead.linkedinId
+        );
+
+        if (!dmResult.success) {
+          return { success: false, action: "error", error: dmResult.error || "Failed to send LinkedIn DM" };
+        }
+
+        await prisma.message.create({
+          data: {
+            leadId: lead.id,
+            channel: "linkedin",
+            source: "zrg",
+            body: content,
+            direction: "outbound",
+            sentAt: new Date(),
+          },
+        });
+
+        await prisma.followUpTask.create({
+          data: {
+            leadId: lead.id,
+            type: "linkedin",
+            dueDate: new Date(),
+            status: "completed",
+            suggestedMessage: content,
+            instanceId: instanceId,
+            stepOrder: step.stepOrder,
+          },
+        });
+
+        return {
+          success: true,
+          action: "sent",
+          message: `LinkedIn DM sent for lead ${effectiveLead.firstName || effectiveLead.id}`,
+        };
+      }
+
+      const inviteResult = await sendLinkedInConnectionRequest(
+        accountId,
+        currentLead.linkedinUrl,
+        content
+      );
+
+      if (!inviteResult.success) {
+        return {
+          success: false,
+          action: "error",
+          error: inviteResult.error || "Failed to send LinkedIn connection request",
+        };
+      }
+
+      await prisma.message.create({
+        data: {
+          leadId: lead.id,
+          channel: "linkedin",
+          source: "zrg",
+          body: content,
+          direction: "outbound",
+          sentAt: new Date(),
+        },
+      });
+
+      await prisma.followUpTask.create({
+        data: {
+          leadId: lead.id,
+          type: "linkedin",
+          dueDate: new Date(),
+          status: "completed",
+          suggestedMessage: content,
+          instanceId: instanceId,
+          stepOrder: step.stepOrder,
+        },
+      });
+
+      return {
+        success: true,
+        action: "sent",
+        message: `LinkedIn connection request sent for lead ${effectiveLead.firstName || effectiveLead.id}`,
+      };
+    }
+
+    // Check per-channel rate limit (only for channels that will send/create drafts)
+    const canSend = await canSendFollowUp(lead.id, step.channel);
+    if (!canSend) {
+      // Reschedule to tomorrow
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      tomorrow.setHours(9, 0, 0, 0);
+
+      await prisma.followUpInstance.update({
+        where: { id: instanceId },
+        data: { nextStepDue: tomorrow },
+      });
+
+      return {
+        success: true,
+        action: "skipped",
+        message: `Rate limited - already sent ${step.channel} follow-up today. Rescheduled to tomorrow.`,
+      };
     }
 
     // Generate message content
@@ -712,6 +936,37 @@ export async function processFollowUpsDue(): Promise<{
           }
         } else if (result.action === "skipped") {
           results.skipped++;
+          // Advance past permanently skipped steps (e.g., phone_provided not met)
+          if (result.advance) {
+            const nextNextStep = instance.sequence.steps.find(
+              (s) => s.stepOrder > nextStep.stepOrder
+            );
+
+            if (nextNextStep) {
+              const dayDiff = nextNextStep.dayOffset - nextStep.dayOffset;
+              const nextDue = new Date(Date.now() + dayDiff * 24 * 60 * 60 * 1000);
+
+              await prisma.followUpInstance.update({
+                where: { id: instance.id },
+                data: {
+                  currentStep: nextStep.stepOrder,
+                  lastStepAt: new Date(),
+                  nextStepDue: nextDue,
+                },
+              });
+            } else {
+              await prisma.followUpInstance.update({
+                where: { id: instance.id },
+                data: {
+                  currentStep: nextStep.stepOrder,
+                  lastStepAt: new Date(),
+                  nextStepDue: null,
+                  status: "completed",
+                  completedAt: new Date(),
+                },
+              });
+            }
+          }
         }
       } else {
         results.failed++;

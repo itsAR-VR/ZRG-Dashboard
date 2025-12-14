@@ -38,6 +38,7 @@ export interface ExternalIds {
 
 export interface CampaignIds {
   campaignId?: string | null;
+  smsCampaignId?: string | null;
   emailCampaignId?: string | null;
   senderAccountId?: string | null;
 }
@@ -185,6 +186,9 @@ export async function findOrCreateLead(
     if (!existingLead.campaignId && campaignIds?.campaignId) {
       updates.campaignId = campaignIds.campaignId;
     }
+    if (existingLead.smsCampaignId == null && campaignIds?.smsCampaignId) {
+      updates.smsCampaignId = campaignIds.smsCampaignId;
+    }
     if (!existingLead.emailCampaignId && campaignIds?.emailCampaignId) {
       updates.emailCampaignId = campaignIds.emailCampaignId;
     }
@@ -242,6 +246,7 @@ export async function findOrCreateLead(
       ghlContactId: externalIds?.ghlContactId || null,
       emailBisonLeadId: externalIds?.emailBisonLeadId || null,
       campaignId: campaignIds?.campaignId || null,
+      smsCampaignId: campaignIds?.smsCampaignId || null,
       emailCampaignId: campaignIds?.emailCampaignId || null,
       senderAccountId: campaignIds?.senderAccountId || null,
       status: "new",
@@ -296,4 +301,3 @@ export function getAvailableChannels(lead: {
 
   return channels;
 }
-

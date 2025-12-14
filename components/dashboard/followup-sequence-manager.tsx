@@ -377,7 +377,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
               </Button>
             </div>
             <p className="text-xs text-muted-foreground mt-4">
-              "All Default" creates both No Response (Day 2/5/7) and Post-Booking Qualification sequences
+              "All Default" creates No Response (Day 2/5/7), Meeting Requested (Day 1/2/5/7), and Post-Booking Qualification sequences
             </p>
           </CardContent>
         </Card>
@@ -462,7 +462,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                       <div className="absolute left-2 top-2 bottom-2 w-0.5 bg-border" />
                       {sequence.steps.map((step, index) => {
                         const ChannelIcon = CHANNEL_ICONS[step.channel];
-                        const isUnsupported = step.channel === "linkedin" || step.channel === "ai_voice";
+                        const isUnsupported = step.channel === "ai_voice";
 
                         return (
                           <div key={step.id || index} className="relative flex items-start gap-3">
@@ -482,7 +482,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                                 <span className="text-sm font-medium">
                                   {CHANNEL_LABELS[step.channel]}
                                 </span>
-                                {isUnsupported && (
+                                {step.channel === "ai_voice" && (
                                   <Badge variant="secondary" className="text-xs">
                                     Coming Soon
                                   </Badge>
@@ -592,7 +592,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
 
               {formData.steps.map((step, index) => {
                 const ChannelIcon = CHANNEL_ICONS[step.channel];
-                const isUnsupported = step.channel === "linkedin" || step.channel === "ai_voice";
+                const isUnsupported = step.channel === "ai_voice";
 
                 return (
                   <Card key={index} className="bg-muted/50">
@@ -656,7 +656,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                               <SelectItem value="linkedin">
                                 <div className="flex items-center gap-2">
                                   <Linkedin className="h-4 w-4" />
-                                  LinkedIn (Coming Soon)
+                                  LinkedIn
                                 </div>
                               </SelectItem>
                               <SelectItem value="ai_voice">
@@ -753,4 +753,3 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
     </div>
   );
 }
-

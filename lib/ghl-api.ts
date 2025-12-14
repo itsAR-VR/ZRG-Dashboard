@@ -4,6 +4,8 @@
  * Handles all API calls to GHL's v2 API for conversations and workflows.
  */
 
+import "@/lib/server-dns";
+
 const GHL_API_BASE = "https://services.leadconnectorhq.com";
 const GHL_API_VERSION = "2021-04-15";
 

@@ -9,6 +9,7 @@ import { extractContactFromSignature, extractContactFromMessageContent } from "@
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { normalizePhone } from "@/lib/lead-matching";
+import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
 
 // =============================================================================
 // Type Definitions
@@ -695,6 +696,12 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   await prisma.lead.update({
     where: { id: lead.id },
     data: { sentimentTag, status: leadStatus },
+  });
+
+  await autoStartMeetingRequestedSequenceIfEligible({
+    leadId: lead.id,
+    previousSentiment,
+    newSentiment: sentimentTag,
   });
 
   if (leadStatus === "meeting-booked") {

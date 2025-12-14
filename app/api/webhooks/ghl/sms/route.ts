@@ -4,6 +4,8 @@ import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { syncConversationHistory, approveAndSendDraft } from "@/actions/message-actions";
 import { classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
 import { findOrCreateLead, normalizePhone } from "@/lib/lead-matching";
+import { normalizeSmsCampaignLabel } from "@/lib/sms-campaign";
+import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
 
 /**
  * GHL Workflow Webhook Payload Structure
@@ -300,12 +302,38 @@ export async function POST(request: NextRequest) {
     console.log(`Processing message from ${firstName} ${lastName}: "${messageBody}"`);
     console.log(`Contact info - Email: ${email}, Phone: ${phone} (normalized: ${normalizedPhone})`);
 
+    // Extract SMS sub-client campaign label (e.g. customData.Client)
+    const smsCampaignLabel = normalizeSmsCampaignLabel(
+      payload.customData?.Client ?? payload.customData?.client
+    );
+    let smsCampaignId: string | null = null;
+    if (smsCampaignLabel) {
+      const smsCampaign = await prisma.smsCampaign.upsert({
+        where: {
+          clientId_nameNormalized: {
+            clientId: client.id,
+            nameNormalized: smsCampaignLabel.nameNormalized,
+          },
+        },
+        create: {
+          clientId: client.id,
+          name: smsCampaignLabel.name,
+          nameNormalized: smsCampaignLabel.nameNormalized,
+        },
+        update: {
+          name: smsCampaignLabel.name,
+        },
+      });
+      smsCampaignId = smsCampaign.id;
+    }
+
     // Use findOrCreateLead for cross-channel deduplication
     // This will match by email OR phone to find existing leads from other channels
     const leadResult = await findOrCreateLead(
       client.id,
       { email, phone, firstName, lastName },
-      { ghlContactId: contactId }
+      { ghlContactId: contactId },
+      { smsCampaignId }
     );
 
     const isNewLead = leadResult.isNew;
@@ -367,6 +395,12 @@ export async function POST(request: NextRequest) {
     });
 
     console.log(`Updated lead ${lead.id} with sentiment: ${sentimentTag}`);
+
+    await autoStartMeetingRequestedSequenceIfEligible({
+      leadId: lead.id,
+      previousSentiment,
+      newSentiment: sentimentTag,
+    });
 
     // Try to extract message timestamp from webhook payload
     // GHL may include date/time in customData or date_created field
