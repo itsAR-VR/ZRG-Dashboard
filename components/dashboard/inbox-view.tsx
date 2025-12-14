@@ -12,7 +12,7 @@ import {
   type Channel,
   type ConversationsCursorOptions 
 } from "@/actions/lead-actions";
-import { syncConversationHistory, syncAllConversations, syncEmailConversationHistory, syncAllEmailConversations, smartSyncConversation } from "@/actions/message-actions";
+import { syncConversationHistory, syncAllConversations, syncEmailConversationHistory, syncAllEmailConversations, smartSyncConversation, reanalyzeLeadSentiment } from "@/actions/message-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff, Inbox, RefreshCw, FilterX } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
@@ -110,6 +110,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
   // Sync state management - track which leads are currently syncing
   const [syncingLeadIds, setSyncingLeadIds] = useState<Set<string>>(new Set());
   const [isSyncingAll, setIsSyncingAll] = useState(false);
+  const [reanalyzingLeadId, setReanalyzingLeadId] = useState<string | null>(null);
   
   // Delayed loading state - only show spinner after 300ms to avoid flicker on fast loads
   const [showDelayedSpinner, setShowDelayedSpinner] = useState(false);
@@ -317,6 +318,42 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
       setSyncingLeadIds(new Set());
     }
   }, [activeWorkspace, conversations, fetchConversations, fetchActiveConversation]);
+
+  const handleReanalyzeSentiment = useCallback(async (leadId: string) => {
+    setReanalyzingLeadId(leadId);
+    try {
+      const result = await reanalyzeLeadSentiment(leadId);
+      if (result.success) {
+        toast.success("Sentiment re-analyzed", {
+          description: result.sentimentTag ? `New tag: ${result.sentimentTag}` : undefined,
+        });
+
+        // Optimistically update the active conversation badge/tag without clearing messages
+        setActiveConversation((prev) => {
+          if (!prev || prev.id !== leadId) return prev;
+          const nextTag = result.sentimentTag || prev.lead.sentimentTag || "Neutral";
+          const normalized = nextTag.toLowerCase().replace(/\s+/g, "-") as Conversation["classification"];
+          return {
+            ...prev,
+            lead: {
+              ...prev.lead,
+              sentimentTag: nextTag,
+            },
+            classification: normalized,
+          };
+        });
+
+        // Refresh list so the left-side badges update
+        fetchConversations();
+      } else {
+        toast.error(result.error || "Failed to re-analyze sentiment");
+      }
+    } catch (err) {
+      toast.error("Failed to re-analyze sentiment");
+    } finally {
+      setReanalyzingLeadId(null);
+    }
+  }, [fetchConversations]);
 
   // Reset sentiment filter when workspace changes
   useEffect(() => {
@@ -551,12 +588,14 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
         isLoadingMore={isFetchingNextPage}
         onLoadMore={() => fetchNextPage()}
       />
-      <ActionStation
+  <ActionStation
         conversation={activeConversation}
         onToggleCrm={() => setIsCrmOpen(!isCrmOpen)}
         isCrmOpen={isCrmOpen}
         isSyncing={isCurrentConversationSyncing}
         onSync={handleSyncConversation}
+        isReanalyzingSentiment={!!activeConversationId && reanalyzingLeadId === activeConversationId}
+        onReanalyzeSentiment={handleReanalyzeSentiment}
         isLoadingMessages={isLoadingMessages}
       />
       {activeConversation && (

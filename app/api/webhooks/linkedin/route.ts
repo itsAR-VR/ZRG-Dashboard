@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyUnipileWebhookSecret } from "@/lib/unipile-api";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
-import { classifySentiment, isPositiveSentiment } from "@/lib/sentiment";
+import { buildSentimentTranscriptFromMessages, classifySentiment, isPositiveSentiment } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
@@ -228,11 +228,16 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
     where: { leadId: lead.id },
     orderBy: { sentAt: "asc" },
     take: 10,
+    select: {
+      sentAt: true,
+      channel: true,
+      direction: true,
+      body: true,
+      subject: true,
+    },
   });
 
-  const transcript = recentMessages
-    .map((m) => `${m.direction === "inbound" ? "Lead" : "Rep"}: ${m.body}`)
-    .join("\n");
+  const transcript = buildSentimentTranscriptFromMessages(recentMessages);
 
   // Classify sentiment
   const sentimentTag = await classifySentiment(transcript);

@@ -163,16 +163,16 @@ Respond with ONLY the category name, nothing else.`;
         temperature: 0,
       });
 
-      const result = response.choices[0]?.message?.content?.trim() as SentimentTag;
+      const raw = response.choices[0]?.message?.content?.trim() || "";
+      const cleaned = raw.replace(/^[\"'`]+|[\"'`]+$/g, "").replace(/\.$/, "").trim();
 
-      if (result && SENTIMENT_TAGS.includes(result)) {
-        return result;
-      }
+      if (cleaned === "Positive") return "Interested";
 
-      // Handle legacy "Positive" responses
-      if (result === "Positive") {
-        return "Interested";
-      }
+      const exact = SENTIMENT_TAGS.find((tag) => tag.toLowerCase() === cleaned.toLowerCase());
+      if (exact) return exact;
+
+      const contained = SENTIMENT_TAGS.find((tag) => cleaned.toLowerCase().includes(tag.toLowerCase()));
+      if (contained) return contained;
 
       return "Neutral";
     } catch (error) {
@@ -243,8 +243,8 @@ async function main() {
   let failed = 0;
   let draftsDeleted = 0;
 
-  const changes: { name: string; email: string; from: string; to: string }[] = [];
-  const failures: { name: string; email: string }[] = [];
+  const changes: { name: string; email: string | null; from: string; to: string }[] = [];
+  const failures: { name: string; email: string | null }[] = [];
 
   // Process one at a time to avoid rate limits
   for (let i = 0; i < leads.length; i++) {

@@ -127,15 +127,16 @@ ${transcript}
       max_output_tokens: 50,
     });
 
-    const result = response.output_text?.trim() as SentimentTag;
+    const raw = response.output_text?.trim() || "";
+    const cleaned = raw.replace(/^[\"'`]+|[\"'`]+$/g, "").replace(/\.$/, "").trim();
 
-    if (result && SENTIMENT_TAGS.includes(result)) {
-      return result;
-    }
+    if (cleaned === "Positive") return "Interested";
 
-    if (result === "Positive") {
-      return "Interested";
-    }
+    const exact = SENTIMENT_TAGS.find((tag) => tag.toLowerCase() === cleaned.toLowerCase());
+    if (exact) return exact;
+
+    const contained = SENTIMENT_TAGS.find((tag) => cleaned.toLowerCase().includes(tag.toLowerCase()));
+    if (contained) return contained;
 
     return "Neutral";
   } catch (error) {

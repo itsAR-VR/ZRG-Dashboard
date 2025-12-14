@@ -5,7 +5,7 @@ import { sendSMS, exportMessages, type GHLExportedMessage } from "@/lib/ghl-api"
 import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { classifySentiment, detectBounce, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
+import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply } from "@/actions/email-actions";
 import {
   sendLinkedInMessageWithWaterfall,
@@ -46,6 +46,88 @@ function preClassifySentiment(
 
   // Lead has responded at some point - always use AI to analyze what they said
   return null;
+}
+
+async function computeSentimentFromMessages(
+  messages: { body: string; direction: string; channel?: string | null; subject?: string | null; sentAt: Date }[]
+): Promise<SentimentTag> {
+  // First, check if we can determine sentiment without AI (pre-classification)
+  const preClassified = preClassifySentiment(messages);
+
+  if (preClassified !== null) {
+    return preClassified;
+  }
+
+  if (detectBounce(messages)) {
+    // Detect bounces using regex (faster and more reliable than AI for system messages)
+    console.log("[Sentiment] Bounce detected via regex → Blacklist");
+    return "Blacklist";
+  }
+
+  // Full turn-by-turn context (with timestamps) helps disambiguate ultra-short replies.
+  const transcript = buildSentimentTranscriptFromMessages(messages.slice(-80));
+
+  if (transcript.trim().length === 0) {
+    return "Neutral";
+  }
+
+  return classifySentiment(transcript);
+}
+
+async function refreshLeadSentimentTag(leadId: string): Promise<{
+  sentimentTag: SentimentTag;
+  status: string;
+}> {
+  // IMPORTANT: Get ALL messages across all channels (SMS, email, LinkedIn)
+  // to ensure sentiment classification considers the full conversation history
+  const messages = await prisma.message.findMany({
+    where: { leadId },
+    select: { body: true, direction: true, channel: true, subject: true, sentAt: true },
+    orderBy: { sentAt: "asc" },
+  });
+
+  const sentimentTag = await computeSentimentFromMessages(messages);
+  const status = SENTIMENT_TO_STATUS[sentimentTag] || "new";
+
+  await prisma.lead.update({
+    where: { id: leadId },
+    data: {
+      sentimentTag,
+      status,
+    },
+  });
+
+  return { sentimentTag, status };
+}
+
+export async function reanalyzeLeadSentiment(leadId: string): Promise<{
+  success: boolean;
+  sentimentTag?: SentimentTag;
+  status?: string;
+  error?: string;
+}> {
+  try {
+    const leadExists = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: { id: true },
+    });
+
+    if (!leadExists) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    const { sentimentTag, status } = await refreshLeadSentimentTag(leadId);
+
+    revalidatePath("/");
+
+    return { success: true, sentimentTag, status };
+  } catch (error) {
+    console.error("[reanalyzeLeadSentiment] Failed:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
 }
 
 interface SendMessageResult {
@@ -440,48 +522,9 @@ export async function syncConversationHistory(leadId: string, options: SyncOptio
 
     if (shouldReclassify) {
       try {
-        const messages = await prisma.message.findMany({
-          where: { leadId },
-          orderBy: { sentAt: "asc" },
-        });
-
-        // First, check if we can determine sentiment without AI (pre-classification)
-        const preClassified = preClassifySentiment(messages);
-
-        let refreshedSentiment: SentimentTag;
-
-        if (preClassified !== null) {
-          // Pre-classification determined the sentiment
-          refreshedSentiment = preClassified;
-        } else if (detectBounce(messages)) {
-          // Detect bounces using regex (faster and more reliable than AI for system messages)
-          refreshedSentiment = "Blacklist";
-          console.log("[Sync] Bounce detected via regex → Blacklist");
-        } else {
-          // Need AI classification - build transcript
-          const transcript = messages
-            .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
-            .join("\n");
-
-          if (transcript.trim().length === 0) {
-            refreshedSentiment = "Neutral";
-          } else {
-            refreshedSentiment = await classifySentiment(transcript);
-          }
-        }
-
-        const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
-
-        await prisma.lead.update({
-          where: { id: leadId },
-          data: {
-            sentimentTag: refreshedSentiment,
-            status: refreshedStatus,
-          },
-        });
-
+        const { sentimentTag, status } = await refreshLeadSentimentTag(leadId);
         reclassifiedSentiment = true;
-        console.log(`[Sync] Reclassified sentiment to ${refreshedSentiment} and status to ${refreshedStatus}${options.forceReclassify ? " (forced)" : ""}`);
+        console.log(`[Sync] Reclassified sentiment to ${sentimentTag} and status to ${status}${options.forceReclassify ? " (forced)" : ""}`);
       } catch (reclassError) {
         console.error("[Sync] Failed to refresh sentiment after sync:", reclassError);
       }
@@ -925,50 +968,9 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
 
     if (shouldReclassify) {
       try {
-        // IMPORTANT: Get ALL messages across all channels (SMS, email, LinkedIn)
-        // to ensure sentiment classification considers the full conversation history
-        const messages = await prisma.message.findMany({
-          where: { leadId },
-          orderBy: { sentAt: "asc" },
-        });
-
-        // First, check if we can determine sentiment without AI (pre-classification)
-        const preClassified = preClassifySentiment(messages);
-
-        let refreshedSentiment: SentimentTag;
-
-        if (preClassified !== null) {
-          // Pre-classification determined the sentiment
-          refreshedSentiment = preClassified;
-        } else if (detectBounce(messages)) {
-          // Detect bounces using regex (faster and more reliable than AI for system messages)
-          refreshedSentiment = "Blacklist";
-          console.log("[EmailSync] Bounce detected via regex → Blacklist");
-        } else {
-          // Need AI classification - build transcript
-          const transcript = messages
-            .map((m) => `${m.direction === "inbound" ? "Lead" : "Agent"}: ${m.body}`)
-            .join("\n");
-
-          if (transcript.trim().length === 0) {
-            refreshedSentiment = "Neutral";
-          } else {
-            refreshedSentiment = await classifySentiment(transcript);
-          }
-        }
-
-        const refreshedStatus = SENTIMENT_TO_STATUS[refreshedSentiment] || "new";
-
-        await prisma.lead.update({
-          where: { id: leadId },
-          data: {
-            sentimentTag: refreshedSentiment,
-            status: refreshedStatus,
-          },
-        });
-
+        const { sentimentTag } = await refreshLeadSentimentTag(leadId);
         reclassifiedSentiment = true;
-        console.log(`[EmailSync] Reclassified sentiment to ${refreshedSentiment}${options.forceReclassify ? " (forced)" : ""}`);
+        console.log(`[EmailSync] Reclassified sentiment to ${sentimentTag}${options.forceReclassify ? " (forced)" : ""}`);
       } catch (reclassError) {
         console.error("[EmailSync] Failed to refresh sentiment after sync:", reclassError);
       }
@@ -1081,6 +1083,7 @@ export async function syncAllEmailConversations(clientId: string): Promise<SyncA
       totalImported,
       totalHealed,
       totalDraftsGenerated,
+      totalReclassified: 0,
       errors,
     };
   } catch (error) {
@@ -1091,6 +1094,7 @@ export async function syncAllEmailConversations(clientId: string): Promise<SyncA
       totalImported: 0,
       totalHealed: 0,
       totalDraftsGenerated: 0,
+      totalReclassified: 0,
       errors: 1,
       error: error instanceof Error ? error.message : "Unknown error",
     };

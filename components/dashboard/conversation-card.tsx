@@ -46,6 +46,10 @@ const classificationStyles: Record<string, { label: string; className: string }>
     label: "Info Requested",
     className: "bg-cyan-500/10 text-cyan-500 border-cyan-500/20",
   },
+  "interested": {
+    label: "Interested",
+    className: "bg-green-500/10 text-green-500 border-green-500/20",
+  },
   "blacklist": {
     label: "Blacklist",
     className: "bg-destructive/10 text-destructive border-destructive/20",

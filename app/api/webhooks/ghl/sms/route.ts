@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { syncConversationHistory, approveAndSendDraft } from "@/actions/message-actions";
-import { classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
+import { buildSentimentTranscriptFromMessages, classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
 import { findOrCreateLead, normalizePhone } from "@/lib/lead-matching";
 import { normalizeSmsCampaignLabel } from "@/lib/sms-campaign";
 import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
@@ -145,12 +145,14 @@ async function fetchGHLConversationHistory(
     );
 
     // Build transcript for AI classification
-    const transcript = sortedMessages
-      .map((m) => {
-        const role = m.direction === "inbound" ? "Lead" : "Agent";
-        return `${role}: ${m.body}`;
-      })
-      .join("\n");
+    const transcript = buildSentimentTranscriptFromMessages(
+      sortedMessages.map((m) => ({
+        sentAt: m.dateAdded,
+        channel: "sms",
+        direction: m.direction,
+        body: m.body,
+      }))
+    );
 
     return { messages: sortedMessages, transcript };
   } catch (error) {
@@ -299,6 +301,44 @@ export async function POST(request: NextRequest) {
     const messageBody =
       payload.message?.body || payload.customData?.Message || "";
 
+    // Try to extract message timestamp from webhook payload
+    // GHL may include date/time in customData or date_created field
+    let webhookMessageTime: Date | null = null;
+
+    // Try customData Date+Time fields
+    if (payload.customData?.Date && payload.customData?.Time) {
+      try {
+        // Format: "Dec 5th, 2024" + "7:33 PM"
+        const dateStr = `${payload.customData.Date} ${payload.customData.Time}`;
+        const parsed = new Date(dateStr);
+        if (!isNaN(parsed.getTime())) {
+          webhookMessageTime = parsed;
+          console.log(`[Webhook] Parsed message time from customData: ${webhookMessageTime.toISOString()}`);
+        }
+      } catch (e) {
+        console.log(`[Webhook] Could not parse customData date: ${e}`);
+      }
+    }
+
+    // Fallback to date_created if available
+    if (!webhookMessageTime && payload.date_created) {
+      try {
+        const parsed = new Date(payload.date_created);
+        if (!isNaN(parsed.getTime())) {
+          webhookMessageTime = parsed;
+          console.log(`[Webhook] Using date_created: ${webhookMessageTime.toISOString()}`);
+        }
+      } catch (e) {
+        console.log(`[Webhook] Could not parse date_created: ${e}`);
+      }
+    }
+
+    // Final fallback to now
+    if (!webhookMessageTime) {
+      webhookMessageTime = new Date();
+      console.log(`[Webhook] Using current time as fallback: ${webhookMessageTime.toISOString()}`);
+    }
+
     console.log(`Processing message from ${firstName} ${lastName}: "${messageBody}"`);
     console.log(`Contact info - Email: ${email}, Phone: ${phone} (normalized: ${normalizedPhone})`);
 
@@ -339,20 +379,21 @@ export async function POST(request: NextRequest) {
     const isNewLead = leadResult.isNew;
     console.log(`Lead ${leadResult.lead.id}: ${isNewLead ? "NEW" : "EXISTING"} (matched by ${leadResult.matchedBy})`);
 
-    // Check if this lead has existing messages
-    const messageCount = await prisma.message.count({
-      where: { leadId: leadResult.lead.id },
+    // Check if this lead has existing SMS messages (not just any channel)
+    // This matters for cross-channel matching where the lead might already have email messages.
+    const smsMessageCount = await prisma.message.count({
+      where: { leadId: leadResult.lead.id, channel: "sms" },
     });
-    const hasNoMessages = messageCount === 0;
+    const hasNoSmsMessages = smsMessageCount === 0;
 
-    console.log(`Lead status: ${isNewLead ? "NEW" : "EXISTING"}, hasMessages: ${!hasNoMessages}`);
+    console.log(`Lead status: ${isNewLead ? "NEW" : "EXISTING"}, hasSmsMessages: ${!hasNoSmsMessages}`);
 
     // Fetch conversation history from GHL
     // Do this for new leads OR leads with no messages (to backfill history)
     let transcript = "";
     let historicalMessages: GHLExportedMessage[] = [];
 
-    if (isNewLead || hasNoMessages) {
+    if (isNewLead || hasNoSmsMessages) {
       console.log("[History Import] Fetching full conversation history from GHL...");
       const historyResult = await fetchGHLConversationHistory(
         locationId,
@@ -360,11 +401,64 @@ export async function POST(request: NextRequest) {
         client.ghlPrivateKey
       );
       historicalMessages = historyResult.messages;
-      transcript = historyResult.transcript;
       console.log(`[History Import] Got ${historicalMessages.length} historical messages`);
+
+      // Ensure the *current* inbound webhook message is included for classification.
+      // GHL's export API can lag and omit the latest inbound message, which would otherwise
+      // cause the model to classify based on outbound-only history.
+      const lastHistorical = historicalMessages[historicalMessages.length - 1];
+      const shouldAppendWebhook =
+        !!messageBody?.trim() &&
+        !(
+          lastHistorical &&
+          lastHistorical.direction === "inbound" &&
+          lastHistorical.body.trim() === messageBody.trim()
+        );
+
+      const transcriptMessages = [
+        ...historicalMessages.map((m) => ({
+          sentAt: m.dateAdded,
+          channel: "sms",
+          direction: m.direction,
+          body: m.body,
+        })),
+        ...(shouldAppendWebhook
+          ? [
+              {
+                sentAt: webhookMessageTime!,
+                channel: "sms",
+                direction: "inbound" as const,
+                body: messageBody,
+              },
+            ]
+          : []),
+      ];
+
+      transcript = buildSentimentTranscriptFromMessages(transcriptMessages);
     } else {
-      // For existing leads with messages, just use the current message for classification
-      transcript = `Lead: ${messageBody}`;
+      // For existing leads, include turn-by-turn context (with timestamps) so ultra-short replies
+      // like "yes/ok/sure" can be classified correctly based on what the agent asked right before.
+      const recentSmsMessages = await prisma.message.findMany({
+        where: { leadId: leadResult.lead.id, channel: "sms" },
+        orderBy: { sentAt: "desc" },
+        take: 25,
+        select: {
+          sentAt: true,
+          channel: true,
+          direction: true,
+          body: true,
+        },
+      });
+
+      transcript = buildSentimentTranscriptFromMessages([
+        ...recentSmsMessages.reverse(),
+        {
+          sentAt: webhookMessageTime!,
+          channel: "sms",
+          direction: "inbound",
+          body: messageBody,
+        },
+      ]);
     }
 
     // Track if we're clearing a "Follow Up" or "Snoozed" tag (for logging)
@@ -402,48 +496,10 @@ export async function POST(request: NextRequest) {
       newSentiment: sentimentTag,
     });
 
-    // Try to extract message timestamp from webhook payload
-    // GHL may include date/time in customData or date_created field
-    let webhookMessageTime: Date | null = null;
-
-    // Try customData Date+Time fields
-    if (payload.customData?.Date && payload.customData?.Time) {
-      try {
-        // Format: "Dec 5th, 2024" + "7:33 PM"
-        const dateStr = `${payload.customData.Date} ${payload.customData.Time}`;
-        const parsed = new Date(dateStr);
-        if (!isNaN(parsed.getTime())) {
-          webhookMessageTime = parsed;
-          console.log(`[Webhook] Parsed message time from customData: ${webhookMessageTime.toISOString()}`);
-        }
-      } catch (e) {
-        console.log(`[Webhook] Could not parse customData date: ${e}`);
-      }
-    }
-
-    // Fallback to date_created if available
-    if (!webhookMessageTime && payload.date_created) {
-      try {
-        const parsed = new Date(payload.date_created);
-        if (!isNaN(parsed.getTime())) {
-          webhookMessageTime = parsed;
-          console.log(`[Webhook] Using date_created: ${webhookMessageTime.toISOString()}`);
-        }
-      } catch (e) {
-        console.log(`[Webhook] Could not parse date_created: ${e}`);
-      }
-    }
-
-    // Final fallback to now
-    if (!webhookMessageTime) {
-      webhookMessageTime = new Date();
-      console.log(`[Webhook] Using current time as fallback: ${webhookMessageTime.toISOString()}`);
-    }
-
     // Import historical messages if this is a new lead or has no messages
     let importedMessagesCount = 0;
     let healedMessagesCount = 0;
-    const isFirstInbound = isNewLead || hasNoMessages;
+    const isFirstInbound = isNewLead || hasNoSmsMessages;
 
     if (isFirstInbound && historicalMessages.length > 0) {
       console.log(`[History Import] Importing ${historicalMessages.length} messages...`);

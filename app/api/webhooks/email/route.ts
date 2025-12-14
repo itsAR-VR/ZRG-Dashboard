@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { classifySentiment, SENTIMENT_TO_STATUS, isPositiveSentiment, type SentimentTag } from "@/lib/sentiment";
+import { buildSentimentTranscriptFromMessages, classifySentiment, SENTIMENT_TO_STATUS, isPositiveSentiment, type SentimentTag } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraft } from "@/actions/message-actions";
 import { findOrCreateLead } from "@/lib/lead-matching";
-import { createEmailBisonLead, fetchEmailBisonLead, getCustomVariable } from "@/lib/emailbison-api";
+import { createEmailBisonLead, fetchEmailBisonLead, fetchEmailBisonSentEmails, getCustomVariable } from "@/lib/emailbison-api";
 import { extractContactFromSignature, extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
@@ -599,6 +600,63 @@ function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   return new Date();
 }
 
+async function backfillOutboundEmailMessagesIfMissing(opts: {
+  leadId: string;
+  emailBisonLeadId: string;
+  apiKey: string;
+  limit?: number;
+}) {
+  const limit = opts.limit ?? 12;
+
+  const existingOutboundCount = await prisma.message.count({
+    where: {
+      leadId: opts.leadId,
+      channel: "email",
+      direction: "outbound",
+    },
+  });
+
+  if (existingOutboundCount > 0) return;
+
+  const sentEmailsResult = await fetchEmailBisonSentEmails(opts.apiKey, opts.emailBisonLeadId);
+  if (!sentEmailsResult.success || !sentEmailsResult.data || sentEmailsResult.data.length === 0) return;
+
+  const sorted = [...sentEmailsResult.data].sort((a, b) => {
+    const aTime = parseDate(a.sent_at, a.scheduled_date_local).getTime();
+    const bTime = parseDate(b.sent_at, b.scheduled_date_local).getTime();
+    return aTime - bTime;
+  });
+
+  const tail = sorted.slice(Math.max(0, sorted.length - limit));
+  const data: Prisma.MessageCreateManyInput[] = tail
+    .map((sentEmail): Prisma.MessageCreateManyInput | null => {
+      const cleaned = cleanEmailBody(sentEmail.email_body, null);
+      const body = cleaned.cleaned || sentEmail.email_subject || "";
+      if (!body.trim()) return null;
+
+      return {
+        inboxxiaScheduledEmailId: String(sentEmail.id),
+        channel: "email",
+        source: "inboxxia_campaign",
+        body,
+        rawHtml: cleaned.rawHtml ?? null,
+        subject: sentEmail.email_subject ?? null,
+        isRead: true,
+        direction: "outbound",
+        leadId: opts.leadId,
+        sentAt: parseDate(sentEmail.sent_at, sentEmail.scheduled_date_local),
+      };
+    })
+    .filter((record): record is Prisma.MessageCreateManyInput => record !== null);
+
+  if (data.length === 0) return;
+
+  await prisma.message.createMany({
+    data,
+    skipDuplicates: true,
+  });
+}
+
 // =============================================================================
 // Event Handlers
 // =============================================================================
@@ -645,6 +703,39 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   // Clean and classify email
   const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
   const contentForClassification = cleaned.cleaned || cleaned.rawText || cleaned.rawHtml || "";
+  const sentAt = parseDate(reply.date_received, reply.created_at);
+
+  if (client.emailBisonApiKey && lead.emailBisonLeadId) {
+    await backfillOutboundEmailMessagesIfMissing({
+      leadId: lead.id,
+      emailBisonLeadId: lead.emailBisonLeadId,
+      apiKey: client.emailBisonApiKey,
+    });
+  }
+
+  const contextMessages = await prisma.message.findMany({
+    where: { leadId: lead.id },
+    orderBy: { sentAt: "desc" },
+    take: 40,
+    select: {
+      sentAt: true,
+      channel: true,
+      direction: true,
+      body: true,
+      subject: true,
+    },
+  });
+
+  const transcript = buildSentimentTranscriptFromMessages([
+    ...contextMessages.reverse(),
+    {
+      sentAt,
+      channel: "email",
+      direction: "inbound",
+      body: cleaned.cleaned || contentForClassification,
+      subject: reply.email_subject ?? null,
+    },
+  ]);
 
   // Track if we're clearing a "Follow Up" or "Snoozed" tag (for logging)
   const previousSentiment = lead.sentimentTag;
@@ -656,9 +747,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   if (reply.interested === true) {
     sentimentTag = "Interested";
   } else {
-    sentimentTag = await classifySentiment(
-      `Subject: ${reply.email_subject ?? ""}\n${contentForClassification}`
-    );
+    sentimentTag = await classifySentiment(transcript);
   }
 
   // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
@@ -667,8 +756,6 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   }
 
   const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
-
-  const sentAt = parseDate(reply.date_received, reply.created_at);
 
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
@@ -1081,15 +1168,46 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 
   const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
   const contentForClassification = cleaned.cleaned || cleaned.rawText || cleaned.rawHtml || "";
+  const sentAt = parseDate(reply.date_received, reply.created_at);
+
+  if (client.emailBisonApiKey && lead.emailBisonLeadId) {
+    await backfillOutboundEmailMessagesIfMissing({
+      leadId: lead.id,
+      emailBisonLeadId: lead.emailBisonLeadId,
+      apiKey: client.emailBisonApiKey,
+    });
+  }
+
+  const contextMessages = await prisma.message.findMany({
+    where: { leadId: lead.id },
+    orderBy: { sentAt: "desc" },
+    take: 40,
+    select: {
+      sentAt: true,
+      channel: true,
+      direction: true,
+      body: true,
+      subject: true,
+    },
+  });
+
+  const transcript = buildSentimentTranscriptFromMessages([
+    ...contextMessages.reverse(),
+    {
+      sentAt,
+      channel: "email",
+      direction: "inbound",
+      body: cleaned.cleaned || contentForClassification,
+      subject: reply.email_subject ?? null,
+    },
+  ]);
 
   // Track if we're clearing a "Follow Up" or "Snoozed" tag (for logging)
   const previousSentiment = lead.sentimentTag;
   const wasFollowUp = previousSentiment === "Follow Up" || previousSentiment === "Snoozed";
 
   // Classify sentiment - any inbound reply clears "Follow Up" or "Snoozed" tags
-  const sentimentTag = await classifySentiment(
-    `Subject: ${reply.email_subject ?? ""}\n${contentForClassification}`
-  );
+  const sentimentTag = await classifySentiment(transcript);
 
   // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
   if (wasFollowUp) {
@@ -1098,7 +1216,6 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 
   const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
 
-  const sentAt = parseDate(reply.date_received, reply.created_at);
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
 

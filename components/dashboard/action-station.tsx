@@ -19,6 +19,8 @@ interface ActionStationProps {
   isCrmOpen: boolean
   isSyncing?: boolean
   onSync?: (leadId: string) => Promise<void>
+  isReanalyzingSentiment?: boolean
+  onReanalyzeSentiment?: (leadId: string) => Promise<void>
   isLoadingMessages?: boolean
 }
 
@@ -42,7 +44,16 @@ const CHANNEL_LABELS = {
   linkedin: "LinkedIn",
 } as const;
 
-export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing = false, onSync, isLoadingMessages = false }: ActionStationProps) {
+export function ActionStation({ 
+  conversation, 
+  onToggleCrm, 
+  isCrmOpen, 
+  isSyncing = false, 
+  onSync, 
+  isReanalyzingSentiment = false,
+  onReanalyzeSentiment,
+  isLoadingMessages = false,
+}: ActionStationProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const shouldScrollRef = useRef(true)
   const prevConversationIdRef = useRef<string | null>(null)
@@ -332,6 +343,13 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
     }
   }
 
+  const handleReanalyzeSentiment = async () => {
+    if (!conversation) return
+    if (onReanalyzeSentiment) {
+      await onReanalyzeSentiment(conversation.id)
+    }
+  }
+
   const isEdited = hasAiDraft && composeMessage !== originalDraft
 
   if (!conversation) {
@@ -404,7 +422,7 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
             variant="outline" 
             size="sm" 
             onClick={handleSyncHistory}
-            disabled={isSyncing}
+            disabled={isSyncing || isReanalyzingSentiment}
             title={isEmail ? "Sync email conversation from EmailBison" : "Sync conversation history from GHL"}
           >
             {isSyncing ? (
@@ -413,6 +431,20 @@ export function ActionStation({ conversation, onToggleCrm, isCrmOpen, isSyncing 
               <History className="mr-2 h-4 w-4" />
             )}
             Sync
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleReanalyzeSentiment}
+            disabled={isSyncing || isReanalyzingSentiment}
+            title="Re-analyze sentiment for this conversation"
+          >
+            {isReanalyzingSentiment ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <RotateCcw className="mr-2 h-4 w-4" />
+            )}
+            Re-analyze Sentiment
           </Button>
           <Button variant={isCrmOpen ? "secondary" : "outline"} size="sm" onClick={onToggleCrm}>
             <PanelRightOpen className="mr-2 h-4 w-4" />
