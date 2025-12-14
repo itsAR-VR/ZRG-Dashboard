@@ -362,6 +362,16 @@ export function ActionStation({
 
   const { lead } = conversation
   const subjectLine = conversation.lastSubject
+  const workspaceName = lead.company
+  const smsClient = lead.smsCampaignName?.trim() || null
+  const isSmsAccountWorkspace = ["owen", "uday 18th", "uday18th", "u-day 18th"].includes(
+    workspaceName.toLowerCase()
+  )
+  const workspaceLabel = smsClient
+    ? `${workspaceName} • Client: ${smsClient}`
+    : isSmsAccountWorkspace
+      ? `${workspaceName} • Client: Unattributed`
+      : workspaceName
 
   const getScoreColor = (score: number) => {
     if (score >= 80) return "bg-emerald-500/10 text-emerald-500 border-emerald-500/20"
@@ -390,11 +400,11 @@ export function ActionStation({
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-1 text-primary hover:underline"
                 >
-                  {lead.company}
+                  {workspaceLabel}
                   <ExternalLink className="h-3 w-3" />
                 </a>
               ) : (
-                <span>{lead.company}</span>
+                <span>{workspaceLabel}</span>
               )}
             </p>
             {subjectLine && (

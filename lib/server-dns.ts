@@ -1,4 +1,3 @@
-import "server-only";
 import dns from "node:dns";
 
 // Prefer IPv4 first to avoid intermittent IPv6 connectivity issues with some providers.
@@ -12,4 +11,3 @@ try {
 } catch {
   // ignore
 }
-

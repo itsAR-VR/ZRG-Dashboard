@@ -37,6 +37,11 @@ interface ConversationFeedProps {
   onSelectConversation: (id: string) => void
   activeSentiment?: string
   onSentimentChange?: (sentiment: string) => void
+  activeSmsClient?: string
+  onSmsClientChange?: (smsClientId: string) => void
+  smsClientOptions?: Array<{ id: string; name: string; leadCount: number }>
+  smsClientUnattributedCount?: number
+  isLoadingSmsClients?: boolean
   syncingLeadIds?: Set<string>
   onSyncAll?: (forceReclassify: boolean) => Promise<void>
   isSyncingAll?: boolean
@@ -51,6 +56,11 @@ export function ConversationFeed({
   onSelectConversation,
   activeSentiment = "all",
   onSentimentChange,
+  activeSmsClient = "all",
+  onSmsClientChange,
+  smsClientOptions = [],
+  smsClientUnattributedCount = 0,
+  isLoadingSmsClients = false,
   syncingLeadIds = new Set(),
   onSyncAll,
   isSyncingAll = false,
@@ -85,6 +95,7 @@ export function ConversationFeed({
       (conv) =>
         conv.lead.name.toLowerCase().includes(searchLower) ||
         conv.lead.company.toLowerCase().includes(searchLower) ||
+        (conv.lead.smsCampaignName || "").toLowerCase().includes(searchLower) ||
         conv.lastMessage.toLowerCase().includes(searchLower) ||
         (conv.lastSubject && conv.lastSubject.toLowerCase().includes(searchLower)),
     )
@@ -178,6 +189,30 @@ export function ConversationFeed({
             </SelectContent>
           </Select>
         </div>
+
+        {/* SMS sub-client filter (workspace-only) */}
+        {onSmsClientChange && (
+          <Select
+            value={activeSmsClient}
+            onValueChange={onSmsClientChange}
+            disabled={isLoadingSmsClients}
+          >
+            <SelectTrigger className="w-full text-xs">
+              <SelectValue placeholder="Client" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Clients</SelectItem>
+              <SelectItem value="unattributed">
+                Unattributed{smsClientUnattributedCount ? ` (${smsClientUnattributedCount})` : ""}
+              </SelectItem>
+              {smsClientOptions.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.name}{c.leadCount ? ` (${c.leadCount})` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         
         {/* Quick jump buttons */}
         <div className="flex items-center justify-between">

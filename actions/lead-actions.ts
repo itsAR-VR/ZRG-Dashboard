@@ -19,6 +19,8 @@ export interface ConversationData {
     autoFollowUpEnabled: boolean;
     autoBookMeetingsEnabled: boolean;
     clientId: string;  // For follow-up sequence management
+    smsCampaignId: string | null;
+    smsCampaignName: string | null;
     // Enrichment data
     linkedinUrl: string | null;
     companyName: string | null;
@@ -136,6 +138,12 @@ export async function getConversations(clientId?: string | null): Promise<{
             ghlLocationId: true,
           },
         },
+        smsCampaign: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
         messages: {
           orderBy: { sentAt: "desc" },
           select: {
@@ -188,6 +196,8 @@ export async function getConversations(clientId?: string | null): Promise<{
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
           autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
           clientId: lead.clientId,
+          smsCampaignId: lead.smsCampaignId,
+          smsCampaignName: lead.smsCampaign?.name ?? null,
           // Enrichment data
           linkedinUrl: lead.linkedinUrl,
           companyName: lead.companyName,
@@ -327,6 +337,12 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
             ghlLocationId: true,
           },
         },
+        smsCampaign: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
         messages: {
           where: channelFilter ? { channel: channelFilter } : undefined,
           orderBy: { sentAt: "asc" }, // Order by actual message time
@@ -366,6 +382,8 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
           autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
           clientId: lead.clientId,
+          smsCampaignId: lead.smsCampaignId,
+          smsCampaignName: lead.smsCampaign?.name ?? null,
           // Enrichment data
           linkedinUrl: lead.linkedinUrl,
           companyName: lead.companyName,
@@ -438,6 +456,8 @@ export interface ConversationsCursorOptions {
   search?: string;
   channel?: Channel | "all";
   sentimentTag?: string;
+  smsCampaignId?: string;
+  smsCampaignUnattributed?: boolean;
   filter?: "attention" | "drafts" | "needs_repair" | "all";
 }
 
@@ -482,6 +502,8 @@ function transformLeadToConversation(lead: any): ConversationData {
       autoFollowUpEnabled: lead.autoFollowUpEnabled,
       autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
       clientId: lead.clientId,
+      smsCampaignId: lead.smsCampaignId,
+      smsCampaignName: lead.smsCampaign?.name ?? null,
       linkedinUrl: lead.linkedinUrl,
       companyName: lead.companyName,
       companyWebsite: lead.companyWebsite,
@@ -521,6 +543,8 @@ export async function getConversationsCursor(
       search,
       channel,
       sentimentTag,
+      smsCampaignId,
+      smsCampaignUnattributed,
       filter,
     } = options;
 
@@ -540,6 +564,7 @@ export async function getConversationsCursor(
           { lastName: { contains: searchTerm, mode: "insensitive" } },
           { email: { contains: searchTerm, mode: "insensitive" } },
           { companyName: { contains: searchTerm, mode: "insensitive" } },
+          { smsCampaign: { is: { name: { contains: searchTerm, mode: "insensitive" } } } },
         ],
       });
     }
@@ -556,6 +581,13 @@ export async function getConversationsCursor(
     // Sentiment tag filter
     if (sentimentTag && sentimentTag !== "all") {
       whereConditions.push({ sentimentTag });
+    }
+
+    // SMS sub-client filter (Lead.smsCampaignId)
+    if (smsCampaignUnattributed) {
+      whereConditions.push({ smsCampaignId: null });
+    } else if (smsCampaignId) {
+      whereConditions.push({ smsCampaignId });
     }
 
     // Special filter presets
@@ -599,6 +631,12 @@ export async function getConversationsCursor(
             id: true,
             name: true,
             ghlLocationId: true,
+          },
+        },
+        smsCampaign: {
+          select: {
+            id: true,
+            name: true,
           },
         },
         messages: {
@@ -675,6 +713,8 @@ export async function getConversationsFromEnd(
       search,
       channel,
       sentimentTag,
+      smsCampaignId,
+      smsCampaignUnattributed,
       filter,
     } = options;
 
@@ -693,6 +733,7 @@ export async function getConversationsFromEnd(
           { lastName: { contains: searchTerm, mode: "insensitive" } },
           { email: { contains: searchTerm, mode: "insensitive" } },
           { companyName: { contains: searchTerm, mode: "insensitive" } },
+          { smsCampaign: { is: { name: { contains: searchTerm, mode: "insensitive" } } } },
         ],
       });
     }
@@ -707,6 +748,12 @@ export async function getConversationsFromEnd(
 
     if (sentimentTag && sentimentTag !== "all") {
       whereConditions.push({ sentimentTag });
+    }
+
+    if (smsCampaignUnattributed) {
+      whereConditions.push({ smsCampaignId: null });
+    } else if (smsCampaignId) {
+      whereConditions.push({ smsCampaignId });
     }
 
     if (filter === "attention") {
@@ -749,6 +796,12 @@ export async function getConversationsFromEnd(
             id: true,
             name: true,
             ghlLocationId: true,
+          },
+        },
+        smsCampaign: {
+          select: {
+            id: true,
+            name: true,
           },
         },
         messages: {

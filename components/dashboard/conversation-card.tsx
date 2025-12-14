@@ -95,6 +95,16 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
     (primaryChannel === "email" || channels.includes("email")) && conversation.lastSubject
       ? `${conversation.lastSubject} — ${conversation.lastMessage}`
       : conversation.lastMessage
+  const workspaceName = conversation.lead.company
+  const smsClient = conversation.lead.smsCampaignName?.trim() || null
+  const isSmsAccountWorkspace = ["owen", "uday 18th", "uday18th", "u-day 18th"].includes(
+    workspaceName.toLowerCase()
+  )
+  const workspaceLine = smsClient
+    ? `${workspaceName} • Client: ${smsClient}`
+    : isSmsAccountWorkspace
+      ? `${workspaceName} • Client: Unattributed`
+      : workspaceName
 
   return (
     <button
@@ -119,7 +129,7 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
             <h3 className="font-medium text-foreground truncate">{conversation.lead.name}</h3>
             {conversation.requiresAttention && <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />}
           </div>
-          <p className="text-sm text-muted-foreground truncate">{conversation.lead.company}</p>
+          <p className="text-sm text-muted-foreground truncate">{workspaceLine}</p>
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
           {/* Show all channel icons if multiple channels */}

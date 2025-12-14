@@ -9,6 +9,8 @@ export interface CRMLeadData {
   email: string | null;
   phone: string | null;
   company: string;
+  smsCampaignId: string | null;
+  smsCampaignName: string | null;
   title: string;
   status: string;
   leadScore: number;
@@ -49,6 +51,12 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
             ghlLocationId: true,
           },
         },
+        smsCampaign: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
         _count: {
           select: { messages: true },
         },
@@ -78,6 +86,8 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
         email: lead.email,
         phone: lead.phone,
         company: lead.client.name,
+        smsCampaignId: lead.smsCampaignId,
+        smsCampaignName: lead.smsCampaign?.name ?? null,
         title: "", // Not in current schema
         status: lead.status,
         leadScore: score,
@@ -335,6 +345,8 @@ function transformLeadToCRM(lead: any): CRMLeadData {
     email: lead.email,
     phone: lead.phone,
     company: lead.client.name,
+    smsCampaignId: lead.smsCampaignId,
+    smsCampaignName: lead.smsCampaign?.name ?? null,
     title: "", // Not in current schema
     status: lead.status,
     leadScore: calculateLeadScore(lead),
@@ -394,6 +406,7 @@ export async function getCRMLeadsCursor(
           { lastName: { contains: searchTerm, mode: "insensitive" } },
           { email: { contains: searchTerm, mode: "insensitive" } },
           { companyName: { contains: searchTerm, mode: "insensitive" } },
+          { smsCampaign: { is: { name: { contains: searchTerm, mode: "insensitive" } } } },
         ],
       });
     }
@@ -412,6 +425,12 @@ export async function getCRMLeadsCursor(
           select: {
             name: true,
             ghlLocationId: true,
+          },
+        },
+        smsCampaign: {
+          select: {
+            id: true,
+            name: true,
           },
         },
         _count: {
@@ -491,6 +510,7 @@ export async function getCRMLeadsFromEnd(
           { lastName: { contains: searchTerm, mode: "insensitive" } },
           { email: { contains: searchTerm, mode: "insensitive" } },
           { companyName: { contains: searchTerm, mode: "insensitive" } },
+          { smsCampaign: { is: { name: { contains: searchTerm, mode: "insensitive" } } } },
         ],
       });
     }
@@ -509,6 +529,12 @@ export async function getCRMLeadsFromEnd(
           select: {
             name: true,
             ghlLocationId: true,
+          },
+        },
+        smsCampaign: {
+          select: {
+            id: true,
+            name: true,
           },
         },
         _count: {

@@ -19,6 +19,8 @@ export interface Lead {
   autoReplyEnabled: boolean
   autoFollowUpEnabled: boolean
   clientId: string  // Workspace/client ID for follow-up sequence management
+  smsCampaignId?: string | null
+  smsCampaignName?: string | null
   status: "new" | "qualified" | "meeting-booked" | "blacklisted" | "not-interested" | "meeting-requested" | "information-requested" | "call-requested"
   qualification: {
     budget: boolean
@@ -65,7 +67,7 @@ export interface Conversation {
   availableChannels: Channel[]  // Channels available based on contact info
   primaryChannel: Channel       // Most recent/active channel
   platform?: Channel            // @deprecated - use primaryChannel instead
-  classification: "meeting-requested" | "not-interested" | "out-of-office" | "follow-up" | "new" | "information-requested" | "call-requested" | "blacklist" | "positive" | "neutral"
+  classification: "meeting-requested" | "not-interested" | "out-of-office" | "follow-up" | "new" | "information-requested" | "call-requested" | "blacklist" | "positive" | "neutral" | "interested"
   lastMessage: string
   lastSubject?: string | null
   lastMessageTime: Date

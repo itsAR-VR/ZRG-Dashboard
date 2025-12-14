@@ -90,6 +90,16 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
 
   if (!lead) return null
 
+  const smsClient = lead.smsCampaignName?.trim() || null
+  const isSmsAccountWorkspace = ["owen", "uday 18th", "uday18th", "u-day 18th"].includes(
+    lead.company.toLowerCase()
+  )
+  const smsClientLine = smsClient
+    ? `Client: ${smsClient}`
+    : isSmsAccountWorkspace
+      ? "Client: Unattributed"
+      : null
+
   // Manual enrichment rules:
   // - Available for EmailBison leads (has emailBisonLeadId)
   // - DISABLED for sentiment tags: Not Interested, Blacklist, Neutral
@@ -154,6 +164,9 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
             <p className="flex items-center gap-1 text-primary">
               {lead.company}
             </p>
+            {smsClientLine && (
+              <p className="text-sm text-muted-foreground">{smsClientLine}</p>
+            )}
           </div>
 
           <Separator />
@@ -622,17 +635,17 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
         </div>
 
         {/* Virtualized table */}
-        <Card className="flex-1 overflow-hidden">
-          {/* Table header */}
-          <div className="border-b bg-muted/30">
-            <div className="flex items-center h-12 px-4">
+          <Card className="flex-1 overflow-hidden">
+            {/* Table header */}
+            <div className="border-b bg-muted/30">
+              <div className="flex items-center h-12 px-4">
               <div 
                 className="flex-[3] min-w-[200px] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
                 onClick={() => handleSort("firstName")}
               >
                 Name <SortIcon field="firstName" />
               </div>
-              <div className="flex-[2] min-w-[150px]">Company</div>
+              <div className="flex-[2] min-w-[150px]">Workspace / Client</div>
               <div className="w-[150px]">Sentiment</div>
               <div 
                 className="w-[80px] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
@@ -709,7 +722,18 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                     {/* Company */}
                     <div className="flex-[2] min-w-[150px] flex items-center gap-2">
                       <Building2 className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                      <span className="truncate">{lead.company}</span>
+                      <div className="min-w-0">
+                        <div className="truncate">{lead.company}</div>
+                        {lead.smsCampaignName ? (
+                          <div className="text-xs text-muted-foreground truncate">
+                            Client: {lead.smsCampaignName}
+                          </div>
+                        ) : ["owen", "uday 18th", "uday18th", "u-day 18th"].includes(lead.company.toLowerCase()) ? (
+                          <div className="text-xs text-muted-foreground truncate">
+                            Client: Unattributed
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
                     
                     {/* Sentiment */}

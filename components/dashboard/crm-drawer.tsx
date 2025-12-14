@@ -24,6 +24,7 @@ import {
   Pause,
   XCircle,
   ListTodo,
+  Users,
   Linkedin,
   Sparkles,
   Building2,
@@ -539,6 +540,17 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
           ? "Already enriched"
           : null
 
+  const workspaceName = lead.company
+  const smsClient = lead.smsCampaignName?.trim() || null
+  const isSmsAccountWorkspace = ["owen", "uday 18th", "uday18th", "u-day 18th"].includes(
+    workspaceName.toLowerCase()
+  )
+  const workspaceLine = smsClient
+    ? `${workspaceName} • Client: ${smsClient}`
+    : isSmsAccountWorkspace
+      ? `${workspaceName} • Client: Unattributed`
+      : workspaceName
+
   return (
     <>
       <aside className="w-80 shrink-0 border-l border-border bg-card overflow-y-auto">
@@ -581,6 +593,11 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
               )}
             </div>
             <div className="space-y-2.5">
+              <div className="flex items-center gap-3 text-sm">
+                <Users className="h-4 w-4 text-muted-foreground shrink-0" />
+                <span className="text-foreground truncate">{workspaceLine}</span>
+              </div>
+
               {/* Email - only show if present */}
               {lead.email && (
                 <div className="flex items-center gap-3 text-sm">
