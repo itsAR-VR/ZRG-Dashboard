@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply } from "@/actions/email-actions";
+import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import {
   sendLinkedInMessageWithWaterfall,
   checkLinkedInConnection,
@@ -149,6 +150,7 @@ interface SyncHistoryResult {
 // Options for sync operations
 interface SyncOptions {
   forceReclassify?: boolean;  // Force sentiment re-analysis even if no new messages
+  resolveMissingGhlContactId?: boolean; // Try to resolve missing GHL contact IDs (manual sync)
 }
 
 // Extended result that tracks which channels were synced (for draft generation)
@@ -246,7 +248,16 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
     return { success: false, error: syncInfo.error || "Failed to get lead sync info", reclassifiedSentiment: false };
   }
 
-  const { canSyncSms, canSyncEmail, hasEmailMessages, hasSmsMessages, emailBisonLeadId, ghlContactId } = syncInfo.data;
+  let { canSyncSms, canSyncEmail, hasEmailMessages, hasSmsMessages, emailBisonLeadId, ghlContactId } = syncInfo.data;
+
+  // Manual sync should try to resolve missing GHL contact IDs (email-first leads)
+  if (!canSyncSms && !ghlContactId && options.resolveMissingGhlContactId !== false) {
+    const ensureResult = await ensureGhlContactIdForLead(leadId);
+    if (ensureResult.success && ensureResult.ghlContactId) {
+      ghlContactId = ensureResult.ghlContactId;
+      canSyncSms = true;
+    }
+  }
 
   // If neither sync is available, return appropriate error
   if (!canSyncSms && !canSyncEmail) {
@@ -605,7 +616,7 @@ export async function syncAllConversations(clientId: string, options: SyncOption
 
       // Use smartSyncConversation which handles both SMS and Email
       const results = await Promise.allSettled(
-        batch.map(lead => smartSyncConversation(lead.id, options))
+        batch.map((lead) => smartSyncConversation(lead.id, { ...options, resolveMissingGhlContactId: false }))
       );
 
       // Process sync results and generate drafts for eligible leads
@@ -1128,17 +1139,22 @@ export async function sendMessage(
       return { success: false, error: "Lead not found" };
     }
 
-    if (!lead.ghlContactId) {
-      return { success: false, error: "Lead has no GHL contact ID" };
-    }
-
     if (!lead.client.ghlPrivateKey) {
       return { success: false, error: "Workspace has no GHL API key configured" };
     }
 
+    let ghlContactId = lead.ghlContactId;
+    if (!ghlContactId) {
+      const ensureResult = await ensureGhlContactIdForLead(leadId, { requirePhone: true });
+      if (!ensureResult.success || !ensureResult.ghlContactId) {
+        return { success: false, error: ensureResult.error || "Lead has no GHL contact ID" };
+      }
+      ghlContactId = ensureResult.ghlContactId;
+    }
+
     // Send SMS via GHL API
     const result = await sendSMS(
-      lead.ghlContactId,
+      ghlContactId,
       message,
       lead.client.ghlPrivateKey
     );

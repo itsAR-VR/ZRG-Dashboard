@@ -22,7 +22,7 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 interface InboxViewProps {
-  activeChannel: string;
+  activeChannels: Channel[];
   activeFilter: string;
   activeWorkspace: string | null;
   initialConversationId?: string | null;
@@ -93,7 +93,7 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
   };
 }
 
-export function InboxView({ activeChannel, activeFilter, activeWorkspace, initialConversationId, onLeadSelect, onClearFilters }: InboxViewProps) {
+export function InboxView({ activeChannels, activeFilter, activeWorkspace, initialConversationId, onLeadSelect, onClearFilters }: InboxViewProps) {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -144,10 +144,15 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     ? smsCampaignFiltersQuery.data.data
     : null;
 
+  const normalizedChannels = useMemo(
+    () => [...activeChannels].sort(),
+    [activeChannels]
+  );
+
   // Build query options for cursor-based pagination
   const queryOptions: ConversationsCursorOptions = useMemo(() => ({
     clientId: activeWorkspace,
-    channel: activeChannel !== "all" ? activeChannel as Channel : undefined,
+    channels: normalizedChannels.length > 0 ? normalizedChannels : undefined,
     sentimentTag: activeSentiment !== "all" ? activeSentiment : undefined,
     smsCampaignId:
       activeSmsClient !== "all" && activeSmsClient !== "unattributed"
@@ -156,7 +161,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
     smsCampaignUnattributed: activeSmsClient === "unattributed" ? true : undefined,
     filter: activeFilter as "attention" | "drafts" | "needs_repair" | "all" | undefined,
     limit: 50,
-  }), [activeWorkspace, activeChannel, activeSentiment, activeSmsClient, activeFilter]);
+  }), [activeWorkspace, normalizedChannels, activeSentiment, activeSmsClient, activeFilter]);
 
   // Infinite query for conversations
   const {
@@ -457,7 +462,7 @@ export function InboxView({ activeChannel, activeFilter, activeWorkspace, initia
   const filteredConversations = conversations;
 
   // Check if any filters are currently active
-  const hasActiveFilters = activeFilter !== "" || activeSentiment !== "all" || activeChannel !== "all";
+  const hasActiveFilters = activeFilter !== "" || activeSentiment !== "all" || activeChannels.length > 0;
 
   // Handle clearing all filters (resets sentiment locally and calls parent for channel/filter)
   const handleClearAllFilters = useCallback(() => {

@@ -8,6 +8,7 @@ import { CRMView } from "@/components/dashboard/crm-view"
 import { AnalyticsView } from "@/components/dashboard/analytics-view"
 import { SettingsView } from "@/components/dashboard/settings-view"
 import { getClients } from "@/actions/client-actions"
+import type { Channel } from "@/actions/lead-actions"
 
 interface Client {
   id: string
@@ -17,7 +18,7 @@ interface Client {
 
 export default function DashboardPage() {
   const [activeView, setActiveView] = useState<ViewType>("inbox")
-  const [activeChannel, setActiveChannel] = useState("all")
+  const [activeChannels, setActiveChannels] = useState<Channel[]>([])
   const [activeFilter, setActiveFilter] = useState("")
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null)
   const [workspaces, setWorkspaces] = useState<Client[]>([])
@@ -33,7 +34,7 @@ export default function DashboardPage() {
   // Handler to clear all filters (channel and sidebar filter)
   // Note: sentiment filter is managed inside InboxView
   const handleClearFilters = () => {
-    setActiveChannel("all")
+    setActiveChannels([])
     setActiveFilter("")
   }
 
@@ -72,7 +73,7 @@ export default function DashboardPage() {
       default:
         return (
           <InboxView 
-            activeChannel={activeChannel}
+            activeChannels={activeChannels}
             activeFilter={activeFilter}
             activeWorkspace={activeWorkspace}
             initialConversationId={selectedLeadId}
@@ -85,8 +86,8 @@ export default function DashboardPage() {
   return (
     <div className="flex h-screen bg-background">
       <Sidebar
-        activeChannel={activeChannel}
-        onChannelChange={setActiveChannel}
+        activeChannels={activeChannels}
+        onChannelsChange={setActiveChannels}
         activeFilter={activeFilter}
         onFilterChange={setActiveFilter}
         activeView={activeView}

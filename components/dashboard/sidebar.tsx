@@ -33,6 +33,7 @@ import {
 import { getInboxCounts } from "@/actions/lead-actions"
 import { signOut } from "@/actions/auth-actions"
 import { useUser } from "@/contexts/user-context"
+import type { Channel } from "@/actions/lead-actions"
 
 export type ViewType = "inbox" | "followups" | "crm" | "analytics" | "settings"
 
@@ -43,8 +44,8 @@ interface Workspace {
 }
 
 interface SidebarProps {
-  activeChannel: string
-  onChannelChange: (channel: string) => void
+  activeChannels: Channel[]
+  onChannelsChange: (channels: Channel[]) => void
   activeFilter: string
   onFilterChange: (filter: string) => void
   activeView: ViewType
@@ -69,8 +70,8 @@ interface FilterCounts {
 }
 
 export function Sidebar({
-  activeChannel,
-  onChannelChange,
+  activeChannels,
+  onChannelsChange,
   activeFilter,
   onFilterChange,
   activeView,
@@ -136,6 +137,9 @@ export function Sidebar({
   const handleSignOut = async () => {
     await signOut()
   }
+
+  const channelToggleValue: string[] =
+    activeChannels.length === 0 ? ["all"] : activeChannels;
 
   return (
     <aside className="flex h-full w-64 flex-col border-r border-border bg-card">
@@ -235,9 +239,25 @@ export function Sidebar({
             <div className="space-y-3">
               <p className="px-3 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Channels</p>
               <ToggleGroup
-                type="single"
-                value={activeChannel}
-                onValueChange={(value) => value && onChannelChange(value)}
+                type="multiple"
+                value={channelToggleValue}
+                onValueChange={(values) => {
+                  const hasAll = values.includes("all");
+                  const nextValues = hasAll ? values.filter((v) => v !== "all") : values;
+
+                  // Special behavior:
+                  // - If "All" was selected and user clicks a channel → select that channel (remove "all").
+                  // - If any channel(s) were selected and user clicks "All" → clear selection (represents "all").
+                  if (hasAll && activeChannels.length > 0) {
+                    onChannelsChange([]);
+                    return;
+                  }
+
+                  const nextChannels = nextValues.filter(
+                    (v): v is Channel => v === "email" || v === "sms" || v === "linkedin"
+                  );
+                  onChannelsChange(nextChannels);
+                }}
                 className="flex flex-col gap-1 px-3"
               >
                 <ToggleGroupItem value="all" aria-label="All channels" className="w-full justify-start px-3">

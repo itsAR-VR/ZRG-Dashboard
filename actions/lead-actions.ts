@@ -454,6 +454,7 @@ export interface ConversationsCursorOptions {
   cursor?: string | null; // Lead ID to start after
   limit?: number;
   search?: string;
+  channels?: Channel[];
   channel?: Channel | "all";
   sentimentTag?: string;
   smsCampaignId?: string;
@@ -541,6 +542,7 @@ export async function getConversationsCursor(
       cursor,
       limit = 50,
       search,
+      channels,
       channel,
       sentimentTag,
       smsCampaignId,
@@ -569,11 +571,18 @@ export async function getConversationsCursor(
       });
     }
 
-    // Channel filter - filter by messages having that channel
-    if (channel && channel !== "all") {
+    // Channel filter - filter by messages having any selected channel
+    const channelList =
+      channels && channels.length > 0
+        ? Array.from(new Set(channels))
+        : channel && channel !== "all"
+          ? [channel]
+          : [];
+
+    if (channelList.length > 0) {
       whereConditions.push({
         messages: {
-          some: { channel },
+          some: { channel: { in: channelList } },
         },
       });
     }
@@ -711,6 +720,7 @@ export async function getConversationsFromEnd(
       clientId,
       limit = 50,
       search,
+      channels,
       channel,
       sentimentTag,
       smsCampaignId,
@@ -738,10 +748,17 @@ export async function getConversationsFromEnd(
       });
     }
 
-    if (channel && channel !== "all") {
+    const channelList =
+      channels && channels.length > 0
+        ? Array.from(new Set(channels))
+        : channel && channel !== "all"
+          ? [channel]
+          : [];
+
+    if (channelList.length > 0) {
       whereConditions.push({
         messages: {
-          some: { channel },
+          some: { channel: { in: channelList } },
         },
       });
     }

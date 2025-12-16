@@ -409,6 +409,44 @@ export async function getGHLContact(
 }
 
 /**
+ * Lookup contacts by email/phone within a location.
+ * Useful for resolving missing contact IDs without creating duplicates.
+ *
+ * NOTE: Response shape is best-effort (GHL may return contact or contacts list).
+ */
+export async function lookupGHLContact(
+  params: { locationId: string; email?: string; phone?: string },
+  privateKey: string
+): Promise<GHLApiResponse<unknown>> {
+  const url = new URL(`${GHL_API_BASE}/contacts/lookup`);
+  url.searchParams.set("locationId", params.locationId);
+  if (params.email) url.searchParams.set("email", params.email);
+  if (params.phone) url.searchParams.set("phone", params.phone);
+
+  // ghlRequest expects a path, so pass full path+query
+  return ghlRequest<unknown>(url.pathname + url.search, privateKey);
+}
+
+/**
+ * Search contacts within a location.
+ * Useful fallback when lookup isn't available or doesn't match.
+ *
+ * NOTE: Response shape is best-effort (GHL may return a contacts list in different envelopes).
+ */
+export async function searchGHLContacts(
+  params: { locationId: string; query: string; limit?: number; skip?: number },
+  privateKey: string
+): Promise<GHLApiResponse<unknown>> {
+  const url = new URL(`${GHL_API_BASE}/contacts/search`);
+  url.searchParams.set("locationId", params.locationId);
+  url.searchParams.set("query", params.query);
+  if (params.limit !== undefined) url.searchParams.set("limit", String(params.limit));
+  if (params.skip !== undefined) url.searchParams.set("skip", String(params.skip));
+
+  return ghlRequest<unknown>(url.pathname + url.search, privateKey);
+}
+
+/**
  * Create a new appointment in GHL
  * 
  * @param params - Appointment creation parameters

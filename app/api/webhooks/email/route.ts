@@ -11,6 +11,7 @@ import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { normalizePhone } from "@/lib/lead-matching";
 import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
+import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 
 // =============================================================================
 // Type Definitions
@@ -846,6 +847,19 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   const leadFullName = `${lead.firstName || ""} ${lead.lastName || ""}`.trim() || "Lead";
   await enrichLeadFromSignature(lead.id, leadFullName, fromEmail, fullEmailBody);
 
+  // If the lead is a positive reply and we have a phone, ensure they exist in GHL
+  // so SMS history and future messages can be synced.
+  if (isPositiveSentiment(sentimentTag)) {
+    try {
+      const ensureResult = await ensureGhlContactIdForLead(lead.id, { requirePhone: true });
+      if (!ensureResult.success && ensureResult.error) {
+        console.log(`[GHL Contact] Lead ${lead.id}: ${ensureResult.error}`);
+      }
+    } catch (error) {
+      console.error(`[GHL Contact] Failed to ensure contact for lead ${lead.id}:`, error);
+    }
+  }
+
   // STEP 4: Trigger Clay enrichment if still missing LinkedIn or phone after other enrichment
   // Only triggers for positive sentiments (Meeting Requested, Call Requested, Info Requested, Interested)
   // Pass EmailBison data for additional context (company, state, etc.)
@@ -923,6 +937,15 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
       },
     });
 
+    try {
+      const ensureResult = await ensureGhlContactIdForLead(existingMessage.leadId, { requirePhone: true });
+      if (!ensureResult.success && ensureResult.error) {
+        console.log(`[GHL Contact] Lead ${existingMessage.leadId}: ${ensureResult.error}`);
+      }
+    } catch (error) {
+      console.error(`[GHL Contact] Failed to ensure contact for lead ${existingMessage.leadId}:`, error);
+    }
+
     // Regenerate AI draft with "Interested" context
     const draftResult = await generateResponseDraft(
       existingMessage.leadId,
@@ -987,6 +1010,15 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     where: { id: lead.id },
     data: { sentimentTag, status: leadStatus },
   });
+
+  try {
+    const ensureResult = await ensureGhlContactIdForLead(lead.id, { requirePhone: true });
+    if (!ensureResult.success && ensureResult.error) {
+      console.log(`[GHL Contact] Lead ${lead.id}: ${ensureResult.error}`);
+    }
+  } catch (error) {
+    console.error(`[GHL Contact] Failed to ensure contact for lead ${lead.id}:`, error);
+  }
 
   // Generate AI draft with "Interested" context
   const draftResult = await generateResponseDraft(
