@@ -6,6 +6,8 @@ import { buildSentimentTranscriptFromMessages, classifySentiment, SENTIMENT_TO_S
 import { findOrCreateLead, normalizePhone } from "@/lib/lead-matching";
 import { normalizeSmsCampaignLabel } from "@/lib/sms-campaign";
 import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
+import { pauseFollowUpsOnReply, processMessageForAutoBooking } from "@/lib/followup-engine";
+import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
 
 /**
  * GHL Workflow Webhook Payload Structure
@@ -496,6 +498,11 @@ export async function POST(request: NextRequest) {
       newSentiment: sentimentTag,
     });
 
+    // Any inbound message pauses active follow-up sequences (re-engage after 7 days of no inbound).
+    pauseFollowUpsOnReply(lead.id).catch((err) =>
+      console.error("[Webhook] Failed to pause follow-ups on reply:", err)
+    );
+
     // Import historical messages if this is a new lead or has no messages
     let importedMessagesCount = 0;
     let healedMessagesCount = 0;
@@ -576,9 +583,16 @@ export async function POST(request: NextRequest) {
       console.error("[Webhook] Background sync failed:", err)
     );
 
+    // Auto-booking: only books when the lead clearly accepts one of the offered slots.
+    // If ambiguous, it creates a follow-up task instead (no booking).
+    const autoBook = await processMessageForAutoBooking(lead.id, messageBody);
+    if (autoBook.booked) {
+      console.log(`[Auto-Book] Booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
+    }
+
     // Generate AI draft if appropriate for this sentiment
     let draftId: string | undefined;
-    if (shouldGenerateDraft(sentimentTag)) {
+    if (!autoBook.booked && shouldGenerateDraft(sentimentTag)) {
       try {
         const draftResult = await generateResponseDraft(
           lead.id,
@@ -593,13 +607,27 @@ export async function POST(request: NextRequest) {
           // Auto-Reply Logic: Check if enabled for this lead
           // lead.autoReplyEnabled comes from the database (via upsert)
           if (lead.autoReplyEnabled && draftId) {
-            console.log(`[Auto-Reply] Auto-approving draft ${draftId} for lead ${lead.id}`);
-            const sendResult = await approveAndSendDraft(draftId);
-            if (sendResult.success) {
-              console.log(`[Auto-Reply] Sent message: ${sendResult.messageId}`);
-              // Draft status is now 'approved' in DB
+            const decision = await decideShouldAutoReply({
+              channel: "sms",
+              latestInbound: messageBody,
+              subject: null,
+              conversationHistory: transcript || `Lead: ${messageBody}`,
+              categorization: sentimentTag,
+              automatedReply: null,
+              replyReceivedAt: webhookMessageTime,
+            });
+
+            if (!decision.shouldReply) {
+              console.log(`[Auto-Reply] Skipped auto-send for lead ${lead.id}: ${decision.reason}`);
             } else {
-              console.error(`[Auto-Reply] Failed to send draft: ${sendResult.error}`);
+              console.log(`[Auto-Reply] Auto-approving draft ${draftId} for lead ${lead.id}`);
+              const sendResult = await approveAndSendDraft(draftId);
+              if (sendResult.success) {
+                console.log(`[Auto-Reply] Sent message: ${sendResult.messageId}`);
+                // Draft status is now 'approved' in DB
+              } else {
+                console.error(`[Auto-Reply] Failed to send draft: ${sendResult.error}`);
+              }
             }
           }
         } else {

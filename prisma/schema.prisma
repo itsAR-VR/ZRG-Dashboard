@@ -30,6 +30,7 @@ model Client {
   settings      WorkspaceSettings?  // One-to-one relation with settings
   followUpSequences FollowUpSequence[]  // Follow-up sequence templates
   calendarLinks CalendarLink[]      // Multiple calendar links for availability
+  availabilityCache WorkspaceAvailabilityCache?
 
   @@index([userId])
 }
@@ -376,7 +377,34 @@ model CalendarLink {
   updatedAt  DateTime @updatedAt
   // Leads that prefer this specific calendar
   leads      Lead[]
+  availabilityCaches WorkspaceAvailabilityCache[]
 
   @@index([clientId])
   @@index([isDefault])
+}
+
+// Per-workspace cache of live availability from the default CalendarLink
+// Refreshed by cron every 10 minutes (and on-demand when stale).
+model WorkspaceAvailabilityCache {
+  id                  String      @id @default(uuid())
+  clientId            String      @unique
+  client              Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  calendarLinkId      String?
+  calendarLink        CalendarLink? @relation(fields: [calendarLinkId], references: [id], onDelete: SetNull)
+  calendarType        String      // 'calendly' | 'hubspot' | 'ghl' | 'unknown'
+  calendarUrl         String
+  slotDurationMinutes Int         @default(30)
+  rangeStart          DateTime
+  rangeEnd            DateTime
+  slotsUtc            Json        // JSON array of ISO datetimes in UTC
+  providerMeta        Json?
+  fetchedAt           DateTime
+  staleAt             DateTime
+  lastError           String?
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@index([clientId])
+  @@index([staleAt])
+  @@index([calendarLinkId])
 }

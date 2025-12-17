@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { processFollowUpsDue } from "@/lib/followup-engine";
+import { processFollowUpsDue, resumeGhostedFollowUps } from "@/lib/followup-engine";
+import { refreshAvailabilityCachesDue } from "@/lib/availability-cache";
 
 /**
  * GET /api/cron/followups
@@ -32,12 +33,22 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    console.log("[Cron] Refreshing availability caches...");
+    const availability = await refreshAvailabilityCachesDue({ limit: 50 });
+    console.log("[Cron] Availability refresh complete:", availability);
+
+    console.log("[Cron] Resuming ghosted follow-ups...");
+    const resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
+    console.log("[Cron] Ghosted follow-up resume complete:", resumed);
+
     console.log("[Cron] Processing follow-ups...");
     const results = await processFollowUpsDue();
     console.log("[Cron] Follow-up processing complete:", results);
 
     return NextResponse.json({
       success: true,
+      availability,
+      resumed,
       results,
       timestamp: new Date().toISOString(),
     });
@@ -86,12 +97,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    console.log("[Cron] Refreshing availability caches (POST)...");
+    const availability = await refreshAvailabilityCachesDue({ limit: 50 });
+    console.log("[Cron] Availability refresh complete:", availability);
+
+    console.log("[Cron] Resuming ghosted follow-ups (POST)...");
+    const resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
+    console.log("[Cron] Ghosted follow-up resume complete:", resumed);
+
     console.log("[Cron] Processing follow-ups (POST)...");
     const results = await processFollowUpsDue();
     console.log("[Cron] Follow-up processing complete:", results);
 
     return NextResponse.json({
       success: true,
+      availability,
+      resumed,
       results,
       timestamp: new Date().toISOString(),
     });

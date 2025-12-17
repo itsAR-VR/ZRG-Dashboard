@@ -8,6 +8,7 @@ import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply } from "@/actions/email-actions";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
+import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import {
   sendLinkedInMessageWithWaterfall,
   checkLinkedInConnection,
@@ -97,6 +98,17 @@ async function refreshLeadSentimentTag(leadId: string): Promise<{
       status,
     },
   });
+
+  // Compliance/backstop: if sentiment is Blacklist/Automated Reply, reject any pending drafts.
+  if (sentimentTag === "Blacklist" || sentimentTag === "Automated Reply") {
+    await prisma.aIDraft.updateMany({
+      where: {
+        leadId,
+        status: "pending",
+      },
+      data: { status: "rejected" },
+    });
+  }
 
   return { sentimentTag, status };
 }
@@ -1139,6 +1151,10 @@ export async function sendMessage(
       return { success: false, error: "Lead not found" };
     }
 
+    if (lead.status === "blacklisted") {
+      return { success: false, error: "Lead is blacklisted" };
+    }
+
     if (!lead.client.ghlPrivateKey) {
       return { success: false, error: "Workspace has no GHL API key configured" };
     }
@@ -1187,6 +1203,11 @@ export async function sendMessage(
       data: { updatedAt: new Date() },
     });
 
+    // Kick off no-response follow-ups starting from this outbound touch (if enabled)
+    autoStartNoResponseSequenceOnOutbound({ leadId, outboundAt: ghlDateAdded }).catch((err) => {
+      console.error("[sendMessage] Failed to auto-start no-response sequence:", err);
+    });
+
     revalidatePath("/");
 
     return {
@@ -1233,6 +1254,10 @@ export async function sendLinkedInMessage(
 
     if (!lead) {
       return { success: false, error: "Lead not found" };
+    }
+
+    if (lead.status === "blacklisted") {
+      return { success: false, error: "Lead is blacklisted" };
     }
 
     if (!lead.linkedinUrl && !lead.linkedinId) {
@@ -1285,6 +1310,11 @@ export async function sendLinkedInMessage(
     await prisma.lead.update({
       where: { id: leadId },
       data: { updatedAt: new Date() },
+    });
+
+    // Kick off no-response follow-ups starting from this outbound touch (if enabled)
+    autoStartNoResponseSequenceOnOutbound({ leadId, outboundAt: savedMessage.sentAt }).catch((err) => {
+      console.error("[sendLinkedInMessage] Failed to auto-start no-response sequence:", err);
     });
 
     revalidatePath("/");

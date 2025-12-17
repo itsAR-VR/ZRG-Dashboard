@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { sendEmailBisonReply } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
 import { syncEmailConversationHistory } from "@/actions/message-actions";
+import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
+import { isOptOutText } from "@/lib/sentiment";
 
 interface SendEmailResult {
   success: boolean;
@@ -77,6 +79,15 @@ export async function sendEmailReply(
       return { success: false, error: "Lead has no email" };
     }
 
+    // Compliance/backstop: never send to blacklisted/opted-out leads.
+    if (lead.status === "blacklisted" || lead.sentimentTag === "Blacklist") {
+      await prisma.aIDraft.update({
+        where: { id: draftId },
+        data: { status: "rejected" },
+      });
+      return { success: false, error: "Lead is blacklisted (opted out)" };
+    }
+
     if (!lead.senderAccountId) {
       return { success: false, error: "Lead is missing sender account for EmailBison" };
     }
@@ -113,6 +124,28 @@ export async function sendEmailReply(
     const replyId = latestInboundEmail?.emailBisonReplyId;
     if (!replyId) {
       return { success: false, error: "No inbound email thread to reply to" };
+    }
+
+    // Compliance/backstop: refuse to reply if the latest inbound email contains an opt-out request.
+    const latestInboundText = `Subject: ${latestInboundEmail.subject || ""} | ${latestInboundEmail.body || ""}`;
+    if (isOptOutText(latestInboundText)) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          status: "blacklisted",
+          sentimentTag: "Blacklist",
+        },
+      });
+
+      await prisma.aIDraft.updateMany({
+        where: {
+          leadId: lead.id,
+          status: "pending",
+        },
+        data: { status: "rejected" },
+      });
+
+      return { success: false, error: "Lead requested unsubscribe (opt-out)" };
     }
 
     const messageContent = editedContent || draft.content;
@@ -176,6 +209,11 @@ export async function sendEmailReply(
     // This matches the SMS flow behavior in approveAndSendDraft
 
     revalidatePath("/");
+
+    // Kick off no-response follow-ups starting from this outbound touch (if enabled)
+    autoStartNoResponseSequenceOnOutbound({ leadId: lead.id, outboundAt: message.sentAt }).catch((err) => {
+      console.error("[Email] Failed to auto-start no-response sequence:", err);
+    });
 
     // Trigger background sync to ensure thread consistency
     // This runs async and doesn't block the response

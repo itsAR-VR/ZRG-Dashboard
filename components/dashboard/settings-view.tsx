@@ -60,6 +60,7 @@ import {
   fetchGHLUsersForWorkspace,
   testGHLConnectionForWorkspace,
   setWorkspaceAutoBookEnabled,
+  getGhlCalendarMismatchInfo,
   type GHLCalendar,
   type GHLUser,
 } from "@/actions/booking-actions"
@@ -142,6 +143,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [ghlUsers, setGhlUsers] = useState<GHLUser[]>([])
   const [isLoadingGhlData, setIsLoadingGhlData] = useState(false)
   const [ghlConnectionStatus, setGhlConnectionStatus] = useState<"unknown" | "connected" | "error">("unknown")
+  const [calendarMismatchInfo, setCalendarMismatchInfo] = useState<{
+    mismatch: boolean
+    ghlDefaultCalendarId: string | null
+    calendarLinkGhlCalendarId: string | null
+    lastError: string | null
+  } | null>(null)
 
   const [availability, setAvailability] = useState({
     timezone: "America/Los_Angeles",
@@ -229,10 +236,23 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           setCalendarLinks(calendarResult.data)
         }
 
+        const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+        if (mismatch.success) {
+          setCalendarMismatchInfo({
+            mismatch: mismatch.mismatch ?? false,
+            ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+            calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+            lastError: mismatch.lastError ?? null,
+          })
+        } else {
+          setCalendarMismatchInfo(null)
+        }
+
         // Load GHL calendars and users for meeting booking config
         loadGHLData(activeWorkspace)
       } else {
         setCalendarLinks([])
+        setCalendarMismatchInfo(null)
       }
       
       setIsLoading(false)
@@ -411,6 +431,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   // Calendar link handlers
   const handleAddCalendarLink = useCallback(async () => {
+    if (!activeWorkspace) {
+      toast.error("No workspace selected")
+      return
+    }
     if (!newCalendarName.trim() || !newCalendarUrl.trim()) {
       toast.error("Please provide both name and URL")
       return
@@ -429,6 +453,15 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       if (calendarResult.success && calendarResult.data) {
         setCalendarLinks(calendarResult.data)
       }
+      const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+      if (mismatch.success) {
+        setCalendarMismatchInfo({
+          mismatch: mismatch.mismatch ?? false,
+          ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+          calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+          lastError: mismatch.lastError ?? null,
+        })
+      }
       setNewCalendarName("")
       setNewCalendarUrl("")
       toast.success("Calendar link added")
@@ -439,12 +472,25 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   }, [activeWorkspace, newCalendarName, newCalendarUrl, calendarLinks.length])
 
   const handleDeleteCalendarLink = useCallback(async (linkId: string) => {
+    if (!activeWorkspace) {
+      toast.error("No workspace selected")
+      return
+    }
     const result = await deleteCalendarLink(linkId)
     if (result.success) {
       // Reload calendar links
       const calendarResult = await getCalendarLinks(activeWorkspace)
       if (calendarResult.success && calendarResult.data) {
         setCalendarLinks(calendarResult.data)
+      }
+      const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+      if (mismatch.success) {
+        setCalendarMismatchInfo({
+          mismatch: mismatch.mismatch ?? false,
+          ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+          calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+          lastError: mismatch.lastError ?? null,
+        })
       }
       toast.success("Calendar link deleted")
     } else {
@@ -453,12 +499,25 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   }, [activeWorkspace])
 
   const handleSetDefaultCalendarLink = useCallback(async (linkId: string) => {
+    if (!activeWorkspace) {
+      toast.error("No workspace selected")
+      return
+    }
     const result = await setDefaultCalendarLink(activeWorkspace, linkId)
     if (result.success) {
       setCalendarLinks(prev => prev.map(link => ({
         ...link,
         isDefault: link.id === linkId,
       })))
+      const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+      if (mismatch.success) {
+        setCalendarMismatchInfo({
+          mismatch: mismatch.mismatch ?? false,
+          ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+          calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+          lastError: mismatch.lastError ?? null,
+        })
+      }
       toast.success("Default calendar updated")
     } else {
       toast.error(result.error || "Failed to set default")
@@ -869,6 +928,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                         value={meetingBooking.ghlDefaultCalendarId}
                         onValueChange={(v) => {
                           setMeetingBooking(prev => ({ ...prev, ghlDefaultCalendarId: v }))
+                          setCalendarMismatchInfo(prev => prev ? ({
+                            ...prev,
+                            ghlDefaultCalendarId: v,
+                            mismatch: !!prev.calendarLinkGhlCalendarId && prev.calendarLinkGhlCalendarId !== v,
+                          }) : prev)
                           handleChange()
                         }}
                         disabled={ghlCalendars.length === 0}
@@ -887,6 +951,28 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       <p className="text-xs text-muted-foreground">
                         Appointments will be created on this calendar
                       </p>
+
+                      {calendarMismatchInfo?.mismatch && (
+                        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+                          <p className="font-medium text-amber-700">
+                            Warning: Calendar Link & Booking Calendar differ
+                          </p>
+                          <p className="mt-1 text-amber-700/90">
+                            Slots shown come from your default Calendar Link, but bookings will be created on the selected GHL calendar.
+                          </p>
+                          <p className="mt-2 text-amber-700/90">
+                            Link calendar: <span className="font-mono">{calendarMismatchInfo.calendarLinkGhlCalendarId}</span>
+                            <br />
+                            Booking calendar: <span className="font-mono">{calendarMismatchInfo.ghlDefaultCalendarId}</span>
+                          </p>
+                        </div>
+                      )}
+
+                      {calendarMismatchInfo?.lastError && (
+                        <p className="text-xs text-muted-foreground">
+                          Availability status: {calendarMismatchInfo.lastError}
+                        </p>
+                      )}
                     </div>
 
                     {/* Assigned User */}
@@ -923,8 +1009,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                         <Select
                           value={String(meetingBooking.meetingDurationMinutes)}
                           onValueChange={(v) => {
-                            setMeetingBooking(prev => ({ ...prev, meetingDurationMinutes: parseInt(v) }))
+                            const minutes = parseInt(v)
+                            setMeetingBooking(prev => ({ ...prev, meetingDurationMinutes: minutes }))
                             handleChange()
+                            if (minutes !== 30) {
+                              toast.error("Only 30-minute meetings are supported for live availability + auto-booking. Set it back to 30.")
+                            }
                           }}
                         >
                           <SelectTrigger>

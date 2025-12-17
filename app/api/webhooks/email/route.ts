@@ -10,8 +10,10 @@ import { extractContactFromSignature, extractContactFromMessageContent } from "@
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { normalizePhone } from "@/lib/lead-matching";
-import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
+import { autoStartMeetingRequestedSequenceIfEligible, autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
+import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
+import { pauseFollowUpsOnReply, processMessageForAutoBooking } from "@/lib/followup-engine";
 
 // =============================================================================
 // Type Definitions
@@ -98,19 +100,77 @@ type Client = {
 // =============================================================================
 
 function stripQuotedSections(text: string): string {
-  let result = text.split("\n").filter((line) => !line.trim().startsWith(">")).join("\n");
+  let result = text
+    .split("\n")
+    .filter((line) => !line.trim().startsWith(">"))
+    .join("\n");
 
-  const replyHeaderIndex = result.search(/On .*wrote:/i);
-  if (replyHeaderIndex !== -1) {
-    result = result.slice(0, replyHeaderIndex);
+  // Common thread separators / quoted headers across clients
+  const threadMarkers: RegExp[] = [
+    /On .*wrote:/i,
+    /^From:\s.+$/im,
+    /^Sent:\s.+$/im,
+    /^To:\s.+$/im,
+    /^Subject:\s.+$/im,
+    /^-----Original Message-----$/im,
+  ];
+
+  let earliestMarkerIndex = -1;
+  for (const marker of threadMarkers) {
+    const idx = result.search(marker);
+    if (idx !== -1 && (earliestMarkerIndex === -1 || idx < earliestMarkerIndex)) {
+      earliestMarkerIndex = idx;
+    }
+  }
+  if (earliestMarkerIndex !== -1) {
+    result = result.slice(0, earliestMarkerIndex);
   }
 
-  const signatureIndex = result.search(/^\s*--/m);
+  // Standard signature delimiter
+  const signatureIndex = result.search(/^\s*--\s*$/m);
   if (signatureIndex !== -1) {
     result = result.slice(0, signatureIndex);
   }
 
-  return result.trim();
+  // Heuristic signature trimming:
+  // If the message has a clear main body and then a footer block (after a blank line)
+  // that looks like a contact signature, strip the footer.
+  const lines = result.split("\n");
+  while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop();
+
+  const emailPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
+  const urlPattern = /\bhttps?:\/\/\S+|\bwww\.\S+/i;
+  const phonePattern = /(?:\+?\d{1,3}[-.\s]?)?(?:\(\d{2,4}\)|\d{2,4})[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b/;
+  const signatureLabelPattern = /\b(tel|telephone|phone|mobile|cell|direct|whats\s*app|whatsapp|linkedin|website|www)\b|(?:^|\s)(t:|m:|p:|e:)\b/i;
+
+  // Find last blank line as a separator between body and footer
+  let lastBlankLine = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].trim()) {
+      lastBlankLine = i;
+      break;
+    }
+  }
+
+  if (lastBlankLine !== -1) {
+    const bodyAbove = lines.slice(0, lastBlankLine).some((l) => l.trim());
+    const footer = lines.slice(lastBlankLine + 1).filter((l) => l.trim());
+
+    if (bodyAbove && footer.length >= 2) {
+      const footerText = footer.join("\n");
+      const looksLikeSignature =
+        emailPattern.test(footerText) ||
+        urlPattern.test(footerText) ||
+        phonePattern.test(footerText) ||
+        signatureLabelPattern.test(footerText);
+
+      if (looksLikeSignature) {
+        lines.splice(lastBlankLine);
+      }
+    }
+  }
+
+  return lines.join("\n").trim();
 }
 
 function htmlToPlain(html: string): string {
@@ -792,6 +852,34 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     newSentiment: sentimentTag,
   });
 
+  // Any inbound message pauses no-response sequences (meeting-requested sequences continue).
+  pauseFollowUpsOnReply(lead.id).catch((err) =>
+    console.error("[Email Webhook] Failed to pause follow-ups on reply:", err)
+  );
+
+  // Auto-booking: only books when the lead clearly accepts one of the offered slots.
+  const autoBook = await processMessageForAutoBooking(lead.id, cleaned.cleaned || contentForClassification);
+  if (autoBook.booked) {
+    console.log(`[Auto-Book] Booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
+  }
+
+  // Compliance/backstop: if the lead opted out or sent an automated reply, reject any pending drafts.
+  if (sentimentTag === "Blacklist" || sentimentTag === "Automated Reply") {
+    await prisma.aIDraft.updateMany({
+      where: {
+        leadId: lead.id,
+        status: "pending",
+      },
+      data: { status: "rejected" },
+    });
+  }
+
+  await autoStartMeetingRequestedSequenceIfEligible({
+    leadId: lead.id,
+    previousSentiment,
+    newSentiment: sentimentTag,
+  });
+
   if (leadStatus === "meeting-booked") {
     await triggerSlackNotification(
       `Meeting booked via Inboxxia for lead ${lead.email || lead.id} (client ${client.name})`
@@ -869,7 +957,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   let draftId: string | undefined;
   let autoReplySent = false;
 
-  if (shouldGenerateDraft(sentimentTag, fromEmail)) {
+  if (!autoBook.booked && shouldGenerateDraft(sentimentTag, fromEmail)) {
     const draftResult = await generateResponseDraft(
       lead.id,
       `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,
@@ -881,13 +969,27 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
       console.log(`[LEAD_REPLIED] Generated AI draft: ${draftId}`);
 
       if (lead.autoReplyEnabled && draftId) {
-        console.log(`[Auto-Reply] Auto-approving draft ${draftId} for lead ${lead.id}`);
-        const sendResult = await approveAndSendDraft(draftId);
-        if (sendResult.success) {
-          console.log(`[Auto-Reply] Sent message: ${sendResult.messageId}`);
-          autoReplySent = true;
+        const decision = await decideShouldAutoReply({
+          channel: "email",
+          latestInbound: cleaned.cleaned || contentForClassification,
+          subject: reply.email_subject ?? null,
+          conversationHistory: transcript,
+          categorization: sentimentTag,
+          automatedReply: reply.automated_reply ?? null,
+          replyReceivedAt: sentAt,
+        });
+
+        if (!decision.shouldReply) {
+          console.log(`[Auto-Reply] Skipped auto-send for lead ${lead.id}: ${decision.reason}`);
         } else {
-          console.error(`[Auto-Reply] Failed to send draft: ${sendResult.error}`);
+          console.log(`[Auto-Reply] Auto-approving draft ${draftId} for lead ${lead.id}`);
+          const sendResult = await approveAndSendDraft(draftId);
+          if (sendResult.success) {
+            console.log(`[Auto-Reply] Sent message: ${sendResult.messageId}`);
+            autoReplySent = true;
+          } else {
+            console.error(`[Auto-Reply] Failed to send draft: ${sendResult.error}`);
+          }
         }
       }
     }
@@ -1011,6 +1113,16 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     data: { sentimentTag, status: leadStatus },
   });
 
+  // Any inbound message pauses no-response sequences.
+  pauseFollowUpsOnReply(lead.id).catch((err) =>
+    console.error("[Email Webhook] Failed to pause follow-ups on reply:", err)
+  );
+
+  const autoBook = await processMessageForAutoBooking(lead.id, cleaned.cleaned || contentForClassification);
+  if (autoBook.booked) {
+    console.log(`[Auto-Book] Booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
+  }
+
   try {
     const ensureResult = await ensureGhlContactIdForLead(lead.id, { requirePhone: true });
     if (!ensureResult.success && ensureResult.error) {
@@ -1021,12 +1133,14 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   }
 
   // Generate AI draft with "Interested" context
-  const draftResult = await generateResponseDraft(
-    lead.id,
-    `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,
-    sentimentTag,
-    "email"
-  );
+  const draftResult = autoBook.booked
+    ? { success: false as const, draftId: undefined as string | undefined }
+    : await generateResponseDraft(
+        lead.id,
+        `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,
+        sentimentTag,
+        "email"
+      );
 
   console.log(`[LEAD_INTERESTED] New lead ${lead.id} marked as Interested`);
 
@@ -1274,6 +1388,23 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     data: { sentimentTag, status: leadStatus },
   });
 
+  await autoStartMeetingRequestedSequenceIfEligible({
+    leadId: lead.id,
+    previousSentiment,
+    newSentiment: sentimentTag,
+  });
+
+  // Any inbound message pauses no-response sequences (meeting-requested sequences continue).
+  pauseFollowUpsOnReply(lead.id).catch((err) =>
+    console.error("[Email Webhook] Failed to pause follow-ups on reply:", err)
+  );
+
+  // Auto-booking: only books when the lead clearly accepts one of the offered slots.
+  const autoBook = await processMessageForAutoBooking(lead.id, cleaned.cleaned || contentForClassification);
+  if (autoBook.booked) {
+    console.log(`[Auto-Book] Booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
+  }
+
   // ==========================================================================
   // ENRICHMENT SEQUENCE (in order of priority)
   // 1. Message content extraction (regex) - check if lead shared contact info in message
@@ -1320,7 +1451,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 
   // Generate AI draft (skip bounce emails)
   let draftId: string | undefined;
-  if (shouldGenerateDraft(sentimentTag, fromEmail)) {
+  if (!autoBook.booked && shouldGenerateDraft(sentimentTag, fromEmail)) {
     const draftResult = await generateResponseDraft(
       lead.id,
       `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,
@@ -1398,6 +1529,8 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
       sentAt,
     },
   });
+
+  await autoStartNoResponseSequenceOnOutbound({ leadId: lead.id, outboundAt: sentAt });
 
   console.log(`[EMAIL_SENT] Lead: ${lead.id}, Subject: ${scheduledEmail.email_subject}`);
 
@@ -1520,6 +1653,15 @@ async function handleLeadUnsubscribed(request: NextRequest, payload: InboxxiaWeb
       status: "blacklisted",
       sentimentTag: "Blacklist",
     },
+  });
+
+  // Reject any pending drafts - unsubscribed leads must never get a reply.
+  await prisma.aIDraft.updateMany({
+    where: {
+      leadId: lead.id,
+      status: "pending",
+    },
+    data: { status: "rejected" },
   });
 
   console.log(`[LEAD_UNSUBSCRIBED] Lead: ${lead.id}, Email: ${lead.email} - BLACKLISTED (Unsubscribed)`);

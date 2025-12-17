@@ -38,6 +38,10 @@ const classificationStyles: Record<string, { label: string; className: string }>
     label: "Out of Office",
     className: "bg-amber-500/10 text-amber-500 border-amber-500/20",
   },
+  "automated-reply": {
+    label: "Automated Reply",
+    className: "bg-slate-500/10 text-slate-300 border-slate-500/20",
+  },
   "follow-up": {
     label: "Follow Up",
     className: "bg-blue-500/10 text-blue-500 border-blue-500/20",

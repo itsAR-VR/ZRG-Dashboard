@@ -10,6 +10,7 @@ export const SENTIMENT_TAGS = [
   "Blacklist",
   "Follow Up",
   "Out of Office",
+  "Automated Reply",
   "Interested",
   "Neutral",
   "Snoozed", // Temporarily hidden from follow-up list
@@ -26,6 +27,7 @@ export const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
   "Blacklist": "blacklisted",
   "Follow Up": "new",
   "Out of Office": "new",
+  "Automated Reply": "new",
   "Interested": "qualified",
   "Neutral": "new",
   "Snoozed": "new",
@@ -190,21 +192,53 @@ export function detectBounce(messages: { body: string; direction: string; channe
 const PHONE_PATTERN =
   /(?:\+?\d{1,3}[-.\s]?)?(?:\(\d{3}\)|\d{3})[-.\s]?\d{3}[-.\s]?\d{4}\b/;
 
-function isOptOutMessage(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
+function splitEmailSubjectPrefix(text: string): { subject: string; body: string; combined: string } {
+  const combined = (text || "").trim();
+  if (!combined) return { subject: "", body: "", combined: "" };
 
-  // Strict single-word opt-outs (common for SMS compliance)
-  if (["stop", "unsubscribe", "optout", "opt out"].includes(normalized)) return true;
+  // buildSentimentTranscriptFromMessages renders email inbound bodies as:
+  // "Subject: <subject> | <body>"
+  const match = combined.match(/^\s*Subject:\s*([^|]+)\|\s*(.*)$/i);
+  if (!match) return { subject: "", body: combined, combined };
 
-  // Common explicit opt-outs
-  if (/\b(remove me|take me off|do not contact|dont contact|don't contact)\b/i.test(normalized)) {
-    return true;
+  return {
+    subject: (match[1] || "").trim(),
+    body: (match[2] || "").trim(),
+    combined,
+  };
+}
+
+function stripCommonPunctuation(text: string): string {
+  return (text || "").replace(/^[\s"'`*()\-–—_:;,.!?]+|[\s"'`*()\-–—_:;,.!?]+$/g, "").trim();
+}
+
+export function isOptOutText(text: string): boolean {
+  const combined = (text || "").replace(/\u00a0/g, " ").trim();
+  if (!combined) return false;
+
+  const { subject, body } = splitEmailSubjectPrefix(combined);
+  const candidates = [body, subject, combined].filter(Boolean);
+
+  // Normalize to handle cases like: "UNSUBSCRIBE - John Doe"
+  const normalizedBody = stripCommonPunctuation(body).toLowerCase();
+  const normalizedCombined = stripCommonPunctuation(combined).toLowerCase();
+
+  // Strict single-word opt-outs (common for SMS/email compliance)
+  if (["stop", "unsubscribe", "optout", "opt out"].includes(normalizedBody)) return true;
+  if (["stop", "unsubscribe", "optout", "opt out"].includes(normalizedCombined)) return true;
+
+  // Strong opt-out triggers (must-win)
+  const strongOptOut = /\b(unsubscribe|opt\s*-?\s*out|remove me|remove us|take me off|take us off|stop (emailing|calling|contacting|messaging|texting)|do not (contact|email|call|text)|don['’]?t (contact|email|call|text)|take a hike|stop)\b/i;
+  if (candidates.some((t) => strongOptOut.test(t))) {
+    // Reduce false positives for "stop" in benign phrases like "stop by"
+    if (!/\bstop\b/i.test(body)) return true;
+    const stopHasContext = /\bstop\b/i.test(body) && /\b(text|txt|message|messages|messaging|contact|email|calling|call)\b/i.test(body);
+    return stopHasContext || normalizedBody === "stop";
   }
 
-  // "stop" with context words (reduces false positives like "stop by")
-  if (/\bstop\b/i.test(normalized) && /\b(text|txt|message|messages|messaging|contact|email|calling|call)\b/i.test(normalized)) {
-    return true;
-  }
+  // Short-message unsubscribe (e.g., "UNSUBSCRIBE" + tiny signature)
+  if (body.length <= 280 && /\bunsubscribe\b/i.test(body)) return true;
+  if (subject && subject.length <= 120 && /\bunsubscribe\b/i.test(subject)) return true;
 
   return false;
 }
@@ -215,15 +249,72 @@ function isOutOfOfficeMessage(text: string): boolean {
   );
 }
 
-function isCallRequestedMessage(text: string): boolean {
+function isAutomatedReplyMessage(text: string): boolean {
   const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+
+  // Avoid labeling obvious out-of-office as generic automated reply
+  if (isOutOfOfficeMessage(normalized)) return false;
+
+  // Strong autoresponder signals
+  const strongSignals = [
+    /\b(this is an automated|auto-?response|autoresponder)\b/i,
+    /\b(do not reply|no[-\s]?reply)\b/i,
+    /\b(your message has been received|we have received your message|we received your email)\b/i,
+    /\b(thank you for contacting|thanks for contacting)\b/i,
+    /\b(ticket (number|#))\b/i,
+    /\b(case (number|#))\b/i,
+  ];
+
+  if (strongSignals.some((re) => re.test(normalized))) return true;
+
+  // Typical acknowledgment patterns (keep strict)
+  const ack = /\b(we('|’)ll get back to you|we will get back to you|as soon as possible|within \d+\s+(hours?|days?))\b/i;
+  const hasAck = ack.test(normalized);
+  const hasDoNotReply = /\b(do not reply|no[-\s]?reply)\b/i.test(normalized);
+  const hasThanksContacting = /\b(thank you for (your )?(email|message)|thank you for contacting)\b/i.test(normalized);
+
+  // Only label automated if it has multiple signals
+  return (hasThanksContacting && hasAck) || (hasThanksContacting && hasDoNotReply) || (hasAck && hasDoNotReply);
+}
+
+function isCallRequestedMessage(text: string): boolean {
+  const raw = (text || "").replace(/\u00a0/g, " ").trim();
+  if (!raw) return false;
+
+  const { body } = splitEmailSubjectPrefix(raw);
+  const normalized = body.toLowerCase();
 
   // Explicit "don't call" / "do not call" should not be treated as call requested
-  if (/\b(don't|dont|do not)\s+call\b/i.test(normalized)) return false;
+  if (/\b(don['’]?t|dont|do not)\s+call\b/i.test(normalized)) return false;
 
-  if (PHONE_PATTERN.test(normalized)) return true;
+  // Only treat as "Call Requested" if the lead explicitly wants a PHONE call.
+  // A phone number in a signature must not trigger this by itself.
+  const explicitCallRequest =
+    /\b(call|ring|phone)\b/i.test(normalized) && /\b(me|us)\b/i.test(normalized);
+  const reachMeAt =
+    /\b(reach|call|ring|phone)\b/i.test(normalized) &&
+    /\b(me|us)\b/i.test(normalized) &&
+    /\b(at|on)\b/i.test(normalized);
 
-  return /\b(call|ring)\b/i.test(normalized) && /\b(me|us)\b/i.test(normalized);
+  const hasPhone = PHONE_PATTERN.test(normalized);
+  const looksLikeSignature =
+    /\b(www\.|https?:\/\/|linkedin\.com)\b/i.test(normalized) ||
+    /\b(direct|mobile|whats\s*app|whatsapp|tel|telephone|phone|t:|m:|p:|e:)\b/i.test(normalized) ||
+    /\b(ltd|limited|llc|inc|corp|company)\b/i.test(normalized);
+
+  if (explicitCallRequest) return true;
+  if (reachMeAt && hasPhone) return true;
+
+  // If the message is basically just a phone number (common for SMS/email replies),
+  // allow it, but keep it strict to avoid signature false-positives.
+  if (hasPhone) {
+    const stripped = normalized.replace(PHONE_PATTERN, "").replace(/\s+/g, " ").trim();
+    const shortRemainder = stripCommonPunctuation(stripped).length <= 24;
+    if (shortRemainder && !looksLikeSignature) return true;
+  }
+
+  return false;
 }
 
 function isMeetingRequestedMessage(text: string): boolean {
@@ -305,49 +396,48 @@ export async function classifySentiment(
   // Fast, high-confidence classification without calling the model.
   // These rules dramatically reduce edge-case misclassifications and cost.
   if (matchesAnyPattern(BOUNCE_PATTERNS, lastLeadText.toLowerCase())) return "Blacklist";
-  if (isOptOutMessage(lastLeadText)) return "Blacklist";
+  if (isOptOutText(lastLeadText)) return "Blacklist";
   if (isOutOfOfficeMessage(lastLeadText)) return "Out of Office";
+  if (isAutomatedReplyMessage(lastLeadText)) return "Automated Reply";
   if (isCallRequestedMessage(lastLeadText)) return "Call Requested";
   if (isMeetingRequestedMessage(lastLeadText)) return "Meeting Requested";
   if (isNotInterestedMessage(lastLeadText)) return "Not Interested";
   if (isInformationRequestedMessage(lastLeadText)) return "Information Requested";
   if (isFollowUpMessage(lastLeadText)) return "Follow Up";
 
-  const systemPrompt = `You are a sales conversation classifier.
+  const systemPrompt = `You are an expert inbox manager for inbound lead replies.
 
-Classify into ONE category based ONLY on the lead's messages (ignore agent/rep messages).
-If multiple intents appear, classify based on the MOST RECENT lead reply (the transcript is chronological; newest is at the end).
+Task: categorize lead replies from outreach conversations across email/SMS/LinkedIn.
+Classify into ONE category based primarily on the MOST RECENT lead reply (the transcript is chronological; newest is at the end).
+Use older messages ONLY to disambiguate ultra-short confirmations (e.g., "that works") against a previously proposed specific time.
+Ignore agent/rep messages except for that disambiguation.
+
+IMPORTANT:
+- If the latest lead reply (or email subject) contains an opt-out/unsubscribe request, classify as "Blacklist".
+- Contact details in signatures (job title, phone numbers, addresses, websites, scheduling links) MUST NOT by themselves imply "Call Requested" or "Meeting Requested".
+
+PRIORITY ORDER (if multiple cues exist):
+Blacklist > Automated Reply > Out of Office > Meeting Requested > Call Requested > Information Requested > Not Interested > Follow Up > Interested > Neutral
 
 CATEGORIES:
-- "Meeting Requested" - Lead explicitly agrees to or confirms a meeting/call. Examples:
-  * "tomorrow works well"
-  * "yes, let's do it"
-  * "I'm free on Tuesday"
-  * "sounds good, when?"
-  * "let's set up a call"
-  * Any time/date confirmation
-- "Call Requested" - Lead provides a phone number or explicitly asks to be called
-- "Information Requested" - Lead asks questions or requests details about pricing, what's being offered, process, etc.
-- "Not Interested" - Lead explicitly declines or says no
-- "Blacklist" - Hostile/abusive messages, opt-out requests, or EMAIL BOUNCES
-- "Follow Up" - Lead deferred action ("busy right now", "later", "let me think")
-- "Out of Office" - Lead mentions being on vacation or temporarily unavailable
-- "Interested" - Lead shows clear interest without specific action ("sounds good", "I'm interested", "tell me more")
-- "Neutral" - Lead's response is genuinely ambiguous with no clear intent (RARE)
+- "Blacklist": Explicit opt-out ("unsubscribe", "remove me", "stop emailing"), hostile opt-out language, spam complaints, or email bounces.
+- "Automated Reply": Generic auto-acknowledgements (e.g., "we received your message", "this is an automated response") that are NOT Out of Office.
+- "Out of Office": Vacation/OOO/away-until messages.
+- "Meeting Requested": Lead asks to schedule or confirms a time/day for a meeting/call (including short confirmations when a specific time exists in the immediately prior context).
+- "Call Requested": Lead explicitly asks for a PHONE call ("call me", "ring me", "phone me") or shares a number as part of that request.
+  Do NOT use this just because a phone number appears in a signature.
+- "Information Requested": Lead asks for details about pricing, offer, process, etc.
+- "Not Interested": Clear decline ("not interested", "no thanks", "already have").
+- "Follow Up": Defers timing ("later", "next month", "busy right now", "reach out in X").
+- "Interested": Positive interest without a clear next step.
+- "Neutral": Truly ambiguous (rare).
 
-CRITICAL RULES:
-1. SHORT CONFIRMATIONS like "tomorrow works well", "yes", "sounds good, when?", "let's do Tuesday" = "Meeting Requested"
-2. Any time/date confirmation or agreement to meet = "Meeting Requested"
-3. Phone number provided = "Call Requested"
-4. Questions about the offer = "Information Requested"
-5. Only use "Neutral" if truly ambiguous (very rare)
-
-Respond with ONLY the category name, nothing else.`;
+Return ONLY the category name, nothing else.`;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: "gpt-5-mini",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: `Transcript (chronological; newest at the end):\n\n${trimTranscriptForModel(transcript)}` }
@@ -361,16 +451,28 @@ Respond with ONLY the category name, nothing else.`;
 
       // Exact match (case-insensitive)
       const exact = SENTIMENT_TAGS.find((tag) => tag.toLowerCase() === cleaned.toLowerCase());
-      if (exact) return exact;
 
       // Sometimes the model returns extra text; try to extract a valid tag.
       const contained = SENTIMENT_TAGS.find((tag) => cleaned.toLowerCase().includes(tag.toLowerCase()));
-      if (contained) return contained;
 
-      const upper = cleaned.toLowerCase();
-      if (upper === "positive") return "Interested";
+      const lower = cleaned.toLowerCase();
+      let candidate: SentimentTag =
+        exact || contained || (lower === "positive" ? "Interested" : "Neutral");
 
-      return "Neutral";
+      // Post-classification validators (safety + signature false-positive reduction)
+      if (isOptOutText(lastLeadText)) return "Blacklist";
+      if (isOutOfOfficeMessage(lastLeadText)) return "Out of Office";
+      if (isAutomatedReplyMessage(lastLeadText)) return "Automated Reply";
+
+      if (candidate === "Call Requested" && !isCallRequestedMessage(lastLeadText)) {
+        if (isMeetingRequestedMessage(lastLeadText)) return "Meeting Requested";
+        if (isInformationRequestedMessage(lastLeadText)) return "Information Requested";
+        if (isNotInterestedMessage(lastLeadText)) return "Not Interested";
+        if (isFollowUpMessage(lastLeadText)) return "Follow Up";
+        candidate = "Interested";
+      }
+
+      return candidate;
     } catch (error) {
       const isRetryable = error instanceof Error &&
         (error.message.includes("500") ||

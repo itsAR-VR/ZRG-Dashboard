@@ -1,0 +1,367 @@
+import "@/lib/server-dns";
+import { prisma } from "@/lib/prisma";
+import {
+  detectCalendarType,
+  fetchCalendlyAvailability,
+  fetchGHLAvailabilityWithMeta,
+  fetchHubSpotAvailability,
+  type AvailabilitySlot,
+  type CalendarType,
+} from "@/lib/calendar-availability";
+
+const DEFAULT_LOOKAHEAD_DAYS = 30;
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const REQUIRED_DURATION_MINUTES = 30;
+
+function normalizeCalendarUrl(input: string): string {
+  const trimmed = (input || "").trim();
+  if (!trimmed) return "";
+
+  // If the user pasted without protocol, assume https
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return `https://${trimmed}`;
+  }
+
+  return trimmed;
+}
+
+function addDays(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function dedupeSortedIso(slotsUtc: string[]): string[] {
+  const deduped = Array.from(new Set(slotsUtc));
+  deduped.sort();
+  return deduped;
+}
+
+export type AvailabilityCacheMeta = {
+  ghlCalendarId?: string | null;
+  resolvedUrl?: string;
+};
+
+export async function refreshWorkspaceAvailabilityCache(clientId: string): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  const now = new Date();
+
+  try {
+    const [calendarLink, settings] = await Promise.all([
+      prisma.calendarLink.findFirst({
+        where: { clientId, isDefault: true },
+        select: { id: true, url: true, type: true },
+      }),
+      prisma.workspaceSettings.findUnique({
+        where: { clientId },
+        select: { meetingDurationMinutes: true },
+      }),
+    ]);
+
+    if (!calendarLink) {
+      // No default link configured; clear cache to avoid stale data.
+      await prisma.workspaceAvailabilityCache
+        .delete({ where: { clientId } })
+        .catch(() => undefined);
+      return { success: false, error: "No default calendar link configured" };
+    }
+
+    const meetingDuration = settings?.meetingDurationMinutes ?? REQUIRED_DURATION_MINUTES;
+    if (meetingDuration !== REQUIRED_DURATION_MINUTES) {
+      const error = `Unsupported meeting duration (${meetingDuration}m). Set Meeting Duration to ${REQUIRED_DURATION_MINUTES} minutes to use live availability.`;
+
+      await prisma.workspaceAvailabilityCache.upsert({
+        where: { clientId },
+        update: {
+          calendarLinkId: calendarLink.id,
+          calendarType: calendarLink.type,
+          calendarUrl: calendarLink.url,
+          slotDurationMinutes: meetingDuration,
+          rangeStart: now,
+          rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+          slotsUtc: [],
+          providerMeta: {},
+          fetchedAt: now,
+          staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+          lastError: error,
+        },
+        create: {
+          clientId,
+          calendarLinkId: calendarLink.id,
+          calendarType: calendarLink.type,
+          calendarUrl: calendarLink.url,
+          slotDurationMinutes: meetingDuration,
+          rangeStart: now,
+          rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+          slotsUtc: [],
+          providerMeta: {},
+          fetchedAt: now,
+          staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+          lastError: error,
+        },
+      });
+
+      return { success: false, error };
+    }
+
+    const normalizedUrl = normalizeCalendarUrl(calendarLink.url);
+    const detectedType = detectCalendarType(normalizedUrl);
+    const calendarType = (calendarLink.type === "unknown" ? detectedType : (calendarLink.type as CalendarType)) || detectedType;
+
+    let rawSlots: AvailabilitySlot[] = [];
+    const providerMeta: AvailabilityCacheMeta = {};
+
+    if (calendarType === "calendly") {
+      rawSlots = await fetchCalendlyAvailability(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS);
+    } else if (calendarType === "hubspot") {
+      rawSlots = await fetchHubSpotAvailability(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS);
+    } else if (calendarType === "ghl") {
+      const ghl = await fetchGHLAvailabilityWithMeta(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS);
+      rawSlots = ghl.slots;
+      providerMeta.ghlCalendarId = ghl.calendarId;
+      providerMeta.resolvedUrl = ghl.resolvedUrl;
+    } else {
+      const error = `Unknown calendar type for URL`;
+      await prisma.workspaceAvailabilityCache.upsert({
+        where: { clientId },
+        update: {
+          calendarLinkId: calendarLink.id,
+          calendarType: calendarType,
+          calendarUrl: calendarLink.url,
+          slotDurationMinutes: REQUIRED_DURATION_MINUTES,
+          rangeStart: now,
+          rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+          slotsUtc: [],
+          providerMeta: providerMeta as any,
+          fetchedAt: now,
+          staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+          lastError: error,
+        },
+        create: {
+          clientId,
+          calendarLinkId: calendarLink.id,
+          calendarType: calendarType,
+          calendarUrl: calendarLink.url,
+          slotDurationMinutes: REQUIRED_DURATION_MINUTES,
+          rangeStart: now,
+          rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+          slotsUtc: [],
+          providerMeta: providerMeta as any,
+          fetchedAt: now,
+          staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+          lastError: error,
+        },
+      });
+      return { success: false, error };
+    }
+
+    rawSlots.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+    const slotsUtc = dedupeSortedIso(rawSlots.map((s) => s.startTime.toISOString()));
+
+    await prisma.workspaceAvailabilityCache.upsert({
+      where: { clientId },
+      update: {
+        calendarLinkId: calendarLink.id,
+        calendarType: calendarType,
+        calendarUrl: calendarLink.url,
+        slotDurationMinutes: REQUIRED_DURATION_MINUTES,
+        rangeStart: now,
+        rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+        slotsUtc: slotsUtc as any,
+        providerMeta: providerMeta as any,
+        fetchedAt: now,
+        staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+        lastError: rawSlots.length === 0 ? "No availability slots found" : null,
+      },
+      create: {
+        clientId,
+        calendarLinkId: calendarLink.id,
+        calendarType: calendarType,
+        calendarUrl: calendarLink.url,
+        slotDurationMinutes: REQUIRED_DURATION_MINUTES,
+        rangeStart: now,
+        rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+        slotsUtc: slotsUtc as any,
+        providerMeta: providerMeta as any,
+        fetchedAt: now,
+        staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+        lastError: rawSlots.length === 0 ? "No availability slots found" : null,
+      },
+    });
+
+    return { success: true };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    await prisma.workspaceAvailabilityCache
+      .upsert({
+        where: { clientId },
+        update: {
+          fetchedAt: now,
+          staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+          lastError: message,
+        },
+        create: {
+          clientId,
+          calendarType: "unknown",
+          calendarUrl: "",
+          slotDurationMinutes: REQUIRED_DURATION_MINUTES,
+          rangeStart: now,
+          rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+          slotsUtc: [],
+          fetchedAt: now,
+          staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+          lastError: message,
+        },
+      })
+      .catch(() => undefined);
+
+    return { success: false, error: message };
+  }
+}
+
+export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { refreshIfStale?: boolean }): Promise<{
+  slotsUtc: string[];
+  calendarType: CalendarType | "unknown";
+  calendarUrl: string;
+  providerMeta: AvailabilityCacheMeta;
+  fetchedAt: Date;
+  staleAt: Date;
+  lastError: string | null;
+}> {
+  const now = new Date();
+  const refreshIfStale = opts?.refreshIfStale ?? true;
+
+  let cache = await prisma.workspaceAvailabilityCache.findUnique({
+    where: { clientId },
+    select: {
+      calendarLinkId: true,
+      calendarType: true,
+      calendarUrl: true,
+      slotsUtc: true,
+      providerMeta: true,
+      fetchedAt: true,
+      staleAt: true,
+      lastError: true,
+    },
+  });
+
+  const defaultLink = refreshIfStale
+    ? await prisma.calendarLink.findFirst({
+        where: { clientId, isDefault: true },
+        select: { id: true, url: true },
+      })
+    : null;
+
+  const defaultUrl = defaultLink?.url ? normalizeCalendarUrl(defaultLink.url) : "";
+  const cachedUrl = cache?.calendarUrl ? normalizeCalendarUrl(cache.calendarUrl) : "";
+  const defaultChanged =
+    !!defaultLink && !!cache && (cache.calendarLinkId !== defaultLink.id || cachedUrl !== defaultUrl);
+
+  if (!cache || (refreshIfStale && (cache.staleAt <= now || defaultChanged))) {
+    const refresh = await refreshWorkspaceAvailabilityCache(clientId);
+    if (refresh.success) {
+      cache = await prisma.workspaceAvailabilityCache.findUnique({
+        where: { clientId },
+        select: {
+          calendarLinkId: true,
+          calendarType: true,
+          calendarUrl: true,
+          slotsUtc: true,
+          providerMeta: true,
+          fetchedAt: true,
+          staleAt: true,
+          lastError: true,
+        },
+      });
+    } else if (refresh.error) {
+      // If refresh failed but we have an existing cache, keep returning it.
+      // Otherwise, surface the error.
+      if (!cache) {
+        throw new Error(refresh.error);
+      }
+    }
+  }
+
+  const slotsUtc = Array.isArray(cache?.slotsUtc) ? (cache?.slotsUtc as unknown as string[]) : [];
+  const providerMeta = (cache?.providerMeta || {}) as AvailabilityCacheMeta;
+
+  return {
+    slotsUtc,
+    calendarType: (cache?.calendarType as CalendarType) || "unknown",
+    calendarUrl: cache?.calendarUrl || "",
+    providerMeta,
+    fetchedAt: cache?.fetchedAt || now,
+    staleAt: cache?.staleAt || now,
+    lastError: cache?.lastError ?? null,
+  };
+}
+
+export async function getWorkspaceAvailabilitySlotsUtc(clientId: string, opts?: { refreshIfStale?: boolean }): Promise<{
+  slotsUtc: string[];
+  calendarType: CalendarType | "unknown";
+  calendarUrl: string;
+  providerMeta: AvailabilityCacheMeta;
+  lastError: string | null;
+}> {
+  const cache = await getWorkspaceAvailabilityCache(clientId, opts);
+
+  // Filter out slots already booked in our DB (best-effort de-dupe)
+  const booked = await prisma.lead.findMany({
+    where: { clientId, bookedSlot: { not: null } },
+    select: { bookedSlot: true },
+  });
+
+  const bookedSet = new Set(
+    booked
+      .filter((b) => b.bookedSlot)
+      .map((b) => new Date(b.bookedSlot as string).toISOString())
+  );
+
+  return {
+    slotsUtc: cache.slotsUtc.filter((iso) => !bookedSet.has(iso)),
+    calendarType: cache.calendarType,
+    calendarUrl: cache.calendarUrl,
+    providerMeta: cache.providerMeta,
+    lastError: cache.lastError,
+  };
+}
+
+export async function refreshAvailabilityCachesDue(opts?: { limit?: number }): Promise<{
+  checked: number;
+  refreshed: number;
+  errors: string[];
+}> {
+  const now = new Date();
+  const limit = opts?.limit ?? 50;
+
+  const stale = await prisma.workspaceAvailabilityCache.findMany({
+    where: { staleAt: { lte: now } },
+    select: { clientId: true },
+    take: limit,
+  });
+
+  const missing = await prisma.client.findMany({
+    where: {
+      calendarLinks: { some: { isDefault: true } },
+      availabilityCache: { is: null },
+    },
+    select: { id: true },
+    take: Math.max(0, limit - stale.length),
+  });
+
+  const clientIds = Array.from(new Set([...stale.map((c) => c.clientId), ...missing.map((c) => c.id)]));
+
+  const errors: string[] = [];
+  let refreshed = 0;
+
+  for (const clientId of clientIds) {
+    const result = await refreshWorkspaceAvailabilityCache(clientId);
+    if (result.success) {
+      refreshed++;
+    } else if (result.error) {
+      errors.push(`${clientId}: ${result.error}`);
+    }
+  }
+
+  return { checked: clientIds.length, refreshed, errors };
+}

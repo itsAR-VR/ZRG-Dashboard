@@ -1,8 +1,12 @@
 import { prisma } from "@/lib/prisma";
-import { generateResponseDraft } from "@/lib/ai-drafts";
 import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequence-actions";
 import OpenAI from "openai";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
+import { sendMessage } from "@/actions/message-actions";
+import { sendEmailReply } from "@/actions/email-actions";
+import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
+import { ensureLeadTimezone } from "@/lib/timezone-inference";
+import { formatAvailabilitySlots } from "@/lib/availability-format";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -266,7 +270,7 @@ export async function generateFollowUpMessage(
   step: FollowUpStepData,
   lead: LeadContext,
   settings: WorkspaceSettings | null
-): Promise<{ content: string; subject: string | null }> {
+): Promise<{ content: string; subject: string | null; offeredSlots: OfferedSlot[] }> {
   // Fetch calendar link for the workspace
   const calendarLink = await getDefaultCalendarLink(lead.clientId);
 
@@ -275,37 +279,52 @@ export async function generateFollowUpMessage(
   const question1 = qualificationQuestions[0]?.question || "[qualification question 1]";
   const question2 = qualificationQuestions[1]?.question || "[qualification question 2]";
 
+  const offeredAt = new Date().toISOString();
+
+  const needsAvailability =
+    (step.messageTemplate || "").includes("{availability}") ||
+    (step.subject || "").includes("{availability}");
+
+  let availabilityText = "";
+  let offeredSlots: OfferedSlot[] = [];
+
+  if (needsAvailability) {
+    try {
+      const availability = await getWorkspaceAvailabilitySlotsUtc(lead.clientId, { refreshIfStale: true });
+      const slotsUtc = availability.slotsUtc;
+
+      if (slotsUtc.length > 0) {
+        const slotCount = 2;
+        const tzResult = await ensureLeadTimezone(lead.id);
+        const timeZone = tzResult.timezone || settings?.timezone || "UTC";
+        const mode = tzResult.source === "workspace_fallback" ? "explicit_tz" : "your_time";
+
+        const formatted = formatAvailabilitySlots({
+          slotsUtcIso: slotsUtc,
+          timeZone,
+          mode,
+          limit: slotCount,
+        });
+
+        availabilityText = formatted.map((s) => s.label).join(" or ");
+        offeredSlots = formatted.map((s) => ({
+          datetime: s.datetime,
+          label: s.label,
+          offeredAt,
+        }));
+      } else {
+        availabilityText = "a couple openings over the next few days";
+      }
+    } catch (error) {
+      console.error("[FollowUp] Failed to load availability:", error);
+      availabilityText = "a couple openings over the next few days";
+      offeredSlots = [];
+    }
+  }
+
   // Replace template variables
   const replaceVariables = (template: string | null): string => {
     if (!template) return "";
-
-    // Get availability slots for email
-    let availability = "";
-    const slotsToShow = settings?.calendarSlotsToShow || 3;
-
-    if (settings?.timezone) {
-      const { hours: startH, minutes: startM } = parseTime(settings.workStartTime, "09:00");
-      const { hours: endH, minutes: endM } = parseTime(settings.workEndTime, "17:00");
-
-      const slots: string[] = [];
-      const cursor = new Date();
-      while (slots.length < slotsToShow) {
-        cursor.setDate(cursor.getDate() + 1);
-        if (cursor.getDay() === 0 || cursor.getDay() === 6) continue;
-
-        const dayStr = cursor.toLocaleDateString("en-US", {
-          weekday: "short",
-          month: "short",
-          day: "numeric",
-          timeZone: settings.timezone || "UTC",
-        });
-        slots.push(
-          `${dayStr} ${startH}:${startM.toString().padStart(2, "0")} - ${endH}:${endM.toString().padStart(2, "0")}`
-        );
-      }
-      // Format as "Monday Dec 9, Tuesday Dec 10" style
-      availability = slots.join(" or ");
-    }
 
     return template
       // Lead variables
@@ -318,7 +337,7 @@ export async function generateFollowUpMessage(
       .replace(/\{companyName\}/g, settings?.companyName || "")
       .replace(/\{result\}/g, settings?.targetResult || "achieving your goals")
       // Calendar/availability variables
-      .replace(/\{availability\}/g, availability)
+      .replace(/\{availability\}/g, availabilityText)
       .replace(/\{calendarLink\}/g, calendarLink?.url || "[calendar link]")
       // Qualification questions
       .replace(/\{qualificationQuestion1\}/g, question1)
@@ -328,7 +347,7 @@ export async function generateFollowUpMessage(
   const content = replaceVariables(step.messageTemplate);
   const subject = step.subject ? replaceVariables(step.subject) : null;
 
-  return { content, subject };
+  return { content, subject, offeredSlots };
 }
 
 // =============================================================================
@@ -560,7 +579,7 @@ export async function executeFollowUpStep(
         };
       }
 
-      const { content } = await generateFollowUpMessage(step, effectiveLead, settings);
+      const { content, offeredSlots } = await generateFollowUpMessage(step, effectiveLead, settings);
 
       // If connected, send a DM. If not connected, send a connection request with note.
       if (currentLead.linkedinId) {
@@ -585,6 +604,13 @@ export async function executeFollowUpStep(
             sentAt: new Date(),
           },
         });
+
+        if (offeredSlots.length > 0) {
+          await prisma.lead.update({
+            where: { id: lead.id },
+            data: { offeredSlots: JSON.stringify(offeredSlots) },
+          });
+        }
 
         await prisma.followUpTask.create({
           data: {
@@ -630,6 +656,13 @@ export async function executeFollowUpStep(
         },
       });
 
+      if (offeredSlots.length > 0) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { offeredSlots: JSON.stringify(offeredSlots) },
+        });
+      }
+
       await prisma.followUpTask.create({
         data: {
           leadId: lead.id,
@@ -670,7 +703,7 @@ export async function executeFollowUpStep(
     }
 
     // Generate message content
-    const { content, subject } = await generateFollowUpMessage(step, lead, settings);
+    const { content, subject, offeredSlots } = await generateFollowUpMessage(step, lead, settings);
 
     // Check if approval is required
     if (step.requiresApproval) {
@@ -704,35 +737,69 @@ export async function executeFollowUpStep(
       };
     }
 
-    // For auto-send, create an AI draft
-    // The actual sending will be handled by the existing draft approval flow
-    // or we can directly send based on channel
-
     if (step.channel === "email") {
-      // Generate AI draft for email
-      const draftResult = await generateResponseDraft(
-        lead.id,
-        `[Follow-up Step ${step.stepOrder}] ${content}`,
-        lead.sentimentTag || "Follow Up",
-        "email"
-      );
-
-      if (!draftResult.success) {
+      if (!lead.email) {
         return {
-          success: false,
-          action: "error",
-          error: draftResult.error || "Failed to generate email draft",
+          success: true,
+          action: "skipped",
+          message: "Email skipped - lead has no email",
+          advance: true,
         };
       }
 
-      // Create follow-up task record
+      // Auto-send email when possible (reply-only infrastructure).
+      // If no thread exists, create a task and advance.
+      const draft = await prisma.aIDraft.create({
+        data: {
+          leadId: lead.id,
+          content,
+          status: "pending",
+          channel: "email",
+        },
+      });
+
+      const sendResult = await sendEmailReply(draft.id);
+
+      if (!sendResult.success) {
+        await prisma.aIDraft
+          .update({ where: { id: draft.id }, data: { status: "rejected" } })
+          .catch(() => undefined);
+
+        await prisma.followUpTask.create({
+          data: {
+            leadId: lead.id,
+            type: "email",
+            dueDate: new Date(),
+            status: "pending",
+            suggestedMessage: content,
+            subject: subject,
+            instanceId: instanceId,
+            stepOrder: step.stepOrder,
+          },
+        });
+
+        return {
+          success: true,
+          action: "skipped",
+          message: `Email auto-send unavailable (${sendResult.error || "unknown error"}) - queued task`,
+          advance: true,
+        };
+      }
+
+      if (offeredSlots.length > 0) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { offeredSlots: JSON.stringify(offeredSlots) },
+        });
+      }
+
       await prisma.followUpTask.create({
         data: {
           leadId: lead.id,
           type: "email",
           dueDate: new Date(),
           status: "completed",
-          suggestedMessage: draftResult.content,
+          suggestedMessage: content,
           subject: subject,
           instanceId: instanceId,
           stepOrder: step.stepOrder,
@@ -742,33 +809,34 @@ export async function executeFollowUpStep(
       return {
         success: true,
         action: "sent",
-        message: `Email draft created for lead ${lead.firstName}`,
+        message: `Email sent for lead ${lead.firstName || lead.id}`,
       };
-    } else if (step.channel === "sms") {
-      // Generate AI draft for SMS
-      const draftResult = await generateResponseDraft(
-        lead.id,
-        `[Follow-up Step ${step.stepOrder}] ${content}`,
-        lead.sentimentTag || "Follow Up",
-        "sms"
-      );
+    }
 
-      if (!draftResult.success) {
+    if (step.channel === "sms") {
+      const sendResult = await sendMessage(lead.id, content);
+      if (!sendResult.success) {
         return {
           success: false,
           action: "error",
-          error: draftResult.error || "Failed to generate SMS draft",
+          error: sendResult.error || "Failed to send SMS",
         };
       }
 
-      // Create follow-up task record
+      if (offeredSlots.length > 0) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { offeredSlots: JSON.stringify(offeredSlots) },
+        });
+      }
+
       await prisma.followUpTask.create({
         data: {
           leadId: lead.id,
           type: "sms",
           dueDate: new Date(),
           status: "completed",
-          suggestedMessage: draftResult.content,
+          suggestedMessage: content,
           instanceId: instanceId,
           stepOrder: step.stepOrder,
         },
@@ -777,15 +845,11 @@ export async function executeFollowUpStep(
       return {
         success: true,
         action: "sent",
-        message: `SMS draft created for lead ${lead.firstName}`,
+        message: `SMS sent for lead ${lead.firstName || lead.id}`,
       };
     }
 
-    return {
-      success: false,
-      action: "error",
-      error: `Unsupported channel: ${step.channel}`,
-    };
+    return { success: false, action: "error", error: `Unsupported channel: ${step.channel}` };
   } catch (error) {
     console.error("Failed to execute follow-up step:", error);
     return {
@@ -987,19 +1051,89 @@ export async function processFollowUpsDue(): Promise<{
  */
 export async function pauseFollowUpsOnReply(leadId: string): Promise<void> {
   try {
-    await prisma.followUpInstance.updateMany({
+    // Only pause sequences that are meant to run when the lead has NOT replied.
+    // Meeting-requested and post-booking sequences are response-driven and should continue.
+    const instances = await prisma.followUpInstance.findMany({
       where: {
         leadId,
         status: "active",
+        sequence: { triggerOn: "no_response" },
       },
-      data: {
-        status: "paused",
-        pausedReason: "lead_replied",
-      },
+      select: { id: true },
+    });
+
+    if (instances.length === 0) return;
+
+    await prisma.followUpInstance.updateMany({
+      where: { id: { in: instances.map((i) => i.id) } },
+      data: { status: "paused", pausedReason: "lead_replied" },
     });
   } catch (error) {
     console.error("Failed to pause follow-ups on reply:", error);
   }
+}
+
+/**
+ * Resume follow-up instances after a lead goes "ghost" again.
+ * Policy: if the most recent inbound message is older than 7 days, resume at the next step.
+ */
+export async function resumeGhostedFollowUps(opts?: {
+  days?: number;
+  limit?: number;
+}): Promise<{ checked: number; resumed: number; errors: string[] }> {
+  const days = opts?.days ?? 7;
+  const limit = opts?.limit ?? 100;
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const results = { checked: 0, resumed: 0, errors: [] as string[] };
+
+  const paused = await prisma.followUpInstance.findMany({
+    where: {
+      status: "paused",
+      pausedReason: "lead_replied",
+    },
+    take: limit,
+    select: {
+      id: true,
+      leadId: true,
+      lead: { select: { autoFollowUpEnabled: true } },
+    },
+  });
+
+  for (const instance of paused) {
+    results.checked++;
+
+    if (!instance.lead.autoFollowUpEnabled) {
+      continue;
+    }
+
+    try {
+      const lastInbound = await prisma.message.findFirst({
+        where: { leadId: instance.leadId, direction: "inbound" },
+        orderBy: { sentAt: "desc" },
+        select: { sentAt: true },
+      });
+
+      // If we have no inbound history, or it's old, re-engage.
+      if (!lastInbound?.sentAt || lastInbound.sentAt <= cutoff) {
+        await prisma.followUpInstance.update({
+          where: { id: instance.id },
+          data: {
+            status: "active",
+            pausedReason: null,
+            nextStepDue: new Date(),
+          },
+        });
+        results.resumed++;
+      }
+    } catch (error) {
+      results.errors.push(
+        `${instance.id}: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+    }
+  }
+
+  return results;
 }
 
 // =============================================================================
@@ -1036,7 +1170,7 @@ ${slotContext}
 Rules:
 - If the user clearly accepts one of the slots, respond with just the slot number (1, 2, 3, etc.)
 - If the user says something like "Thursday works" or "the first one", match to the appropriate slot
-- If the user accepts multiple slots or is ambiguous, pick the earliest/first matching slot
+- If the user is ambiguous (e.g., "yes", "sounds good", "works" with no indication of which option), respond with "NONE"
 - If the user doesn't seem to be accepting any time slot, respond with "NONE"
 - Only respond with a number or "NONE", nothing else`;
 
@@ -1145,22 +1279,39 @@ export async function processMessageForAutoBooking(
     // Parse which slot they accepted
     const acceptedSlot = await parseAcceptedTimeFromMessage(messageBody, offeredSlots);
     if (!acceptedSlot) {
-      // Fallback: pick the first available slot if they said "yes" to meeting
-      // This handles cases like "Thursday works" when we offered Thursday
-      const firstSlot = offeredSlots[0];
-      console.log(`Auto-booking fallback: using first offered slot for lead ${leadId}`);
+      // Ambiguous acceptance (e.g., "yes/sounds good") — do NOT auto-book.
+      // Create a follow-up task with a suggested clarification message.
+      const lead = await prisma.lead.findUnique({
+        where: { id: leadId },
+        select: { id: true, phone: true, email: true, linkedinUrl: true, sentimentTag: true },
+      });
 
-      const bookingResult = await bookMeetingOnGHL(leadId, firstSlot.datetime);
-      if (bookingResult.success) {
-        // Send Slack notification for auto-booking
-        await sendAutoBookingSlackNotification(leadId, firstSlot);
+      const type = lead?.phone ? "sms" : lead?.email ? "email" : lead?.linkedinUrl ? "linkedin" : "call";
+      const options = offeredSlots.slice(0, 2);
+      const suggestion =
+        options.length === 2
+          ? `Which works better for you: (1) ${options[0]!.label} or (2) ${options[1]!.label}?`
+          : `Which of these works best for you: ${offeredSlots.map((s) => s.label).join(" or ")}?`;
 
-        return {
-          booked: true,
-          appointmentId: bookingResult.appointmentId,
-        };
+      await prisma.followUpTask.create({
+        data: {
+          leadId,
+          type,
+          dueDate: new Date(),
+          status: "pending",
+          suggestedMessage: suggestion,
+        },
+      });
+
+      // Surface in Follow-ups tab
+      if (lead?.sentimentTag !== "Blacklist") {
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: { sentimentTag: "Follow Up" },
+        });
       }
-      return { booked: false, error: bookingResult.error };
+
+      return { booked: false };
     }
 
     // Book the accepted slot

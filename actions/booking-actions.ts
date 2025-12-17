@@ -13,7 +13,9 @@ import {
     type GHLUser,
     type GHLAppointment,
 } from "@/lib/ghl-api";
-import { getFormattedAvailabilityForLead as getFormattedAvailabilityForLeadImpl } from "@/lib/calendar-availability";
+import { getWorkspaceAvailabilityCache, getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
+import { ensureLeadTimezone } from "@/lib/timezone-inference";
+import { formatAvailabilitySlots } from "@/lib/availability-format";
 
 // Re-export types for use in components
 export type { GHLCalendar, GHLUser, GHLAppointment };
@@ -44,7 +46,7 @@ export interface OfferedSlot {
  * Logic:
  * - workspace ON + lead ON = true
  * - workspace ON + lead OFF = false (lead opted out)
- * - workspace OFF + lead ON = true (lead opted in)
+ * - workspace OFF + lead ON = false (workspace is the master kill-switch)
  * - workspace OFF + lead OFF = false
  */
 export async function shouldAutoBook(leadId: string): Promise<{
@@ -75,13 +77,16 @@ export async function shouldAutoBook(leadId: string): Promise<{
         const workspaceEnabled = lead.client.settings?.autoBookMeetings ?? false;
         const leadEnabled = lead.autoBookMeetingsEnabled ?? true;
 
-        // Auto-book if lead toggle is ON (regardless of workspace setting)
-        // This allows leads to opt-in even when workspace default is off
-        if (leadEnabled) {
-            return { shouldBook: true };
+        if (!workspaceEnabled) {
+            return { shouldBook: false, reason: "Workspace auto-booking is disabled" };
         }
 
-        return { shouldBook: false, reason: "Auto-booking disabled for this lead" };
+        if (!leadEnabled) {
+            return { shouldBook: false, reason: "Auto-booking disabled for this lead" };
+        }
+
+        return { shouldBook: true };
+
     } catch (error) {
         console.error("Error checking auto-book status:", error);
         return { shouldBook: false, reason: "Error checking auto-book status" };
@@ -421,6 +426,27 @@ export async function bookMeetingOnGHL(
 
         await autoStartPostBookingSequenceIfEligible({ leadId });
 
+        // Stop any non-post-booking sequences once a meeting is booked
+        const activeInstances = await prisma.followUpInstance.findMany({
+            where: {
+                leadId,
+                status: { in: ["active", "paused"] },
+                sequence: { triggerOn: { not: "meeting_selected" } },
+            },
+            select: { id: true },
+        });
+
+        if (activeInstances.length > 0) {
+            await prisma.followUpInstance.updateMany({
+                where: { id: { in: activeInstances.map((i) => i.id) } },
+                data: {
+                    status: "completed",
+                    completedAt: new Date(),
+                    nextStepDue: null,
+                },
+            });
+        }
+
         revalidatePath("/");
 
         return {
@@ -497,5 +523,76 @@ export async function getFormattedAvailabilityForLead(
     clientId: string,
     leadId?: string
 ): Promise<Array<{ datetime: string; label: string }>> {
-    return getFormattedAvailabilityForLeadImpl(clientId, leadId);
+    const [settings, availability] = await Promise.all([
+        prisma.workspaceSettings.findUnique({
+            where: { clientId },
+            select: { calendarSlotsToShow: true, timezone: true },
+        }),
+        getWorkspaceAvailabilitySlotsUtc(clientId, { refreshIfStale: true }),
+    ]);
+
+    if (availability.lastError?.startsWith("Unsupported meeting duration")) {
+        throw new Error(availability.lastError);
+    }
+
+    const limit = settings?.calendarSlotsToShow || 3;
+
+    if (!leadId) {
+        const timeZone = settings?.timezone || "UTC";
+        return formatAvailabilitySlots({
+            slotsUtcIso: availability.slotsUtc,
+            timeZone,
+            mode: "explicit_tz",
+            limit,
+        });
+    }
+
+    const tzResult = await ensureLeadTimezone(leadId);
+    const timeZone = tzResult.timezone || settings?.timezone || "UTC";
+    const mode = tzResult.source === "workspace_fallback" ? "explicit_tz" : "your_time";
+
+    return formatAvailabilitySlots({
+        slotsUtcIso: availability.slotsUtc,
+        timeZone,
+        mode,
+        limit,
+    });
+}
+
+export async function getGhlCalendarMismatchInfo(clientId: string): Promise<{
+    success: boolean;
+    ghlDefaultCalendarId?: string | null;
+    calendarLinkGhlCalendarId?: string | null;
+    mismatch?: boolean;
+    lastError?: string | null;
+}> {
+    try {
+        const [settings, cache] = await Promise.all([
+            prisma.workspaceSettings.findUnique({
+                where: { clientId },
+                select: { ghlDefaultCalendarId: true },
+            }),
+            getWorkspaceAvailabilityCache(clientId, { refreshIfStale: true }),
+        ]);
+
+        const ghlDefaultCalendarId = settings?.ghlDefaultCalendarId || null;
+        const calendarLinkGhlCalendarId =
+            cache?.calendarType === "ghl" ? cache.providerMeta?.ghlCalendarId || null : null;
+
+        const mismatch =
+            !!ghlDefaultCalendarId &&
+            !!calendarLinkGhlCalendarId &&
+            ghlDefaultCalendarId !== calendarLinkGhlCalendarId;
+
+        return {
+            success: true,
+            ghlDefaultCalendarId,
+            calendarLinkGhlCalendarId,
+            mismatch,
+            lastError: cache?.lastError ?? null,
+        };
+    } catch (error) {
+        console.error("Failed to get GHL calendar mismatch info:", error);
+        return { success: false };
+    }
 }

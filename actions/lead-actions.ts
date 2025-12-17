@@ -55,6 +55,7 @@ function mapSentimentToClassification(sentimentTag: string | null): string {
     "Call Requested": "call-requested",
     "Not Interested": "not-interested",
     "Out of Office": "out-of-office",
+    "Automated Reply": "automated-reply",
     "Follow Up": "follow-up",
     "Information Requested": "follow-up",
     "Interested": "interested",

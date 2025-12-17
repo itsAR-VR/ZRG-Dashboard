@@ -569,7 +569,10 @@ function detectCalendarType(url: string): CalendarLinkData["type"] {
     lowerUrl.includes("leadconnectorhq.com") ||
     lowerUrl.includes("gohighlevel.com") ||
     lowerUrl.includes("msgsndr.com") ||
-    lowerUrl.includes(".highlevel.")
+    lowerUrl.includes(".highlevel.") ||
+    // GHL widget booking links can be hosted on custom domains
+    lowerUrl.includes("/widget/booking/") ||
+    lowerUrl.includes("/widget/bookings/")
   ) {
     return "ghl";
   }

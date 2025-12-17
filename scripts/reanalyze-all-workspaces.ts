@@ -27,6 +27,7 @@ const SENTIMENT_TAGS = [
   "Blacklist",
   "Follow Up",
   "Out of Office",
+  "Automated Reply",
   "Interested",
   "Neutral",
   "Snoozed",
@@ -42,13 +43,14 @@ const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
   "Blacklist": "blacklisted",
   "Follow Up": "new",
   "Out of Office": "new",
+  "Automated Reply": "new",
   "Interested": "qualified",
   "Neutral": "new",
   "Snoozed": "new",
 };
 
 // Sentiments that should NOT have AI drafts
-const EXCLUDED_FROM_DRAFTS = ["Neutral", "Blacklist", "Snoozed"];
+const EXCLUDED_FROM_DRAFTS = ["Neutral", "Blacklist", "Snoozed", "Automated Reply"];
 
 /**
  * Pre-classification - only skip AI for leads with no inbound messages

@@ -2,7 +2,7 @@
 
 A scalable, full-stack application designed to manage high-volume sales outreach. This system replaces legacy n8n/Airtable workflows by unifying Email, SMS (GoHighLevel), and LinkedIn conversations into a single "Master Inbox" with AI-driven sentiment analysis, automatic drafting, and campaign management.
 
-**Current Status:** Phase II Complete (Email Integration via Inboxxia + SMS via GoHighLevel) with **Multi-Channel Lead Architecture** foundation (SMS + Email live, LinkedIn scaffolded).
+**Current Status:** Phases I–IV complete for core operations (SMS + Email inbox, follow-up automation, LinkedIn outbound via Unipile, calendar availability + booking). LinkedIn inbound ingestion is still pending.
 
 **Live Demo:** [https://zrg-dashboard.vercel.app/](https://zrg-dashboard.vercel.app/)
 
@@ -15,10 +15,11 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 | **Frontend** | Next.js 16 (App Router), Tailwind CSS, Shadcn UI, Lucide Icons |
 | **Backend** | Next.js Server Actions & API Routes |
 | **Database** | Supabase (PostgreSQL) with Prisma ORM |
-| **AI Engine** | OpenAI (GPT-4o / GPT-4o-mini) |
+| **AI Engine** | OpenAI (GPT-5.1 / GPT-5-mini / GPT 5-nano) |
 | **Hosting** | Vercel (Serverless) |
 | **Email Platform** | Inboxxia (EmailBison) - Cold email campaigns & replies |
 | **SMS Platform** | GoHighLevel (GHL) - SMS messaging & CRM sync |
+| **LinkedIn Platform** | Unipile - LinkedIn connection requests + DMs |
 
 ---
 
@@ -45,23 +46,45 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   | `LEAD_UNSUBSCRIBED` | Blacklists lead with unsubscribe status |
 - [x] **AI Draft Generation** - Context-aware response drafts based on sentiment
 - [x] **Auto-Reply System** - Automatic sending when enabled per lead
+- [x] **Auto-Reply Safety Gate** - Suppresses replies to opt-outs, automated replies, and acknowledgement-only messages
 - [x] **Email Body Sanitization** - Strips quoted text, signatures, HTML boilerplate
 - [x] **Deduplication** - Prevents duplicate messages via `emailBisonReplyId` and `inboxxiaScheduledEmailId`
 - [x] **Campaign Sync** - Syncs Inboxxia campaigns to dashboard
 - [x] **Unified Inbox** - SMS and Email in single conversation view with platform/channel badges
+- [x] **EmailGuard Validation** - Validates recipient domains before sending replies (auto-blacklists invalid)
 
 ### Multi-Channel Lead Architecture (New)
-- [x] **Single Lead, Multiple Channels** — Leads can own SMS + Email now; LinkedIn fields are present for next phase.
+- [x] **Single Lead, Multiple Channels** — Leads can own SMS + Email + LinkedIn (outbound supported; inbound pending).
 - [x] **`Message.channel`** — Explicit channel field (`sms` | `email` | `linkedin`) on all messages.
 - [x] **Cross-Channel Dedup** — `findOrCreateLead` utility matches by email **or** normalized phone to prevent duplicate leads across webhooks.
 - [x] **GHL SMS Webhook** — Uses unified lead-matching, captures email when present, saves `channel: "sms"`.
 - [x] **Inboxxia Email Webhook** — Uses unified lead-matching, saves `channel: "email"`.
-- [x] **Inbox UI** — Conversation cards show all active channels; Action Station has channel tabs (SMS/Email; LinkedIn placeholder).
+- [x] **Inbox UI** — Conversation cards show all active channels; Action Station has channel tabs (SMS/Email) and supports LinkedIn follow-up steps.
+
+### Phase III: LinkedIn Integration (Unipile)
+- [x] **Outbound LinkedIn Messaging** — Follow-up steps can send LinkedIn DMs via Unipile.
+- [x] **Connection Request Automation** — If not connected, sends a connection request with the follow-up step message as the note.
+- [x] **Sequence Conditions** — `linkedin_connected` supported for step gating.
+
+### Phase IV: Calendar Automation (Availability + Booking)
+- [x] **Calendar Link Management** — Multiple calendar links per workspace (`CalendarLink`), default link used as availability source-of-truth.
+- [x] **Live Availability Cache** — Per-workspace `WorkspaceAvailabilityCache` refreshed every 10 minutes (30-day lookahead).
+- [x] **GHL Widget Support** — Handles GHL `/widget/booking/` and `/widget/bookings/` (including custom domains) and parses `NUXT_DATA` variants.
+- [x] **Lead Timezone Display** — Slots display in lead timezone (“your time”), fallback to workspace timezone with explicit TZ label.
+- [x] **Offered Slot Persistence** — When the system proposes times, it stores `Lead.offeredSlots` for later matching.
+- [x] **Hardened Auto-Booking** — Only books when the lead clearly accepts one of the offered slots; ambiguous “yes/sounds good” routes to Follow-ups instead.
+- [x] **Warn-Only Calendar Mismatch** — If the calendar inferred from the Calendar Link differs from `ghlDefaultCalendarId`, UI warns but does not block booking.
+
+### Phase IV: Follow-Up Automation (No-Response Sequences)
+- [x] **Auto-Start on Outbound Touch** — Starts `triggerOn="no_response"` sequences when SMS/Email/LinkedIn is sent.
+- [x] **Pause on Reply** — Pauses no-response sequences when the lead replies.
+- [x] **Re-Engage After 7 Days** — Resumes paused sequences at the next step if the lead goes ghost for 7+ days.
+- [x] **Auto-Send When Allowed** — Steps with `requiresApproval=false` send automatically (SMS/LinkedIn; email is reply-only when a thread exists, otherwise queues a task).
 
 ### Dashboard Features
 - [x] **Inbox View** - Filterable conversation list with search
 - [x] **Action Station** - AI draft review, edit, approve/reject workflow
-- [x] **Channel Tabs** - Switch per-lead between SMS/Email (LinkedIn coming soon) with per-channel message counts
+- [x] **Channel Tabs** - Switch per-lead between SMS/Email (LinkedIn outbound supported via follow-ups) with per-channel message counts
 - [x] **CRM Drawer** - Lead details, status management, sentiment tags
 - [x] **Settings Page** - Workspace management, API key configuration
 - [x] **Email Credential Management** - Inboxxia API key input per workspace
@@ -88,9 +111,15 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - **Features:** Campaign management, reply tracking, send via API
 - **Auth:** Bearer token (API Key per workspace)
 
+### Unipile (LinkedIn)
+- **Features:** Connection requests + DMs (used by follow-up sequences)
+- **Auth:** `UNIPILE_DSN` + `UNIPILE_API_KEY` (global) + per-workspace `Client.unipileAccountId`
+
 ### OpenAI
-- **Sentiment Classification:** Analyzes message content → tags like "Interested", "Meeting Requested", "Not Interested", "Out of Office", etc.
-- **Draft Generation:** Creates contextual response drafts based on sentiment and conversation history
+- **Sentiment Classification (`gpt-5-mini`):** Deterministic guardrails + AI fallback classify the most recent lead reply (includes `Blacklist` opt-outs and `Automated Reply` auto-acknowledgements).
+- **Auto-Reply Safety Gate (`gpt-5-mini`):** Decides if an auto-reply should be sent (blocks opt-outs, automated replies, and acknowledgement-only messages).
+- **Draft Generation (`gpt-5.1`):** Generates contextual drafts with availability-aware scheduling rules and banned-words enforcement.
+- **Timezone Inference (`gpt-5-nano`):** Infers lead IANA timezone when missing (persisted only when confidence ≥ 0.95).
 
 ---
 
@@ -124,7 +153,11 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   prisma.ts                 # Prisma client singleton
   supabase.ts               # Supabase client
   sentiment.ts              # Sentiment classification logic
+  auto-reply-gate.ts        # Auto-send decision gate (should we auto-reply?)
   ai-drafts.ts              # AI draft generation
+  availability-cache.ts     # Cached live availability refresh + filtering
+  availability-format.ts    # Availability slot label formatting
+  timezone-inference.ts     # Lead timezone inference (deterministic + AI)
   emailbison-api.ts         # Inboxxia API client
 
 /prisma
@@ -147,6 +180,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 | `AIDraft` | Pending AI-generated response drafts |
 | `FollowUpTask` | Scheduled follow-up tasks |
 | `WorkspaceSettings` | AI personality, automation rules |
+| `WorkspaceAvailabilityCache` | Cached calendar availability per workspace |
 
 ### Key Message Fields
 
@@ -182,6 +216,9 @@ model Message {
 | `DIRECT_URL` | Session pooler connection (port 5432) |
 | `SLACK_WEBHOOK_URL` | (Optional) Slack notifications for meetings booked |
 | `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |
+| `UNIPILE_DSN` | Unipile base DSN (e.g. `https://apiXX.unipile.com:PORT`) |
+| `UNIPILE_API_KEY` | Unipile API key |
+| `EMAIL_GUARD_API_KEY` | (Optional) EmailGuard API key for email validation before sending |
 
 ### Vercel Cron Setup
 
@@ -203,6 +240,12 @@ This runs every 10 minutes. To set up:
 3. Vercel automatically calls `/api/cron/followups` with `Authorization: Bearer <CRON_SECRET>`
 
 **Note:** Vercel Cron is available on Pro and Enterprise plans. On Hobby, use an external service like [cron-job.org](https://cron-job.org) with the same endpoint.
+
+### Calendar Availability + Booking Notes
+
+- **Availability source-of-truth:** default `CalendarLink` (shown in follow-ups via `{availability}` and in the booking modal).
+- **Booking calendar:** appointments are created on `WorkspaceSettings.ghlDefaultCalendarId` (warn-only if it differs from the Calendar Link’s inferred GHL calendar).
+- **Meeting duration:** live availability + auto-booking currently requires `meetingDurationMinutes = 30` (UI will toast if changed).
 
 ### Database Migration
 
@@ -255,21 +298,24 @@ npm run dev
 - [x] Campaign sync and management
 - [x] Follow-Up Sequences - Multi-step, multi-channel follow-up chains with Day 2/5/7 templates
 - [x] Calendar Link Management - Multiple calendar links per workspace with availability fetching
+- [x] Live availability cache + booking modal (lead timezone aware)
+- [x] Auto-booking when a lead accepts offered times
+- [x] LinkedIn follow-up steps (Unipile DMs + connection requests)
 - [x] Template Variables - {senderName}, {companyName}, {result}, {calendarLink}, {qualificationQuestion1/2}
+- [x] AI Persona Enhancements - Service description, qualification questions, knowledge assets for better AI context
+- [x] EmailGuard Integration - Email validation before sending
 
 ### 🚧 In Progress / Next Up
-- [ ] **AI Persona Enhancements** - Service description, qualification questions, knowledge assets for better AI context
 - [ ] **Channel-Aware Analytics** - Open/reply rates by channel, sentiment trends
 - [ ] **Email Opens Persistence** - Store EMAIL_OPENED events for analytics
 - [ ] **Lead Scoring** - AI-powered prioritization across channels
 
 ### 📋 Future Phases (see `lib/future-integrations.ts` for detailed specs)
-- [ ] **Phase III: LinkedIn Integration** - Unipile API for LinkedIn messaging (channel = `linkedin`)
-- [ ] **Phase IV: Calendar Automation** - Automated meeting booking when lead selects a time
 - [ ] **Phase V: AI Voice Caller** - Retell AI via SIP trunking for qualification calls and double-dial touchpoints
 - [ ] **Phase VI: Advanced Analytics** - Funnel visualization, A/B testing
 - [ ] **Phase VII: Team Features** - Multi-user access, assignment workflows
-- [ ] **EmailGuard Integration** - Email validation before sending
+- [ ] **LinkedIn Inbound Sync** - Ingest inbound LinkedIn messages into the unified inbox
+- [ ] **Calendar Reconciliation** - Cancellation/reschedule sync + stronger de-dupe across external bookings
 
 ---
 
@@ -277,18 +323,20 @@ npm run dev
 
 > **Detailed specifications for future integrations are documented in [`lib/future-integrations.ts`](lib/future-integrations.ts)**
 
-### Calendar Availability (Phase IV - Partially Complete)
-**Status:** Availability fetching implemented, automated booking pending
+### Calendar Automation (Phase IV - Mostly Complete)
+**Status:** Availability caching + booking + auto-booking implemented
 
 **What's working:**
 - Multiple calendar links per workspace (`CalendarLink` model)
 - Auto-detection of calendar type (Calendly, HubSpot, GoHighLevel)
-- Real-time availability slot fetching via `lib/calendar-availability.ts`
+- Real-time availability slot fetching via `lib/calendar-availability.ts` (cached in `WorkspaceAvailabilityCache`)
 - `{availability}` and `{calendarLink}` template variables in follow-ups
+- Booking appointments on GHL (`WorkspaceSettings.ghlDefaultCalendarId`)
+- Auto-booking when a lead accepts one of the offered slots
 
 **Still needed:**
-- Automated booking when lead selects a time
-- Meeting confirmation sync back to dashboard
+- Cancellation/reschedule reconciliation (external bookings/cancellations)
+- Optional per-lead calendar overrides (if/when enabled)
 
 ### AI Voice Caller (Phase V)
 **Status:** Channel scaffolded, API integration pending
@@ -302,7 +350,7 @@ npm run dev
 **Channel:** `ai_voice` in `FollowUpStep.channel`
 
 ### LinkedIn Integration (Phase III)
-**Status:** Schema scaffolded, API integration pending
+**Status:** Outbound integrated (Unipile); inbound ingestion pending
 **Provider:** Unipile API
 
 **Database fields ready:**
@@ -310,10 +358,12 @@ npm run dev
 - `Lead.linkedinUrl` - Profile URL
 - `Message.channel = 'linkedin'` - Message channel support
 
-**Planned integration:**
-- Check if lead has connected on LinkedIn (`linkedin_connected` condition)
-- Send follow-up messages via LinkedIn if connected
-- Connection request automation
+**What's working:**
+- Follow-up steps can send LinkedIn DMs if connected
+- Follow-up steps send connection requests if not connected
+
+**Still needed:**
+- Ingest inbound LinkedIn messages into the inbox (webhook/polling)
 
 ---
 
@@ -343,7 +393,7 @@ npm run dev
 ## 📝 Notes
 
 - **Deduplication:** The system prevents duplicate messages using unique IDs from external platforms
-- **Sentiment Mapping:** Sentiments automatically map to lead statuses (e.g., "Interested" → "engaged")
+- **Sentiment Mapping:** Sentiments map to lead statuses (e.g., "Interested" → "qualified", "Blacklist" → "blacklisted")
 - **Source Tracking:** Messages tagged with `source` field distinguish ZRG-sent vs campaign-sent emails
 - **Blacklisting:** Bounced and unsubscribed leads are automatically blacklisted
 

@@ -28,6 +28,7 @@ const SENTIMENT_OPTIONS = [
   { value: "Blacklist", label: "Blacklist" },
   { value: "Follow Up", label: "Follow Up" },
   { value: "Out of Office", label: "Out of Office" },
+  { value: "Automated Reply", label: "Automated Reply" },
   { value: "Neutral", label: "Neutral" },
 ] as const
 

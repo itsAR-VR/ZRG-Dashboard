@@ -59,7 +59,8 @@ export function detectCalendarType(url: string): CalendarType {
         lowerUrl.includes("msgsndr.com") ||
         lowerUrl.includes(".highlevel.") ||
         // Common GHL custom domain patterns
-        lowerUrl.includes("/widget/booking/")
+        lowerUrl.includes("/widget/booking/") ||
+        lowerUrl.includes("/widget/bookings/")
     ) {
         return "ghl";
     }
@@ -287,18 +288,18 @@ export async function fetchHubSpotAvailability(url: string, days: number = 28): 
             // HubSpot returns: linkAvailability.linkAvailabilityByDuration['1800000'].availabilities
             const linkAvailability = data.linkAvailability;
             if (linkAvailability?.linkAvailabilityByDuration) {
-                // Get the first duration option (usually 30 min = 1800000ms)
-                const durations = Object.values(linkAvailability.linkAvailabilityByDuration) as Array<{
-                    availabilities?: Array<{ startMillisUtc: number }>;
-                }>;
-                for (const duration of durations) {
-                    if (duration.availabilities && Array.isArray(duration.availabilities)) {
-                        for (const avail of duration.availabilities) {
-                            if (avail.startMillisUtc) {
-                                slots.push({
-                                    startTime: new Date(avail.startMillisUtc),
-                                });
-                            }
+                // Enforce 30-minute slots (1800000ms) to match platform booking logic
+                const duration30 =
+                    (linkAvailability.linkAvailabilityByDuration as any)?.["1800000"] as
+                        | { availabilities?: Array<{ startMillisUtc: number }> }
+                        | undefined;
+
+                if (duration30?.availabilities && Array.isArray(duration30.availabilities)) {
+                    for (const avail of duration30.availabilities) {
+                        if (avail.startMillisUtc) {
+                            slots.push({
+                                startTime: new Date(avail.startMillisUtc),
+                            });
                         }
                     }
                 }
@@ -327,8 +328,8 @@ export async function fetchHubSpotAvailability(url: string, days: number = 28): 
  */
 function extractGHLCalendarId(html: string): string | null {
     try {
-        // Find the __NUXT_DATA__ script tag
-        const nuxtMatch = html.match(/<script[^>]*id="__NUXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+        // Find the NUXT_DATA script tag (Nuxt variants: id="__NUXT_DATA__" or id="NUXT_DATA")
+        const nuxtMatch = html.match(/<script[^>]*id="(?:__)?NUXT_DATA(?:__)?"[^>]*>([\s\S]*?)<\/script>/i);
         if (!nuxtMatch) {
             console.error("No __NUXT_DATA__ found in GHL page");
             return null;
@@ -363,10 +364,19 @@ function extractGHLCalendarId(html: string): string | null {
 /**
  * Fetch availability from GoHighLevel
  */
-export async function fetchGHLAvailability(url: string, days: number = 28): Promise<AvailabilitySlot[]> {
+export async function fetchGHLAvailabilityWithMeta(
+    url: string,
+    days: number = 28
+): Promise<{
+    slots: AvailabilitySlot[];
+    calendarId: string | null;
+    resolvedUrl?: string;
+    error?: string;
+}> {
     try {
         // First, fetch the calendar page HTML to get the calendar ID
         const pageResponse = await fetch(url, {
+            redirect: "follow",
             headers: {
                 Accept: "text/html",
                 "User-Agent": "Mozilla/5.0 (compatible; ZRG-Dashboard/1.0)",
@@ -375,7 +385,7 @@ export async function fetchGHLAvailability(url: string, days: number = 28): Prom
 
         if (!pageResponse.ok) {
             console.error("Failed to fetch GHL calendar page:", pageResponse.status);
-            return [];
+            return { slots: [], calendarId: null, resolvedUrl: pageResponse.url, error: `GHL booking page fetch failed (${pageResponse.status})` };
         }
 
         const html = await pageResponse.text();
@@ -383,7 +393,7 @@ export async function fetchGHLAvailability(url: string, days: number = 28): Prom
 
         if (!calendarId) {
             console.error("Could not extract calendar ID from GHL page");
-            return [];
+            return { slots: [], calendarId: null, resolvedUrl: pageResponse.url, error: "Could not extract calendar ID from GHL booking page" };
         }
 
         // Now fetch the free slots
@@ -397,7 +407,7 @@ export async function fetchGHLAvailability(url: string, days: number = 28): Prom
 
         if (!slotsResponse.ok) {
             console.error("GHL free-slots request failed:", slotsResponse.status);
-            return [];
+            return { slots: [], calendarId, resolvedUrl: pageResponse.url, error: `GHL free-slots request failed (${slotsResponse.status})` };
         }
 
         const data = await slotsResponse.json();
@@ -408,23 +418,35 @@ export async function fetchGHLAvailability(url: string, days: number = 28): Prom
             // Skip metadata keys
             if (key === "traceId") continue;
 
-            const dayData = value as { slots?: Array<{ startTime?: string }> };
-            if (dayData?.slots && Array.isArray(dayData.slots)) {
-                for (const slot of dayData.slots) {
-                    if (slot.startTime) {
-                        slots.push({
-                            startTime: new Date(slot.startTime),
-                        });
+            const dayData = value as { slots?: unknown[] };
+            const daySlots = (dayData as any)?.slots;
+            if (Array.isArray(daySlots)) {
+                for (const slot of daySlots) {
+                    // Some GHL responses return slot ISO strings directly; others use objects with startTime.
+                    const startTime =
+                        typeof slot === "string"
+                            ? slot
+                            : (slot as any)?.startTime;
+                    if (typeof startTime === "string" && startTime) {
+                        slots.push({ startTime: new Date(startTime) });
                     }
                 }
             }
         }
 
-        return slots;
+        return { slots, calendarId, resolvedUrl: pageResponse.url };
     } catch (error) {
         console.error("Failed to fetch GHL availability:", error);
-        return [];
+        return { slots: [], calendarId: null, error: error instanceof Error ? error.message : "Unknown error" };
     }
+}
+
+/**
+ * Fetch availability from GoHighLevel (slots only)
+ */
+export async function fetchGHLAvailability(url: string, days: number = 28): Promise<AvailabilitySlot[]> {
+    const result = await fetchGHLAvailabilityWithMeta(url, days);
+    return result.slots;
 }
 
 // =============================================================================

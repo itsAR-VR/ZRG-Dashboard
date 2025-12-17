@@ -226,7 +226,11 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
       setAvailableSlots(slots)
     } catch (error) {
       console.error("Failed to load available slots:", error)
-      toast.error("Failed to load available time slots")
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "Failed to load available time slots"
+      toast.error(message)
     } finally {
       setIsLoadingSlots(false)
     }
