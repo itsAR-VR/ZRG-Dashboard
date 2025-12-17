@@ -8,6 +8,8 @@ import { sendEmailReply } from "@/actions/email-actions";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
+import { selectDistributedAvailabilitySlots } from "@/lib/availability-distribution";
+import { getWorkspaceSlotOfferCountsForRange, incrementWorkspaceSlotOffersBatch } from "@/lib/slot-offer-ledger";
 import {
   shouldAutoBook,
   bookMeetingOnGHL,
@@ -30,6 +32,8 @@ interface LeadContext {
   linkedinId: string | null;
   sentimentTag: string | null;
   clientId: string;
+  offeredSlots: string | null;
+  snoozedUntil: Date | null;
 }
 
 interface WorkspaceSettings {
@@ -276,7 +280,8 @@ export async function generateFollowUpMessage(
   const question1 = qualificationQuestions[0]?.question || "[qualification question 1]";
   const question2 = qualificationQuestions[1]?.question || "[qualification question 2]";
 
-  const offeredAt = new Date().toISOString();
+  const offeredAtIso = new Date().toISOString();
+  const offeredAt = new Date(offeredAtIso);
 
   const needsAvailability =
     (step.messageTemplate || "").includes("{availability}") ||
@@ -291,24 +296,57 @@ export async function generateFollowUpMessage(
       const slotsUtc = availability.slotsUtc;
 
       if (slotsUtc.length > 0) {
-        const slotCount = 2;
         const tzResult = await ensureLeadTimezone(lead.id);
         const timeZone = tzResult.timezone || settings?.timezone || "UTC";
         const mode = tzResult.source === "workspace_fallback" ? "explicit_tz" : "your_time";
 
-        const formatted = formatAvailabilitySlots({
+        const existingOffered = new Set<string>();
+        if (lead.offeredSlots) {
+          try {
+            const parsed = JSON.parse(lead.offeredSlots) as Array<{ datetime?: string }>;
+            for (const s of parsed) {
+              if (!s?.datetime) continue;
+              const d = new Date(s.datetime);
+              if (!Number.isNaN(d.getTime())) existingOffered.add(d.toISOString());
+            }
+          } catch {
+            // ignore parse errors
+          }
+        }
+
+        const startAfterUtc = lead.snoozedUntil && lead.snoozedUntil > offeredAt ? lead.snoozedUntil : null;
+        const anchor = startAfterUtc && startAfterUtc > offeredAt ? startAfterUtc : offeredAt;
+        const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const offerCounts = await getWorkspaceSlotOfferCountsForRange(lead.clientId, anchor, rangeEnd);
+
+        const selectedUtcIso = selectDistributedAvailabilitySlots({
           slotsUtcIso: slotsUtc,
+          offeredCountBySlotUtcIso: offerCounts,
           timeZone,
-          mode,
-          limit: slotCount,
+          excludeUtcIso: existingOffered,
+          startAfterUtc,
+          preferWithinDays: 5,
+          now: offeredAt,
         });
 
-        availabilityText = formatted.map((s) => s.label).join(" or ");
-        offeredSlots = formatted.map((s) => ({
-          datetime: s.datetime,
-          label: s.label,
-          offeredAt,
-        }));
+        const formatted = formatAvailabilitySlots({
+          slotsUtcIso: selectedUtcIso,
+          timeZone,
+          mode,
+          limit: selectedUtcIso.length,
+        });
+
+        if (formatted.length > 0) {
+          availabilityText = formatted.map((s) => s.label).join(" or ");
+          offeredSlots = formatted.map((s) => ({
+            datetime: s.datetime,
+            label: s.label,
+            offeredAt: offeredAtIso,
+          }));
+        } else {
+          availabilityText = "a couple openings over the next few days";
+          offeredSlots = [];
+        }
       } else {
         availabilityText = "a couple openings over the next few days";
       }
@@ -607,6 +645,13 @@ export async function executeFollowUpStep(
             where: { id: lead.id },
             data: { offeredSlots: JSON.stringify(offeredSlots) },
           });
+
+          const offeredAt = offeredSlots[0]?.offeredAt ? new Date(offeredSlots[0].offeredAt) : new Date();
+          await incrementWorkspaceSlotOffersBatch({
+            clientId: lead.clientId,
+            slotUtcIsoList: offeredSlots.map((s) => s.datetime),
+            offeredAt: Number.isNaN(offeredAt.getTime()) ? new Date() : offeredAt,
+          });
         }
 
         await prisma.followUpTask.create({
@@ -657,6 +702,13 @@ export async function executeFollowUpStep(
         await prisma.lead.update({
           where: { id: lead.id },
           data: { offeredSlots: JSON.stringify(offeredSlots) },
+        });
+
+        const offeredAt = offeredSlots[0]?.offeredAt ? new Date(offeredSlots[0].offeredAt) : new Date();
+        await incrementWorkspaceSlotOffersBatch({
+          clientId: lead.clientId,
+          slotUtcIsoList: offeredSlots.map((s) => s.datetime),
+          offeredAt: Number.isNaN(offeredAt.getTime()) ? new Date() : offeredAt,
         });
       }
 
@@ -788,6 +840,13 @@ export async function executeFollowUpStep(
           where: { id: lead.id },
           data: { offeredSlots: JSON.stringify(offeredSlots) },
         });
+
+        const offeredAt = offeredSlots[0]?.offeredAt ? new Date(offeredSlots[0].offeredAt) : new Date();
+        await incrementWorkspaceSlotOffersBatch({
+          clientId: lead.clientId,
+          slotUtcIsoList: offeredSlots.map((s) => s.datetime),
+          offeredAt: Number.isNaN(offeredAt.getTime()) ? new Date() : offeredAt,
+        });
       }
 
       await prisma.followUpTask.create({
@@ -824,6 +883,13 @@ export async function executeFollowUpStep(
         await prisma.lead.update({
           where: { id: lead.id },
           data: { offeredSlots: JSON.stringify(offeredSlots) },
+        });
+
+        const offeredAt = offeredSlots[0]?.offeredAt ? new Date(offeredSlots[0].offeredAt) : new Date();
+        await incrementWorkspaceSlotOffersBatch({
+          clientId: lead.clientId,
+          slotUtcIsoList: offeredSlots.map((s) => s.datetime),
+          offeredAt: Number.isNaN(offeredAt.getTime()) ? new Date() : offeredAt,
         });
       }
 
@@ -888,6 +954,9 @@ export async function processFollowUpsDue(): Promise<{
       where: {
         status: "active",
         nextStepDue: { lte: now },
+        lead: {
+          OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }],
+        },
       },
       include: {
         lead: true,
@@ -937,6 +1006,8 @@ export async function processFollowUpsDue(): Promise<{
         linkedinId: instance.lead.linkedinId,
         sentimentTag: instance.lead.sentimentTag,
         clientId: instance.lead.clientId,
+        offeredSlots: instance.lead.offeredSlots,
+        snoozedUntil: instance.lead.snoozedUntil,
       };
 
       // Build step data
@@ -1071,6 +1142,87 @@ export async function pauseFollowUpsOnReply(leadId: string): Promise<void> {
 }
 
 /**
+ * Pause follow-up instances for a lead until a specific timestamp.
+ * Used for "contact me after X" deferrals (snooze).
+ *
+ * Policy: pause any active instances (and instances paused due to lead reply),
+ * and set nextStepDue to the snooze cutoff so the sequence resumes at the next step.
+ */
+export async function pauseFollowUpsUntil(leadId: string, snoozedUntil: Date): Promise<void> {
+  try {
+    await prisma.followUpInstance.updateMany({
+      where: {
+        leadId,
+        OR: [
+          { status: "active" },
+          { status: "paused", pausedReason: "lead_replied" },
+        ],
+      },
+      data: {
+        status: "paused",
+        pausedReason: "lead_snoozed",
+        nextStepDue: snoozedUntil,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to pause follow-ups until:", error);
+  }
+}
+
+/**
+ * Resume follow-up instances that were paused due to a snooze once the cutoff has passed.
+ * Resumes at the next step (does not restart the sequence).
+ */
+export async function resumeSnoozedFollowUps(opts?: {
+  limit?: number;
+}): Promise<{ checked: number; resumed: number; errors: string[] }> {
+  const limit = opts?.limit ?? 200;
+  const now = new Date();
+
+  const results = { checked: 0, resumed: 0, errors: [] as string[] };
+
+  const paused = await prisma.followUpInstance.findMany({
+    where: {
+      status: "paused",
+      pausedReason: "lead_snoozed",
+      nextStepDue: { lte: now },
+      lead: { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] },
+    },
+    take: limit,
+    select: {
+      id: true,
+      leadId: true,
+      lead: { select: { autoFollowUpEnabled: true } },
+    },
+  });
+
+  for (const instance of paused) {
+    results.checked++;
+
+    if (!instance.lead.autoFollowUpEnabled) {
+      continue;
+    }
+
+    try {
+      await prisma.followUpInstance.update({
+        where: { id: instance.id },
+        data: {
+          status: "active",
+          pausedReason: null,
+        },
+      });
+      results.resumed++;
+    } catch (error) {
+      results.errors.push(
+        `${instance.id}: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+    }
+  }
+
+  return results;
+}
+
+/**
  * Resume follow-up instances after a lead goes "ghost" again.
  * Policy: if the most recent inbound message is older than 7 days, resume at the next step.
  */
@@ -1093,7 +1245,7 @@ export async function resumeGhostedFollowUps(opts?: {
     select: {
       id: true,
       leadId: true,
-      lead: { select: { autoFollowUpEnabled: true } },
+      lead: { select: { autoFollowUpEnabled: true, snoozedUntil: true } },
     },
   });
 
@@ -1105,6 +1257,9 @@ export async function resumeGhostedFollowUps(opts?: {
     }
 
     try {
+      if (instance.lead.snoozedUntil && instance.lead.snoozedUntil > new Date()) {
+        continue;
+      }
       const lastInbound = await prisma.message.findFirst({
         where: { leadId: instance.leadId, direction: "inbound" },
         orderBy: { sentAt: "desc" },

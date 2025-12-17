@@ -835,7 +835,7 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
     let healedCount = 0;
     let skippedDuplicates = 0;
 
-    // Process inbound replies
+    // Process replies (EmailBison "replies" endpoint includes inbound + outbound thread items)
     for (const reply of replies) {
       try {
         const emailBisonReplyId = String(reply.id);
@@ -846,6 +846,10 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
             : new Date();
         const body = cleanEmailBody(reply.html_body, reply.text_body);
         const subject = reply.email_subject || null;
+        const folder = (reply.folder || "").toLowerCase();
+        const type = (reply.type || "").toLowerCase();
+        const isOutbound = folder === "sent" || type.includes("outgoing");
+        const direction = isOutbound ? ("outbound" as const) : ("inbound" as const);
 
         // Skip if no body
         if (!body) {
@@ -859,13 +863,24 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
         });
 
         if (existingByReplyId) {
-          // Message already exists - just ensure timestamp is correct
+          // Message already exists - heal any missing fields (timestamp / direction)
+          const updateData: Record<string, unknown> = {};
           if (existingByReplyId.sentAt.getTime() !== msgTimestamp.getTime()) {
+            updateData.sentAt = msgTimestamp;
+          }
+          if (existingByReplyId.direction !== direction) {
+            updateData.direction = direction;
+          }
+          if (isOutbound && existingByReplyId.isRead !== true) {
+            updateData.isRead = true;
+          }
+
+          if (Object.keys(updateData).length > 0) {
             await prisma.message.update({
               where: { emailBisonReplyId },
-              data: { sentAt: msgTimestamp },
+              data: updateData,
             });
-            console.log(`[EmailSync] Fixed timestamp for replyId ${emailBisonReplyId}`);
+            console.log(`[EmailSync] Healed replyId ${emailBisonReplyId} (${Object.keys(updateData).join(", ")})`);
             healedCount++;
           } else {
             skippedDuplicates++;
@@ -877,13 +892,13 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
         const existingByContent = await prisma.message.findFirst({
           where: {
             leadId,
-            direction: "inbound",
             channel: "email",
             emailBisonReplyId: null,
             OR: [
               { body: { contains: body.substring(0, 100) } },
-              { subject: subject },
+              ...(subject ? [{ subject }] : []),
             ],
+            ...(isOutbound ? {} : { direction: "inbound" }),
           },
         });
 
@@ -895,6 +910,8 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
               emailBisonReplyId,
               sentAt: msgTimestamp,
               subject: subject || existingByContent.subject,
+              direction,
+              ...(isOutbound ? { isRead: true } : {}),
             },
           });
           healedCount++;
@@ -912,7 +929,8 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
             rawHtml: reply.html_body ?? null,
             rawText: reply.text_body ?? null,
             subject,
-            direction: "inbound",
+            direction,
+            ...(isOutbound ? { isRead: true } : {}),
             leadId,
             sentAt: msgTimestamp,
           },

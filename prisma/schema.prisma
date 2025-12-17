@@ -31,6 +31,7 @@ model Client {
   followUpSequences FollowUpSequence[]  // Follow-up sequence templates
   calendarLinks CalendarLink[]      // Multiple calendar links for availability
   availabilityCache WorkspaceAvailabilityCache?
+  offeredSlots   WorkspaceOfferedSlot[]
   aiInteractions AIInteraction[]
 
   @@index([userId])
@@ -439,4 +440,22 @@ model WorkspaceAvailabilityCache {
   @@index([clientId])
   @@index([staleAt])
   @@index([calendarLinkId])
+}
+
+// Tracks how often specific availability slots have been offered to leads (soft distribution signal).
+// Used to spread suggested times across the next few days before reusing the same slot.
+model WorkspaceOfferedSlot {
+  id            String   @id @default(uuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  slotUtc       DateTime
+  offeredCount  Int      @default(0)
+  lastOfferedAt DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([clientId, slotUtc])
+  @@index([clientId])
+  @@index([slotUtc])
+  @@index([clientId, slotUtc])
 }

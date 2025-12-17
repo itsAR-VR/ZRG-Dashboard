@@ -16,6 +16,7 @@ import {
 import { getWorkspaceAvailabilityCache, getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
+import { getWorkspaceSlotOfferCountsForRange } from "@/lib/slot-offer-ledger";
 
 // Re-export types for use in components
 export type { GHLCalendar, GHLUser, GHLAppointment };
@@ -35,6 +36,12 @@ export interface OfferedSlot {
     datetime: string;  // ISO format
     label: string;     // Human-readable (e.g., "3pm EST on Thursday")
     offeredAt: string; // When this slot was offered
+}
+
+export interface BookingAvailabilitySlot {
+    datetime: string; // ISO UTC
+    label: string; // Display label in lead/workspace TZ
+    offeredCount: number; // How many times this slot has been offered
 }
 
 // =============================================================================
@@ -366,16 +373,26 @@ export async function bookMeetingOnGHL(
             );
 
             if (!contactResult.success || !contactResult.data?.contact?.id) {
-                return { success: false, error: "Failed to create contact in GHL" };
+                const errorText = contactResult.error || "";
+                const recovered = errorText.match(/"contactId"\s*:\s*"([^"]+)"/i)?.[1] || null;
+                if (!recovered) {
+                    return { success: false, error: "Failed to create contact in GHL" };
+                }
+
+                ghlContactId = recovered;
+                await prisma.lead.update({
+                    where: { id: leadId },
+                    data: { ghlContactId },
+                });
+            } else {
+                ghlContactId = contactResult.data.contact.id;
+
+                // Update lead with GHL contact ID
+                await prisma.lead.update({
+                    where: { id: leadId },
+                    data: { ghlContactId },
+                });
             }
-
-            ghlContactId = contactResult.data.contact.id;
-
-            // Update lead with GHL contact ID
-            await prisma.lead.update({
-                where: { id: leadId },
-                data: { ghlContactId },
-            });
         }
 
         // Calculate end time based on meeting duration
@@ -557,6 +574,63 @@ export async function getFormattedAvailabilityForLead(
         mode,
         limit,
     });
+}
+
+/**
+ * Get booking availability for the CRM booking modal.
+ * - Returns ALL slots from the 30-day availability cache (not limited by calendarSlotsToShow)
+ * - Formats in the lead timezone when available ("your time"), else explicit TZ
+ * - Includes a soft distribution signal: offeredCount per slot (workspace-wide)
+ */
+export async function getBookingAvailabilityForLead(
+    clientId: string,
+    leadId: string
+): Promise<BookingAvailabilitySlot[]> {
+    const [settings, availability, lead] = await Promise.all([
+        prisma.workspaceSettings.findUnique({
+            where: { clientId },
+            select: { timezone: true },
+        }),
+        getWorkspaceAvailabilitySlotsUtc(clientId, { refreshIfStale: true }),
+        prisma.lead.findUnique({
+            where: { id: leadId },
+            select: { snoozedUntil: true },
+        }),
+    ]);
+
+    if (availability.lastError?.startsWith("Unsupported meeting duration")) {
+        throw new Error(availability.lastError);
+    }
+
+    const tzResult = await ensureLeadTimezone(leadId);
+    const timeZone = tzResult.timezone || settings?.timezone || "UTC";
+    const mode = tzResult.source === "workspace_fallback" ? "explicit_tz" : "your_time";
+
+    const now = new Date();
+    const cutoff = lead?.snoozedUntil && lead.snoozedUntil > now ? lead.snoozedUntil : null;
+
+    const slotsUtc = cutoff
+        ? availability.slotsUtc.filter((iso) => {
+            const t = new Date(iso).getTime();
+            return Number.isFinite(t) && t >= cutoff.getTime();
+        })
+        : availability.slotsUtc;
+
+    const formatted = formatAvailabilitySlots({
+        slotsUtcIso: slotsUtc,
+        timeZone,
+        mode,
+        limit: slotsUtc.length,
+    });
+
+    const rangeEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const offerCounts = await getWorkspaceSlotOfferCountsForRange(clientId, now, rangeEnd);
+
+    return formatted.map((slot) => ({
+        datetime: slot.datetime,
+        label: slot.label,
+        offeredCount: offerCounts.get(slot.datetime) ?? 0,
+    }));
 }
 
 export async function getGhlCalendarMismatchInfo(clientId: string): Promise<{

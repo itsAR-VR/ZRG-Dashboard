@@ -6,8 +6,10 @@ import { buildSentimentTranscriptFromMessages, classifySentiment, SENTIMENT_TO_S
 import { findOrCreateLead, normalizePhone } from "@/lib/lead-matching";
 import { normalizeSmsCampaignLabel } from "@/lib/sms-campaign";
 import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
-import { pauseFollowUpsOnReply, processMessageForAutoBooking } from "@/lib/followup-engine";
+import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBooking } from "@/lib/followup-engine";
 import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
+import { ensureLeadTimezone } from "@/lib/timezone-inference";
+import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
 
 /**
  * GHL Workflow Webhook Payload Structure
@@ -505,6 +507,28 @@ export async function POST(request: NextRequest) {
     pauseFollowUpsOnReply(lead.id).catch((err) =>
       console.error("[Webhook] Failed to pause follow-ups on reply:", err)
     );
+
+    // If the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
+    const inboundText = (messageBody || "").trim();
+    const snoozeKeywordHit =
+      /\b(after|until|from)\b/i.test(inboundText) &&
+      /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
+
+    if (snoozeKeywordHit) {
+      const tzResult = await ensureLeadTimezone(lead.id);
+      const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
+        messageText: inboundText,
+        timeZone: tzResult.timezone || "UTC",
+      });
+
+      if (snoozedUntilUtc && confidence >= 0.95) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { snoozedUntil: snoozedUntilUtc },
+        });
+        await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
+      }
+    }
 
     // Import historical messages if this is a new lead or has no messages
     let importedMessagesCount = 0;

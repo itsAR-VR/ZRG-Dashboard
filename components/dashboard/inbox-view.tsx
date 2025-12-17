@@ -121,6 +121,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   
   const realtimeConnectedRef = useRef(false);
   const prevConversationIdRef = useRef<string | null>(null);
+  const lastAutoSyncRef = useRef<Map<string, number>>(new Map());
 
   // Reset SMS sub-client filter when switching workspaces
   useEffect(() => {
@@ -241,6 +242,22 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
       }
     }
 
+    const shouldAutoSync =
+      !!baseConv && (baseConv.channels.includes("email") || baseConv.channels.includes("sms"));
+    const lastSyncAt = lastAutoSyncRef.current.get(activeConversationId) || 0;
+    const shouldSyncNow = shouldAutoSync && Date.now() - lastSyncAt > 5 * 60 * 1000; // 5 minutes
+
+    const syncPromise = shouldSyncNow
+      ? smartSyncConversation(activeConversationId).catch((err) => {
+          console.error("[InboxView] Auto-sync failed:", err);
+          return null;
+        })
+      : Promise.resolve(null);
+
+    if (shouldSyncNow) {
+      lastAutoSyncRef.current.set(activeConversationId, Date.now());
+    }
+
     // Fetch full messages in background
     const result = await getConversation(activeConversationId);
     if (result.success && result.data) {
@@ -252,10 +269,28 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
         });
       }
     }
+
+    const syncResult = await syncPromise;
+    if (syncResult?.success) {
+      const imported = syncResult.importedCount || 0;
+      const healed = syncResult.healedCount || 0;
+      const hasChanges = imported > 0 || healed > 0;
+
+      if (hasChanges) {
+        const refreshed = await getConversation(activeConversationId);
+        if (refreshed.success && refreshed.data && baseConv) {
+          setActiveConversation({
+            ...baseConv,
+            messages: refreshed.data.messages,
+          });
+        }
+        refetch().catch(() => undefined);
+      }
+    }
     if (showLoading) {
       setIsLoadingMessages(false);
     }
-  }, [activeConversationId, conversations]);
+  }, [activeConversationId, conversations, refetch]);
 
   // Sync a single conversation (SMS and/or Email based on lead's external IDs)
   const handleSyncConversation = useCallback(async (leadId: string) => {

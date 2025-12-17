@@ -152,6 +152,13 @@ export async function ensureGhlContactIdForLead(
 
   const createdId = createResult.data?.contact?.id;
   if (!createResult.success || !createdId) {
+    const errorText = createResult.error || "";
+    const recovered = errorText.match(/"contactId"\s*:\s*"([^"]+)"/i)?.[1] || null;
+    if (recovered) {
+      await prisma.lead.update({ where: { id: leadId }, data: { ghlContactId: recovered } });
+      return { success: true, ghlContactId: recovered, linkedExisting: true };
+    }
+
     return { success: false, error: createResult.error || "Failed to create contact in GHL" };
   }
 

@@ -91,6 +91,30 @@ function mapUsStateToTimezone(state: string): { timezone: string; confidence: nu
   return { timezone, confidence: 0.98 };
 }
 
+function mapKnownRegionSignalsToTimezone(opts: {
+  companyState?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  companyWebsite?: string | null;
+}): { timezone: string; confidence: number } | null {
+  const state = (opts.companyState || "").toLowerCase();
+  const email = (opts.email || "").toLowerCase();
+  const website = (opts.companyWebsite || "").toLowerCase();
+  const phone = (opts.phone || "").replace(/\s+/g, "");
+
+  const looksUk =
+    /\b(united kingdom|uk|england|scotland|wales|london|gb)\b/.test(state) ||
+    /\.co\.uk\b/.test(email) ||
+    /\.co\.uk\b/.test(website) ||
+    phone.startsWith("+44");
+
+  if (looksUk) {
+    return { timezone: "Europe/London", confidence: 0.98 };
+  }
+
+  return null;
+}
+
 export async function ensureLeadTimezone(leadId: string): Promise<{
   timezone: string | null;
   source: "existing" | "deterministic" | "ai" | "workspace_fallback";
@@ -113,6 +137,25 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
 
   if (!lead) {
     return { timezone: null, source: "workspace_fallback" };
+  }
+
+  // Deterministic: known region signals (e.g., UK).
+  const known = mapKnownRegionSignalsToTimezone({
+    companyState: lead.companyState,
+    phone: lead.phone,
+    email: lead.email,
+    companyWebsite: lead.companyWebsite,
+  });
+  if (known?.timezone && isValidIanaTimezone(known.timezone) && known.confidence >= CONFIDENCE_THRESHOLD) {
+    if (isValidIanaTimezone(lead.timezone) && lead.timezone === known.timezone) {
+      return { timezone: lead.timezone!, source: "existing", confidence: 1 };
+    }
+
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: { timezone: known.timezone },
+    });
+    return { timezone: known.timezone, source: "deterministic", confidence: known.confidence };
   }
 
   if (isValidIanaTimezone(lead.timezone)) {

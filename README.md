@@ -72,6 +72,9 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - [x] **GHL Widget Support** — Handles GHL `/widget/booking/` and `/widget/bookings/` (including custom domains) and parses `NUXT_DATA` variants.
 - [x] **Lead Timezone Display** — Slots display in lead timezone (“your time”), fallback to workspace timezone with explicit TZ label.
 - [x] **Offered Slot Persistence** — When the system proposes times, it stores `Lead.offeredSlots` for later matching.
+- [x] **Slot Distribution + Soft Holds** — Workspace-wide `WorkspaceOfferedSlot` tracks how often a slot has been offered; suggestions prefer the next 5 days and spread across days (morning + afternoon) before reusing.
+- [x] **Booking Modal (All Slots + Grid)** — “Book Meeting (GHL)” shows all available slots for the next 30 days in a scrollable grid and displays per-slot offered counts.
+- [x] **Snooze-by-Reply** — Messages like “call after Jan 13” set `Lead.snoozedUntil`, pause sequences until that date, and filter booking availability to start after the snooze cutoff.
 - [x] **Hardened Auto-Booking** — Only books when the lead clearly accepts one of the offered slots; ambiguous “yes/sounds good” routes to Follow-ups instead.
 - [x] **Warn-Only Calendar Mismatch** — If the calendar inferred from the Calendar Link differs from `ghlDefaultCalendarId`, UI warns but does not block booking.
 
@@ -160,6 +163,9 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   /ai                       # AI observability + prompt templates
   availability-cache.ts     # Cached live availability refresh + filtering
   availability-format.ts    # Availability slot label formatting
+  availability-distribution.ts # Slot selection distribution (5-day preference, morning/afternoon)
+  slot-offer-ledger.ts      # WorkspaceOfferedSlot read/increment helpers
+  snooze-detection.ts       # Deterministic deferral date detection ("after Jan 13")
   timezone-inference.ts     # Lead timezone inference (deterministic + AI)
   emailbison-api.ts         # Inboxxia API client
 
@@ -185,6 +191,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 | `FollowUpTask` | Scheduled follow-up tasks |
 | `WorkspaceSettings` | AI personality, automation rules |
 | `WorkspaceAvailabilityCache` | Cached calendar availability per workspace |
+| `WorkspaceOfferedSlot` | Per-workspace offered-slot counts (soft distribution) |
 
 ### Key Message Fields
 
@@ -218,6 +225,11 @@ model Message {
 | `OPENAI_API_KEY` | OpenAI API key |
 | `AI_MODEL_PRICING_JSON` | (Optional) Override per-model token pricing for cost estimates |
 | `DATABASE_URL` | Transaction pooler connection (port 6543, `?pgbouncer=true`) |
+| `DIRECT_URL` | Direct DB connection (port 5432) used for Prisma CLI (`db push`, migrations) |
+
+### Prisma Schema Changes
+
+- After pulling changes that modify `prisma/schema.prisma`, run `npm run db:push` to sync the database schema (creates tables like `WorkspaceOfferedSlot`).
 | `DIRECT_URL` | Session pooler connection (port 5432) |
 | `SLACK_WEBHOOK_URL` | (Optional) Slack notifications for meetings booked |
 | `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |

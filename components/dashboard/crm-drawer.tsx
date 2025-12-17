@@ -49,7 +49,8 @@ import {
   bookMeetingOnGHL,
   getLeadBookingStatus,
   isGHLBookingConfigured,
-  getFormattedAvailabilityForLead,
+  getBookingAvailabilityForLead,
+  getGhlCalendarMismatchInfo,
 } from "@/actions/booking-actions"
 import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
 import { useEnrichmentPolling } from "@/hooks/use-enrichment-polling"
@@ -114,7 +115,7 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
   // GHL Booking states
   const [autoBookMeetingsEnabled, setAutoBookMeetingsEnabled] = useState(lead.autoBookMeetingsEnabled ?? true)
   const [isBookingDialogOpen, setIsBookingDialogOpen] = useState(false)
-  const [availableSlots, setAvailableSlots] = useState<Array<{ datetime: string; label: string }>>([])
+  const [availableSlots, setAvailableSlots] = useState<Array<{ datetime: string; label: string; offeredCount: number }>>([])
   const [isLoadingSlots, setIsLoadingSlots] = useState(false)
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null)
   const [isGHLConfigured, setIsGHLConfigured] = useState(false)
@@ -222,8 +223,19 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
     if (!lead.clientId) return
     setIsLoadingSlots(true)
     try {
-      const slots = await getFormattedAvailabilityForLead(lead.clientId, lead.id)
+      const [slots, mismatch] = await Promise.all([
+        getBookingAvailabilityForLead(lead.clientId, lead.id),
+        getGhlCalendarMismatchInfo(lead.clientId),
+      ])
+
       setAvailableSlots(slots)
+
+      if (mismatch.success && mismatch.mismatch) {
+        toast.warning("Calendar mismatch detected", {
+          description:
+            "Availability is pulled from the default Calendar Link, but booking uses the workspace's GHL Default Calendar. Update Settings to align them.",
+        })
+      }
     } catch (error) {
       console.error("Failed to load available slots:", error)
       const message =
@@ -1102,7 +1114,7 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
 
       {/* GHL Booking Dialog */}
       <Dialog open={isBookingDialogOpen} onOpenChange={setIsBookingDialogOpen}>
-        <DialogContent className="sm:max-w-[450px]">
+        <DialogContent className="w-[95vw] max-w-5xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Calendar className="h-5 w-5" />
@@ -1124,32 +1136,36 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                 <p className="text-xs mt-1">Check calendar link settings.</p>
               </div>
             ) : (
-              <div className="space-y-2 max-h-[300px] overflow-y-auto">
-                {availableSlots.map((slot, index) => (
-                  <button
-                    key={index}
-                    onClick={() => setSelectedSlot(slot.datetime)}
-                    className={cn(
-                      "w-full p-3 rounded-lg border text-left transition-all",
-                      selectedSlot === slot.datetime
-                        ? "border-primary bg-primary/10 ring-1 ring-primary"
-                        : "border-border hover:border-primary/50 hover:bg-muted/50"
-                    )}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Clock className="h-4 w-4 text-muted-foreground" />
-                        <span className="font-medium">{slot.label}</span>
-                      </div>
-                      {selectedSlot === slot.datetime && (
-                        <Check className="h-4 w-4 text-primary" />
+              <div className="max-h-[65vh] overflow-y-auto pr-1">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  {availableSlots.map((slot) => (
+                    <button
+                      key={slot.datetime}
+                      onClick={() => setSelectedSlot(slot.datetime)}
+                      className={cn(
+                        "w-full rounded-lg border p-3 text-left transition-all",
+                        selectedSlot === slot.datetime
+                          ? "border-primary bg-primary/10 ring-1 ring-primary"
+                          : "border-border hover:border-primary/50 hover:bg-muted/50"
                       )}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1 ml-6">
-                      {new Date(slot.datetime).toLocaleString()}
-                    </p>
-                  </button>
-                ))}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-2">
+                          <Clock className="mt-0.5 h-4 w-4 text-muted-foreground" />
+                          <div>
+                            <div className="font-medium leading-tight">{slot.label}</div>
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              Offered: {slot.offeredCount}
+                            </div>
+                          </div>
+                        </div>
+                        {selectedSlot === slot.datetime && (
+                          <Check className="h-4 w-4 text-primary" />
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
           </div>

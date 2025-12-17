@@ -129,8 +129,11 @@ export async function getConversations(clientId?: string | null): Promise<{
   error?: string;
 }> {
   try {
+    const now = new Date();
+    const snoozeFilter = { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] };
+
     const leads = await prisma.lead.findMany({
-      where: clientId ? { clientId } : undefined,
+      where: clientId ? { clientId, ...snoozeFilter } : snoozeFilter,
       include: {
         client: {
           select: {
@@ -250,6 +253,8 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
   total: number;
 }> {
   try {
+    const now = new Date();
+    const snoozeFilter = { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] };
     // Must match the attentionTags in requiresAttention function
     const attentionTags = [
       "Meeting Requested",
@@ -266,6 +271,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       prisma.lead.count({
         where: {
           ...clientFilter,
+          ...snoozeFilter,
           sentimentTag: { in: attentionTags },
           status: { not: "blacklisted" },
         },
@@ -276,6 +282,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
           status: "pending",
           lead: {
             ...(clientId ? { clientId } : {}),
+            ...snoozeFilter,
             sentimentTag: { not: "Blacklist" },
             status: { not: "blacklisted" },
           },
@@ -285,6 +292,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       prisma.lead.count({
         where: {
           ...clientFilter,
+          ...snoozeFilter,
           status: { not: "blacklisted" },
         },
       }),
@@ -292,6 +300,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       prisma.lead.count({
         where: {
           ...clientFilter,
+          ...snoozeFilter,
           status: "blacklisted",
         },
       }),
@@ -299,6 +308,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       prisma.lead.count({
         where: {
           ...clientFilter,
+          ...snoozeFilter,
           status: "needs_repair",
         },
       }),
@@ -553,6 +563,8 @@ export async function getConversationsCursor(
 
     // Build the where clause for filtering
     const whereConditions: any[] = [];
+    const now = new Date();
+    whereConditions.push({ OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] });
 
     if (clientId) {
       whereConditions.push({ clientId });
@@ -731,6 +743,8 @@ export async function getConversationsFromEnd(
 
     // Build the where clause (same as cursor version)
     const whereConditions: any[] = [];
+    const now = new Date();
+    whereConditions.push({ OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] });
 
     if (clientId) {
       whereConditions.push({ clientId });

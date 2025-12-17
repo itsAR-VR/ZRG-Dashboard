@@ -13,7 +13,9 @@ import { normalizePhone } from "@/lib/lead-matching";
 import { autoStartMeetingRequestedSequenceIfEligible, autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
-import { pauseFollowUpsOnReply, processMessageForAutoBooking } from "@/lib/followup-engine";
+import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBooking } from "@/lib/followup-engine";
+import { ensureLeadTimezone } from "@/lib/timezone-inference";
+import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
 
 // =============================================================================
 // Type Definitions
@@ -260,6 +262,10 @@ async function triggerSlackNotification(message: string) {
 interface EmailBisonEnrichmentResult {
   linkedinUrl?: string;
   phone?: string;
+  companyName?: string;
+  companyWebsite?: string;
+  companyState?: string;
+  timezoneRaw?: string;
   // Additional data for Clay enrichment
   clayData: EmailBisonEnrichmentData;
 }
@@ -321,22 +327,36 @@ async function enrichLeadFromEmailBison(
     // Company name from main lead data
     if (leadData.company) {
       result.clayData.companyName = leadData.company;
+      result.companyName = leadData.company;
     }
 
     // Company domain from 'website' custom variable (full URL)
     const website = getCustomVariable(customVars, "website");
     if (website && website !== "-") {
       result.clayData.companyDomain = website;
+      result.companyWebsite = website;
     }
 
     // State from 'company state' custom variable
     const companyState = getCustomVariable(customVars, "company state");
     if (companyState && companyState !== "-") {
       result.clayData.state = companyState;
+      result.companyState = companyState;
+    }
+
+    // Timezone from custom variables (best-effort; may be IANA or an abbreviation)
+    const timezoneRaw =
+      getCustomVariable(customVars, "timezone") ||
+      getCustomVariable(customVars, "time zone") ||
+      getCustomVariable(customVars, "tz") ||
+      getCustomVariable(customVars, "lead timezone") ||
+      getCustomVariable(customVars, "lead time zone");
+    if (timezoneRaw && timezoneRaw !== "-") {
+      result.timezoneRaw = timezoneRaw;
     }
 
     // Update lead with enriched data
-    if (result.linkedinUrl || result.phone) {
+    if (result.linkedinUrl || result.phone || result.companyName || result.companyWebsite || result.companyState || result.timezoneRaw) {
       const updates: Record<string, unknown> = {};
 
       // Get current lead to check what's missing
@@ -347,6 +367,40 @@ async function enrichLeadFromEmailBison(
       }
       if (result.phone && !currentLead?.phone) {
         updates.phone = result.phone;
+      }
+      if (result.companyName && !currentLead?.companyName) {
+        updates.companyName = result.companyName;
+      }
+      if (result.companyWebsite && !currentLead?.companyWebsite) {
+        updates.companyWebsite = result.companyWebsite;
+      }
+      if (result.companyState && !currentLead?.companyState) {
+        updates.companyState = result.companyState;
+      }
+      if (result.timezoneRaw && (!currentLead?.timezone || currentLead.timezone.trim() === "")) {
+        const raw = result.timezoneRaw.trim();
+        const upper = raw.toUpperCase();
+        const mapped: Record<string, string> = {
+          UTC: "UTC",
+          GMT: "Europe/London",
+          BST: "Europe/London",
+          EST: "America/New_York",
+          EDT: "America/New_York",
+          CST: "America/Chicago",
+          CDT: "America/Chicago",
+          MST: "America/Denver",
+          MDT: "America/Denver",
+          PST: "America/Los_Angeles",
+          PDT: "America/Los_Angeles",
+        };
+
+        const candidate = mapped[upper] || raw;
+        try {
+          new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date());
+          updates.timezone = candidate;
+        } catch {
+          // ignore unrecognized values; ensureLeadTimezone() will infer later
+        }
       }
 
       if (Object.keys(updates).length > 0) {
@@ -673,16 +727,6 @@ async function backfillOutboundEmailMessagesIfMissing(opts: {
 }) {
   const limit = opts.limit ?? 12;
 
-  const existingOutboundCount = await prisma.message.count({
-    where: {
-      leadId: opts.leadId,
-      channel: "email",
-      direction: "outbound",
-    },
-  });
-
-  if (existingOutboundCount > 0) return;
-
   const sentEmailsResult = await fetchEmailBisonSentEmails(opts.apiKey, opts.emailBisonLeadId);
   if (!sentEmailsResult.success || !sentEmailsResult.data || sentEmailsResult.data.length === 0) return;
 
@@ -693,33 +737,64 @@ async function backfillOutboundEmailMessagesIfMissing(opts: {
   });
 
   const tail = sorted.slice(Math.max(0, sorted.length - limit));
-  const data: Prisma.MessageCreateManyInput[] = tail
-    .map((sentEmail): Prisma.MessageCreateManyInput | null => {
-      const cleaned = cleanEmailBody(sentEmail.email_body, null);
-      const body = cleaned.cleaned || sentEmail.email_subject || "";
-      if (!body.trim()) return null;
 
-      return {
-        inboxxiaScheduledEmailId: String(sentEmail.id),
+  for (const sentEmail of tail) {
+    const inboxxiaScheduledEmailId = String(sentEmail.id);
+    const sentAt = parseDate(sentEmail.sent_at, sentEmail.scheduled_date_local);
+    const cleaned = cleanEmailBody(sentEmail.email_body, null);
+    const body = cleaned.cleaned || sentEmail.email_subject || "";
+    const subject = sentEmail.email_subject ?? null;
+
+    if (!body.trim()) continue;
+
+    const existingById = await prisma.message.findUnique({
+      where: { inboxxiaScheduledEmailId },
+    });
+    if (existingById) continue;
+
+    const windowStart = new Date(sentAt.getTime() - 12 * 60 * 60 * 1000);
+    const windowEnd = new Date(sentAt.getTime() + 12 * 60 * 60 * 1000);
+
+    const existingLegacy = await prisma.message.findFirst({
+      where: {
+        leadId: opts.leadId,
+        channel: "email",
+        direction: "outbound",
+        inboxxiaScheduledEmailId: null,
+        sentAt: { gte: windowStart, lte: windowEnd },
+        body: { contains: body.substring(0, Math.min(100, body.length)) },
+      },
+      select: { id: true },
+    });
+
+    if (existingLegacy) {
+      await prisma.message.update({
+        where: { id: existingLegacy.id },
+        data: {
+          inboxxiaScheduledEmailId,
+          sentAt,
+          subject,
+          rawHtml: cleaned.rawHtml ?? null,
+        },
+      });
+      continue;
+    }
+
+    await prisma.message.create({
+      data: {
+        inboxxiaScheduledEmailId,
         channel: "email",
         source: "inboxxia_campaign",
         body,
         rawHtml: cleaned.rawHtml ?? null,
-        subject: sentEmail.email_subject ?? null,
+        subject,
         isRead: true,
         direction: "outbound",
         leadId: opts.leadId,
-        sentAt: parseDate(sentEmail.sent_at, sentEmail.scheduled_date_local),
-      };
-    })
-    .filter((record): record is Prisma.MessageCreateManyInput => record !== null);
-
-  if (data.length === 0) return;
-
-  await prisma.message.createMany({
-    data,
-    skipDuplicates: true,
-  });
+        sentAt,
+      },
+    });
+  }
 }
 
 // =============================================================================
@@ -860,6 +935,28 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   pauseFollowUpsOnReply(lead.id).catch((err) =>
     console.error("[Email Webhook] Failed to pause follow-ups on reply:", err)
   );
+
+  // If the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
+  const inboundText = (cleaned.cleaned || contentForClassification || "").trim();
+  const snoozeKeywordHit =
+    /\b(after|until|from)\b/i.test(inboundText) &&
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
+
+  if (snoozeKeywordHit) {
+    const tzResult = await ensureLeadTimezone(lead.id);
+    const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
+      messageText: inboundText,
+      timeZone: tzResult.timezone || "UTC",
+    });
+
+    if (snoozedUntilUtc && confidence >= 0.95) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { snoozedUntil: snoozedUntilUtc },
+      });
+      await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
+    }
+  }
 
   // Auto-booking: only books when the lead clearly accepts one of the offered slots.
   const autoBook = await processMessageForAutoBooking(lead.id, cleaned.cleaned || contentForClassification);
@@ -1123,6 +1220,28 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   pauseFollowUpsOnReply(lead.id).catch((err) =>
     console.error("[Email Webhook] Failed to pause follow-ups on reply:", err)
   );
+
+  // If the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
+  const inboundText = (cleaned.cleaned || contentForClassification || "").trim();
+  const snoozeKeywordHit =
+    /\b(after|until|from)\b/i.test(inboundText) &&
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
+
+  if (snoozeKeywordHit) {
+    const tzResult = await ensureLeadTimezone(lead.id);
+    const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
+      messageText: inboundText,
+      timeZone: tzResult.timezone || "UTC",
+    });
+
+    if (snoozedUntilUtc && confidence >= 0.95) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { snoozedUntil: snoozedUntilUtc },
+      });
+      await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
+    }
+  }
 
   const autoBook = await processMessageForAutoBooking(lead.id, cleaned.cleaned || contentForClassification);
   if (autoBook.booked) {
@@ -1404,6 +1523,28 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   pauseFollowUpsOnReply(lead.id).catch((err) =>
     console.error("[Email Webhook] Failed to pause follow-ups on reply:", err)
   );
+
+  // If the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
+  const inboundText = (cleaned.cleaned || contentForClassification || "").trim();
+  const snoozeKeywordHit =
+    /\b(after|until|from)\b/i.test(inboundText) &&
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
+
+  if (snoozeKeywordHit) {
+    const tzResult = await ensureLeadTimezone(lead.id);
+    const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
+      messageText: inboundText,
+      timeZone: tzResult.timezone || "UTC",
+    });
+
+    if (snoozedUntilUtc && confidence >= 0.95) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { snoozedUntil: snoozedUntilUtc },
+      });
+      await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
+    }
+  }
 
   // Auto-booking: only books when the lead clearly accepts one of the offered slots.
   const autoBook = await processMessageForAutoBooking(lead.id, cleaned.cleaned || contentForClassification);

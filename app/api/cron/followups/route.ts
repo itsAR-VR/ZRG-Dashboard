@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { processFollowUpsDue, resumeGhostedFollowUps } from "@/lib/followup-engine";
+import { processFollowUpsDue, resumeGhostedFollowUps, resumeSnoozedFollowUps } from "@/lib/followup-engine";
 import { refreshAvailabilityCachesDue } from "@/lib/availability-cache";
 
 /**
@@ -37,6 +37,10 @@ export async function GET(request: NextRequest) {
     const availability = await refreshAvailabilityCachesDue({ limit: 50 });
     console.log("[Cron] Availability refresh complete:", availability);
 
+    console.log("[Cron] Resuming snoozed follow-ups...");
+    const snoozed = await resumeSnoozedFollowUps({ limit: 200 });
+    console.log("[Cron] Snoozed follow-up resume complete:", snoozed);
+
     console.log("[Cron] Resuming ghosted follow-ups...");
     const resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
     console.log("[Cron] Ghosted follow-up resume complete:", resumed);
@@ -48,6 +52,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       availability,
+      snoozed,
       resumed,
       results,
       timestamp: new Date().toISOString(),
@@ -101,6 +106,10 @@ export async function POST(request: NextRequest) {
     const availability = await refreshAvailabilityCachesDue({ limit: 50 });
     console.log("[Cron] Availability refresh complete:", availability);
 
+    console.log("[Cron] Resuming snoozed follow-ups (POST)...");
+    const snoozed = await resumeSnoozedFollowUps({ limit: 200 });
+    console.log("[Cron] Snoozed follow-up resume complete:", snoozed);
+
     console.log("[Cron] Resuming ghosted follow-ups (POST)...");
     const resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
     console.log("[Cron] Ghosted follow-up resume complete:", resumed);
@@ -112,6 +121,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       availability,
+      snoozed,
       resumed,
       results,
       timestamp: new Date().toISOString(),

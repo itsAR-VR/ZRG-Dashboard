@@ -244,6 +244,22 @@ export async function snoozeLead(
       data: { snoozedUntil },
     });
 
+    // Pause follow-up instances until snooze expires (resume at next step).
+    await prisma.followUpInstance.updateMany({
+      where: {
+        leadId,
+        OR: [
+          { status: "active" },
+          { status: "paused", pausedReason: "lead_replied" },
+        ],
+      },
+      data: {
+        status: "paused",
+        pausedReason: "lead_snoozed",
+        nextStepDue: snoozedUntil,
+      },
+    });
+
     revalidatePath("/");
     return { success: true, snoozedUntil };
   } catch (error) {
@@ -262,6 +278,12 @@ export async function unsnoozeLead(
     await prisma.lead.update({
       where: { id: leadId },
       data: { snoozedUntil: null },
+    });
+
+    // Resume sequences that were paused due to snooze.
+    await prisma.followUpInstance.updateMany({
+      where: { leadId, status: "paused", pausedReason: "lead_snoozed" },
+      data: { status: "active", pausedReason: null, nextStepDue: new Date() },
     });
 
     revalidatePath("/");

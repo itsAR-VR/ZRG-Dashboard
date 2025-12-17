@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
+import { selectDistributedAvailabilitySlots } from "@/lib/availability-distribution";
+import { getWorkspaceSlotOfferCountsForRange, incrementWorkspaceSlotOffersBatch } from "@/lib/slot-offer-ledger";
 
 type DraftChannel = "sms" | "email" | "linkedin";
 
@@ -265,6 +267,8 @@ export async function generateResponseDraft(
         id: true,
         firstName: true,
         clientId: true,
+        offeredSlots: true,
+        snoozedUntil: true,
         client: {
           select: {
             name: true,
@@ -345,17 +349,50 @@ export async function generateResponseDraft(
       try {
         const slots = await getWorkspaceAvailabilitySlotsUtc(lead.clientId, { refreshIfStale: true });
         if (slots.slotsUtc.length > 0) {
-          const slotCount = 2;
-          const offeredAt = new Date().toISOString();
+          const offeredAtIso = new Date().toISOString();
+          const offeredAt = new Date(offeredAtIso);
           const tzResult = await ensureLeadTimezone(leadId);
           const timeZone = tzResult.timezone || settings?.timezone || "UTC";
           const mode = tzResult.source === "workspace_fallback" ? "explicit_tz" : "your_time";
 
-          const formatted = formatAvailabilitySlots({
+          const existingOffered = new Set<string>();
+          if (lead.offeredSlots) {
+            try {
+              const parsed = JSON.parse(lead.offeredSlots) as Array<{ datetime?: string }>;
+              for (const s of parsed) {
+                if (!s?.datetime) continue;
+                const d = new Date(s.datetime);
+                if (!Number.isNaN(d.getTime())) {
+                  existingOffered.add(d.toISOString());
+                }
+              }
+            } catch {
+              // ignore parse errors
+            }
+          }
+
+          const startAfterUtc =
+            lead.snoozedUntil && lead.snoozedUntil > new Date() ? lead.snoozedUntil : null;
+
+          const anchor = startAfterUtc && startAfterUtc > offeredAt ? startAfterUtc : offeredAt;
+          const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
+          const offerCounts = await getWorkspaceSlotOfferCountsForRange(lead.clientId, anchor, rangeEnd);
+
+          const selectedUtcIso = selectDistributedAvailabilitySlots({
             slotsUtcIso: slots.slotsUtc,
+            offeredCountBySlotUtcIso: offerCounts,
+            timeZone,
+            excludeUtcIso: existingOffered,
+            startAfterUtc,
+            preferWithinDays: 5,
+            now: offeredAt,
+          });
+
+          const formatted = formatAvailabilitySlots({
+            slotsUtcIso: selectedUtcIso,
             timeZone,
             mode,
-            limit: slotCount,
+            limit: selectedUtcIso.length,
           });
 
           availability = formatted.map((s) => s.label);
@@ -368,10 +405,16 @@ export async function generateResponseDraft(
                   formatted.map((s) => ({
                     datetime: s.datetime,
                     label: s.label,
-                    offeredAt,
+                    offeredAt: offeredAtIso,
                   }))
                 ),
               },
+            });
+
+            await incrementWorkspaceSlotOffersBatch({
+              clientId: lead.clientId,
+              slotUtcIsoList: formatted.map((s) => s.datetime),
+              offeredAt,
             });
           }
         }
