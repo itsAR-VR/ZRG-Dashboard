@@ -44,12 +44,26 @@ export type TotalsSummary = {
   costComplete: boolean;
 };
 
+export type ErrorSample = {
+  at: string;
+  message: string;
+};
+
+export type ErrorSampleGroup = {
+  featureId: string;
+  name: string;
+  model: string;
+  errors: number;
+  samples: ErrorSample[];
+};
+
 export type ObservabilitySummary = {
   window: AiObservabilityWindow;
   rangeStart: string;
   rangeEnd: string;
   totals: TotalsSummary;
   features: FeatureSummary[];
+  errorSamples: ErrorSampleGroup[];
 };
 
 async function requireWorkspaceAdmin(clientId: string): Promise<{ userId: string }> {
@@ -249,6 +263,55 @@ export async function getAiObservabilitySummary(
     const totalsAvgLatencyMs =
       totalCalls > 0 ? Math.round(totalLatencySum / totalCalls) : null;
 
+    const recentErrors = await prisma.aIInteraction.findMany({
+      where: {
+        clientId,
+        status: "error",
+        createdAt: { gte: rangeStart, lte: rangeEnd },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+      select: {
+        featureId: true,
+        model: true,
+        createdAt: true,
+        errorMessage: true,
+      },
+    });
+
+    const errorSampleGroups = new Map<Key, ErrorSampleGroup>();
+    for (const row of recentErrors) {
+      const key = `${row.featureId}::${row.model}` as Key;
+      const existing = errorSampleGroups.get(key);
+      const base = perFeatureModel.get(key);
+      const group =
+        existing ||
+        ({
+          featureId: row.featureId,
+          name: buildFeatureName(row.featureId),
+          model: row.model,
+          errors: base?.errors ?? 0,
+          samples: [],
+        } satisfies ErrorSampleGroup);
+
+      if (!existing) errorSampleGroups.set(key, group);
+
+      if (group.samples.length < 3) {
+        group.samples.push({
+          at: row.createdAt.toISOString(),
+          message: (row.errorMessage || "Unknown error").trim(),
+        });
+      }
+    }
+
+    const errorSamples = Array.from(errorSampleGroups.values()).sort((a, b) => {
+      const byErrors = b.errors - a.errors;
+      if (byErrors !== 0) return byErrors;
+      const aAt = a.samples[0]?.at || "";
+      const bAt = b.samples[0]?.at || "";
+      return bAt.localeCompare(aAt);
+    });
+
     const data: ObservabilitySummary = {
       window,
       rangeStart: rangeStart.toISOString(),
@@ -264,6 +327,7 @@ export async function getAiObservabilitySummary(
         costComplete,
       },
       features,
+      errorSamples,
     };
 
     return { success: true, data };

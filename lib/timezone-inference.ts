@@ -1,6 +1,6 @@
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
-import { runResponse } from "@/lib/ai/openai-telemetry";
+import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { prisma } from "@/lib/prisma";
 
 const CONFIDENCE_THRESHOLD = 0.95;
@@ -148,7 +148,7 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
       String(CONFIDENCE_THRESHOLD)
     );
 
-    const response = await runResponse({
+    const { response, interactionId } = await runResponseWithInteraction({
       clientId: lead.clientId,
       leadId,
       featureId: promptTemplate?.featureId || "timezone.infer",
@@ -158,6 +158,23 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
         reasoning: { effort: "low" },
         max_output_tokens: 120,
         instructions,
+        text: {
+          verbosity: "low",
+          format: {
+            type: "json_schema",
+            name: "timezone_inference",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                timezone: { type: ["string", "null"] },
+                confidence: { type: "number", minimum: 0, maximum: 1 },
+              },
+              required: ["timezone", "confidence"],
+            },
+          },
+        },
         input: JSON.stringify(
           {
             companyState: lead.companyState,
@@ -170,17 +187,33 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
           null,
           2
         ),
+        temperature: 0,
       },
     });
 
     const text = response.output_text?.trim();
     if (!text) {
+      if (interactionId) {
+        await markAiInteractionError(interactionId, "Post-process error: empty output_text");
+      }
       const fallback = lead.client.settings?.timezone || null;
       return { timezone: fallback, source: "workspace_fallback" };
     }
 
     const jsonText = text.replace(/```json\n?|\n?```/g, "").trim();
-    const parsed = JSON.parse(jsonText) as { timezone: string | null; confidence: number };
+    let parsed: { timezone: string | null; confidence: number };
+    try {
+      parsed = JSON.parse(jsonText) as { timezone: string | null; confidence: number };
+    } catch (parseError) {
+      if (interactionId) {
+        await markAiInteractionError(
+          interactionId,
+          `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})`
+        );
+      }
+      const fallback = lead.client.settings?.timezone || null;
+      return { timezone: fallback, source: "workspace_fallback" };
+    }
 
     const tz = parsed?.timezone;
     const conf = typeof parsed?.confidence === "number" ? parsed.confidence : 0;

@@ -6,7 +6,7 @@
 
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
-import { runResponse } from "@/lib/ai/openai-telemetry";
+import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { normalizeLinkedInUrl } from "./linkedin-utils";
 import { normalizePhone } from "./lead-matching";
 
@@ -45,59 +45,105 @@ export async function extractContactFromSignature(
     return defaultResult;
   }
 
-  try {
-    const promptTemplate = getAIPromptTemplate("signature.extract.v1");
-    const instructionsTemplate =
-      promptTemplate?.messages.find((m) => m.role === "system")?.content ||
-      "Extract contact info from the signature and return JSON.";
-    const instructions = instructionsTemplate
-      .replaceAll("{leadName}", leadName)
-      .replaceAll("{leadEmail}", leadEmail);
+  const promptTemplate = getAIPromptTemplate("signature.extract.v1");
+  const instructionsTemplate =
+    promptTemplate?.messages.find((m) => m.role === "system")?.content ||
+    "Extract contact info from the signature and return JSON.";
+  const instructions = instructionsTemplate
+    .replaceAll("{leadName}", leadName)
+    .replaceAll("{leadEmail}", leadEmail);
 
+  try {
     // GPT-5-nano for signature extraction using Responses API
     // Use low reasoning effort to ensure we get a textual JSON output within the token budget.
-    const response = await runResponse({
-      clientId: meta.clientId,
-      leadId: meta.leadId,
-      featureId: promptTemplate?.featureId || "signature.extract",
-      promptKey: promptTemplate?.key || "signature.extract.v1",
-      params: {
-        model: "gpt-5-nano",
-        instructions,
-        text: {
-          verbosity: "low",
-          format: {
-            type: "json_schema",
-            name: "signature_extraction",
-            strict: true,
-            schema: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                isFromLead: { type: "boolean" },
-                phone: { type: ["string", "null"] },
-                linkedinUrl: { type: ["string", "null"] },
-                confidence: { type: "string", enum: ["high", "medium", "low"] },
-              },
-              required: ["isFromLead", "phone", "linkedinUrl", "confidence"],
-            },
-          },
-        },
-        input: `Email from: ${leadEmail}
+    const signatureInput = `Email from: ${leadEmail}
 Expected lead name: ${leadName}
 
 Email body:
-${emailBody.slice(0, 5000)}`,
-        reasoning: { effort: "low" },
-        temperature: 0,
-        max_output_tokens: 200,
-      },
-    });
+${emailBody.slice(0, 5000)}`;
+
+    let response: { output_text?: string | null };
+    let interactionId: string | null = null;
+
+    try {
+      const result = await runResponseWithInteraction({
+        clientId: meta.clientId,
+        leadId: meta.leadId,
+        featureId: promptTemplate?.featureId || "signature.extract",
+        promptKey: promptTemplate?.key || "signature.extract.v1",
+        params: {
+          model: "gpt-5-nano",
+          instructions,
+          text: {
+            verbosity: "low",
+            format: {
+              type: "json_schema",
+              name: "signature_extraction",
+              strict: true,
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  isFromLead: { type: "boolean" },
+                  phone: { type: ["string", "null"] },
+                  linkedinUrl: { type: ["string", "null"] },
+                  confidence: { type: "string", enum: ["high", "medium", "low"] },
+                },
+                required: ["isFromLead", "phone", "linkedinUrl", "confidence"],
+              },
+            },
+          },
+          input: signatureInput,
+          reasoning: { effort: "low" },
+          temperature: 0,
+          max_output_tokens: 200,
+        },
+      });
+      response = result.response;
+      interactionId = result.interactionId;
+    } catch (error) {
+      // Fallback: if Structured Outputs are unsupported/rejected, retry without json_schema.
+      const msg = error instanceof Error ? error.message : String(error);
+      const lower = msg.toLowerCase();
+      const looksLikeSchemaUnsupported =
+        lower.includes("json_schema") ||
+        lower.includes("response_format") ||
+        lower.includes("structured") ||
+        lower.includes("text.format") ||
+        lower.includes("invalid schema");
+
+      if (!looksLikeSchemaUnsupported) {
+        throw error;
+      }
+
+      console.warn("[SignatureExtractor] Structured output rejected, retrying without json_schema");
+
+      const result = await runResponseWithInteraction({
+        clientId: meta.clientId,
+        leadId: meta.leadId,
+        featureId: promptTemplate?.featureId || "signature.extract",
+        promptKey: (promptTemplate?.key || "signature.extract.v1") + ".fallback",
+        params: {
+          model: "gpt-5-nano",
+          instructions,
+          input: signatureInput,
+          reasoning: { effort: "low" },
+          temperature: 0,
+          max_output_tokens: 250,
+        },
+      });
+
+      response = result.response;
+      interactionId = result.interactionId;
+    }
 
     const content = response.output_text?.trim();
 
     if (!content) {
       console.log("[SignatureExtractor] No response from AI");
+      if (interactionId) {
+        await markAiInteractionError(interactionId, "Post-process error: empty output_text");
+      }
       return defaultResult;
     }
 
@@ -110,16 +156,36 @@ ${emailBody.slice(0, 5000)}`,
       reasoning?: string;
     };
 
+    function extractJsonObject(text: string): string {
+      const cleaned = text.replace(/```json\n?|\n?```/g, "").trim();
+      const first = cleaned.indexOf("{");
+      const last = cleaned.lastIndexOf("}");
+      if (first >= 0 && last > first) return cleaned.slice(first, last + 1);
+      return cleaned;
+    }
+
     try {
-      // Handle potential markdown code blocks
-      const jsonContent = content.replace(/```json\n?|\n?```/g, "").trim();
-      parsed = JSON.parse(jsonContent);
-    } catch {
+      parsed = JSON.parse(extractJsonObject(content));
+    } catch (parseError) {
+      if (interactionId) {
+        await markAiInteractionError(
+          interactionId,
+          `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})`
+        );
+      }
       console.error("[SignatureExtractor] Failed to parse AI response:", content);
       return defaultResult;
     }
 
     // Validate and normalize results
+    if (typeof parsed?.isFromLead !== "boolean" || !["high", "medium", "low"].includes(parsed?.confidence)) {
+      if (interactionId) {
+        await markAiInteractionError(interactionId, "Post-process error: invalid JSON shape for signature extraction");
+      }
+      console.error("[SignatureExtractor] Invalid JSON shape:", parsed);
+      return defaultResult;
+    }
+
     const result: SignatureExtractionResult = {
       isFromLead: Boolean(parsed.isFromLead),
       phone: parsed.phone ? normalizePhone(parsed.phone) : null,

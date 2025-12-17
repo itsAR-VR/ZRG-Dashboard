@@ -57,14 +57,14 @@ async function recordInteraction(opts: {
   latencyMs: number;
   status: "success" | "error";
   errorMessage?: string | null;
-}): Promise<void> {
+}): Promise<string> {
   const costUsd = estimateCostUsd({
     model: opts.model,
     inputTokens: opts.usage.inputTokens,
     outputTokens: opts.usage.outputTokens,
   });
 
-  await prisma.aIInteraction.create({
+  const created = await prisma.aIInteraction.create({
     data: {
       clientId: opts.clientId,
       leadId: opts.leadId || null,
@@ -84,23 +84,40 @@ async function recordInteraction(opts: {
 
   // Keep the table bounded (best-effort).
   await pruneOldAIInteractionsMaybe();
+  return created.id;
 }
 
-export async function runChatCompletion(opts: {
+export async function markAiInteractionError(interactionId: string, errorMessage: string): Promise<void> {
+  if (!interactionId) return;
+  try {
+    await prisma.aIInteraction.update({
+      where: { id: interactionId },
+      data: {
+        status: "error",
+        errorMessage: String(errorMessage || "Post-process error").slice(0, 10_000),
+      },
+    });
+  } catch (error) {
+    console.error("[AI Telemetry] Failed to mark interaction error:", error);
+  }
+}
+
+export async function runChatCompletionWithInteraction(opts: {
   clientId: string;
   leadId?: string | null;
   featureId: string;
   promptKey?: string | null;
   params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming;
-}): Promise<OpenAI.Chat.ChatCompletion> {
+}): Promise<{ response: OpenAI.Chat.ChatCompletion; interactionId: string | null }> {
   const start = Date.now();
   try {
     const resp = await openai.chat.completions.create(opts.params);
     const latencyMs = Date.now() - start;
     const usage = extractUsageFromChatCompletion(resp);
 
+    let interactionId: string | null = null;
     try {
-      await recordInteraction({
+      interactionId = await recordInteraction({
         clientId: opts.clientId,
         leadId: opts.leadId,
         featureId: opts.featureId,
@@ -115,7 +132,7 @@ export async function runChatCompletion(opts: {
       console.error("[AI Telemetry] Failed to record chat interaction:", logError);
     }
 
-    return resp;
+    return { response: resp, interactionId };
   } catch (error) {
     const latencyMs = Date.now() - start;
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -141,21 +158,33 @@ export async function runChatCompletion(opts: {
   }
 }
 
-export async function runResponse(opts: {
+export async function runChatCompletion(opts: {
+  clientId: string;
+  leadId?: string | null;
+  featureId: string;
+  promptKey?: string | null;
+  params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming;
+}): Promise<OpenAI.Chat.ChatCompletion> {
+  const { response } = await runChatCompletionWithInteraction(opts);
+  return response;
+}
+
+export async function runResponseWithInteraction(opts: {
   clientId: string;
   leadId?: string | null;
   featureId: string;
   promptKey?: string | null;
   params: OpenAI.Responses.ResponseCreateParamsNonStreaming;
-}): Promise<OpenAI.Responses.Response> {
+}): Promise<{ response: OpenAI.Responses.Response; interactionId: string | null }> {
   const start = Date.now();
   try {
     const resp = await openai.responses.create(opts.params);
     const latencyMs = Date.now() - start;
     const usage = extractUsageFromResponseApi(resp);
 
+    let interactionId: string | null = null;
     try {
-      await recordInteraction({
+      interactionId = await recordInteraction({
         clientId: opts.clientId,
         leadId: opts.leadId,
         featureId: opts.featureId,
@@ -170,7 +199,7 @@ export async function runResponse(opts: {
       console.error("[AI Telemetry] Failed to record response interaction:", logError);
     }
 
-    return resp;
+    return { response: resp, interactionId };
   } catch (error) {
     const latencyMs = Date.now() - start;
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -194,4 +223,15 @@ export async function runResponse(opts: {
 
     throw error;
   }
+}
+
+export async function runResponse(opts: {
+  clientId: string;
+  leadId?: string | null;
+  featureId: string;
+  promptKey?: string | null;
+  params: OpenAI.Responses.ResponseCreateParamsNonStreaming;
+}): Promise<OpenAI.Responses.Response> {
+  const { response } = await runResponseWithInteraction(opts);
+  return response;
 }

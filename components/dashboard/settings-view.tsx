@@ -1721,6 +1721,56 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                             </TableBody>
                           </Table>
                         </div>
+
+                        <Separator />
+
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm font-medium">Recent Errors</p>
+                            <p className="text-xs text-muted-foreground">Samples only (not a full log)</p>
+                          </div>
+
+                          {aiObs.errorSamples?.length ? (
+                            <Accordion type="single" collapsible className="w-full">
+                              {aiObs.errorSamples.map((group) => (
+                                <AccordionItem
+                                  key={`${group.featureId}:${group.model}`}
+                                  value={`${group.featureId}:${group.model}`}
+                                >
+                                  <AccordionTrigger>
+                                    <div className="flex flex-col text-left">
+                                      <span className="font-medium">{group.name}</span>
+                                      <span className="text-xs text-muted-foreground">
+                                        {group.model} · {new Intl.NumberFormat().format(group.errors)} errors
+                                      </span>
+                                    </div>
+                                  </AccordionTrigger>
+                                  <AccordionContent className="space-y-2">
+                                    {group.samples.map((sample, index) => {
+                                      const message =
+                                        sample.message.length > 240
+                                          ? `${sample.message.slice(0, 240)}…`
+                                          : sample.message;
+                                      return (
+                                        <div
+                                          key={`${group.featureId}:${group.model}:${index}`}
+                                          className="rounded-lg border bg-muted/30 p-3 text-xs whitespace-pre-wrap"
+                                        >
+                                          <div className="text-muted-foreground">
+                                            {new Date(sample.at).toLocaleString()}
+                                          </div>
+                                          <div className="mt-1">{message}</div>
+                                        </div>
+                                      );
+                                    })}
+                                  </AccordionContent>
+                                </AccordionItem>
+                              ))}
+                            </Accordion>
+                          ) : (
+                            <div className="text-sm text-muted-foreground">No errors in this window.</div>
+                          )}
+                        </div>
                       </>
                     ) : (
                       <div className="text-sm text-muted-foreground">No AI activity in this window yet.</div>

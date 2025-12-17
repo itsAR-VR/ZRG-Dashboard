@@ -1,6 +1,6 @@
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
-import { runResponse } from "@/lib/ai/openai-telemetry";
+import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { isOptOutText } from "@/lib/sentiment";
 
 export type AutoReplyDecision = {
@@ -96,7 +96,7 @@ Output MUST be valid JSON:
   );
 
   try {
-    const response = await runResponse({
+    const { response, interactionId } = await runResponseWithInteraction({
       clientId: opts.clientId,
       leadId: opts.leadId,
       featureId: promptTemplate?.featureId || "auto_reply_gate.decide",
@@ -106,21 +106,54 @@ Output MUST be valid JSON:
         reasoning: { effort: "low" },
         max_output_tokens: 200,
         instructions: system,
+        text: {
+          verbosity: "low",
+          format: {
+            type: "json_schema",
+            name: "auto_reply_gate",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                should_reply: { type: "boolean" },
+                reason: { type: "string" },
+                follow_up_time: { type: ["string", "null"] },
+              },
+              required: ["should_reply", "reason"],
+            },
+          },
+        },
         input: [{ role: "user", content: user }],
+        temperature: 0,
       },
     });
 
     const text = response.output_text?.trim();
     if (!text) {
+      if (interactionId) {
+        await markAiInteractionError(interactionId, "Post-process error: empty output_text");
+      }
       return { shouldReply: false, reason: "No decision returned" };
     }
 
     const jsonText = text.replace(/```json\n?|\n?```/g, "").trim();
-    const parsed = JSON.parse(jsonText) as {
-      should_reply: boolean;
-      reason: string;
-      follow_up_time?: string;
-    };
+    let parsed: { should_reply: boolean; reason: string; follow_up_time?: string | null };
+    try {
+      parsed = JSON.parse(jsonText) as {
+        should_reply: boolean;
+        reason: string;
+        follow_up_time?: string | null;
+      };
+    } catch (parseError) {
+      if (interactionId) {
+        await markAiInteractionError(
+          interactionId,
+          `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})`
+        );
+      }
+      return { shouldReply: false, reason: "Decision parse error" };
+    }
 
     return {
       shouldReply: Boolean(parsed.should_reply),
