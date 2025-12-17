@@ -120,6 +120,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - **Auto-Reply Safety Gate (`gpt-5-mini`):** Decides if an auto-reply should be sent (blocks opt-outs, automated replies, and acknowledgement-only messages).
 - **Draft Generation (`gpt-5.1`):** Generates contextual drafts with availability-aware scheduling rules and banned-words enforcement.
 - **Timezone Inference (`gpt-5-nano`):** Infers lead IANA timezone when missing (persisted only when confidence ≥ 0.95).
+- **AI Observability (Admin-only):** Settings → AI Personality includes an AI mini-dashboard showing prompt templates (system/assistant/user), usage (calls/tokens/errors/latency), and estimated cost (30-day retention).
 
 ---
 
@@ -148,6 +149,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   message-actions.ts        # Message operations, draft approval
   email-actions.ts          # Email sending via Inboxxia
   email-campaign-actions.ts # Campaign sync logic
+  ai-observability-actions.ts # Admin-only AI prompts + usage dashboard data
 
 /lib
   prisma.ts                 # Prisma client singleton
@@ -155,6 +157,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   sentiment.ts              # Sentiment classification logic
   auto-reply-gate.ts        # Auto-send decision gate (should we auto-reply?)
   ai-drafts.ts              # AI draft generation
+  /ai                       # AI observability + prompt templates
   availability-cache.ts     # Cached live availability refresh + filtering
   availability-format.ts    # Availability slot label formatting
   timezone-inference.ts     # Lead timezone inference (deterministic + AI)
@@ -178,6 +181,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 | `Campaign` | GHL SMS campaigns |
 | `EmailCampaign` | Inboxxia email campaigns |
 | `AIDraft` | Pending AI-generated response drafts |
+| `AIInteraction` | AI usage telemetry (tokens/cost/latency/errors) |
 | `FollowUpTask` | Scheduled follow-up tasks |
 | `WorkspaceSettings` | AI personality, automation rules |
 | `WorkspaceAvailabilityCache` | Cached calendar availability per workspace |
@@ -212,12 +216,19 @@ model Message {
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anonymous key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (for webhooks) |
 | `OPENAI_API_KEY` | OpenAI API key |
+| `AI_MODEL_PRICING_JSON` | (Optional) Override per-model token pricing for cost estimates |
 | `DATABASE_URL` | Transaction pooler connection (port 6543, `?pgbouncer=true`) |
 | `DIRECT_URL` | Session pooler connection (port 5432) |
 | `SLACK_WEBHOOK_URL` | (Optional) Slack notifications for meetings booked |
 | `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |
 | `UNIPILE_DSN` | Unipile base DSN (e.g. `https://apiXX.unipile.com:PORT`) |
 | `UNIPILE_API_KEY` | Unipile API key |
+
+### Optional Cron (AI Retention)
+
+- **Endpoint:** `/api/cron/ai-retention`
+- **Purpose:** Prunes `AIInteraction` records older than 30 days (also pruned opportunistically during normal app usage).
+- **Auth:** `Authorization: Bearer ${CRON_SECRET}`
 | `EMAIL_GUARD_API_KEY` | (Optional) EmailGuard API key for email validation before sending |
 
 ### Vercel Cron Setup

@@ -31,6 +31,7 @@ model Client {
   followUpSequences FollowUpSequence[]  // Follow-up sequence templates
   calendarLinks CalendarLink[]      // Multiple calendar links for availability
   availabilityCache WorkspaceAvailabilityCache?
+  aiInteractions AIInteraction[]
 
   @@index([userId])
 }
@@ -165,6 +166,7 @@ model Lead {
   followUps         FollowUpTask[]
   followUpInstances FollowUpInstance[]  // Active follow-up sequences for this lead
   aiDrafts          AIDraft[]
+  aiInteractions    AIInteraction[]
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -262,6 +264,36 @@ model AIDraft {
   @@index([leadId])
   @@index([channel])
   @@index([status])
+}
+
+// AI usage telemetry (admin-only observability)
+model AIInteraction {
+  id           String   @id @default(uuid())
+  clientId     String
+  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leadId       String?
+  lead         Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  featureId    String   // Stable feature key (e.g. "sentiment.classify")
+  promptKey    String?  // Optional prompt registry key/version
+  model        String
+  apiType      String   // "responses" | "chat_completions"
+  inputTokens  Int?
+  outputTokens Int?
+  reasoningTokens Int?
+  totalTokens  Int?
+  latencyMs    Int?
+  status       String   @default("success") // success | error
+  errorMessage String?  @db.Text
+  createdAt    DateTime @default(now())
+
+  @@index([clientId])
+  @@index([leadId])
+  @@index([featureId])
+  @@index([model])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@index([clientId, createdAt(sort: Desc)])
+  @@index([clientId, featureId, createdAt(sort: Desc)])
 }
 
 // EmailBison campaigns synced per client

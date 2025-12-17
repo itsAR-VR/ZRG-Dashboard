@@ -1,16 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequence-actions";
-import OpenAI from "openai";
+import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { runResponse } from "@/lib/ai/openai-telemetry";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
 import { sendMessage } from "@/actions/message-actions";
 import { sendEmailReply } from "@/actions/email-actions";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 import {
   shouldAutoBook,
   bookMeetingOnGHL,
@@ -1146,7 +1143,8 @@ export async function resumeGhostedFollowUps(opts?: {
  */
 export async function parseAcceptedTimeFromMessage(
   message: string,
-  offeredSlots: OfferedSlot[]
+  offeredSlots: OfferedSlot[],
+  meta: { clientId: string; leadId?: string | null }
 ): Promise<OfferedSlot | null> {
   if (!message || offeredSlots.length === 0) return null;
 
@@ -1162,25 +1160,25 @@ export async function parseAcceptedTimeFromMessage(
       .map((slot, i) => `${i + 1}. ${slot.label} (${slot.datetime})`)
       .join("\n");
 
-    const systemPrompt = `You are a time parsing assistant. Given a user message and a list of available time slots, determine which slot (if any) the user is accepting.
-
-Available slots:
-${slotContext}
-
-Rules:
-- If the user clearly accepts one of the slots, respond with just the slot number (1, 2, 3, etc.)
-- If the user says something like "Thursday works" or "the first one", match to the appropriate slot
-- If the user is ambiguous (e.g., "yes", "sounds good", "works" with no indication of which option), respond with "NONE"
-- If the user doesn't seem to be accepting any time slot, respond with "NONE"
-- Only respond with a number or "NONE", nothing else`;
+    const promptTemplate = getAIPromptTemplate("followup.parse_accepted_time.v1");
+    const systemTemplate =
+      promptTemplate?.messages.find((m) => m.role === "system")?.content ||
+      "Match the message to one of the provided slots; reply with a slot number or NONE.";
+    const systemPrompt = systemTemplate.replaceAll("{slotContext}", slotContext);
 
     // GPT-5-mini with low reasoning effort for time parsing using Responses API
-    const response = await openai.responses.create({
-      model: "gpt-5-mini",
-      instructions: systemPrompt,
-      input: message,
-      reasoning: { effort: "low" },
-      max_output_tokens: 10,
+    const response = await runResponse({
+      clientId: meta.clientId,
+      leadId: meta.leadId,
+      featureId: promptTemplate?.featureId || "followup.parse_accepted_time",
+      promptKey: promptTemplate?.key || "followup.parse_accepted_time.v1",
+      params: {
+        model: "gpt-5-mini",
+        instructions: systemPrompt,
+        input: message,
+        reasoning: { effort: "low" },
+        max_output_tokens: 10,
+      },
     });
 
     const aiResponse = response.output_text?.trim();
@@ -1205,37 +1203,34 @@ Rules:
  * Detect "meeting accepted" intent from a message
  * Returns true if the message indicates acceptance of a meeting time
  */
-export async function detectMeetingAcceptedIntent(message: string): Promise<boolean> {
+export async function detectMeetingAcceptedIntent(
+  message: string,
+  meta: { clientId: string; leadId?: string | null }
+): Promise<boolean> {
   if (!message) return false;
 
   try {
     // Validate OpenAI API key is configured
     if (!process.env.OPENAI_API_KEY) return false;
 
+    const promptTemplate = getAIPromptTemplate("followup.detect_meeting_accept_intent.v1");
+    const systemPrompt =
+      promptTemplate?.messages.find((m) => m.role === "system")?.content ||
+      "Determine if the message indicates acceptance. Reply YES or NO.";
+
     // GPT-5-mini with low reasoning effort for intent detection using Responses API
-    const response = await openai.responses.create({
-      model: "gpt-5-mini",
-      instructions: `You are an intent classifier. Determine if the following message indicates that the person is accepting/confirming a meeting time.
-
-Examples of acceptance:
-- "Yes, Thursday at 3pm works"
-- "That time is perfect"
-- "Let's do the 11am slot"
-- "The second option works for me"
-- "I can make Friday work"
-- "Thursday works"
-
-Examples of non-acceptance:
-- "What times are available?"
-- "I'm not interested"
-- "Can we reschedule?"
-- "What is this about?"
-- "Tell me more"
-
-Respond with only "YES" or "NO".`,
-      input: message,
-      reasoning: { effort: "low" },
-      max_output_tokens: 5,
+    const response = await runResponse({
+      clientId: meta.clientId,
+      leadId: meta.leadId,
+      featureId: promptTemplate?.featureId || "followup.detect_meeting_accept_intent",
+      promptKey: promptTemplate?.key || "followup.detect_meeting_accept_intent.v1",
+      params: {
+        model: "gpt-5-mini",
+        instructions: systemPrompt,
+        input: message,
+        reasoning: { effort: "low" },
+        max_output_tokens: 5,
+      },
     });
 
     const result = response.output_text?.trim()?.toUpperCase();
@@ -1258,6 +1253,15 @@ export async function processMessageForAutoBooking(
   error?: string;
 }> {
   try {
+    const leadMeta = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: { id: true, clientId: true },
+    });
+
+    if (!leadMeta) {
+      return { booked: false, error: "Lead not found" };
+    }
+
     // Check if lead should auto-book
     const autoBookResult = await shouldAutoBook(leadId);
     if (!autoBookResult.shouldBook) {
@@ -1265,7 +1269,10 @@ export async function processMessageForAutoBooking(
     }
 
     // Detect if the message indicates meeting acceptance
-    const isMeetingAccepted = await detectMeetingAcceptedIntent(messageBody);
+    const isMeetingAccepted = await detectMeetingAcceptedIntent(messageBody, {
+      clientId: leadMeta.clientId,
+      leadId: leadMeta.id,
+    });
     if (!isMeetingAccepted) {
       return { booked: false };
     }
@@ -1277,7 +1284,10 @@ export async function processMessageForAutoBooking(
     }
 
     // Parse which slot they accepted
-    const acceptedSlot = await parseAcceptedTimeFromMessage(messageBody, offeredSlots);
+    const acceptedSlot = await parseAcceptedTimeFromMessage(messageBody, offeredSlots, {
+      clientId: leadMeta.clientId,
+      leadId: leadMeta.id,
+    });
     if (!acceptedSlot) {
       // Ambiguous acceptance (e.g., "yes/sounds good") — do NOT auto-book.
       // Create a follow-up task with a suggested clarification message.

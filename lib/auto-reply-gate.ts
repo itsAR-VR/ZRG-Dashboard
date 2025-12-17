@@ -1,10 +1,7 @@
 import "@/lib/server-dns";
-import OpenAI from "openai";
+import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { runResponse } from "@/lib/ai/openai-telemetry";
 import { isOptOutText } from "@/lib/sentiment";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 export type AutoReplyDecision = {
   shouldReply: boolean;
@@ -29,6 +26,8 @@ function isAckOnly(text: string): boolean {
 }
 
 export async function decideShouldAutoReply(opts: {
+  clientId: string;
+  leadId?: string | null;
   channel: "email" | "sms" | "linkedin";
   latestInbound: string;
   subject?: string | null;
@@ -63,30 +62,10 @@ export async function decideShouldAutoReply(opts: {
     return { shouldReply: false, reason: "OPENAI_API_KEY not configured" };
   }
 
-  const system = `You decide whether an inbound reply warrants sending a reply back.
-
-Inputs provided:
-1) Reply: the latest inbound message (cleaned)
-2) Subject (if email)
-3) Conversation history transcript
-4) Reply categorization (intent/sentiment)
-5) Automated reply flag (if available)
-6) Reply received at timestamp
-
-Reasoning framework:
-- If categorization is unsubscribe / stop / angry / spam complaint / blacklist → NO
-- If categorization is interested / positive / neutral question / referral / meeting requested / call requested / information requested / follow up → YES
-- If categorization is not interested / polite decline and no new info is added → NO
-- Exception: If categorization is Not Interested but the conversation history shows they were previously interested, reply unless it is a definitive hard no
-- If the reply introduces a new question, new info, or a path to progress → YES
-- If the reply is an auto-response or simple acknowledgement ("thanks", "got it") → NO
-- If conversation history already had a final closing message and the reply doesn't reopen the door → NO
-
-Follow-up time:
-- Only include follow_up_time when appropriate.
-- If should_reply is true and they are interested, set follow up soon (usually next day).
-- If should_reply is false but they explicitly ask for future contact (e.g., "reach out in 3 months"), set follow_up_time accordingly.
-- Use ISO format (YYYY-MM-DDTHH:MM:SSZ). If timezone unclear, assume US Central. Never output a time earlier than 8am local.
+  const promptTemplate = getAIPromptTemplate("auto_reply_gate.decide.v1");
+  const system =
+    promptTemplate?.messages.find((m) => m.role === "system")?.content ||
+    `You decide whether an inbound reply warrants sending a reply back.
 
 Output MUST be valid JSON:
 {
@@ -117,12 +96,18 @@ Output MUST be valid JSON:
   );
 
   try {
-    const response = await openai.responses.create({
-      model: "gpt-5-mini",
-      reasoning: { effort: "low" },
-      max_output_tokens: 200,
-      instructions: system,
-      input: [{ role: "user", content: user }],
+    const response = await runResponse({
+      clientId: opts.clientId,
+      leadId: opts.leadId,
+      featureId: promptTemplate?.featureId || "auto_reply_gate.decide",
+      promptKey: promptTemplate?.key || "auto_reply_gate.decide.v1",
+      params: {
+        model: "gpt-5-mini",
+        reasoning: { effort: "low" },
+        max_output_tokens: 200,
+        instructions: system,
+        input: [{ role: "user", content: user }],
+      },
     });
 
     const text = response.output_text?.trim();
@@ -147,4 +132,3 @@ Output MUST be valid JSON:
     return { shouldReply: false, reason: "Decision error" };
   }
 }
-

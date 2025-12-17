@@ -373,6 +373,7 @@ async function enrichLeadFromEmailBison(
  * Only updates lead if extraction is confident and from actual lead
  */
 async function enrichLeadFromSignature(
+  clientId: string,
   leadId: string,
   leadName: string,
   leadEmail: string,
@@ -390,7 +391,10 @@ async function enrichLeadFromSignature(
       return result;
     }
 
-    const extraction = await extractContactFromSignature(emailBody, leadName, leadEmail);
+    const extraction = await extractContactFromSignature(emailBody, leadName, leadEmail, {
+      clientId,
+      leadId,
+    });
 
     // Only use extraction if from actual lead and high confidence
     if (!extraction.isFromLead) {
@@ -808,7 +812,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   if (reply.interested === true) {
     sentimentTag = "Interested";
   } else {
-    sentimentTag = await classifySentiment(transcript);
+    sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
   }
 
   // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
@@ -933,7 +937,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
 
   // STEP 3: Extract contact info from email signature (AI-powered)
   const leadFullName = `${lead.firstName || ""} ${lead.lastName || ""}`.trim() || "Lead";
-  await enrichLeadFromSignature(lead.id, leadFullName, fromEmail, fullEmailBody);
+  await enrichLeadFromSignature(client.id, lead.id, leadFullName, fromEmail, fullEmailBody);
 
   // If the lead is a positive reply and we have a phone, ensure they exist in GHL
   // so SMS history and future messages can be synced.
@@ -970,6 +974,8 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
 
       if (lead.autoReplyEnabled && draftId) {
         const decision = await decideShouldAutoReply({
+          clientId: client.id,
+          leadId: lead.id,
           channel: "email",
           latestInbound: cleaned.cleaned || contentForClassification,
           subject: reply.email_subject ?? null,
@@ -1353,7 +1359,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   const wasFollowUp = previousSentiment === "Follow Up" || previousSentiment === "Snoozed";
 
   // Classify sentiment - any inbound reply clears "Follow Up" or "Snoozed" tags
-  const sentimentTag = await classifySentiment(transcript);
+  const sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
 
   // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
   if (wasFollowUp) {
@@ -1443,7 +1449,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 
   // STEP 2: Extract contact info from email signature (AI-powered)
   const leadFullName = fromName || `${lead.firstName || ""} ${lead.lastName || ""}`.trim() || "Lead";
-  await enrichLeadFromSignature(lead.id, leadFullName, fromEmail, fullEmailBody);
+  await enrichLeadFromSignature(client.id, lead.id, leadFullName, fromEmail, fullEmailBody);
 
   // STEP 3: Trigger Clay enrichment if still missing LinkedIn or phone
   // Only triggers for positive sentiments (Meeting Requested, Call Requested, Info Requested, Interested)

@@ -1,12 +1,9 @@
-import OpenAI from "openai";
+import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { runResponse } from "@/lib/ai/openai-telemetry";
 import { prisma } from "@/lib/prisma";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 type DraftChannel = "sms" | "email" | "linkedin";
 
@@ -286,6 +283,10 @@ export async function generateResponseDraft(
       },
     });
 
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
     const settings = lead?.client?.settings;
     const aiTone = settings?.aiTone || "friendly-professional";
     const aiName = settings?.aiPersonaName || lead?.client?.name || "Your Sales Rep";
@@ -449,12 +450,26 @@ Generate an appropriate ${channel} response following the guidelines above.
           },
         ];
 
-    const response = await openai.responses.create({
-      model: "gpt-5.1",
-      instructions: systemPrompt,
-      input: inputMessages,
-      reasoning: { effort: "low" },
-      max_output_tokens: channel === "email" ? 1000 : 160,
+    const promptKey =
+      channel === "email"
+        ? "draft.generate.email.v1"
+        : channel === "linkedin"
+          ? "draft.generate.linkedin.v1"
+          : "draft.generate.sms.v1";
+    const promptTemplate = getAIPromptTemplate(promptKey);
+
+    const response = await runResponse({
+      clientId: lead.clientId,
+      leadId,
+      featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
+      promptKey: promptTemplate?.key || promptKey,
+      params: {
+        model: "gpt-5.1",
+        instructions: systemPrompt,
+        input: inputMessages,
+        reasoning: { effort: "low" },
+        max_output_tokens: channel === "email" ? 1000 : 160,
+      },
     });
 
     const draftContent = response.output_text?.trim();

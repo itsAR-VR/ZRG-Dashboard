@@ -1,10 +1,7 @@
 import "@/lib/server-dns";
-import OpenAI from "openai";
+import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { runResponse } from "@/lib/ai/openai-telemetry";
 import { prisma } from "@/lib/prisma";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 const CONFIDENCE_THRESHOLD = 0.95;
 
@@ -103,6 +100,7 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
     where: { id: leadId },
     select: {
       id: true,
+      clientId: true,
       timezone: true,
       companyState: true,
       phone: true,
@@ -141,47 +139,38 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
   }
 
   try {
-    const response = await openai.responses.create({
-      model: "gpt-5-nano",
-      reasoning: { effort: "low" },
-      max_output_tokens: 120,
-      instructions: `<task>
-Infer the lead's IANA timezone identifier.
-</task>
+    const promptTemplate = getAIPromptTemplate("timezone.infer.v1");
+    const instructionsTemplate =
+      promptTemplate?.messages.find((m) => m.role === "system")?.content ||
+      "Infer the lead's IANA timezone. Output only JSON.";
+    const instructions = instructionsTemplate.replaceAll(
+      "{confidenceThreshold}",
+      String(CONFIDENCE_THRESHOLD)
+    );
 
-<rules>
-- Output ONLY valid JSON.
-- timezone must be an IANA timezone (e.g., "America/New_York"). Never output abbreviations like "EST".
-- If you cannot reach >= ${CONFIDENCE_THRESHOLD} confidence, set timezone to null and confidence < ${CONFIDENCE_THRESHOLD}.
-- Do not guess.
-</rules>
-
-<output_format>
-{"timezone": string | null, "confidence": number}
-</output_format>
-
-<hints>
-Common US timezones include:
-- America/New_York
-- America/Chicago
-- America/Denver
-- America/Los_Angeles
-- America/Phoenix
-- America/Anchorage
-- Pacific/Honolulu
-</hints>`,
-      input: JSON.stringify(
-        {
-          companyState: lead.companyState,
-          phone: lead.phone,
-          email: lead.email,
-          companyName: lead.companyName,
-          companyWebsite: lead.companyWebsite,
-          workspaceTimezone: lead.client.settings?.timezone || null,
-        },
-        null,
-        2
-      ),
+    const response = await runResponse({
+      clientId: lead.clientId,
+      leadId,
+      featureId: promptTemplate?.featureId || "timezone.infer",
+      promptKey: promptTemplate?.key || "timezone.infer.v1",
+      params: {
+        model: "gpt-5-nano",
+        reasoning: { effort: "low" },
+        max_output_tokens: 120,
+        instructions,
+        input: JSON.stringify(
+          {
+            companyState: lead.companyState,
+            phone: lead.phone,
+            email: lead.email,
+            companyName: lead.companyName,
+            companyWebsite: lead.companyWebsite,
+            workspaceTimezone: lead.client.settings?.timezone || null,
+          },
+          null,
+          2
+        ),
+      },
     });
 
     const text = response.output_text?.trim();
@@ -211,4 +200,3 @@ Common US timezones include:
     return { timezone: fallback, source: "workspace_fallback" };
   }
 }
-

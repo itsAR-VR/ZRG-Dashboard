@@ -240,7 +240,7 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
   const transcript = buildSentimentTranscriptFromMessages(recentMessages);
 
   // Classify sentiment
-  const sentimentTag = await classifySentiment(transcript);
+  const sentimentTag = await classifySentiment(transcript, { clientId, leadId: lead.id });
 
   // Update lead sentiment
   await prisma.lead.update({

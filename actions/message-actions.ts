@@ -51,7 +51,8 @@ function preClassifySentiment(
 }
 
 async function computeSentimentFromMessages(
-  messages: { body: string; direction: string; channel?: string | null; subject?: string | null; sentAt: Date }[]
+  messages: { body: string; direction: string; channel?: string | null; subject?: string | null; sentAt: Date }[],
+  opts: { clientId: string; leadId: string }
 ): Promise<SentimentTag> {
   // First, check if we can determine sentiment without AI (pre-classification)
   const preClassified = preClassifySentiment(messages);
@@ -73,13 +74,22 @@ async function computeSentimentFromMessages(
     return "Neutral";
   }
 
-  return classifySentiment(transcript);
+  return classifySentiment(transcript, { clientId: opts.clientId, leadId: opts.leadId });
 }
 
 async function refreshLeadSentimentTag(leadId: string): Promise<{
   sentimentTag: SentimentTag;
   status: string;
 }> {
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+    select: { id: true, clientId: true },
+  });
+
+  if (!lead) {
+    throw new Error("Lead not found");
+  }
+
   // IMPORTANT: Get ALL messages across all channels (SMS, email, LinkedIn)
   // to ensure sentiment classification considers the full conversation history
   const messages = await prisma.message.findMany({
@@ -88,7 +98,10 @@ async function refreshLeadSentimentTag(leadId: string): Promise<{
     orderBy: { sentAt: "asc" },
   });
 
-  const sentimentTag = await computeSentimentFromMessages(messages);
+  const sentimentTag = await computeSentimentFromMessages(messages, {
+    clientId: lead.clientId,
+    leadId: lead.id,
+  });
   const status = SENTIMENT_TO_STATUS[sentimentTag] || "new";
 
   await prisma.lead.update({

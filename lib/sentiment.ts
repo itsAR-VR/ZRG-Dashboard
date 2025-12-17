@@ -1,5 +1,6 @@
 import "@/lib/server-dns";
-import OpenAI from "openai";
+import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { runChatCompletion } from "@/lib/ai/openai-telemetry";
 
 // Sentiment tags for classification
 export const SENTIMENT_TAGS = [
@@ -52,10 +53,6 @@ export function isPositiveSentiment(tag: string | null): tag is PositiveSentimen
   if (!tag) return false;
   return POSITIVE_SENTIMENTS.includes(tag as PositiveSentiment);
 }
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 // ============================================================================
 // REGEX BOUNCE DETECTION
@@ -385,12 +382,17 @@ async function sleep(ms: number): Promise<void> {
  */
 export async function classifySentiment(
   transcript: string,
-  maxRetries: number = 3
+  opts: {
+    clientId: string;
+    leadId?: string | null;
+    maxRetries?: number;
+  }
 ): Promise<SentimentTag> {
   if (!transcript || !process.env.OPENAI_API_KEY) {
     return "Neutral";
   }
 
+  const maxRetries = opts.maxRetries ?? 3;
   const { allLeadText, lastLeadText } = extractLeadTextFromTranscript(transcript);
 
   // Fast, high-confidence classification without calling the model.
@@ -405,45 +407,30 @@ export async function classifySentiment(
   if (isInformationRequestedMessage(lastLeadText)) return "Information Requested";
   if (isFollowUpMessage(lastLeadText)) return "Follow Up";
 
-  const systemPrompt = `You are an expert inbox manager for inbound lead replies.
-
-Task: categorize lead replies from outreach conversations across email/SMS/LinkedIn.
-Classify into ONE category based primarily on the MOST RECENT lead reply (the transcript is chronological; newest is at the end).
-Use older messages ONLY to disambiguate ultra-short confirmations (e.g., "that works") against a previously proposed specific time.
-Ignore agent/rep messages except for that disambiguation.
-
-IMPORTANT:
-- If the latest lead reply (or email subject) contains an opt-out/unsubscribe request, classify as "Blacklist".
-- Contact details in signatures (job title, phone numbers, addresses, websites, scheduling links) MUST NOT by themselves imply "Call Requested" or "Meeting Requested".
-
-PRIORITY ORDER (if multiple cues exist):
-Blacklist > Automated Reply > Out of Office > Meeting Requested > Call Requested > Information Requested > Not Interested > Follow Up > Interested > Neutral
-
-CATEGORIES:
-- "Blacklist": Explicit opt-out ("unsubscribe", "remove me", "stop emailing"), hostile opt-out language, spam complaints, or email bounces.
-- "Automated Reply": Generic auto-acknowledgements (e.g., "we received your message", "this is an automated response") that are NOT Out of Office.
-- "Out of Office": Vacation/OOO/away-until messages.
-- "Meeting Requested": Lead asks to schedule or confirms a time/day for a meeting/call (including short confirmations when a specific time exists in the immediately prior context).
-- "Call Requested": Lead explicitly asks for a PHONE call ("call me", "ring me", "phone me") or shares a number as part of that request.
-  Do NOT use this just because a phone number appears in a signature.
-- "Information Requested": Lead asks for details about pricing, offer, process, etc.
-- "Not Interested": Clear decline ("not interested", "no thanks", "already have").
-- "Follow Up": Defers timing ("later", "next month", "busy right now", "reach out in X").
-- "Interested": Positive interest without a clear next step.
-- "Neutral": Truly ambiguous (rare).
-
-Return ONLY the category name, nothing else.`;
+  const promptTemplate = getAIPromptTemplate("sentiment.classify.v1");
+  const systemPrompt =
+    promptTemplate?.messages.find((m) => m.role === "system")?.content ||
+    "You are an expert inbox manager. Classify the reply into ONE category and return only the category name.";
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const response = await openai.chat.completions.create({
-        model: "gpt-5-mini",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: `Transcript (chronological; newest at the end):\n\n${trimTranscriptForModel(transcript)}` }
-        ],
-        max_tokens: 50,
-        temperature: 0,
+      const response = await runChatCompletion({
+        clientId: opts.clientId,
+        leadId: opts.leadId,
+        featureId: promptTemplate?.featureId || "sentiment.classify",
+        promptKey: promptTemplate?.key || "sentiment.classify.v1",
+        params: {
+          model: "gpt-5-mini",
+          messages: [
+            { role: "system", content: systemPrompt },
+            {
+              role: "user",
+              content: `Transcript (chronological; newest at the end):\n\n${trimTranscriptForModel(transcript)}`,
+            },
+          ],
+          max_tokens: 50,
+          temperature: 0,
+        },
       });
 
       const raw = response.choices[0]?.message?.content?.trim() || "";

@@ -6,6 +6,10 @@ import {
   Linkedin,
   MessageSquare,
   Phone,
+  Activity,
+  DollarSign,
+  RefreshCcw,
+  Eye,
   Check,
   Clock,
   Globe,
@@ -39,6 +43,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { IntegrationsManager } from "./settings/integrations-manager"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { 
@@ -55,6 +68,13 @@ import {
   type QualificationQuestion,
   type CalendarLinkData,
 } from "@/actions/settings-actions"
+import {
+  getAiObservabilitySummary,
+  getAiPromptTemplates,
+  type AiObservabilityWindow,
+  type AiPromptTemplatePublic,
+  type ObservabilitySummary,
+} from "@/actions/ai-observability-actions"
 import {
   fetchGHLCalendarsForWorkspace,
   fetchGHLUsersForWorkspace,
@@ -168,6 +188,17 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     autoBlacklist: true,
   })
 
+  // AI observability (admin-only)
+  const [aiObsWindow, setAiObsWindow] = useState<AiObservabilityWindow>("24h")
+  const [aiObs, setAiObs] = useState<ObservabilitySummary | null>(null)
+  const [aiObsLoading, setAiObsLoading] = useState(false)
+  const [canViewAiObs, setCanViewAiObs] = useState(false)
+  const [aiObsError, setAiObsError] = useState<string | null>(null)
+
+  const [aiPromptsOpen, setAiPromptsOpen] = useState(false)
+  const [aiPromptTemplates, setAiPromptTemplates] = useState<AiPromptTemplatePublic[] | null>(null)
+  const [aiPromptsLoading, setAiPromptsLoading] = useState(false)
+
   // Load settings when workspace changes
   useEffect(() => {
     async function loadSettings() {
@@ -260,6 +291,74 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
     loadSettings()
   }, [activeWorkspace])
+
+  const refreshAiObservability = useCallback(async () => {
+    if (!activeWorkspace) {
+      setAiObs(null)
+      setCanViewAiObs(false)
+      setAiObsError(null)
+      return
+    }
+
+    setAiObsLoading(true)
+    try {
+      const result = await getAiObservabilitySummary(activeWorkspace, aiObsWindow)
+      if (result.success && result.data) {
+        setAiObs(result.data)
+        setCanViewAiObs(true)
+        setAiObsError(null)
+      } else {
+        setAiObs(null)
+        const errorMessage = result.error || "Failed to load AI metrics"
+        const isAuthError =
+          errorMessage.toLowerCase().includes("unauthorized") ||
+          errorMessage.toLowerCase().includes("not authenticated")
+        if (isAuthError) {
+          setCanViewAiObs(false)
+        }
+        setAiObsError(errorMessage)
+      }
+    } catch (error) {
+      setAiObs(null)
+      setAiObsError(error instanceof Error ? error.message : "Failed to load AI metrics")
+    } finally {
+      setAiObsLoading(false)
+    }
+  }, [activeWorkspace, aiObsWindow])
+
+  useEffect(() => {
+    refreshAiObservability()
+  }, [refreshAiObservability])
+
+  useEffect(() => {
+    if (!aiPromptsOpen) return
+    if (!activeWorkspace) return
+    if (aiPromptTemplates) return
+
+    let cancelled = false
+    setAiPromptsLoading(true)
+    getAiPromptTemplates(activeWorkspace)
+      .then((result) => {
+        if (cancelled) return
+        if (result.success && result.templates) {
+          setAiPromptTemplates(result.templates)
+        } else {
+          toast.error("Failed to load prompts", { description: result.error || "Unknown error" })
+        }
+      })
+      .catch((err) => {
+        if (cancelled) return
+        toast.error("Failed to load prompts", { description: err instanceof Error ? err.message : "Unknown error" })
+      })
+      .finally(() => {
+        if (cancelled) return
+        setAiPromptsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [aiPromptsOpen, activeWorkspace, aiPromptTemplates])
 
   // Load GHL calendars and users for booking config
   const loadGHLData = async (clientId: string) => {
@@ -1467,6 +1566,228 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </div>
               </CardContent>
             </Card>
+
+            {canViewAiObs ? (
+              <>
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <CardTitle className="flex items-center gap-2">
+                          <Activity className="h-5 w-5" />
+                          AI Dashboard
+                        </CardTitle>
+                        <CardDescription>
+                          Token usage + cost estimates across all AI calls (30-day retention)
+                        </CardDescription>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Select
+                          value={aiObsWindow}
+                          onValueChange={(v) => setAiObsWindow(v as AiObservabilityWindow)}
+                        >
+                          <SelectTrigger className="w-[110px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="24h">24h</SelectItem>
+                            <SelectItem value="7d">7d</SelectItem>
+                            <SelectItem value="30d">30d</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={refreshAiObservability}
+                          disabled={aiObsLoading}
+                        >
+                          <RefreshCcw className="h-4 w-4 mr-2" />
+                          Refresh
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setAiPromptsOpen(true)}
+                        >
+                          <Eye className="h-4 w-4 mr-2" />
+                          View Prompts
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {aiObsError ? (
+                      <div className="text-sm text-destructive">{aiObsError}</div>
+                    ) : null}
+
+                    {aiObsLoading ? (
+                      <div className="flex items-center justify-center py-10">
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                      </div>
+                    ) : aiObs ? (
+                      <>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <div className="p-3 rounded-lg border">
+                            <p className="text-xs text-muted-foreground">Calls</p>
+                            <p className="text-xl font-semibold">
+                              {new Intl.NumberFormat().format(aiObs.totals.calls)}
+                            </p>
+                          </div>
+                          <div className="p-3 rounded-lg border">
+                            <p className="text-xs text-muted-foreground">Tokens</p>
+                            <p className="text-xl font-semibold">
+                              {new Intl.NumberFormat(undefined, { notation: "compact" }).format(aiObs.totals.totalTokens)}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {new Intl.NumberFormat(undefined, { notation: "compact" }).format(aiObs.totals.inputTokens)} in /{" "}
+                              {new Intl.NumberFormat(undefined, { notation: "compact" }).format(aiObs.totals.outputTokens)} out
+                            </p>
+                          </div>
+                          <div className="p-3 rounded-lg border">
+                            <p className="text-xs text-muted-foreground">Estimated Cost</p>
+                            <p className="text-xl font-semibold flex items-center gap-2">
+                              <DollarSign className="h-4 w-4 text-muted-foreground" />
+                              {aiObs.totals.estimatedCostUsd.toLocaleString("en-US", {
+                                style: "currency",
+                                currency: "USD",
+                              })}
+                            </p>
+                            {!aiObs.totals.costComplete ? (
+                              <p className="text-xs text-muted-foreground">Partial (unknown model rates)</p>
+                            ) : null}
+                          </div>
+                          <div className="p-3 rounded-lg border">
+                            <p className="text-xs text-muted-foreground">Errors</p>
+                            <p className="text-xl font-semibold">
+                              {aiObs.totals.calls
+                                ? `${Math.round((aiObs.totals.errors / aiObs.totals.calls) * 100)}%`
+                                : "0%"}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {new Intl.NumberFormat().format(aiObs.totals.errors)} errors ·{" "}
+                              {aiObs.totals.avgLatencyMs ? `${aiObs.totals.avgLatencyMs}ms avg` : "—"}
+                            </p>
+                          </div>
+                        </div>
+
+                        <Separator />
+
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm font-medium">By Feature</p>
+                            <p className="text-xs text-muted-foreground">
+                              Window: {aiObs.window} · Updated:{" "}
+                              {new Date(aiObs.rangeEnd).toLocaleString()}
+                            </p>
+                          </div>
+
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Feature</TableHead>
+                                <TableHead>Model</TableHead>
+                                <TableHead>Calls</TableHead>
+                                <TableHead>Tokens</TableHead>
+                                <TableHead>Cost</TableHead>
+                                <TableHead>Errors</TableHead>
+                                <TableHead>Latency</TableHead>
+                                <TableHead>Last Used</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {aiObs.features.map((f) => (
+                                <TableRow key={`${f.featureId}:${f.model}`}>
+                                  <TableCell className="font-medium">{f.name}</TableCell>
+                                  <TableCell className="text-muted-foreground">{f.model}</TableCell>
+                                  <TableCell>{new Intl.NumberFormat().format(f.calls)}</TableCell>
+                                  <TableCell>
+                                    {new Intl.NumberFormat(undefined, { notation: "compact" }).format(f.totalTokens)}
+                                  </TableCell>
+                                  <TableCell>
+                                    {f.estimatedCostUsd === null
+                                      ? "—"
+                                      : f.estimatedCostUsd.toLocaleString("en-US", {
+                                          style: "currency",
+                                          currency: "USD",
+                                        })}
+                                  </TableCell>
+                                  <TableCell>{new Intl.NumberFormat().format(f.errors)}</TableCell>
+                                  <TableCell>{f.avgLatencyMs ? `${f.avgLatencyMs}ms` : "—"}</TableCell>
+                                  <TableCell>
+                                    {f.lastUsedAt ? new Date(f.lastUsedAt).toLocaleString() : "—"}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-sm text-muted-foreground">No AI activity in this window yet.</div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Dialog open={aiPromptsOpen} onOpenChange={setAiPromptsOpen}>
+                  <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+                    <DialogHeader>
+                      <DialogTitle>Backend Prompts</DialogTitle>
+                      <DialogDescription>
+                        Template-only view (system / assistant / user). No lead data is shown.
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    {aiPromptsLoading ? (
+                      <div className="flex items-center justify-center py-10">
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                      </div>
+                    ) : aiPromptTemplates && aiPromptTemplates.length > 0 ? (
+                      <Accordion type="single" collapsible className="w-full">
+                        {aiPromptTemplates.map((t) => (
+                          <AccordionItem key={t.key} value={t.key}>
+                            <AccordionTrigger>
+                              <div className="flex flex-col text-left">
+                                <span className="font-medium">{t.name}</span>
+                                <span className="text-xs text-muted-foreground">
+                                  {t.featureId} · {t.model} · {t.apiType}
+                                </span>
+                              </div>
+                            </AccordionTrigger>
+                            <AccordionContent className="space-y-4">
+                              {t.description ? (
+                                <p className="text-sm text-muted-foreground">{t.description}</p>
+                              ) : null}
+
+                              {(["system", "assistant", "user"] as const).map((role) => {
+                                const parts = t.messages.filter((m) => m.role === role)
+                                if (parts.length === 0) return null
+                                return (
+                                  <div key={role} className="space-y-2">
+                                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                      {role}
+                                    </p>
+                                    {parts.map((p, i) => (
+                                      <div
+                                        key={`${t.key}:${role}:${i}`}
+                                        className="rounded-lg border bg-muted/30 p-3 text-xs whitespace-pre-wrap"
+                                      >
+                                        {p.content}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )
+                              })}
+                            </AccordionContent>
+                          </AccordionItem>
+                        ))}
+                      </Accordion>
+                    ) : (
+                      <div className="text-sm text-muted-foreground">No prompt templates available.</div>
+                    )}
+                  </DialogContent>
+                </Dialog>
+              </>
+            ) : null}
           </TabsContent>
 
           {/* Team Management */}

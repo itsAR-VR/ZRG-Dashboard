@@ -469,7 +469,10 @@ export async function POST(request: NextRequest) {
 
     // Classify sentiment using AI
     // Note: Any inbound reply will reclassify sentiment, clearing "Follow Up" or "Snoozed" tags
-    const sentimentTag = await classifySentiment(transcript || messageBody);
+    const sentimentTag = await classifySentiment(transcript || messageBody, {
+      clientId: client.id,
+      leadId: leadResult.lead.id,
+    });
     console.log(`AI Classification: ${sentimentTag}`);
 
     // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
@@ -608,6 +611,8 @@ export async function POST(request: NextRequest) {
           // lead.autoReplyEnabled comes from the database (via upsert)
           if (lead.autoReplyEnabled && draftId) {
             const decision = await decideShouldAutoReply({
+              clientId: client.id,
+              leadId: lead.id,
               channel: "sms",
               latestInbound: messageBody,
               subject: null,

@@ -5,13 +5,10 @@
  */
 
 import "@/lib/server-dns";
-import OpenAI from "openai";
+import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { runResponse } from "@/lib/ai/openai-telemetry";
 import { normalizeLinkedInUrl } from "./linkedin-utils";
 import { normalizePhone } from "./lead-matching";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
 
 export interface SignatureExtractionResult {
   isFromLead: boolean;       // AI confirms email is from the actual lead
@@ -33,7 +30,8 @@ export interface SignatureExtractionResult {
 export async function extractContactFromSignature(
   emailBody: string,
   leadName: string,
-  leadEmail: string
+  leadEmail: string,
+  meta: { clientId: string; leadId?: string | null }
 ): Promise<SignatureExtractionResult> {
   // Default result for failures
   const defaultResult: SignatureExtractionResult = {
@@ -48,52 +46,32 @@ export async function extractContactFromSignature(
   }
 
   try {
+    const promptTemplate = getAIPromptTemplate("signature.extract.v1");
+    const instructionsTemplate =
+      promptTemplate?.messages.find((m) => m.role === "system")?.content ||
+      "Extract contact info from the signature and return JSON.";
+    const instructions = instructionsTemplate
+      .replaceAll("{leadName}", leadName)
+      .replaceAll("{leadEmail}", leadEmail);
+
     // GPT-5-nano for signature extraction using Responses API
     // Use low reasoning effort to ensure we get a textual JSON output within the token budget.
-    const response = await openai.responses.create({
-      model: "gpt-5-nano",
-      instructions: `<task>
-Analyze this email to extract contact information from the signature.
-</task>
-
-<verification>
-First, determine if this email is from the actual lead (${leadName}, ${leadEmail}) 
-or from an assistant/EA responding on their behalf. Look for indicators like:
-- "On behalf of...", "${leadName}'s assistant", third-person references to the lead
-- Different name in signature than the lead's name
-- Phrases like "I am writing on behalf of", "Please contact [someone else]"
-- The signature belonging to someone other than ${leadName}
-</verification>
-
-<extraction>
-If the email IS from the lead (isFromLead: true), extract:
-1. Phone number (any format) from the signature - look for patterns like:
-   - xxx-xxx-xxxx, (xxx) xxx-xxxx, +1 xxx xxx xxxx
-   - Numbers labeled as "Phone:", "Cell:", "Mobile:", "Tel:", "M:", "P:"
-2. LinkedIn profile URL from the signature - look for:
-   - linkedin.com/in/username
-   - Links containing "linkedin"
-
-Return null for fields not found. Only extract from the signature area (typically at the bottom).
-</extraction>
-
-<output_format>
-Respond with ONLY valid JSON, no explanation:
-{
-  "isFromLead": boolean,
-  "phone": string | null,
-  "linkedinUrl": string | null,
-  "confidence": "high" | "medium" | "low",
-  "reasoning": "brief 1-sentence explanation"
-}
-</output_format>`,
-      input: `Email from: ${leadEmail}
+    const response = await runResponse({
+      clientId: meta.clientId,
+      leadId: meta.leadId,
+      featureId: promptTemplate?.featureId || "signature.extract",
+      promptKey: promptTemplate?.key || "signature.extract.v1",
+      params: {
+        model: "gpt-5-nano",
+        instructions,
+        input: `Email from: ${leadEmail}
 Expected lead name: ${leadName}
 
 Email body:
 ${emailBody.slice(0, 5000)}`,
-      reasoning: { effort: "low" },
-      max_output_tokens: 200,
+        reasoning: { effort: "low" },
+        max_output_tokens: 200,
+      },
     });
 
     const content = response.output_text?.trim();
