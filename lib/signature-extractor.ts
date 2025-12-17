@@ -95,7 +95,6 @@ ${emailBody.slice(0, 5000)}`;
           },
           input: signatureInput,
           reasoning: { effort: "low" },
-          temperature: 0,
           max_output_tokens: 200,
         },
       });
@@ -128,7 +127,6 @@ ${emailBody.slice(0, 5000)}`;
           instructions,
           input: signatureInput,
           reasoning: { effort: "low" },
-          temperature: 0,
           max_output_tokens: 250,
         },
       });

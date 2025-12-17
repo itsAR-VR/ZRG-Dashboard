@@ -122,10 +122,9 @@ Output MUST be valid JSON:
               },
               required: ["should_reply", "reason"],
             },
-          },
+        },
         },
         input: [{ role: "user", content: user }],
-        temperature: 0,
       },
     });
 

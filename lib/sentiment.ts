@@ -429,7 +429,6 @@ export async function classifySentiment(
             },
           ],
           max_completion_tokens: 50,
-          temperature: 0,
         },
       });
 

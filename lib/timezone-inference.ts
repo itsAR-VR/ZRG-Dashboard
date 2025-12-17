@@ -187,7 +187,6 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
           null,
           2
         ),
-        temperature: 0,
       },
     });
 
