@@ -17,16 +17,6 @@ type UsageSnapshot = {
   totalTokens?: number | null;
 };
 
-function extractUsageFromChatCompletion(resp: any): UsageSnapshot {
-  const usage = resp?.usage;
-  if (!usage) return {};
-  return {
-    inputTokens: typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : null,
-    outputTokens: typeof usage.completion_tokens === "number" ? usage.completion_tokens : null,
-    totalTokens: typeof usage.total_tokens === "number" ? usage.total_tokens : null,
-  };
-}
-
 function extractUsageFromResponseApi(resp: any): UsageSnapshot {
   const usage = resp?.usage;
   if (!usage) return {};
@@ -100,73 +90,6 @@ export async function markAiInteractionError(interactionId: string, errorMessage
   } catch (error) {
     console.error("[AI Telemetry] Failed to mark interaction error:", error);
   }
-}
-
-export async function runChatCompletionWithInteraction(opts: {
-  clientId: string;
-  leadId?: string | null;
-  featureId: string;
-  promptKey?: string | null;
-  params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming;
-}): Promise<{ response: OpenAI.Chat.ChatCompletion; interactionId: string | null }> {
-  const start = Date.now();
-  try {
-    const resp = await openai.chat.completions.create(opts.params);
-    const latencyMs = Date.now() - start;
-    const usage = extractUsageFromChatCompletion(resp);
-
-    let interactionId: string | null = null;
-    try {
-      interactionId = await recordInteraction({
-        clientId: opts.clientId,
-        leadId: opts.leadId,
-        featureId: opts.featureId,
-        promptKey: opts.promptKey,
-        model: String(opts.params.model),
-        apiType: "chat_completions",
-        usage,
-        latencyMs,
-        status: "success",
-      });
-    } catch (logError) {
-      console.error("[AI Telemetry] Failed to record chat interaction:", logError);
-    }
-
-    return { response: resp, interactionId };
-  } catch (error) {
-    const latencyMs = Date.now() - start;
-    const message = error instanceof Error ? error.message : "Unknown error";
-
-    try {
-      await recordInteraction({
-        clientId: opts.clientId,
-        leadId: opts.leadId,
-        featureId: opts.featureId,
-        promptKey: opts.promptKey,
-        model: String(opts.params.model),
-        apiType: "chat_completions",
-        usage: {},
-        latencyMs,
-        status: "error",
-        errorMessage: message,
-      });
-    } catch (logError) {
-      console.error("[AI Telemetry] Failed to record chat error:", logError);
-    }
-
-    throw error;
-  }
-}
-
-export async function runChatCompletion(opts: {
-  clientId: string;
-  leadId?: string | null;
-  featureId: string;
-  promptKey?: string | null;
-  params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming;
-}): Promise<OpenAI.Chat.ChatCompletion> {
-  const { response } = await runChatCompletionWithInteraction(opts);
-  return response;
 }
 
 export async function runResponseWithInteraction(opts: {

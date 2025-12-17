@@ -1,6 +1,6 @@
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
-import { runChatCompletion } from "@/lib/ai/openai-telemetry";
+import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 
 // Sentiment tags for classification
 export const SENTIMENT_TAGS = [
@@ -414,26 +414,67 @@ export async function classifySentiment(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const response = await runChatCompletion({
+      const { response, interactionId } = await runResponseWithInteraction({
         clientId: opts.clientId,
         leadId: opts.leadId,
         featureId: promptTemplate?.featureId || "sentiment.classify",
         promptKey: promptTemplate?.key || "sentiment.classify.v1",
         params: {
           model: "gpt-5-mini",
-          messages: [
-            { role: "system", content: systemPrompt },
+          instructions: systemPrompt,
+          input: [
             {
               role: "user",
               content: `Transcript (chronological; newest at the end):\n\n${trimTranscriptForModel(transcript)}`,
             },
           ],
-          max_completion_tokens: 50,
+          text: {
+            verbosity: "low",
+            format: {
+              type: "json_schema",
+              name: "sentiment_classification",
+              strict: true,
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  classification: { type: "string", enum: [...SENTIMENT_TAGS] },
+                },
+                required: ["classification"],
+              },
+            },
+          },
+          reasoning: { effort: "low" },
+          max_output_tokens: 80,
         },
       });
 
-      const raw = response.choices[0]?.message?.content?.trim() || "";
-      const cleaned = raw.replace(/^[\"'`]+|[\"'`]+$/g, "").replace(/\.$/, "").trim();
+      const raw = response.output_text?.trim() || "";
+      if (!raw) {
+        if (interactionId) {
+          await markAiInteractionError(interactionId, "Post-process error: empty output_text");
+        }
+        return "Neutral";
+      }
+
+      let jsonText = raw.replace(/```json\n?|\n?```/g, "").trim();
+      let parsed: { classification?: string } | null = null;
+      try {
+        parsed = JSON.parse(jsonText) as { classification?: string };
+      } catch (parseError) {
+        if (interactionId) {
+          await markAiInteractionError(
+            interactionId,
+            `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})`
+          );
+        }
+        parsed = null;
+      }
+
+      const cleaned = (parsed?.classification || raw)
+        .replace(/^[\"'`]+|[\"'`]+$/g, "")
+        .replace(/\.$/, "")
+        .trim();
 
       // Exact match (case-insensitive)
       const exact = SENTIMENT_TAGS.find((tag) => tag.toLowerCase() === cleaned.toLowerCase());

@@ -248,7 +248,7 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       name: "Sentiment Classification",
       description: "Classifies inbound replies into sentiment/intent tags.",
       model: "gpt-5-mini",
-      apiType: "chat_completions",
+      apiType: "responses",
       messages: [
         { role: "system", content: SENTIMENT_SYSTEM },
         {
