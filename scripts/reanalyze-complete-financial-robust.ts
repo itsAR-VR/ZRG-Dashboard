@@ -161,7 +161,7 @@ Respond with ONLY the category name, nothing else.`;
           { role: "system", content: systemPrompt },
           { role: "user", content: `Classify this conversation:\n\n${transcript}` }
         ],
-        max_tokens: 50,
+        max_completion_tokens: 50,
         temperature: 0,
       });
 

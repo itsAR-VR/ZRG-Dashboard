@@ -428,7 +428,7 @@ export async function classifySentiment(
               content: `Transcript (chronological; newest at the end):\n\n${trimTranscriptForModel(transcript)}`,
             },
           ],
-          max_tokens: 50,
+          max_completion_tokens: 50,
           temperature: 0,
         },
       });

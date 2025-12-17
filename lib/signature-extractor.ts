@@ -64,12 +64,32 @@ export async function extractContactFromSignature(
       params: {
         model: "gpt-5-nano",
         instructions,
+        text: {
+          verbosity: "low",
+          format: {
+            type: "json_schema",
+            name: "signature_extraction",
+            strict: true,
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                isFromLead: { type: "boolean" },
+                phone: { type: ["string", "null"] },
+                linkedinUrl: { type: ["string", "null"] },
+                confidence: { type: "string", enum: ["high", "medium", "low"] },
+              },
+              required: ["isFromLead", "phone", "linkedinUrl", "confidence"],
+            },
+          },
+        },
         input: `Email from: ${leadEmail}
 Expected lead name: ${leadName}
 
 Email body:
 ${emailBody.slice(0, 5000)}`,
         reasoning: { effort: "low" },
+        temperature: 0,
         max_output_tokens: 200,
       },
     });

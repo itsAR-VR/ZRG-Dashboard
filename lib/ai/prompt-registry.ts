@@ -179,8 +179,7 @@ Respond with ONLY valid JSON, no explanation:
   "isFromLead": boolean,
   "phone": string | null,
   "linkedinUrl": string | null,
-  "confidence": "high" | "medium" | "low",
-  "reasoning": "brief 1-sentence explanation"
+  "confidence": "high" | "medium" | "low"
 }
 </output_format>`;
 
@@ -385,4 +384,3 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
 export function getAIPromptTemplate(key: string): AIPromptTemplate | null {
   return listAIPromptTemplates().find((t) => t.key === key) || null;
 }
-
