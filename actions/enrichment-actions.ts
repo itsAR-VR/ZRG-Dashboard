@@ -10,6 +10,7 @@ import { triggerEnrichmentForLead, type ClayEnrichmentRequest } from "@/lib/clay
 import { fetchEmailBisonLead, getCustomVariable } from "@/lib/emailbison-api";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { normalizePhone } from "@/lib/lead-matching";
+import { toStoredPhone } from "@/lib/phone-utils";
 
 export interface EnrichmentStats {
   pending: number;
@@ -270,7 +271,7 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
     updateData.linkedinUrl = normalizedLinkedIn;
   }
   if (normalizedPhone && !lead.phone) {
-    updateData.phone = normalizedPhone;
+    updateData.phone = toStoredPhone(extractedPhone) || normalizedPhone;
   }
   if (extractedCompanyName && !lead.companyName) {
     updateData.companyName = extractedCompanyName;

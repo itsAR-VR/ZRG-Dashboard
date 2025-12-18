@@ -55,6 +55,7 @@ import {
 import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
 import { useEnrichmentPolling } from "@/hooks/use-enrichment-polling"
 import { toast } from "sonner"
+import { toDisplayPhone } from "@/lib/phone-utils"
 import {
   Dialog,
   DialogContent,
@@ -626,7 +627,7 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
               <div className="flex items-center gap-3 text-sm">
                 <Phone className="h-4 w-4 text-muted-foreground shrink-0" />
                 {lead.phone ? (
-                  <span className="text-foreground">{lead.phone}</span>
+                  <span className="text-foreground">{toDisplayPhone(lead.phone) ?? lead.phone}</span>
                 ) : (
                   <span className="flex items-center gap-2">
                     <span className="text-muted-foreground italic">No number found</span>

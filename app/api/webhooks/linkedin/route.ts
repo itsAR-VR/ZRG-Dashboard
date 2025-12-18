@@ -12,6 +12,7 @@ import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
+import { toStoredPhone } from "@/lib/phone-utils";
 
 // Unipile webhook event types
 type UnipileEventType =
@@ -208,7 +209,7 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
     // Phone is the main thing we'd find in LinkedIn messages
     // (LinkedIn URL would already be known)
     if (messageExtraction.phone && !currentLead?.phone) {
-      messageUpdates.phone = messageExtraction.phone;
+      messageUpdates.phone = toStoredPhone(messageExtraction.phone);
       console.log(`[LinkedIn Webhook] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
     }
 

@@ -5,7 +5,6 @@ import { revalidatePath } from "next/cache";
 import { autoStartPostBookingSequenceIfEligible } from "@/lib/followup-automation";
 import {
     createGHLAppointment,
-    createGHLContact,
     getGHLCalendars,
     getGHLUsers,
     testGHLConnection,
@@ -17,6 +16,7 @@ import { getWorkspaceAvailabilityCache, getWorkspaceAvailabilitySlotsUtc } from 
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
 import { getWorkspaceSlotOfferCountsForRange } from "@/lib/slot-offer-ledger";
+import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 
 // Re-export types for use in components
 export type { GHLCalendar, GHLUser, GHLAppointment };
@@ -355,44 +355,65 @@ export async function bookMeetingOnGHL(
             return { success: false, error: "No GHL calendar configured" };
         }
 
-        // Get or create GHL contact
-        let ghlContactId = lead.ghlContactId;
+        // Ensure the lead is linked to a GHL contact (search-first, upsert standard fields).
+        const ensureContact = await ensureGhlContactIdForLead(leadId, { allowCreateWithoutPhone: true });
+        if (!ensureContact.success || !ensureContact.ghlContactId) {
+            return { success: false, error: ensureContact.error || "Failed to resolve GHL contact for lead" };
+        }
 
-        if (!ghlContactId) {
-            // Create contact in GHL
-            const contactResult = await createGHLContact(
-                {
-                    locationId: client.ghlLocationId,
-                    firstName: lead.firstName || undefined,
-                    lastName: lead.lastName || undefined,
-                    email: lead.email || undefined,
-                    phone: lead.phone || undefined,
-                    source: "zrg-dashboard",
-                },
-                client.ghlPrivateKey
-            );
+        const ghlContactId = ensureContact.ghlContactId;
 
-            if (!contactResult.success || !contactResult.data?.contact?.id) {
-                const errorText = contactResult.error || "";
-                const recovered = errorText.match(/"contactId"\s*:\s*"([^"]+)"/i)?.[1] || null;
-                if (!recovered) {
-                    return { success: false, error: "Failed to create contact in GHL" };
+        // If availability calendar (default CalendarLink) differs from booking calendar, do a preflight check
+        // to avoid booking a slot that isn't actually free on the booking calendar.
+        try {
+            const cache = await getWorkspaceAvailabilityCache(client.id, { refreshIfStale: true });
+            const availabilityCalendarId =
+                cache?.calendarType === "ghl" ? cache.providerMeta?.ghlCalendarId || null : null;
+
+            const mismatch =
+                !!availabilityCalendarId &&
+                !!calendarId &&
+                availabilityCalendarId !== calendarId;
+
+            if (mismatch) {
+                const now = Date.now();
+                const endDate = now + 30 * 24 * 60 * 60 * 1000;
+                const resp = await fetch(
+                    `https://backend.leadconnectorhq.com/calendars/${encodeURIComponent(
+                        calendarId
+                    )}/free-slots?startDate=${now}&endDate=${endDate}&timezone=UTC`,
+                    { headers: { Accept: "application/json" } }
+                );
+
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const available = new Set<string>();
+                    for (const [key, value] of Object.entries(data || {})) {
+                        if (key === "traceId") continue;
+                        const daySlots = (value as any)?.slots;
+                        if (!Array.isArray(daySlots)) continue;
+                        for (const slot of daySlots) {
+                            const startTime =
+                                typeof slot === "string" ? slot : (slot as any)?.startTime;
+                            if (typeof startTime === "string" && startTime) {
+                                const iso = new Date(startTime).toISOString();
+                                available.add(iso);
+                            }
+                        }
+                    }
+
+                    const selectedIso = new Date(selectedSlot).toISOString();
+                    if (!available.has(selectedIso)) {
+                        return {
+                            success: false,
+                            error:
+                                "That time is no longer available on the booking calendar. Please refresh availability and pick another slot.",
+                        };
+                    }
                 }
-
-                ghlContactId = recovered;
-                await prisma.lead.update({
-                    where: { id: leadId },
-                    data: { ghlContactId },
-                });
-            } else {
-                ghlContactId = contactResult.data.contact.id;
-
-                // Update lead with GHL contact ID
-                await prisma.lead.update({
-                    where: { id: leadId },
-                    data: { ghlContactId },
-                });
             }
+        } catch (error) {
+            console.warn("[bookMeetingOnGHL] Preflight availability check failed:", error);
         }
 
         // Calculate end time based on meeting duration
@@ -640,33 +661,40 @@ export async function getGhlCalendarMismatchInfo(clientId: string): Promise<{
     mismatch?: boolean;
     lastError?: string | null;
 }> {
+    const settings = await prisma.workspaceSettings.findUnique({
+        where: { clientId },
+        select: { ghlDefaultCalendarId: true },
+    });
+
+    const ghlDefaultCalendarId = settings?.ghlDefaultCalendarId || null;
+
+    let cache:
+        | (Awaited<ReturnType<typeof getWorkspaceAvailabilityCache>> & {
+              providerMeta?: { ghlCalendarId?: string | null };
+          })
+        | null = null;
+    let cacheError: string | null = null;
+
     try {
-        const [settings, cache] = await Promise.all([
-            prisma.workspaceSettings.findUnique({
-                where: { clientId },
-                select: { ghlDefaultCalendarId: true },
-            }),
-            getWorkspaceAvailabilityCache(clientId, { refreshIfStale: true }),
-        ]);
-
-        const ghlDefaultCalendarId = settings?.ghlDefaultCalendarId || null;
-        const calendarLinkGhlCalendarId =
-            cache?.calendarType === "ghl" ? cache.providerMeta?.ghlCalendarId || null : null;
-
-        const mismatch =
-            !!ghlDefaultCalendarId &&
-            !!calendarLinkGhlCalendarId &&
-            ghlDefaultCalendarId !== calendarLinkGhlCalendarId;
-
-        return {
-            success: true,
-            ghlDefaultCalendarId,
-            calendarLinkGhlCalendarId,
-            mismatch,
-            lastError: cache?.lastError ?? null,
-        };
+        cache = await getWorkspaceAvailabilityCache(clientId, { refreshIfStale: true });
     } catch (error) {
-        console.error("Failed to get GHL calendar mismatch info:", error);
-        return { success: false };
+        cacheError = error instanceof Error ? error.message : "Unknown error";
+        console.warn("[getGhlCalendarMismatchInfo] availability cache unavailable:", cacheError);
     }
+
+    const calendarLinkGhlCalendarId =
+        cache?.calendarType === "ghl" ? (cache as any)?.providerMeta?.ghlCalendarId || null : null;
+
+    const mismatch =
+        !!ghlDefaultCalendarId &&
+        !!calendarLinkGhlCalendarId &&
+        ghlDefaultCalendarId !== calendarLinkGhlCalendarId;
+
+    return {
+        success: true,
+        ghlDefaultCalendarId,
+        calendarLinkGhlCalendarId,
+        mismatch,
+        lastError: cacheError ?? cache?.lastError ?? null,
+    };
 }

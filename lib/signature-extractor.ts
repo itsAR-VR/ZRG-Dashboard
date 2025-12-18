@@ -8,7 +8,7 @@ import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { normalizeLinkedInUrl } from "./linkedin-utils";
-import { normalizePhone } from "./lead-matching";
+import { toStoredPhone } from "./phone-utils";
 
 export interface SignatureExtractionResult {
   isFromLead: boolean;       // AI confirms email is from the actual lead
@@ -186,7 +186,7 @@ ${emailBody.slice(0, 5000)}`;
 
     const result: SignatureExtractionResult = {
       isFromLead: Boolean(parsed.isFromLead),
-      phone: parsed.phone ? normalizePhone(parsed.phone) : null,
+      phone: parsed.phone ? toStoredPhone(parsed.phone) : null,
       linkedinUrl: parsed.linkedinUrl ? normalizeLinkedInUrl(parsed.linkedinUrl) : null,
       confidence: ["high", "medium", "low"].includes(parsed.confidence) ? parsed.confidence : "low",
       reasoning: parsed.reasoning,
@@ -224,7 +224,7 @@ export function extractPhoneFromText(text: string): string | null {
         const digits = match.replace(/\D/g, "");
         // Valid phone numbers have 10-15 digits
         if (digits.length >= 10 && digits.length <= 15) {
-          return normalizePhone(match);
+          return toStoredPhone(match);
         }
       }
     }

@@ -8,6 +8,7 @@ import "@/lib/server-dns";
 
 const GHL_API_BASE = "https://services.leadconnectorhq.com";
 const GHL_API_VERSION = "2021-04-15";
+const GHL_CONTACTS_API_VERSION = "2021-07-28";
 
 interface GHLApiResponse<T> {
   success: boolean;
@@ -340,6 +341,53 @@ export interface CreateContactParams {
   tags?: string[];
 }
 
+export interface GHLContactSearchFilter {
+  field?: string;
+  operator?: string;
+  value?: unknown;
+  group?: "AND" | "OR";
+  filters?: GHLContactSearchFilter[];
+}
+
+export interface GHLContactSearchSort {
+  field: string;
+  direction: "asc" | "desc";
+}
+
+export interface SearchContactsAdvancedParams {
+  locationId: string;
+  page?: number;
+  pageLimit: number;
+  searchAfter?: unknown[];
+  filters?: GHLContactSearchFilter[];
+  sort?: GHLContactSearchSort[];
+  query?: string;
+}
+
+export interface SearchContactsAdvancedResponse {
+  contacts: Array<GHLContact & Record<string, unknown>>;
+  total?: number;
+  traceId?: string;
+}
+
+export interface UpsertContactParams {
+  locationId: string;
+  firstName?: string;
+  lastName?: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  companyName?: string;
+  website?: string;
+  timezone?: string;
+  address1?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+  source?: string;
+}
+
 /**
  * Get all calendars for a location
  * 
@@ -388,6 +436,7 @@ export async function createGHLContact(
     {
       method: "POST",
       body: JSON.stringify(params),
+      headers: { Version: GHL_CONTACTS_API_VERSION },
     }
   );
 }
@@ -404,46 +453,42 @@ export async function getGHLContact(
 ): Promise<GHLApiResponse<{ contact: GHLContact }>> {
   return ghlRequest<{ contact: GHLContact }>(
     `/contacts/${encodeURIComponent(contactId)}`,
-    privateKey
+    privateKey,
+    { headers: { Version: GHL_CONTACTS_API_VERSION } }
   );
 }
 
 /**
- * Lookup contacts by email/phone within a location.
- * Useful for resolving missing contact IDs without creating duplicates.
+ * Advanced Search Contacts (POST /contacts/search)
  *
- * NOTE: Response shape is best-effort (GHL may return contact or contacts list).
+ * Uses advanced filters/sort/pagination. Prefer this over older lookup/search variants.
  */
-export async function lookupGHLContact(
-  params: { locationId: string; email?: string; phone?: string },
+export async function searchGHLContactsAdvanced(
+  params: SearchContactsAdvancedParams,
   privateKey: string
-): Promise<GHLApiResponse<unknown>> {
-  const url = new URL(`${GHL_API_BASE}/contacts/lookup`);
-  url.searchParams.set("locationId", params.locationId);
-  if (params.email) url.searchParams.set("email", params.email);
-  if (params.phone) url.searchParams.set("phone", params.phone);
-
-  // ghlRequest expects a path, so pass full path+query
-  return ghlRequest<unknown>(url.pathname + url.search, privateKey);
+): Promise<GHLApiResponse<SearchContactsAdvancedResponse>> {
+  return ghlRequest<SearchContactsAdvancedResponse>("/contacts/search", privateKey, {
+    method: "POST",
+    body: JSON.stringify(params),
+    headers: { Version: GHL_CONTACTS_API_VERSION },
+  });
 }
 
 /**
- * Search contacts within a location.
- * Useful fallback when lookup isn't available or doesn't match.
+ * Upsert a contact (POST /contacts/upsert)
  *
- * NOTE: Response shape is best-effort (GHL may return a contacts list in different envelopes).
+ * Creates or updates a contact based on the Location "Allow Duplicate Contact" configuration.
+ * Important: Do NOT pass tags here unless you intend to overwrite all tags.
  */
-export async function searchGHLContacts(
-  params: { locationId: string; query: string; limit?: number; skip?: number },
+export async function upsertGHLContact(
+  params: UpsertContactParams,
   privateKey: string
-): Promise<GHLApiResponse<unknown>> {
-  const url = new URL(`${GHL_API_BASE}/contacts/search`);
-  url.searchParams.set("locationId", params.locationId);
-  url.searchParams.set("query", params.query);
-  if (params.limit !== undefined) url.searchParams.set("limit", String(params.limit));
-  if (params.skip !== undefined) url.searchParams.set("skip", String(params.skip));
-
-  return ghlRequest<unknown>(url.pathname + url.search, privateKey);
+): Promise<GHLApiResponse<{ contactId: string }>> {
+  return ghlRequest<{ contactId: string }>("/contacts/upsert", privateKey, {
+    method: "POST",
+    body: JSON.stringify(params),
+    headers: { Version: GHL_CONTACTS_API_VERSION },
+  });
 }
 
 /**

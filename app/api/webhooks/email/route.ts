@@ -10,6 +10,7 @@ import { extractContactFromSignature, extractContactFromMessageContent } from "@
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { normalizePhone } from "@/lib/lead-matching";
+import { toStoredPhone } from "@/lib/phone-utils";
 import { autoStartMeetingRequestedSequenceIfEligible, autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
@@ -317,9 +318,12 @@ async function enrichLeadFromEmailBison(
     if (phoneRaw && phoneRaw !== "-") {
       const normalized = normalizePhone(phoneRaw);
       if (normalized) {
-        result.phone = normalized;
-        result.clayData.existingPhone = normalized;
-        console.log(`[EmailBison Enrichment] Found phone for lead ${leadId}: ${normalized}`);
+        const stored = toStoredPhone(phoneRaw);
+        if (stored) {
+          result.phone = stored;
+          result.clayData.existingPhone = stored;
+          console.log(`[EmailBison Enrichment] Found phone for lead ${leadId}: ${stored}`);
+        }
       }
     }
 
@@ -366,7 +370,7 @@ async function enrichLeadFromEmailBison(
         updates.linkedinUrl = result.linkedinUrl;
       }
       if (result.phone && !currentLead?.phone) {
-        updates.phone = result.phone;
+        updates.phone = toStoredPhone(result.phone) || result.phone;
       }
       if (result.companyName && !currentLead?.companyName) {
         updates.companyName = result.companyName;
@@ -1005,7 +1009,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     const messageUpdates: Record<string, unknown> = {};
 
     if (messageExtraction.phone && !currentLead?.phone) {
-      messageUpdates.phone = messageExtraction.phone;
+      messageUpdates.phone = toStoredPhone(messageExtraction.phone) || messageExtraction.phone;
       console.log(`[Enrichment] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
     }
     if (messageExtraction.linkedinUrl && !currentLead?.linkedinUrl) {
@@ -1040,7 +1044,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   // so SMS history and future messages can be synced.
   if (isPositiveSentiment(sentimentTag)) {
     try {
-      const ensureResult = await ensureGhlContactIdForLead(lead.id, { requirePhone: true });
+      const ensureResult = await ensureGhlContactIdForLead(lead.id, { allowCreateWithoutPhone: true });
       if (!ensureResult.success && ensureResult.error) {
         console.log(`[GHL Contact] Lead ${lead.id}: ${ensureResult.error}`);
       }
@@ -1143,7 +1147,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     });
 
     try {
-      const ensureResult = await ensureGhlContactIdForLead(existingMessage.leadId, { requirePhone: true });
+      const ensureResult = await ensureGhlContactIdForLead(existingMessage.leadId, { allowCreateWithoutPhone: true });
       if (!ensureResult.success && ensureResult.error) {
         console.log(`[GHL Contact] Lead ${existingMessage.leadId}: ${ensureResult.error}`);
       }
@@ -1249,7 +1253,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   }
 
   try {
-    const ensureResult = await ensureGhlContactIdForLead(lead.id, { requirePhone: true });
+    const ensureResult = await ensureGhlContactIdForLead(lead.id, { allowCreateWithoutPhone: true });
     if (!ensureResult.success && ensureResult.error) {
       console.log(`[GHL Contact] Lead ${lead.id}: ${ensureResult.error}`);
     }
@@ -1569,7 +1573,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     const messageUpdates: Record<string, unknown> = {};
 
     if (messageExtraction.phone && !currentLead?.phone) {
-      messageUpdates.phone = messageExtraction.phone;
+      messageUpdates.phone = toStoredPhone(messageExtraction.phone) || messageExtraction.phone;
       console.log(`[Enrichment] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
     }
     if (messageExtraction.linkedinUrl && !currentLead?.linkedinUrl) {

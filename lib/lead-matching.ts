@@ -1,16 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { normalizePhoneDigits, toStoredPhone } from "@/lib/phone-utils";
 
 /**
  * Normalize phone number by stripping all non-digit characters
  * This allows matching +1-555-123-4567 = (555) 123-4567 = 5551234567
  */
 export function normalizePhone(phone: string | null | undefined): string | null {
-  if (!phone) return null;
-  const digits = phone.replace(/\D/g, "");
-  // Return null if not enough digits for a valid phone
-  if (digits.length < 7) return null;
-  return digits;
+  return normalizePhoneDigits(phone);
 }
 
 /**
@@ -117,7 +114,9 @@ export async function findOrCreateLead(
 
   // Priority 6: Match by phone (we store normalized, but also check raw)
   if (normalizedPhone) {
-    searchConditions.push({ phone: normalizedPhone });
+    // Phone is stored in E.164-like format (`+` + digits). Use a contains match so we can
+    // safely migrate older rows that stored digits-only without breaking matching.
+    searchConditions.push({ phone: { contains: normalizedPhone } });
   }
 
   // Try to find existing lead
@@ -144,7 +143,7 @@ export async function findOrCreateLead(
         matchedBy = "linkedinUrl";
       } else if (normalizedEmail && existingLead.email?.toLowerCase() === normalizedEmail) {
         matchedBy = "email";
-      } else if (normalizedPhone && existingLead.phone === normalizedPhone) {
+      } else if (normalizedPhone && normalizePhone(existingLead.phone) === normalizedPhone) {
         matchedBy = "phone";
       }
     }
@@ -159,7 +158,7 @@ export async function findOrCreateLead(
       updates.email = normalizedEmail;
     }
     if (!existingLead.phone && normalizedPhone) {
-      updates.phone = normalizedPhone;
+      updates.phone = toStoredPhone(contactInfo.phone);
     }
     if (!existingLead.firstName && contactInfo.firstName) {
       updates.firstName = contactInfo.firstName;
@@ -238,7 +237,7 @@ export async function findOrCreateLead(
     data: {
       clientId,
       email: normalizedEmail,
-      phone: normalizedPhone,
+      phone: toStoredPhone(contactInfo.phone),
       linkedinUrl: normalizedLinkedInUrl,
       linkedinId: externalIds?.linkedinId || null,
       firstName: contactInfo.firstName || null,

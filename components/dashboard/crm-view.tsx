@@ -36,6 +36,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Separator } from "@/components/ui/separator"
+import { toDisplayPhone } from "@/lib/phone-utils"
 import { 
   getCRMLeadsCursor, 
   updateLeadStatus, 
@@ -199,7 +200,7 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
               </div>
               <div className="flex items-center gap-3">
                 <Phone className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm">{lead.phone || "No phone"}</span>
+                <span className="text-sm">{lead.phone ? toDisplayPhone(lead.phone) ?? lead.phone : "No phone"}</span>
               </div>
               {lead.linkedinUrl && (
                 <div className="flex items-center gap-3">
