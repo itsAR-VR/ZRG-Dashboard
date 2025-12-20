@@ -210,6 +210,38 @@ function stripCommonPunctuation(text: string): string {
   return (text || "").replace(/^[\s"'`*()\-–—_:;,.!?]+|[\s"'`*()\-–—_:;,.!?]+$/g, "").trim();
 }
 
+function stripQuotedEmailThread(text: string): string {
+  const combined = (text || "").replace(/\u00a0/g, " ").trim();
+  if (!combined) return "";
+
+  const { body } = splitEmailSubjectPrefix(combined);
+  const cleaned = body.trim();
+  if (!cleaned) return "";
+
+  const markers: RegExp[] = [
+    // Classic separators
+    /-{5,}\s*original message\s*-{5,}/i,
+    /-{5,}\s*forwarded message\s*-{5,}/i,
+    /_{5,}/,
+    // Quote header blocks often inserted by email clients
+    /-{5,}\s*from:\s*/i,
+    /\bfrom:\s.+\bsent:\s.+\bto:\s/i,
+    /\bon\s.+\bwrote:\s*/i,
+    // "From:" blocks without dashes (keep strict: only if it looks like a header set)
+    /\bfrom:\s.+\b(sent|to|subject):\s/i,
+  ];
+
+  let cutIndex: number | null = null;
+  for (const re of markers) {
+    const match = re.exec(cleaned);
+    if (!match || typeof match.index !== "number") continue;
+    if (cutIndex === null || match.index < cutIndex) cutIndex = match.index;
+  }
+
+  const withoutThread = cutIndex === null ? cleaned : cleaned.slice(0, cutIndex);
+  return stripCommonPunctuation(withoutThread).trim();
+}
+
 export function isOptOutText(text: string): boolean {
   const combined = (text || "").replace(/\u00a0/g, " ").trim();
   if (!combined) return false;
@@ -446,23 +478,37 @@ export async function classifySentiment(
 
   const maxRetries = opts.maxRetries ?? 3;
   const { allLeadText, lastLeadText } = extractLeadTextFromTranscript(transcript);
+  const lastLeadPrimary = stripQuotedEmailThread(lastLeadText) || lastLeadText.trim();
 
   // Fast, high-confidence classification without calling the model.
   // These rules dramatically reduce edge-case misclassifications and cost.
   if (matchesAnyPattern(BOUNCE_PATTERNS, lastLeadText.toLowerCase())) return "Blacklist";
-  if (isOptOutText(lastLeadText)) return "Blacklist";
-  if (isOutOfOfficeMessage(lastLeadText)) return "Out of Office";
-  if (isAutomatedReplyMessage(lastLeadText)) return "Automated Reply";
-  if (isCallRequestedMessage(lastLeadText)) return "Call Requested";
-  if (isMeetingRequestedMessage(lastLeadText)) return "Meeting Requested";
-  if (isNotInterestedMessage(lastLeadText)) return "Not Interested";
-  if (isInformationRequestedMessage(lastLeadText)) return "Information Requested";
-  if (isFollowUpMessage(lastLeadText)) return "Follow Up";
+  if (isOptOutText(lastLeadPrimary)) return "Blacklist";
+  if (isOutOfOfficeMessage(lastLeadPrimary)) return "Out of Office";
+  if (isAutomatedReplyMessage(lastLeadPrimary)) return "Automated Reply";
+  // Explicit "no thanks" must override any quoted outbound thread content.
+  if (isNotInterestedMessage(lastLeadPrimary)) return "Not Interested";
+  if (isMeetingRequestedMessage(lastLeadPrimary)) return "Meeting Requested";
+  if (isCallRequestedMessage(lastLeadPrimary)) return "Call Requested";
+  if (isInformationRequestedMessage(lastLeadPrimary)) return "Information Requested";
+  if (isFollowUpMessage(lastLeadPrimary)) return "Follow Up";
 
   const promptTemplate = getAIPromptTemplate("sentiment.classify.v1");
   const systemPrompt =
     promptTemplate?.messages.find((m) => m.role === "system")?.content ||
     "You are an expert inbox manager. Classify the reply into ONE category and return only the category name.";
+
+  const recentContext = trimTranscriptForModel(transcript);
+  const modelInputPayload = JSON.stringify(
+    {
+      latest_lead_reply: lastLeadPrimary,
+      // Lower-priority context (use only to disambiguate ultra-short confirmations).
+      context_transcript_tail: recentContext,
+      lead_replies_tail: allLeadText.slice(Math.max(0, allLeadText.length - 3000)),
+    },
+    null,
+    2
+  );
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -478,7 +524,7 @@ export async function classifySentiment(
           input: [
             {
               role: "user",
-              content: `Transcript (chronological; newest at the end):\n\n${trimTranscriptForModel(transcript)}`,
+              content: modelInputPayload,
             },
           ],
           text: {
@@ -545,15 +591,15 @@ export async function classifySentiment(
         exact || contained || (lower === "positive" ? "Interested" : "Neutral");
 
       // Post-classification validators (safety + signature false-positive reduction)
-      if (isOptOutText(lastLeadText)) return "Blacklist";
-      if (isOutOfOfficeMessage(lastLeadText)) return "Out of Office";
-      if (isAutomatedReplyMessage(lastLeadText)) return "Automated Reply";
+      if (isOptOutText(lastLeadPrimary)) return "Blacklist";
+      if (isOutOfOfficeMessage(lastLeadPrimary)) return "Out of Office";
+      if (isAutomatedReplyMessage(lastLeadPrimary)) return "Automated Reply";
+      if (isNotInterestedMessage(lastLeadPrimary)) return "Not Interested";
 
-      if (candidate === "Call Requested" && !isCallRequestedMessage(lastLeadText)) {
-        if (isMeetingRequestedMessage(lastLeadText)) return "Meeting Requested";
-        if (isInformationRequestedMessage(lastLeadText)) return "Information Requested";
-        if (isNotInterestedMessage(lastLeadText)) return "Not Interested";
-        if (isFollowUpMessage(lastLeadText)) return "Follow Up";
+      if (candidate === "Call Requested" && !isCallRequestedMessage(lastLeadPrimary)) {
+        if (isMeetingRequestedMessage(lastLeadPrimary)) return "Meeting Requested";
+        if (isInformationRequestedMessage(lastLeadPrimary)) return "Information Requested";
+        if (isFollowUpMessage(lastLeadPrimary)) return "Follow Up";
         candidate = "Interested";
       }
 

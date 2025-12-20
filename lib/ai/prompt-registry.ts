@@ -23,6 +23,7 @@ Task: categorize lead replies from outreach conversations across email/SMS/Linke
 Classify into ONE category based primarily on the MOST RECENT lead reply (the transcript is chronological; newest is at the end).
 Use older messages ONLY to disambiguate ultra-short confirmations (e.g., "that works") against a previously proposed specific time.
 Ignore agent/rep messages except for that disambiguation.
+If inputs include a field like "latest_lead_reply", treat it as the highest-priority signal and discount quoted email threads (e.g., blocks starting with "From:", "On ... wrote:", "-----Original Message-----") and signatures.
 
 IMPORTANT:
 - If the latest lead reply (or email subject) contains an opt-out/unsubscribe request, classify as "Blacklist".
