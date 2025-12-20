@@ -3,9 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import {
   Mail,
-  Linkedin,
   MessageSquare,
-  Phone,
   Activity,
   DollarSign,
   RefreshCcw,
@@ -87,22 +85,6 @@ import {
 } from "@/actions/booking-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
-
-interface Integration {
-  id: string
-  name: string
-  icon: typeof Mail
-  connected: boolean
-  account?: string
-}
-
-const integrations: Integration[] = [
-  { id: "gmail", name: "Gmail", icon: Mail, connected: false },
-  { id: "outlook", name: "Outlook", icon: Mail, connected: false },
-  { id: "linkedin", name: "LinkedIn", icon: Linkedin, connected: false },
-  { id: "twilio", name: "Twilio SMS", icon: MessageSquare, connected: false },
-  { id: "dialpad", name: "Dialpad", icon: Phone, connected: false },
-]
 
 interface SettingsViewProps {
   activeWorkspace?: string | null
@@ -1171,45 +1153,6 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               </CardContent>
             </Card>
 
-            {/* Other Channel Integrations */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Other Channels</CardTitle>
-                <CardDescription>Additional channel integrations (coming soon)</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {integrations.map((integration) => (
-                  <div key={integration.id} className="flex items-center justify-between p-4 rounded-lg border">
-                    <div className="flex items-center gap-4">
-                      <div className={`p-2 rounded-lg ${integration.connected ? "bg-primary/10" : "bg-muted"}`}>
-                        <integration.icon
-                          className={`h-5 w-5 ${integration.connected ? "text-primary" : "text-muted-foreground"}`}
-                        />
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium">{integration.name}</p>
-                          {integration.connected ? (
-                            <Badge variant="outline" className="text-green-500 border-green-500/30 bg-green-500/10">
-                              <Check className="h-3 w-3 mr-1" />
-                              Connected
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline" className="text-muted-foreground">
-                              Coming Soon
-                            </Badge>
-                          )}
-                        </div>
-                        {integration.account && <p className="text-sm text-muted-foreground">{integration.account}</p>}
-                      </div>
-                    </div>
-                    <Button variant="outline" size="sm" disabled={!integration.connected}>
-                      {integration.connected ? "Disconnect" : "Connect"}
-                    </Button>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
           </TabsContent>
 
           {/* AI Personality */}
