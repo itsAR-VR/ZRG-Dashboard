@@ -242,9 +242,42 @@ export function isOptOutText(text: string): boolean {
 }
 
 function isOutOfOfficeMessage(text: string): boolean {
-  return /\b(out of office|ooo|on vacation|vacation|away until|back on|back in|return(ing)? (on|at)|travell?ing)\b/i.test(
-    text,
-  );
+  const combined = (text || "").replace(/\u00a0/g, " ").trim();
+  if (!combined) return false;
+
+  const { subject, body } = splitEmailSubjectPrefix(combined);
+  const candidates = [body, subject, combined].filter(Boolean);
+
+  const subjectAutoReply = /\b(automatic reply|auto[-\s]?reply|auto[-\s]?response|out of office|ooo|autoreply)\b/i;
+
+  // Strong "away" signals.
+  const awaySignals =
+    /\b(out of office|ooo|on leave|on holiday|on vacation|away from (the )?office|away|unavailable|travell?ing|traveling|sabbatical|parental leave|maternity leave|paternity leave)\b/i;
+
+  // Common OOO phrasing that doesn't always include the exact words "out of office".
+  const availabilitySignals =
+    /\b(limited|intermittent|reduced)\s+(access|availability)\b|\b(have|has)\s+limited\s+access\b|\b(not|won['’]?t)\s+(be\s+)?(checking|monitoring|reading)\s+(my\s+)?(email|emails|inbox)\b|\b(apologies|sorry)\b.*\b(delay(ed)?\s+response|slow\s+to\s+respond)\b/i;
+
+  // Date/return framing commonly found in OOO messages.
+  const returnSignals =
+    /\b(away|out|off)\s+(until|till)\b|\b(back|return(ing)?|return)\s+(on|at|in)\b|\b(i('|’)?ll|i will)\s+(be\s+)?back\b|\b(resume|resuming)\b.*\b(on|at)\b/i;
+
+  // Routing for urgent matters is a common OOO/auto-reply pattern and should not
+  // be treated as "Call Requested".
+  const urgentRouting =
+    /\b(if|for)\s+(your\s+)?(enquir(y|ies)|inquir(y|ies)|matter|request)\s+is\s+urgent\b|\bfor\s+urgent\s+(matters?|enquir(y|ies)|inquir(y|ies))\b|\burgent(ly)?\b.*\b(contact|call|reach|phone|ring)\b|\bplease\s+contact\b/i;
+
+  const hasSubjectAutoReply = subject ? subjectAutoReply.test(subject) : false;
+  const hasAway = candidates.some((t) => awaySignals.test(t));
+  const hasAvailability = candidates.some((t) => availabilitySignals.test(t));
+  const hasReturnFrame = candidates.some((t) => returnSignals.test(t));
+  const hasUrgentRouting = candidates.some((t) => urgentRouting.test(t));
+
+  // Treat as OOO if:
+  // - subject screams auto-reply/OOO, OR
+  // - the body says they are away, OR
+  // - it's framed as limited access/returning + urgent routing language.
+  return hasSubjectAutoReply || hasAway || ((hasAvailability || hasReturnFrame) && hasUrgentRouting);
 }
 
 function isAutomatedReplyMessage(text: string): boolean {
@@ -279,6 +312,10 @@ function isAutomatedReplyMessage(text: string): boolean {
 function isCallRequestedMessage(text: string): boolean {
   const raw = (text || "").replace(/\u00a0/g, " ").trim();
   if (!raw) return false;
+
+  // Out-of-office auto replies often include "call me on ..." for urgent matters.
+  // Those should be categorized as "Out of Office", not "Call Requested".
+  if (isOutOfOfficeMessage(raw)) return false;
 
   const { body } = splitEmailSubjectPrefix(raw);
   const normalized = body.toLowerCase();
@@ -317,6 +354,7 @@ function isCallRequestedMessage(text: string): boolean {
 
 function isMeetingRequestedMessage(text: string): boolean {
   const normalized = text.trim().toLowerCase();
+  if (isOutOfOfficeMessage(normalized)) return false;
 
   // Detect explicit scheduling language / confirmations
   const hasScheduleIntent =
