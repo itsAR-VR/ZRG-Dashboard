@@ -163,6 +163,73 @@ export async function updateLeadAutomationSettings(
 }
 
 /**
+ * Bulk-enable auto follow-ups for leads that require attention / are positive.
+ *
+ * This is intentionally conservative: it only enables, and only for a safe allow-list
+ * of sentiment tags. It does not change leads outside this allow-list.
+ */
+export async function enableAutoFollowUpsForAttentionLeads(
+  clientId: string
+): Promise<{
+  success: boolean;
+  eligible?: number;
+  enabledNow?: number;
+  alreadyEnabled?: number;
+  error?: string;
+}> {
+  try {
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    // Keep this list aligned with what the UI considers "requires attention".
+    // Includes "Positive" for legacy rows.
+    const eligibleSentiments: string[] = [
+      "Meeting Requested",
+      "Call Requested",
+      "Information Requested",
+      "Interested",
+      "Follow Up",
+      "Positive",
+    ];
+
+    const whereEligible = {
+      clientId,
+      status: { not: "blacklisted" },
+      sentimentTag: { in: eligibleSentiments },
+    };
+
+    const [eligible, alreadyEnabled, updateResult] = await Promise.all([
+      prisma.lead.count({ where: whereEligible }),
+      prisma.lead.count({
+        where: {
+          ...whereEligible,
+          autoFollowUpEnabled: true,
+        },
+      }),
+      prisma.lead.updateMany({
+        where: {
+          ...whereEligible,
+          autoFollowUpEnabled: false,
+        },
+        data: { autoFollowUpEnabled: true },
+      }),
+    ]);
+
+    revalidatePath("/");
+    return {
+      success: true,
+      eligible,
+      alreadyEnabled,
+      enabledNow: updateResult.count,
+    };
+  } catch (error) {
+    console.error("Failed to bulk enable auto follow-ups:", error);
+    return { success: false, error: "Failed to enable auto follow-ups" };
+  }
+}
+
+/**
  * Delete a lead
  */
 export async function deleteLead(

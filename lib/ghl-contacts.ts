@@ -62,7 +62,8 @@ export async function ensureGhlContactIdForLead(
   }
 
   const emailNormalized = normalizeEmail(lead.email);
-  const phoneNormalized = normalizePhoneDigits(lead.phone);
+  const phoneForGhl = toGhlPhone(lead.phone);
+  const phoneNormalized = phoneForGhl ? normalizePhoneDigits(phoneForGhl) : null;
 
   if (opts.requirePhone && !phoneNormalized) {
     return { success: false, error: "No phone available to resolve GHL contact" };
@@ -101,7 +102,7 @@ export async function ensureGhlContactIdForLead(
               firstName: lead.firstName || undefined,
               lastName: lead.lastName || undefined,
               email: emailNormalized || undefined,
-              phone: shouldSendPhone ? toGhlPhone(lead.phone || undefined) || undefined : undefined,
+              phone: shouldSendPhone ? phoneForGhl || undefined : undefined,
               companyName: lead.companyName || undefined,
               website: lead.companyWebsite || undefined,
               timezone: lead.timezone || undefined,
@@ -138,7 +139,7 @@ export async function ensureGhlContactIdForLead(
         firstName: lead.firstName || undefined,
         lastName: lead.lastName || undefined,
         email: emailNormalized || undefined,
-        phone: phoneNormalized ? toGhlPhone(lead.phone || undefined) || undefined : undefined,
+        phone: phoneForGhl || undefined,
         companyName: lead.companyName || undefined,
         website: lead.companyWebsite || undefined,
         timezone: lead.timezone || undefined,

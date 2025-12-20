@@ -7,6 +7,7 @@
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
+import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { normalizeLinkedInUrl } from "./linkedin-utils";
 import { toStoredPhone } from "./phone-utils";
 
@@ -62,7 +63,7 @@ Expected lead name: ${leadName}
 Email body:
 ${emailBody.slice(0, 5000)}`;
 
-    let response: { output_text?: string | null };
+    let response: Awaited<ReturnType<typeof runResponseWithInteraction>>["response"];
     let interactionId: string | null = null;
 
     try {
@@ -73,6 +74,7 @@ ${emailBody.slice(0, 5000)}`;
         promptKey: promptTemplate?.key || "signature.extract.v1",
         params: {
           model: "gpt-5-nano",
+          temperature: 0,
           instructions,
           text: {
             verbosity: "low",
@@ -94,8 +96,10 @@ ${emailBody.slice(0, 5000)}`;
             },
           },
           input: signatureInput,
-          reasoning: { effort: "low" },
-          max_output_tokens: 200,
+          reasoning: { effort: "minimal" },
+          // `max_output_tokens` includes reasoning tokens; keep headroom so we don't
+          // end up with an empty/truncated JSON body.
+          max_output_tokens: 450,
         },
       });
       response = result.response;
@@ -124,10 +128,11 @@ ${emailBody.slice(0, 5000)}`;
         promptKey: (promptTemplate?.key || "signature.extract.v1") + ".fallback",
         params: {
           model: "gpt-5-nano",
+          temperature: 0,
           instructions,
           input: signatureInput,
-          reasoning: { effort: "low" },
-          max_output_tokens: 250,
+          reasoning: { effort: "minimal" },
+          max_output_tokens: 450,
         },
       });
 
@@ -135,12 +140,16 @@ ${emailBody.slice(0, 5000)}`;
       interactionId = result.interactionId;
     }
 
-    const content = response.output_text?.trim();
+    const content = getTrimmedOutputText(response);
 
     if (!content) {
       console.log("[SignatureExtractor] No response from AI");
       if (interactionId) {
-        await markAiInteractionError(interactionId, "Post-process error: empty output_text");
+        const details = summarizeResponseForTelemetry(response);
+        await markAiInteractionError(
+          interactionId,
+          `Post-process error: empty output_text${details ? ` (${details})` : ""}`
+        );
       }
       return defaultResult;
     }
@@ -154,21 +163,16 @@ ${emailBody.slice(0, 5000)}`;
       reasoning?: string;
     };
 
-    function extractJsonObject(text: string): string {
-      const cleaned = text.replace(/```json\n?|\n?```/g, "").trim();
-      const first = cleaned.indexOf("{");
-      const last = cleaned.lastIndexOf("}");
-      if (first >= 0 && last > first) return cleaned.slice(first, last + 1);
-      return cleaned;
-    }
-
     try {
-      parsed = JSON.parse(extractJsonObject(content));
+      parsed = JSON.parse(extractJsonObjectFromText(content));
     } catch (parseError) {
       if (interactionId) {
+        const details = summarizeResponseForTelemetry(response);
         await markAiInteractionError(
           interactionId,
-          `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})`
+          `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})${
+            details ? ` (${details})` : ""
+          }`
         );
       }
       console.error("[SignatureExtractor] Failed to parse AI response:", content);

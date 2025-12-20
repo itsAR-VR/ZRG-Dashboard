@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { applyAirtableModeToDefaultSequences } from "@/actions/followup-sequence-actions";
 
 export interface UserSettingsData {
   id: string;
@@ -23,6 +24,7 @@ export interface UserSettingsData {
   flagUncertainReplies: boolean;
   pauseForOOO: boolean;
   autoBlacklist: boolean;
+  airtableMode: boolean;
   emailDigest: boolean;
   slackAlerts: boolean;
   timezone: string | null;
@@ -97,6 +99,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           flagUncertainReplies: true,
           pauseForOOO: true,
           autoBlacklist: true,
+          airtableMode: false,
           emailDigest: true,
           slackAlerts: true,
           timezone: "America/Los_Angeles",
@@ -178,6 +181,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         flagUncertainReplies: settings.flagUncertainReplies,
         pauseForOOO: settings.pauseForOOO,
         autoBlacklist: settings.autoBlacklist,
+        airtableMode: settings.airtableMode,
         emailDigest: settings.emailDigest,
         slackAlerts: settings.slackAlerts,
         timezone: settings.timezone,
@@ -230,6 +234,7 @@ export async function updateUserSettings(
         flagUncertainReplies: data.flagUncertainReplies,
         pauseForOOO: data.pauseForOOO,
         autoBlacklist: data.autoBlacklist,
+        airtableMode: data.airtableMode,
         emailDigest: data.emailDigest,
         slackAlerts: data.slackAlerts,
         timezone: data.timezone,
@@ -259,6 +264,7 @@ export async function updateUserSettings(
         flagUncertainReplies: data.flagUncertainReplies ?? true,
         pauseForOOO: data.pauseForOOO ?? true,
         autoBlacklist: data.autoBlacklist ?? true,
+        airtableMode: data.airtableMode ?? false,
         emailDigest: data.emailDigest ?? true,
         slackAlerts: data.slackAlerts ?? true,
         timezone: data.timezone,
@@ -384,6 +390,34 @@ export async function updateAutomationRules(
   } catch (error) {
     console.error("Failed to update automation rules:", error);
     return { success: false, error: "Failed to update rules" };
+  }
+}
+
+export async function setAirtableMode(
+  clientId: string | null | undefined,
+  enabled: boolean
+): Promise<{ success: boolean; updatedSequences?: number; error?: string }> {
+  try {
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    await prisma.workspaceSettings.upsert({
+      where: { clientId },
+      update: { airtableMode: enabled },
+      create: { clientId, airtableMode: enabled },
+    });
+
+    const applyResult = await applyAirtableModeToDefaultSequences({ clientId, enabled });
+    if (!applyResult.success) {
+      return { success: false, error: applyResult.error || "Failed to apply Airtable Mode" };
+    }
+
+    revalidatePath("/");
+    return { success: true, updatedSequences: applyResult.updated ?? 0 };
+  } catch (error) {
+    console.error("Failed to set Airtable Mode:", error);
+    return { success: false, error: "Failed to update Airtable Mode" };
   }
 }
 

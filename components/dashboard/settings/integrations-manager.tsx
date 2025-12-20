@@ -48,15 +48,24 @@ export function IntegrationsManager() {
   const [showEmailFields, setShowEmailFields] = useState(false);
   const [editingClientId, setEditingClientId] = useState<string | null>(null);
 
-  // Form state
-  const [formData, setFormData] = useState({
+  const emptyNewClientForm = {
     name: "",
     ghlLocationId: "",
     ghlPrivateKey: "",
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
     unipileAccountId: "",
-  });
+  };
+
+  const emptyIntegrationsForm = {
+    emailBisonApiKey: "",
+    emailBisonWorkspaceId: "",
+    unipileAccountId: "",
+  };
+
+  // Separate form states to prevent cross-contamination between "Add Workspace" and per-client edits
+  const [newClientForm, setNewClientForm] = useState(emptyNewClientForm);
+  const [integrationsForm, setIntegrationsForm] = useState(emptyIntegrationsForm);
 
   // Fetch clients on mount
   useEffect(() => {
@@ -79,9 +88,16 @@ export function IntegrationsManager() {
     setError(null);
 
     startTransition(async () => {
-      const result = await createClient(formData);
+      const result = await createClient({
+        name: newClientForm.name,
+        ghlLocationId: newClientForm.ghlLocationId,
+        ghlPrivateKey: newClientForm.ghlPrivateKey,
+        emailBisonApiKey: newClientForm.emailBisonApiKey,
+        emailBisonWorkspaceId: newClientForm.emailBisonWorkspaceId,
+        unipileAccountId: newClientForm.unipileAccountId,
+      });
       if (result.success) {
-        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonWorkspaceId: "", unipileAccountId: "" });
+        setNewClientForm(emptyNewClientForm);
         setShowForm(false);
         setShowEmailFields(false);
         toast.success("Workspace added successfully");
@@ -102,26 +118,29 @@ export function IntegrationsManager() {
       // Build update payload - only include fields that have values or are being explicitly changed
       const updatePayload: { emailBisonApiKey?: string; emailBisonWorkspaceId?: string; unipileAccountId?: string } = {};
       
-      // Always update workspace ID if provided (even empty to clear it)
-      if (formData.emailBisonWorkspaceId !== (currentClient?.emailBisonWorkspaceId || "")) {
-        updatePayload.emailBisonWorkspaceId = formData.emailBisonWorkspaceId;
-      } else if (formData.emailBisonWorkspaceId) {
-        updatePayload.emailBisonWorkspaceId = formData.emailBisonWorkspaceId;
+      // Update workspace ID (allow empty to clear)
+      if (integrationsForm.emailBisonWorkspaceId !== (currentClient?.emailBisonWorkspaceId || "")) {
+        updatePayload.emailBisonWorkspaceId = integrationsForm.emailBisonWorkspaceId;
       }
       
       // Only update API key if user entered a new one (not blank placeholder)
-      if (formData.emailBisonApiKey) {
-        updatePayload.emailBisonApiKey = formData.emailBisonApiKey;
+      if (integrationsForm.emailBisonApiKey) {
+        updatePayload.emailBisonApiKey = integrationsForm.emailBisonApiKey;
       }
       
       // Update Unipile Account ID if changed
-      if (formData.unipileAccountId !== (currentClient?.unipileAccountId || "")) {
-        updatePayload.unipileAccountId = formData.unipileAccountId;
+      if (integrationsForm.unipileAccountId !== (currentClient?.unipileAccountId || "")) {
+        updatePayload.unipileAccountId = integrationsForm.unipileAccountId;
+      }
+
+      if (Object.keys(updatePayload).length === 0) {
+        toast.info("No changes to save");
+        return;
       }
 
       const result = await updateClient(clientId, updatePayload);
       if (result.success) {
-        setFormData({ name: "", ghlLocationId: "", ghlPrivateKey: "", emailBisonApiKey: "", emailBisonWorkspaceId: "", unipileAccountId: "" });
+        setIntegrationsForm(emptyIntegrationsForm);
         setEditingClientId(null);
         toast.success("Credentials updated");
         await fetchClients();
@@ -219,7 +238,19 @@ export function IntegrationsManager() {
               Manage your GoHighLevel sub-account integrations
             </CardDescription>
           </div>
-          <Button onClick={() => setShowForm(!showForm)} variant={showForm ? "outline" : "default"}>
+          <Button
+            onClick={() => {
+              setShowForm((prev) => {
+                const next = !prev;
+                if (next) {
+                  setNewClientForm(emptyNewClientForm);
+                  setShowEmailFields(false);
+                }
+                return next;
+              });
+            }}
+            variant={showForm ? "outline" : "default"}
+          >
             <Plus className="h-4 w-4 mr-2" />
             {showForm ? "Cancel" : "Add Workspace"}
           </Button>
@@ -246,8 +277,8 @@ export function IntegrationsManager() {
                   <Input
                     id="name"
                     placeholder="e.g., Acme Corp"
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    value={newClientForm.name}
+                    onChange={(e) => setNewClientForm({ ...newClientForm, name: e.target.value })}
                     required
                   />
                 </div>
@@ -259,8 +290,8 @@ export function IntegrationsManager() {
                   <Input
                     id="locationId"
                     placeholder="e.g., abc123xyz"
-                    value={formData.ghlLocationId}
-                    onChange={(e) => setFormData({ ...formData, ghlLocationId: e.target.value })}
+                    value={newClientForm.ghlLocationId}
+                    onChange={(e) => setNewClientForm({ ...newClientForm, ghlLocationId: e.target.value })}
                     required
                   />
                 </div>
@@ -275,8 +306,8 @@ export function IntegrationsManager() {
                   type="password"
                   autoComplete="off"
                   placeholder="pit_xxxxxxxxxxxxxxxx"
-                  value={formData.ghlPrivateKey}
-                  onChange={(e) => setFormData({ ...formData, ghlPrivateKey: e.target.value })}
+                  value={newClientForm.ghlPrivateKey}
+                  onChange={(e) => setNewClientForm({ ...newClientForm, ghlPrivateKey: e.target.value })}
                   required
                 />
                 <p className="text-xs text-muted-foreground">
@@ -310,8 +341,8 @@ export function IntegrationsManager() {
                       <Input
                         id="emailBisonWorkspaceId"
                         placeholder="e.g., 12345"
-                        value={formData.emailBisonWorkspaceId}
-                        onChange={(e) => setFormData({ ...formData, emailBisonWorkspaceId: e.target.value })}
+                        value={newClientForm.emailBisonWorkspaceId}
+                        onChange={(e) => setNewClientForm({ ...newClientForm, emailBisonWorkspaceId: e.target.value })}
                       />
                       <p className="text-xs text-muted-foreground">
                         Found in EmailBison webhook payloads as workspace_id. Required for automatic webhook routing.
@@ -327,8 +358,8 @@ export function IntegrationsManager() {
                         type="password"
                         autoComplete="off"
                         placeholder="eb_xxxxxxxxxxxxxxxx"
-                        value={formData.emailBisonApiKey}
-                        onChange={(e) => setFormData({ ...formData, emailBisonApiKey: e.target.value })}
+                        value={newClientForm.emailBisonApiKey}
+                        onChange={(e) => setNewClientForm({ ...newClientForm, emailBisonApiKey: e.target.value })}
                       />
                       <p className="text-xs text-muted-foreground">
                         Found in your EmailBison instance → Settings → API Keys
@@ -344,8 +375,8 @@ export function IntegrationsManager() {
                       <Input
                         id="unipileAccountId"
                         placeholder="e.g., Asdq-j08dsqQS89QSD"
-                        value={formData.unipileAccountId}
-                        onChange={(e) => setFormData({ ...formData, unipileAccountId: e.target.value })}
+                        value={newClientForm.unipileAccountId}
+                        onChange={(e) => setNewClientForm({ ...newClientForm, unipileAccountId: e.target.value })}
                       />
                       <p className="text-xs text-muted-foreground mt-1">
                         Found in Unipile dashboard under your connected LinkedIn account
@@ -525,12 +556,11 @@ export function IntegrationsManager() {
                           onClick={() => {
                             if (isEditingThis) {
                               setEditingClientId(null);
-                              setFormData({ ...formData, emailBisonApiKey: "", emailBisonWorkspaceId: "" });
+                              setIntegrationsForm(emptyIntegrationsForm);
                             } else {
                               setEditingClientId(client.id);
-                              setFormData({
-                                ...formData,
-                                emailBisonApiKey: client.emailBisonApiKey || "",
+                              setIntegrationsForm({
+                                emailBisonApiKey: "",
                                 emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
                                 unipileAccountId: client.unipileAccountId || "",
                               });
@@ -568,8 +598,8 @@ export function IntegrationsManager() {
                               <Input
                                 id={`workspaceId-${client.id}`}
                                 placeholder="e.g., 78"
-                                value={formData.emailBisonWorkspaceId}
-                                onChange={(e) => setFormData({ ...formData, emailBisonWorkspaceId: e.target.value })}
+                                value={integrationsForm.emailBisonWorkspaceId}
+                                onChange={(e) => setIntegrationsForm({ ...integrationsForm, emailBisonWorkspaceId: e.target.value })}
                                 className="h-8 text-sm"
                               />
                               <p className="text-[10px] text-muted-foreground">
@@ -583,8 +613,8 @@ export function IntegrationsManager() {
                                 type="password"
                                 autoComplete="off"
                                 placeholder={client.emailBisonApiKey ? "••••••••" : "eb_xxxxxxxxxxxxxxxx"}
-                                value={formData.emailBisonApiKey}
-                                onChange={(e) => setFormData({ ...formData, emailBisonApiKey: e.target.value })}
+                                value={integrationsForm.emailBisonApiKey}
+                                onChange={(e) => setIntegrationsForm({ ...integrationsForm, emailBisonApiKey: e.target.value })}
                                 className="h-8 text-sm"
                               />
                             </div>
@@ -598,8 +628,8 @@ export function IntegrationsManager() {
                               <Input
                                 id={`linkedinId-${client.id}`}
                                 placeholder="e.g., Asdq-j08dsqQS89QSD"
-                                value={formData.unipileAccountId}
-                                onChange={(e) => setFormData({ ...formData, unipileAccountId: e.target.value })}
+                                value={integrationsForm.unipileAccountId}
+                                onChange={(e) => setIntegrationsForm({ ...integrationsForm, unipileAccountId: e.target.value })}
                                 className="h-8 text-sm"
                               />
                               <p className="text-[10px] text-muted-foreground">

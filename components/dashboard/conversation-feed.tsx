@@ -46,6 +46,8 @@ interface ConversationFeedProps {
   syncingLeadIds?: Set<string>
   onSyncAll?: (forceReclassify: boolean) => Promise<void>
   isSyncingAll?: boolean
+  onEnableAutoFollowUpsForAttentionLeads?: () => Promise<void>
+  isEnablingAutoFollowUps?: boolean
   hasMore?: boolean
   isLoadingMore?: boolean
   onLoadMore?: () => void
@@ -65,6 +67,8 @@ export function ConversationFeed({
   syncingLeadIds = new Set(),
   onSyncAll,
   isSyncingAll = false,
+  onEnableAutoFollowUpsForAttentionLeads,
+  isEnablingAutoFollowUps = false,
   hasMore = false,
   isLoadingMore = false,
   onLoadMore,
@@ -279,6 +283,26 @@ export function ConversationFeed({
               </Label>
             </div>
           </div>
+        )}
+
+        {/* Bulk-enable Auto Follow-ups for attention/positive leads */}
+        {onEnableAutoFollowUpsForAttentionLeads && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full text-xs"
+            onClick={() => onEnableAutoFollowUpsForAttentionLeads()}
+            disabled={isEnablingAutoFollowUps}
+          >
+            {isEnablingAutoFollowUps ? (
+              <>
+                <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
+                Enabling Auto Follow-ups...
+              </>
+            ) : (
+              "Enable Auto Follow-ups (Attention)"
+            )}
+          </Button>
         )}
       </div>
 

@@ -13,6 +13,24 @@ export interface ClientData {
   unipileAccountId?: string;
 }
 
+function normalizeOptionalString(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return value.trim();
+}
+
+function normalizeEmailBisonWorkspaceId(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return value.trim().replace(/^#\s*/, "");
+}
+
+function validateEmailBisonWorkspaceId(value: string | undefined): string | null {
+  const normalized = normalizeEmailBisonWorkspaceId(value);
+  if (normalized === undefined) return null;
+  if (normalized === "") return null;
+  if (!/^\d+$/.test(normalized)) return "EmailBison Workspace ID must be a numeric value";
+  return null;
+}
+
 /**
  * Get the current user's ID from Supabase
  */
@@ -72,28 +90,50 @@ export async function createClient(data: ClientData) {
       return { success: false, error: "Not authenticated" };
     }
 
+    const name = data.name?.trim();
+    const ghlLocationId = data.ghlLocationId?.trim();
+    const ghlPrivateKey = data.ghlPrivateKey?.trim();
+    const emailBisonApiKey = normalizeOptionalString(data.emailBisonApiKey);
+    const emailBisonWorkspaceId = normalizeEmailBisonWorkspaceId(data.emailBisonWorkspaceId);
+    const unipileAccountId = normalizeOptionalString(data.unipileAccountId);
+
     // Validate required fields
-    if (!data.name || !data.ghlLocationId || !data.ghlPrivateKey) {
+    if (!name || !ghlLocationId || !ghlPrivateKey) {
       return { success: false, error: "Missing required fields" };
+    }
+
+    const workspaceIdError = validateEmailBisonWorkspaceId(emailBisonWorkspaceId);
+    if (workspaceIdError) {
+      return { success: false, error: workspaceIdError };
     }
 
     // Check if location ID already exists
     const existing = await prisma.client.findUnique({
-      where: { ghlLocationId: data.ghlLocationId },
+      where: { ghlLocationId },
     });
 
     if (existing) {
       return { success: false, error: "A workspace with this Location ID already exists" };
     }
 
+    if (emailBisonWorkspaceId) {
+      const existingWithWorkspaceId = await prisma.client.findUnique({
+        where: { emailBisonWorkspaceId },
+      });
+      if (existingWithWorkspaceId) {
+        return { success: false, error: "A workspace with this EmailBison Workspace ID already exists" };
+      }
+    }
+
     // Create the client/workspace with userId
     const client = await prisma.client.create({
       data: {
-        name: data.name,
-        ghlLocationId: data.ghlLocationId,
-        ghlPrivateKey: data.ghlPrivateKey,
-        emailBisonApiKey: data.emailBisonApiKey || null,
-        emailBisonWorkspaceId: data.emailBisonWorkspaceId || null,
+        name,
+        ghlLocationId,
+        ghlPrivateKey,
+        emailBisonApiKey: emailBisonApiKey || null,
+        emailBisonWorkspaceId: emailBisonWorkspaceId || null,
+        unipileAccountId: unipileAccountId || null,
         userId, // Tie workspace to current user
       },
     });
@@ -133,10 +173,26 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
       return { success: false, error: "Workspace not found or access denied" };
     }
 
+    const name = normalizeOptionalString(data.name);
+    const ghlLocationId = normalizeOptionalString(data.ghlLocationId);
+    const ghlPrivateKey = normalizeOptionalString(data.ghlPrivateKey);
+    const emailBisonApiKey = normalizeOptionalString(data.emailBisonApiKey);
+    const emailBisonWorkspaceId = normalizeEmailBisonWorkspaceId(data.emailBisonWorkspaceId);
+    const unipileAccountId = normalizeOptionalString(data.unipileAccountId);
+
+    if (name !== undefined && !name) return { success: false, error: "Workspace name cannot be empty" };
+    if (ghlLocationId !== undefined && !ghlLocationId) return { success: false, error: "GHL Location ID cannot be empty" };
+    if (ghlPrivateKey !== undefined && !ghlPrivateKey) return { success: false, error: "GHL Private Integration Key cannot be empty" };
+
+    const workspaceIdError = validateEmailBisonWorkspaceId(emailBisonWorkspaceId);
+    if (workspaceIdError) {
+      return { success: false, error: workspaceIdError };
+    }
+
     // If ghlLocationId is being changed, check for uniqueness
-    if (data.ghlLocationId !== undefined && data.ghlLocationId !== client.ghlLocationId) {
+    if (ghlLocationId !== undefined && ghlLocationId !== client.ghlLocationId) {
       const existingWithLocationId = await prisma.client.findUnique({
-        where: { ghlLocationId: data.ghlLocationId },
+        where: { ghlLocationId },
       });
       if (existingWithLocationId) {
         return { success: false, error: "A workspace with this Location ID already exists" };
@@ -144,11 +200,11 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
     }
 
     // If emailBisonWorkspaceId is being changed, check for uniqueness
-    if (data.emailBisonWorkspaceId !== undefined &&
-      data.emailBisonWorkspaceId !== client.emailBisonWorkspaceId &&
-      data.emailBisonWorkspaceId !== "") {
+    if (emailBisonWorkspaceId !== undefined &&
+      emailBisonWorkspaceId !== (client.emailBisonWorkspaceId || "") &&
+      emailBisonWorkspaceId !== "") {
       const existingWithWorkspaceId = await prisma.client.findUnique({
-        where: { emailBisonWorkspaceId: data.emailBisonWorkspaceId },
+        where: { emailBisonWorkspaceId },
       });
       if (existingWithWorkspaceId) {
         return { success: false, error: "A workspace with this EmailBison Workspace ID already exists" };
@@ -157,12 +213,12 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
 
     // Build update data, only including fields that are provided
     const updateData: Record<string, string | null> = {};
-    if (data.name !== undefined) updateData.name = data.name;
-    if (data.ghlLocationId !== undefined) updateData.ghlLocationId = data.ghlLocationId;
-    if (data.ghlPrivateKey !== undefined) updateData.ghlPrivateKey = data.ghlPrivateKey;
-    if (data.emailBisonApiKey !== undefined) updateData.emailBisonApiKey = data.emailBisonApiKey || null;
-    if (data.emailBisonWorkspaceId !== undefined) updateData.emailBisonWorkspaceId = data.emailBisonWorkspaceId || null;
-    if (data.unipileAccountId !== undefined) updateData.unipileAccountId = data.unipileAccountId || null;
+    if (name !== undefined) updateData.name = name;
+    if (ghlLocationId !== undefined) updateData.ghlLocationId = ghlLocationId;
+    if (ghlPrivateKey !== undefined) updateData.ghlPrivateKey = ghlPrivateKey;
+    if (data.emailBisonApiKey !== undefined) updateData.emailBisonApiKey = emailBisonApiKey || null;
+    if (data.emailBisonWorkspaceId !== undefined) updateData.emailBisonWorkspaceId = emailBisonWorkspaceId || null;
+    if (data.unipileAccountId !== undefined) updateData.unipileAccountId = unipileAccountId || null;
 
     const updatedClient = await prisma.client.update({
       where: { id },

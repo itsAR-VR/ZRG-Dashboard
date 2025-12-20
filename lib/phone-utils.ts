@@ -11,17 +11,29 @@ function stripInternationalPrefix00(digits: string): string {
 }
 
 /**
- * Canonical storage format for phones in our DB:
- * - `+` plus sign
- * - digits only (no spaces/hyphens)
- *
- * Example: `+442085379206`
+ * Storage format for phones in our DB:
+ * - Prefer E.164 (`+` + digits) when a country calling code is present/likely.
+ * - Otherwise store digits-only (national format) to avoid inventing invalid country codes.
  */
 export function toStoredPhone(phone: string | null | undefined): string | null {
-  const digits = normalizePhoneDigits(phone);
+  const raw = phone?.trim();
+  if (!raw) return null;
+  const digits = normalizePhoneDigits(raw);
   if (!digits) return null;
   const normalized = stripInternationalPrefix00(digits);
-  return `+${normalized}`;
+
+  // Numbers with a leading 0 are almost always national-format (trunk prefix),
+  // so we store digits-only rather than inventing a bogus `+0...` E.164 number.
+  if (normalized.startsWith("0")) return normalized;
+
+  const looksExplicitInternational = raw.startsWith("+") || raw.startsWith("00");
+  const looksLikeIncludesCountryCode = normalized.length > 10;
+
+  if (looksExplicitInternational || looksLikeIncludesCountryCode) {
+    return `+${normalized}`;
+  }
+
+  return normalized;
 }
 
 /**
@@ -30,26 +42,45 @@ export function toStoredPhone(phone: string | null | undefined): string | null {
  * - Uses `+1 XXX-XXX-XXXX` for NANP numbers when possible.
  */
 export function toDisplayPhone(phone: string | null | undefined): string | null {
-  const digits = normalizePhoneDigits(phone);
+  const raw = phone?.trim();
+  if (!raw) return null;
+  const digits = normalizePhoneDigits(raw);
   if (!digits) return null;
   const normalized = stripInternationalPrefix00(digits);
 
-  if (normalized.length <= 10) return `+${normalized}`;
+  // If we don't have a country calling code, don't pretend we do.
+  if (normalized.startsWith("0") || normalized.length <= 10) {
+    return raw;
+  }
 
-  // Heuristic: many of our numbers are in E.164 with a ~10-digit national component.
-  const ccLen = Math.min(3, Math.max(1, normalized.length - 10));
-  const countryCode = normalized.slice(0, ccLen);
-  const national = normalized.slice(ccLen);
-
-  if (countryCode === "1" && national.length === 10) {
+  // Common case: NANP with explicit country code.
+  if (normalized.length === 11 && normalized.startsWith("1")) {
+    const national = normalized.slice(1);
     return `+1 ${national.slice(0, 3)}-${national.slice(3, 6)}-${national.slice(6)}`;
   }
 
-  return `+${countryCode} ${national}`;
+  // Fallback: show E.164-ish without guessing country code length.
+  return `+${normalized}`;
 }
 
 export function toGhlPhone(phone: string | null | undefined): string | null {
-  return toDisplayPhone(phone);
+  const raw = phone?.trim();
+  if (!raw) return null;
+
+  const digits = normalizePhoneDigits(raw);
+  if (!digits) return null;
+
+  const normalized = stripInternationalPrefix00(digits);
+
+  // Avoid sending invalid E.164 numbers like `+0...`.
+  if (normalized.startsWith("0")) return null;
+  if (normalized.length > 15) return null;
+
+  const looksExplicitInternational = raw.startsWith("+") || raw.startsWith("00");
+  const looksLikeIncludesCountryCode = normalized.length > 10;
+  if (!looksExplicitInternational && !looksLikeIncludesCountryCode) return null;
+
+  return `+${normalized}`;
 }
 
 export function isSamePhone(a: string | null | undefined, b: string | null | undefined): boolean {
@@ -57,4 +88,3 @@ export function isSamePhone(a: string | null | undefined, b: string | null | und
   const bd = normalizePhoneDigits(b);
   return !!ad && !!bd && ad === bd;
 }
-

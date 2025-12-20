@@ -40,6 +40,7 @@ interface WorkspaceSettings {
   timezone: string | null;
   workStartTime: string | null;
   workEndTime: string | null;
+  airtableMode?: boolean | null;
   // New fields for template variables
   aiPersonaName: string | null;
   companyName: string | null;
@@ -422,6 +423,17 @@ export async function executeFollowUpStep(
       };
     }
 
+    // Airtable Mode: email is handled externally (Airtable/n8n via EmailBison).
+    // Never execute email steps from follow-up sequences when enabled.
+    if (settings?.airtableMode && step.channel === "email") {
+      return {
+        success: true,
+        action: "skipped",
+        message: "Airtable Mode enabled - email steps are disabled",
+        advance: true,
+      };
+    }
+
     // Handle unsupported channels
     if (step.channel === "ai_voice") {
       return {
@@ -527,21 +539,6 @@ export async function executeFollowUpStep(
       };
 
       if (!evaluateCondition(effectiveLead, step.condition)) {
-        // Special-case: linkedin_connected should poll/wait rather than skipping permanently
-        if (step.condition?.type === "linkedin_connected" && !currentLead.linkedinId) {
-          const retryAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-          await prisma.followUpInstance.update({
-            where: { id: instanceId },
-            data: { nextStepDue: retryAt },
-          });
-
-          return {
-            success: true,
-            action: "skipped",
-            message: "Waiting for LinkedIn connection acceptance; rescheduled in 1 hour",
-          };
-        }
-
         return {
           success: true,
           action: "skipped",
@@ -955,6 +952,7 @@ export async function processFollowUpsDue(): Promise<{
         status: "active",
         nextStepDue: { lte: now },
         lead: {
+          autoFollowUpEnabled: true,
           OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }],
         },
       },

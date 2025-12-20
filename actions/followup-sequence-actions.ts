@@ -718,6 +718,25 @@ export async function advanceFollowUpInstance(
 // Default Sequence Templates
 // =============================================================================
 
+const DEFAULT_SEQUENCE_NAMES = {
+  noResponse: "No Response Day 2/5/7",
+  meetingRequested: "Meeting Requested Day 1/2/5/7",
+  postBooking: "Post-Booking Qualification",
+} as const;
+
+async function isAirtableModeEnabled(clientId: string): Promise<boolean> {
+  const settings = await prisma.workspaceSettings.findUnique({
+    where: { clientId },
+    select: { airtableMode: true },
+  });
+  return settings?.airtableMode === true;
+}
+
+function stripEmailSteps(steps: Omit<FollowUpStepData, "id">[]): Omit<FollowUpStepData, "id">[] {
+  const filtered = steps.filter((s) => s.channel !== "email");
+  return filtered.map((step, idx) => ({ ...step, stepOrder: idx + 1 }));
+}
+
 /**
  * Create the default "No Response" Day 2/5/7 follow-up sequence for a workspace
  * Triggered when lead doesn't respond to initial outreach
@@ -818,12 +837,15 @@ Where should we go from here?`,
     },
   ];
 
+  const airtableMode = await isAirtableModeEnabled(clientId);
+  const steps = airtableMode ? stripEmailSteps(noResponseSteps) : noResponseSteps;
+
   return createFollowUpSequence({
     clientId,
-    name: "No Response Day 2/5/7",
+    name: DEFAULT_SEQUENCE_NAMES.noResponse,
     description: "Triggered when lead doesn't respond: Day 2 (ask for phone), Day 5 (availability reminder), Day 7 (final check-in)",
     triggerOn: "no_response",
-    steps: noResponseSteps,
+    steps,
   });
 }
 
@@ -915,12 +937,15 @@ I have {availability} available. Calendar link here as well: {calendarLink}
     },
   ];
 
+  const airtableMode = await isAirtableModeEnabled(clientId);
+  const filteredSteps = airtableMode ? stripEmailSteps(steps) : steps;
+
   return createFollowUpSequence({
     clientId,
-    name: "Meeting Requested Day 1/2/5/7",
+    name: DEFAULT_SEQUENCE_NAMES.meetingRequested,
     description: "Triggered when sentiment becomes \"Meeting Requested\": Day 1 (email + LinkedIn connect), Day 2 (SMS + LinkedIn DM if connected), Day 5 (reminder), Day 7 (final check-in)",
     triggerOn: "manual",
-    steps,
+    steps: filteredSteps,
   });
 }
 
@@ -951,9 +976,14 @@ Looking forward to speaking with you!
     },
   ];
 
+  const airtableMode = await isAirtableModeEnabled(clientId);
+  if (airtableMode) {
+    return { success: false, error: "Post-booking default sequence is email-only and is disabled in Airtable Mode" };
+  }
+
   return createFollowUpSequence({
     clientId,
-    name: "Post-Booking Qualification",
+    name: DEFAULT_SEQUENCE_NAMES.postBooking,
     description: "Triggered after meeting booked: Confirmation + request qualification info",
     triggerOn: "meeting_selected",
     steps: postBookingSteps,
@@ -966,10 +996,12 @@ Looking forward to speaking with you!
 export async function createAllDefaultSequences(
   clientId: string
 ): Promise<{ success: boolean; sequenceIds?: string[]; errors?: string[] }> {
+  const airtableMode = await isAirtableModeEnabled(clientId);
+
   const results = await Promise.all([
     createDefaultSequence(clientId),
     createMeetingRequestedSequence(clientId),
-    createPostBookingSequence(clientId),
+    ...(airtableMode ? [] : [createPostBookingSequence(clientId)]),
   ]);
 
   const sequenceIds: string[] = [];
@@ -988,4 +1020,104 @@ export async function createAllDefaultSequences(
     sequenceIds: sequenceIds.length > 0 ? sequenceIds : undefined,
     errors: errors.length > 0 ? errors : undefined,
   };
+}
+
+export async function applyAirtableModeToDefaultSequences(opts: {
+  clientId: string;
+  enabled: boolean;
+}): Promise<{ success: boolean; updated?: number; error?: string }> {
+  try {
+    if (!opts.clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    if (!opts.enabled) {
+      // NOTE: We intentionally do not attempt to restore email steps automatically.
+      // That would require re-templating and could overwrite user edits.
+      return { success: true, updated: 0 };
+    }
+
+    const sequences = await prisma.followUpSequence.findMany({
+      where: {
+        clientId: opts.clientId,
+        name: { in: [DEFAULT_SEQUENCE_NAMES.noResponse, DEFAULT_SEQUENCE_NAMES.meetingRequested] },
+      },
+      include: { steps: { orderBy: { stepOrder: "asc" } } },
+    });
+
+    let updated = 0;
+
+    for (const sequence of sequences) {
+      const original = sequence.steps;
+      const remaining = original.filter((s) => s.channel !== "email");
+      if (remaining.length === original.length) {
+        continue;
+      }
+
+      await prisma.$transaction(async (tx) => {
+        // Capture old stepOrder values BEFORE we renumber anything in the DB.
+        // We use this snapshot to remap in-flight FollowUpInstance.currentStep safely.
+        const remainingOldOrders = remaining.map((s) => s.stepOrder);
+        const orderMap = new Map<number, number>();
+        for (let i = 0; i < remainingOldOrders.length; i++) {
+          orderMap.set(remainingOldOrders[i]!, i + 1);
+        }
+
+        await tx.followUpStep.deleteMany({
+          where: { sequenceId: sequence.id, channel: "email" },
+        });
+
+        // Renumber remaining steps to keep stepOrder sequential (UI + instance.currentStep assume this).
+        for (let i = 0; i < remaining.length; i++) {
+          await tx.followUpStep.update({
+            where: { id: remaining[i]!.id },
+            data: { stepOrder: 1000 + i },
+          });
+        }
+        for (let i = 0; i < remaining.length; i++) {
+          await tx.followUpStep.update({
+            where: { id: remaining[i]!.id },
+            data: { stepOrder: i + 1 },
+          });
+        }
+
+        // Map in-flight instances to the new stepOrder numbering.
+        // If the last completed step was an email step, fall back to the nearest prior non-email step.
+        const instances = await tx.followUpInstance.findMany({
+          where: { sequenceId: sequence.id },
+          select: { id: true, currentStep: true },
+        });
+
+        for (const instance of instances) {
+          if (!instance.currentStep || instance.currentStep <= 0) continue;
+          const lastOld =
+            remainingOldOrders.filter((o) => o <= instance.currentStep).pop() ?? 0;
+          const newCurrent = lastOld ? orderMap.get(lastOld) ?? 0 : 0;
+          if (newCurrent !== instance.currentStep) {
+            await tx.followUpInstance.update({
+              where: { id: instance.id },
+              data: { currentStep: newCurrent },
+            });
+          }
+        }
+      });
+
+      updated++;
+    }
+
+    // Post-booking default is email-only; disable it in Airtable Mode so it can't auto-start.
+    await prisma.followUpSequence.updateMany({
+      where: {
+        clientId: opts.clientId,
+        name: DEFAULT_SEQUENCE_NAMES.postBooking,
+      },
+      data: { isActive: false },
+    });
+
+    revalidatePath("/");
+    return { success: true, updated };
+  } catch (error) {
+    console.error("Failed to apply Airtable Mode to default sequences:", error);
+    return { success: false, error: "Failed to apply Airtable Mode" };
+  }
 }

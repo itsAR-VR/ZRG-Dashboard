@@ -1,6 +1,7 @@
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
+import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 
 // Sentiment tags for classification
 export const SENTIMENT_TAGS = [
@@ -421,6 +422,7 @@ export async function classifySentiment(
         promptKey: promptTemplate?.key || "sentiment.classify.v1",
         params: {
           model: "gpt-5-mini",
+          temperature: 0,
           instructions: systemPrompt,
           input: [
             {
@@ -444,30 +446,35 @@ export async function classifySentiment(
               },
             },
           },
-          reasoning: { effort: "low" },
-          max_output_tokens: 80,
+          reasoning: { effort: "minimal" },
+          // `max_output_tokens` includes reasoning tokens; keep headroom so the
+          // structured JSON body isn't empty/truncated.
+          max_output_tokens: 240,
         },
       });
 
-      const raw = response.output_text?.trim() || "";
+      const raw = getTrimmedOutputText(response) || "";
       if (!raw) {
+        // Retry a couple times before recording a post-process error; empty output
+        // is often caused by hitting `max_output_tokens` (which includes reasoning).
+        if (attempt < maxRetries) {
+          continue;
+        }
         if (interactionId) {
-          await markAiInteractionError(interactionId, "Post-process error: empty output_text");
+          const details = summarizeResponseForTelemetry(response);
+          await markAiInteractionError(
+            interactionId,
+            `Post-process error: empty output_text${details ? ` (${details})` : ""}`
+          );
         }
         return "Neutral";
       }
 
-      let jsonText = raw.replace(/```json\n?|\n?```/g, "").trim();
+      const jsonText = extractJsonObjectFromText(raw);
       let parsed: { classification?: string } | null = null;
       try {
         parsed = JSON.parse(jsonText) as { classification?: string };
-      } catch (parseError) {
-        if (interactionId) {
-          await markAiInteractionError(
-            interactionId,
-            `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})`
-          );
-        }
+      } catch {
         parsed = null;
       }
 

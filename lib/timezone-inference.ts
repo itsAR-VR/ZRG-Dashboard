@@ -1,6 +1,7 @@
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
+import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { prisma } from "@/lib/prisma";
 
 const CONFIDENCE_THRESHOLD = 0.95;
@@ -191,67 +192,94 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
       String(CONFIDENCE_THRESHOLD)
     );
 
-    const { response, interactionId } = await runResponseWithInteraction({
-      clientId: lead.clientId,
-      leadId,
-      featureId: promptTemplate?.featureId || "timezone.infer",
-      promptKey: promptTemplate?.key || "timezone.infer.v1",
-      params: {
-        model: "gpt-5-nano",
-        reasoning: { effort: "low" },
-        max_output_tokens: 120,
-        instructions,
-        text: {
-          verbosity: "low",
-          format: {
-            type: "json_schema",
-            name: "timezone_inference",
-            strict: true,
-            schema: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                timezone: { type: ["string", "null"] },
-                confidence: { type: "number", minimum: 0, maximum: 1 },
+    const input = JSON.stringify(
+      {
+        companyState: lead.companyState,
+        phone: lead.phone,
+        email: lead.email,
+        companyName: lead.companyName,
+        companyWebsite: lead.companyWebsite,
+        workspaceTimezone: lead.client.settings?.timezone || null,
+      },
+      null,
+      2
+    );
+
+    // `max_output_tokens` includes reasoning tokens; keep headroom and retry once
+    // if we receive an empty/truncated JSON body.
+    const attempts: Array<{ maxOutputTokens: number }> = [{ maxOutputTokens: 240 }, { maxOutputTokens: 480 }];
+
+    let parsed: { timezone: string | null; confidence: number } | null = null;
+    let lastResponse: Awaited<ReturnType<typeof runResponseWithInteraction>>["response"] | null = null;
+    let lastInteractionId: string | null = null;
+    let lastErrorMessage: string | null = null;
+
+    for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
+      const { response, interactionId } = await runResponseWithInteraction({
+        clientId: lead.clientId,
+        leadId,
+        featureId: promptTemplate?.featureId || "timezone.infer",
+        promptKey:
+          (promptTemplate?.key || "timezone.infer.v1") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
+        params: {
+          model: "gpt-5-nano",
+          temperature: 0,
+          reasoning: { effort: "minimal" },
+          max_output_tokens: attempts[attemptIndex].maxOutputTokens,
+          instructions,
+          text: {
+            verbosity: "low",
+            format: {
+              type: "json_schema",
+              name: "timezone_inference",
+              strict: true,
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  timezone: { type: ["string", "null"] },
+                  confidence: { type: "number", minimum: 0, maximum: 1 },
+                },
+                required: ["timezone", "confidence"],
               },
-              required: ["timezone", "confidence"],
             },
           },
+          input,
         },
-        input: JSON.stringify(
-          {
-            companyState: lead.companyState,
-            phone: lead.phone,
-            email: lead.email,
-            companyName: lead.companyName,
-            companyWebsite: lead.companyWebsite,
-            workspaceTimezone: lead.client.settings?.timezone || null,
-          },
-          null,
-          2
-        ),
-      },
-    });
+      });
 
-    const text = response.output_text?.trim();
-    if (!text) {
-      if (interactionId) {
-        await markAiInteractionError(interactionId, "Post-process error: empty output_text");
+      lastResponse = response;
+      lastInteractionId = interactionId;
+
+      const text = getTrimmedOutputText(response);
+      if (!text) {
+        const details = summarizeResponseForTelemetry(response);
+        lastErrorMessage = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
+        // If the model was cut off, a retry with more headroom often succeeds.
+        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < attempts.length - 1) {
+          continue;
+        }
+        break;
       }
-      const fallback = lead.client.settings?.timezone || null;
-      return { timezone: fallback, source: "workspace_fallback" };
+
+      try {
+        parsed = JSON.parse(extractJsonObjectFromText(text)) as { timezone: string | null; confidence: number };
+        break;
+      } catch (parseError) {
+        const details = summarizeResponseForTelemetry(response);
+        lastErrorMessage = `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})${
+          details ? ` (${details})` : ""
+        }`;
+
+        if (attemptIndex < attempts.length - 1) {
+          continue;
+        }
+      }
     }
 
-    const jsonText = text.replace(/```json\n?|\n?```/g, "").trim();
-    let parsed: { timezone: string | null; confidence: number };
-    try {
-      parsed = JSON.parse(jsonText) as { timezone: string | null; confidence: number };
-    } catch (parseError) {
-      if (interactionId) {
-        await markAiInteractionError(
-          interactionId,
-          `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})`
-        );
+    if (!parsed) {
+      if (lastInteractionId && lastErrorMessage) {
+        await markAiInteractionError(lastInteractionId, lastErrorMessage);
       }
       const fallback = lead.client.settings?.timezone || null;
       return { timezone: fallback, source: "workspace_fallback" };

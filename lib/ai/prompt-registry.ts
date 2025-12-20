@@ -44,7 +44,8 @@ CATEGORIES:
 - "Interested": Positive interest without a clear next step.
 - "Neutral": Truly ambiguous (rare).
 
-Return ONLY the category name, nothing else.`;
+Return ONLY valid JSON (no markdown/code-fences, no extra keys):
+{"classification": "<one of the category names above>"}\n`;
 
 const AUTO_REPLY_GATE_SYSTEM = `You decide whether an inbound reply warrants sending a reply back.
 

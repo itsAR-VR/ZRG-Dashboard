@@ -225,8 +225,9 @@ async function findClient(request: NextRequest, payload?: InboxxiaWebhook): Prom
 
   // Strategy 2: Look up by EmailBison workspace_id from payload
   const workspaceId = payload?.event?.workspace_id;
-  if (workspaceId) {
-    const workspaceIdStr = String(workspaceId);
+  const workspaceIdStr =
+    workspaceId !== undefined && workspaceId !== null ? String(workspaceId).trim() : "";
+  if (workspaceIdStr) {
     const client = await prisma.client.findUnique({
       where: { emailBisonWorkspaceId: workspaceIdStr },
     });
@@ -237,8 +238,55 @@ async function findClient(request: NextRequest, payload?: InboxxiaWebhook): Prom
     console.warn(`[Email Webhook] workspace_id in payload but no matching client: ${workspaceIdStr}`);
   }
 
+  // Strategy 3 (safe backstop): Exact match by workspace name (only if unique globally)
+  const rawWorkspaceName = payload?.event?.workspace_name || payload?.event?.name;
+  const workspaceName = typeof rawWorkspaceName === "string" ? rawWorkspaceName.trim() : "";
+  if (workspaceName) {
+    const candidates = Array.from(
+      new Set(
+        [
+          workspaceName,
+          workspaceName.replace(/\s*-\s*Inboxxia\s*Client\s*$/i, "").trim(),
+          workspaceName.replace(/\s*-\s*EmailBison\s*Client\s*$/i, "").trim(),
+          workspaceName.replace(/\s*-\s*Inboxxia\s*$/i, "").trim(),
+          workspaceName.replace(/\s*-\s*EmailBison\s*$/i, "").trim(),
+        ].filter(Boolean)
+      )
+    );
+
+    for (const candidate of candidates) {
+      const matches = await prisma.client.findMany({
+        where: { name: { equals: candidate, mode: "insensitive" } },
+        take: 2,
+      });
+
+      if (matches.length === 1) {
+        console.warn(
+          `[Email Webhook] Client matched by workspace_name (emailBisonWorkspaceId missing/mismatched): ${matches[0].name} (${matches[0].id})`
+        );
+        return matches[0];
+      }
+
+      if (matches.length > 1) {
+        console.warn(
+          `[Email Webhook] Multiple clients match workspace_name "${candidate}". Skipping name-based routing.`
+        );
+        break;
+      }
+    }
+  }
+
   // No client found - log diagnostic info
-  console.error(`[Email Webhook] Client lookup failed. clientId param: ${clientIdParam || "none"}, workspace_id: ${workspaceId || "none"}`);
+  const instanceUrl = payload?.event?.instance_url;
+  const leadEmail = payload?.data?.lead?.email || payload?.data?.reply?.from_email_address;
+
+  console.error(
+    `[Email Webhook] Client lookup failed. clientId param: ${clientIdParam || "none"}, workspace_id: ${workspaceIdStr || "none"}, workspace_name: ${workspaceName || "none"}, instance_url: ${typeof instanceUrl === "string" ? instanceUrl : "none"}, lead: ${leadEmail || "unknown"}`
+  );
+
+  await triggerSlackNotification(
+    `[Email Webhook] Client lookup failed. workspace_id=${workspaceIdStr || "none"} workspace_name=${workspaceName || "none"} lead=${leadEmail || "unknown"} instance_url=${typeof instanceUrl === "string" ? instanceUrl : "none"}. Fix: set EmailBison Workspace ID in Dashboard → Settings → Integrations.`
+  );
   return null;
 }
 

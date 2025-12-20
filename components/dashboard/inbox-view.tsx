@@ -14,6 +14,7 @@ import {
 } from "@/actions/lead-actions";
 import { getSmsCampaignFilters } from "@/actions/sms-campaign-actions";
 import { syncConversationHistory, syncAllConversations, syncEmailConversationHistory, syncAllEmailConversations, smartSyncConversation, reanalyzeLeadSentiment } from "@/actions/message-actions";
+import { enableAutoFollowUpsForAttentionLeads } from "@/actions/crm-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff, Inbox, RefreshCw, FilterX } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
@@ -115,6 +116,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   const [syncingLeadIds, setSyncingLeadIds] = useState<Set<string>>(new Set());
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [reanalyzingLeadId, setReanalyzingLeadId] = useState<string | null>(null);
+  const [isEnablingAutoFollowUps, setIsEnablingAutoFollowUps] = useState(false);
   
   // Delayed loading state - only show spinner after 300ms to avoid flicker on fast loads
   const [showDelayedSpinner, setShowDelayedSpinner] = useState(false);
@@ -426,6 +428,46 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
     }
   }, [fetchConversations]);
 
+  const handleEnableAutoFollowUpsForAttentionLeads = useCallback(async () => {
+    if (!activeWorkspace) {
+      toast.error("No workspace selected");
+      return;
+    }
+
+    const ok = confirm(
+      [
+        "Enable Auto Follow-ups for all attention/positive leads in this workspace?",
+        "",
+        "Includes: Meeting Requested, Call Requested, Information Requested, Interested, Follow Up",
+        "",
+        "This will only enable follow-ups for these leads (it won't change other leads).",
+      ].join("\n")
+    );
+    if (!ok) return;
+
+    setIsEnablingAutoFollowUps(true);
+    try {
+      const result = await enableAutoFollowUpsForAttentionLeads(activeWorkspace);
+      if (result.success) {
+        const eligible = result.eligible ?? 0;
+        const enabledNow = result.enabledNow ?? 0;
+        const alreadyEnabled = result.alreadyEnabled ?? 0;
+
+        toast.success("Auto Follow-ups updated", {
+          description: `${enabledNow} enabled now • ${alreadyEnabled} already enabled • ${eligible} eligible`,
+        });
+
+        await fetchConversations();
+      } else {
+        toast.error(result.error || "Failed to enable auto follow-ups");
+      }
+    } catch (err) {
+      toast.error("Failed to enable auto follow-ups");
+    } finally {
+      setIsEnablingAutoFollowUps(false);
+    }
+  }, [activeWorkspace, fetchConversations]);
+
   // Reset sentiment filter when workspace changes
   useEffect(() => {
     setActiveSentiment("all");
@@ -657,13 +699,15 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
         smsClientOptions={activeWorkspace ? smsCampaignFilters?.campaigns || [] : []}
         smsClientUnattributedCount={activeWorkspace ? smsCampaignFilters?.unattributedLeadCount || 0 : 0}
         isLoadingSmsClients={activeWorkspace ? smsCampaignFiltersQuery.isLoading : false}
-        syncingLeadIds={syncingLeadIds}
-        onSyncAll={handleSyncAll}
-        isSyncingAll={isSyncingAll}
-        hasMore={hasNextPage}
-        isLoadingMore={isFetchingNextPage}
-        onLoadMore={() => fetchNextPage()}
-      />
+	        syncingLeadIds={syncingLeadIds}
+	        onSyncAll={handleSyncAll}
+	        isSyncingAll={isSyncingAll}
+	        onEnableAutoFollowUpsForAttentionLeads={activeWorkspace ? handleEnableAutoFollowUpsForAttentionLeads : undefined}
+	        isEnablingAutoFollowUps={isEnablingAutoFollowUps}
+	        hasMore={hasNextPage}
+	        isLoadingMore={isFetchingNextPage}
+	        onLoadMore={() => fetchNextPage()}
+	      />
   <ActionStation
         conversation={activeConversation}
         onToggleCrm={() => setIsCrmOpen(!isCrmOpen)}

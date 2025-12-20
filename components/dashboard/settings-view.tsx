@@ -54,20 +54,21 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { IntegrationsManager } from "./settings/integrations-manager"
 // Note: FollowUpSequenceManager moved to Follow-ups view
-import { 
-  getUserSettings, 
-  updateUserSettings, 
-  addKnowledgeAsset,
-  deleteKnowledgeAsset,
-  getCalendarLinks,
-  addCalendarLink,
-  deleteCalendarLink,
-  setDefaultCalendarLink,
-  type UserSettingsData,
-  type KnowledgeAssetData,
-  type QualificationQuestion,
-  type CalendarLinkData,
-} from "@/actions/settings-actions"
+	import { 
+	  getUserSettings, 
+	  updateUserSettings, 
+	  addKnowledgeAsset,
+	  deleteKnowledgeAsset,
+	  getCalendarLinks,
+	  addCalendarLink,
+	  deleteCalendarLink,
+	  setDefaultCalendarLink,
+	  setAirtableMode,
+	  type UserSettingsData,
+	  type KnowledgeAssetData,
+	  type QualificationQuestion,
+	  type CalendarLinkData,
+	} from "@/actions/settings-actions"
 import {
   getAiObservabilitySummary,
   getAiPromptTemplates,
@@ -181,12 +182,15 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     slackAlerts: true,
   })
 
-  const [automationRules, setAutomationRules] = useState({
-    autoApproveMeetings: true,
-    flagUncertainReplies: true,
-    pauseForOOO: true,
-    autoBlacklist: true,
-  })
+	  const [automationRules, setAutomationRules] = useState({
+	    autoApproveMeetings: true,
+	    flagUncertainReplies: true,
+	    pauseForOOO: true,
+	    autoBlacklist: true,
+	  })
+
+	  const [airtableModeEnabled, setAirtableModeEnabled] = useState(false)
+	  const [isApplyingAirtableMode, setIsApplyingAirtableMode] = useState(false)
 
   // AI observability (admin-only)
   const [aiObsWindow, setAiObsWindow] = useState<AiObservabilityWindow>("24h")
@@ -230,12 +234,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           emailDigest: result.data.emailDigest,
           slackAlerts: result.data.slackAlerts,
         })
-        setAutomationRules({
-          autoApproveMeetings: result.data.autoApproveMeetings,
-          flagUncertainReplies: result.data.flagUncertainReplies,
-          pauseForOOO: result.data.pauseForOOO,
-          autoBlacklist: result.data.autoBlacklist,
-        })
+	        setAutomationRules({
+	          autoApproveMeetings: result.data.autoApproveMeetings,
+	          flagUncertainReplies: result.data.flagUncertainReplies,
+	          pauseForOOO: result.data.pauseForOOO,
+	          autoBlacklist: result.data.autoBlacklist,
+	        })
+	        setAirtableModeEnabled(result.data.airtableMode)
         // Parse qualification questions from JSON
         if (result.data.qualificationQuestions) {
           try {
@@ -1554,18 +1559,67 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
                       <span className="text-sm">Auto-blacklist explicit opt-outs</span>
-                      <Switch 
-                        checked={automationRules.autoBlacklist}
-                        onCheckedChange={(v) => {
-                          setAutomationRules({ ...automationRules, autoBlacklist: v })
-                          handleChange()
-                        }}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+	                      <Switch 
+	                        checked={automationRules.autoBlacklist}
+	                        onCheckedChange={(v) => {
+	                          setAutomationRules({ ...automationRules, autoBlacklist: v })
+	                          handleChange()
+	                        }}
+	                      />
+	                    </div>
+	                    <div className="flex items-center justify-between p-3 rounded-lg border">
+	                      <div className="space-y-0.5">
+	                        <span className="text-sm">Airtable Mode</span>
+	                        <p className="text-xs text-muted-foreground">
+	                          Email is handled externally; default sequences become SMS/LinkedIn-only
+	                        </p>
+	                      </div>
+	                      <Switch 
+	                        checked={airtableModeEnabled}
+	                        disabled={!activeWorkspace || isApplyingAirtableMode}
+	                        onCheckedChange={async (v) => {
+	                          if (!activeWorkspace) return
+
+		                          if (v) {
+		                            const ok = confirm(
+		                              [
+		                                "Enable Airtable Mode for this workspace?",
+		                                "",
+		                                "This will remove email steps from the default follow-up sequences and skip email steps during execution.",
+		                                "Turning it off will NOT automatically restore email steps.",
+		                              ].join("\n")
+		                            )
+		                            if (!ok) return
+		                          }
+
+	                          setIsApplyingAirtableMode(true)
+	                          const previous = airtableModeEnabled
+	                          setAirtableModeEnabled(v)
+	                          try {
+	                            const result = await setAirtableMode(activeWorkspace, v)
+		                            if (result.success) {
+		                              toast.success("Airtable Mode updated", {
+		                                description: v
+		                                  ? `Updated ${result.updatedSequences ?? 0} default sequence(s)`
+		                                  : "Email steps remain unchanged (manual restore)",
+		                              })
+		                            } else {
+		                              setAirtableModeEnabled(previous)
+		                              toast.error(result.error || "Failed to update Airtable Mode")
+		                            }
+		                          } catch (err) {
+		                            setAirtableModeEnabled(previous)
+		                            toast.error("Failed to update Airtable Mode")
+		                          } finally {
+		                            setIsApplyingAirtableMode(false)
+		                          }
+	                        }}
+	                      />
+	                    </div>
+	                  </div>
+	                </div>
+	              </CardContent>
+	            </Card>
 
             {canViewAiObs ? (
               <>
