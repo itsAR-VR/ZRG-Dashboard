@@ -90,9 +90,10 @@ interface SettingsViewProps {
   activeWorkspace?: string | null
   activeTab?: string
   onTabChange?: (tab: string) => void
+  onWorkspacesChange?: (workspaces: Array<{ id: string; name: string; ghlLocationId: string }>) => void
 }
 
-export function SettingsView({ activeWorkspace, activeTab = "general", onTabChange }: SettingsViewProps) {
+export function SettingsView({ activeWorkspace, activeTab = "general", onTabChange, onWorkspacesChange }: SettingsViewProps) {
   const { user, isLoading: isUserLoading } = useUser()
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
@@ -945,7 +946,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           {/* Integrations */}
           <TabsContent value="integrations" className="space-y-6">
             {/* GHL Workspaces - Dynamic Multi-Tenancy */}
-            <IntegrationsManager />
+            <IntegrationsManager onWorkspacesChange={onWorkspacesChange} />
 
             {/* Meeting Booking Configuration */}
             <Card>

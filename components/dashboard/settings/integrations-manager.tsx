@@ -36,7 +36,11 @@ interface Client {
   };
 }
 
-export function IntegrationsManager() {
+interface IntegrationsManagerProps {
+  onWorkspacesChange?: (workspaces: Array<Pick<Client, "id" | "name" | "ghlLocationId">>) => void;
+}
+
+export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerProps) {
   const [clients, setClients] = useState<Client[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
@@ -58,6 +62,7 @@ export function IntegrationsManager() {
   };
 
   const emptyIntegrationsForm = {
+    name: "",
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
     unipileAccountId: "",
@@ -76,7 +81,11 @@ export function IntegrationsManager() {
     setIsLoading(true);
     const result = await getClients();
     if (result.success && result.data) {
-      setClients(result.data as Client[]);
+      const nextClients = result.data as Client[];
+      setClients(nextClients);
+      onWorkspacesChange?.(
+        nextClients.map((c) => ({ id: c.id, name: c.name, ghlLocationId: c.ghlLocationId })),
+      );
     } else {
       setError(result.error || "Failed to load clients");
     }
@@ -108,7 +117,7 @@ export function IntegrationsManager() {
     });
   }
 
-  async function handleUpdateEmailCredentials(clientId: string) {
+  async function handleUpdateWorkspace(clientId: string) {
     setError(null);
 
     // Find the current client to check existing values
@@ -116,7 +125,16 @@ export function IntegrationsManager() {
 
     startTransition(async () => {
       // Build update payload - only include fields that have values or are being explicitly changed
-      const updatePayload: { emailBisonApiKey?: string; emailBisonWorkspaceId?: string; unipileAccountId?: string } = {};
+      const updatePayload: { name?: string; emailBisonApiKey?: string; emailBisonWorkspaceId?: string; unipileAccountId?: string } = {};
+
+      const nextName = integrationsForm.name.trim();
+      if (!nextName) {
+        toast.error("Workspace name cannot be empty");
+        return;
+      }
+      if (nextName !== (currentClient?.name || "")) {
+        updatePayload.name = nextName;
+      }
       
       // Update workspace ID (allow empty to clear)
       if (integrationsForm.emailBisonWorkspaceId !== (currentClient?.emailBisonWorkspaceId || "")) {
@@ -195,7 +213,7 @@ export function IntegrationsManager() {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm("Are you sure you want to delete this client? This will also delete all associated leads and messages.")) {
+    if (!confirm("Are you sure you want to delete this workspace? This will also delete all associated leads and messages.")) {
       return;
     }
 
@@ -205,7 +223,7 @@ export function IntegrationsManager() {
         toast.success("Workspace deleted");
         await fetchClients();
       } else {
-        setError(result.error || "Failed to delete client");
+        setError(result.error || "Failed to delete workspace");
       }
     });
   }
@@ -272,7 +290,7 @@ export function IntegrationsManager() {
                 <div className="space-y-2">
                   <Label htmlFor="name" className="flex items-center gap-2">
                     <Building2 className="h-4 w-4" />
-                    Client Name
+                    Workspace Name
                   </Label>
                   <Input
                     id="name"
@@ -560,6 +578,7 @@ export function IntegrationsManager() {
                             } else {
                               setEditingClientId(client.id);
                               setIntegrationsForm({
+                                name: client.name,
                                 emailBisonApiKey: "",
                                 emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
                                 unipileAccountId: client.unipileAccountId || "",
@@ -593,6 +612,16 @@ export function IntegrationsManager() {
                                 <p>API Key: <code className="bg-background px-1 rounded">{client.emailBisonApiKey ? "••••••••" : "Not set"}</code></p>
                               </div>
                             )}
+                            <div className="space-y-2">
+                              <Label htmlFor={`workspaceName-${client.id}`} className="text-xs">Workspace Name</Label>
+                              <Input
+                                id={`workspaceName-${client.id}`}
+                                placeholder="e.g., Acme Corp"
+                                value={integrationsForm.name}
+                                onChange={(e) => setIntegrationsForm({ ...integrationsForm, name: e.target.value })}
+                                className="h-8 text-sm"
+                              />
+                            </div>
                             <div className="space-y-2">
                               <Label htmlFor={`workspaceId-${client.id}`} className="text-xs">Workspace ID (required for webhook routing)</Label>
                               <Input
@@ -639,10 +668,10 @@ export function IntegrationsManager() {
                             
                             <Button
                               size="sm"
-                              onClick={() => handleUpdateEmailCredentials(client.id)}
+                              onClick={() => handleUpdateWorkspace(client.id)}
                               disabled={isPending}
                             >
-                              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Config"}
+                              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Changes"}
                             </Button>
                           </div>
                         )}

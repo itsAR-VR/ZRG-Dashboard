@@ -25,6 +25,16 @@ export default function DashboardPage() {
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const [settingsTab, setSettingsTab] = useState("general")
 
+  const syncWorkspaces = (nextWorkspaces: Client[]) => {
+    setWorkspaces(nextWorkspaces)
+    setActiveWorkspace((prev) => {
+      if (nextWorkspaces.length === 0) return null
+      if (!prev) return nextWorkspaces[0].id
+      if (nextWorkspaces.some((w) => w.id === prev)) return prev
+      return nextWorkspaces[0].id
+    })
+  }
+
   // Handler to open a lead in the Master Inbox from CRM
   const handleOpenInInbox = (leadId: string) => {
     setSelectedLeadId(leadId)
@@ -43,11 +53,7 @@ export default function DashboardPage() {
     async function fetchWorkspaces() {
       const result = await getClients()
       if (result.success && result.data) {
-        setWorkspaces(result.data as Client[])
-        // Auto-select first workspace if available
-        if (result.data.length > 0 && !activeWorkspace) {
-          setActiveWorkspace(result.data[0].id)
-        }
+        syncWorkspaces(result.data as Client[])
       }
     }
     fetchWorkspaces()
@@ -67,6 +73,7 @@ export default function DashboardPage() {
             activeWorkspace={activeWorkspace}
             activeTab={settingsTab}
             onTabChange={setSettingsTab}
+            onWorkspacesChange={syncWorkspaces}
           />
         )
       case "inbox":
