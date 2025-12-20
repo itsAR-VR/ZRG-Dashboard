@@ -290,23 +290,36 @@ function isAutomatedReplyMessage(text: string): boolean {
   // Strong autoresponder signals
   const strongSignals = [
     /\b(this is an automated|auto-?response|autoresponder)\b/i,
+    /\b(automatic reply|auto[-\s]?reply|autoreply)\b/i,
     /\b(do not reply|no[-\s]?reply)\b/i,
     /\b(your message has been received|we have received your message|we received your email)\b/i,
     /\b(thank you for contacting|thanks for contacting)\b/i,
     /\b(ticket (number|#))\b/i,
     /\b(case (number|#))\b/i,
+    /\b(please be assured|will be dealt with shortly|will be handled shortly|we will deal with)\b/i,
   ];
 
   if (strongSignals.some((re) => re.test(normalized))) return true;
 
   // Typical acknowledgment patterns (keep strict)
-  const ack = /\b(we('|’)ll get back to you|we will get back to you|as soon as possible|within \d+\s+(hours?|days?))\b/i;
+  const ack =
+    /\b(we('|’)ll get back to you|we will get back to you|as soon as possible|within \d+\s+(hours?|days?)|dealt with shortly|handled shortly)\b/i;
   const hasAck = ack.test(normalized);
   const hasDoNotReply = /\b(do not reply|no[-\s]?reply)\b/i.test(normalized);
   const hasThanksContacting = /\b(thank you for (your )?(email|message)|thank you for contacting)\b/i.test(normalized);
+  const hasUrgentRouting =
+    /\b(if|for)\s+(your\s+)?(enquir(y|ies)|inquir(y|ies)|matter|request)\s+is\s+urgent\b|\burgent(ly)?\b.*\b(call|contact|reach|phone|ring)\b/i.test(
+      normalized,
+    );
 
   // Only label automated if it has multiple signals
-  return (hasThanksContacting && hasAck) || (hasThanksContacting && hasDoNotReply) || (hasAck && hasDoNotReply);
+  return (
+    (hasThanksContacting && hasAck) ||
+    (hasThanksContacting && hasDoNotReply) ||
+    (hasAck && hasDoNotReply) ||
+    (hasAck && hasUrgentRouting) ||
+    (hasUrgentRouting && hasDoNotReply)
+  );
 }
 
 function isCallRequestedMessage(text: string): boolean {
