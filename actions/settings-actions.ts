@@ -24,6 +24,7 @@ export interface UserSettingsData {
   flagUncertainReplies: boolean;
   pauseForOOO: boolean;
   autoBlacklist: boolean;
+  autoFollowUpsOnReply: boolean;
   airtableMode: boolean;
   emailDigest: boolean;
   slackAlerts: boolean;
@@ -99,6 +100,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           flagUncertainReplies: true,
           pauseForOOO: true,
           autoBlacklist: true,
+          autoFollowUpsOnReply: false,
           airtableMode: false,
           emailDigest: true,
           slackAlerts: true,
@@ -140,6 +142,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           flagUncertainReplies: true,
           pauseForOOO: true,
           autoBlacklist: true,
+          autoFollowUpsOnReply: false,
           emailDigest: true,
           slackAlerts: true,
           workStartTime: "09:00",
@@ -181,6 +184,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         flagUncertainReplies: settings.flagUncertainReplies,
         pauseForOOO: settings.pauseForOOO,
         autoBlacklist: settings.autoBlacklist,
+        autoFollowUpsOnReply: settings.autoFollowUpsOnReply,
         airtableMode: settings.airtableMode,
         emailDigest: settings.emailDigest,
         slackAlerts: settings.slackAlerts,
@@ -234,6 +238,7 @@ export async function updateUserSettings(
         flagUncertainReplies: data.flagUncertainReplies,
         pauseForOOO: data.pauseForOOO,
         autoBlacklist: data.autoBlacklist,
+        autoFollowUpsOnReply: data.autoFollowUpsOnReply,
         airtableMode: data.airtableMode,
         emailDigest: data.emailDigest,
         slackAlerts: data.slackAlerts,
@@ -264,6 +269,7 @@ export async function updateUserSettings(
         flagUncertainReplies: data.flagUncertainReplies ?? true,
         pauseForOOO: data.pauseForOOO ?? true,
         autoBlacklist: data.autoBlacklist ?? true,
+        autoFollowUpsOnReply: data.autoFollowUpsOnReply ?? false,
         airtableMode: data.airtableMode ?? false,
         emailDigest: data.emailDigest ?? true,
         slackAlerts: data.slackAlerts ?? true,
@@ -418,6 +424,49 @@ export async function setAirtableMode(
   } catch (error) {
     console.error("Failed to set Airtable Mode:", error);
     return { success: false, error: "Failed to update Airtable Mode" };
+  }
+}
+
+export async function getAutoFollowUpsOnReply(
+  clientId: string | null | undefined
+): Promise<{ success: boolean; enabled?: boolean; error?: string }> {
+  try {
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    const settings = await prisma.workspaceSettings.findUnique({
+      where: { clientId },
+      select: { autoFollowUpsOnReply: true },
+    });
+
+    return { success: true, enabled: settings?.autoFollowUpsOnReply === true };
+  } catch (error) {
+    console.error("Failed to get auto-followups-on-reply setting:", error);
+    return { success: false, error: "Failed to load auto follow-up setting" };
+  }
+}
+
+export async function setAutoFollowUpsOnReply(
+  clientId: string | null | undefined,
+  enabled: boolean
+): Promise<{ success: boolean; enabled?: boolean; error?: string }> {
+  try {
+    if (!clientId) {
+      return { success: false, error: "No workspace selected" };
+    }
+
+    await prisma.workspaceSettings.upsert({
+      where: { clientId },
+      update: { autoFollowUpsOnReply: enabled },
+      create: { clientId, autoFollowUpsOnReply: enabled },
+    });
+
+    revalidatePath("/");
+    return { success: true, enabled };
+  } catch (error) {
+    console.error("Failed to set auto-followups-on-reply setting:", error);
+    return { success: false, error: "Failed to update auto follow-up setting" };
   }
 }
 

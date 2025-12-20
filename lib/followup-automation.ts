@@ -132,6 +132,18 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
   if (lead.ghlAppointmentId) return { started: false, reason: "already_booked" };
   if (lead.followUpInstances.length > 0) return { started: false, reason: "instance_already_active" };
 
+  // Policy: only start follow-up sequencing for leads who have replied via EMAIL at least once.
+  // This prevents "no response" sequences from running on leads with only outbound touches.
+  const inboundEmail = await prisma.message.findFirst({
+    where: {
+      leadId: lead.id,
+      channel: "email",
+      direction: "inbound",
+    },
+    select: { id: true },
+  });
+  if (!inboundEmail) return { started: false, reason: "no_inbound_email" };
+
   const sequence = await prisma.followUpSequence.findFirst({
     where: { clientId: lead.clientId, isActive: true, triggerOn: "no_response" },
     select: { id: true, name: true },

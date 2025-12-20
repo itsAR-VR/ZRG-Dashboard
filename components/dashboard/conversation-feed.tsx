@@ -7,6 +7,7 @@ import type { Conversation } from "@/lib/mock-data"
 import { ConversationCard } from "./conversation-card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
@@ -46,8 +47,9 @@ interface ConversationFeedProps {
   syncingLeadIds?: Set<string>
   onSyncAll?: (forceReclassify: boolean) => Promise<void>
   isSyncingAll?: boolean
-  onEnableAutoFollowUpsForAttentionLeads?: () => Promise<void>
-  isEnablingAutoFollowUps?: boolean
+  autoFollowUpsOnReplyEnabled?: boolean
+  onToggleAutoFollowUpsOnReply?: (enabled: boolean) => Promise<void>
+  isTogglingAutoFollowUpsOnReply?: boolean
   hasMore?: boolean
   isLoadingMore?: boolean
   onLoadMore?: () => void
@@ -67,8 +69,9 @@ export function ConversationFeed({
   syncingLeadIds = new Set(),
   onSyncAll,
   isSyncingAll = false,
-  onEnableAutoFollowUpsForAttentionLeads,
-  isEnablingAutoFollowUps = false,
+  autoFollowUpsOnReplyEnabled = false,
+  onToggleAutoFollowUpsOnReply,
+  isTogglingAutoFollowUpsOnReply = false,
   hasMore = false,
   isLoadingMore = false,
   onLoadMore,
@@ -285,24 +288,21 @@ export function ConversationFeed({
           </div>
         )}
 
-        {/* Bulk-enable Auto Follow-ups for attention/positive leads */}
-        {onEnableAutoFollowUpsForAttentionLeads && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full text-xs"
-            onClick={() => onEnableAutoFollowUpsForAttentionLeads()}
-            disabled={isEnablingAutoFollowUps}
-          >
-            {isEnablingAutoFollowUps ? (
-              <>
-                <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-                Enabling Auto Follow-ups...
-              </>
-            ) : (
-              "Enable Auto Follow-ups (Attention)"
-            )}
-          </Button>
+        {/* Workspace switch: Auto-enable follow-ups on positive inbound EMAIL replies */}
+        {onToggleAutoFollowUpsOnReply && (
+          <div className="flex items-center justify-between p-3 rounded-lg border">
+            <div className="space-y-0.5">
+              <span className="text-sm">Auto Follow-ups (Positive Replies)</span>
+              <p className="text-xs text-muted-foreground">
+                Auto-enroll leads after a positive inbound email reply
+              </p>
+            </div>
+            <Switch
+              checked={autoFollowUpsOnReplyEnabled}
+              disabled={isTogglingAutoFollowUpsOnReply}
+              onCheckedChange={(v) => onToggleAutoFollowUpsOnReply(v)}
+            />
+          </div>
         )}
       </div>
 

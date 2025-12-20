@@ -5,7 +5,7 @@ import { sendSMS, exportMessages, type GHLExportedMessage } from "@/lib/ghl-api"
 import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
+import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, isPositiveSentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply } from "@/actions/email-actions";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
@@ -111,6 +111,14 @@ async function refreshLeadSentimentTag(leadId: string): Promise<{
       status,
     },
   });
+
+  // If sentiment is no longer positive, don't leave enrichment stuck in "pending".
+  if (!isPositiveSentiment(sentimentTag)) {
+    await prisma.lead.updateMany({
+      where: { id: leadId, enrichmentStatus: "pending" },
+      data: { enrichmentStatus: "not_needed" },
+    });
+  }
 
   // Compliance/backstop: if sentiment is Blacklist/Automated Reply, reject any pending drafts.
   if (sentimentTag === "Blacklist" || sentimentTag === "Automated Reply") {

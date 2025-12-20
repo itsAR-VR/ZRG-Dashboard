@@ -587,8 +587,9 @@ async function triggerClayEnrichmentIfNeeded(
       return;
     }
 
-    // Skip if already enriched or processing
-    if (lead.enrichmentStatus && lead.enrichmentStatus !== "pending") {
+    // One-time policy: only attempt Clay enrichment once per lead.
+    // If enrichmentStatus is already set (including "pending"), do not re-trigger.
+    if (lead.enrichmentStatus) {
       return;
     }
 
@@ -611,12 +612,13 @@ async function triggerClayEnrichmentIfNeeded(
       return;
     }
 
-    // Mark as pending and trigger enrichment (with timestamp for timeout tracking)
+    // Mark as pending and trigger enrichment (single attempt)
     await prisma.lead.update({
       where: { id: leadId },
       data: { 
         enrichmentStatus: "pending",
-        enrichmentLastRetry: new Date(), // Initialize for follow-up engine timeout calculations
+        enrichmentLastRetry: new Date(),
+        enrichmentRetryCount: 1,
       },
     });
 
@@ -635,16 +637,53 @@ async function triggerClayEnrichmentIfNeeded(
       linkedInProfile: emailBisonData?.linkedInProfile || lead.linkedinUrl || undefined,
     };
 
-    await triggerEnrichmentForLead(
+    const triggerResult = await triggerEnrichmentForLead(
       enrichmentRequest,
       missingLinkedIn,
       missingPhone
     );
 
-    console.log(`[Clay Enrichment] Triggered for lead ${leadId} (linkedin: ${missingLinkedIn}, phone: ${missingPhone})`);
+    if (!triggerResult.linkedInSent && !triggerResult.phoneSent) {
+      // If we failed to send anything (e.g., rate limited / missing env), do not leave the lead stuck in "pending".
+      await prisma.lead.update({
+        where: { id: leadId },
+        data: { enrichmentStatus: "failed" },
+      });
+      console.log(`[Clay Enrichment] Failed to trigger (no sends) for lead ${leadId} (linkedin: ${missingLinkedIn}, phone: ${missingPhone})`);
+      return;
+    }
+
+    console.log(`[Clay Enrichment] Triggered for lead ${leadId} (linkedinSent: ${triggerResult.linkedInSent}, phoneSent: ${triggerResult.phoneSent})`);
   } catch (error) {
     console.error(`[Clay Enrichment] Error triggering enrichment for lead ${leadId}:`, error);
   }
+}
+
+async function applyAutoFollowUpPolicyOnInboundEmail(opts: {
+  clientId: string;
+  leadId: string;
+  sentimentTag: string | null;
+}): Promise<void> {
+  // If the lead is no longer positive, ensure we don't leave them stuck "enriching".
+  if (!isPositiveSentiment(opts.sentimentTag)) {
+    await prisma.lead.updateMany({
+      where: { id: opts.leadId, enrichmentStatus: "pending" },
+      data: { enrichmentStatus: "not_needed" },
+    });
+    return;
+  }
+
+  // If workspace policy is enabled, auto-enable follow-ups for positive inbound EMAIL replies.
+  const settings = await prisma.workspaceSettings.findUnique({
+    where: { clientId: opts.clientId },
+    select: { autoFollowUpsOnReply: true },
+  });
+  if (!settings?.autoFollowUpsOnReply) return;
+
+  await prisma.lead.updateMany({
+    where: { id: opts.leadId, autoFollowUpEnabled: false },
+    data: { autoFollowUpEnabled: true },
+  });
 }
 
 /**
@@ -977,6 +1016,12 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     data: { sentimentTag, status: leadStatus },
   });
 
+  await applyAutoFollowUpPolicyOnInboundEmail({
+    clientId: client.id,
+    leadId: lead.id,
+    sentimentTag,
+  });
+
   await autoStartMeetingRequestedSequenceIfEligible({
     leadId: lead.id,
     previousSentiment,
@@ -1266,6 +1311,12 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   await prisma.lead.update({
     where: { id: lead.id },
     data: { sentimentTag, status: leadStatus },
+  });
+
+  await applyAutoFollowUpPolicyOnInboundEmail({
+    clientId: client.id,
+    leadId: lead.id,
+    sentimentTag,
   });
 
   // Any inbound message pauses no-response sequences.
@@ -1565,6 +1616,12 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     data: { sentimentTag, status: leadStatus },
   });
 
+  await applyAutoFollowUpPolicyOnInboundEmail({
+    clientId: client.id,
+    leadId: lead.id,
+    sentimentTag,
+  });
+
   await autoStartMeetingRequestedSequenceIfEligible({
     leadId: lead.id,
     previousSentiment,
@@ -1794,6 +1851,10 @@ async function handleEmailBounced(request: NextRequest, payload: InboxxiaWebhook
       sentimentTag: "Blacklist",
     },
   });
+  await prisma.lead.updateMany({
+    where: { id: lead.id, enrichmentStatus: "pending" },
+    data: { enrichmentStatus: "not_needed" },
+  });
 
   // Create a visible bounce message in the conversation
   const bounceBody = reply?.text_body || reply?.html_body || "Email bounced - address invalid or blocked.";
@@ -1852,6 +1913,10 @@ async function handleLeadUnsubscribed(request: NextRequest, payload: InboxxiaWeb
       status: "blacklisted",
       sentimentTag: "Blacklist",
     },
+  });
+  await prisma.lead.updateMany({
+    where: { id: lead.id, enrichmentStatus: "pending" },
+    data: { enrichmentStatus: "not_needed" },
   });
 
   // Reject any pending drafts - unsubscribed leads must never get a reply.

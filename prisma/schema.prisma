@@ -60,6 +60,7 @@ model WorkspaceSettings {
   flagUncertainReplies Boolean  @default(true)
   pauseForOOO          Boolean  @default(true)
   autoBlacklist        Boolean  @default(true)
+  autoFollowUpsOnReply Boolean  @default(false) // When true, auto-enable follow-ups for leads after a positive inbound EMAIL reply.
   airtableMode         Boolean  @default(false) // When true, email is handled externally (Airtable/n8n); follow-up sequences should be SMS/LinkedIn only.
   // Notification Settings
   emailDigest          Boolean  @default(true)

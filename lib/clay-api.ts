@@ -67,8 +67,8 @@ export async function sendToClayForLinkedInEnrichment(
   }
 
   if (!checkRateLimit()) {
-    console.warn(`[Clay] Rate limit exceeded for LinkedIn enrichment, lead ${request.leadId} will be processed by cron`);
-    return { success: false, error: "Rate limit exceeded - queued for batch processing" };
+    console.warn(`[Clay] Rate limit exceeded for LinkedIn enrichment, lead ${request.leadId}`);
+    return { success: false, error: "Rate limit exceeded" };
   }
 
   return sendToClayTable(webhookUrl, request, "LinkedIn");
@@ -89,8 +89,8 @@ export async function sendToClayForPhoneEnrichment(
   }
 
   if (!checkRateLimit()) {
-    console.warn(`[Clay] Rate limit exceeded for Phone enrichment, lead ${request.leadId} will be processed by cron`);
-    return { success: false, error: "Rate limit exceeded - queued for batch processing" };
+    console.warn(`[Clay] Rate limit exceeded for Phone enrichment, lead ${request.leadId}`);
+    return { success: false, error: "Rate limit exceeded" };
   }
 
   return sendToClayTable(webhookUrl, request, "Phone");

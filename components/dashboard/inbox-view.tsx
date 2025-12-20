@@ -14,7 +14,7 @@ import {
 } from "@/actions/lead-actions";
 import { getSmsCampaignFilters } from "@/actions/sms-campaign-actions";
 import { syncConversationHistory, syncAllConversations, syncEmailConversationHistory, syncAllEmailConversations, smartSyncConversation, reanalyzeLeadSentiment } from "@/actions/message-actions";
-import { enableAutoFollowUpsForAttentionLeads } from "@/actions/crm-actions";
+import { getAutoFollowUpsOnReply, setAutoFollowUpsOnReply } from "@/actions/settings-actions";
 import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff, Inbox, RefreshCw, FilterX } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
@@ -116,7 +116,8 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   const [syncingLeadIds, setSyncingLeadIds] = useState<Set<string>>(new Set());
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [reanalyzingLeadId, setReanalyzingLeadId] = useState<string | null>(null);
-  const [isEnablingAutoFollowUps, setIsEnablingAutoFollowUps] = useState(false);
+  const [autoFollowUpsOnReplyEnabled, setAutoFollowUpsOnReplyEnabled] = useState(false);
+  const [isTogglingAutoFollowUpsOnReply, setIsTogglingAutoFollowUpsOnReply] = useState(false);
   
   // Delayed loading state - only show spinner after 300ms to avoid flicker on fast loads
   const [showDelayedSpinner, setShowDelayedSpinner] = useState(false);
@@ -128,6 +129,23 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   // Reset SMS sub-client filter when switching workspaces
   useEffect(() => {
     setActiveSmsClient("all");
+  }, [activeWorkspace]);
+
+  // Load workspace auto-followups-on-reply setting for the inbox sidebar switch
+  useEffect(() => {
+    async function loadAutoFollowUpsSetting() {
+      if (!activeWorkspace) {
+        setAutoFollowUpsOnReplyEnabled(false);
+        return;
+      }
+
+      const result = await getAutoFollowUpsOnReply(activeWorkspace);
+      if (result.success) {
+        setAutoFollowUpsOnReplyEnabled(result.enabled === true);
+      }
+    }
+
+    loadAutoFollowUpsSetting().catch(() => undefined);
   }, [activeWorkspace]);
 
   // Fetch SMS sub-clients for campaign filtering
@@ -428,7 +446,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
     }
   }, [fetchConversations]);
 
-  const handleEnableAutoFollowUpsForAttentionLeads = useCallback(async () => {
+  const handleToggleAutoFollowUpsOnReply = useCallback(async (enabled: boolean) => {
     if (!activeWorkspace) {
       toast.error("No workspace selected");
       return;
@@ -436,37 +454,35 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
 
     const ok = confirm(
       [
-        "Enable Auto Follow-ups for all attention/positive leads in this workspace?",
+        `${enabled ? "Enable" : "Disable"} Auto Follow-ups for positive email replies?`,
         "",
-        "Includes: Meeting Requested, Call Requested, Information Requested, Interested, Follow Up",
-        "",
-        "This will only enable follow-ups for these leads (it won't change other leads).",
+        enabled
+          ? "When ON: once a lead replies positively via email, follow-ups will be auto-enabled for that lead."
+          : "When OFF: follow-ups must be enabled per lead (manual).",
       ].join("\n")
     );
     if (!ok) return;
 
-    setIsEnablingAutoFollowUps(true);
+    setIsTogglingAutoFollowUpsOnReply(true);
+    const previous = autoFollowUpsOnReplyEnabled;
+    setAutoFollowUpsOnReplyEnabled(enabled);
     try {
-      const result = await enableAutoFollowUpsForAttentionLeads(activeWorkspace);
-      if (result.success) {
-        const eligible = result.eligible ?? 0;
-        const enabledNow = result.enabledNow ?? 0;
-        const alreadyEnabled = result.alreadyEnabled ?? 0;
-
-        toast.success("Auto Follow-ups updated", {
-          description: `${enabledNow} enabled now • ${alreadyEnabled} already enabled • ${eligible} eligible`,
-        });
-
-        await fetchConversations();
-      } else {
-        toast.error(result.error || "Failed to enable auto follow-ups");
+      const result = await setAutoFollowUpsOnReply(activeWorkspace, enabled);
+      if (!result.success) {
+        setAutoFollowUpsOnReplyEnabled(previous);
+        toast.error(result.error || "Failed to update auto follow-ups setting");
+        return;
       }
+      toast.success("Auto Follow-ups setting updated", {
+        description: enabled ? "Auto-enroll on positive email replies is ON" : "Auto-enroll is OFF",
+      });
     } catch (err) {
-      toast.error("Failed to enable auto follow-ups");
+      setAutoFollowUpsOnReplyEnabled(previous);
+      toast.error("Failed to update auto follow-ups setting");
     } finally {
-      setIsEnablingAutoFollowUps(false);
+      setIsTogglingAutoFollowUpsOnReply(false);
     }
-  }, [activeWorkspace, fetchConversations]);
+  }, [activeWorkspace, autoFollowUpsOnReplyEnabled]);
 
   // Reset sentiment filter when workspace changes
   useEffect(() => {
@@ -702,8 +718,9 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
 	        syncingLeadIds={syncingLeadIds}
 	        onSyncAll={handleSyncAll}
 	        isSyncingAll={isSyncingAll}
-	        onEnableAutoFollowUpsForAttentionLeads={activeWorkspace ? handleEnableAutoFollowUpsForAttentionLeads : undefined}
-	        isEnablingAutoFollowUps={isEnablingAutoFollowUps}
+          autoFollowUpsOnReplyEnabled={autoFollowUpsOnReplyEnabled}
+          onToggleAutoFollowUpsOnReply={activeWorkspace ? handleToggleAutoFollowUpsOnReply : undefined}
+          isTogglingAutoFollowUpsOnReply={isTogglingAutoFollowUpsOnReply}
 	        hasMore={hasNextPage}
 	        isLoadingMore={isFetchingNextPage}
 	        onLoadMore={() => fetchNextPage()}

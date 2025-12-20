@@ -107,6 +107,10 @@ export async function sendEmailReply(
           sentimentTag: "Blacklist",
         },
       });
+      await prisma.lead.updateMany({
+        where: { id: lead.id, enrichmentStatus: "pending" },
+        data: { enrichmentStatus: "not_needed" },
+      });
 
       return { success: false, error: `Email validation failed: ${guardResult.reason}` };
     }
@@ -135,6 +139,10 @@ export async function sendEmailReply(
           status: "blacklisted",
           sentimentTag: "Blacklist",
         },
+      });
+      await prisma.lead.updateMany({
+        where: { id: lead.id, enrichmentStatus: "pending" },
+        data: { enrichmentStatus: "not_needed" },
       });
 
       await prisma.aIDraft.updateMany({
