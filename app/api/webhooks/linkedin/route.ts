@@ -13,6 +13,7 @@ import { extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
 import { toStoredPhone } from "@/lib/phone-utils";
+import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 
 // Unipile webhook event types
 type UnipileEventType =
@@ -185,6 +186,7 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
   }
 
   // Create message record
+  const sentAt = new Date(message.timestamp);
   const newMessage = await prisma.message.create({
     data: {
       leadId: lead.id,
@@ -192,10 +194,12 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
       source: "linkedin",
       body: message.text,
       direction: "inbound",
-      sentAt: new Date(message.timestamp),
+      sentAt,
       isRead: false,
     },
   });
+
+  await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
   console.log(`[LinkedIn Webhook] Created message ${newMessage.id} for lead ${lead.id}`);
 

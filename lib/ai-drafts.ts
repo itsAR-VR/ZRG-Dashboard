@@ -6,6 +6,7 @@ import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
 import { selectDistributedAvailabilitySlots } from "@/lib/availability-distribution";
 import { getWorkspaceSlotOfferCountsForRange, incrementWorkspaceSlotOffersBatch } from "@/lib/slot-offer-ledger";
+import { isPositiveSentiment } from "@/lib/sentiment";
 
 type DraftChannel = "sms" | "email" | "linkedin";
 
@@ -591,18 +592,8 @@ export function shouldGenerateDraft(sentimentTag: string, email?: string | null)
     return false;
   }
 
-  // Only generate drafts for leads who have engaged positively or shown interest
-  const engagedSentiments = [
-    "Meeting Requested",
-    "Call Requested",
-    "Information Requested",
-    "Follow Up",
-    "Out of Office",
-    "Interested",
-    "Positive", // Legacy fallback - maps to "Interested" in new system
-  ];
-
-  if (sentimentTag === "Automated Reply") return false;
-
-  return engagedSentiments.includes(sentimentTag);
+  // Only generate drafts for strictly positive sentiments.
+  // (Legacy: "Positive" is treated as "Interested".)
+  const normalized = sentimentTag === "Positive" ? "Interested" : sentimentTag;
+  return isPositiveSentiment(normalized);
 }

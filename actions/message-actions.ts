@@ -9,6 +9,7 @@ import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, 
 import { sendEmailReply } from "@/actions/email-actions";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
+import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
 import {
   sendLinkedInMessageWithWaterfall,
   checkLinkedInConnection,
@@ -104,11 +105,25 @@ async function refreshLeadSentimentTag(leadId: string): Promise<{
   });
   const status = SENTIMENT_TO_STATUS[sentimentTag] || "new";
 
+  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  let lastInboundAt: Date | null = null;
+  let lastOutboundAt: Date | null = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!lastInboundAt && msg.direction === "inbound") lastInboundAt = msg.sentAt;
+    if (!lastOutboundAt && msg.direction === "outbound") lastOutboundAt = msg.sentAt;
+    if (lastInboundAt && lastOutboundAt) break;
+  }
+
   await prisma.lead.update({
     where: { id: leadId },
     data: {
       sentimentTag,
       status,
+      lastInboundAt,
+      lastOutboundAt,
+      lastMessageAt: lastMessage?.sentAt ?? null,
+      lastMessageDirection: (lastMessage?.direction as string | undefined) ?? null,
     },
   });
 
@@ -120,8 +135,8 @@ async function refreshLeadSentimentTag(leadId: string): Promise<{
     });
   }
 
-  // Compliance/backstop: if sentiment is Blacklist/Automated Reply, reject any pending drafts.
-  if (sentimentTag === "Blacklist" || sentimentTag === "Automated Reply") {
+  // Policy/backstop: drafts only exist for strictly positive sentiments.
+  if (!shouldGenerateDraft(sentimentTag)) {
     await prisma.aIDraft.updateMany({
       where: {
         leadId,
@@ -557,6 +572,9 @@ export async function syncConversationHistory(leadId: string, options: SyncOptio
     }
 
     console.log(`[Sync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
+
+    // Keep denormalized rollups in sync for inbox "fresh attention" logic.
+    await recomputeLeadMessageRollups(leadId);
 
     // Re-run sentiment analysis if:
     // 1. Messages were actually imported or healed, OR
@@ -1022,6 +1040,9 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
 
     console.log(`[EmailSync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
 
+    // Keep denormalized rollups in sync for inbox "fresh attention" logic.
+    await recomputeLeadMessageRollups(leadId);
+
     // Re-run sentiment analysis if:
     // 1. Messages were actually imported or healed, OR
     // 2. forceReclassify option is enabled (user explicitly requested re-analysis)
@@ -1236,6 +1257,8 @@ export async function sendMessage(
       },
     });
 
+    await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt: ghlDateAdded });
+
     // Update the lead's updatedAt timestamp
     await prisma.lead.update({
       where: { id: leadId },
@@ -1344,6 +1367,8 @@ export async function sendLinkedInMessage(
         sentAt: new Date(),
       },
     });
+
+    await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt: savedMessage.sentAt });
 
     // Update the lead's updatedAt timestamp
     await prisma.lead.update({
@@ -1564,7 +1589,7 @@ export async function regenerateDraft(
 
     // Check if we should generate a draft for this sentiment
     if (!shouldGenerateDraft(sentimentTag)) {
-      return { success: false, error: "Cannot generate draft for this sentiment (Blacklisted)" };
+      return { success: false, error: "Cannot generate draft for this sentiment" };
     }
 
     // Generate new draft

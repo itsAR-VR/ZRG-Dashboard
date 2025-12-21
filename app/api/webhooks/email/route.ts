@@ -17,6 +17,7 @@ import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
 import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBooking } from "@/lib/followup-engine";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
+import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 
 // =============================================================================
 // Type Definitions
@@ -868,6 +869,7 @@ async function backfillOutboundEmailMessagesIfMissing(opts: {
           rawHtml: cleaned.rawHtml ?? null,
         },
       });
+      await bumpLeadMessageRollup({ leadId: opts.leadId, direction: "outbound", sentAt });
       continue;
     }
 
@@ -885,6 +887,8 @@ async function backfillOutboundEmailMessagesIfMissing(opts: {
         sentAt,
       },
     });
+
+    await bumpLeadMessageRollup({ leadId: opts.leadId, direction: "outbound", sentAt });
   }
 }
 
@@ -1016,6 +1020,8 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
       sentAt,
     },
   });
+
+  await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
   // Update lead sentiment/status
   await prisma.lead.update({
@@ -1355,6 +1361,8 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     },
   });
 
+  await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
+
   await prisma.lead.update({
     where: { id: lead.id },
     data: { sentimentTag, status: leadStatus },
@@ -1503,6 +1511,8 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
             sentAt,
           },
         });
+
+        await bumpLeadMessageRollup({ leadId: originalLead.id, direction: "inbound", sentAt });
 
         // Mark the original lead as blacklisted (email is invalid)
         await prisma.lead.update({
@@ -1660,6 +1670,8 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
       sentAt,
     },
   });
+
+  await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
   await prisma.lead.update({
     where: { id: lead.id },
@@ -1836,6 +1848,8 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
     },
   });
 
+  await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt });
+
   await autoStartNoResponseSequenceOnOutbound({ leadId: lead.id, outboundAt: sentAt });
 
   console.log(`[EMAIL_SENT] Lead: ${lead.id}, Subject: ${scheduledEmail.email_subject}`);
@@ -1909,6 +1923,7 @@ async function handleEmailBounced(request: NextRequest, payload: InboxxiaWebhook
   // Create a visible bounce message in the conversation
   const bounceBody = reply?.text_body || reply?.html_body || "Email bounced - address invalid or blocked.";
   const cleaned = cleanEmailBody(reply?.html_body, reply?.text_body);
+  const sentAt = new Date();
 
   await prisma.message.create({
     data: {
@@ -1921,9 +1936,11 @@ async function handleEmailBounced(request: NextRequest, payload: InboxxiaWebhook
       isRead: false,
       direction: "inbound",
       leadId: lead.id,
-      sentAt: new Date(),
+      sentAt,
     },
   });
+
+  await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
   console.log(`[EMAIL_BOUNCED] Lead: ${lead.id}, Email: ${lead.email} - BLACKLISTED`);
 

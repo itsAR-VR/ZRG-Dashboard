@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { syncEmailConversationHistory } from "@/actions/message-actions";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { isOptOutText } from "@/lib/sentiment";
+import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 
 interface SendEmailResult {
   success: boolean;
@@ -207,6 +208,8 @@ export async function sendEmailReply(
         sentAt: new Date(),
       },
     });
+
+    await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt: message.sentAt });
 
     await prisma.aIDraft.update({
       where: { id: draftId },

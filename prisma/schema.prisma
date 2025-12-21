@@ -135,6 +135,11 @@ model Lead {
   // Status and sentiment
   status       String        @default("new")
   sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.
+  // Message rollups (for inbox "fresh attention" vs "previously required attention")
+  lastInboundAt  DateTime?   // Most recent inbound message timestamp
+  lastOutboundAt DateTime?   // Most recent outbound message timestamp
+  lastMessageAt DateTime?    // Most recent message timestamp (any direction)
+  lastMessageDirection String? // 'inbound' | 'outbound' (derived from most recent message)
   snoozedUntil DateTime?     // When snoozed, hide from inbox until this date
   // Enrichment tracking (for Clay/EmailBison/signature extraction)
   enrichmentStatus   String?   // 'pending' | 'enriched' | 'not_found' | 'not_needed' | 'failed'
@@ -184,6 +189,10 @@ model Lead {
   @@index([linkedinUrl])    // For LinkedIn matching
   @@index([enrichmentStatus]) // For batch enrichment queries
   @@index([preferredCalendarLinkId])
+  @@index([lastInboundAt(sort: Desc)])
+  @@index([lastOutboundAt(sort: Desc)])
+  @@index([lastMessageAt(sort: Desc)])
+  @@index([lastMessageDirection])
   
   // Composite indexes for CRM/Inbox cursor pagination and filtering
   @@index([clientId, status])                    // CRM status filter

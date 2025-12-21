@@ -108,7 +108,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   const [isCrmOpen, setIsCrmOpen] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isLive, setIsLive] = useState(false);
-  const [activeSentiment, setActiveSentiment] = useState<string>("all");
+  const [activeSentiments, setActiveSentiments] = useState<string[]>([]);
   const [activeSmsClient, setActiveSmsClient] = useState<string>("all");
   const [newConversationCount, setNewConversationCount] = useState(0);
   
@@ -171,19 +171,24 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
     [activeChannels]
   );
 
+  const normalizedSentiments = useMemo(
+    () => [...activeSentiments].sort(),
+    [activeSentiments]
+  );
+
   // Build query options for cursor-based pagination
   const queryOptions: ConversationsCursorOptions = useMemo(() => ({
     clientId: activeWorkspace,
     channels: normalizedChannels.length > 0 ? normalizedChannels : undefined,
-    sentimentTag: activeSentiment !== "all" ? activeSentiment : undefined,
+    sentimentTags: normalizedSentiments.length > 0 ? normalizedSentiments : undefined,
     smsCampaignId:
       activeSmsClient !== "all" && activeSmsClient !== "unattributed"
         ? activeSmsClient
         : undefined,
     smsCampaignUnattributed: activeSmsClient === "unattributed" ? true : undefined,
-    filter: activeFilter as "attention" | "drafts" | "needs_repair" | "all" | undefined,
+    filter: activeFilter as "attention" | "previous_attention" | "drafts" | "needs_repair" | "all" | undefined,
     limit: 50,
-  }), [activeWorkspace, normalizedChannels, activeSentiment, activeSmsClient, activeFilter]);
+  }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter]);
 
   // Infinite query for conversations
   const {
@@ -528,7 +533,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
 
   // Reset sentiment filter when workspace changes
   useEffect(() => {
-    setActiveSentiment("all");
+    setActiveSentiments([]);
   }, [activeWorkspace]);
 
   // Handle initial conversation selection (e.g., from CRM "Open in Master Inbox")
@@ -597,11 +602,11 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   const filteredConversations = conversations;
 
   // Check if any filters are currently active
-  const hasActiveFilters = activeFilter !== "" || activeSentiment !== "all" || activeChannels.length > 0;
+  const hasActiveFilters = activeFilter !== "" || activeSentiments.length > 0 || activeChannels.length > 0;
 
   // Handle clearing all filters (resets sentiment locally and calls parent for channel/filter)
   const handleClearAllFilters = useCallback(() => {
-    setActiveSentiment("all");
+    setActiveSentiments([]);
     onClearFilters?.();
   }, [onClearFilters]);
 
@@ -746,16 +751,16 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
         </Badge>
       </div>
 	      
-	      <ConversationFeed
-	        conversations={filteredConversations}
-	        activeConversationId={activeConversationId}
-	        onSelectConversation={handleLeadSelect}
-	        activeSentiment={activeSentiment}
-	        onSentimentChange={setActiveSentiment}
-	        activeSmsClient={activeSmsClient}
-	        onSmsClientChange={activeWorkspace ? setActiveSmsClient : undefined}
-	        smsClientOptions={activeWorkspace ? smsCampaignFilters?.campaigns || [] : []}
-	        smsClientUnattributedCount={activeWorkspace ? smsCampaignFilters?.unattributedLeadCount || 0 : 0}
+		      <ConversationFeed
+		        conversations={filteredConversations}
+		        activeConversationId={activeConversationId}
+		        onSelectConversation={handleLeadSelect}
+		        activeSentiments={activeSentiments}
+		        onSentimentsChange={setActiveSentiments}
+		        activeSmsClient={activeSmsClient}
+		        onSmsClientChange={activeWorkspace ? setActiveSmsClient : undefined}
+		        smsClientOptions={activeWorkspace ? smsCampaignFilters?.campaigns || [] : []}
+		        smsClientUnattributedCount={activeWorkspace ? smsCampaignFilters?.unattributedLeadCount || 0 : 0}
 	        isLoadingSmsClients={activeWorkspace ? smsCampaignFiltersQuery.isLoading : false}
 	        syncingLeadIds={syncingLeadIds}
 	        onSyncAll={handleSyncAll}

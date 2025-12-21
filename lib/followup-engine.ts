@@ -5,6 +5,7 @@ import { runResponse } from "@/lib/ai/openai-telemetry";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
 import { sendMessage } from "@/actions/message-actions";
 import { sendEmailReply } from "@/actions/email-actions";
+import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
@@ -626,6 +627,7 @@ export async function executeFollowUpStep(
           return { success: false, action: "error", error: dmResult.error || "Failed to send LinkedIn DM" };
         }
 
+        const sentAt = new Date();
         await prisma.message.create({
           data: {
             leadId: lead.id,
@@ -633,9 +635,10 @@ export async function executeFollowUpStep(
             source: "zrg",
             body: content,
             direction: "outbound",
-            sentAt: new Date(),
+            sentAt,
           },
         });
+        await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt });
 
         if (offeredSlots.length > 0) {
           await prisma.lead.update({
@@ -684,6 +687,7 @@ export async function executeFollowUpStep(
         };
       }
 
+      const sentAt = new Date();
       await prisma.message.create({
         data: {
           leadId: lead.id,
@@ -691,9 +695,10 @@ export async function executeFollowUpStep(
           source: "zrg",
           body: content,
           direction: "outbound",
-          sentAt: new Date(),
+          sentAt,
         },
       });
+      await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt });
 
       if (offeredSlots.length > 0) {
         await prisma.lead.update({

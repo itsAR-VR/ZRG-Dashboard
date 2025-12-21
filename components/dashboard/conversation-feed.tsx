@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Search, RefreshCw, Loader2, ChevronsUp, ChevronsDown } from "lucide-react"
 
 type SortOption = "recent" | "oldest" | "name-az" | "name-za"
@@ -35,8 +36,8 @@ interface ConversationFeedProps {
   conversations: Conversation[]
   activeConversationId: string | null
   onSelectConversation: (id: string) => void
-  activeSentiment?: string
-  onSentimentChange?: (sentiment: string) => void
+  activeSentiments?: string[]
+  onSentimentsChange?: (sentiments: string[]) => void
   activeSmsClient?: string
   onSmsClientChange?: (smsClientId: string) => void
   smsClientOptions?: Array<{ id: string; name: string; leadCount: number }>
@@ -59,8 +60,8 @@ export function ConversationFeed({
   conversations, 
   activeConversationId, 
   onSelectConversation,
-  activeSentiment = "all",
-  onSentimentChange,
+  activeSentiments = [],
+  onSentimentsChange,
   activeSmsClient = "all",
   onSmsClientChange,
   smsClientOptions = [],
@@ -157,6 +158,23 @@ export function ConversationFeed({
   // Count active conversations for sync all button
   const activeCount = filteredConversations.length
 
+  const sentimentTriggerLabel =
+    activeSentiments.length === 0 ? "All Sentiments" : `${activeSentiments.length} selected`
+
+  const toggleSentiment = useCallback((value: string, checked: boolean) => {
+    if (!onSentimentsChange) return
+    const next = new Set(activeSentiments)
+    if (checked) next.add(value)
+    else next.delete(value)
+
+    // Preserve stable UI ordering (same as SENTIMENT_OPTIONS order)
+    const ordered = SENTIMENT_OPTIONS
+      .filter((o) => o.value !== "all" && next.has(o.value))
+      .map((o) => o.value)
+
+    onSentimentsChange(ordered)
+  }, [activeSentiments, onSentimentsChange])
+
   return (
     <div className="flex h-full w-80 flex-col border-r border-border bg-background">
       {/* Search & Filters */}
@@ -182,21 +200,37 @@ export function ConversationFeed({
               <SelectItem value="name-za">Name Z-A</SelectItem>
             </SelectContent>
           </Select>
-          <Select 
-            value={activeSentiment} 
-            onValueChange={onSentimentChange}
-          >
-            <SelectTrigger className="flex-1 text-xs">
-              <SelectValue placeholder="Sentiment" />
-            </SelectTrigger>
-            <SelectContent>
-              {SENTIMENT_OPTIONS.map((option) => (
-                <SelectItem key={option.value} value={option.value}>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                className="flex-1 justify-between text-xs"
+                type="button"
+              >
+                <span className="truncate">{sentimentTriggerLabel}</span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-56">
+              <DropdownMenuCheckboxItem
+                checked={activeSentiments.length === 0}
+                onCheckedChange={(checked) => {
+                  if (checked) onSentimentsChange?.([])
+                }}
+              >
+                All Sentiments
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuSeparator />
+              {SENTIMENT_OPTIONS.filter((o) => o.value !== "all").map((option) => (
+                <DropdownMenuCheckboxItem
+                  key={option.value}
+                  checked={activeSentiments.includes(option.value)}
+                  onCheckedChange={(checked) => toggleSentiment(option.value, Boolean(checked))}
+                >
                   {option.label}
-                </SelectItem>
+                </DropdownMenuCheckboxItem>
               ))}
-            </SelectContent>
-          </Select>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {/* SMS sub-client filter (workspace-only) */}

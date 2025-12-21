@@ -67,19 +67,30 @@ function mapSentimentToClassification(sentimentTag: string | null): string {
 }
 
 /**
- * Check if a conversation requires attention based on sentiment
- * Includes all positive response types that need user action
+ * Tags that can require action when the latest message is inbound.
  */
-function requiresAttention(sentimentTag: string | null): boolean {
-  const attentionTags = [
-    "Meeting Requested",
-    "Call Requested",
-    "Information Requested",
-    "Positive",
-    "Interested",
-    "Follow Up"
-  ];
-  return attentionTags.includes(sentimentTag || "");
+const ATTENTION_SENTIMENT_TAGS = [
+  "Meeting Requested",
+  "Call Requested",
+  "Information Requested",
+  "Positive", // Legacy - treat as Interested
+  "Interested",
+  "Follow Up",
+] as const;
+
+function isAttentionSentimentTag(sentimentTag: string | null): boolean {
+  return ATTENTION_SENTIMENT_TAGS.includes((sentimentTag || "") as (typeof ATTENTION_SENTIMENT_TAGS)[number]);
+}
+
+function leadRequiresAttention(lead: {
+  status: string;
+  sentimentTag: string | null;
+  lastMessageDirection?: string | null;
+}): boolean {
+  if (lead.status === "blacklisted") return false;
+  if (lead.sentimentTag === "Blacklist") return false;
+  if (!isAttentionSentimentTag(lead.sentimentTag)) return false;
+  return lead.lastMessageDirection === "inbound";
 }
 
 /**
@@ -155,6 +166,7 @@ export async function getConversations(clientId?: string | null): Promise<{
             body: true,
             subject: true,
             channel: true,
+            direction: true,
             emailBisonReplyId: true,
             rawHtml: true,
             sentAt: true,
@@ -222,8 +234,7 @@ export async function getConversations(clientId?: string | null): Promise<{
         lastMessageTime: latestMessage?.sentAt || lead.createdAt, // Use sentAt for actual message time
         // Hide drafts for blacklisted leads
         hasAiDraft: lead.status !== "blacklisted" && lead.sentimentTag !== "Blacklist" && channelDrafts.length > 0,
-        // Don't mark blacklisted leads as requiring attention
-        requiresAttention: lead.status !== "blacklisted" && lead.sentimentTag !== "Blacklist" && requiresAttention(lead.sentimentTag),
+        requiresAttention: leadRequiresAttention(lead),
         sentimentTag: lead.sentimentTag,
         campaignId,
         emailCampaignId: lead.emailCampaignId,
@@ -247,7 +258,7 @@ export async function getConversations(clientId?: string | null): Promise<{
  */
 export async function getInboxCounts(clientId?: string | null): Promise<{
   requiresAttention: number;
-  draftsForApproval: number;
+  previouslyRequiredAttention: number;
   awaitingReply: number;
   needsRepair: number;
   total: number;
@@ -255,37 +266,35 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
   try {
     const now = new Date();
     const snoozeFilter = { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] };
-    // Must match the attentionTags in requiresAttention function
-    const attentionTags = [
+    const positiveSentimentTags = [
       "Meeting Requested",
       "Call Requested",
       "Information Requested",
-      "Positive",
       "Interested",
-      "Follow Up"
+      "Positive", // Legacy - treat as Interested
     ];
     const clientFilter = clientId ? { clientId } : {};
 
-    const [attention, drafts, total, blacklisted, needsRepair] = await Promise.all([
+    const [attention, previousAttention, total, blacklisted, needsRepair] = await Promise.all([
       // Count leads requiring attention (excluding blacklisted)
       prisma.lead.count({
         where: {
           ...clientFilter,
           ...snoozeFilter,
-          sentimentTag: { in: attentionTags },
+          sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
+          lastMessageDirection: "inbound",
           status: { not: "blacklisted" },
         },
       }),
-      // Exclude drafts for blacklisted leads
-      prisma.aIDraft.count({
+      // Leads that previously required attention (positive + had inbound history + latest message is outbound)
+      prisma.lead.count({
         where: {
-          status: "pending",
-          lead: {
-            ...(clientId ? { clientId } : {}),
-            ...snoozeFilter,
-            sentimentTag: { not: "Blacklist" },
-            status: { not: "blacklisted" },
-          },
+          ...clientFilter,
+          ...snoozeFilter,
+          sentimentTag: { in: positiveSentimentTags },
+          lastInboundAt: { not: null },
+          lastMessageDirection: "outbound",
+          status: { not: "blacklisted" },
         },
       }),
       // Total leads (excluding blacklisted)
@@ -316,7 +325,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
 
     return {
       requiresAttention: attention,
-      draftsForApproval: drafts,
+      previouslyRequiredAttention: previousAttention,
       awaitingReply: Math.max(0, total - attention),
       needsRepair,
       total: total + blacklisted, // Include blacklisted in total for reference
@@ -325,7 +334,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     console.error("Failed to get inbox counts:", error);
     return {
       requiresAttention: 0,
-      draftsForApproval: 0,
+      previouslyRequiredAttention: 0,
       awaitingReply: 0,
       needsRepair: 0,
       total: 0,
@@ -468,9 +477,10 @@ export interface ConversationsCursorOptions {
   channels?: Channel[];
   channel?: Channel | "all";
   sentimentTag?: string;
+  sentimentTags?: string[];
   smsCampaignId?: string;
   smsCampaignUnattributed?: boolean;
-  filter?: "attention" | "drafts" | "needs_repair" | "all";
+  filter?: "attention" | "previous_attention" | "drafts" | "needs_repair" | "all";
 }
 
 export interface ConversationsCursorResult {
@@ -533,7 +543,7 @@ function transformLeadToConversation(lead: any): ConversationData {
     lastSubject: latestMessage?.subject || null,
     lastMessageTime: latestMessage?.sentAt || lead.createdAt,
     hasAiDraft: lead.status !== "blacklisted" && lead.sentimentTag !== "Blacklist" && channelDrafts.length > 0,
-    requiresAttention: lead.status !== "blacklisted" && lead.sentimentTag !== "Blacklist" && requiresAttention(lead.sentimentTag),
+    requiresAttention: leadRequiresAttention(lead),
     sentimentTag: lead.sentimentTag,
     campaignId,
     emailCampaignId: lead.emailCampaignId,
@@ -556,6 +566,7 @@ export async function getConversationsCursor(
       channels,
       channel,
       sentimentTag,
+      sentimentTags,
       smsCampaignId,
       smsCampaignUnattributed,
       filter,
@@ -600,8 +611,10 @@ export async function getConversationsCursor(
       });
     }
 
-    // Sentiment tag filter
-    if (sentimentTag && sentimentTag !== "all") {
+    // Sentiment tag filter (multi-select supported)
+    if (sentimentTags && sentimentTags.length > 0) {
+      whereConditions.push({ sentimentTag: { in: sentimentTags } });
+    } else if (sentimentTag && sentimentTag !== "all") {
       whereConditions.push({ sentimentTag });
     }
 
@@ -614,24 +627,16 @@ export async function getConversationsCursor(
 
     // Special filter presets
     if (filter === "attention") {
-      const attentionTags = [
-        "Meeting Requested",
-        "Call Requested",
-        "Information Requested",
-        "Positive",
-        "Interested",
-        "Follow Up"
-      ];
       whereConditions.push({
-        sentimentTag: { in: attentionTags },
+        sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
+        lastMessageDirection: "inbound",
         status: { not: "blacklisted" },
       });
-    } else if (filter === "drafts") {
+    } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
-        aiDrafts: {
-          some: { status: "pending" },
-        },
-        sentimentTag: { not: "Blacklist" },
+        sentimentTag: { in: ["Meeting Requested", "Call Requested", "Information Requested", "Interested", "Positive"] },
+        lastInboundAt: { not: null },
+        lastMessageDirection: "outbound",
         status: { not: "blacklisted" },
       });
     } else if (filter === "needs_repair") {
@@ -669,6 +674,7 @@ export async function getConversationsCursor(
             body: true,
             subject: true,
             channel: true,
+            direction: true,
             emailBisonReplyId: true,
             rawHtml: true,
             sentAt: true,
@@ -736,6 +742,7 @@ export async function getConversationsFromEnd(
       channels,
       channel,
       sentimentTag,
+      sentimentTags,
       smsCampaignId,
       smsCampaignUnattributed,
       filter,
@@ -778,7 +785,9 @@ export async function getConversationsFromEnd(
       });
     }
 
-    if (sentimentTag && sentimentTag !== "all") {
+    if (sentimentTags && sentimentTags.length > 0) {
+      whereConditions.push({ sentimentTag: { in: sentimentTags } });
+    } else if (sentimentTag && sentimentTag !== "all") {
       whereConditions.push({ sentimentTag });
     }
 
@@ -789,24 +798,16 @@ export async function getConversationsFromEnd(
     }
 
     if (filter === "attention") {
-      const attentionTags = [
-        "Meeting Requested",
-        "Call Requested",
-        "Information Requested",
-        "Positive",
-        "Interested",
-        "Follow Up"
-      ];
       whereConditions.push({
-        sentimentTag: { in: attentionTags },
+        sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
+        lastMessageDirection: "inbound",
         status: { not: "blacklisted" },
       });
-    } else if (filter === "drafts") {
+    } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
-        aiDrafts: {
-          some: { status: "pending" },
-        },
-        sentimentTag: { not: "Blacklist" },
+        sentimentTag: { in: ["Meeting Requested", "Call Requested", "Information Requested", "Interested", "Positive"] },
+        lastInboundAt: { not: null },
+        lastMessageDirection: "outbound",
         status: { not: "blacklisted" },
       });
     } else if (filter === "needs_repair") {
@@ -844,6 +845,7 @@ export async function getConversationsFromEnd(
             body: true,
             subject: true,
             channel: true,
+            direction: true,
             emailBisonReplyId: true,
             rawHtml: true,
             sentAt: true,

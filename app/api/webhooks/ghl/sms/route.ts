@@ -10,6 +10,7 @@ import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBookin
 import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
+import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 
 /**
  * GHL Workflow Webhook Payload Structure
@@ -195,6 +196,11 @@ async function importHistoricalMessages(
             where: { ghlId },
             data: { sentAt: msgTimestamp },
           } as any);
+          await bumpLeadMessageRollup({
+            leadId,
+            direction: (msg.direction as "inbound" | "outbound") === "inbound" ? "inbound" : "outbound",
+            sentAt: msgTimestamp,
+          });
           healedCount++;
           console.log(`[Import] Fixed timestamp for ghlId ${ghlId}`);
         }
@@ -220,6 +226,11 @@ async function importHistoricalMessages(
             sentAt: msgTimestamp,
           },
         } as any);
+        await bumpLeadMessageRollup({
+          leadId,
+          direction: (msg.direction as "inbound" | "outbound") === "inbound" ? "inbound" : "outbound",
+          sentAt: msgTimestamp,
+        });
         healedCount++;
         console.log(`[Import] Healed: "${msg.body.substring(0, 30)}..." -> ghlId: ${ghlId}`);
         continue;
@@ -236,6 +247,11 @@ async function importHistoricalMessages(
           sentAt: msgTimestamp,
         },
       } as any);
+      await bumpLeadMessageRollup({
+        leadId,
+        direction: (msg.direction as "inbound" | "outbound") === "inbound" ? "inbound" : "outbound",
+        sentAt: msgTimestamp,
+      });
       importedCount++;
       console.log(`[Import] Saved: "${msg.body.substring(0, 30)}..." (${msg.direction}) @ ${msgTimestamp.toISOString()}`);
     } catch (error) {
@@ -567,6 +583,7 @@ export async function POST(request: NextRequest) {
               // ghlId will be added on next sync
             },
           } as any);
+          await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt: webhookMessageTime });
           importedMessagesCount++;
           console.log(`[Webhook] Saved current inbound message @ ${webhookMessageTime.toISOString()}`);
         }
@@ -594,6 +611,7 @@ export async function POST(request: NextRequest) {
             // ghlId will be added on next sync
           },
         } as any);
+        await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt: webhookMessageTime });
         console.log(`Created message: ${message.id} @ ${webhookMessageTime.toISOString()}`);
       } else {
         console.log(`[Webhook] Message already exists (id: ${existingByContent.id})`);

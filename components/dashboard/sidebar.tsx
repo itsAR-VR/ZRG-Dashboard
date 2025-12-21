@@ -65,7 +65,7 @@ const navItems = [
 
 interface FilterCounts {
   attention: number
-  drafts: number
+  previousAttention: number
   needsRepair: number
 }
 
@@ -100,7 +100,7 @@ export function Sidebar({
       if (!cancelled) {
         setCounts({
           attention: result.requiresAttention,
-          drafts: result.draftsForApproval,
+          previousAttention: result.previouslyRequiredAttention,
           needsRepair: result.needsRepair,
         })
         setIsLoadingCounts(false)
@@ -119,7 +119,7 @@ export function Sidebar({
 
   const filterItems = [
     { id: "attention", label: "Requires Attention", icon: AlertCircle, count: counts?.attention ?? 0, variant: "destructive" as const },
-    { id: "drafts", label: "Drafts for Approval", icon: FileEdit, count: counts?.drafts ?? 0, variant: "warning" as const },
+    { id: "previous_attention", label: "Previously Required Attention", icon: FileEdit, count: counts?.previousAttention ?? 0, variant: "warning" as const },
     { id: "needs_repair", label: "Needs Repair", icon: Wrench, count: counts?.needsRepair ?? 0, variant: "outline" as const },
   ]
 
