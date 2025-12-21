@@ -519,7 +519,6 @@ export async function classifySentiment(
         promptKey: promptTemplate?.key || "sentiment.classify.v1",
         params: {
           model: "gpt-5-mini",
-          temperature: 0,
           instructions: systemPrompt,
           input: [
             {

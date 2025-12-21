@@ -223,7 +223,6 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
           (promptTemplate?.key || "timezone.infer.v1") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
         params: {
           model: "gpt-5-nano",
-          temperature: 0,
           reasoning: { effort: "minimal" },
           max_output_tokens: attempts[attemptIndex].maxOutputTokens,
           instructions,

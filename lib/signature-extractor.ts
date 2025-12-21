@@ -74,7 +74,6 @@ ${emailBody.slice(0, 5000)}`;
         promptKey: promptTemplate?.key || "signature.extract.v1",
         params: {
           model: "gpt-5-nano",
-          temperature: 0,
           instructions,
           text: {
             verbosity: "low",
@@ -128,7 +127,6 @@ ${emailBody.slice(0, 5000)}`;
         promptKey: (promptTemplate?.key || "signature.extract.v1") + ".fallback",
         params: {
           model: "gpt-5-nano",
-          temperature: 0,
           instructions,
           input: signatureInput,
           reasoning: { effort: "minimal" },

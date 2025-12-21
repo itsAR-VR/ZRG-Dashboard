@@ -10,6 +10,27 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+function isUnsupportedTemperatureError(error: unknown): boolean {
+  const anyErr = error as any;
+  const message = error instanceof Error ? error.message : String(anyErr?.message || "");
+  const param =
+    typeof anyErr?.param === "string"
+      ? anyErr.param
+      : typeof anyErr?.error?.param === "string"
+        ? anyErr.error.param
+        : null;
+
+  return (
+    param === "temperature" &&
+    (message.includes("Unsupported parameter") || message.toLowerCase().includes("unsupported parameter"))
+  );
+}
+
+function omitTemperature(params: OpenAI.Responses.ResponseCreateParamsNonStreaming): OpenAI.Responses.ResponseCreateParamsNonStreaming {
+  const { temperature: _temperature, ...rest } = params as any;
+  return rest as OpenAI.Responses.ResponseCreateParamsNonStreaming;
+}
+
 type UsageSnapshot = {
   inputTokens?: number | null;
   outputTokens?: number | null;
@@ -101,7 +122,17 @@ export async function runResponseWithInteraction(opts: {
 }): Promise<{ response: OpenAI.Responses.Response; interactionId: string | null }> {
   const start = Date.now();
   try {
-    const resp = await openai.responses.create(opts.params);
+    let resp: OpenAI.Responses.Response;
+    try {
+      resp = await openai.responses.create(opts.params);
+    } catch (error) {
+      // Some models reject `temperature` (400 invalid_request_error). Retry once without it.
+      if ("temperature" in (opts.params as any) && isUnsupportedTemperatureError(error)) {
+        resp = await openai.responses.create(omitTemperature(opts.params));
+      } else {
+        throw error;
+      }
+    }
     const latencyMs = Date.now() - start;
     const usage = extractUsageFromResponseApi(resp);
 
