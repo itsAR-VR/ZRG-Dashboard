@@ -116,6 +116,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   const [syncingLeadIds, setSyncingLeadIds] = useState<Set<string>>(new Set());
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [reanalyzingLeadId, setReanalyzingLeadId] = useState<string | null>(null);
+  const [isReanalyzingAllSentiments, setIsReanalyzingAllSentiments] = useState(false);
   const [autoFollowUpsOnReplyEnabled, setAutoFollowUpsOnReplyEnabled] = useState(false);
   const [isTogglingAutoFollowUpsOnReply, setIsTogglingAutoFollowUpsOnReply] = useState(false);
   
@@ -446,6 +447,47 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
     }
   }, [fetchConversations]);
 
+  const handleReanalyzeAllSentiments = useCallback(async (leadIds: string[]) => {
+    if (!leadIds || leadIds.length === 0) {
+      toast.info("No conversations to re-analyze");
+      return;
+    }
+
+    const ok = confirm(
+      [
+        `Re-analyze sentiments for ${leadIds.length} conversation${leadIds.length === 1 ? "" : "s"}?`,
+        "",
+        "This uses existing message history (no sync), and may take a bit.",
+      ].join("\n")
+    );
+    if (!ok) return;
+
+    setIsReanalyzingAllSentiments(true);
+    let successCount = 0;
+    let errorCount = 0;
+
+    try {
+      for (const leadId of leadIds) {
+        try {
+          const result = await reanalyzeLeadSentiment(leadId);
+          if (result.success) successCount += 1;
+          else errorCount += 1;
+        } catch {
+          errorCount += 1;
+        }
+      }
+
+      toast.success("Re-analysis complete", {
+        description: `${successCount} updated${errorCount > 0 ? `, ${errorCount} errors` : ""}`,
+      });
+
+      fetchConversations();
+      fetchActiveConversation(false);
+    } finally {
+      setIsReanalyzingAllSentiments(false);
+    }
+  }, [fetchActiveConversation, fetchConversations]);
+
   const handleToggleAutoFollowUpsOnReply = useCallback(async (enabled: boolean) => {
     if (!activeWorkspace) {
       toast.error("No workspace selected");
@@ -703,38 +745,41 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
           )}
         </Badge>
       </div>
-      
-      <ConversationFeed
-        conversations={filteredConversations}
-        activeConversationId={activeConversationId}
-        onSelectConversation={handleLeadSelect}
-        activeSentiment={activeSentiment}
-        onSentimentChange={setActiveSentiment}
-        activeSmsClient={activeSmsClient}
-        onSmsClientChange={activeWorkspace ? setActiveSmsClient : undefined}
-        smsClientOptions={activeWorkspace ? smsCampaignFilters?.campaigns || [] : []}
-        smsClientUnattributedCount={activeWorkspace ? smsCampaignFilters?.unattributedLeadCount || 0 : 0}
-        isLoadingSmsClients={activeWorkspace ? smsCampaignFiltersQuery.isLoading : false}
+	      
+	      <ConversationFeed
+	        conversations={filteredConversations}
+	        activeConversationId={activeConversationId}
+	        onSelectConversation={handleLeadSelect}
+	        activeSentiment={activeSentiment}
+	        onSentimentChange={setActiveSentiment}
+	        activeSmsClient={activeSmsClient}
+	        onSmsClientChange={activeWorkspace ? setActiveSmsClient : undefined}
+	        smsClientOptions={activeWorkspace ? smsCampaignFilters?.campaigns || [] : []}
+	        smsClientUnattributedCount={activeWorkspace ? smsCampaignFilters?.unattributedLeadCount || 0 : 0}
+	        isLoadingSmsClients={activeWorkspace ? smsCampaignFiltersQuery.isLoading : false}
 	        syncingLeadIds={syncingLeadIds}
 	        onSyncAll={handleSyncAll}
 	        isSyncingAll={isSyncingAll}
-          autoFollowUpsOnReplyEnabled={autoFollowUpsOnReplyEnabled}
-          onToggleAutoFollowUpsOnReply={activeWorkspace ? handleToggleAutoFollowUpsOnReply : undefined}
-          isTogglingAutoFollowUpsOnReply={isTogglingAutoFollowUpsOnReply}
+	        onReanalyzeAllSentiments={handleReanalyzeAllSentiments}
+	        isReanalyzingAllSentiments={isReanalyzingAllSentiments}
+	        autoFollowUpsOnReplyEnabled={autoFollowUpsOnReplyEnabled}
+	        onToggleAutoFollowUpsOnReply={activeWorkspace ? handleToggleAutoFollowUpsOnReply : undefined}
+	        isTogglingAutoFollowUpsOnReply={isTogglingAutoFollowUpsOnReply}
 	        hasMore={hasNextPage}
 	        isLoadingMore={isFetchingNextPage}
 	        onLoadMore={() => fetchNextPage()}
 	      />
-  <ActionStation
-        conversation={activeConversation}
-        onToggleCrm={() => setIsCrmOpen(!isCrmOpen)}
-        isCrmOpen={isCrmOpen}
-        isSyncing={isCurrentConversationSyncing}
-        onSync={handleSyncConversation}
-        isReanalyzingSentiment={!!activeConversationId && reanalyzingLeadId === activeConversationId}
-        onReanalyzeSentiment={handleReanalyzeSentiment}
-        isLoadingMessages={isLoadingMessages}
-      />
+
+	      <ActionStation
+	        conversation={activeConversation}
+	        onToggleCrm={() => setIsCrmOpen(!isCrmOpen)}
+	        isCrmOpen={isCrmOpen}
+	        isSyncing={isCurrentConversationSyncing}
+	        onSync={handleSyncConversation}
+	        isReanalyzingSentiment={!!activeConversationId && reanalyzingLeadId === activeConversationId}
+	        onReanalyzeSentiment={handleReanalyzeSentiment}
+	        isLoadingMessages={isLoadingMessages}
+	      />
       {activeConversation && (
         <CrmDrawer
           lead={activeConversation.lead}
