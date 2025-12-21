@@ -83,6 +83,12 @@ const BOUNCE_PATTERNS = [
   /the email account.*does not exist/i,
   /undelivered mail returned to sender/i,
   /message could not be delivered/i,
+  // "Inbox not monitored / no longer in use" system-style replies (treat like invalid channel)
+  /\b(email|mailbox|inbox)\b.*\b(no longer (in use|used|active)|not (in use|used|active)|inactive|not monitored|no longer monitored|unmanned|unattended)\b/i,
+  /\b(email address|this address)\b.*\b(no longer (in use|used|active)|inactive|not monitored|no longer monitored)\b/i,
+  /\b(this|the)\s+(email|inbox|mailbox)\b.*\b(no longer (exists|in use|used)|not monitored|unmanned|unattended)\b/i,
+  /\b(please|kindly)\s+(do not|don['’]?t)\s+(email|reply)\b.*\b(this|the)\b/i,
+  /\b(address|account)\b.*\b(no longer (associated|available)|has been (deactivated|disabled))\b/i,
 ];
 
 function matchesAnyPattern(patterns: RegExp[], text: string): boolean {
@@ -240,6 +246,176 @@ function stripQuotedEmailThread(text: string): string {
 
   const withoutThread = cutIndex === null ? cleaned : cleaned.slice(0, cutIndex);
   return stripCommonPunctuation(withoutThread).trim();
+}
+
+const EMAIL_FOOTER_PATTERNS = {
+  email: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
+  url: /\bhttps?:\/\/\S+|\bwww\.\S+/i,
+  phone:
+    /(?:\+?\d{1,3}[-.\s]?)?(?:\(\d{2,4}\)|\d{2,4})[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b/,
+  signatureLabel:
+    /\b(tel|telephone|phone|mobile|cell|direct|whats\s*app|whatsapp|linkedin|website|www)\b|(?:^|\s)(t:|m:|p:|e:)\b/i,
+  sentFromMobile: /\b(sent from my (iphone|ipad)|sent via mobile|get outlook for (ios|android))\b/i,
+  // Common confidentiality disclaimers and legal boilerplate
+  disclaimer:
+    /\b(confidential|privileged|intended (only|solely) for|if you (have|received) this (email|message) in error|unauthori[sz]ed|liability|virus|malware|attachments? may contain|delete (this|the) (email|message)|disclaimer)\b/i,
+  // Newsletter/marketing footers (not common in genuine replies, but can pollute text)
+  marketingFooter:
+    /\b(unsubscribe|manage (your )?preferences|view (this|email) in (a )?browser|email preferences|privacy policy|terms of (service|use))\b/i,
+};
+
+function looksLikeNameLine(text: string): boolean {
+  const trimmed = stripCommonPunctuation(text).trim();
+  if (!trimmed) return false;
+  if (trimmed.length > 60) return false;
+  if (/\d/.test(trimmed)) return false;
+
+  const normalized = trimmed.replace(/[*_`~]/g, "").trim();
+  const parts = normalized.split(/\s+/).filter(Boolean);
+  if (parts.length < 2 || parts.length > 5) return false;
+
+  // Require at least 2 capitalized tokens (e.g., "Peggy Picano-Nacci")
+  const capitalized = parts.filter((p) => /^[A-Z][A-Za-z'’.\-]+$/.test(p));
+  return capitalized.length >= 2;
+}
+
+function looksLikeTitleOrCompanyLine(text: string): boolean {
+  const trimmed = stripCommonPunctuation(text).trim();
+  if (!trimmed) return false;
+  if (trimmed.length > 80) return false;
+
+  const titleKeywords =
+    /\b(founder|co[-\s]?founder|ceo|cto|cfo|president|director|partner|principal|owner|manager|head of|vp|vice president|consultant)\b/i;
+  const companyMarkers = /\b(inc|llc|ltd|limited|corp|co\.)\b/i;
+  return titleKeywords.test(trimmed) || companyMarkers.test(trimmed);
+}
+
+function looksLikeClosingLine(text: string): boolean {
+  const trimmed = stripCommonPunctuation(text).trim();
+  if (!trimmed) return false;
+  if (trimmed.length > 40) return false;
+  return /^(best|regards|kind regards|thanks|thank you|cheers|sincerely)$/i.test(trimmed);
+}
+
+function isStrongFooterLine(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return (
+    EMAIL_FOOTER_PATTERNS.email.test(trimmed) ||
+    EMAIL_FOOTER_PATTERNS.url.test(trimmed) ||
+    EMAIL_FOOTER_PATTERNS.phone.test(trimmed) ||
+    EMAIL_FOOTER_PATTERNS.signatureLabel.test(trimmed) ||
+    EMAIL_FOOTER_PATTERNS.sentFromMobile.test(trimmed) ||
+    EMAIL_FOOTER_PATTERNS.disclaimer.test(trimmed) ||
+    EMAIL_FOOTER_PATTERNS.marketingFooter.test(trimmed)
+  );
+}
+
+function isHardFooterSignalLine(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return (
+    EMAIL_FOOTER_PATTERNS.signatureLabel.test(trimmed) ||
+    EMAIL_FOOTER_PATTERNS.sentFromMobile.test(trimmed) ||
+    EMAIL_FOOTER_PATTERNS.disclaimer.test(trimmed) ||
+    EMAIL_FOOTER_PATTERNS.marketingFooter.test(trimmed)
+  );
+}
+
+function isWeakFooterLine(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  return looksLikeClosingLine(trimmed) || looksLikeNameLine(trimmed) || looksLikeTitleOrCompanyLine(trimmed);
+}
+
+/**
+ * Remove common signature/disclaimer/footer content from an email-ish body.
+ * Preserves up to 2 lines of a natural closing (e.g., name/title) when present.
+ */
+function stripEmailFooter(text: string): string {
+  const normalized = (text || "").replace(/\u00a0/g, " ").trim();
+  if (!normalized) return "";
+
+  const lines = normalized.split(/\r?\n/);
+  while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop();
+  if (lines.length === 0) return "";
+
+  // Find a strong footer signal near the bottom.
+  let strongIndex: number | null = null;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (isStrongFooterLine(line)) {
+      strongIndex = i;
+      break;
+    }
+  }
+
+  if (strongIndex === null) return normalized;
+
+  // Walk upward through the footer block to find its start. Prefer a blank-line
+  // separator, but fall back to the earliest footer-like line.
+  let footerStart = strongIndex;
+  let separatorStart: number | null = null;
+  let strongCount = 0;
+  let hardCount = 0;
+  for (let i = strongIndex; i >= 0; i--) {
+    const line = lines[i].trim();
+
+    if (!line || line === "--") {
+      separatorStart = i + 1;
+      continue;
+    }
+
+    if (isStrongFooterLine(line) || isWeakFooterLine(line)) {
+      footerStart = i;
+      if (isStrongFooterLine(line)) strongCount++;
+      if (isHardFooterSignalLine(line)) hardCount++;
+      continue;
+    }
+
+    // Hit main body text.
+    break;
+  }
+
+  const start = separatorStart ?? footerStart;
+  if (start <= 0) return normalized;
+
+  const candidateFooterLines = lines.slice(start).filter((l) => l.trim());
+  // Be conservative: avoid stripping legitimate content like a link/phone number
+  // shared in the body (no blank-line separator + only one weak strong-signal line).
+  const hasSeparator = separatorStart !== null;
+  const footerQualifies =
+    (hasSeparator && strongCount >= 1) ||
+    (hardCount >= 1 && candidateFooterLines.length >= 2) ||
+    (hardCount >= 1 && strongCount >= 1) ||
+    (hardCount >= 2);
+  if (!footerQualifies) return normalized;
+
+  const bodyLines = lines.slice(0, start);
+  while (bodyLines.length > 0 && !bodyLines[bodyLines.length - 1].trim()) bodyLines.pop();
+  if (bodyLines.length === 0) return normalized;
+
+  // Preserve a short closing from the top of the footer (usually name/title).
+  const footerLines = lines.slice(start);
+  const preserved: string[] = [];
+  for (let i = 0; i < footerLines.length && preserved.length < 2; i++) {
+    const rawLine = footerLines[i];
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (isStrongFooterLine(line)) break;
+    if (looksLikeClosingLine(line) || looksLikeNameLine(line) || looksLikeTitleOrCompanyLine(line)) {
+      preserved.push(stripCommonPunctuation(line));
+      continue;
+    }
+    break;
+  }
+
+  const out = [...bodyLines];
+  if (preserved.length > 0) {
+    out.push("", ...preserved);
+  }
+  return out.join("\n").trim();
 }
 
 export function isOptOutText(text: string): boolean {
@@ -423,9 +599,38 @@ function isMeetingRequestedMessage(text: string): boolean {
   return hasScheduleIntent && hasTimeSignal;
 }
 
+function hasScheduleOrTimeSignal(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  const scheduleWords =
+    /\b(meet|meeting|schedule|calendar|book|set up|setup|sync up|chat|talk|call)\b/i;
+  const timeWords =
+    /\b(today|tomorrow|tonight|this (morning|afternoon|evening|week)|next (week|month)|mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b/i;
+  const timeClock = /\b\d{1,2}(:\d{2})?\s?(am|pm)\b/i;
+  const timeDate = /\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b/i;
+  return scheduleWords.test(normalized) || timeWords.test(normalized) || timeClock.test(normalized) || timeDate.test(normalized);
+}
+
 function isNotInterestedMessage(text: string): boolean {
   const normalized = text.trim().toLowerCase();
-  return /\b(not interested|no thanks|no thank you|no thx|wrong number|already have)\b/i.test(normalized);
+  if (!normalized) return false;
+
+  if (/\b(not interested|no thanks|no thank you|no thx|wrong number|already have|not a fit|not relevant)\b/i.test(normalized)) {
+    return true;
+  }
+
+  // Polite "we're all good" / "all set" closures are usually a decline, not an info request.
+  // Guardrail: don't treat as Not Interested if they include scheduling/time signals.
+  const allSetOrGood =
+    /\b(all set|all good|we('?re| are) all set|we('?re| are) good|i('?m| am) good|good for now|no need (for|to)|no need(ed)?|we('?re| are) all set here)\b/i;
+  const thanksOnly = /\b(thanks|thank you)\b/i.test(normalized);
+  if (allSetOrGood.test(normalized) && (thanksOnly || normalized.length <= 160)) {
+    if (normalized.includes("?")) return false;
+    if (hasScheduleOrTimeSignal(normalized)) return false;
+    return true;
+  }
+
+  return false;
 }
 
 function isInformationRequestedMessage(text: string): boolean {
@@ -478,14 +683,20 @@ export async function classifySentiment(
 
   const maxRetries = opts.maxRetries ?? 3;
   const { allLeadText, lastLeadText } = extractLeadTextFromTranscript(transcript);
-  const lastLeadPrimary = stripQuotedEmailThread(lastLeadText) || lastLeadText.trim();
+  const lastLeadCombined = (lastLeadText || "").replace(/\u00a0/g, " ").trim();
+  const { subject: lastLeadSubject } = splitEmailSubjectPrefix(lastLeadCombined);
+  const lastLeadBody = stripQuotedEmailThread(lastLeadCombined) || lastLeadCombined;
+  const lastLeadPrimary = stripEmailFooter(lastLeadBody);
+  const lastLeadForDetectors = lastLeadSubject
+    ? `Subject: ${lastLeadSubject} | ${lastLeadPrimary}`
+    : lastLeadPrimary;
 
   // Fast, high-confidence classification without calling the model.
   // These rules dramatically reduce edge-case misclassifications and cost.
-  if (matchesAnyPattern(BOUNCE_PATTERNS, lastLeadText.toLowerCase())) return "Blacklist";
-  if (isOptOutText(lastLeadPrimary)) return "Blacklist";
-  if (isOutOfOfficeMessage(lastLeadPrimary)) return "Out of Office";
-  if (isAutomatedReplyMessage(lastLeadPrimary)) return "Automated Reply";
+  if (matchesAnyPattern(BOUNCE_PATTERNS, lastLeadCombined.toLowerCase())) return "Blacklist";
+  if (isOptOutText(lastLeadForDetectors)) return "Blacklist";
+  if (isOutOfOfficeMessage(lastLeadForDetectors)) return "Out of Office";
+  if (isAutomatedReplyMessage(lastLeadForDetectors)) return "Automated Reply";
   // Explicit "no thanks" must override any quoted outbound thread content.
   if (isNotInterestedMessage(lastLeadPrimary)) return "Not Interested";
   if (isMeetingRequestedMessage(lastLeadPrimary)) return "Meeting Requested";
@@ -501,7 +712,9 @@ export async function classifySentiment(
   const recentContext = trimTranscriptForModel(transcript);
   const modelInputPayload = JSON.stringify(
     {
+      latest_lead_subject: lastLeadSubject || null,
       latest_lead_reply: lastLeadPrimary,
+      latest_lead_reply_with_subject: lastLeadForDetectors,
       // Lower-priority context (use only to disambiguate ultra-short confirmations).
       context_transcript_tail: recentContext,
       lead_replies_tail: allLeadText.slice(Math.max(0, allLeadText.length - 3000)),
@@ -590,9 +803,9 @@ export async function classifySentiment(
         exact || contained || (lower === "positive" ? "Interested" : "Neutral");
 
       // Post-classification validators (safety + signature false-positive reduction)
-      if (isOptOutText(lastLeadPrimary)) return "Blacklist";
-      if (isOutOfOfficeMessage(lastLeadPrimary)) return "Out of Office";
-      if (isAutomatedReplyMessage(lastLeadPrimary)) return "Automated Reply";
+      if (isOptOutText(lastLeadForDetectors)) return "Blacklist";
+      if (isOutOfOfficeMessage(lastLeadForDetectors)) return "Out of Office";
+      if (isAutomatedReplyMessage(lastLeadForDetectors)) return "Automated Reply";
       if (isNotInterestedMessage(lastLeadPrimary)) return "Not Interested";
 
       if (candidate === "Call Requested" && !isCallRequestedMessage(lastLeadPrimary)) {

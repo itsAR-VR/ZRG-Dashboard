@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { buildSentimentTranscriptFromMessages, classifySentiment, SENTIMENT_TO_STATUS, isPositiveSentiment, type SentimentTag } from "@/lib/sentiment";
+import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, isOptOutText, SENTIMENT_TO_STATUS, isPositiveSentiment, type SentimentTag } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraft } from "@/actions/message-actions";
 import { findOrCreateLead } from "@/lib/lead-matching";
@@ -975,7 +975,14 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   // If Inboxxia already marked as interested, use that; otherwise classify with AI
   // Note: Any inbound reply will reclassify sentiment, clearing "Follow Up" or "Snoozed" tags
   let sentimentTag: SentimentTag;
-  if (reply.interested === true) {
+  const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
+  const mustBlacklist =
+    isOptOutText(inboundCombinedForSafety) ||
+    detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
+
+  if (mustBlacklist) {
+    sentimentTag = "Blacklist";
+  } else if (reply.interested === true) {
     sentimentTag = "Interested";
   } else {
     sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
@@ -1230,6 +1237,41 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   });
 
   if (existingMessage) {
+    const inboundCombinedForSafety = `Subject: ${existingMessage.subject ?? ""} | ${existingMessage.body ?? ""}`;
+    const mustBlacklist =
+      isOptOutText(inboundCombinedForSafety) ||
+      detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
+
+    if (mustBlacklist) {
+      await prisma.lead.update({
+        where: { id: existingMessage.leadId },
+        data: {
+          sentimentTag: "Blacklist",
+          status: SENTIMENT_TO_STATUS["Blacklist"] || "blacklisted",
+        },
+      });
+
+      // Auto-reject any pending drafts for this lead
+      await prisma.aIDraft.updateMany({
+        where: {
+          leadId: existingMessage.leadId,
+          status: "pending",
+        },
+        data: { status: "rejected" },
+      });
+
+      console.log(`[LEAD_INTERESTED] Override → Blacklist for lead ${existingMessage.leadId} (provider interest ignored)`);
+
+      return NextResponse.json({
+        success: true,
+        eventType: "LEAD_INTERESTED",
+        leadId: existingMessage.leadId,
+        updatedExisting: true,
+        sentimentTag: "Blacklist",
+        status: SENTIMENT_TO_STATUS["Blacklist"] || "blacklisted",
+      });
+    }
+
     // Message exists - just update lead sentiment to "Interested"
     await prisma.lead.update({
       where: { id: existingMessage.leadId },
@@ -1283,7 +1325,12 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
 
   const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
   const contentForClassification = cleaned.cleaned || cleaned.rawText || cleaned.rawHtml || "";
-  const sentimentTag = "Interested";
+  const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
+  const mustBlacklist =
+    isOptOutText(inboundCombinedForSafety) ||
+    detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
+
+  const sentimentTag: SentimentTag = mustBlacklist ? "Blacklist" : "Interested";
   const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || "engaged";
 
   const sentAt = parseDate(reply.date_received, reply.created_at);
@@ -1351,26 +1398,29 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     console.log(`[Auto-Book] Booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
   }
 
-  try {
-    const ensureResult = await ensureGhlContactIdForLead(lead.id, { allowCreateWithoutPhone: true });
-    if (!ensureResult.success && ensureResult.error) {
-      console.log(`[GHL Contact] Lead ${lead.id}: ${ensureResult.error}`);
+  if (isPositiveSentiment(sentimentTag)) {
+    try {
+      const ensureResult = await ensureGhlContactIdForLead(lead.id, { allowCreateWithoutPhone: true });
+      if (!ensureResult.success && ensureResult.error) {
+        console.log(`[GHL Contact] Lead ${lead.id}: ${ensureResult.error}`);
+      }
+    } catch (error) {
+      console.error(`[GHL Contact] Failed to ensure contact for lead ${lead.id}:`, error);
     }
-  } catch (error) {
-    console.error(`[GHL Contact] Failed to ensure contact for lead ${lead.id}:`, error);
   }
 
-  // Generate AI draft with "Interested" context
-  const draftResult = autoBook.booked
-    ? { success: false as const, draftId: undefined as string | undefined }
-    : await generateResponseDraft(
+  // Generate AI draft when appropriate (skip blacklists/automated/system replies)
+  const shouldDraft = !autoBook.booked && shouldGenerateDraft(sentimentTag, fromEmail);
+  const draftResult = shouldDraft
+    ? await generateResponseDraft(
         lead.id,
         `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,
         sentimentTag,
         "email"
-      );
+      )
+    : { success: false as const, draftId: undefined as string | undefined };
 
-  console.log(`[LEAD_INTERESTED] New lead ${lead.id} marked as Interested`);
+  console.log(`[LEAD_INTERESTED] New lead ${lead.id} marked as ${sentimentTag}`);
 
   return NextResponse.json({
     success: true,
