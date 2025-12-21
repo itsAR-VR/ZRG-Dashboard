@@ -11,7 +11,7 @@
  *
  * Notes:
  * - Safe to re-run (idempotent).
- * - Uses Message max(sentAt) by direction to infer lastMessageDirection.
+ * - Uses aggregate SQL updates (fast, pgbouncer-friendly).
  */
 import * as dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
@@ -48,103 +48,73 @@ function parseArgs(argv: string[]) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const clientId = args.get("clientId");
-  const concurrency = Number(args.get("concurrency") || 25);
-
-  const messageWhereBase: any = clientId && typeof clientId === "string" ? { lead: { clientId } } : {};
+  const clientFilterSql =
+    clientId && typeof clientId === "string"
+      ? `JOIN "Lead" l ON l.id = m."leadId" WHERE l."clientId" = '${clientId.replace(/'/g, "''")}'`
+      : "";
 
   console.log(`[Rollups] Backfill starting${clientId ? ` for clientId=${clientId}` : ""}...`);
 
-  const [inbound, outbound] = await Promise.all([
-    prisma.message.groupBy({
-      by: ["leadId"],
-      where: { ...messageWhereBase, direction: "inbound" },
-      _max: { sentAt: true },
-    }),
-    prisma.message.groupBy({
-      by: ["leadId"],
-      where: { ...messageWhereBase, direction: "outbound" },
-      _max: { sentAt: true },
-    }),
-  ]);
+  const inboundCte = clientFilterSql
+    ? `FROM "Message" m ${clientFilterSql} AND m.direction = 'inbound'`
+    : `FROM "Message" m WHERE m.direction = 'inbound'`;
 
-  const rollups = new Map<
-    string,
-    { lastInboundAt: Date | null; lastOutboundAt: Date | null; lastMessageAt: Date | null; lastMessageDirection: string | null }
-  >();
+  const outboundCte = clientFilterSql
+    ? `FROM "Message" m ${clientFilterSql} AND m.direction = 'outbound'`
+    : `FROM "Message" m WHERE m.direction = 'outbound'`;
 
-  for (const row of inbound) {
-    rollups.set(row.leadId, {
-      lastInboundAt: row._max.sentAt ?? null,
-      lastOutboundAt: null,
-      lastMessageAt: row._max.sentAt ?? null,
-      lastMessageDirection: row._max.sentAt ? "inbound" : null,
-    });
-  }
+  const lastMessageFrom = clientFilterSql
+    ? `FROM "Message" m ${clientFilterSql}`
+    : `FROM "Message" m`;
 
-  for (const row of outbound) {
-    const existing = rollups.get(row.leadId);
-    const outboundAt = row._max.sentAt ?? null;
-    if (!existing) {
-      rollups.set(row.leadId, {
-        lastInboundAt: null,
-        lastOutboundAt: outboundAt,
-        lastMessageAt: outboundAt,
-        lastMessageDirection: outboundAt ? "outbound" : null,
-      });
-      continue;
-    }
+  const updatedInbound = await prisma.$executeRawUnsafe(`
+WITH inbound AS (
+  SELECT m."leadId" AS "leadId", MAX(m."sentAt") AS "sentAt"
+  ${inboundCte}
+  GROUP BY m."leadId"
+)
+UPDATE "Lead" l
+SET "lastInboundAt" = inbound."sentAt"
+FROM inbound
+WHERE l.id = inbound."leadId";
+`);
 
-    existing.lastOutboundAt = outboundAt;
-    const inboundAt = existing.lastInboundAt;
-    if (!inboundAt && outboundAt) {
-      existing.lastMessageAt = outboundAt;
-      existing.lastMessageDirection = "outbound";
-    } else if (inboundAt && !outboundAt) {
-      existing.lastMessageAt = inboundAt;
-      existing.lastMessageDirection = "inbound";
-    } else if (inboundAt && outboundAt) {
-      if (inboundAt.getTime() >= outboundAt.getTime()) {
-        existing.lastMessageAt = inboundAt;
-        existing.lastMessageDirection = "inbound";
-      } else {
-        existing.lastMessageAt = outboundAt;
-        existing.lastMessageDirection = "outbound";
-      }
-    }
-  }
+  console.log(`[Rollups] lastInboundAt updated rows: ${updatedInbound}`);
 
-  const entries = Array.from(rollups.entries());
-  console.log(`[Rollups] Updating ${entries.length} leads...`);
+  const updatedOutbound = await prisma.$executeRawUnsafe(`
+WITH outbound AS (
+  SELECT m."leadId" AS "leadId", MAX(m."sentAt") AS "sentAt"
+  ${outboundCte}
+  GROUP BY m."leadId"
+)
+UPDATE "Lead" l
+SET "lastOutboundAt" = outbound."sentAt"
+FROM outbound
+WHERE l.id = outbound."leadId";
+`);
 
-  let processed = 0;
-  let failed = 0;
+  console.log(`[Rollups] lastOutboundAt updated rows: ${updatedOutbound}`);
 
-  const queue = [...entries];
-  const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
-    while (queue.length > 0) {
-      const next = queue.shift();
-      if (!next) return;
-      const [leadId, data] = next;
-      try {
-        await prisma.lead.update({
-          where: { id: leadId },
-          data,
-        });
-      } catch (err) {
-        failed++;
-        console.error(`[Rollups] Failed leadId=${leadId}:`, err);
-      } finally {
-        processed++;
-        if (processed % 500 === 0) {
-          console.log(`[Rollups] Progress: ${processed}/${entries.length} (failed: ${failed})`);
-        }
-      }
-    }
-  });
+  const updatedLastMessage = await prisma.$executeRawUnsafe(`
+WITH last_message AS (
+  SELECT DISTINCT ON (m."leadId")
+    m."leadId" AS "leadId",
+    m."sentAt" AS "sentAt",
+    m.direction AS direction
+  ${lastMessageFrom}
+  ORDER BY m."leadId", m."sentAt" DESC
+)
+UPDATE "Lead" l
+SET
+  "lastMessageAt" = last_message."sentAt",
+  "lastMessageDirection" = last_message.direction
+FROM last_message
+WHERE l.id = last_message."leadId";
+`);
 
-  await Promise.all(workers);
+  console.log(`[Rollups] lastMessageAt/lastMessageDirection updated rows: ${updatedLastMessage}`);
 
-  console.log(`[Rollups] Done. Updated ${processed} leads (failed: ${failed}).`);
+  console.log("[Rollups] Done.");
 }
 
 main()
@@ -155,4 +125,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
-
