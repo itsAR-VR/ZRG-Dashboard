@@ -5,6 +5,7 @@ import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTe
 
 // Sentiment tags for classification
 export const SENTIMENT_TAGS = [
+  "New", // No inbound replies yet
   "Meeting Requested",
   "Call Requested",
   "Information Requested",
@@ -22,6 +23,7 @@ export type SentimentTag = (typeof SENTIMENT_TAGS)[number];
 
 // Map sentiment tags to lead statuses
 export const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
+  "New": "new",
   "Meeting Requested": "meeting-requested",
   "Call Requested": "qualified",
   "Information Requested": "qualified",
@@ -717,7 +719,7 @@ export async function classifySentiment(
   const { allLeadText, lastLeadText } = extractLeadTextFromTranscript(transcript);
   if (!lastLeadText.trim()) {
     // No lead reply found; never classify based on agent outbound-only context.
-    return "Neutral";
+    return "New";
   }
   const lastLeadCombined = (lastLeadText || "").replace(/\u00a0/g, " ").trim();
   const { subject: lastLeadSubject } = splitEmailSubjectPrefix(lastLeadCombined);
@@ -785,7 +787,12 @@ export async function classifySentiment(
                 type: "object",
                 additionalProperties: false,
                 properties: {
-                  classification: { type: "string", enum: [...SENTIMENT_TAGS] },
+                  // "New" is a pre-classification value for "no inbound replies"; the model
+                  // should never choose it when classifying an actual reply.
+                  classification: {
+                    type: "string",
+                    enum: SENTIMENT_TAGS.filter((t) => t !== "New"),
+                  },
                 },
                 required: ["classification"],
               },

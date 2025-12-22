@@ -37,14 +37,14 @@ function preClassifySentiment(
   messages: { direction: string }[]
 ): SentimentTag | null {
   if (messages.length === 0) {
-    return "Neutral";
+    return "New";
   }
 
   // Only auto-classify if lead has NEVER responded
   const hasInboundMessages = messages.some(m => m.direction === "inbound");
   if (!hasInboundMessages) {
-    console.log("[PreClassify] Lead has never responded → Neutral");
-    return "Neutral";
+    console.log("[PreClassify] Lead has never responded → New");
+    return "New";
   }
 
   // Lead has responded at some point - always use AI to analyze what they said
