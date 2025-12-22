@@ -142,7 +142,7 @@ export function Sidebar({
     activeChannels.length === 0 ? ["all"] : activeChannels;
 
   return (
-    <aside className="flex h-full w-64 flex-col border-r border-border bg-card">
+    <aside className="flex h-full w-[18.5rem] flex-col border-r border-border bg-card overflow-x-hidden">
       {/* Branding */}
       <div className="flex items-center gap-3 border-b border-border p-4">
         <img src="/images/zrg-logo-3.png" alt="ZRG Logo" className="h-8 w-auto" />
@@ -186,7 +186,7 @@ export function Sidebar({
       )}
 
       {/* Navigation */}
-      <nav className="flex-1 space-y-1 p-3 overflow-y-auto">
+      <nav className="flex-1 space-y-1 p-3 overflow-y-auto overflow-x-hidden">
         {navItems.map((item) => (
           <Button
             key={item.id}
@@ -210,12 +210,12 @@ export function Sidebar({
                 <Button
                   key={item.id}
                   variant={activeFilter === item.id ? "secondary" : "ghost"}
-                  className="w-full justify-between"
+                  className="w-full justify-between overflow-hidden"
                   onClick={() => onFilterChange(activeFilter === item.id ? "" : item.id)}
                 >
-                  <span className="flex items-center gap-3">
+                  <span className="flex items-center gap-3 min-w-0">
                     <item.icon className="h-4 w-4" />
-                    <span className="text-sm">{item.label}</span>
+                    <span className="text-sm truncate">{item.label}</span>
                   </span>
                   {/* Hide counts while loading to avoid showing stale/incorrect data */}
                   {!isLoadingCounts && item.count > 0 && (
