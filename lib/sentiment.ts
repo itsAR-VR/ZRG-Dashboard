@@ -118,7 +118,15 @@ function extractLeadTextFromTranscript(transcript: string): {
 
   // Many call sites pass a single inbound message body (no "Lead:" prefix).
   // In that case, treat the full transcript as lead text.
+  //
+  // IMPORTANT: If we see agent markers but no lead markers, the lead hasn't
+  // responded; do not treat the agent's outbound as lead text.
   if (leadLines.length === 0) {
+    const hasAgentMarkers = /\bAgent\s*:\s*/i.test(transcript);
+    if (hasAgentMarkers) {
+      return { allLeadText: "", lastLeadText: "" };
+    }
+
     const cleaned = transcript.trim();
     return { allLeadText: cleaned, lastLeadText: cleaned };
   }
@@ -460,15 +468,19 @@ function isOutOfOfficeMessage(text: string): boolean {
 
   // Strong "away" signals.
   const awaySignals =
-    /\b(out of office|ooo|on leave|on holiday|on vacation|away from (the )?office|away|unavailable|travell?ing|traveling|sabbatical|parental leave|maternity leave|paternity leave)\b/i;
+    /\b(out of office|ooo|on leave|on holiday|on vacation|away from (the )?office|away|unavailable|travell?ing|traveling|sabbatical|parental leave|maternity leave|paternity leave|annual leave)\b/i;
+
+  // Handle "on Annual Leave" (or similar) where a word appears between "on" and "leave".
+  const onLeaveSignals =
+    /\bon\s+(annual|parental|maternity|paternity|sick|medical)\s+leave\b/i;
 
   // Common OOO phrasing that doesn't always include the exact words "out of office".
   const availabilitySignals =
-    /\b(limited|intermittent|reduced)\s+(access|availability)\b|\b(have|has)\s+limited\s+access\b|\b(not|won['’]?t)\s+(be\s+)?(checking|monitoring|reading)\s+(my\s+)?(email|emails|inbox)\b|\b(apologies|sorry)\b.*\b(delay(ed)?\s+response|slow\s+to\s+respond)\b/i;
+    /\b(limited|intermittent|reduced)\s+(access|availability)\b|\b(have|has)\s+limited\s+access\b|\b(not|won['’]?t)\s+(be\s+)?(checking|monitoring|reading)\s+(my\s+)?(email|emails|inbox)\b|\b(emails?\s+will\s+not\s+be\s+monitor(?:ed|ing)|will\s+not\s+be\s+monitor(?:ed|ing))\b|\b(apologies|sorry)\b.*\b(delay(ed)?\s+response|slow\s+to\s+respond)\b/i;
 
   // Date/return framing commonly found in OOO messages.
   const returnSignals =
-    /\b(away|out|off)\s+(until|till)\b|\b(back|return(ing)?|return)\s+(on|at|in)\b|\b(i('|’)?ll|i will)\s+(be\s+)?back\b|\b(resume|resuming)\b.*\b(on|at)\b/i;
+    /\b(away|out|off)\s+(until|till)\b|\b(back|return(ing)?|return)\s+(on|at|in)\b|\b(return(ing)?\s+to\s+work|back\s+to\s+work)\b|\b(i('|’)?ll|i will)\s+(be\s+)?back\b|\b(resume|resuming)\b.*\b(on|at)\b/i;
 
   // Routing for urgent matters is a common OOO/auto-reply pattern and should not
   // be treated as "Call Requested".
@@ -476,7 +488,7 @@ function isOutOfOfficeMessage(text: string): boolean {
     /\b(if|for)\s+(your\s+)?(enquir(y|ies)|inquir(y|ies)|matter|request)\s+is\s+urgent\b|\bfor\s+urgent\s+(matters?|enquir(y|ies)|inquir(y|ies))\b|\burgent(ly)?\b.*\b(contact|call|reach|phone|ring)\b|\bplease\s+contact\b/i;
 
   const hasSubjectAutoReply = subject ? subjectAutoReply.test(subject) : false;
-  const hasAway = candidates.some((t) => awaySignals.test(t));
+  const hasAway = candidates.some((t) => awaySignals.test(t) || onLeaveSignals.test(t));
   const hasAvailability = candidates.some((t) => availabilitySignals.test(t));
   const hasReturnFrame = candidates.some((t) => returnSignals.test(t));
   const hasUrgentRouting = candidates.some((t) => urgentRouting.test(t));
@@ -615,7 +627,27 @@ function isNotInterestedMessage(text: string): boolean {
   const normalized = text.trim().toLowerCase();
   if (!normalized) return false;
 
-  if (/\b(not interested|no thanks|no thank you|no thx|wrong number|already have|not a fit|not relevant)\b/i.test(normalized)) {
+  if (
+    /\b(not interested|no thanks|no thank you|no thx|wrong number|already have|not a fit|not relevant)\b/i.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+
+  // "Don't follow up" / "stop contacting" is a decline even if the thread contains
+  // the agent asking for a call.
+  const dontFollowUpOrContact =
+    /\b(don['’]?t|dont|do not)\s+(follow up|reach out|contact|email|call|text|message)\b/i;
+  const stopFollowingUp =
+    /\b(stop)\s+(following up|follow(?:ing)?\s*up|contacting|emailing|calling|texting|messaging)\b/i;
+  const noNeedTo =
+    /\bno\s+need\s+to\s+(follow up|reach out|contact)\b/i;
+
+  if (dontFollowUpOrContact.test(normalized) || stopFollowingUp.test(normalized) || noNeedTo.test(normalized)) {
+    // If they are *also* asking a question or proposing times, treat that as engagement instead.
+    if (normalized.includes("?")) return false;
+    if (hasScheduleOrTimeSignal(normalized)) return false;
     return true;
   }
 
@@ -683,6 +715,10 @@ export async function classifySentiment(
 
   const maxRetries = opts.maxRetries ?? 3;
   const { allLeadText, lastLeadText } = extractLeadTextFromTranscript(transcript);
+  if (!lastLeadText.trim()) {
+    // No lead reply found; never classify based on agent outbound-only context.
+    return "Neutral";
+  }
   const lastLeadCombined = (lastLeadText || "").replace(/\u00a0/g, " ").trim();
   const { subject: lastLeadSubject } = splitEmailSubjectPrefix(lastLeadCombined);
   const lastLeadBody = stripQuotedEmailThread(lastLeadCombined) || lastLeadCombined;
