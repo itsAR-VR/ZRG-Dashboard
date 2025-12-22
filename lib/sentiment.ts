@@ -466,11 +466,14 @@ function isOutOfOfficeMessage(text: string): boolean {
   const { subject, body } = splitEmailSubjectPrefix(combined);
   const candidates = [body, subject, combined].filter(Boolean);
 
-  const subjectAutoReply = /\b(automatic reply|auto[-\s]?reply|auto[-\s]?response|out of office|ooo|autoreply)\b/i;
+  // The subject is one of the strongest signals for OOO/autoreplies.
+  // Important variants include: "Out of office", "Out of the office", "Out-of-office".
+  const subjectAutoReply =
+    /\b(automatic reply|auto[-\s]?reply|auto[-\s]?response|out[-\s]?of[-\s]?(the\s+)?office|ooo|autoreply)\b/i;
 
   // Strong "away" signals.
   const awaySignals =
-    /\b(out of office|ooo|on leave|on holiday|on vacation|away from (the )?office|away|unavailable|travell?ing|traveling|sabbatical|parental leave|maternity leave|paternity leave|annual leave)\b/i;
+    /\b(out[-\s]?of[-\s]?(the\s+)?office|ooo|on leave|on holiday|on vacation|away from (the )?office|away|unavailable|travell?ing|traveling|sabbatical|parental leave|maternity leave|paternity leave|annual leave)\b/i;
 
   // Handle "on Annual Leave" (or similar) where a word appears between "on" and "leave".
   const onLeaveSignals =
@@ -558,14 +561,22 @@ function isCallRequestedMessage(text: string): boolean {
   // Explicit "don't call" / "do not call" should not be treated as call requested
   if (/\b(don['’]?t|dont|do not)\s+call\b/i.test(normalized)) return false;
 
+  // Auto-replies often include "phone/call the office" or "call reception" with a number.
+  // That is NOT the lead requesting a call.
+  if (/\b(call|ring|phone)\b/i.test(normalized) && /\b(the\s+)?(office|reception|receptionist|front\s+desk|switchboard|team|main\s+line)\b/i.test(normalized)) {
+    return false;
+  }
+
   // Only treat as "Call Requested" if the lead explicitly wants a PHONE call.
   // A phone number in a signature must not trigger this by itself.
   const explicitCallRequest =
-    /\b(call|ring|phone)\b/i.test(normalized) && /\b(me|us)\b/i.test(normalized);
+    /\b(call|ring|phone)\s+(me|us)\b/i.test(normalized) ||
+    /\b(give|give\s+me|give\s+us)\s+(a\s+)?call\b/i.test(normalized) ||
+    /\b(call|ring|phone)\b.*\b(me|us)\b/i.test(normalized) && /\bplease\b/i.test(normalized);
+
   const reachMeAt =
-    /\b(reach|call|ring|phone)\b/i.test(normalized) &&
-    /\b(me|us)\b/i.test(normalized) &&
-    /\b(at|on)\b/i.test(normalized);
+    /\b(reach|call|ring|phone)\s+(me|us)\s+(at|on)\b/i.test(normalized) ||
+    /\b(call|ring|phone)\s+(me|us)\s+(at|on)\b/i.test(normalized);
 
   const hasPhone = PHONE_PATTERN.test(normalized);
   const looksLikeSignature =
@@ -798,10 +809,12 @@ export async function classifySentiment(
               },
             },
           },
-          reasoning: { effort: "minimal" },
+          // Use "medium" reasoning to reduce edge-case misclassifications
+          // (especially for noisy email threads and auto-replies).
+          reasoning: { effort: "medium" },
           // `max_output_tokens` includes reasoning tokens; keep headroom so the
           // structured JSON body isn't empty/truncated.
-          max_output_tokens: 240,
+          max_output_tokens: 480,
         },
       });
 
