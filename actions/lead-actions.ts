@@ -257,6 +257,7 @@ export async function getConversations(clientId?: string | null): Promise<{
  * @param clientId - Optional client ID to filter by workspace
  */
 export async function getInboxCounts(clientId?: string | null): Promise<{
+  allResponses: number;
   requiresAttention: number;
   previouslyRequiredAttention: number;
   awaitingReply: number;
@@ -275,7 +276,16 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     ];
     const clientFilter = clientId ? { clientId } : {};
 
-    const [attention, previousAttention, total, blacklisted, needsRepair] = await Promise.all([
+    const [allResponses, attention, previousAttention, total, blacklisted, needsRepair] = await Promise.all([
+      // All inbound replies (latest message is inbound)
+      prisma.lead.count({
+        where: {
+          ...clientFilter,
+          ...snoozeFilter,
+          lastInboundAt: { not: null },
+          lastMessageDirection: "inbound",
+        },
+      }),
       // Count leads requiring attention (excluding blacklisted)
       prisma.lead.count({
         where: {
@@ -324,6 +334,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     ]);
 
     return {
+      allResponses,
       requiresAttention: attention,
       previouslyRequiredAttention: previousAttention,
       awaitingReply: Math.max(0, total - attention),
@@ -333,6 +344,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
   } catch (error) {
     console.error("Failed to get inbox counts:", error);
     return {
+      allResponses: 0,
       requiresAttention: 0,
       previouslyRequiredAttention: 0,
       awaitingReply: 0,
@@ -480,7 +492,7 @@ export interface ConversationsCursorOptions {
   sentimentTags?: string[];
   smsCampaignId?: string;
   smsCampaignUnattributed?: boolean;
-  filter?: "attention" | "previous_attention" | "drafts" | "needs_repair" | "all";
+  filter?: "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "all";
 }
 
 export interface ConversationsCursorResult {
@@ -626,7 +638,12 @@ export async function getConversationsCursor(
     }
 
     // Special filter presets
-    if (filter === "attention") {
+    if (filter === "responses") {
+      whereConditions.push({
+        lastInboundAt: { not: null },
+        lastMessageDirection: "inbound",
+      });
+    } else if (filter === "attention") {
       whereConditions.push({
         sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
         lastMessageDirection: "inbound",
@@ -797,7 +814,12 @@ export async function getConversationsFromEnd(
       whereConditions.push({ smsCampaignId });
     }
 
-    if (filter === "attention") {
+    if (filter === "responses") {
+      whereConditions.push({
+        lastInboundAt: { not: null },
+        lastMessageDirection: "inbound",
+      });
+    } else if (filter === "attention") {
       whereConditions.push({
         sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
         lastMessageDirection: "inbound",

@@ -64,6 +64,7 @@ const navItems = [
 ]
 
 interface FilterCounts {
+  allResponses: number
   attention: number
   previousAttention: number
   needsRepair: number
@@ -99,6 +100,7 @@ export function Sidebar({
       
       if (!cancelled) {
         setCounts({
+          allResponses: result.allResponses,
           attention: result.requiresAttention,
           previousAttention: result.previouslyRequiredAttention,
           needsRepair: result.needsRepair,
@@ -118,9 +120,10 @@ export function Sidebar({
   }, [activeWorkspace])
 
   const filterItems = [
+    { id: "responses", label: "All Responses", icon: MessageSquare, count: counts?.allResponses ?? 0, variant: "outline" as const },
     { id: "attention", label: "Requires Attention", icon: AlertCircle, count: counts?.attention ?? 0, variant: "destructive" as const },
-    { id: "previous_attention", label: "Previously Required Attention", icon: FileEdit, count: counts?.previousAttention ?? 0, variant: "warning" as const },
     { id: "needs_repair", label: "Needs Repair", icon: Wrench, count: counts?.needsRepair ?? 0, variant: "outline" as const },
+    { id: "previous_attention", label: "Previously Required Attention", icon: FileEdit, count: counts?.previousAttention ?? 0, variant: "warning" as const },
   ]
 
   const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)

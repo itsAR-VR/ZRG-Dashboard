@@ -186,7 +186,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
         ? activeSmsClient
         : undefined,
     smsCampaignUnattributed: activeSmsClient === "unattributed" ? true : undefined,
-    filter: activeFilter as "attention" | "previous_attention" | "drafts" | "needs_repair" | "all" | undefined,
+    filter: activeFilter as "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "all" | undefined,
     limit: 50,
   }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter]);
 
