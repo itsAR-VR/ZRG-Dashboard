@@ -737,6 +737,66 @@ function stripEmailSteps(steps: Omit<FollowUpStepData, "id">[]): Omit<FollowUpSt
   return filtered.map((step, idx) => ({ ...step, stepOrder: idx + 1 }));
 }
 
+async function isLinkedInConfigured(clientId: string): Promise<boolean> {
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: { unipileAccountId: true },
+  });
+  return Boolean(client?.unipileAccountId);
+}
+
+function defaultNoResponseLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
+  return [
+    // DAY 2 - LinkedIn connection request (note)
+    {
+      stepOrder: 1, // temporary; will be renumbered
+      dayOffset: 2,
+      channel: "linkedin",
+      messageTemplate: `Hi {firstName} — quick follow-up about {result}. Happy to share details if you're still exploring.`,
+      subject: null,
+      condition: { type: "always" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 5 - LinkedIn DM (only once connected)
+    {
+      stepOrder: 1, // temporary; will be renumbered
+      dayOffset: 5,
+      channel: "linkedin",
+      messageTemplate: `Hey {firstName} — circling back. If helpful, I have {availability}. Or grab a time here: {calendarLink}`,
+      subject: null,
+      condition: { type: "linkedin_connected" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 7 - Final LinkedIn DM (only once connected)
+    {
+      stepOrder: 1, // temporary; will be renumbered
+      dayOffset: 7,
+      channel: "linkedin",
+      messageTemplate: `Last touch, {firstName} — should I close the loop on this, or do you still want to chat about {result}?`,
+      subject: null,
+      condition: { type: "linkedin_connected" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+  ];
+}
+
+function sortStepsForScheduling<T extends { dayOffset: number; channel: string }>(steps: T[]): T[] {
+  const priority: Record<string, number> = {
+    email: 1,
+    sms: 2,
+    linkedin: 3,
+    ai_voice: 4,
+  };
+  return [...steps].sort((a, b) => {
+    const dayDiff = a.dayOffset - b.dayOffset;
+    if (dayDiff !== 0) return dayDiff;
+    return (priority[a.channel] ?? 999) - (priority[b.channel] ?? 999);
+  });
+}
+
 /**
  * Create the default "No Response" Day 2/5/7 follow-up sequence for a workspace
  * Triggered when lead doesn't respond to initial outreach
@@ -838,7 +898,15 @@ Where should we go from here?`,
   ];
 
   const airtableMode = await isAirtableModeEnabled(clientId);
-  const steps = airtableMode ? stripEmailSteps(noResponseSteps) : noResponseSteps;
+  const hasLinkedIn = airtableMode ? await isLinkedInConfigured(clientId) : false;
+  const steps = airtableMode
+    ? (() => {
+        const base = stripEmailSteps(noResponseSteps);
+        if (!hasLinkedIn) return base;
+        const augmented = sortStepsForScheduling([...base, ...defaultNoResponseLinkedInSteps()]);
+        return augmented.map((s, idx) => ({ ...s, stepOrder: idx + 1 }));
+      })()
+    : noResponseSteps;
 
   return createFollowUpSequence({
     clientId,
@@ -1037,6 +1105,8 @@ export async function applyAirtableModeToDefaultSequences(opts: {
       return { success: true, updated: 0 };
     }
 
+    const hasLinkedIn = await isLinkedInConfigured(opts.clientId);
+
     const sequences = await prisma.followUpSequence.findMany({
       where: {
         clientId: opts.clientId,
@@ -1049,34 +1119,115 @@ export async function applyAirtableModeToDefaultSequences(opts: {
 
     for (const sequence of sequences) {
       const original = sequence.steps;
-      const remaining = original.filter((s) => s.channel !== "email");
-      if (remaining.length === original.length) {
-        continue;
-      }
+      const baseExisting = original.filter((s) => s.channel !== "email");
+      const hasEmailSteps = baseExisting.length !== original.length;
+      const hasLinkedInSteps = baseExisting.some((s) => s.channel === "linkedin");
+      const shouldAddNoResponseLinkedIn =
+        sequence.name === DEFAULT_SEQUENCE_NAMES.noResponse && hasLinkedIn && !hasLinkedInSteps;
+      const shouldMutate = hasEmailSteps || shouldAddNoResponseLinkedIn;
+      if (!shouldMutate) continue;
 
       await prisma.$transaction(async (tx) => {
-        // Capture old stepOrder values BEFORE we renumber anything in the DB.
+        const toCreate = shouldAddNoResponseLinkedIn ? defaultNoResponseLinkedInSteps() : [];
+
+        const desired = sortStepsForScheduling([
+          ...baseExisting.map((s) => ({
+            kind: "existing" as const,
+            id: s.id,
+            oldStepOrder: s.stepOrder,
+            dayOffset: s.dayOffset,
+            channel: s.channel,
+            messageTemplate: s.messageTemplate,
+            subject: s.subject,
+            condition: s.condition,
+            requiresApproval: s.requiresApproval,
+            fallbackStepId: s.fallbackStepId,
+          })),
+          ...toCreate.map((s) => ({
+            kind: "new" as const,
+            dayOffset: s.dayOffset,
+            channel: s.channel,
+            messageTemplate: s.messageTemplate,
+            subject: s.subject,
+            condition: s.condition,
+            requiresApproval: s.requiresApproval,
+            fallbackStepId: s.fallbackStepId,
+          })),
+        ]);
+
+        // Capture old stepOrder values BEFORE we change anything in the DB.
         // We use this snapshot to remap in-flight FollowUpInstance.currentStep safely.
-        const remainingOldOrders = remaining.map((s) => s.stepOrder);
+        const remainingOldOrders = desired
+          .filter((d) => d.kind === "existing")
+          .map((d) => (d.kind === "existing" ? d.oldStepOrder : null))
+          .filter((v): v is number => typeof v === "number");
         const orderMap = new Map<number, number>();
-        for (let i = 0; i < remainingOldOrders.length; i++) {
-          orderMap.set(remainingOldOrders[i]!, i + 1);
+        for (let i = 0; i < desired.length; i++) {
+          const d = desired[i]!;
+          if (d.kind === "existing") {
+            orderMap.set(d.oldStepOrder!, i + 1);
+          }
         }
 
-        await tx.followUpStep.deleteMany({
-          where: { sequenceId: sequence.id, channel: "email" },
-        });
+        if (hasEmailSteps) {
+          await tx.followUpStep.deleteMany({
+            where: { sequenceId: sequence.id, channel: "email" },
+          });
+        }
 
-        // Renumber remaining steps to keep stepOrder sequential (UI + instance.currentStep assume this).
-        for (let i = 0; i < remaining.length; i++) {
+        // Stage existing steps to non-conflicting stepOrder values
+        const existingInDesired = desired.filter((d) => d.kind === "existing") as Array<
+          Extract<(typeof desired)[number], { kind: "existing" }>
+        >;
+        for (let i = 0; i < existingInDesired.length; i++) {
           await tx.followUpStep.update({
-            where: { id: remaining[i]!.id },
+            where: { id: existingInDesired[i]!.id },
             data: { stepOrder: 1000 + i },
           });
         }
-        for (let i = 0; i < remaining.length; i++) {
+
+        // Create new steps (if any) with non-conflicting stepOrder values
+        const createdIds: string[] = [];
+        for (let i = 0; i < desired.length; i++) {
+          const d = desired[i]!;
+          if (d.kind !== "new") continue;
+          const created = await tx.followUpStep.create({
+            data: {
+              sequenceId: sequence.id,
+              stepOrder: 2000 + i,
+              dayOffset: d.dayOffset,
+              channel: d.channel,
+              messageTemplate: d.messageTemplate,
+              subject: d.subject,
+              condition: d.condition ? JSON.stringify(d.condition) : null,
+              requiresApproval: d.requiresApproval,
+              fallbackStepId: d.fallbackStepId,
+            },
+            select: { id: true },
+          });
+          createdIds.push(created.id);
+        }
+
+        // Final renumber pass (two-phase to satisfy @@unique([sequenceId, stepOrder]))
+        const resolvedIds: string[] = [];
+        let createdIdx = 0;
+        for (const d of desired) {
+          if (d.kind === "existing") {
+            resolvedIds.push(d.id);
+          } else {
+            resolvedIds.push(createdIds[createdIdx++]!);
+          }
+        }
+
+        for (let i = 0; i < resolvedIds.length; i++) {
           await tx.followUpStep.update({
-            where: { id: remaining[i]!.id },
+            where: { id: resolvedIds[i]! },
+            data: { stepOrder: 3000 + i },
+          });
+        }
+        for (let i = 0; i < resolvedIds.length; i++) {
+          await tx.followUpStep.update({
+            where: { id: resolvedIds[i]! },
             data: { stepOrder: i + 1 },
           });
         }
@@ -1090,8 +1241,7 @@ export async function applyAirtableModeToDefaultSequences(opts: {
 
         for (const instance of instances) {
           if (!instance.currentStep || instance.currentStep <= 0) continue;
-          const lastOld =
-            remainingOldOrders.filter((o) => o <= instance.currentStep).pop() ?? 0;
+          const lastOld = remainingOldOrders.filter((o) => o <= instance.currentStep).pop() ?? 0;
           const newCurrent = lastOld ? orderMap.get(lastOld) ?? 0 : 0;
           if (newCurrent !== instance.currentStep) {
             await tx.followUpInstance.update({

@@ -1227,7 +1227,8 @@ export async function resumeSnoozedFollowUps(opts?: {
 
 /**
  * Resume follow-up instances after a lead goes "ghost" again.
- * Policy: if the most recent inbound message is older than 7 days, resume at the next step.
+ * Policy: only resume if the most recent message is outbound (we're the latest toucher),
+ * and the most recent inbound message is older than N days.
  */
 export async function resumeGhostedFollowUps(opts?: {
   days?: number;
@@ -1263,6 +1264,17 @@ export async function resumeGhostedFollowUps(opts?: {
       if (instance.lead.snoozedUntil && instance.lead.snoozedUntil > new Date()) {
         continue;
       }
+      const lastMessage = await prisma.message.findFirst({
+        where: { leadId: instance.leadId },
+        orderBy: { sentAt: "desc" },
+        select: { direction: true },
+      });
+
+      // Never resume if the lead is the most recent sender.
+      if (!lastMessage || lastMessage.direction !== "outbound") {
+        continue;
+      }
+
       const lastInbound = await prisma.message.findFirst({
         where: { leadId: instance.leadId, direction: "inbound" },
         orderBy: { sentAt: "desc" },

@@ -120,8 +120,8 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
       ghlAppointmentId: true,
       followUpInstances: {
         where: { status: { in: ["active", "paused"] } },
-        select: { id: true },
-        take: 1,
+        select: { id: true, status: true, pausedReason: true, sequenceId: true, currentStep: true },
+        take: 20,
       },
     },
   });
@@ -130,7 +130,59 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
   if (lead.status === "blacklisted" || lead.sentimentTag === "Blacklist") return { started: false, reason: "blacklisted" };
   if (lead.ghlAppointmentId) return { started: false, reason: "already_booked" };
-  if (lead.followUpInstances.length > 0) return { started: false, reason: "instance_already_active" };
+
+  const activeInstances = lead.followUpInstances.filter((i) => i.status === "active");
+  if (activeInstances.length > 0) return { started: false, reason: "instance_already_active" };
+
+  const pausedInstances = lead.followUpInstances.filter((i) => i.status === "paused");
+  const pausedReplied = pausedInstances.filter((i) => i.pausedReason === "lead_replied");
+  const pausedOther = pausedInstances.filter((i) => i.pausedReason !== "lead_replied");
+
+  // Policy: if a no-response instance is paused due to a lead reply, re-enable it on the next outbound touch.
+  // This ensures we only auto-follow up when the latest touch is outbound (from us).
+  if (pausedReplied.length > 0 && pausedOther.length === 0) {
+    const startAt = opts.outboundAt || new Date();
+    let resumed = 0;
+
+    for (const instance of pausedReplied) {
+      const nextStep = await prisma.followUpStep.findFirst({
+        where: { sequenceId: instance.sequenceId, stepOrder: { gt: instance.currentStep } },
+        orderBy: { stepOrder: "asc" },
+        select: { dayOffset: true },
+      });
+
+      // If the sequence is already complete, mark it completed so a fresh instance can be started on this outbound.
+      if (!nextStep) {
+        await prisma.followUpInstance.update({
+          where: { id: instance.id },
+          data: {
+            status: "completed",
+            pausedReason: null,
+            nextStepDue: null,
+            completedAt: new Date(),
+          },
+        });
+        continue;
+      }
+
+      const nextStepDue = new Date(startAt.getTime() + nextStep.dayOffset * 24 * 60 * 60 * 1000);
+      await prisma.followUpInstance.update({
+        where: { id: instance.id },
+        data: {
+          status: "active",
+          pausedReason: null,
+          nextStepDue,
+        },
+      });
+      resumed++;
+    }
+
+    if (resumed > 0) {
+      return { started: true, reason: "resumed_on_outbound" };
+    }
+  }
+
+  if (pausedInstances.length > 0) return { started: false, reason: "instance_already_active" };
 
   // Policy: only start follow-up sequencing for leads who have replied via EMAIL at least once.
   // This prevents "no response" sequences from running on leads with only outbound touches.

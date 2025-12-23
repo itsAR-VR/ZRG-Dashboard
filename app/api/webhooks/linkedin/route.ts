@@ -12,6 +12,7 @@ import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
+import { pauseFollowUpsOnReply } from "@/lib/followup-engine";
 import { toStoredPhone } from "@/lib/phone-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 
@@ -258,6 +259,11 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
     previousSentiment: lead.sentimentTag,
     newSentiment: sentimentTag,
   });
+
+  // Any inbound message pauses active no-response follow-up sequences.
+  pauseFollowUpsOnReply(lead.id).catch((err) =>
+    console.error("[LinkedIn Webhook] Failed to pause follow-ups on reply:", err)
+  );
 
   // Trigger Clay enrichment for phone if:
   // 1. Sentiment is positive (Meeting Requested, Call Requested, Info Requested, Interested)
