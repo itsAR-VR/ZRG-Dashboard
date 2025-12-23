@@ -2,6 +2,7 @@ import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
+import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 
 // Sentiment tags for classification
 export const SENTIMENT_TAGS = [
@@ -47,6 +48,12 @@ export const POSITIVE_SENTIMENTS = [
 ] as const;
 
 export type PositiveSentiment = (typeof POSITIVE_SENTIMENTS)[number];
+
+const SENTIMENT_MIN_OUTPUT_TOKENS = 480;
+const SENTIMENT_MAX_OUTPUT_TOKENS = (() => {
+  const raw = Number(process.env.AI_SENTIMENT_MAX_OUTPUT_TOKENS || 3500);
+  return Number.isFinite(raw) ? Math.max(SENTIMENT_MIN_OUTPUT_TOKENS, Math.trunc(raw)) : 3500;
+})();
 
 /**
  * Check if a sentiment tag is positive (triggers enrichment)
@@ -522,6 +529,9 @@ function isAutomatedReplyMessage(text: string): boolean {
     /\b(ticket (number|#))\b/i,
     /\b(case (number|#))\b/i,
     /\b(please be assured|will be dealt with shortly|will be handled shortly|we will deal with)\b/i,
+    // "Account no longer checked / retired" responses should never be treated as positive intent.
+    /\b(email\s+account|this\s+email)\b.*\b(no\s+longer\s+be\s+checked|will\s+no\s+longer\s+be\s+checked|not\s+be\s+checked)\b/i,
+    /\b(retired|retirement)\b.*\b(email|inbox|account)\b/i,
   ];
 
   if (strongSignals.some((re) => re.test(normalized))) return true;
@@ -772,6 +782,19 @@ export async function classifySentiment(
     2
   );
 
+  const modelInput = [{ role: "user", content: modelInputPayload }] as const;
+  const budget = await computeAdaptiveMaxOutputTokens({
+    model: "gpt-5-mini",
+    instructions: systemPrompt,
+    input: modelInput as any,
+    // Ensure enough headroom for reasoning on long/noisy threads.
+    min: SENTIMENT_MIN_OUTPUT_TOKENS,
+    max: SENTIMENT_MAX_OUTPUT_TOKENS,
+    overheadTokens: 256,
+    // Use the Responses input-tokens endpoint when available for accurate sizing.
+    preferApiCount: true,
+  });
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const { response, interactionId } = await runResponseWithInteraction({
@@ -782,12 +805,7 @@ export async function classifySentiment(
         params: {
           model: "gpt-5-mini",
           instructions: systemPrompt,
-          input: [
-            {
-              role: "user",
-              content: modelInputPayload,
-            },
-          ],
+          input: modelInput as any,
           text: {
             verbosity: "low",
             format: {
@@ -814,7 +832,7 @@ export async function classifySentiment(
           reasoning: { effort: "medium" },
           // `max_output_tokens` includes reasoning tokens; keep headroom so the
           // structured JSON body isn't empty/truncated.
-          max_output_tokens: 480,
+          max_output_tokens: budget.maxOutputTokens,
         },
       });
 

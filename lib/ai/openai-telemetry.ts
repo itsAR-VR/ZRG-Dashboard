@@ -1,14 +1,11 @@
 import "server-only";
 
 import "@/lib/server-dns";
-import OpenAI from "openai";
+import type OpenAI from "openai";
 import { prisma } from "@/lib/prisma";
 import { estimateCostUsd } from "@/lib/ai/pricing";
 import { pruneOldAIInteractionsMaybe } from "@/lib/ai/retention";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+import { openai } from "@/lib/ai/openai-client";
 
 function isUnsupportedTemperatureError(error: unknown): boolean {
   const anyErr = error as any;
