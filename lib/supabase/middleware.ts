@@ -41,6 +41,8 @@ export async function updateSession(request: NextRequest) {
   const isAuthPage = request.nextUrl.pathname.startsWith("/auth");
   const isApiRoute = request.nextUrl.pathname.startsWith("/api");
   const isPublicRoute = isAuthPage || isApiRoute;
+  const isAuthCallbackRoute = request.nextUrl.pathname === "/auth/callback";
+  const isResetPasswordRoute = request.nextUrl.pathname === "/auth/reset-password";
 
   if (!user && !isPublicRoute) {
     // No user, redirect to login
@@ -49,7 +51,7 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  if (user && isAuthPage) {
+  if (user && isAuthPage && !isAuthCallbackRoute && !isResetPasswordRoute) {
     // User is logged in but trying to access auth pages, redirect to home
     const url = request.nextUrl.clone();
     url.pathname = "/";
@@ -58,7 +60,6 @@ export async function updateSession(request: NextRequest) {
 
   return supabaseResponse;
 }
-
 
 
 

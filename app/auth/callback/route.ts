@@ -7,11 +7,14 @@ export async function GET(request: NextRequest) {
   
   // Handle OAuth callback (has 'code' parameter)
   const code = searchParams.get("code");
-  const next = searchParams.get("next") ?? "/";
+  let next = searchParams.get("next") ?? "/";
   
   // Handle email verification callback (has 'token_hash' and 'type' parameters)
   const token_hash = searchParams.get("token_hash");
   const type = searchParams.get("type") as "signup" | "recovery" | "invite" | "email" | null;
+  if (type === "recovery" && (!next || next === "/")) {
+    next = "/auth/reset-password";
+  }
 
   const supabase = await createClient();
 
@@ -33,8 +36,8 @@ export async function GET(request: NextRequest) {
     });
 
     if (!error) {
-      // Successfully verified - redirect to dashboard
-      return NextResponse.redirect(`${origin}/`);
+      // Successfully verified - recovery flows should land on the reset screen
+      return NextResponse.redirect(`${origin}${type === "recovery" ? "/auth/reset-password" : "/"}`);
     }
     console.error("Email verification error:", error);
     return NextResponse.redirect(`${origin}/auth/error?message=${encodeURIComponent(error.message)}`);

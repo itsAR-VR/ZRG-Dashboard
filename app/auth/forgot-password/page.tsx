@@ -22,7 +22,9 @@ export default function ForgotPasswordPage() {
 
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/auth/reset-password`,
+        // Supabase SSR clients use PKCE flow, so we need to land on the server
+        // callback route to exchange the `code` for a session cookie.
+        redirectTo: `${window.location.origin}/auth/callback?next=/auth/reset-password`,
       });
 
       if (error) {
