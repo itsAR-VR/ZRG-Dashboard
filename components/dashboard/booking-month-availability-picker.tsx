@@ -32,6 +32,12 @@ function getTimePartFromLabel(label: string): string {
   return timePart || label
 }
 
+function splitTimeLabel(timePart: string): { time: string; meta: string | null } {
+  const match = timePart.match(/^(.*?)(\s*\((your time)\))$/i)
+  if (!match) return { time: timePart, meta: null }
+  return { time: (match[1] ?? timePart).trim(), meta: match[2]?.trim() ?? null }
+}
+
 function parseDayFromLabel(label: string): { monthIndex: number; day: number } | null {
   const idx = label.lastIndexOf(' on ')
   if (idx < 0) return null
@@ -166,7 +172,7 @@ export function BookingMonthAvailabilityPicker({
   const activeSlots = activeGroup?.slots ?? []
 
   return (
-    <div className="grid gap-4 md:grid-cols-[360px_1fr]">
+    <div className="grid gap-4 md:grid-cols-[420px_minmax(0,1fr)] xl:grid-cols-[460px_minmax(0,1fr)]">
       <div className="rounded-lg border bg-background">
         <div className="border-b px-4 py-3">
           <div className="text-sm font-medium">Choose a day</div>
@@ -203,15 +209,15 @@ export function BookingMonthAvailabilityPicker({
         />
       </div>
 
-      <div className="rounded-lg border bg-background">
-        <div className="flex items-start justify-between gap-4 border-b px-4 py-3">
+      <div className="min-w-0 rounded-lg border bg-background">
+        <div className="flex items-start justify-between gap-6 border-b px-4 py-3">
           <div>
             <div className="text-sm font-medium">Choose a time</div>
             <div className="text-xs text-muted-foreground">
               {activeDay ? getShortDayLabel(activeDay) : 'Select a day to see times'}
             </div>
           </div>
-          <div className="hidden md:flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="hidden lg:flex items-center gap-2 text-xs text-muted-foreground">
             <Info className="h-4 w-4" />
             <span>Times match the slot labels shown below</span>
           </div>
@@ -220,34 +226,42 @@ export function BookingMonthAvailabilityPicker({
         {activeDay && activeSlots.length === 0 ? (
           <div className="p-6 text-sm text-muted-foreground">No slots for this day.</div>
         ) : (
-          <div className="max-h-[55vh] overflow-y-auto p-4">
+          <div className="max-h-[60vh] overflow-y-auto p-4">
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {activeSlots.map((slot) => (
-                <button
-                  key={slot.datetime}
-                  onClick={() => onSelectSlot(slot.datetime)}
-                  className={cn(
-                    'w-full rounded-lg border p-3 text-left transition-all',
-                    selectedSlot === slot.datetime
-                      ? 'border-primary bg-primary/10 ring-1 ring-primary'
-                      : 'border-border hover:border-primary/50 hover:bg-muted/50'
-                  )}
-                >
-                  <div className="flex items-start justify-between gap-2">
+              {activeSlots.map((slot) => {
+                const { time, meta } = splitTimeLabel(getTimePartFromLabel(slot.label))
+                return (
+                  <button
+                    key={slot.datetime}
+                    onClick={() => onSelectSlot(slot.datetime)}
+                    className={cn(
+                      'w-full rounded-lg border p-3 text-left transition-all',
+                      selectedSlot === slot.datetime
+                        ? 'border-primary bg-primary/10 ring-1 ring-primary'
+                        : 'border-border hover:border-primary/50 hover:bg-muted/50'
+                    )}
+                  >
                     <div className="flex items-start gap-2">
-                      <Clock className="mt-0.5 h-4 w-4 text-muted-foreground" />
-                      <div>
-                        <div className="font-medium leading-tight">
-                          {getTimePartFromLabel(slot.label)}
+                      <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <div className="font-medium leading-tight tabular-nums">
+                            {time}
+                          </div>
+                          {meta ? (
+                            <div className="rounded-full border px-2 py-0.5 text-[11px] leading-none text-muted-foreground">
+                              {meta}
+                            </div>
+                          ) : null}
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">
                           Offered: {slot.offeredCount}
                         </div>
                       </div>
                     </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                )
+              })}
             </div>
           </div>
         )}
