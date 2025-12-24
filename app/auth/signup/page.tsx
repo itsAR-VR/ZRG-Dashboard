@@ -150,6 +150,7 @@ export default function SignupPage() {
                 id="password"
                 type="password"
                 placeholder="••••••••"
+                autoComplete="new-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
@@ -161,6 +162,7 @@ export default function SignupPage() {
                 id="confirmPassword"
                 type="password"
                 placeholder="••••••••"
+                autoComplete="new-password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 required
@@ -188,7 +190,6 @@ export default function SignupPage() {
     </div>
   );
 }
-
 
 
 

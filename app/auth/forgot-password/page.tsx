@@ -21,14 +21,22 @@ export default function ForgotPasswordPage() {
     setIsLoading(true);
 
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      const normalizedEmail = email.trim().toLowerCase();
+      const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
         // Supabase SSR clients use PKCE flow, so we need to land on the server
         // callback route to exchange the `code` for a session cookie.
         redirectTo: `${window.location.origin}/auth/callback?next=/auth/reset-password`,
       });
 
       if (error) {
+        console.error("resetPasswordForEmail error:", error);
+        if (error.status === 500 && error.message.toLowerCase().includes("recovery email")) {
+          toast.error(
+            "Could not send reset email for this address. If this keeps happening, check your Supabase Auth email provider/suppression list."
+          );
+        } else {
         toast.error(error.message);
+        }
       } else {
         setIsEmailSent(true);
         toast.success("Password reset email sent!");
