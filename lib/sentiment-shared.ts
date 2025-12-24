@@ -3,6 +3,7 @@
 
 export const SENTIMENT_TAGS = [
   "New", // No inbound replies yet
+  "Meeting Booked",
   "Meeting Requested",
   "Call Requested",
   "Information Requested",
@@ -21,6 +22,7 @@ export type SentimentTag = (typeof SENTIMENT_TAGS)[number];
 // Map sentiment tags to lead statuses
 export const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
   New: "new",
+  "Meeting Booked": "meeting-booked",
   "Meeting Requested": "meeting-requested",
   "Call Requested": "qualified",
   "Information Requested": "qualified",
@@ -48,4 +50,3 @@ export function isPositiveSentiment(tag: string | null): tag is PositiveSentimen
   if (!tag) return false;
   return POSITIVE_SENTIMENTS.includes(tag as PositiveSentiment);
 }
-

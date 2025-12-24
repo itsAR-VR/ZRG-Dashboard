@@ -1,8 +1,9 @@
+import "server-only";
+
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
-import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import {
   isPositiveSentiment,
   POSITIVE_SENTIMENTS,
@@ -11,12 +12,6 @@ import {
   type PositiveSentiment,
   type SentimentTag,
 } from "@/lib/sentiment-shared";
-
-const SENTIMENT_MIN_OUTPUT_TOKENS = 480;
-const SENTIMENT_MAX_OUTPUT_TOKENS = (() => {
-  const raw = Number(process.env.AI_SENTIMENT_MAX_OUTPUT_TOKENS || 3500);
-  return Number.isFinite(raw) ? Math.max(SENTIMENT_MIN_OUTPUT_TOKENS, Math.trunc(raw)) : 3500;
-})();
 
 export {
   isPositiveSentiment,
@@ -50,7 +45,7 @@ const BOUNCE_PATTERNS = [
   /spam/i,
   /mailer-daemon/i,
   /postmaster/i,
-  /550[\s-]/i,  // SMTP error codes
+  /550[\s-]/i, // SMTP error codes
   /554[\s-]/i,
   /the email account.*does not exist/i,
   /undelivered mail returned to sender/i,
@@ -68,6 +63,39 @@ function matchesAnyPattern(patterns: RegExp[], text: string): boolean {
     if (pattern.test(text)) return true;
   }
   return false;
+}
+
+// ============================================================================
+// TRANSCRIPT BUILDING (MINIMAL NORMALIZATION)
+// ============================================================================
+
+export type SentimentTranscriptMessage = {
+  sentAt: Date | string;
+  channel?: string | null;
+  direction: "inbound" | "outbound" | string;
+  body: string;
+  subject?: string | null;
+};
+
+function serializeOneLine(text: string): string {
+  const raw = (text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  // Keep whitespace as-is; only make newlines explicit so the transcript remains parseable.
+  return raw.trim().replace(/\n/g, "\\n");
+}
+
+export function buildSentimentTranscriptFromMessages(messages: SentimentTranscriptMessage[]): string {
+  return messages
+    .filter((m) => (m.body || "").trim().length > 0)
+    .map((m) => {
+      const sentAt = typeof m.sentAt === "string" ? new Date(m.sentAt) : m.sentAt;
+      const ts = sentAt instanceof Date && !isNaN(sentAt.getTime()) ? sentAt.toISOString() : String(m.sentAt);
+      const channel = (m.channel || "sms").toString().toLowerCase();
+      const direction = m.direction === "inbound" ? "IN" : "OUT";
+      const speaker = m.direction === "inbound" ? "Lead" : "Agent";
+      const subjectPrefix = channel === "email" && m.subject ? `Subject: ${serializeOneLine(m.subject)} | ` : "";
+      return `[${ts}] [${channel} ${direction}] ${speaker}: ${subjectPrefix}${serializeOneLine(m.body)}`;
+    })
+    .join("\n");
 }
 
 function extractLeadTextFromTranscript(transcript: string): {
@@ -110,46 +138,17 @@ function extractLeadTextFromTranscript(transcript: string): {
   return { allLeadText, lastLeadText };
 }
 
-export type SentimentTranscriptMessage = {
-  sentAt: Date | string;
-  channel?: string | null;
-  direction: "inbound" | "outbound" | string;
-  body: string;
-  subject?: string | null;
-};
-
-function normalizeTranscriptBody(text: string): string {
-  return (text || "").replace(/\s+/g, " ").trim();
+function truncateVeryLargeText(text: string, maxChars: number): string {
+  const cleaned = (text || "").trim();
+  if (cleaned.length <= maxChars) return cleaned;
+  return `${cleaned.slice(0, 40_000)}\n\n...[TRUNCATED ${cleaned.length - 80_000} chars]...\n\n${cleaned.slice(
+    cleaned.length - 40_000
+  )}`;
 }
 
-export function buildSentimentTranscriptFromMessages(messages: SentimentTranscriptMessage[]): string {
-  return messages
-    .filter((m) => normalizeTranscriptBody(m.body).length > 0)
-    .map((m) => {
-      const sentAt = typeof m.sentAt === "string" ? new Date(m.sentAt) : m.sentAt;
-      const ts = sentAt instanceof Date && !isNaN(sentAt.getTime()) ? sentAt.toISOString() : String(m.sentAt);
-      const channel = (m.channel || "sms").toString().toLowerCase();
-      const direction = m.direction === "inbound" ? "IN" : "OUT";
-      const speaker = m.direction === "inbound" ? "Lead" : "Agent";
-      const subjectPrefix =
-        channel === "email" && m.subject ? `Subject: ${normalizeTranscriptBody(m.subject)} | ` : "";
-      return `[${ts}] [${channel} ${direction}] ${speaker}: ${subjectPrefix}${normalizeTranscriptBody(m.body)}`;
-    })
-    .join("\n");
-}
-
-function trimTranscriptForModel(transcript: string, maxLines = 80, maxChars = 12000): string {
-  const cleaned = transcript.trim();
-  if (!cleaned) return "";
-
-  const lines = cleaned.split(/\r?\n/);
-  const tailLines = lines.length > maxLines ? lines.slice(lines.length - maxLines) : lines;
-  let tail = tailLines.join("\n").trim();
-  if (tail.length > maxChars) {
-    tail = tail.slice(tail.length - maxChars);
-  }
-  return tail;
-}
+// ============================================================================
+// FAST PRE-CHECKS (MINIMAL)
+// ============================================================================
 
 /**
  * Check if any inbound message matches bounce patterns
@@ -168,13 +167,6 @@ export function detectBounce(messages: { body: string; direction: string; channe
 
   return false; // No inbound messages
 }
-
-// ============================================================================
-// HIGH-CONFIDENCE RULES (NO AI)
-// ============================================================================
-
-const PHONE_PATTERN =
-  /(?:\+?\d{1,3}[-.\s]?)?(?:\(\d{3}\)|\d{3})[-.\s]?\d{3}[-.\s]?\d{4}\b/;
 
 function splitEmailSubjectPrefix(text: string): { subject: string; body: string; combined: string } {
   const combined = (text || "").trim();
@@ -196,208 +188,6 @@ function stripCommonPunctuation(text: string): string {
   return (text || "").replace(/^[\s"'`*()\-–—_:;,.!?]+|[\s"'`*()\-–—_:;,.!?]+$/g, "").trim();
 }
 
-function stripQuotedEmailThread(text: string): string {
-  const combined = (text || "").replace(/\u00a0/g, " ").trim();
-  if (!combined) return "";
-
-  const { body } = splitEmailSubjectPrefix(combined);
-  const cleaned = body.trim();
-  if (!cleaned) return "";
-
-  const markers: RegExp[] = [
-    // Classic separators
-    /-{5,}\s*original message\s*-{5,}/i,
-    /-{5,}\s*forwarded message\s*-{5,}/i,
-    /_{5,}/,
-    // Quote header blocks often inserted by email clients
-    /-{5,}\s*from:\s*/i,
-    /\bfrom:\s.+\bsent:\s.+\bto:\s/i,
-    /\bon\s.+\bwrote:\s*/i,
-    // "From:" blocks without dashes (keep strict: only if it looks like a header set)
-    /\bfrom:\s.+\b(sent|to|subject):\s/i,
-  ];
-
-  let cutIndex: number | null = null;
-  for (const re of markers) {
-    const match = re.exec(cleaned);
-    if (!match || typeof match.index !== "number") continue;
-    if (cutIndex === null || match.index < cutIndex) cutIndex = match.index;
-  }
-
-  const withoutThread = cutIndex === null ? cleaned : cleaned.slice(0, cutIndex);
-  return stripCommonPunctuation(withoutThread).trim();
-}
-
-const EMAIL_FOOTER_PATTERNS = {
-  email: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
-  url: /\bhttps?:\/\/\S+|\bwww\.\S+/i,
-  phone:
-    /(?:\+?\d{1,3}[-.\s]?)?(?:\(\d{2,4}\)|\d{2,4})[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b/,
-  signatureLabel:
-    /\b(tel|telephone|phone|mobile|cell|direct|whats\s*app|whatsapp|linkedin|website|www)\b|(?:^|\s)(t:|m:|p:|e:)\b/i,
-  sentFromMobile: /\b(sent from my (iphone|ipad)|sent via mobile|get outlook for (ios|android))\b/i,
-  // Common confidentiality disclaimers and legal boilerplate
-  disclaimer:
-    /\b(confidential|privileged|intended (only|solely) for|if you (have|received) this (email|message) in error|unauthori[sz]ed|liability|virus|malware|attachments? may contain|delete (this|the) (email|message)|disclaimer)\b/i,
-  // Newsletter/marketing footers (not common in genuine replies, but can pollute text)
-  marketingFooter:
-    /\b(unsubscribe|manage (your )?preferences|view (this|email) in (a )?browser|email preferences|privacy policy|terms of (service|use))\b/i,
-};
-
-function looksLikeNameLine(text: string): boolean {
-  const trimmed = stripCommonPunctuation(text).trim();
-  if (!trimmed) return false;
-  if (trimmed.length > 60) return false;
-  if (/\d/.test(trimmed)) return false;
-
-  const normalized = trimmed.replace(/[*_`~]/g, "").trim();
-  const parts = normalized.split(/\s+/).filter(Boolean);
-  if (parts.length < 2 || parts.length > 5) return false;
-
-  // Require at least 2 capitalized tokens (e.g., "Peggy Picano-Nacci")
-  const capitalized = parts.filter((p) => /^[A-Z][A-Za-z'’.\-]+$/.test(p));
-  return capitalized.length >= 2;
-}
-
-function looksLikeTitleOrCompanyLine(text: string): boolean {
-  const trimmed = stripCommonPunctuation(text).trim();
-  if (!trimmed) return false;
-  if (trimmed.length > 80) return false;
-
-  const titleKeywords =
-    /\b(founder|co[-\s]?founder|ceo|cto|cfo|president|director|partner|principal|owner|manager|head of|vp|vice president|consultant)\b/i;
-  const companyMarkers = /\b(inc|llc|ltd|limited|corp|co\.)\b/i;
-  return titleKeywords.test(trimmed) || companyMarkers.test(trimmed);
-}
-
-function looksLikeClosingLine(text: string): boolean {
-  const trimmed = stripCommonPunctuation(text).trim();
-  if (!trimmed) return false;
-  if (trimmed.length > 40) return false;
-  return /^(best|regards|kind regards|thanks|thank you|cheers|sincerely)$/i.test(trimmed);
-}
-
-function isStrongFooterLine(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) return false;
-  return (
-    EMAIL_FOOTER_PATTERNS.email.test(trimmed) ||
-    EMAIL_FOOTER_PATTERNS.url.test(trimmed) ||
-    EMAIL_FOOTER_PATTERNS.phone.test(trimmed) ||
-    EMAIL_FOOTER_PATTERNS.signatureLabel.test(trimmed) ||
-    EMAIL_FOOTER_PATTERNS.sentFromMobile.test(trimmed) ||
-    EMAIL_FOOTER_PATTERNS.disclaimer.test(trimmed) ||
-    EMAIL_FOOTER_PATTERNS.marketingFooter.test(trimmed)
-  );
-}
-
-function isHardFooterSignalLine(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) return false;
-  return (
-    EMAIL_FOOTER_PATTERNS.signatureLabel.test(trimmed) ||
-    EMAIL_FOOTER_PATTERNS.sentFromMobile.test(trimmed) ||
-    EMAIL_FOOTER_PATTERNS.disclaimer.test(trimmed) ||
-    EMAIL_FOOTER_PATTERNS.marketingFooter.test(trimmed)
-  );
-}
-
-function isWeakFooterLine(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed) return false;
-  return looksLikeClosingLine(trimmed) || looksLikeNameLine(trimmed) || looksLikeTitleOrCompanyLine(trimmed);
-}
-
-/**
- * Remove common signature/disclaimer/footer content from an email-ish body.
- * Preserves up to 2 lines of a natural closing (e.g., name/title) when present.
- */
-function stripEmailFooter(text: string): string {
-  const normalized = (text || "").replace(/\u00a0/g, " ").trim();
-  if (!normalized) return "";
-
-  const lines = normalized.split(/\r?\n/);
-  while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop();
-  if (lines.length === 0) return "";
-
-  // Find a strong footer signal near the bottom.
-  let strongIndex: number | null = null;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    if (isStrongFooterLine(line)) {
-      strongIndex = i;
-      break;
-    }
-  }
-
-  if (strongIndex === null) return normalized;
-
-  // Walk upward through the footer block to find its start. Prefer a blank-line
-  // separator, but fall back to the earliest footer-like line.
-  let footerStart = strongIndex;
-  let separatorStart: number | null = null;
-  let strongCount = 0;
-  let hardCount = 0;
-  for (let i = strongIndex; i >= 0; i--) {
-    const line = lines[i].trim();
-
-    if (!line || line === "--") {
-      separatorStart = i + 1;
-      continue;
-    }
-
-    if (isStrongFooterLine(line) || isWeakFooterLine(line)) {
-      footerStart = i;
-      if (isStrongFooterLine(line)) strongCount++;
-      if (isHardFooterSignalLine(line)) hardCount++;
-      continue;
-    }
-
-    // Hit main body text.
-    break;
-  }
-
-  const start = separatorStart ?? footerStart;
-  if (start <= 0) return normalized;
-
-  const candidateFooterLines = lines.slice(start).filter((l) => l.trim());
-  // Be conservative: avoid stripping legitimate content like a link/phone number
-  // shared in the body (no blank-line separator + only one weak strong-signal line).
-  const hasSeparator = separatorStart !== null;
-  const footerQualifies =
-    (hasSeparator && strongCount >= 1) ||
-    (hardCount >= 1 && candidateFooterLines.length >= 2) ||
-    (hardCount >= 1 && strongCount >= 1) ||
-    (hardCount >= 2);
-  if (!footerQualifies) return normalized;
-
-  const bodyLines = lines.slice(0, start);
-  while (bodyLines.length > 0 && !bodyLines[bodyLines.length - 1].trim()) bodyLines.pop();
-  if (bodyLines.length === 0) return normalized;
-
-  // Preserve a short closing from the top of the footer (usually name/title).
-  const footerLines = lines.slice(start);
-  const preserved: string[] = [];
-  for (let i = 0; i < footerLines.length && preserved.length < 2; i++) {
-    const rawLine = footerLines[i];
-    const line = rawLine.trim();
-    if (!line) continue;
-    if (isStrongFooterLine(line)) break;
-    if (looksLikeClosingLine(line) || looksLikeNameLine(line) || looksLikeTitleOrCompanyLine(line)) {
-      preserved.push(stripCommonPunctuation(line));
-      continue;
-    }
-    break;
-  }
-
-  const out = [...bodyLines];
-  if (preserved.length > 0) {
-    out.push("", ...preserved);
-  }
-  return out.join("\n").trim();
-}
-
 export function isOptOutText(text: string): boolean {
   const combined = (text || "").replace(/\u00a0/g, " ").trim();
   if (!combined) return false;
@@ -414,11 +204,13 @@ export function isOptOutText(text: string): boolean {
   if (["stop", "unsubscribe", "optout", "opt out"].includes(normalizedCombined)) return true;
 
   // Strong opt-out triggers (must-win)
-  const strongOptOut = /\b(unsubscribe|opt\s*-?\s*out|remove me|remove us|take me off|take us off|stop (emailing|calling|contacting|messaging|texting)|do not (contact|email|call|text)|don['’]?t (contact|email|call|text)|take a hike|stop)\b/i;
+  const strongOptOut =
+    /\b(unsubscribe|opt\s*-?\s*out|remove me|remove us|take me off|take us off|stop (emailing|calling|contacting|messaging|texting)|do not (contact|email|call|text)|don['’]?t (contact|email|call|text)|take a hike|stop)\b/i;
   if (candidates.some((t) => strongOptOut.test(t))) {
     // Reduce false positives for "stop" in benign phrases like "stop by"
     if (!/\bstop\b/i.test(body)) return true;
-    const stopHasContext = /\bstop\b/i.test(body) && /\b(text|txt|message|messages|messaging|contact|email|calling|call)\b/i.test(body);
+    const stopHasContext =
+      /\bstop\b/i.test(body) && /\b(text|txt|message|messages|messaging|contact|email|calling|call)\b/i.test(body);
     return stopHasContext || normalizedBody === "stop";
   }
 
@@ -429,264 +221,381 @@ export function isOptOutText(text: string): boolean {
   return false;
 }
 
-function isOutOfOfficeMessage(text: string): boolean {
-  const combined = (text || "").replace(/\u00a0/g, " ").trim();
-  if (!combined) return false;
+// ============================================================================
+// EMAIL INBOX ANALYSIS (PROMPT-ONLY)
+// ============================================================================
 
-  const { subject, body } = splitEmailSubjectPrefix(combined);
-  const candidates = [body, subject, combined].filter(Boolean);
-
-  // The subject is one of the strongest signals for OOO/autoreplies.
-  // Important variants include: "Out of office", "Out of the office", "Out-of-office".
-  const subjectAutoReply =
-    /\b(automatic reply|auto[-\s]?reply|auto[-\s]?response|out[-\s]?of[-\s]?(the\s+)?office|ooo|autoreply)\b/i;
-
-  // Strong "away" signals.
-  const awaySignals =
-    /\b(out[-\s]?of[-\s]?(the\s+)?office|ooo|on leave|on holiday|on vacation|away from (the )?office|away|unavailable|travell?ing|traveling|sabbatical|parental leave|maternity leave|paternity leave|annual leave)\b/i;
-
-  // Handle "on Annual Leave" (or similar) where a word appears between "on" and "leave".
-  const onLeaveSignals =
-    /\bon\s+(annual|parental|maternity|paternity|sick|medical)\s+leave\b/i;
-
-  // Common OOO phrasing that doesn't always include the exact words "out of office".
-  const availabilitySignals =
-    /\b(limited|intermittent|reduced)\s+(access|availability)\b|\b(have|has)\s+limited\s+access\b|\b(not|won['’]?t)\s+(be\s+)?(checking|monitoring|reading)\s+(my\s+)?(email|emails|inbox)\b|\b(emails?\s+will\s+not\s+be\s+monitor(?:ed|ing)|will\s+not\s+be\s+monitor(?:ed|ing))\b|\b(apologies|sorry)\b.*\b(delay(ed)?\s+response|slow\s+to\s+respond)\b/i;
-
-  // Date/return framing commonly found in OOO messages.
-  const returnSignals =
-    /\b(away|out|off)\s+(until|till)\b|\b(back|return(ing)?|return)\s+(on|at|in)\b|\b(return(ing)?\s+to\s+work|back\s+to\s+work)\b|\b(i('|’)?ll|i will)\s+(be\s+)?back\b|\b(resume|resuming)\b.*\b(on|at)\b/i;
-
-  // Routing for urgent matters is a common OOO/auto-reply pattern and should not
-  // be treated as "Call Requested".
-  const urgentRouting =
-    /\b(if|for)\s+(your\s+)?(enquir(y|ies)|inquir(y|ies)|matter|request)\s+is\s+urgent\b|\bfor\s+urgent\s+(matters?|enquir(y|ies)|inquir(y|ies))\b|\burgent(ly)?\b.*\b(contact|call|reach|phone|ring)\b|\bplease\s+contact\b/i;
-
-  const hasSubjectAutoReply = subject ? subjectAutoReply.test(subject) : false;
-  const hasAway = candidates.some((t) => awaySignals.test(t) || onLeaveSignals.test(t));
-  const hasAvailability = candidates.some((t) => availabilitySignals.test(t));
-  const hasReturnFrame = candidates.some((t) => returnSignals.test(t));
-  const hasUrgentRouting = candidates.some((t) => urgentRouting.test(t));
-
-  // Treat as OOO if:
-  // - subject screams auto-reply/OOO, OR
-  // - the body says they are away, OR
-  // - it's framed as limited access/returning + urgent routing language.
-  return hasSubjectAutoReply || hasAway || ((hasAvailability || hasReturnFrame) && hasUrgentRouting);
+function normalizeNewlines(text: string): string {
+  return (text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\u0000/g, "");
 }
 
-function isAutomatedReplyMessage(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return false;
+function removeQuotedEmailLines(text: string): string {
+  const lines = normalizeNewlines(text).split("\n");
+  const kept = lines.filter((line) => !/^\s*>/.test(line));
+  return kept.join("\n");
+}
 
-  // Avoid labeling obvious out-of-office as generic automated reply
-  if (isOutOfOfficeMessage(normalized)) return false;
+function cutAtFirstQuotedThreadMarker(text: string): string {
+  const cleaned = normalizeNewlines(text);
+  if (!cleaned.trim()) return "";
 
-  // Strong autoresponder signals
-  const strongSignals = [
-    /\b(this is an automated|auto-?response|autoresponder)\b/i,
-    /\b(automatic reply|auto[-\s]?reply|autoreply)\b/i,
-    /\b(do not reply|no[-\s]?reply)\b/i,
-    /\b(your message has been received|we have received your message|we received your email)\b/i,
-    /\b(thank you for contacting|thanks for contacting)\b/i,
-    /\b(ticket (number|#))\b/i,
-    /\b(case (number|#))\b/i,
-    /\b(please be assured|will be dealt with shortly|will be handled shortly|we will deal with)\b/i,
-    // "Account no longer checked / retired" responses should never be treated as positive intent.
-    /\b(email\s+account|this\s+email)\b.*\b(no\s+longer\s+be\s+checked|will\s+no\s+longer\s+be\s+checked|not\s+be\s+checked)\b/i,
-    /\b(retired|retirement)\b.*\b(email|inbox|account)\b/i,
+  const markers: RegExp[] = [
+    // Very common separators
+    /^-{2,}\s*Original Message\s*-{2,}\s*$/im,
+    /^-{2,}\s*Forwarded message\s*-{2,}\s*$/im,
+    /^-----\s*Original Message\s*-----$/im,
+    /^-----\s*Forwarded message\s*-----$/im,
+    /^_{5,}\s*$/m,
+
+    // Gmail/clients: "On ... wrote:"
+    /^\s*On\s+.+\s+wrote:\s*$/im,
+
+    // Header blocks from quoted replies (only match when it looks like a header set)
+    /(^|\n)\s*From:\s.+\n\s*(Sent|Date):\s.+\n\s*To:\s.+/i,
+    /(^|\n)\s*From:\s.+\n\s*(Sent|Date):\s.+\n\s*Subject:\s.+/i,
+    /(^|\n)\s*From:\s.+\n\s*To:\s.+\n\s*Subject:\s.+/i,
+    /(^|\n)\s*From:\s.+\n\s*Subject:\s.+/i,
   ];
 
-  if (strongSignals.some((re) => re.test(normalized))) return true;
-
-  // Typical acknowledgment patterns (keep strict)
-  const ack =
-    /\b(we('|’)ll get back to you|we will get back to you|as soon as possible|within \d+\s+(hours?|days?)|dealt with shortly|handled shortly)\b/i;
-  const hasAck = ack.test(normalized);
-  const hasDoNotReply = /\b(do not reply|no[-\s]?reply)\b/i.test(normalized);
-  const hasThanksContacting = /\b(thank you for (your )?(email|message)|thank you for contacting)\b/i.test(normalized);
-  const hasUrgentRouting =
-    /\b(if|for)\s+(your\s+)?(enquir(y|ies)|inquir(y|ies)|matter|request)\s+is\s+urgent\b|\burgent(ly)?\b.*\b(call|contact|reach|phone|ring)\b/i.test(
-      normalized,
-    );
-
-  // Only label automated if it has multiple signals
-  return (
-    (hasThanksContacting && hasAck) ||
-    (hasThanksContacting && hasDoNotReply) ||
-    (hasAck && hasDoNotReply) ||
-    (hasAck && hasUrgentRouting) ||
-    (hasUrgentRouting && hasDoNotReply)
-  );
-}
-
-function isCallRequestedMessage(text: string): boolean {
-  const raw = (text || "").replace(/\u00a0/g, " ").trim();
-  if (!raw) return false;
-
-  // Out-of-office auto replies often include "call me on ..." for urgent matters.
-  // Those should be categorized as "Out of Office", not "Call Requested".
-  if (isOutOfOfficeMessage(raw)) return false;
-
-  const { body } = splitEmailSubjectPrefix(raw);
-  const normalized = body.toLowerCase();
-
-  // Explicit "don't call" / "do not call" should not be treated as call requested
-  if (/\b(don['’]?t|dont|do not)\s+call\b/i.test(normalized)) return false;
-
-  // Auto-replies often include "phone/call the office" or "call reception" with a number.
-  // That is NOT the lead requesting a call.
-  if (/\b(call|ring|phone)\b/i.test(normalized) && /\b(the\s+)?(office|reception|receptionist|front\s+desk|switchboard|team|main\s+line)\b/i.test(normalized)) {
-    return false;
+  let cutIndex: number | null = null;
+  for (const re of markers) {
+    const match = re.exec(cleaned);
+    if (!match || typeof match.index !== "number") continue;
+    if (cutIndex === null || match.index < cutIndex) cutIndex = match.index;
   }
 
-  // Only treat as "Call Requested" if the lead explicitly wants a PHONE call.
-  // A phone number in a signature must not trigger this by itself.
-  const explicitCallRequest =
-    /\b(call|ring|phone)\s+(me|us)\b/i.test(normalized) ||
-    /\b(give|give\s+me|give\s+us)\s+(a\s+)?call\b/i.test(normalized) ||
-    /\b(call|ring|phone)\b.*\b(me|us)\b/i.test(normalized) && /\bplease\b/i.test(normalized);
+  const out = cutIndex === null ? cleaned : cleaned.slice(0, cutIndex);
+  return out.trim();
+}
 
-  const reachMeAt =
-    /\b(reach|call|ring|phone)\s+(me|us)\s+(at|on)\b/i.test(normalized) ||
-    /\b(call|ring|phone)\s+(me|us)\s+(at|on)\b/i.test(normalized);
+function extractLatestEmailReplyBlockPlaintextGuess(opts: {
+  subject?: string | null;
+  bodyText?: string | null;
+  providerCleanedText?: string | null;
+}): string {
+  // Prefer the raw provider text body if available.
+  const base = (opts.bodyText || opts.providerCleanedText || "").trim();
+  if (!base) return "";
 
-  const hasPhone = PHONE_PATTERN.test(normalized);
-  const looksLikeSignature =
-    /\b(www\.|https?:\/\/|linkedin\.com)\b/i.test(normalized) ||
-    /\b(direct|mobile|whats\s*app|whatsapp|tel|telephone|phone|t:|m:|p:|e:)\b/i.test(normalized) ||
-    /\b(ltd|limited|llc|inc|corp|company)\b/i.test(normalized);
+  // 1) Drop clearly-quoted lines, 2) cut at thread markers, 3) trim.
+  const noQuotedLines = removeQuotedEmailLines(base);
+  const topBlock = cutAtFirstQuotedThreadMarker(noQuotedLines);
 
-  if (explicitCallRequest) return true;
-  if (reachMeAt && hasPhone) return true;
+  // If the body is empty/signature-only, the subject can still carry meaning,
+  // but keep it separate so we don't pollute the "latest block".
+  return topBlock.trim();
+}
 
-  // If the message is basically just a phone number (common for SMS/email replies),
-  // allow it, but keep it strict to avoid signature false-positives.
-  if (hasPhone) {
-    const stripped = normalized.replace(PHONE_PATTERN, "").replace(/\s+/g, " ").trim();
-    const shortRemainder = stripCommonPunctuation(stripped).length <= 24;
-    if (shortRemainder && !looksLikeSignature) return true;
+export type EmailInboxClassification =
+  | "Meeting Booked"
+  | "Meeting Requested"
+  | "Call Requested"
+  | "Information Requested"
+  | "Not Interested"
+  | "Automated Reply"
+  | "Out Of Office"
+  | "Blacklist";
+
+export type EmailInboxAnalysis = {
+  classification: EmailInboxClassification;
+  cleaned_response: string;
+  is_newsletter: boolean;
+  mobile_number?: string;
+  direct_phone?: string;
+  scheduling_link?: string;
+};
+
+const EMAIL_INBOX_MANAGER_SYSTEM = `Output your response in the following strict JSON format:
+{
+  "classification": "One of: Meeting Booked, Meeting Requested, Call Requested, Information Requested, Not Interested, Automated Reply, Out Of Office, Blacklist",
+  "cleaned_response": "Plain-text body including at most a short closing + name/job title. If the scheduling link is not in the signature and is in the main part of the email body do not omit it from the cleaned email body.",
+  "mobile_number": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
+  "direct_phone": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
+  "scheduling_link": "String (URL), omit key if not found",
+  "is_newsletter": "Boolean, true if this appears to be a newsletter or marketing email rather than a genuine reply"
+}
+
+Rules for cleaned_response:
+- Include the body text only.
+- Identify and keep only the latest reply block (remove quoted replies/forwards and markers like "On Mon, ... wrote:", "From:", "-----Original Message-----").
+- Strip branded HTML signatures, logos, banners, and long disclaimers.
+- Retain natural signature closings of up to 2 lines (e.g., "Best," + name, optionally job title).
+- If the scheduling link is not in the signature and is in the main part of the email body, do not omit it from cleaned_response.
+
+Primary weighting (avoid common misreads):
+- Treat message.latest_reply_block_plaintext_guess as the highest-signal input for BOTH cleaning and classification.
+- Use the subject line as a high-signal cue for "Out Of Office" / "Automatic Reply" variants.
+- Use conversation history only to disambiguate ultra-short confirmations; never let quoted outbound text drive intent.
+- Urgent-routing boilerplate (e.g., "if urgent, call ...") in auto-replies must NOT be treated as "Call Requested".
+
+Rules for signature fields:
+- Extract only mobile_number, direct_phone, and scheduling_link.
+- Normalize phone numbers to E.164 format where possible. If no country code is present, leave in original format (do NOT guess).
+- Omit these keys entirely if not present.
+- Do not include extracted values inside cleaned_response.
+
+Meeting Booked classification notes:
+- Choose "Meeting Booked" ONLY if: an explicit date/time is accepted, OR the message confirms a booking/invite acceptance, OR the body explicitly instructs to book via THEIR scheduling link ("use my Calendly", "book via my link").
+- Do NOT choose "Meeting Booked" if there is only a generic request for availability, or if a link exists only in a signature without explicit instruction.
+- If they request a meeting but no time is confirmed → "Meeting Requested".
+- If they request a phone call but no time is confirmed → "Call Requested" (only if explicitly a phone call).
+
+Automated Reply vs Out Of Office:
+- Use "Automated Reply" for generic auto-acknowledgements (e.g., "we received your message", "thank you for contacting us").
+- Use "Out Of Office" specifically for absence/vacation/leave notifications.
+
+Blacklist classification notes:
+- Use "Blacklist" for explicit unsubscribe/removal requests, hostile opt-out language, spam complaints, bounces, or "inbox not monitored / no longer in use".
+
+Newsletter / marketing detection notes:
+- is_newsletter = true ONLY if you are very certain this is a marketing/newsletter blast (unsubscribe footer, digest/promotional template, broad marketing content, no reference to the outreach).
+- is_newsletter = false for genuine human replies, auto-replies, or transactional emails.
+
+Always output valid JSON. Always include classification, cleaned_response, and is_newsletter.`;
+
+function defaultAvailabilityText(clientName?: string | null): string {
+  return `Here is the current availability for ${clientName || "the client"}:\n\nNO TIMES AVAILABLE - ASSUME THE TIME IS AVAILABLE AND CATEGORIZE AS 'Meeting Booked' IF A TIME HAS BEEN AGREED`;
+}
+
+export async function analyzeInboundEmailReply(opts: {
+  clientId: string;
+  leadId?: string | null;
+  clientName?: string | null;
+  lead?: {
+    first_name?: string | null;
+    last_name?: string | null;
+    email?: string | null;
+    time_received?: string | null;
+  } | null;
+  subject?: string | null;
+  body_text?: string | null;
+  provider_cleaned_text?: string | null;
+  entire_conversation_thread_html?: string | null;
+  automated_reply?: boolean | null;
+  conversation_transcript?: string | null;
+  availability_text?: string | null;
+  maxRetries?: number;
+}): Promise<EmailInboxAnalysis | null> {
+  if (!process.env.OPENAI_API_KEY) return null;
+
+  const maxRetries = opts.maxRetries ?? 2;
+  const promptTemplate = getAIPromptTemplate("sentiment.email_inbox_analyze.v1");
+  const systemPrompt =
+    promptTemplate?.messages.find((m) => m.role === "system")?.content || EMAIL_INBOX_MANAGER_SYSTEM;
+
+  const latestReplyGuess = extractLatestEmailReplyBlockPlaintextGuess({
+    subject: opts.subject,
+    bodyText: opts.body_text ?? null,
+    providerCleanedText: opts.provider_cleaned_text ?? null,
+  });
+
+  const userPayload = {
+    role: "expert_inbox_manager",
+    task: {
+      description: `Categorize and clean up email responses from leads replying to cold email campaigns for ${opts.clientName || "the client"}.`,
+      actions: [
+        {
+          name: "categorization",
+          description: "Classify the reply into exactly one of the allowed categories.",
+          allowed_categories: [
+            "Meeting Booked",
+            "Meeting Requested",
+            "Call Requested",
+            "Information Requested",
+            "Not Interested",
+            "Automated Reply",
+            "Out Of Office",
+            "Blacklist",
+          ],
+          thread_handling: {
+            primary_focus:
+              "Classify based on the latest human-written message (the topmost unquoted block) after cleaning, while also considering the subject line and the entire conversation history if they contain relevant classification cues.",
+            use_history_to_disambiguate: [
+              "If the latest message references a previously suggested time, verify that a specific date/time was explicitly accepted.",
+              "If the latest message is a bare confirmation with no explicit time, check the immediately preceding turn for a specific time. If none is explicitly accepted, do NOT classify as 'Meeting Booked'.",
+              "If the latest message asks for more details while prior turn discussed features, choose 'Information Requested'.",
+            ],
+          },
+          signature_link_handling: {
+            rule: "The mere presence of a scheduling link in a signature MUST NOT influence classification.",
+            when_to_use_for_classification: [
+              "Treat as 'Meeting Booked' if the body text explicitly instructs scheduling using their link (e.g., 'book via my calendar', 'use my link below').",
+              "Treat as 'Meeting Booked' if the body confirms the meeting is already booked (e.g., 'I booked Wednesday 2pm via your link', 'invite accepted').",
+              "Treat as 'Meeting Requested' ONLY if the body generally asks to arrange a meeting time without a booking link or confirmed acceptance.",
+              "Treat as 'Call Requested' ONLY if the body asks to arrange a phone call without a confirmed time (explicitly a phone call).",
+            ],
+          },
+          meeting_booked_guardrails: {
+            require_one_of: [
+              "An explicit date/time expression in the latest message indicating acceptance.",
+              "An explicit acceptance or calendar confirmation referencing a concrete time.",
+              "An explicit instruction to book directly on their calendar link.",
+            ],
+            not_meeting_booked_if: [
+              "Generic confirmations without a time AND no explicit date/time is present or accepted.",
+              "A signature shows a scheduling link without explicit instruction or booking confirmation in the body.",
+            ],
+          },
+          decision_rules: [
+            "Blacklist: Recipient explicitly requests removal/unsubscribe OR the subject line contains an explicit opt-out keyword.",
+            "Automated Reply: Autoresponder message that is not an Out Of Office.",
+            "Out Of Office: Autoresponder or manual note indicating absence/vacation/leave.",
+            "Meeting Booked: ONLY if guardrails are satisfied.",
+            "Meeting Requested: Recipient asks to arrange a meeting/demo but no confirmed time and no instruction to self-book.",
+            "Call Requested: Recipient asks to arrange a phone call but no confirmed time (explicit phone call).",
+            "Information Requested: Asks for details/clarifications/pricing/more information.",
+            "Not Interested: Decline, negative response, or no interest expressed without explicit unsubscribe request.",
+          ],
+        },
+        {
+          name: "cleaning",
+          description:
+            "Convert the email body to plain text, removing past threads, headers, and branded HTML signatures.",
+          steps: [
+            "Identify and keep only the latest reply block: remove quoted replies/forwards and markers like 'On Mon, ... wrote:'.",
+            "Remove HTML artifacts, logos, banners, disclaimers, tracking pixels.",
+            "Normalize whitespace and line breaks.",
+            "Preserve a short natural closing up to 2 lines: a closing phrase + sender name and at most job title.",
+            "If the scheduling link is not in the signature and is in the main part of the email body do not omit it from the cleaned email body.",
+          ],
+          signature_extraction: {
+            fields_to_extract: ["mobile_number", "direct_phone", "scheduling_link"],
+            rules: [
+              "Detect and extract only if clearly present (including within HTML signatures).",
+              "Normalize phone numbers to E.164 format when a country code is present; if no country code, leave as-is (do NOT guess).",
+              "Scheduling link = any URL matching known schedulers or obvious 'schedule/book/calendar' patterns.",
+              "Do not include extracted fields in the cleaned body.",
+            ],
+          },
+        },
+      ],
+    },
+    context: {
+      company: opts.lead?.email ? String(opts.lead.email).split("@")[1] : null,
+      lead: {
+        first_name: opts.lead?.first_name ?? null,
+        last_name: opts.lead?.last_name ?? null,
+        email: opts.lead?.email ?? null,
+        time_received: opts.lead?.time_received ?? null,
+      },
+      message: {
+        subject: opts.subject ?? null,
+        latest_reply_block_plaintext_guess: latestReplyGuess || null,
+        body_text: opts.body_text ?? null,
+        provider_cleaned_text: opts.provider_cleaned_text ?? null,
+        entire_conversation_thread: truncateVeryLargeText(opts.entire_conversation_thread_html || "", 160_000) || null,
+        automated_reply: opts.automated_reply ?? null,
+        conversation_history_transcript: truncateVeryLargeText(opts.conversation_transcript || "", 200_000) || null,
+      },
+    },
+    constraints: [
+      "Always choose exactly one category from allowed list.",
+      "Meeting Booked MUST satisfy the guardrails; otherwise use Meeting Requested / Call Requested / other best fit.",
+      "If multiple cues exist, apply decision_rules priority order: Blacklist > Automated Reply > Out Of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Not Interested.",
+      "Signature data must be excluded from cleaned_response and only output under the correct JSON keys.",
+      "Omit signature keys entirely if not present.",
+      "Do NOT use scheduling links found only in signatures to decide classification unless the body explicitly references using that link.",
+      "Use the 'automated_reply' field from context to help identify Automated Reply vs Out Of Office classifications.",
+    ],
+  };
+
+  const availability = (opts.availability_text || "").trim() || defaultAvailabilityText(opts.clientName);
+  const userPrompt = `${JSON.stringify(userPayload, null, 2)}\n\n${availability}`;
+
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      classification: {
+        type: "string",
+        enum: [
+          "Meeting Booked",
+          "Meeting Requested",
+          "Call Requested",
+          "Information Requested",
+          "Not Interested",
+          "Automated Reply",
+          "Out Of Office",
+          "Blacklist",
+        ],
+      },
+      cleaned_response: { type: "string" },
+      mobile_number: { type: "string" },
+      direct_phone: { type: "string" },
+      scheduling_link: { type: "string" },
+      is_newsletter: { type: "boolean" },
+    },
+    required: ["classification", "cleaned_response", "is_newsletter"],
+  } as const;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const { response, interactionId } = await runResponseWithInteraction({
+        clientId: opts.clientId,
+        leadId: opts.leadId,
+        featureId: promptTemplate?.featureId || "sentiment.email_inbox_analyze",
+        promptKey: promptTemplate?.key || "sentiment.email_inbox_analyze.v1",
+        params: {
+          model: "gpt-5-mini",
+          instructions: systemPrompt,
+          input: [{ role: "user", content: userPrompt }] as const,
+          reasoning: { effort: "medium" },
+          max_output_tokens: 1500,
+          text: {
+            verbosity: "low",
+            format: { type: "json_schema", name: "email_inbox_analysis", strict: true, schema },
+          },
+        },
+      });
+
+      const raw = getTrimmedOutputText(response) || "";
+      if (!raw) {
+        if (attempt < maxRetries) continue;
+        if (interactionId) {
+          const details = summarizeResponseForTelemetry(response);
+          await markAiInteractionError(
+            interactionId,
+            `Post-process error: empty output_text${details ? ` (${details})` : ""}`
+          );
+        }
+        return null;
+      }
+
+      const jsonText = extractJsonObjectFromText(raw);
+      const parsed = JSON.parse(jsonText) as EmailInboxAnalysis;
+      if (!parsed?.classification || typeof parsed.cleaned_response !== "string" || typeof parsed.is_newsletter !== "boolean") {
+        if (attempt < maxRetries) continue;
+        return null;
+      }
+      return parsed;
+    } catch (error) {
+      const isRetryable =
+        error instanceof Error &&
+        (error.message.includes("500") ||
+          error.message.includes("503") ||
+          error.message.toLowerCase().includes("rate") ||
+          error.message.toLowerCase().includes("timeout"));
+
+      if (isRetryable && attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
+        continue;
+      }
+
+      return null;
+    }
   }
 
-  return false;
-}
-
-function isMeetingRequestedMessage(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (isOutOfOfficeMessage(normalized)) return false;
-
-  // Detect explicit scheduling language / confirmations
-  const hasScheduleIntent =
-    /\b(meet|meeting|schedule|calendar|book|set up|setup|sync up|chat|talk|call)\b/i.test(normalized);
-
-  const hasTimeSignal =
-    /\b(today|tomorrow|tonight|this (morning|afternoon|evening|week)|next (week|month)|mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b/i.test(
-      normalized,
-    ) ||
-    /\b\d{1,2}(:\d{2})?\s?(am|pm)\b/i.test(normalized) ||
-    /\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b/i.test(normalized);
-
-  // Common short confirmations that usually indicate scheduling agreement
-  const hasConfirmation =
-    /\b(yes|yep|yeah|sure|ok|okay|sounds good|that works|works for me|perfect|great)\b/i.test(normalized);
-
-  // If there's an explicit time/day signal, treat it as meeting requested even if "call" isn't present.
-  if (hasTimeSignal && hasConfirmation) return true;
-
-  // Otherwise require some scheduling intent + time/day signal
-  return hasScheduleIntent && hasTimeSignal;
-}
-
-function hasScheduleOrTimeSignal(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return false;
-  const scheduleWords =
-    /\b(meet|meeting|schedule|calendar|book|set up|setup|sync up|chat|talk|call)\b/i;
-  const timeWords =
-    /\b(today|tomorrow|tonight|this (morning|afternoon|evening|week)|next (week|month)|mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b/i;
-  const timeClock = /\b\d{1,2}(:\d{2})?\s?(am|pm)\b/i;
-  const timeDate = /\b\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?\b/i;
-  return scheduleWords.test(normalized) || timeWords.test(normalized) || timeClock.test(normalized) || timeDate.test(normalized);
-}
-
-function isNotInterestedMessage(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return false;
-
-  if (
-    /\b(not interested|no thanks|no thank you|no thx|wrong number|already have|not a fit|not relevant)\b/i.test(
-      normalized,
-    )
-  ) {
-    return true;
-  }
-
-  // "Don't follow up" / "stop contacting" is a decline even if the thread contains
-  // the agent asking for a call.
-  const dontFollowUpOrContact =
-    /\b(don['’]?t|dont|do not)\s+(follow up|reach out|contact|email|call|text|message)\b/i;
-  const stopFollowingUp =
-    /\b(stop)\s+(following up|follow(?:ing)?\s*up|contacting|emailing|calling|texting|messaging)\b/i;
-  const noNeedTo =
-    /\bno\s+need\s+to\s+(follow up|reach out|contact)\b/i;
-
-  if (dontFollowUpOrContact.test(normalized) || stopFollowingUp.test(normalized) || noNeedTo.test(normalized)) {
-    // If they are *also* asking a question or proposing times, treat that as engagement instead.
-    if (normalized.includes("?")) return false;
-    if (hasScheduleOrTimeSignal(normalized)) return false;
-    return true;
-  }
-
-  // Polite "we're all good" / "all set" closures are usually a decline, not an info request.
-  // Guardrail: don't treat as Not Interested if they include scheduling/time signals.
-  const allSetOrGood =
-    /\b(all set|all good|we('?re| are) all set|we('?re| are) good|i('?m| am) good|good for now|no need (for|to)|no need(ed)?|we('?re| are) all set here)\b/i;
-  const thanksOnly = /\b(thanks|thank you)\b/i.test(normalized);
-  if (allSetOrGood.test(normalized) && (thanksOnly || normalized.length <= 160)) {
-    if (normalized.includes("?")) return false;
-    if (hasScheduleOrTimeSignal(normalized)) return false;
-    return true;
-  }
-
-  return false;
-}
-
-function isInformationRequestedMessage(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  const hasQuestion =
-    normalized.includes("?") || /\b(what|how|why|where|who)\b/i.test(normalized);
-  const hasOfferKeyword =
-    /\b(price|pricing|cost|rate|fee|charge|details|info|information|about|offer|service|product|process)\b/i.test(
-      normalized,
-    );
-  return hasQuestion && hasOfferKeyword;
-}
-
-function isFollowUpMessage(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  return /\b(follow up|reach out|check back|circle back|later|not now|busy|in a meeting|another time|next week|next month|in a bit)\b/i.test(
-    normalized,
-  );
+  return null;
 }
 
 // ============================================================================
-// RETRY LOGIC
+// SENTIMENT CLASSIFICATION (PROMPT-ONLY)
 // ============================================================================
 
 async function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Classify conversation sentiment using OpenAI with retry logic
- * 
- * IMPORTANT: This function should only be called AFTER pre-classification checks:
- * - If lead has never responded → return "Neutral" (don't call this function)
- * - If detectBounce() returns true → return "Blacklist" (don't call this function)
- * 
- * This function analyzes the conversation content when the lead HAS responded.
- * It always uses AI classification regardless of how long ago the lead responded.
- */
 export async function classifySentiment(
   transcript: string,
   opts: {
@@ -700,63 +609,27 @@ export async function classifySentiment(
   }
 
   const maxRetries = opts.maxRetries ?? 3;
-  const { allLeadText, lastLeadText } = extractLeadTextFromTranscript(transcript);
+  const { lastLeadText } = extractLeadTextFromTranscript(transcript);
   if (!lastLeadText.trim()) {
     // No lead reply found; never classify based on agent outbound-only context.
     return "New";
   }
-  const lastLeadCombined = (lastLeadText || "").replace(/\u00a0/g, " ").trim();
-  const { subject: lastLeadSubject } = splitEmailSubjectPrefix(lastLeadCombined);
-  const lastLeadBody = stripQuotedEmailThread(lastLeadCombined) || lastLeadCombined;
-  const lastLeadPrimary = stripEmailFooter(lastLeadBody);
-  const lastLeadForDetectors = lastLeadSubject
-    ? `Subject: ${lastLeadSubject} | ${lastLeadPrimary}`
-    : lastLeadPrimary;
 
-  // Fast, high-confidence classification without calling the model.
-  // These rules dramatically reduce edge-case misclassifications and cost.
+  const lastLeadCombined = (lastLeadText || "").replace(/\u00a0/g, " ").trim();
   if (matchesAnyPattern(BOUNCE_PATTERNS, lastLeadCombined.toLowerCase())) return "Blacklist";
-  if (isOptOutText(lastLeadForDetectors)) return "Blacklist";
-  if (isOutOfOfficeMessage(lastLeadForDetectors)) return "Out of Office";
-  if (isAutomatedReplyMessage(lastLeadForDetectors)) return "Automated Reply";
-  // Explicit "no thanks" must override any quoted outbound thread content.
-  if (isNotInterestedMessage(lastLeadPrimary)) return "Not Interested";
-  if (isMeetingRequestedMessage(lastLeadPrimary)) return "Meeting Requested";
-  if (isCallRequestedMessage(lastLeadPrimary)) return "Call Requested";
-  if (isInformationRequestedMessage(lastLeadPrimary)) return "Information Requested";
-  if (isFollowUpMessage(lastLeadPrimary)) return "Follow Up";
+  if (isOptOutText(lastLeadCombined)) return "Blacklist";
 
   const promptTemplate = getAIPromptTemplate("sentiment.classify.v1");
   const systemPrompt =
     promptTemplate?.messages.find((m) => m.role === "system")?.content ||
-    "You are an expert inbox manager. Classify the reply into ONE category and return only the category name.";
+    "You are an expert inbox manager. Classify the reply into ONE category and return only JSON {\"classification\": \"...\"}.";
 
-  const recentContext = trimTranscriptForModel(transcript);
-  const modelInputPayload = JSON.stringify(
-    {
-      latest_lead_subject: lastLeadSubject || null,
-      latest_lead_reply: lastLeadPrimary,
-      latest_lead_reply_with_subject: lastLeadForDetectors,
-      // Lower-priority context (use only to disambiguate ultra-short confirmations).
-      context_transcript_tail: recentContext,
-      lead_replies_tail: allLeadText.slice(Math.max(0, allLeadText.length - 3000)),
-    },
-    null,
-    2
-  );
+  const safeTranscript = truncateVeryLargeText(transcript, 240_000);
+  const userPrompt =
+    promptTemplate?.messages.find((m) => m.role === "user")?.content?.replace("{{transcript}}", safeTranscript) ||
+    `Transcript (chronological; newest at the end):\n\n${safeTranscript}`;
 
-  const modelInput = [{ role: "user", content: modelInputPayload }] as const;
-  const budget = await computeAdaptiveMaxOutputTokens({
-    model: "gpt-5-mini",
-    instructions: systemPrompt,
-    input: modelInput as any,
-    // Ensure enough headroom for reasoning on long/noisy threads.
-    min: SENTIMENT_MIN_OUTPUT_TOKENS,
-    max: SENTIMENT_MAX_OUTPUT_TOKENS,
-    overheadTokens: 256,
-    // Use the Responses input-tokens endpoint when available for accurate sizing.
-    preferApiCount: true,
-  });
+  const enumTags = SENTIMENT_TAGS.filter((t) => t !== "New" && t !== "Snoozed");
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -768,7 +641,9 @@ export async function classifySentiment(
         params: {
           model: "gpt-5-mini",
           instructions: systemPrompt,
-          input: modelInput as any,
+          input: [{ role: "user", content: userPrompt }] as const,
+          reasoning: { effort: "medium" },
+          max_output_tokens: 250,
           text: {
             verbosity: "low",
             format: {
@@ -779,33 +654,18 @@ export async function classifySentiment(
                 type: "object",
                 additionalProperties: false,
                 properties: {
-                  // "New" is a pre-classification value for "no inbound replies"; the model
-                  // should never choose it when classifying an actual reply.
-                  classification: {
-                    type: "string",
-                    enum: SENTIMENT_TAGS.filter((t) => t !== "New"),
-                  },
+                  classification: { type: "string", enum: enumTags },
                 },
                 required: ["classification"],
               },
             },
           },
-          // Use "medium" reasoning to reduce edge-case misclassifications
-          // (especially for noisy email threads and auto-replies).
-          reasoning: { effort: "medium" },
-          // `max_output_tokens` includes reasoning tokens; keep headroom so the
-          // structured JSON body isn't empty/truncated.
-          max_output_tokens: budget.maxOutputTokens,
         },
       });
 
       const raw = getTrimmedOutputText(response) || "";
       if (!raw) {
-        // Retry a couple times before recording a post-process error; empty output
-        // is often caused by hitting `max_output_tokens` (which includes reasoning).
-        if (attempt < maxRetries) {
-          continue;
-        }
+        if (attempt < maxRetries) continue;
         if (interactionId) {
           const details = summarizeResponseForTelemetry(response);
           await markAiInteractionError(
@@ -817,57 +677,29 @@ export async function classifySentiment(
       }
 
       const jsonText = extractJsonObjectFromText(raw);
-      let parsed: { classification?: string } | null = null;
-      try {
-        parsed = JSON.parse(jsonText) as { classification?: string };
-      } catch {
-        parsed = null;
-      }
+      const parsed = JSON.parse(jsonText) as { classification?: string };
+      const cleaned = String(parsed?.classification || "").trim();
 
-      const cleaned = (parsed?.classification || raw)
-        .replace(/^[\"'`]+|[\"'`]+$/g, "")
-        .replace(/\.$/, "")
-        .trim();
+      const exact = enumTags.find((tag) => tag.toLowerCase() === cleaned.toLowerCase());
+      if (exact) return exact;
 
-      // Exact match (case-insensitive)
-      const exact = SENTIMENT_TAGS.find((tag) => tag.toLowerCase() === cleaned.toLowerCase());
-
-      // Sometimes the model returns extra text; try to extract a valid tag.
-      const contained = SENTIMENT_TAGS.find((tag) => cleaned.toLowerCase().includes(tag.toLowerCase()));
-
-      const lower = cleaned.toLowerCase();
-      let candidate: SentimentTag =
-        exact || contained || (lower === "positive" ? "Interested" : "Neutral");
-
-      // Post-classification validators (safety + signature false-positive reduction)
-      if (isOptOutText(lastLeadForDetectors)) return "Blacklist";
-      if (isOutOfOfficeMessage(lastLeadForDetectors)) return "Out of Office";
-      if (isAutomatedReplyMessage(lastLeadForDetectors)) return "Automated Reply";
-      if (isNotInterestedMessage(lastLeadPrimary)) return "Not Interested";
-
-      if (candidate === "Call Requested" && !isCallRequestedMessage(lastLeadPrimary)) {
-        if (isMeetingRequestedMessage(lastLeadPrimary)) return "Meeting Requested";
-        if (isInformationRequestedMessage(lastLeadPrimary)) return "Information Requested";
-        if (isFollowUpMessage(lastLeadPrimary)) return "Follow Up";
-        candidate = "Interested";
-      }
-
-      return candidate;
+      // If the model somehow deviated, fall back safely.
+      if (attempt < maxRetries) continue;
+      return "Neutral";
     } catch (error) {
-      const isRetryable = error instanceof Error &&
+      const isRetryable =
+        error instanceof Error &&
         (error.message.includes("500") ||
           error.message.includes("503") ||
-          error.message.includes("rate") ||
-          error.message.includes("timeout"));
+          error.message.toLowerCase().includes("rate") ||
+          error.message.toLowerCase().includes("timeout"));
 
       if (isRetryable && attempt < maxRetries) {
-        const backoffMs = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
-        console.log(`[Sentiment] Attempt ${attempt} failed, retrying in ${backoffMs / 1000}s...`);
-        await sleep(backoffMs);
-      } else {
-        console.error("[Sentiment] Classification error after retries:", error);
-        return "Neutral";
+        await sleep(Math.pow(2, attempt) * 1000);
+        continue;
       }
+
+      return "Neutral";
     }
   }
 

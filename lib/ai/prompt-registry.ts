@@ -38,12 +38,13 @@ HIGH-SIGNAL EDGE CASES
 - Polite closures like "all set", "all good", "we're good", "I'm good", "no need" (often paired with "thank you") are usually a decline → "Not Interested" (unless they also request info or scheduling).
 
 PRIORITY ORDER (if multiple cues exist)
-Blacklist > Automated Reply > Out of Office > Meeting Requested > Call Requested > Information Requested > Not Interested > Follow Up > Interested > Neutral
+Blacklist > Automated Reply > Out of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Not Interested > Follow Up > Interested > Neutral
 
 CATEGORIES
 - "Blacklist": Opt-out/unsubscribe/removal request, hostile opt-out language, spam complaint, email bounces, or inbox/address not monitored/no longer in use.
 - "Automated Reply": Auto-acknowledgements (e.g., "we received your message", "this is an automated response") that are NOT Out of Office.
 - "Out of Office": Absence/vacation/leave/OOO messages (including limited access + urgent-routing language).
+- "Meeting Booked": ONLY if a concrete time is explicitly accepted/confirmed, OR they confirm a booking/invite acceptance, OR they explicitly instruct to book via THEIR scheduling link in the body.
 - "Meeting Requested": Lead asks to arrange a meeting/demo OR explicitly agrees to a concrete day/time.
   Guardrail: do NOT treat generic confirmations ("confirmed", "sounds good") as meeting requested unless a specific time exists in the immediately prior context.
 - "Call Requested": Lead explicitly asks for a PHONE call (ring/phone/call me/us) without a confirmed time.
@@ -57,6 +58,48 @@ CATEGORIES
 OUTPUT
 Return ONLY valid JSON (no markdown/code-fences, no extra keys):
 {"classification": "<one of the category names above>"}\n`;
+
+const EMAIL_INBOX_MANAGER_ANALYZE_SYSTEM = `Output your response in the following strict JSON format:
+{
+  "classification": "One of: Meeting Booked, Meeting Requested, Call Requested, Information Requested, Not Interested, Automated Reply, Out Of Office, Blacklist",
+  "cleaned_response": "Plain-text body including at most a short closing + name/job title. If the scheduling link is not in the signature and is in the main part of the email body do not omit it from the cleaned email body.",
+  "mobile_number": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
+  "direct_phone": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
+  "scheduling_link": "String (URL), omit key if not found",
+  "is_newsletter": "Boolean, true if this appears to be a newsletter or marketing email rather than a genuine reply"
+}
+
+Rules for cleaned_response:
+- Include the body text only.
+- Identify and keep only the latest reply block (remove quoted replies/forwards and markers like "On Mon, ... wrote:", "From:", "-----Original Message-----").
+- Strip branded HTML signatures, logos, banners, and long disclaimers.
+- Retain natural signature closings of up to 2 lines (e.g., "Best," + name, optionally job title).
+- If the scheduling link is not in the signature and is in the main part of the email body, do not omit it from cleaned_response.
+
+Rules for signature fields:
+- Extract only mobile_number, direct_phone, and scheduling_link.
+- Normalize phone numbers to E.164 format where possible. If no country code is present, leave in original format (do NOT guess).
+- Omit these keys entirely if not present.
+- Do not include extracted values inside cleaned_response.
+
+Meeting Booked classification notes:
+- Choose "Meeting Booked" ONLY if: an explicit date/time is accepted, OR the message confirms a booking/invite acceptance, OR the body explicitly instructs to book via THEIR scheduling link ("use my Calendly", "book via my link").
+- Do NOT choose "Meeting Booked" if there is only a generic request for availability, or if a link exists only in a signature without explicit instruction.
+- If they request a meeting but no time is confirmed → "Meeting Requested".
+- If they request a phone call but no time is confirmed → "Call Requested" (only if explicitly a phone call).
+
+Automated Reply vs Out Of Office:
+- Use "Automated Reply" for generic auto-acknowledgements (e.g., "we received your message", "thank you for contacting us").
+- Use "Out Of Office" specifically for absence/vacation/leave notifications.
+
+Blacklist classification notes:
+- Use "Blacklist" for explicit unsubscribe/removal requests, hostile opt-out language, spam complaints, bounces, or "inbox not monitored / no longer in use".
+
+Newsletter / marketing detection notes:
+- is_newsletter = true ONLY if you are very certain this is a marketing/newsletter blast (unsubscribe footer, digest/promotional template, broad marketing content, no reference to the outreach).
+- is_newsletter = false for genuine human replies, auto-replies, or transactional emails.
+
+Always output valid JSON. Always include classification, cleaned_response, and is_newsletter.`;
 
 const AUTO_REPLY_GATE_SYSTEM = `You decide whether an inbound reply warrants sending a reply back.
 
@@ -267,6 +310,18 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
           role: "user",
           content: "Transcript (chronological; newest at the end):\n\n{{transcript}}",
         },
+      ],
+    },
+    {
+      key: "sentiment.email_inbox_analyze.v1",
+      featureId: "sentiment.email_inbox_analyze",
+      name: "Email Inbox Analyze",
+      description: "Classifies + cleans inbound email replies and extracts signature fields.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [
+        { role: "system", content: EMAIL_INBOX_MANAGER_ANALYZE_SYSTEM },
+        { role: "user", content: "{{payload}}" },
       ],
     },
     {

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, isOptOutText, SENTIMENT_TO_STATUS, isPositiveSentiment, type SentimentTag } from "@/lib/sentiment";
+import { analyzeInboundEmailReply, buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, isOptOutText, SENTIMENT_TO_STATUS, isPositiveSentiment, type SentimentTag } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraft } from "@/actions/message-actions";
 import { findOrCreateLead } from "@/lib/lead-matching";
@@ -102,6 +102,29 @@ type Client = {
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+function mapEmailInboxClassificationToSentimentTag(classification: string): SentimentTag {
+  switch (classification) {
+    case "Meeting Booked":
+      return "Meeting Booked";
+    case "Meeting Requested":
+      return "Meeting Requested";
+    case "Call Requested":
+      return "Call Requested";
+    case "Information Requested":
+      return "Information Requested";
+    case "Not Interested":
+      return "Not Interested";
+    case "Automated Reply":
+      return "Automated Reply";
+    case "Out Of Office":
+      return "Out of Office";
+    case "Blacklist":
+      return "Blacklist";
+    default:
+      return "Neutral";
+  }
+}
 
 function stripQuotedSections(text: string): string {
   let result = text
@@ -979,6 +1002,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   // If Inboxxia already marked as interested, use that; otherwise classify with AI
   // Note: Any inbound reply will reclassify sentiment, clearing "Follow Up" or "Snoozed" tags
   let sentimentTag: SentimentTag;
+  let cleanedBodyForStorage: string = cleaned.cleaned || contentForClassification;
   const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
   const mustBlacklist =
     isOptOutText(inboundCombinedForSafety) ||
@@ -989,7 +1013,32 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   } else if (reply.interested === true) {
     sentimentTag = "Interested";
   } else {
-    sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
+    const analysis = await analyzeInboundEmailReply({
+      clientId: client.id,
+      leadId: lead.id,
+      clientName: client.name,
+      lead: {
+        first_name: lead.firstName ?? null,
+        last_name: lead.lastName ?? null,
+        email: lead.email ?? null,
+        time_received: reply.date_received ?? null,
+      },
+      subject: reply.email_subject ?? null,
+      body_text: reply.text_body ?? null,
+      provider_cleaned_text: cleaned.cleaned ?? null,
+      entire_conversation_thread_html: reply.html_body ?? null,
+      automated_reply: reply.automated_reply ?? null,
+      conversation_transcript: transcript,
+    });
+
+    if (analysis) {
+      sentimentTag = mapEmailInboxClassificationToSentimentTag(analysis.classification);
+      if (analysis.cleaned_response?.trim()) {
+        cleanedBodyForStorage = analysis.cleaned_response.trim();
+      }
+    } else {
+      sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
+    }
   }
 
   // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
@@ -1008,7 +1057,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
       emailBisonReplyId,
       channel: "email",
       source: "zrg", // Inbound replies are processed by ZRG
-      body: cleaned.cleaned || contentForClassification,
+      body: cleanedBodyForStorage,
       rawText: cleaned.rawText ?? null,
       rawHtml: cleaned.rawHtml ?? null,
       subject: reply.email_subject ?? null,
@@ -1047,7 +1096,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   );
 
   // If the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
-  const inboundText = (cleaned.cleaned || contentForClassification || "").trim();
+  const inboundText = (cleanedBodyForStorage || "").trim();
   const snoozeKeywordHit =
     /\b(after|until|from)\b/i.test(inboundText) &&
     /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
@@ -1069,7 +1118,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   }
 
   // Auto-booking: only books when the lead clearly accepts one of the offered slots.
-  const autoBook = await processMessageForAutoBooking(lead.id, cleaned.cleaned || contentForClassification);
+  const autoBook = await processMessageForAutoBooking(lead.id, cleanedBodyForStorage);
   if (autoBook.booked) {
     console.log(`[Auto-Book] Booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
   }
@@ -1331,6 +1380,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
 
   const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
   const contentForClassification = cleaned.cleaned || cleaned.rawText || cleaned.rawHtml || "";
+  const cleanedBodyForStorage = cleaned.cleaned || contentForClassification;
   const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
   const mustBlacklist =
     isOptOutText(inboundCombinedForSafety) ||
@@ -1348,7 +1398,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
       emailBisonReplyId,
       channel: "email",
       source: "zrg",
-      body: cleaned.cleaned || contentForClassification,
+      body: cleanedBodyForStorage,
       rawText: cleaned.rawText ?? null,
       rawHtml: cleaned.rawHtml ?? null,
       subject: reply.email_subject ?? null,
@@ -1380,7 +1430,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   );
 
   // If the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
-  const inboundText = (cleaned.cleaned || contentForClassification || "").trim();
+  const inboundText = (cleanedBodyForStorage || "").trim();
   const snoozeKeywordHit =
     /\b(after|until|from)\b/i.test(inboundText) &&
     /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
@@ -1401,7 +1451,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     }
   }
 
-  const autoBook = await processMessageForAutoBooking(lead.id, cleaned.cleaned || contentForClassification);
+  const autoBook = await processMessageForAutoBooking(lead.id, cleanedBodyForStorage);
   if (autoBook.booked) {
     console.log(`[Auto-Book] Booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
   }
@@ -1641,7 +1691,46 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   const wasFollowUp = previousSentiment === "Follow Up" || previousSentiment === "Snoozed";
 
   // Classify sentiment - any inbound reply clears "Follow Up" or "Snoozed" tags
-  const sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
+  let sentimentTag: SentimentTag;
+  let cleanedBodyForStorage: string = cleaned.cleaned || contentForClassification;
+
+  const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
+  const mustBlacklist =
+    isOptOutText(inboundCombinedForSafety) ||
+    detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
+
+  if (mustBlacklist) {
+    sentimentTag = "Blacklist";
+  } else if (reply.interested === true) {
+    sentimentTag = "Interested";
+  } else {
+    const analysis = await analyzeInboundEmailReply({
+      clientId: client.id,
+      leadId: lead.id,
+      clientName: client.name,
+      lead: {
+        first_name: lead.firstName ?? null,
+        last_name: lead.lastName ?? null,
+        email: lead.email ?? null,
+        time_received: reply.date_received ?? null,
+      },
+      subject: reply.email_subject ?? null,
+      body_text: reply.text_body ?? null,
+      provider_cleaned_text: cleaned.cleaned ?? null,
+      entire_conversation_thread_html: reply.html_body ?? null,
+      automated_reply: reply.automated_reply ?? null,
+      conversation_transcript: transcript,
+    });
+
+    if (analysis) {
+      sentimentTag = mapEmailInboxClassificationToSentimentTag(analysis.classification);
+      if (analysis.cleaned_response?.trim()) {
+        cleanedBodyForStorage = analysis.cleaned_response.trim();
+      }
+    } else {
+      sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
+    }
+  }
 
   // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
   if (wasFollowUp) {
@@ -1658,7 +1747,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
       emailBisonReplyId,
       channel: "email",
       source: "zrg",
-      body: cleaned.cleaned || contentForClassification,
+      body: cleanedBodyForStorage,
       rawText: cleaned.rawText ?? null,
       rawHtml: cleaned.rawHtml ?? null,
       subject: reply.email_subject ?? null,
@@ -1696,7 +1785,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   );
 
   // If the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
-  const inboundText = (cleaned.cleaned || contentForClassification || "").trim();
+  const inboundText = (cleanedBodyForStorage || "").trim();
   const snoozeKeywordHit =
     /\b(after|until|from)\b/i.test(inboundText) &&
     /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
@@ -1718,7 +1807,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   }
 
   // Auto-booking: only books when the lead clearly accepts one of the offered slots.
-  const autoBook = await processMessageForAutoBooking(lead.id, cleaned.cleaned || contentForClassification);
+  const autoBook = await processMessageForAutoBooking(lead.id, cleanedBodyForStorage);
   if (autoBook.booked) {
     console.log(`[Auto-Book] Booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
   }
