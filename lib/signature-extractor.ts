@@ -8,6 +8,7 @@ import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
+import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { normalizeLinkedInUrl } from "./linkedin-utils";
 import { toStoredPhone } from "./phone-utils";
 
@@ -63,6 +64,17 @@ Expected lead name: ${leadName}
 Email body:
 ${emailBody.slice(0, 5000)}`;
 
+    const budget = await computeAdaptiveMaxOutputTokens({
+      model: "gpt-5-nano",
+      instructions,
+      input: signatureInput,
+      min: 450,
+      max: 900,
+      overheadTokens: 256,
+      outputScale: 0.2,
+      preferApiCount: true,
+    });
+
     let response: Awaited<ReturnType<typeof runResponseWithInteraction>>["response"];
     let interactionId: string | null = null;
 
@@ -98,7 +110,7 @@ ${emailBody.slice(0, 5000)}`;
           reasoning: { effort: "minimal" },
           // `max_output_tokens` includes reasoning tokens; keep headroom so we don't
           // end up with an empty/truncated JSON body.
-          max_output_tokens: 450,
+          max_output_tokens: budget.maxOutputTokens,
         },
       });
       response = result.response;
@@ -130,7 +142,7 @@ ${emailBody.slice(0, 5000)}`;
           instructions,
           input: signatureInput,
           reasoning: { effort: "minimal" },
-          max_output_tokens: 450,
+          max_output_tokens: budget.maxOutputTokens,
         },
       });
 

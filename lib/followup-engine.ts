@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequence-actions";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { runResponse } from "@/lib/ai/openai-telemetry";
+import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
 import { sendMessage } from "@/actions/message-actions";
 import { sendEmailReply } from "@/actions/email-actions";
@@ -1336,18 +1337,30 @@ export async function parseAcceptedTimeFromMessage(
       "Match the message to one of the provided slots; reply with a slot number or NONE.";
     const systemPrompt = systemTemplate.replaceAll("{slotContext}", slotContext);
 
-    // GPT-5-mini with low reasoning effort for time parsing using Responses API
+    const model = "gpt-5-mini";
+    const budget = await computeAdaptiveMaxOutputTokens({
+      model,
+      instructions: systemPrompt,
+      input: message,
+      min: 96,
+      max: 400,
+      overheadTokens: 128,
+      outputScale: 0.1,
+      preferApiCount: true,
+    });
+
+    // GPT-5-mini with minimal reasoning effort for time parsing using Responses API
     const response = await runResponse({
       clientId: meta.clientId,
       leadId: meta.leadId,
       featureId: promptTemplate?.featureId || "followup.parse_accepted_time",
       promptKey: promptTemplate?.key || "followup.parse_accepted_time.v1",
       params: {
-        model: "gpt-5-mini",
+        model,
         instructions: systemPrompt,
         input: message,
-        reasoning: { effort: "low" },
-        max_output_tokens: 10,
+        reasoning: { effort: "minimal" },
+        max_output_tokens: budget.maxOutputTokens,
       },
     });
 
@@ -1388,18 +1401,30 @@ export async function detectMeetingAcceptedIntent(
       promptTemplate?.messages.find((m) => m.role === "system")?.content ||
       "Determine if the message indicates acceptance. Reply YES or NO.";
 
-    // GPT-5-mini with low reasoning effort for intent detection using Responses API
+    const model = "gpt-5-mini";
+    const budget = await computeAdaptiveMaxOutputTokens({
+      model,
+      instructions: systemPrompt,
+      input: message,
+      min: 64,
+      max: 256,
+      overheadTokens: 96,
+      outputScale: 0.1,
+      preferApiCount: true,
+    });
+
+    // GPT-5-mini with minimal reasoning effort for intent detection using Responses API
     const response = await runResponse({
       clientId: meta.clientId,
       leadId: meta.leadId,
       featureId: promptTemplate?.featureId || "followup.detect_meeting_accept_intent",
       promptKey: promptTemplate?.key || "followup.detect_meeting_accept_intent.v1",
       params: {
-        model: "gpt-5-mini",
+        model,
         instructions: systemPrompt,
         input: message,
-        reasoning: { effort: "low" },
-        max_output_tokens: 5,
+        reasoning: { effort: "minimal" },
+        max_output_tokens: budget.maxOutputTokens,
       },
     });
 

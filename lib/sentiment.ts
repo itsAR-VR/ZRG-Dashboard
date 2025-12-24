@@ -3,6 +3,7 @@ import "server-only";
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
+import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import {
   isPositiveSentiment,
@@ -501,6 +502,17 @@ export async function analyzeInboundEmailReply(opts: {
 
   const availability = (opts.availability_text || "").trim() || defaultAvailabilityText(opts.clientName);
   const userPrompt = `${JSON.stringify(userPayload, null, 2)}\n\n${availability}`;
+  const model = "gpt-5-mini";
+  const baseBudget = await computeAdaptiveMaxOutputTokens({
+    model,
+    instructions: systemPrompt,
+    input: [{ role: "user", content: userPrompt }] as const,
+    min: 1200,
+    max: 2400,
+    overheadTokens: 384,
+    outputScale: 0.15,
+    preferApiCount: true,
+  });
 
   const schema = {
     type: "object",
@@ -534,13 +546,15 @@ export async function analyzeInboundEmailReply(opts: {
         clientId: opts.clientId,
         leadId: opts.leadId,
         featureId: promptTemplate?.featureId || "sentiment.email_inbox_analyze",
-        promptKey: promptTemplate?.key || "sentiment.email_inbox_analyze.v1",
+        promptKey: (promptTemplate?.key || "sentiment.email_inbox_analyze.v1") + (attempt === 1 ? "" : `.retry${attempt}`),
         params: {
-          model: "gpt-5-mini",
+          model,
           instructions: systemPrompt,
           input: [{ role: "user", content: userPrompt }] as const,
-          reasoning: { effort: "medium" },
-          max_output_tokens: 1500,
+          // Structured output + big input: keep reasoning tight so we reliably
+          // get a JSON body instead of consuming the budget on reasoning tokens.
+          reasoning: { effort: "low" },
+          max_output_tokens: Math.min(baseBudget.maxOutputTokens + (attempt - 1) * 600, 4000),
           text: {
             verbosity: "low",
             format: { type: "json_schema", name: "email_inbox_analysis", strict: true, schema },
@@ -550,6 +564,7 @@ export async function analyzeInboundEmailReply(opts: {
 
       const raw = getTrimmedOutputText(response) || "";
       if (!raw) {
+        if (response.incomplete_details?.reason === "max_output_tokens" && attempt < maxRetries) continue;
         if (attempt < maxRetries) continue;
         if (interactionId) {
           const details = summarizeResponseForTelemetry(response);
@@ -631,6 +646,18 @@ export async function classifySentiment(
 
   const enumTags = SENTIMENT_TAGS.filter((t) => t !== "New" && t !== "Snoozed");
 
+  const model = "gpt-5-mini";
+  const baseBudget = await computeAdaptiveMaxOutputTokens({
+    model,
+    instructions: systemPrompt,
+    input: [{ role: "user", content: userPrompt }] as const,
+    min: 256,
+    max: 900,
+    overheadTokens: 256,
+    outputScale: 0.15,
+    preferApiCount: true,
+  });
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const { response, interactionId } = await runResponseWithInteraction({
@@ -639,11 +666,14 @@ export async function classifySentiment(
         featureId: promptTemplate?.featureId || "sentiment.classify",
         promptKey: promptTemplate?.key || "sentiment.classify.v1",
         params: {
-          model: "gpt-5-mini",
+          model,
           instructions: systemPrompt,
           input: [{ role: "user", content: userPrompt }] as const,
-          reasoning: { effort: "medium" },
-          max_output_tokens: 250,
+          // This is a short structured output; avoid spending the output budget on
+          // extra reasoning tokens.
+          reasoning: { effort: "low" },
+          // Scale `max_output_tokens` to input size (reasoning tokens count here).
+          max_output_tokens: Math.min(baseBudget.maxOutputTokens + (attempt - 1) * 400, 2000),
           text: {
             verbosity: "low",
             format: {

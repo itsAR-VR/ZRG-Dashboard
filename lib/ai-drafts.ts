@@ -1,5 +1,6 @@
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { runResponse } from "@/lib/ai/openai-telemetry";
+import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { prisma } from "@/lib/prisma";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
@@ -502,17 +503,29 @@ Generate an appropriate ${channel} response following the guidelines above.
           : "draft.generate.sms.v1";
     const promptTemplate = getAIPromptTemplate(promptKey);
 
+    const model = "gpt-5.1";
+    const budget = await computeAdaptiveMaxOutputTokens({
+      model,
+      instructions: systemPrompt,
+      input: inputMessages,
+      min: channel === "email" ? 800 : 160,
+      max: channel === "email" ? 1400 : 360,
+      overheadTokens: 256,
+      outputScale: 0.2,
+      preferApiCount: true,
+    });
+
     const response = await runResponse({
       clientId: lead.clientId,
       leadId,
       featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
       promptKey: promptTemplate?.key || promptKey,
       params: {
-        model: "gpt-5.1",
+        model,
         instructions: systemPrompt,
         input: inputMessages,
         reasoning: { effort: "low" },
-        max_output_tokens: channel === "email" ? 1000 : 160,
+        max_output_tokens: budget.maxOutputTokens,
       },
     });
 

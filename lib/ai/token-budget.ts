@@ -58,11 +58,16 @@ export async function computeAdaptiveMaxOutputTokens(opts: {
   min: number;
   max: number;
   /**
-   * Target `max_output_tokens` ~= `inputTokens + overhead`.
-   * This creates additional headroom for reasoning tokens (since they are counted
-   * in `max_output_tokens` for GPT-5 / o-series models).
+   * Target `max_output_tokens` ~= `inputTokens * outputScale + overheadTokens`.
+   * This creates headroom for reasoning tokens (since they are counted in
+   * `max_output_tokens` for GPT-5 / o-series models).
    */
   overheadTokens?: number;
+  /**
+   * How much the output budget should scale with input size. Reasoning tends to
+   * grow with input, but not 1:1; this keeps budgets sane for large transcripts.
+   */
+  outputScale?: number;
   /**
    * If true, attempts to call the API token-count endpoint first.
    * Falls back to heuristic if unavailable/fails.
@@ -71,6 +76,7 @@ export async function computeAdaptiveMaxOutputTokens(opts: {
 }): Promise<AdaptiveMaxOutputTokensResult> {
   const preferApiCount = Boolean(opts.preferApiCount);
   const overhead = typeof opts.overheadTokens === "number" ? opts.overheadTokens : 192;
+  const outputScale = typeof opts.outputScale === "number" ? opts.outputScale : 0.2;
 
   const apiCount = preferApiCount
     ? await countInputTokensViaApi({ model: opts.model, instructions: opts.instructions, input: opts.input })
@@ -79,15 +85,14 @@ export async function computeAdaptiveMaxOutputTokens(opts: {
   const inputTokens =
     typeof apiCount === "number" && apiCount >= 0
       ? apiCount
-      : approximateTokensFromInput(opts.input);
+      : approximateTokensFromText(opts.instructions || "") + approximateTokensFromInput(opts.input);
   const source: AdaptiveMaxOutputTokensResult["inputTokensSource"] =
     typeof apiCount === "number" && apiCount >= 0 ? "api" : "heuristic";
 
   // "Thinking tokens" live inside `max_output_tokens` as reasoning tokens.
   // Keep it roughly proportional to input size, with fixed overhead.
-  const target = inputTokens + overhead;
+  const target = Math.ceil(inputTokens * outputScale) + overhead;
   const maxOutputTokens = clampInt(target, opts.min, opts.max);
 
   return { inputTokens, inputTokensSource: source, maxOutputTokens };
 }
-

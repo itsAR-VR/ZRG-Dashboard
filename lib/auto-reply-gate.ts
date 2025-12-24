@@ -1,6 +1,8 @@
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
+import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
+import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { isOptOutText } from "@/lib/sentiment";
 
 export type AutoReplyDecision = {
@@ -96,69 +98,104 @@ Output MUST be valid JSON:
   );
 
   try {
-    const { response, interactionId } = await runResponseWithInteraction({
-      clientId: opts.clientId,
-      leadId: opts.leadId,
-      featureId: promptTemplate?.featureId || "auto_reply_gate.decide",
-      promptKey: promptTemplate?.key || "auto_reply_gate.decide.v1",
-      params: {
-        model: "gpt-5-mini",
-        reasoning: { effort: "low" },
-        max_output_tokens: 200,
-        instructions: system,
-        text: {
-          verbosity: "low",
-          format: {
-            type: "json_schema",
-            name: "auto_reply_gate",
-            strict: true,
-            schema: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                should_reply: { type: "boolean" },
-                reason: { type: "string" },
-                follow_up_time: { type: ["string", "null"] },
-              },
-              required: ["should_reply", "reason"],
-            },
-        },
-        },
-        input: [{ role: "user", content: user }],
-      },
+    const model = "gpt-5-mini";
+    const input = [{ role: "user" as const, content: user }];
+    const baseBudget = await computeAdaptiveMaxOutputTokens({
+      model,
+      instructions: system,
+      input,
+      min: 256,
+      max: 900,
+      overheadTokens: 256,
+      outputScale: 0.2,
+      preferApiCount: true,
     });
 
-    const text = response.output_text?.trim();
-    if (!text) {
-      if (interactionId) {
-        await markAiInteractionError(interactionId, "Post-process error: empty output_text");
-      }
-      return { shouldReply: false, reason: "No decision returned" };
-    }
+    const attempts = [
+      baseBudget.maxOutputTokens,
+      Math.min(Math.max(baseBudget.maxOutputTokens, 512) + 400, 1600),
+    ];
 
-    const jsonText = text.replace(/```json\n?|\n?```/g, "").trim();
-    let parsed: { should_reply: boolean; reason: string; follow_up_time?: string | null };
-    try {
-      parsed = JSON.parse(jsonText) as {
-        should_reply: boolean;
-        reason: string;
-        follow_up_time?: string | null;
+    let lastInteractionId: string | null = null;
+    let lastErrorMessage: string | null = null;
+
+    for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
+      const { response, interactionId } = await runResponseWithInteraction({
+        clientId: opts.clientId,
+        leadId: opts.leadId,
+        featureId: promptTemplate?.featureId || "auto_reply_gate.decide",
+        promptKey:
+          (promptTemplate?.key || "auto_reply_gate.decide.v1") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
+        params: {
+          model,
+          reasoning: { effort: "low" },
+          max_output_tokens: attempts[attemptIndex],
+          instructions: system,
+          text: {
+            verbosity: "low",
+            format: {
+              type: "json_schema",
+              name: "auto_reply_gate",
+              strict: true,
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  should_reply: { type: "boolean" },
+                  reason: { type: "string" },
+                  follow_up_time: { type: ["string", "null"] },
+                },
+                required: ["should_reply", "reason"],
+              },
+            },
+          },
+          input,
+        },
+      });
+
+      lastInteractionId = interactionId;
+
+      const text = getTrimmedOutputText(response);
+      if (!text) {
+        const details = summarizeResponseForTelemetry(response);
+        lastErrorMessage = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
+        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < attempts.length - 1) {
+          continue;
+        }
+        break;
+      }
+
+      let parsed: { should_reply: boolean; reason: string; follow_up_time?: string | null };
+      try {
+        parsed = JSON.parse(extractJsonObjectFromText(text)) as {
+          should_reply: boolean;
+          reason: string;
+          follow_up_time?: string | null;
+        };
+      } catch (parseError) {
+        const details = summarizeResponseForTelemetry(response);
+        lastErrorMessage = `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})${
+          details ? ` (${details})` : ""
+        }`;
+
+        if (attemptIndex < attempts.length - 1) {
+          continue;
+        }
+        break;
+      }
+
+      return {
+        shouldReply: Boolean(parsed.should_reply),
+        reason: String(parsed.reason || "").slice(0, 240) || "No reason provided",
+        ...(parsed.follow_up_time ? { followUpTime: parsed.follow_up_time } : {}),
       };
-    } catch (parseError) {
-      if (interactionId) {
-        await markAiInteractionError(
-          interactionId,
-          `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})`
-        );
-      }
-      return { shouldReply: false, reason: "Decision parse error" };
     }
 
-    return {
-      shouldReply: Boolean(parsed.should_reply),
-      reason: String(parsed.reason || "").slice(0, 240) || "No reason provided",
-      ...(parsed.follow_up_time ? { followUpTime: parsed.follow_up_time } : {}),
-    };
+    if (lastInteractionId && lastErrorMessage) {
+      await markAiInteractionError(lastInteractionId, lastErrorMessage);
+    }
+
+    return { shouldReply: false, reason: "No decision returned" };
   } catch (error) {
     console.error("[AutoReplyGate] Decision failed:", error);
     return { shouldReply: false, reason: "Decision error" };
