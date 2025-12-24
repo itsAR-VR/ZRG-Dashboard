@@ -2,6 +2,8 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { shouldGenerateDraft } from "@/lib/ai-drafts";
+import { isPositiveSentiment, SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared";
 
 export interface CRMLeadData {
   id: string;
@@ -135,6 +137,54 @@ export async function updateLeadStatus(
   } catch (error) {
     console.error("Failed to update lead status:", error);
     return { success: false, error: "Failed to update status" };
+  }
+}
+
+/**
+ * Manually set a lead's sentiment tag.
+ */
+export async function updateLeadSentimentTag(
+  leadId: string,
+  sentimentTag: string
+): Promise<{ success: boolean; sentimentTag?: string; error?: string }> {
+  try {
+    const nextTag = sentimentTag as SentimentTag;
+    if (!SENTIMENT_TAGS.includes(nextTag)) {
+      return { success: false, error: "Invalid sentiment tag" };
+    }
+
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: {
+        sentimentTag: nextTag,
+      },
+    });
+
+    // Keep system policies consistent with sentiment changes.
+    // If sentiment is no longer positive, don't leave enrichment stuck in "pending".
+    if (!isPositiveSentiment(nextTag)) {
+      await prisma.lead.updateMany({
+        where: { id: leadId, enrichmentStatus: "pending" },
+        data: { enrichmentStatus: "not_needed" },
+      });
+    }
+
+    // Draft policy/backstop: only generate drafts for eligible sentiments.
+    if (!shouldGenerateDraft(nextTag)) {
+      await prisma.aIDraft.updateMany({
+        where: {
+          leadId,
+          status: "pending",
+        },
+        data: { status: "rejected" },
+      });
+    }
+
+    revalidatePath("/");
+    return { success: true, sentimentTag: nextTag };
+  } catch (error) {
+    console.error("Failed to update lead sentiment tag:", error);
+    return { success: false, error: "Failed to update sentiment tag" };
   }
 }
 

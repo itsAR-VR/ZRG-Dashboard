@@ -3,51 +3,14 @@ import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-
-// Sentiment tags for classification
-export const SENTIMENT_TAGS = [
-  "New", // No inbound replies yet
-  "Meeting Requested",
-  "Call Requested",
-  "Information Requested",
-  "Not Interested",
-  "Blacklist",
-  "Follow Up",
-  "Out of Office",
-  "Automated Reply",
-  "Interested",
-  "Neutral",
-  "Snoozed", // Temporarily hidden from follow-up list
-] as const;
-
-export type SentimentTag = (typeof SENTIMENT_TAGS)[number];
-
-// Map sentiment tags to lead statuses
-export const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
-  "New": "new",
-  "Meeting Requested": "meeting-requested",
-  "Call Requested": "qualified",
-  "Information Requested": "qualified",
-  "Not Interested": "not-interested",
-  "Blacklist": "blacklisted",
-  "Follow Up": "new",
-  "Out of Office": "new",
-  "Automated Reply": "new",
-  "Interested": "qualified",
-  "Neutral": "new",
-  "Snoozed": "new",
-};
-
-// Positive sentiments that trigger Clay enrichment
-// These indicate the lead is engaged and worth enriching for phone/LinkedIn
-export const POSITIVE_SENTIMENTS = [
-  "Meeting Requested",
-  "Call Requested",
-  "Information Requested",
-  "Interested",
-] as const;
-
-export type PositiveSentiment = (typeof POSITIVE_SENTIMENTS)[number];
+import {
+  isPositiveSentiment,
+  POSITIVE_SENTIMENTS,
+  SENTIMENT_TAGS,
+  SENTIMENT_TO_STATUS,
+  type PositiveSentiment,
+  type SentimentTag,
+} from "@/lib/sentiment-shared";
 
 const SENTIMENT_MIN_OUTPUT_TOKENS = 480;
 const SENTIMENT_MAX_OUTPUT_TOKENS = (() => {
@@ -55,14 +18,14 @@ const SENTIMENT_MAX_OUTPUT_TOKENS = (() => {
   return Number.isFinite(raw) ? Math.max(SENTIMENT_MIN_OUTPUT_TOKENS, Math.trunc(raw)) : 3500;
 })();
 
-/**
- * Check if a sentiment tag is positive (triggers enrichment)
- * Used to determine when to auto-trigger Clay enrichment
- */
-export function isPositiveSentiment(tag: string | null): tag is PositiveSentiment {
-  if (!tag) return false;
-  return POSITIVE_SENTIMENTS.includes(tag as PositiveSentiment);
-}
+export {
+  isPositiveSentiment,
+  POSITIVE_SENTIMENTS,
+  SENTIMENT_TAGS,
+  SENTIMENT_TO_STATUS,
+  type PositiveSentiment,
+  type SentimentTag,
+};
 
 // ============================================================================
 // REGEX BOUNCE DETECTION

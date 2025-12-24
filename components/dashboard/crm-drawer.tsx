@@ -32,7 +32,7 @@ import {
   ExternalLink,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { updateLeadStatus, snoozeLead, bookMeeting, updateLeadAutomationSettings } from "@/actions/crm-actions"
+import { bookMeeting, snoozeLead, updateLeadAutomationSettings, updateLeadSentimentTag, updateLeadStatus } from "@/actions/crm-actions"
 import { createFollowUpTask } from "@/actions/followup-actions"
 import {
   getLeadFollowUpInstances,
@@ -66,6 +66,7 @@ import {
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared"
 
 interface CrmDrawerProps {
   lead: Lead
@@ -93,9 +94,19 @@ const snoozeOptions = [
   { value: 14, label: "2 weeks" },
 ]
 
+const MANUAL_SENTIMENT_TAGS = SENTIMENT_TAGS.filter((tag) => tag !== "Snoozed") as readonly SentimentTag[]
+
+function normalizeSentimentTag(tag: string | null | undefined): SentimentTag {
+  const match = MANUAL_SENTIMENT_TAGS.find((t) => t === tag)
+  return match || "New"
+}
+
 export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProps) {
   const [isPending, startTransition] = useTransition()
   const [currentStatus, setCurrentStatus] = useState(lead.status)
+  const [currentSentimentTag, setCurrentSentimentTag] = useState<SentimentTag>(
+    normalizeSentimentTag(lead.sentimentTag)
+  )
   const [isSnoozeDialogOpen, setIsSnoozeDialogOpen] = useState(false)
   const [isFollowUpDialogOpen, setIsFollowUpDialogOpen] = useState(false)
   const [followUpMessage, setFollowUpMessage] = useState("")
@@ -127,6 +138,22 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
 
   // Enrichment state
   const [isEnriching, setIsEnriching] = useState(false)
+
+  // Keep local state in sync when the selected lead changes or refreshes.
+  useEffect(() => {
+    setCurrentStatus(lead.status)
+    setCurrentSentimentTag(normalizeSentimentTag(lead.sentimentTag))
+    setAutoReplyEnabled(lead.autoReplyEnabled || false)
+    setAutoFollowUpEnabled(lead.autoFollowUpEnabled || false)
+    setAutoBookMeetingsEnabled(lead.autoBookMeetingsEnabled ?? true)
+  }, [
+    lead.id,
+    lead.status,
+    lead.sentimentTag,
+    lead.autoReplyEnabled,
+    lead.autoFollowUpEnabled,
+    lead.autoBookMeetingsEnabled,
+  ])
   
   // Enrichment polling hook for manual enrichment
   const { startPolling, isPolling } = useEnrichmentPolling({
@@ -377,6 +404,22 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
       } else {
         toast.error(result.error || "Failed to update status")
         setCurrentStatus(lead.status) // Revert on error
+      }
+    })
+  }
+
+  const handleSentimentChange = async (nextTag: SentimentTag) => {
+    const previousTag = currentSentimentTag
+    setCurrentSentimentTag(nextTag)
+
+    startTransition(async () => {
+      const result = await updateLeadSentimentTag(lead.id, nextTag)
+      if (result.success) {
+        toast.success("Sentiment updated successfully")
+        onLeadUpdate?.()
+      } else {
+        toast.error(result.error || "Failed to update sentiment")
+        setCurrentSentimentTag(previousTag)
       }
     })
   }
@@ -725,6 +768,33 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          <Separator />
+
+          {/* Sentiment */}
+          <div className="space-y-3">
+            <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Sentiment</h4>
+            <Select
+              value={currentSentimentTag}
+              onValueChange={(value) => handleSentimentChange(value as SentimentTag)}
+              disabled={isPending}
+            >
+              <SelectTrigger className="w-full">
+                {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MANUAL_SENTIMENT_TAGS.map((tag) => (
+                  <SelectItem key={tag} value={tag}>
+                    {tag}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Sets the lead&apos;s sentiment tag for filtering and automation.
+            </p>
           </div>
 
           <Separator />
