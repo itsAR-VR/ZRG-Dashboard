@@ -7,6 +7,7 @@ import { Separator } from "@/components/ui/separator"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { 
   Mail, 
   Phone, 
@@ -32,7 +33,8 @@ import {
   ExternalLink,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { bookMeeting, snoozeLead, updateLeadAutomationSettings, updateLeadSentimentTag, updateLeadStatus } from "@/actions/crm-actions"
+import { BookingMonthAvailabilityPicker } from "@/components/dashboard/booking-month-availability-picker"
+import { bookMeeting, snoozeLead, snoozeLeadUntil, updateLeadAutomationSettings, updateLeadSentimentTag, updateLeadStatus } from "@/actions/crm-actions"
 import { createFollowUpTask } from "@/actions/followup-actions"
 import {
   getLeadFollowUpInstances,
@@ -112,6 +114,7 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
   const [followUpMessage, setFollowUpMessage] = useState("")
   const [isBookingMeeting, setIsBookingMeeting] = useState(false)
   const [isSnoozing, setIsSnoozing] = useState(false)
+  const [customSnoozeAt, setCustomSnoozeAt] = useState("")
   const [isCreatingFollowUp, setIsCreatingFollowUp] = useState(false)
   
   // Automation states
@@ -466,6 +469,36 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
       if (result.success && result.snoozedUntil) {
         toast.success(`Lead snoozed until ${result.snoozedUntil.toLocaleDateString()}`)
         setIsSnoozeDialogOpen(false)
+        setCustomSnoozeAt("")
+        onLeadUpdate?.()
+      } else {
+        toast.error(result.error || "Failed to snooze lead")
+      }
+    } finally {
+      setIsSnoozing(false)
+    }
+  }
+
+  const handleCustomSnooze = async () => {
+    const raw = customSnoozeAt.trim()
+    if (!raw) {
+      toast.error("Pick a date/time to snooze until")
+      return
+    }
+
+    const dt = new Date(raw)
+    if (Number.isNaN(dt.getTime())) {
+      toast.error("Invalid date/time")
+      return
+    }
+
+    setIsSnoozing(true)
+    try {
+      const result = await snoozeLeadUntil(lead.id, dt.toISOString())
+      if (result.success && result.snoozedUntil) {
+        toast.success(`Lead snoozed until ${result.snoozedUntil.toLocaleString()}`)
+        setIsSnoozeDialogOpen(false)
+        setCustomSnoozeAt("")
         onLeadUpdate?.()
       } else {
         toast.error(result.error || "Failed to snooze lead")
@@ -1139,6 +1172,32 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                 {option.label}
               </Button>
             ))}
+
+            <Separator className="my-2" />
+
+            <div className="grid gap-2">
+              <Label htmlFor="custom-snooze">Custom snooze until</Label>
+              <Input
+                id="custom-snooze"
+                type="datetime-local"
+                value={customSnoozeAt}
+                onChange={(e) => setCustomSnoozeAt(e.target.value)}
+                disabled={isSnoozing}
+              />
+              <Button
+                variant="default"
+                className="w-full justify-start"
+                onClick={handleCustomSnooze}
+                disabled={isSnoozing || !customSnoozeAt.trim()}
+              >
+                {isSnoozing ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <AlarmClock className="mr-2 h-4 w-4" />
+                )}
+                Snooze until date/time
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -1207,37 +1266,11 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                 <p className="text-xs mt-1">Check calendar link settings.</p>
               </div>
             ) : (
-              <div className="max-h-[65vh] overflow-y-auto pr-1">
-                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                  {availableSlots.map((slot) => (
-                    <button
-                      key={slot.datetime}
-                      onClick={() => setSelectedSlot(slot.datetime)}
-                      className={cn(
-                        "w-full rounded-lg border p-3 text-left transition-all",
-                        selectedSlot === slot.datetime
-                          ? "border-primary bg-primary/10 ring-1 ring-primary"
-                          : "border-border hover:border-primary/50 hover:bg-muted/50"
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-start gap-2">
-                          <Clock className="mt-0.5 h-4 w-4 text-muted-foreground" />
-                          <div>
-                            <div className="font-medium leading-tight">{slot.label}</div>
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              Offered: {slot.offeredCount}
-                            </div>
-                          </div>
-                        </div>
-                        {selectedSlot === slot.datetime && (
-                          <Check className="h-4 w-4 text-primary" />
-                        )}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <BookingMonthAvailabilityPicker
+                slots={availableSlots}
+                selectedSlot={selectedSlot}
+                onSelectSlot={setSelectedSlot}
+              />
             )}
           </div>
           <DialogFooter>

@@ -353,8 +353,32 @@ export async function snoozeLead(
   days: number = 2
 ): Promise<{ success: boolean; snoozedUntil?: Date; error?: string }> {
   try {
-    const snoozedUntil = new Date();
-    snoozedUntil.setDate(snoozedUntil.getDate() + days);
+    const snoozedUntil = new Date(Date.now() + Math.max(0, Math.trunc(days)) * 24 * 60 * 60 * 1000);
+    return snoozeLeadUntil(leadId, snoozedUntil.toISOString());
+  } catch (error) {
+    console.error("Failed to snooze lead:", error);
+    return { success: false, error: "Failed to snooze lead" };
+  }
+}
+
+/**
+ * Snooze a lead until an exact date/time (ISO string).
+ * This enables longer/explicit snoozes (e.g., > 2 weeks).
+ */
+export async function snoozeLeadUntil(
+  leadId: string,
+  snoozedUntilIso: string
+): Promise<{ success: boolean; snoozedUntil?: Date; error?: string }> {
+  try {
+    const snoozedUntil = new Date(snoozedUntilIso);
+    if (Number.isNaN(snoozedUntil.getTime())) {
+      return { success: false, error: "Invalid snooze date" };
+    }
+
+    const now = new Date();
+    if (snoozedUntil <= now) {
+      return { success: false, error: "Snooze date must be in the future" };
+    }
 
     await prisma.lead.update({
       where: { id: leadId },
@@ -365,10 +389,7 @@ export async function snoozeLead(
     await prisma.followUpInstance.updateMany({
       where: {
         leadId,
-        OR: [
-          { status: "active" },
-          { status: "paused", pausedReason: "lead_replied" },
-        ],
+        OR: [{ status: "active" }, { status: "paused", pausedReason: "lead_replied" }],
       },
       data: {
         status: "paused",
@@ -380,7 +401,7 @@ export async function snoozeLead(
     revalidatePath("/");
     return { success: true, snoozedUntil };
   } catch (error) {
-    console.error("Failed to snooze lead:", error);
+    console.error("Failed to snooze lead until:", error);
     return { success: false, error: "Failed to snooze lead" };
   }
 }
