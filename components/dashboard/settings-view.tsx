@@ -29,6 +29,7 @@ import {
   Building2,
   Target,
   Star,
+  AlertTriangle,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -83,6 +84,7 @@ import {
   type GHLCalendar,
   type GHLUser,
 } from "@/actions/booking-actions"
+import { backfillNoResponseFollowUpsForAwaitingReplyLeads } from "@/actions/crm-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
 
@@ -101,6 +103,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   // Settings state from database
   const [settings, setSettings] = useState<UserSettingsData | null>(null)
+  const [isBackfillingFollowUps, setIsBackfillingFollowUps] = useState(false)
 
   // Local state for form inputs
   const [aiPersona, setAiPersona] = useState({
@@ -449,6 +452,40 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     setIsSaving(false)
   }
 
+  const handleBackfillFollowUps = async () => {
+    if (!activeWorkspace) {
+      toast.error("Select a workspace first")
+      return
+    }
+
+    setIsBackfillingFollowUps(true)
+    try {
+      const res = await backfillNoResponseFollowUpsForAwaitingReplyLeads(activeWorkspace, { limit: 200 })
+      if (!res.success) {
+        toast.error(res.error || "Failed to backfill follow-ups")
+        return
+      }
+
+      toast.success("Backfill complete", {
+        description: `Checked ${res.checked ?? 0}, enabled ${res.enabledNow ?? 0}, started ${res.started ?? 0}`,
+      })
+
+      // Refresh settings + calendar links so the banner can update without a full reload
+      const refreshed = await getUserSettings(activeWorkspace)
+      if (refreshed.success && refreshed.data) {
+        setSettings(refreshed.data)
+      }
+      const links = await getCalendarLinks(activeWorkspace)
+      if (links.success && links.data) {
+        setCalendarLinks(links.data)
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to backfill follow-ups")
+    } finally {
+      setIsBackfillingFollowUps(false)
+    }
+  }
+
   // Qualification question handlers
   const handleAddQuestion = useCallback(() => {
     if (!newQuestion.trim()) return
@@ -668,6 +705,56 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
           {/* General Settings */}
           <TabsContent value="general" className="space-y-6">
+            {settings?.autoFollowUpsOnReply ? (() => {
+              const missing: string[] = []
+              const senderName = (aiPersona.name || "").trim()
+              const companyName = (companyContext.companyName || "").trim()
+              const targetResult = (companyContext.targetResult || "").trim()
+              const hasDefaultCalendar = calendarLinks.some((l) => l.isDefault)
+
+              if (!senderName) missing.push("Sender name (AI Persona)")
+              if (!companyName) missing.push("Company name")
+              if (!targetResult) missing.push("Target result/outcome ({result})")
+              if (!hasDefaultCalendar) missing.push("Default calendar link")
+
+              if (missing.length === 0) return null
+
+              return (
+                <Card className="border-amber-500/30 bg-amber-500/5">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center gap-2">
+                      <AlertTriangle className="h-5 w-5 text-amber-200" />
+                      <span className="text-amber-200">Follow-ups are ON, but templates are missing context</span>
+                    </CardTitle>
+                    <CardDescription className="text-amber-200/70">
+                      Follow-up messages may fall back to placeholders or generic wording until these are filled out.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="text-sm text-amber-100/80">
+                      Missing: {missing.join(", ")}
+                      {airtableModeEnabled ? " • Airtable Mode is ON (email steps are skipped in sequences)." : null}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="secondary"
+                        onClick={handleBackfillFollowUps}
+                        disabled={isBackfillingFollowUps}
+                      >
+                        {isBackfillingFollowUps ? (
+                          <>
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            Backfilling…
+                          </>
+                        ) : (
+                          "Backfill follow-ups for awaiting-reply leads"
+                        )}
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              )
+            })() : null}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">

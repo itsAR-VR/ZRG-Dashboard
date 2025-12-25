@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { processFollowUpsDue, resumeGhostedFollowUps, resumeSnoozedFollowUps } from "@/lib/followup-engine";
 import { refreshAvailabilityCachesDue } from "@/lib/availability-cache";
+import { backfillNoResponseFollowUpsDueOnCron } from "@/lib/followup-backfill";
 
 /**
  * GET /api/cron/followups
@@ -45,6 +46,10 @@ export async function GET(request: NextRequest) {
     const resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
     console.log("[Cron] Ghosted follow-up resume complete:", resumed);
 
+    console.log("[Cron] Backfilling awaiting-reply follow-ups...");
+    const backfill = await backfillNoResponseFollowUpsDueOnCron();
+    console.log("[Cron] Follow-up backfill complete:", backfill);
+
     console.log("[Cron] Processing follow-ups...");
     const results = await processFollowUpsDue();
     console.log("[Cron] Follow-up processing complete:", results);
@@ -54,6 +59,7 @@ export async function GET(request: NextRequest) {
       availability,
       snoozed,
       resumed,
+      backfill,
       results,
       timestamp: new Date().toISOString(),
     });
@@ -114,6 +120,10 @@ export async function POST(request: NextRequest) {
     const resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
     console.log("[Cron] Ghosted follow-up resume complete:", resumed);
 
+    console.log("[Cron] Backfilling awaiting-reply follow-ups (POST)...");
+    const backfill = await backfillNoResponseFollowUpsDueOnCron();
+    console.log("[Cron] Follow-up backfill complete:", backfill);
+
     console.log("[Cron] Processing follow-ups (POST)...");
     const results = await processFollowUpsDue();
     console.log("[Cron] Follow-up processing complete:", results);
@@ -123,6 +133,7 @@ export async function POST(request: NextRequest) {
       availability,
       snoozed,
       resumed,
+      backfill,
       results,
       timestamp: new Date().toISOString(),
     });

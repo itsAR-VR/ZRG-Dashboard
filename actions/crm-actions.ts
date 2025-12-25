@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { shouldGenerateDraft } from "@/lib/ai-drafts";
 import { isPositiveSentiment, SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared";
 
@@ -199,10 +200,33 @@ export async function updateLeadAutomationSettings(
   }
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const before = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: {
+        autoFollowUpEnabled: true,
+      },
+    });
+
     await prisma.lead.update({
       where: { id: leadId },
       data: settings,
     });
+
+    // If follow-ups were just enabled, try to start the no-response sequence based on the last outbound touch.
+    // This helps "Previously Required Attention" leads begin sequencing immediately after being enrolled.
+    if (settings.autoFollowUpEnabled === true && before && !before.autoFollowUpEnabled) {
+      const lastMessage = await prisma.message.findFirst({
+        where: { leadId },
+        orderBy: { sentAt: "desc" },
+        select: { direction: true, sentAt: true },
+      });
+
+      if (lastMessage?.direction === "outbound") {
+        autoStartNoResponseSequenceOnOutbound({ leadId, outboundAt: lastMessage.sentAt }).catch((err) => {
+          console.error("[CRM] Failed to auto-start no-response sequence on enable:", err);
+        });
+      }
+    }
 
     revalidatePath("/");
     return { success: true };
@@ -276,6 +300,121 @@ export async function enableAutoFollowUpsForAttentionLeads(
   } catch (error) {
     console.error("Failed to bulk enable auto follow-ups:", error);
     return { success: false, error: "Failed to enable auto follow-ups" };
+  }
+}
+
+/**
+ * Backfill no-response follow-up instances for "awaiting reply" leads:
+ * - Lead has inbound history
+ * - Latest message is outbound (we're the latest toucher)
+ * - Lead is positive / qualified
+ *
+ * This is useful when auto-followups were enabled after leads had already replied,
+ * or when leads were never auto-enrolled.
+ */
+export async function backfillNoResponseFollowUpsForAwaitingReplyLeads(
+  clientId: string,
+  opts?: { limit?: number }
+): Promise<{
+  success: boolean;
+  checked?: number;
+  enabledNow?: number;
+  started?: number;
+  reasons?: Record<string, number>;
+  error?: string;
+}> {
+  try {
+    if (!clientId) return { success: false, error: "No workspace selected" };
+
+    const limit = opts?.limit ?? 200;
+    const now = new Date();
+
+    const positiveSentiments: string[] = [
+      "Meeting Requested",
+      "Call Requested",
+      "Information Requested",
+      "Interested",
+      "Positive", // legacy
+    ];
+
+    // Pull a bounded set of candidate leads; we validate latest message direction and inbound history using Messages
+    // so we don't rely on denormalized rollups being perfect.
+    const candidateLeads = await prisma.lead.findMany({
+      where: {
+        clientId,
+        status: { not: "blacklisted" },
+        sentimentTag: { in: positiveSentiments },
+        OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }],
+      },
+      take: limit,
+      select: {
+        id: true,
+        autoFollowUpEnabled: true,
+        lastMessageAt: true,
+        updatedAt: true,
+      },
+      orderBy: [{ lastMessageAt: "desc" }, { updatedAt: "desc" }],
+    });
+
+    if (candidateLeads.length === 0) {
+      return { success: true, checked: 0, enabledNow: 0, started: 0, reasons: {} };
+    }
+
+    let enabledNow = 0;
+    let started = 0;
+    const reasons: Record<string, number> = {};
+
+    for (const lead of candidateLeads) {
+      const lastMessage = await prisma.message.findFirst({
+        where: { leadId: lead.id },
+        orderBy: { sentAt: "desc" },
+        select: { direction: true, sentAt: true },
+      });
+
+      if (!lastMessage) {
+        reasons.no_messages = (reasons.no_messages ?? 0) + 1;
+        continue;
+      }
+
+      if (lastMessage.direction !== "outbound") {
+        reasons.latest_message_not_outbound = (reasons.latest_message_not_outbound ?? 0) + 1;
+        continue;
+      }
+
+      const hasInbound = await prisma.message.findFirst({
+        where: { leadId: lead.id, direction: "inbound" },
+        select: { id: true },
+      });
+
+      if (!hasInbound) {
+        reasons.no_inbound_history = (reasons.no_inbound_history ?? 0) + 1;
+        continue;
+      }
+
+      if (!lead.autoFollowUpEnabled) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { autoFollowUpEnabled: true },
+        });
+        enabledNow++;
+      }
+
+      const res = await autoStartNoResponseSequenceOnOutbound({ leadId: lead.id, outboundAt: lastMessage.sentAt });
+      if (res.started) started++;
+      if (res.reason) reasons[res.reason] = (reasons[res.reason] ?? 0) + 1;
+    }
+
+    revalidatePath("/");
+    return {
+      success: true,
+      checked: candidateLeads.length,
+      enabledNow,
+      started,
+      reasons,
+    };
+  } catch (error) {
+    console.error("Failed to backfill no-response follow-ups:", error);
+    return { success: false, error: "Failed to backfill follow-ups" };
   }
 }
 

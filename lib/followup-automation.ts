@@ -165,7 +165,18 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
         continue;
       }
 
-      const nextStepDue = new Date(startAt.getTime() + nextStep.dayOffset * 24 * 60 * 60 * 1000);
+      const currentStepMeta =
+        instance.currentStep > 0
+          ? await prisma.followUpStep.findUnique({
+              where: { sequenceId_stepOrder: { sequenceId: instance.sequenceId, stepOrder: instance.currentStep } },
+              select: { dayOffset: true },
+            })
+          : null;
+
+      // When resuming, schedule relative to this outbound touch while preserving the spacing between steps.
+      const currentOffset = currentStepMeta?.dayOffset ?? 0;
+      const dayDiff = Math.max(0, nextStep.dayOffset - currentOffset);
+      const nextStepDue = new Date(startAt.getTime() + dayDiff * 24 * 60 * 60 * 1000);
       await prisma.followUpInstance.update({
         where: { id: instance.id },
         data: {
@@ -184,17 +195,16 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
 
   if (pausedInstances.length > 0) return { started: false, reason: "instance_already_active" };
 
-  // Policy: only start follow-up sequencing for leads who have replied via EMAIL at least once.
+  // Policy: only start follow-up sequencing for leads who have replied at least once (any channel).
   // This prevents "no response" sequences from running on leads with only outbound touches.
-  const inboundEmail = await prisma.message.findFirst({
+  const inboundMessage = await prisma.message.findFirst({
     where: {
       leadId: lead.id,
-      channel: "email",
       direction: "inbound",
     },
     select: { id: true },
   });
-  if (!inboundEmail) return { started: false, reason: "no_inbound_email" };
+  if (!inboundMessage) return { started: false, reason: "no_inbound_history" };
 
   const sequence = await prisma.followUpSequence.findFirst({
     where: { clientId: lead.clientId, isActive: true, triggerOn: "no_response" },
