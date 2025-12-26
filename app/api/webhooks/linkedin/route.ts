@@ -13,8 +13,10 @@ import { extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
 import { pauseFollowUpsOnReply } from "@/lib/followup-engine";
+import { resumeAwaitingEnrichmentFollowUpsForLead } from "@/lib/followup-engine";
 import { toStoredPhone } from "@/lib/phone-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
+import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 
 // Unipile webhook event types
 type UnipileEventType =
@@ -63,16 +65,19 @@ export async function POST(request: NextRequest) {
     const rawBody = await request.text();
     const payload: UnipileWebhookPayload = JSON.parse(rawBody);
 
-    console.log(`[LinkedIn Webhook] Received event: ${payload.event} for account ${payload.account_id}`);
+    const accountId = (payload.account_id || "").trim();
+
+    console.log(`[LinkedIn Webhook] Received event: ${payload.event} for account ${accountId}`);
 
     // Find the client (workspace) by Unipile account ID
     const client = await prisma.client.findFirst({
-      where: { unipileAccountId: payload.account_id },
+      where: { unipileAccountId: accountId },
     });
 
     if (!client) {
-      console.error(`[LinkedIn Webhook] No client found for Unipile account: ${payload.account_id}`);
-      return NextResponse.json({ error: "Client not found" }, { status: 404 });
+      // Treat as a non-fatal configuration issue (prevents webhook retry storms).
+      console.warn(`[LinkedIn Webhook] Ignoring event for unknown Unipile account: ${accountId}`);
+      return NextResponse.json({ success: true, ignored: true });
     }
 
     // Handle different event types
@@ -218,16 +223,28 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
       console.log(`[LinkedIn Webhook] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
     }
 
-    if (Object.keys(messageUpdates).length > 0) {
-      messageUpdates.enrichmentSource = "message_content";
-      messageUpdates.enrichedAt = new Date();
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: messageUpdates,
-      });
-      console.log(`[LinkedIn Webhook] Updated lead ${lead.id} from message content`);
-    }
-  }
+	    if (Object.keys(messageUpdates).length > 0) {
+	      messageUpdates.enrichmentSource = "message_content";
+	      messageUpdates.enrichedAt = new Date();
+	      await prisma.lead.update({
+	        where: { id: lead.id },
+	        data: messageUpdates,
+	      });
+	      console.log(`[LinkedIn Webhook] Updated lead ${lead.id} from message content`);
+
+	      // If we discovered a phone, ensure/sync to GHL and resume any follow-ups waiting for enrichment.
+	      if (messageUpdates.phone) {
+	        try {
+	          await ensureGhlContactIdForLead(lead.id, { allowCreateWithoutPhone: true });
+	          await syncGhlContactPhoneForLead(lead.id).catch(() => undefined);
+	        } catch (error) {
+	          console.warn("[LinkedIn Webhook] Failed to sync phone to GHL:", error);
+	        }
+
+	        await resumeAwaitingEnrichmentFollowUpsForLead(lead.id).catch(() => undefined);
+	      }
+	    }
+	  }
 
   // Get conversation history for sentiment analysis
   const recentMessages = await prisma.message.findMany({

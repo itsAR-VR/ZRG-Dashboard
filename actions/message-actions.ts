@@ -1,7 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { sendSMS, exportMessages, type GHLExportedMessage } from "@/lib/ghl-api";
+import { sendSMS, exportMessages, updateGHLContact, type GHLExportedMessage } from "@/lib/ghl-api";
 import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
@@ -10,6 +10,8 @@ import { sendEmailReply } from "@/actions/email-actions";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
+import { toGhlPhoneBestEffort } from "@/lib/phone-utils";
+import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import {
   sendLinkedInMessageWithWaterfall,
   checkLinkedInConnection,
@@ -1229,11 +1231,56 @@ export async function sendMessage(
     }
 
     // Send SMS via GHL API
-    const result = await sendSMS(
-      ghlContactId,
-      message,
-      lead.client.ghlPrivateKey
-    );
+    let result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey);
+
+    // Common failure mode: contact exists but does not have a phone number saved in GHL.
+    // If we have a phone in our DB, try to patch it onto the contact and retry once.
+    if (!result.success && (result.error || "").toLowerCase().includes("missing phone number")) {
+      const defaultCountryCallingCode = (process.env.GHL_DEFAULT_COUNTRY_CALLING_CODE || "1").trim();
+      const phoneForGhl = toGhlPhoneBestEffort(lead.phone, { defaultCountryCallingCode });
+
+      const patchAttempt = async (phone: string) =>
+        updateGHLContact(
+          ghlContactId,
+          {
+            firstName: lead.firstName || undefined,
+            lastName: lead.lastName || undefined,
+            email: lead.email || undefined,
+            phone,
+            companyName: lead.companyName || undefined,
+            website: lead.companyWebsite || undefined,
+            timezone: lead.timezone || undefined,
+            source: "zrg-dashboard",
+          },
+          lead.client.ghlPrivateKey
+        );
+
+      // 1) If we already have a phone, try to sync it immediately.
+      if (phoneForGhl) {
+        const patch = await patchAttempt(phoneForGhl);
+        if (patch.success) {
+          result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey);
+        }
+      }
+
+      // 2) If still failing, attempt the enrichment pipeline (message content → EmailBison → optional signature AI → Clay).
+      if (!result.success && (result.error || "").toLowerCase().includes("missing phone number")) {
+        const includeSignatureAi = process.env.PHONE_ENRICHMENT_SIGNATURE_AI_ENABLED === "true";
+        const enriched = await enrichPhoneThenSyncToGhl(leadId, { includeSignatureAi });
+
+        if (enriched.phoneFound) {
+          result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey);
+        } else {
+          return {
+            success: false,
+            error:
+              enriched.source === "clay_triggered"
+                ? "Cannot send SMS: phone missing. Enrichment triggered; SMS will be disabled until a phone is found."
+                : "Cannot send SMS: phone missing. Add a phone number to the lead and re-sync to GHL.",
+          };
+        }
+      }
+    }
 
     if (!result.success) {
       return { success: false, error: result.error || "Failed to send message via GHL" };

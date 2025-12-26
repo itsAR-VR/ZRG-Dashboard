@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
-import { searchGHLContactsAdvanced, upsertGHLContact, type GHLContact } from "@/lib/ghl-api";
+import { searchGHLContactsAdvanced, updateGHLContact, upsertGHLContact, type GHLContact } from "@/lib/ghl-api";
 import { normalizeEmail } from "@/lib/lead-matching";
-import { normalizePhoneDigits, toGhlPhone, toStoredPhone } from "@/lib/phone-utils";
+import { normalizePhoneDigits, toGhlPhone, toGhlPhoneBestEffort, toStoredPhone } from "@/lib/phone-utils";
 
 export interface EnsureGhlContactIdResult {
   success: boolean;
@@ -62,12 +62,10 @@ export async function ensureGhlContactIdForLead(
   }
 
   const emailNormalized = normalizeEmail(lead.email);
-  const phoneForGhl = toGhlPhone(lead.phone);
-  const phoneNormalized = phoneForGhl ? normalizePhoneDigits(phoneForGhl) : null;
-
-  if (opts.requirePhone && !phoneNormalized) {
-    return { success: false, error: "No phone available to resolve GHL contact" };
-  }
+  const defaultCountryCallingCode = (process.env.GHL_DEFAULT_COUNTRY_CALLING_CODE || "1").trim();
+  const phoneForGhl =
+    toGhlPhone(lead.phone) || toGhlPhoneBestEffort(lead.phone, { defaultCountryCallingCode });
+  const phoneNormalized = phoneForGhl ? normalizePhoneDigits(phoneForGhl) : normalizePhoneDigits(lead.phone);
 
   if (!emailNormalized && !phoneNormalized) {
     return { success: false, error: "No email or phone available to resolve GHL contact" };
@@ -128,6 +126,10 @@ export async function ensureGhlContactIdForLead(
   }
 
   // 2) Upsert contact (create/update based on location configuration)
+  if (opts.requirePhone && !phoneNormalized) {
+    return { success: false, error: "No phone available to create new GHL contact" };
+  }
+
   if (!phoneNormalized && !opts.allowCreateWithoutPhone) {
     return { success: false, error: "No phone available to create new GHL contact" };
   }
@@ -167,5 +169,74 @@ export async function ensureGhlContactIdForLead(
   } catch (error) {
     console.warn("[ensureGhlContactIdForLead] upsert failed:", error);
     return { success: false, error: error instanceof Error ? error.message : "Failed to upsert contact in GHL" };
+  }
+}
+
+export async function syncGhlContactPhoneForLead(
+  leadId: string,
+  opts?: { defaultCountryCallingCode?: string }
+): Promise<{ success: boolean; updated?: boolean; error?: string }> {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        companyName: true,
+        companyWebsite: true,
+        timezone: true,
+        ghlContactId: true,
+        client: {
+          select: {
+            ghlPrivateKey: true,
+          },
+        },
+      },
+    });
+
+    if (!lead) return { success: false, error: "Lead not found" };
+    if (!lead.ghlContactId) return { success: true, updated: false };
+    if (!lead.client.ghlPrivateKey) return { success: false, error: "Workspace has no GHL API key configured" };
+
+    const defaultCountryCallingCode =
+      opts?.defaultCountryCallingCode?.trim() ||
+      (process.env.GHL_DEFAULT_COUNTRY_CALLING_CODE || "").trim() ||
+      "1";
+
+    const phoneForGhl =
+      // Prefer strict E.164 when possible.
+      toGhlPhone(lead.phone) ||
+      // Best-effort: allow falling back to a workspace default country code (commonly +1).
+      toGhlPhoneBestEffort(lead.phone, { defaultCountryCallingCode });
+
+    if (!phoneForGhl) {
+      return { success: false, error: "No usable phone number available to sync to GHL contact" };
+    }
+
+    const update = await updateGHLContact(
+      lead.ghlContactId,
+      {
+        firstName: lead.firstName || undefined,
+        lastName: lead.lastName || undefined,
+        email: lead.email ? normalizeEmail(lead.email) || undefined : undefined,
+        phone: phoneForGhl,
+        companyName: lead.companyName || undefined,
+        website: lead.companyWebsite || undefined,
+        timezone: lead.timezone || undefined,
+        source: "zrg-dashboard",
+      },
+      lead.client.ghlPrivateKey
+    );
+
+    if (!update.success) {
+      return { success: false, error: update.error || "Failed to update GHL contact phone" };
+    }
+
+    return { success: true, updated: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to sync phone to GHL contact" };
   }
 }

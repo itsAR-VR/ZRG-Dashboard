@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { applyAirtableModeToDefaultSequences } from "@/actions/followup-sequence-actions";
+import { computeWorkspaceFollowUpsPausedUntil } from "@/lib/workspace-followups-pause";
 
 export interface UserSettingsData {
   id: string;
@@ -23,6 +24,7 @@ export interface UserSettingsData {
   autoApproveMeetings: boolean;
   flagUncertainReplies: boolean;
   pauseForOOO: boolean;
+  followUpsPausedUntil: Date | null;
   autoBlacklist: boolean;
   autoFollowUpsOnReply: boolean;
   airtableMode: boolean;
@@ -99,6 +101,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           autoApproveMeetings: true,
           flagUncertainReplies: true,
           pauseForOOO: true,
+          followUpsPausedUntil: null,
           autoBlacklist: true,
           autoFollowUpsOnReply: false,
           airtableMode: false,
@@ -141,6 +144,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           autoApproveMeetings: true,
           flagUncertainReplies: true,
           pauseForOOO: true,
+          followUpsPausedUntil: null,
           autoBlacklist: true,
           autoFollowUpsOnReply: false,
           emailDigest: true,
@@ -183,6 +187,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         autoApproveMeetings: settings.autoApproveMeetings,
         flagUncertainReplies: settings.flagUncertainReplies,
         pauseForOOO: settings.pauseForOOO,
+        followUpsPausedUntil: settings.followUpsPausedUntil,
         autoBlacklist: settings.autoBlacklist,
         autoFollowUpsOnReply: settings.autoFollowUpsOnReply,
         airtableMode: settings.airtableMode,
@@ -237,6 +242,7 @@ export async function updateUserSettings(
         autoApproveMeetings: data.autoApproveMeetings,
         flagUncertainReplies: data.flagUncertainReplies,
         pauseForOOO: data.pauseForOOO,
+        followUpsPausedUntil: data.followUpsPausedUntil,
         autoBlacklist: data.autoBlacklist,
         autoFollowUpsOnReply: data.autoFollowUpsOnReply,
         airtableMode: data.airtableMode,
@@ -268,6 +274,7 @@ export async function updateUserSettings(
         autoApproveMeetings: data.autoApproveMeetings ?? true,
         flagUncertainReplies: data.flagUncertainReplies ?? true,
         pauseForOOO: data.pauseForOOO ?? true,
+        followUpsPausedUntil: data.followUpsPausedUntil ?? null,
         autoBlacklist: data.autoBlacklist ?? true,
         autoFollowUpsOnReply: data.autoFollowUpsOnReply ?? false,
         airtableMode: data.airtableMode ?? false,
@@ -467,6 +474,73 @@ export async function setAutoFollowUpsOnReply(
   } catch (error) {
     console.error("Failed to set auto-followups-on-reply setting:", error);
     return { success: false, error: "Failed to update auto follow-up setting" };
+  }
+}
+
+export async function pauseWorkspaceFollowUps(
+  clientId: string | null | undefined,
+  days: number
+): Promise<{ success: boolean; pausedUntil?: Date; error?: string }> {
+  try {
+    if (!clientId) return { success: false, error: "No workspace selected" };
+    if (!Number.isFinite(days)) return { success: false, error: "Invalid number of days" };
+
+    const daysInt = Math.floor(days);
+    if (daysInt < 1) return { success: false, error: "Days must be at least 1" };
+    const clampedDays = Math.min(daysInt, 365);
+
+    const settings = await prisma.workspaceSettings.findUnique({
+      where: { clientId },
+      select: { timezone: true },
+    });
+
+    const pausedUntil = computeWorkspaceFollowUpsPausedUntil({
+      days: clampedDays,
+      timeZone: settings?.timezone,
+    });
+
+    await prisma.workspaceSettings.upsert({
+      where: { clientId },
+      update: { followUpsPausedUntil: pausedUntil },
+      create: { clientId, followUpsPausedUntil: pausedUntil },
+    });
+
+    // Prevent follow-ups from becoming overdue during the pause window.
+    // (We keep instances active; cron will not process them until the pause lifts.)
+    await prisma.followUpInstance.updateMany({
+      where: {
+        status: "active",
+        lead: { clientId },
+        OR: [{ nextStepDue: null }, { nextStepDue: { lt: pausedUntil } }],
+      },
+      data: { nextStepDue: pausedUntil },
+    });
+
+    revalidatePath("/");
+    return { success: true, pausedUntil };
+  } catch (error) {
+    console.error("Failed to pause workspace follow-ups:", error);
+    return { success: false, error: "Failed to pause follow-ups" };
+  }
+}
+
+export async function resumeWorkspaceFollowUps(
+  clientId: string | null | undefined
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!clientId) return { success: false, error: "No workspace selected" };
+
+    await prisma.workspaceSettings.upsert({
+      where: { clientId },
+      update: { followUpsPausedUntil: null },
+      create: { clientId, followUpsPausedUntil: null },
+    });
+
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to resume workspace follow-ups:", error);
+    return { success: false, error: "Failed to resume follow-ups" };
   }
 }
 

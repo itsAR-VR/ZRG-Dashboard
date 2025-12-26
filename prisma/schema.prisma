@@ -59,6 +59,9 @@ model WorkspaceSettings {
   autoApproveMeetings  Boolean  @default(true)
   flagUncertainReplies Boolean  @default(true)
   pauseForOOO          Boolean  @default(true)
+  // Workspace-level follow-up pause (end-of-day in workspace timezone).
+  // When set to a future timestamp, follow-up automation should not auto-enroll or send outbound follow-ups.
+  followUpsPausedUntil DateTime?
   autoBlacklist        Boolean  @default(true)
   autoFollowUpsOnReply Boolean  @default(false) // When true, auto-enable follow-ups for leads after a positive inbound EMAIL reply.
   airtableMode         Boolean  @default(false) // When true, email is handled externally (Airtable/n8n); follow-up sequences should be SMS/LinkedIn only.

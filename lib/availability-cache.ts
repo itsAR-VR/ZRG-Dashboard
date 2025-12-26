@@ -59,11 +59,44 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
     ]);
 
     if (!calendarLink) {
-      // No default link configured; clear cache to avoid stale data.
+      // No default link configured; store an explicit empty cache entry so callers
+      // can render gracefully instead of throwing during SSR.
+      const error = "No default calendar link configured";
+
       await prisma.workspaceAvailabilityCache
-        .delete({ where: { clientId } })
+        .upsert({
+          where: { clientId },
+          update: {
+            calendarLinkId: null,
+            calendarType: "unknown",
+            calendarUrl: "",
+            slotDurationMinutes: REQUIRED_DURATION_MINUTES,
+            rangeStart: now,
+            rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+            slotsUtc: [],
+            providerMeta: {},
+            fetchedAt: now,
+            staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+            lastError: error,
+          },
+          create: {
+            clientId,
+            calendarLinkId: null,
+            calendarType: "unknown",
+            calendarUrl: "",
+            slotDurationMinutes: REQUIRED_DURATION_MINUTES,
+            rangeStart: now,
+            rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+            slotsUtc: [],
+            providerMeta: {},
+            fetchedAt: now,
+            staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+            lastError: error,
+          },
+        })
         .catch(() => undefined);
-      return { success: false, error: "No default calendar link configured" };
+
+      return { success: false, error };
     }
 
     const meetingDuration = settings?.meetingDurationMinutes ?? REQUIRED_DURATION_MINUTES;
@@ -259,26 +292,32 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
 
   if (!cache || (refreshIfStale && (cache.staleAt <= now || defaultChanged))) {
     const refresh = await refreshWorkspaceAvailabilityCache(clientId);
-    if (refresh.success) {
-      cache = await prisma.workspaceAvailabilityCache.findUnique({
-        where: { clientId },
-        select: {
-          calendarLinkId: true,
-          calendarType: true,
-          calendarUrl: true,
-          slotsUtc: true,
-          providerMeta: true,
-          fetchedAt: true,
-          staleAt: true,
-          lastError: true,
-        },
-      });
-    } else if (refresh.error) {
-      // If refresh failed but we have an existing cache, keep returning it.
-      // Otherwise, surface the error.
-      if (!cache) {
-        throw new Error(refresh.error);
-      }
+    const refreshed = await prisma.workspaceAvailabilityCache.findUnique({
+      where: { clientId },
+      select: {
+        calendarLinkId: true,
+        calendarType: true,
+        calendarUrl: true,
+        slotsUtc: true,
+        providerMeta: true,
+        fetchedAt: true,
+        staleAt: true,
+        lastError: true,
+      },
+    });
+
+    if (refreshed) {
+      cache = refreshed;
+    } else if (!cache && refresh.error) {
+      return {
+        slotsUtc: [],
+        calendarType: "unknown",
+        calendarUrl: "",
+        providerMeta: {},
+        fetchedAt: now,
+        staleAt: now,
+        lastError: refresh.error,
+      };
     }
   }
 

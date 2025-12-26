@@ -7,7 +7,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyClayWebhookSignature } from "@/lib/clay-api";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
-import { normalizePhone } from "@/lib/lead-matching";
+import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
+import { resumeAwaitingEnrichmentFollowUpsForLead } from "@/lib/followup-engine";
+import { toStoredPhone } from "@/lib/phone-utils";
 
 // Clay callback payload structure
 interface ClayEnrichmentCallback {
@@ -71,16 +73,26 @@ export async function POST(request: NextRequest) {
           }
         }
       } else if (payload.enrichmentType === "phone" && payload.phone) {
-        const normalizedPhone = normalizePhone(payload.phone);
-        if (normalizedPhone && !lead.phone) {
-          updateData.phone = normalizedPhone;
+        const stored = toStoredPhone(payload.phone);
+        if (stored && !lead.phone) {
+          updateData.phone = stored;
         }
       }
 
-      // Update enrichment status
-      updateData.enrichmentStatus = "enriched";
+      // Update enrichment status.
+      //
+      // Important: Clay can send separate callbacks for linkedin + phone when both were requested.
+      // If the lead is still missing a phone and we were previously "pending", keep it pending so:
+      // - the follow-up engine doesn't assume enrichment is complete
+      // - the enrichment cleanup cron can eventually mark it failed/not_found
+      const keepPending =
+        payload.enrichmentType === "linkedin" && lead.enrichmentStatus === "pending" && !lead.phone;
+
+      updateData.enrichmentStatus = keepPending ? "pending" : "enriched";
       updateData.enrichmentSource = "clay";
-      updateData.enrichedAt = new Date();
+      if (!keepPending) {
+        updateData.enrichedAt = new Date();
+      }
 
       console.log(`[Clay Webhook] Enriched lead ${payload.leadId} with ${payload.enrichmentType} data`);
     } else if (payload.status === "not_found") {
@@ -101,6 +113,19 @@ export async function POST(request: NextRequest) {
         where: { id: payload.leadId },
         data: updateData,
       });
+    }
+
+    // If we enriched a phone, ensure the lead is linked to a GHL contact and sync the phone over.
+    if (payload.enrichmentType === "phone" && payload.status === "success") {
+      try {
+        await ensureGhlContactIdForLead(payload.leadId, { allowCreateWithoutPhone: true });
+        await syncGhlContactPhoneForLead(payload.leadId).catch(() => undefined);
+      } catch (error) {
+        console.warn("[Clay Webhook] Failed to sync enriched phone to GHL:", error);
+      }
+
+      // If any follow-up instances were paused waiting for enrichment, resume them now.
+      await resumeAwaitingEnrichmentFollowUpsForLead(payload.leadId).catch(() => undefined);
     }
 
     return NextResponse.json({ success: true });

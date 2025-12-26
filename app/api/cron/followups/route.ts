@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { processFollowUpsDue, resumeGhostedFollowUps, resumeSnoozedFollowUps } from "@/lib/followup-engine";
+import {
+  processFollowUpsDue,
+  resumeAwaitingEnrichmentFollowUps,
+  resumeGhostedFollowUps,
+  resumeSnoozedFollowUps,
+} from "@/lib/followup-engine";
 import { refreshAvailabilityCachesDue } from "@/lib/availability-cache";
 import { backfillNoResponseFollowUpsDueOnCron } from "@/lib/followup-backfill";
 
@@ -46,6 +51,10 @@ export async function GET(request: NextRequest) {
     const resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
     console.log("[Cron] Ghosted follow-up resume complete:", resumed);
 
+    console.log("[Cron] Resuming enrichment-paused follow-ups...");
+    const enrichmentResumed = await resumeAwaitingEnrichmentFollowUps({ limit: 200 });
+    console.log("[Cron] Enrichment-paused follow-up resume complete:", enrichmentResumed);
+
     console.log("[Cron] Backfilling awaiting-reply follow-ups...");
     const backfill = await backfillNoResponseFollowUpsDueOnCron();
     console.log("[Cron] Follow-up backfill complete:", backfill);
@@ -59,6 +68,7 @@ export async function GET(request: NextRequest) {
       availability,
       snoozed,
       resumed,
+      enrichmentResumed,
       backfill,
       results,
       timestamp: new Date().toISOString(),
@@ -120,6 +130,10 @@ export async function POST(request: NextRequest) {
     const resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
     console.log("[Cron] Ghosted follow-up resume complete:", resumed);
 
+    console.log("[Cron] Resuming enrichment-paused follow-ups (POST)...");
+    const enrichmentResumed = await resumeAwaitingEnrichmentFollowUps({ limit: 200 });
+    console.log("[Cron] Enrichment-paused follow-up resume complete:", enrichmentResumed);
+
     console.log("[Cron] Backfilling awaiting-reply follow-ups (POST)...");
     const backfill = await backfillNoResponseFollowUpsDueOnCron();
     console.log("[Cron] Follow-up backfill complete:", backfill);
@@ -133,6 +147,7 @@ export async function POST(request: NextRequest) {
       availability,
       snoozed,
       resumed,
+      enrichmentResumed,
       backfill,
       results,
       timestamp: new Date().toISOString(),

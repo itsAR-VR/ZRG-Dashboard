@@ -77,7 +77,10 @@ export async function backfillNoResponseFollowUpsDueOnCron(opts?: {
   };
 
   const workspaces = await prisma.workspaceSettings.findMany({
-    where: { autoFollowUpsOnReply: true },
+    where: {
+      autoFollowUpsOnReply: true,
+      OR: [{ followUpsPausedUntil: null }, { followUpsPausedUntil: { lte: now } }],
+    },
     select: { clientId: true },
     take: workspaceLimit,
     orderBy: { updatedAt: "desc" },

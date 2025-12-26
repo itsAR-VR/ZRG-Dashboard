@@ -19,6 +19,8 @@ import {
   type OfferedSlot,
 } from "@/actions/booking-actions";
 import { sendSlackNotification } from "@/lib/slack-notifications";
+import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
+import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 
 // =============================================================================
 // Types
@@ -497,6 +499,28 @@ export async function executeFollowUpStep(
     });
 
     const settings = client?.settings || null;
+    const now = new Date();
+
+    // Workspace-level pause: block automated follow-up execution while paused.
+    // Manual messaging remains allowed via other actions.
+    if (isWorkspaceFollowUpsPaused({ followUpsPausedUntil: settings?.followUpsPausedUntil, now })) {
+      const pausedUntil = settings?.followUpsPausedUntil ?? null;
+
+      if (pausedUntil) {
+        await prisma.followUpInstance.update({
+          where: { id: instanceId },
+          data: { nextStepDue: pausedUntil },
+        });
+      }
+
+      return {
+        success: true,
+        action: "skipped",
+        message: pausedUntil
+          ? `Workspace follow-ups paused until ${pausedUntil.toISOString()}`
+          : "Workspace follow-ups paused",
+      };
+    }
 
     // Check business hours
     if (!isWithinBusinessHours(settings)) {
@@ -531,16 +555,6 @@ export async function executeFollowUpStep(
         success: true,
         action: "skipped",
         message: `Channel "${step.channel}" not yet implemented - skipping step`,
-        advance: true,
-      };
-    }
-
-    // Evaluate step condition (LinkedIn steps re-check against current DB state below)
-    if (step.channel !== "linkedin" && !evaluateCondition(lead, step.condition)) {
-      return {
-        success: true,
-        action: "skipped",
-        message: `Condition not met: ${step.condition?.type}`,
         advance: true,
       };
     }
@@ -584,9 +598,35 @@ export async function executeFollowUpStep(
           };
         }
       } else {
-        // No phone and enrichment is not pending (failed, not_found, or not_needed)
-        // Skip SMS step - can't send without phone
-        console.log(`[FollowUp] SMS step skipped for lead ${lead.id} - no phone available (enrichment status: ${currentLead?.enrichmentStatus})`);
+        // No phone and enrichment is not pending (failed, not_found, or not_needed).
+        // Try the full phone enrichment pipeline before permanently skipping the SMS step.
+        const includeSignatureAi = process.env.PHONE_ENRICHMENT_SIGNATURE_AI_ENABLED === "true";
+        const enriched = await enrichPhoneThenSyncToGhl(lead.id, { includeSignatureAi });
+
+        console.log(
+          `[FollowUp] SMS step missing phone for lead ${lead.id} (enrichment: ${currentLead?.enrichmentStatus || "none"}). ` +
+            `Pipeline result: ${enriched.success ? enriched.source || "unknown" : "error"}`
+        );
+
+        // If we triggered Clay, do NOT advance; let the sequence wait/pause.
+        if (enriched.source === "clay_triggered") {
+          return {
+            success: true,
+            action: "skipped",
+            message: "Waiting for phone enrichment (Clay triggered)",
+          };
+        }
+
+        // If we found a phone (or tried to sync) we still retry on a later cron run.
+        if (enriched.phoneFound) {
+          return {
+            success: true,
+            action: "skipped",
+            message: "Phone discovered; retrying SMS on next cron run",
+          };
+        }
+
+        // Otherwise permanently skip this SMS step and advance the sequence.
         return {
           success: true,
           action: "skipped",
@@ -594,6 +634,16 @@ export async function executeFollowUpStep(
           advance: true,
         };
       }
+    }
+
+    // Evaluate step condition (LinkedIn steps re-check against current DB state below)
+    if (step.channel !== "linkedin" && !evaluateCondition(lead, step.condition)) {
+      return {
+        success: true,
+        action: "skipped",
+        message: `Condition not met: ${step.condition?.type}`,
+        advance: true,
+      };
     }
 
     // LinkedIn steps: connection request (if not connected) and DMs once connected
@@ -964,10 +1014,29 @@ export async function executeFollowUpStep(
     if (step.channel === "sms") {
       const sendResult = await sendMessage(lead.id, content);
       if (!sendResult.success) {
+        const msg = sendResult.error || "Failed to send SMS";
+        const lower = msg.toLowerCase();
+
+        // Avoid hard-failing and retry-spamming cron when SMS is impossible (most commonly: no phone on contact).
+        if (
+          lower.includes("missing phone") ||
+          lower.includes("phone missing") ||
+          lower.includes("no usable phone") ||
+          lower.includes("no phone")
+        ) {
+          console.log(`[FollowUp] SMS step skipped for lead ${lead.id} - ${msg}`);
+          return {
+            success: true,
+            action: "skipped",
+            message: `SMS skipped - ${msg}`,
+            advance: true,
+          };
+        }
+
         return {
           success: false,
           action: "error",
-          error: sendResult.error || "Failed to send SMS",
+          error: msg,
         };
       }
 
@@ -1300,6 +1369,7 @@ export async function resumeSnoozedFollowUps(opts?: {
       lead: {
         select: {
           autoFollowUpEnabled: true,
+          client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
         },
       },
     },
@@ -1309,6 +1379,15 @@ export async function resumeSnoozedFollowUps(opts?: {
     results.checked++;
 
     if (!instance.lead.autoFollowUpEnabled) {
+      continue;
+    }
+
+    if (
+      isWorkspaceFollowUpsPaused({
+        followUpsPausedUntil: instance.lead.client.settings?.followUpsPausedUntil,
+        now,
+      })
+    ) {
       continue;
     }
 
@@ -1360,6 +1439,7 @@ export async function resumeGhostedFollowUps(opts?: {
         select: {
           autoFollowUpEnabled: true,
           snoozedUntil: true,
+          client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
         },
       },
     },
@@ -1373,6 +1453,15 @@ export async function resumeGhostedFollowUps(opts?: {
     }
 
     try {
+      if (
+        isWorkspaceFollowUpsPaused({
+          followUpsPausedUntil: instance.lead.client.settings?.followUpsPausedUntil,
+          now,
+        })
+      ) {
+        continue;
+      }
+
       if (instance.lead.snoozedUntil && instance.lead.snoozedUntil > new Date()) {
         continue;
       }
@@ -1413,6 +1502,214 @@ export async function resumeGhostedFollowUps(opts?: {
   }
 
   return results;
+}
+
+/**
+ * Resume follow-up instances that were paused because we were waiting on enrichment
+ * (e.g., missing phone for SMS or missing LinkedIn URL for LinkedIn steps).
+ *
+ * Policy: only resume when the next step's channel prerequisites are now satisfied.
+ */
+export async function resumeAwaitingEnrichmentFollowUps(opts?: {
+  limit?: number;
+}): Promise<{ checked: number; resumed: number; errors: string[] }> {
+  const limit = opts?.limit ?? 200;
+  const now = new Date();
+
+  const results = { checked: 0, resumed: 0, errors: [] as string[] };
+
+  const paused = await prisma.followUpInstance.findMany({
+    where: { status: "paused", pausedReason: "awaiting_enrichment" },
+    take: limit,
+    include: {
+      lead: {
+        select: {
+          id: true,
+          phone: true,
+          linkedinUrl: true,
+          enrichmentStatus: true,
+          autoFollowUpEnabled: true,
+          snoozedUntil: true,
+          client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
+        },
+      },
+      sequence: {
+        include: {
+          steps: { orderBy: { stepOrder: "asc" } },
+        },
+      },
+    },
+  });
+
+  for (const instance of paused) {
+    results.checked++;
+
+    if (!instance.lead.autoFollowUpEnabled) continue;
+    if (instance.lead.snoozedUntil && instance.lead.snoozedUntil > now) continue;
+
+    if (
+      isWorkspaceFollowUpsPaused({
+        followUpsPausedUntil: instance.lead.client.settings?.followUpsPausedUntil,
+        now,
+      })
+    ) {
+      continue;
+    }
+
+    const nextStep = instance.sequence.steps.find((s) => s.stepOrder > instance.currentStep);
+    if (!nextStep) {
+      continue;
+    }
+
+    const channel = nextStep.channel;
+    const enrichmentTerminal =
+      instance.lead.enrichmentStatus === "failed" || instance.lead.enrichmentStatus === "not_found";
+    if (channel === "sms" && !instance.lead.phone && !enrichmentTerminal) continue;
+    if (channel === "linkedin" && !instance.lead.linkedinUrl) continue;
+
+    try {
+      // If we timed out enrichment and still don't have phone, advance past the SMS step so the sequence doesn't get stuck.
+      if (channel === "sms" && !instance.lead.phone && enrichmentTerminal) {
+        const nextNextStep = instance.sequence.steps.find((s) => s.stepOrder > nextStep.stepOrder);
+
+        if (nextNextStep) {
+          const dayDiff = nextNextStep.dayOffset - nextStep.dayOffset;
+          const nextDue = new Date(Date.now() + dayDiff * 24 * 60 * 60 * 1000);
+          await prisma.followUpInstance.update({
+            where: { id: instance.id },
+            data: {
+              status: "active",
+              pausedReason: null,
+              currentStep: nextStep.stepOrder,
+              lastStepAt: new Date(),
+              nextStepDue: nextDue,
+            },
+          });
+        } else {
+          await prisma.followUpInstance.update({
+            where: { id: instance.id },
+            data: {
+              status: "completed",
+              pausedReason: null,
+              currentStep: nextStep.stepOrder,
+              lastStepAt: new Date(),
+              nextStepDue: null,
+              completedAt: new Date(),
+            },
+          });
+        }
+
+        results.resumed++;
+      } else {
+        await prisma.followUpInstance.update({
+          where: { id: instance.id },
+          data: {
+            status: "active",
+            pausedReason: null,
+            nextStepDue: new Date(),
+          },
+        });
+        results.resumed++;
+      }
+    } catch (error) {
+      results.errors.push(`${instance.id}: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }
+
+  return results;
+}
+
+export async function resumeAwaitingEnrichmentFollowUpsForLead(
+  leadId: string
+): Promise<{ success: boolean; resumed?: number; error?: string }> {
+  try {
+    const now = new Date();
+    const instances = await prisma.followUpInstance.findMany({
+      where: { leadId, status: "paused", pausedReason: "awaiting_enrichment" },
+      include: {
+        lead: {
+          select: {
+            phone: true,
+            linkedinUrl: true,
+            enrichmentStatus: true,
+            autoFollowUpEnabled: true,
+            snoozedUntil: true,
+            client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
+          },
+        },
+        sequence: { include: { steps: { orderBy: { stepOrder: "asc" } } } },
+      },
+    });
+
+    if (instances.length === 0) return { success: true, resumed: 0 };
+
+    let resumed = 0;
+    for (const instance of instances) {
+      if (!instance.lead.autoFollowUpEnabled) continue;
+      if (instance.lead.snoozedUntil && instance.lead.snoozedUntil > now) continue;
+
+      if (
+        isWorkspaceFollowUpsPaused({
+          followUpsPausedUntil: instance.lead.client.settings?.followUpsPausedUntil,
+          now,
+        })
+      ) {
+        continue;
+      }
+
+      const nextStep = instance.sequence.steps.find((s) => s.stepOrder > instance.currentStep);
+      if (!nextStep) continue;
+
+      const channel = nextStep.channel;
+      const enrichmentTerminal =
+        instance.lead.enrichmentStatus === "failed" || instance.lead.enrichmentStatus === "not_found";
+      if (channel === "sms" && !instance.lead.phone && !enrichmentTerminal) continue;
+      if (channel === "linkedin" && !instance.lead.linkedinUrl) continue;
+
+      if (channel === "sms" && !instance.lead.phone && enrichmentTerminal) {
+        const nextNextStep = instance.sequence.steps.find((s) => s.stepOrder > nextStep.stepOrder);
+
+        if (nextNextStep) {
+          const dayDiff = nextNextStep.dayOffset - nextStep.dayOffset;
+          const nextDue = new Date(Date.now() + dayDiff * 24 * 60 * 60 * 1000);
+          await prisma.followUpInstance.update({
+            where: { id: instance.id },
+            data: {
+              status: "active",
+              pausedReason: null,
+              currentStep: nextStep.stepOrder,
+              lastStepAt: new Date(),
+              nextStepDue: nextDue,
+            },
+          });
+        } else {
+          await prisma.followUpInstance.update({
+            where: { id: instance.id },
+            data: {
+              status: "completed",
+              pausedReason: null,
+              currentStep: nextStep.stepOrder,
+              lastStepAt: new Date(),
+              nextStepDue: null,
+              completedAt: new Date(),
+            },
+          });
+        }
+
+        resumed++;
+      } else {
+        await prisma.followUpInstance.update({
+          where: { id: instance.id },
+          data: { status: "active", pausedReason: null, nextStepDue: new Date() },
+        });
+        resumed++;
+      }
+    }
+
+    return { success: true, resumed };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to resume follow-ups" };
+  }
 }
 
 // =============================================================================

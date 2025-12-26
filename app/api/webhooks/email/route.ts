@@ -12,9 +12,14 @@ import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { normalizePhone } from "@/lib/lead-matching";
 import { toStoredPhone } from "@/lib/phone-utils";
 import { autoStartMeetingRequestedSequenceIfEligible, autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
-import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
+import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
-import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBooking } from "@/lib/followup-engine";
+import {
+  pauseFollowUpsOnReply,
+  pauseFollowUpsUntil,
+  processMessageForAutoBooking,
+  resumeAwaitingEnrichmentFollowUpsForLead,
+} from "@/lib/followup-engine";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
@@ -1203,10 +1208,23 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
       if (!ensureResult.success && ensureResult.error) {
         console.log(`[GHL Contact] Lead ${lead.id}: ${ensureResult.error}`);
       }
+
+      // If we have a phone (from message/custom vars/signature), sync it to the GHL contact so SMS can send.
+      const sync = await syncGhlContactPhoneForLead(lead.id).catch((err) => ({
+        success: false,
+        updated: false,
+        error: err instanceof Error ? err.message : "Failed to sync phone to GHL",
+      }));
+      if (!sync.success) {
+        console.log(`[GHL Contact] Phone sync for lead ${lead.id}: ${sync.error || "unknown error"}`);
+      }
     } catch (error) {
       console.error(`[GHL Contact] Failed to ensure contact for lead ${lead.id}:`, error);
     }
   }
+
+  // If any follow-up instances were paused waiting for enrichment, resume them now.
+  await resumeAwaitingEnrichmentFollowUpsForLead(lead.id).catch(() => undefined);
 
   // STEP 4: Trigger Clay enrichment if still missing LinkedIn or phone after other enrichment
   // Only triggers for positive sentiments (Meeting Requested, Call Requested, Info Requested, Interested)

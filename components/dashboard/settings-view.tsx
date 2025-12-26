@@ -63,6 +63,8 @@ import { IntegrationsManager } from "./settings/integrations-manager"
 	  deleteCalendarLink,
 	  setDefaultCalendarLink,
 	  setAirtableMode,
+	  pauseWorkspaceFollowUps,
+	  resumeWorkspaceFollowUps,
 	  type UserSettingsData,
 	  type KnowledgeAssetData,
 	  type QualificationQuestion,
@@ -175,6 +177,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 	    autoBlacklist: true,
 	  })
 
+	  const [followUpsPausedUntil, setFollowUpsPausedUntil] = useState<Date | null>(null)
+	  const [pauseFollowUpsDays, setPauseFollowUpsDays] = useState("7")
+	  const [isPausingFollowUps, setIsPausingFollowUps] = useState(false)
+
 	  const [airtableModeEnabled, setAirtableModeEnabled] = useState(false)
 	  const [isApplyingAirtableMode, setIsApplyingAirtableMode] = useState(false)
 
@@ -226,6 +232,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 	          pauseForOOO: result.data.pauseForOOO,
 	          autoBlacklist: result.data.autoBlacklist,
 	        })
+	        setFollowUpsPausedUntil(result.data.followUpsPausedUntil)
 	        setAirtableModeEnabled(result.data.airtableMode)
         // Parse qualification questions from JSON
         if (result.data.qualificationQuestions) {
@@ -485,6 +492,71 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       setIsBackfillingFollowUps(false)
     }
   }
+
+  const getWorkspaceTimeZone = () => settings?.timezone || "America/Los_Angeles"
+
+  const formatWorkspaceDateTime = (d: Date) => {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: getWorkspaceTimeZone(),
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(d)
+  }
+
+  const handlePauseWorkspaceFollowUps = async (daysOverride?: number) => {
+    if (!activeWorkspace) {
+      toast.error("Select a workspace first")
+      return
+    }
+
+    const daysRaw = daysOverride ?? Number.parseInt(pauseFollowUpsDays, 10)
+    if (!Number.isFinite(daysRaw) || daysRaw <= 0) {
+      toast.error("Enter a valid number of days")
+      return
+    }
+
+    setIsPausingFollowUps(true)
+    try {
+      const res = await pauseWorkspaceFollowUps(activeWorkspace, daysRaw)
+      if (res.success && res.pausedUntil) {
+        setFollowUpsPausedUntil(res.pausedUntil)
+        toast.success("Follow-ups paused", {
+          description: `Paused until ${formatWorkspaceDateTime(res.pausedUntil)}`,
+        })
+      } else {
+        toast.error(res.error || "Failed to pause follow-ups")
+      }
+    } catch (err) {
+      toast.error("Failed to pause follow-ups")
+    } finally {
+      setIsPausingFollowUps(false)
+    }
+  }
+
+  const handleResumeWorkspaceFollowUps = async () => {
+    if (!activeWorkspace) {
+      toast.error("Select a workspace first")
+      return
+    }
+
+    setIsPausingFollowUps(true)
+    try {
+      const res = await resumeWorkspaceFollowUps(activeWorkspace)
+      if (res.success) {
+        setFollowUpsPausedUntil(null)
+        toast.success("Follow-ups resumed")
+      } else {
+        toast.error(res.error || "Failed to resume follow-ups")
+      }
+    } catch (err) {
+      toast.error("Failed to resume follow-ups")
+    } finally {
+      setIsPausingFollowUps(false)
+    }
+  }
+
+  const isFollowUpsPaused =
+    Boolean(followUpsPausedUntil) && (followUpsPausedUntil as Date).getTime() > Date.now()
 
   // Qualification question handlers
   const handleAddQuestion = useCallback(() => {
@@ -1587,6 +1659,72 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                           handleChange()
                         }}
                       />
+                    </div>
+                    <div className="p-3 rounded-lg border space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm">Pause all follow-ups</span>
+                            {isFollowUpsPaused ? (
+                              <Badge variant="destructive" className="text-xs">Paused</Badge>
+                            ) : (
+                              <Badge variant="outline" className="text-xs">Active</Badge>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            Blocks auto-enrollment and automated outbound sends. Manual messages are still allowed.
+                          </p>
+                          {isFollowUpsPaused && followUpsPausedUntil ? (
+                            <p className="text-xs text-muted-foreground">
+                              Paused until {formatWorkspaceDateTime(followUpsPausedUntil)}
+                            </p>
+                          ) : null}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            min={1}
+                            max={365}
+                            step={1}
+                            className="w-[90px]"
+                            value={pauseFollowUpsDays}
+                            disabled={!activeWorkspace || isPausingFollowUps}
+                            onChange={(e) => setPauseFollowUpsDays(e.target.value)}
+                          />
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={!activeWorkspace || isPausingFollowUps}
+                            onClick={() => handlePauseWorkspaceFollowUps()}
+                          >
+                            Pause
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={!activeWorkspace || isPausingFollowUps || !isFollowUpsPaused}
+                            onClick={() => handleResumeWorkspaceFollowUps()}
+                          >
+                            Resume
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {[1, 3, 7, 14].map((d) => (
+                          <Button
+                            key={d}
+                            variant="secondary"
+                            size="sm"
+                            disabled={!activeWorkspace || isPausingFollowUps}
+                            onClick={() => {
+                              setPauseFollowUpsDays(String(d))
+                              handlePauseWorkspaceFollowUps(d)
+                            }}
+                          >
+                            {d}d
+                          </Button>
+                        ))}
+                      </div>
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
                       <span className="text-sm">Auto-blacklist explicit opt-outs</span>

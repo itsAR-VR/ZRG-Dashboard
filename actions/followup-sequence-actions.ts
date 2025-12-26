@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 
 // =============================================================================
 // Types
@@ -335,11 +336,27 @@ export async function startFollowUpSequence(
       return { success: false, error: "Lead already has this sequence running" };
     }
 
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: { client: { select: { settings: { select: { followUpsPausedUntil: true } } } } },
+    });
+
     // Calculate first step due date
     const firstStep = sequence.steps[0];
-    const nextStepDue = firstStep
+    let nextStepDue = firstStep
       ? new Date(Date.now() + firstStep.dayOffset * 24 * 60 * 60 * 1000)
       : null;
+
+    // Manual starts are allowed while paused, but the first execution should not occur until after the pause.
+    const pausedUntil = lead?.client.settings?.followUpsPausedUntil ?? null;
+    if (
+      nextStepDue &&
+      pausedUntil &&
+      isWorkspaceFollowUpsPaused({ followUpsPausedUntil: pausedUntil }) &&
+      pausedUntil.getTime() > nextStepDue.getTime()
+    ) {
+      nextStepDue = pausedUntil;
+    }
 
     // Create or update instance
     const instance = await prisma.followUpInstance.upsert({

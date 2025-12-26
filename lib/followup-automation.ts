@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 
 const MEETING_REQUESTED_SEQUENCE_NAME = "Meeting Requested Day 1/2/5/7";
 const POST_BOOKING_SEQUENCE_NAME = "Post-Booking Qualification";
@@ -56,11 +57,14 @@ export async function autoStartMeetingRequestedSequenceIfEligible(opts: {
       autoFollowUpEnabled: true,
       autoBookMeetingsEnabled: true,
       ghlAppointmentId: true,
-      client: { select: { settings: { select: { autoBookMeetings: true } } } },
+      client: { select: { settings: { select: { autoBookMeetings: true, followUpsPausedUntil: true } } } },
     },
   });
 
   if (!lead) return { started: false, reason: "lead_not_found" };
+  if (isWorkspaceFollowUpsPaused({ followUpsPausedUntil: lead.client.settings?.followUpsPausedUntil })) {
+    return { started: false, reason: "workspace_paused" };
+  }
   if (lead.ghlAppointmentId) return { started: false, reason: "already_booked" };
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
   if (!lead.autoBookMeetingsEnabled) return { started: false, reason: "lead_auto_book_disabled" };
@@ -87,10 +91,14 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
       clientId: true,
       autoFollowUpEnabled: true,
       ghlAppointmentId: true,
+      client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
     },
   });
 
   if (!lead) return { started: false, reason: "lead_not_found" };
+  if (isWorkspaceFollowUpsPaused({ followUpsPausedUntil: lead.client.settings?.followUpsPausedUntil })) {
+    return { started: false, reason: "workspace_paused" };
+  }
   if (!lead.ghlAppointmentId) return { started: false, reason: "no_appointment" };
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
 
@@ -118,6 +126,7 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
       sentimentTag: true,
       autoFollowUpEnabled: true,
       ghlAppointmentId: true,
+      client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
       followUpInstances: {
         where: { status: { in: ["active", "paused"] } },
         select: { id: true, status: true, pausedReason: true, sequenceId: true, currentStep: true },
@@ -127,6 +136,9 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
   });
 
   if (!lead) return { started: false, reason: "lead_not_found" };
+  if (isWorkspaceFollowUpsPaused({ followUpsPausedUntil: lead.client.settings?.followUpsPausedUntil })) {
+    return { started: false, reason: "workspace_paused" };
+  }
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
   if (lead.status === "blacklisted" || lead.sentimentTag === "Blacklist") return { started: false, reason: "blacklisted" };
   if (lead.ghlAppointmentId) return { started: false, reason: "already_booked" };

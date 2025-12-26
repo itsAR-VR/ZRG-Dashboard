@@ -458,6 +458,29 @@ export async function getGHLContact(
   );
 }
 
+export type UpdateContactParams = Omit<UpsertContactParams, "locationId">;
+
+/**
+ * Update an existing contact by ID (PUT /contacts/{contactId})
+ *
+ * Used to patch missing standard fields (like phone) without risking duplicates.
+ */
+export async function updateGHLContact(
+  contactId: string,
+  params: UpdateContactParams,
+  privateKey: string
+): Promise<GHLApiResponse<{ contact?: GHLContact }>> {
+  return ghlRequest<{ contact?: GHLContact }>(
+    `/contacts/${encodeURIComponent(contactId)}`,
+    privateKey,
+    {
+      method: "PUT",
+      body: JSON.stringify(params),
+      headers: { Version: GHL_CONTACTS_API_VERSION },
+    }
+  );
+}
+
 /**
  * Advanced Search Contacts (POST /contacts/search)
  *
