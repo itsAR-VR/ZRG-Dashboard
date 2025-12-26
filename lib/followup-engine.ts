@@ -43,6 +43,7 @@ interface WorkspaceSettings {
   workStartTime: string | null;
   workEndTime: string | null;
   airtableMode?: boolean | null;
+  followUpsPausedUntil?: Date | null;
   // New fields for template variables
   aiPersonaName: string | null;
   companyName: string | null;
@@ -108,6 +109,98 @@ export function evaluateCondition(lead: LeadContext, condition: StepCondition | 
 // Business Hours
 // =============================================================================
 
+const WEEKDAY_TO_INDEX: Record<string, number> = {
+  Sun: 0,
+  Mon: 1,
+  Tue: 2,
+  Wed: 3,
+  Thu: 4,
+  Fri: 5,
+  Sat: 6,
+};
+
+function safeTimeZone(timeZone: string | null | undefined, fallback: string): string {
+  const tz = timeZone || fallback;
+  try {
+    // Validate tz; Intl throws RangeError on invalid IANA names.
+    new Intl.DateTimeFormat("en-US", { timeZone: tz }).format(new Date());
+    return tz;
+  } catch {
+    return fallback;
+  }
+}
+
+function getZonedDateTimeParts(date: Date, timeZone: string): {
+  year: number;
+  month: number;
+  day: number;
+  weekday: number;
+  hour: number;
+  minute: number;
+} {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = dtf.formatToParts(date);
+  const get = (type: Intl.DateTimeFormatPartTypes): string | undefined =>
+    parts.find((p) => p.type === type)?.value;
+
+  const weekdayLabel = get("weekday") || "Sun";
+  const weekday = WEEKDAY_TO_INDEX[weekdayLabel] ?? 0;
+
+  const year = Number.parseInt(get("year") || "0", 10);
+  const month = Number.parseInt(get("month") || "1", 10);
+  const day = Number.parseInt(get("day") || "1", 10);
+
+  let hour = Number.parseInt(get("hour") || "0", 10);
+  if (hour === 24) hour = 0;
+  const minute = Number.parseInt(get("minute") || "0", 10);
+
+  return {
+    year: Number.isFinite(year) ? year : 0,
+    month: Number.isFinite(month) ? month : 1,
+    day: Number.isFinite(day) ? day : 1,
+    weekday,
+    hour: Number.isFinite(hour) ? hour : 0,
+    minute: Number.isFinite(minute) ? minute : 0,
+  };
+}
+
+function addDaysToYmd(ymd: { year: number; month: number; day: number }, days: number): {
+  year: number;
+  month: number;
+  day: number;
+} {
+  const d = new Date(Date.UTC(ymd.year, ymd.month - 1, ymd.day));
+  d.setUTCDate(d.getUTCDate() + days);
+  return { year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() };
+}
+
+function zonedTimeToUtc(local: { year: number; month: number; day: number; hour: number; minute: number }, timeZone: string): Date {
+  // Initial guess: interpret the local wall-clock time as UTC, then adjust by the observed tz offset.
+  let utc = new Date(Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0, 0));
+  const desiredAsUtc = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, 0, 0);
+
+  // Iterate to account for DST/offset differences after adjustment.
+  for (let i = 0; i < 3; i++) {
+    const actual = getZonedDateTimeParts(utc, timeZone);
+    const actualAsUtc = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, 0, 0);
+    const diff = actualAsUtc - desiredAsUtc;
+    if (diff === 0) break;
+    utc = new Date(utc.getTime() - diff);
+  }
+
+  return utc;
+}
+
 /**
  * Parse time string "HH:MM" to hours and minutes
  */
@@ -125,24 +218,19 @@ function parseTime(timeStr: string | null | undefined, fallback: string = "09:00
 export function isWithinBusinessHours(settings: WorkspaceSettings | null): boolean {
   if (!settings) return true; // No settings = always OK
 
-  const timezone = settings.timezone || "America/Los_Angeles";
+  const timezone = safeTimeZone(settings.timezone, "America/Los_Angeles");
   const { hours: startH, minutes: startM } = parseTime(settings.workStartTime, "09:00");
   const { hours: endH, minutes: endM } = parseTime(settings.workEndTime, "17:00");
 
-  // Get current time in the workspace timezone
-  const now = new Date();
-  const localTime = new Date(now.toLocaleString("en-US", { timeZone: timezone }));
-  const currentHours = localTime.getHours();
-  const currentMinutes = localTime.getMinutes();
-  const dayOfWeek = localTime.getDay();
+  const nowParts = getZonedDateTimeParts(new Date(), timezone);
 
   // Check weekend (0 = Sunday, 6 = Saturday)
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
+  if (nowParts.weekday === 0 || nowParts.weekday === 6) {
     return false;
   }
 
   // Convert to minutes for easy comparison
-  const currentTotalMinutes = currentHours * 60 + currentMinutes;
+  const currentTotalMinutes = nowParts.hour * 60 + nowParts.minute;
   const startTotalMinutes = startH * 60 + startM;
   const endTotalMinutes = endH * 60 + endM;
 
@@ -153,32 +241,33 @@ export function isWithinBusinessHours(settings: WorkspaceSettings | null): boole
  * Get the next available business hour time
  */
 export function getNextBusinessHour(settings: WorkspaceSettings | null): Date {
-  const timezone = settings?.timezone || "America/Los_Angeles";
+  const timezone = safeTimeZone(settings?.timezone, "America/Los_Angeles");
   const { hours: startH, minutes: startM } = parseTime(settings?.workStartTime, "09:00");
-
-  const now = new Date();
-  let target = new Date(now.toLocaleString("en-US", { timeZone: timezone }));
-
-  // Move to next day if we're past end time or on weekend
-  const localDay = target.getDay();
   const { hours: endH, minutes: endM } = parseTime(settings?.workEndTime, "17:00");
-  const currentTotalMinutes = target.getHours() * 60 + target.getMinutes();
+
+  const nowParts = getZonedDateTimeParts(new Date(), timezone);
+
+  const currentTotalMinutes = nowParts.hour * 60 + nowParts.minute;
   const endTotalMinutes = endH * 60 + endM;
+  const isWeekend = nowParts.weekday === 0 || nowParts.weekday === 6;
 
-  if (currentTotalMinutes > endTotalMinutes || localDay === 0 || localDay === 6) {
-    // Move to next day
-    target.setDate(target.getDate() + 1);
+  let targetYmd = { year: nowParts.year, month: nowParts.month, day: nowParts.day };
+  let targetWeekday = nowParts.weekday;
+
+  // If we're past end time or on a weekend, move to the next day.
+  if (currentTotalMinutes > endTotalMinutes || isWeekend) {
+    targetYmd = addDaysToYmd(targetYmd, 1);
+    targetWeekday = (targetWeekday + 1) % 7;
   }
 
-  // Skip weekends
-  while (target.getDay() === 0 || target.getDay() === 6) {
-    target.setDate(target.getDate() + 1);
+  // Skip weekends.
+  while (targetWeekday === 0 || targetWeekday === 6) {
+    targetYmd = addDaysToYmd(targetYmd, 1);
+    targetWeekday = (targetWeekday + 1) % 7;
   }
 
-  // Set to start of business hours
-  target.setHours(startH, startM, 0, 0);
-
-  return target;
+  // Convert the target local wall-clock time to an actual UTC instant.
+  return zonedTimeToUtc({ ...targetYmd, hour: startH, minute: startM }, timezone);
 }
 
 // =============================================================================
@@ -960,6 +1049,18 @@ export async function processFollowUpsDue(): Promise<{
         lead: {
           autoFollowUpEnabled: true,
           OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }],
+          client: {
+            OR: [
+              { settings: { is: null } },
+              {
+                settings: {
+                  is: {
+                    OR: [{ followUpsPausedUntil: null }, { followUpsPausedUntil: { lte: now } }],
+                  },
+                },
+              },
+            ],
+          },
         },
       },
       include: {
@@ -1196,7 +1297,11 @@ export async function resumeSnoozedFollowUps(opts?: {
     select: {
       id: true,
       leadId: true,
-      lead: { select: { autoFollowUpEnabled: true } },
+      lead: {
+        select: {
+          autoFollowUpEnabled: true,
+        },
+      },
     },
   });
 
@@ -1238,6 +1343,7 @@ export async function resumeGhostedFollowUps(opts?: {
   const days = opts?.days ?? 7;
   const limit = opts?.limit ?? 100;
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const now = new Date();
 
   const results = { checked: 0, resumed: 0, errors: [] as string[] };
 
@@ -1250,7 +1356,12 @@ export async function resumeGhostedFollowUps(opts?: {
     select: {
       id: true,
       leadId: true,
-      lead: { select: { autoFollowUpEnabled: true, snoozedUntil: true } },
+      lead: {
+        select: {
+          autoFollowUpEnabled: true,
+          snoozedUntil: true,
+        },
+      },
     },
   });
 
