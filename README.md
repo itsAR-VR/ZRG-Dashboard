@@ -226,22 +226,54 @@ model Message {
 | `AI_MODEL_PRICING_JSON` | (Optional) Override per-model token pricing for cost estimates |
 | `DATABASE_URL` | Transaction pooler connection (port 6543, `?pgbouncer=true`) |
 | `DIRECT_URL` | Direct DB connection (port 5432) used for Prisma CLI (`db push`, migrations) |
+| `SLACK_WEBHOOK_URL` | (Optional) Slack notifications for meetings booked |
+| `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |
+| `WORKSPACE_PROVISIONING_SECRET` | Secret for `/api/admin/workspaces` automation authentication (generate with `openssl rand -hex 32`) |
+| `ADMIN_ACTIONS_SECRET` | (Optional) Shared secret for admin endpoints (fallback if provisioning secret is unset) |
+| `UNIPILE_DSN` | Unipile base DSN (e.g. `https://apiXX.unipile.com:PORT`) |
+| `UNIPILE_API_KEY` | Unipile API key |
+| `EMAIL_GUARD_API_KEY` | (Optional) EmailGuard API key for email validation before sending |
 
 ### Prisma Schema Changes
 
 - After pulling changes that modify `prisma/schema.prisma`, run `npm run db:push` to sync the database schema (creates tables like `WorkspaceOfferedSlot`).
-| `DIRECT_URL` | Session pooler connection (port 5432) |
-| `SLACK_WEBHOOK_URL` | (Optional) Slack notifications for meetings booked |
-| `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |
-| `UNIPILE_DSN` | Unipile base DSN (e.g. `https://apiXX.unipile.com:PORT`) |
-| `UNIPILE_API_KEY` | Unipile API key |
 
 ### Optional Cron (AI Retention)
 
 - **Endpoint:** `/api/cron/ai-retention`
 - **Purpose:** Prunes `AIInteraction` records older than 30 days (also pruned opportunistically during normal app usage).
 - **Auth:** `Authorization: Bearer ${CRON_SECRET}`
-| `EMAIL_GUARD_API_KEY` | (Optional) EmailGuard API key for email validation before sending |
+
+### Workspace Provisioning (monday.com)
+
+- **Endpoint:** `/api/admin/workspaces`
+- **Method:** `POST`
+- **Auth:** `Authorization: Bearer ${WORKSPACE_PROVISIONING_SECRET}` (or `x-workspace-provisioning-secret: ${WORKSPACE_PROVISIONING_SECRET}`)
+- **Purpose:** Creates a new `Client` (workspace) + default `WorkspaceSettings`, intended for external automation (e.g., monday.com).
+
+**Request body (JSON)**
+
+```json
+{
+  "name": "Acme Inc",
+  "userEmail": "owner@acme.com",
+  "ghlLocationId": "AbCdEf123",
+  "ghlPrivateKey": "ghl_private_integration_key",
+  "emailBisonApiKey": "optional_emailbison_api_key",
+  "emailBisonWorkspaceId": "12345",
+  "unipileAccountId": "optional_unipile_account_id",
+  "upsert": true,
+  "settings": {
+    "timezone": "America/Los_Angeles",
+    "companyName": "Acme Inc",
+    "airtableMode": "false"
+  }
+}
+```
+
+**Response**
+- `201` on create: `{ "success": true, "existed": false, "workspace": { ... } }`
+- `200` if workspace already exists for the same `ghlLocationId`: `{ "success": true, "existed": true, ... }`
 
 ### Vercel Cron Setup
 

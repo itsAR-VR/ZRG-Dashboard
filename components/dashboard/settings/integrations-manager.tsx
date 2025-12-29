@@ -736,6 +736,23 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                   <strong>Important:</strong> Set your LinkedIn Account ID above for each workspace. Include the <code className="bg-background px-1 py-0.5 rounded">x-unipile-secret</code> header when creating webhooks.
                 </p>
               </div>
+
+              {/* monday.com Workspace Provisioning */}
+              <div className="p-4 rounded-lg bg-muted/50 space-y-2">
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Key className="h-4 w-4" />
+                  Webhook URL for Workspace Provisioning (monday.com)
+                </p>
+                <code className="block text-xs bg-background p-2 rounded border break-all">
+                  {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/admin/workspaces
+                </code>
+                <p className="text-xs text-muted-foreground">
+                  Configure a monday.com HTTP request automation to <strong>POST</strong> to this endpoint to create workspaces automatically.
+                </p>
+                <p className="text-xs text-muted-foreground mt-2">
+                  <strong>Auth:</strong> Send <code className="bg-background px-1 py-0.5 rounded">Authorization: Bearer WORKSPACE_PROVISIONING_SECRET</code> (or <code className="bg-background px-1 py-0.5 rounded">x-workspace-provisioning-secret</code>).
+                </p>
+              </div>
             </div>
           </>
         )}
