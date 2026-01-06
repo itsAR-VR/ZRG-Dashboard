@@ -42,16 +42,22 @@ export interface EmailBisonReplyPayload {
 export interface EmailBisonReplyMessage {
   id: number;
   uuid?: string | null;
+  // API examples show `subject`; older codepaths sometimes used `email_subject`.
+  subject?: string | null;
   email_subject?: string | null;
   from_email_address?: string | null;
   from_name?: string | null;
+  primary_to_email_address?: string | null;
   to?: { address: string; name: string | null }[] | null;
   cc?: { address: string; name: string | null }[] | null;
   bcc?: { address: string; name: string | null }[] | null;
   html_body?: string | null;
   text_body?: string | null;
+  raw_body?: string | null;
+  raw_message_id?: string | null;
   date_received?: string | null;
   created_at?: string | null;
+  updated_at?: string | null;
   automated_reply?: boolean | null;
   interested?: boolean | null;
   type?: string | null;
@@ -75,6 +81,28 @@ export interface EmailBisonSentEmail {
   sent_at?: string | null;
   scheduled_date_local?: string | null;
   raw_message_id?: string | null;
+}
+
+export interface EmailBisonSenderEmailAccount {
+  id: number;
+  email?: string | null;
+  email_address?: string | null;
+  name?: string | null;
+  status?: string | null;
+  provider?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  // Allow unknown provider fields without breaking parsing
+  [key: string]: unknown;
+}
+
+export interface EmailBisonLeadListItem {
+  id: number;
+  email?: string | null;
+  email_address?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  [key: string]: unknown;
 }
 
 const INBOXXIA_BASE_URL = "https://send.meetinboxxia.com";
@@ -220,7 +248,7 @@ export async function fetchEmailBisonReplies(
     console.log(`[EmailBison] Found ${repliesArray.length} replies for lead ${bisonLeadId}:`,
       repliesArray.map(r => ({
         id: r.id,
-        subject: r.email_subject?.substring(0, 30),
+        subject: (r.subject ?? r.email_subject ?? "")?.substring(0, 30),
         from: r.from_email_address,
         folder: r.folder,
         type: r.type,
@@ -286,6 +314,203 @@ export async function fetchEmailBisonSentEmails(
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
     };
+  }
+}
+
+/**
+ * Fetch replies for a lead by lead_id.
+ * Supports filtering via query params like filters[folder]=sent.
+ */
+export async function fetchEmailBisonLeadReplies(
+  apiKey: string,
+  leadId: string,
+  filters?: {
+    folder?: string;
+    campaign_id?: number | string;
+    sender_email_id?: number | string;
+    search?: string;
+    read?: boolean;
+  }
+): Promise<{ success: boolean; data?: EmailBisonReplyMessage[]; error?: string }> {
+  const encoded = encodeURIComponent(leadId);
+  const qs = new URLSearchParams();
+
+  if (filters?.folder) qs.set("filters[folder]", filters.folder);
+  if (filters?.campaign_id != null) qs.set("filters[campaign_id]", String(filters.campaign_id));
+  if (filters?.sender_email_id != null) qs.set("filters[sender_email_id]", String(filters.sender_email_id));
+  if (filters?.search) qs.set("filters[search]", filters.search);
+  if (filters?.read != null) qs.set("filters[read]", String(filters.read));
+
+  const url = `${INBOXXIA_BASE_URL}/api/leads/${encoded}/replies${qs.toString() ? `?${qs.toString()}` : ""}`;
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const body = await parseJsonSafe(response);
+      return {
+        success: false,
+        error: `EmailBison lead replies fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+      };
+    }
+
+    const body = await parseJsonSafe(response);
+    const repliesArray: EmailBisonReplyMessage[] =
+      Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : Array.isArray(body?.replies) ? body.replies : [];
+
+    return { success: true, data: repliesArray };
+  } catch (error) {
+    console.error("[EmailBison] Failed to fetch lead replies:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+async function fetchEmailBisonLeadsListByUrl(
+  apiKey: string,
+  url: string
+): Promise<{ success: boolean; data?: EmailBisonLeadListItem[]; error?: string }> {
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const body = await parseJsonSafe(response);
+      return {
+        success: false,
+        error: `EmailBison leads fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+      };
+    }
+
+    const body = await parseJsonSafe(response);
+    const list: EmailBisonLeadListItem[] =
+      Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : Array.isArray(body?.leads) ? body.leads : [];
+
+    return { success: true, data: list };
+  } catch (error) {
+    console.error("[EmailBison] Failed to fetch leads:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+/**
+ * Best-effort lookup for EmailBison lead_id by email address.
+ * Tries a few common query param patterns used by MeetInboxXia/EmailBison.
+ */
+export async function findEmailBisonLeadIdByEmail(
+  apiKey: string,
+  email: string
+): Promise<{ success: boolean; leadId?: string; error?: string }> {
+  const needle = email.trim().toLowerCase();
+  if (!needle) return { success: false, error: "missing_email" };
+
+  const candidates = [
+    `${INBOXXIA_BASE_URL}/api/leads?filters[search]=${encodeURIComponent(needle)}&per_page=200`,
+    `${INBOXXIA_BASE_URL}/api/leads?search=${encodeURIComponent(needle)}&per_page=200`,
+    `${INBOXXIA_BASE_URL}/api/leads?filters[email]=${encodeURIComponent(needle)}&per_page=200`,
+    `${INBOXXIA_BASE_URL}/api/leads?filters[email_address]=${encodeURIComponent(needle)}&per_page=200`,
+  ];
+
+  for (const url of candidates) {
+    const res = await fetchEmailBisonLeadsListByUrl(apiKey, url);
+    if (!res.success || !res.data) continue;
+
+    const match = res.data.find((l) => {
+      const e = String((l.email_address ?? l.email ?? "") || "").trim().toLowerCase();
+      return e === needle;
+    });
+
+    if (match?.id != null) return { success: true, leadId: String(match.id) };
+  }
+
+  return { success: false, error: "not_found" };
+}
+
+/**
+ * Fetch a list of replies across the whole workspace.
+ * Useful as a fallback to discover lead_id when /api/leads searching is unavailable.
+ */
+export async function fetchEmailBisonRepliesGlobal(
+  apiKey: string,
+  filters?: { folder?: string; search?: string }
+): Promise<{ success: boolean; data?: EmailBisonReplyMessage[]; error?: string }> {
+  const qs = new URLSearchParams();
+  if (filters?.folder) qs.set("filters[folder]", filters.folder);
+  if (filters?.search) qs.set("filters[search]", filters.search);
+
+  const url = `${INBOXXIA_BASE_URL}/api/replies${qs.toString() ? `?${qs.toString()}` : ""}`;
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const body = await parseJsonSafe(response);
+      return {
+        success: false,
+        error: `EmailBison replies fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+      };
+    }
+
+    const body = await parseJsonSafe(response);
+    const replies: EmailBisonReplyMessage[] =
+      Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : Array.isArray(body?.replies) ? body.replies : [];
+
+    return { success: true, data: replies };
+  } catch (error) {
+    console.error("[EmailBison] Failed to fetch global replies:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+/**
+ * Fetch all sender email accounts for the workspace associated with the API key.
+ */
+export async function fetchEmailBisonSenderEmails(
+  apiKey: string
+): Promise<{ success: boolean; data?: EmailBisonSenderEmailAccount[]; error?: string }> {
+  const url = `${INBOXXIA_BASE_URL}/api/sender-emails`;
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const body = await parseJsonSafe(response);
+      return {
+        success: false,
+        error: `EmailBison sender-emails fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+      };
+    }
+
+    const body = await parseJsonSafe(response);
+    const list: EmailBisonSenderEmailAccount[] =
+      Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : Array.isArray(body?.sender_emails) ? body.sender_emails : [];
+
+    return { success: true, data: list };
+  } catch (error) {
+    console.error("[EmailBison] Failed to fetch sender emails:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
   }
 }
 
@@ -426,4 +651,3 @@ export function getCustomVariable(
 
   return found?.value?.trim() || null;
 }
-

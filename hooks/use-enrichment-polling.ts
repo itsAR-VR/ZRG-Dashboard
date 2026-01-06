@@ -79,30 +79,6 @@ export function useEnrichmentPolling(options: UseEnrichmentPollingOptions) {
   }, [leadId]);
 
   /**
-   * Check if status has changed from "pending" to something else
-   */
-  const checkStatusChange = useCallback(async () => {
-    const result = await fetchStatus();
-    if (!result) return;
-
-    const currentStatus = result.enrichmentStatus;
-    
-    // If status changed from "pending" to something else, enrichment is complete
-    if (
-      previousStatusRef.current === "pending" &&
-      currentStatus !== "pending"
-    ) {
-      console.log(`[EnrichmentPolling] Status changed: ${previousStatusRef.current} -> ${currentStatus}`);
-      stopPolling();
-      onComplete(result);
-      return;
-    }
-
-    // Update previous status for next check
-    previousStatusRef.current = currentStatus;
-  }, [fetchStatus, onComplete]);
-
-  /**
    * Stop polling and clear all timers
    */
   const stopPolling = useCallback(() => {
@@ -118,6 +94,27 @@ export function useEnrichmentPolling(options: UseEnrichmentPollingOptions) {
       setIsPolling(false);
     }
   }, []);
+
+  /**
+   * Check if status has changed from "pending" to something else
+   */
+  const checkStatusChange = useCallback(async () => {
+    const result = await fetchStatus();
+    if (!result) return;
+
+    const currentStatus = result.enrichmentStatus;
+
+    // If status changed from "pending" to something else, enrichment is complete
+    if (previousStatusRef.current === "pending" && currentStatus !== "pending") {
+      console.log(`[EnrichmentPolling] Status changed: ${previousStatusRef.current} -> ${currentStatus}`);
+      stopPolling();
+      onComplete(result);
+      return;
+    }
+
+    // Update previous status for next check
+    previousStatusRef.current = currentStatus;
+  }, [fetchStatus, onComplete, stopPolling]);
 
   /**
    * Start polling for enrichment status changes

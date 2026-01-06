@@ -60,6 +60,7 @@ import {
   type FollowUpInstanceData,
 } from "@/actions/followup-sequence-actions"
 import { FollowUpSequenceManager } from "./followup-sequence-manager"
+import { ReactivationsView } from "./reactivations-view"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
@@ -832,6 +833,7 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
             <TabsTrigger value="sequences">
               Sequences ({instances.length})
             </TabsTrigger>
+            <TabsTrigger value="reactivations">Reactivations</TabsTrigger>
           </TabsList>
 
           <ScrollArea className="h-[calc(100%-48px)] mt-4">
@@ -842,7 +844,7 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
                   <MessageCircle className="h-12 w-12 mx-auto mb-4 opacity-50" />
                   <p>No conversations need follow-up</p>
                   <p className="text-sm mt-2">
-                    Leads tagged with "Follow Up" sentiment will appear here
+                    Leads tagged with &quot;Follow Up&quot; sentiment will appear here
                   </p>
                 </div>
               ) : (
@@ -997,6 +999,11 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
                   )}
                 </>
               )}
+            </TabsContent>
+
+            {/* Reactivations Tab */}
+            <TabsContent value="reactivations" className="mt-0 space-y-6 pr-4">
+              <ReactivationsView activeWorkspace={activeWorkspace ?? null} />
             </TabsContent>
           </ScrollArea>
         </Tabs>

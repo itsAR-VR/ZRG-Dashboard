@@ -377,7 +377,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
               </Button>
             </div>
             <p className="text-xs text-muted-foreground mt-4">
-              "All Default" creates No Response (Day 2/5/7), Meeting Requested (Day 1/2/5/7), and Post-Booking Qualification sequences
+              &quot;All Default&quot; creates No Response (Day 2/5/7), Meeting Requested (Day 1/2/5/7), and Post-Booking Qualification sequences
             </p>
           </CardContent>
         </Card>

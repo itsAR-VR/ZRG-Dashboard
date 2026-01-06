@@ -3,7 +3,10 @@
     {
       "path": "/api/cron/followups",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/reactivations",
+      "schedule": "*/10 * * * *"
     }
   ]
 }
-

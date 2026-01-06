@@ -349,6 +349,20 @@ export async function POST(request: NextRequest) {
             update: { ...(settings ?? {}) },
           });
 
+          const reactivationCount = await tx.reactivationCampaign.count({ where: { clientId: existing.id } });
+          if (reactivationCount === 0) {
+            await tx.reactivationCampaign.create({
+              data: {
+                clientId: existing.id,
+                name: "Reactivation",
+                isActive: true,
+                dailyLimitPerSender: 5,
+                bumpMessageTemplate:
+                  "Hey {firstName} — just bumping this. Is it worth discussing this now, or should I circle back later?",
+              },
+            });
+          }
+
           return workspace;
         });
 
@@ -415,6 +429,17 @@ export async function POST(request: NextRequest) {
         data: {
           clientId: workspace.id,
           ...(settings ?? {}),
+        },
+      });
+
+      await tx.reactivationCampaign.create({
+        data: {
+          clientId: workspace.id,
+          name: "Reactivation",
+          isActive: true,
+          dailyLimitPerSender: 5,
+          bumpMessageTemplate:
+            "Hey {firstName} — just bumping this. Is it worth discussing this now, or should I circle back later?",
         },
       });
 

@@ -15,13 +15,13 @@ export default function VerifyPage() {
           </div>
           <CardTitle className="text-2xl font-bold">Check your email</CardTitle>
           <CardDescription>
-            We've sent you a confirmation link to verify your account
+            We&apos;ve sent you a confirmation link to verify your account
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
             Click the link in your email to complete your registration. 
-            If you don't see the email, check your spam folder.
+            If you don&apos;t see the email, check your spam folder.
           </p>
         </CardContent>
         <CardFooter className="flex justify-center">
@@ -33,7 +33,6 @@ export default function VerifyPage() {
     </div>
   );
 }
-
 
 
 

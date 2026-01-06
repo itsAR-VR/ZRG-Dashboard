@@ -27,6 +27,9 @@ model Client {
   campaigns     Campaign[]
   smsCampaigns  SmsCampaign[]
   emailCampaigns EmailCampaign[]
+  reactivationCampaigns ReactivationCampaign[]
+  senderEmailSnapshots EmailBisonSenderEmailSnapshot[]
+  reactivationSenderDailyUsage ReactivationSenderDailyUsage[]
   settings      WorkspaceSettings?  // One-to-one relation with settings
   followUpSequences FollowUpSequence[]  // Follow-up sequence templates
   calendarLinks CalendarLink[]      // Multiple calendar links for availability
@@ -176,6 +179,7 @@ model Lead {
   messages          Message[]
   followUps         FollowUpTask[]
   followUpInstances FollowUpInstance[]  // Active follow-up sequences for this lead
+  reactivationEnrollments ReactivationEnrollment[]
   aiDrafts          AIDraft[]
   aiInteractions    AIInteraction[]
   createdAt         DateTime      @default(now())
@@ -319,6 +323,7 @@ model EmailCampaign {
   clientId       String
   client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   leads          Lead[]
+  reactivationCampaigns ReactivationCampaign[]
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -358,6 +363,7 @@ model FollowUpSequence {
   triggerOn   String   @default("no_response")  // 'no_response' | 'meeting_selected' | 'manual'
   steps       FollowUpStep[]
   instances   FollowUpInstance[]
+  reactivationCampaigns ReactivationCampaign[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -405,6 +411,130 @@ model FollowUpInstance {
   @@index([sequenceId])
   @@index([status])
   @@index([nextStepDue])
+}
+
+// =============================================================================
+// Reactivation (CSV-based lead re-engagement)
+// =============================================================================
+
+model ReactivationCampaign {
+  id                  String   @id @default(uuid())
+  clientId            String
+  client              Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name                String
+  isActive            Boolean  @default(true)
+  // Optional: lock to a single EmailBison campaign (recommended).
+  emailCampaignId     String?
+  emailCampaign       EmailCampaign? @relation(fields: [emailCampaignId], references: [id], onDelete: SetNull)
+  // After bump send, optionally start a follow-up sequence (reuses existing sequencing system).
+  followUpSequenceId  String?
+  followUpSequence    FollowUpSequence? @relation(fields: [followUpSequenceId], references: [id], onDelete: SetNull)
+  // Confirmed requirement: 5/day per sender email address.
+  dailyLimitPerSender Int      @default(5)
+  // Optional allowlist of sender_email_id values (EmailBison sender emails).
+  allowedSenderEmailIds Json?
+  // Default bump template. Variables: {firstName}
+  bumpMessageTemplate String   @db.Text
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  enrollments         ReactivationEnrollment[]
+
+  @@index([clientId])
+  @@index([isActive])
+  @@index([emailCampaignId])
+  @@index([followUpSequenceId])
+}
+
+model ReactivationEnrollment {
+  id                 String   @id @default(uuid())
+  campaignId         String
+  campaign           ReactivationCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  leadId             String
+  lead               Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  status             String   @default("pending_resolution") // pending_resolution | ready | sent | rate_limited | needs_review | failed
+  needsReviewReason  String?  @db.Text
+  // Resolution fields (derived from EmailBison “sent” thread)
+  emailBisonLeadId        String?
+  anchorReplyId           String? // Reply ID to respond to for in-thread bump
+  anchorCampaignId        String? // EmailBison campaign_id (most recent campaign for the sent thread)
+  originalSenderEmailId   String? // sender_email_id used originally
+  selectedSenderEmailId   String? // sender_email_id selected (original or fallback)
+  deadOriginalSender      Boolean  @default(false)
+  deadReason              String?  @db.Text
+  // Scheduling + retries
+  nextActionAt        DateTime?
+  lastAttemptAt       DateTime?
+  retryCount          Int      @default(0)
+  lastError           String?  @db.Text
+  resolvedAt          DateTime?
+  sentAt              DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  sendLogs            ReactivationSendLog[]
+
+  @@unique([campaignId, leadId])
+  @@index([campaignId])
+  @@index([leadId])
+  @@index([status])
+  @@index([nextActionAt])
+  @@index([selectedSenderEmailId])
+}
+
+model EmailBisonSenderEmailSnapshot {
+  id            String   @id @default(uuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  senderEmailId String
+  emailAddress  String?
+  status        String?
+  isSendable    Boolean  @default(true)
+  raw           Json?
+  fetchedAt     DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([clientId, senderEmailId])
+  @@index([clientId])
+  @@index([clientId, isSendable])
+  @@index([fetchedAt])
+}
+
+model ReactivationSenderDailyUsage {
+  id            String   @id @default(uuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  senderEmailId String
+  dateKey       String   // YYYY-MM-DD in workspace timezone
+  count         Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([clientId, senderEmailId, dateKey])
+  @@index([clientId])
+  @@index([senderEmailId])
+  @@index([dateKey])
+}
+
+model ReactivationSendLog {
+  id               String   @id @default(uuid())
+  enrollmentId     String
+  enrollment       ReactivationEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  stepKey          String   // e.g. "bump_1"
+  channel          String   @default("email") // email | sms | linkedin (future)
+  senderEmailId    String?
+  anchorReplyId    String?
+  providerMessageId String?
+  status           String   @default("sent") // sent | skipped | error
+  error            String?  @db.Text
+  sentAt           DateTime @default(now())
+  createdAt        DateTime @default(now())
+
+  @@unique([enrollmentId, stepKey])
+  @@index([channel])
+  @@index([senderEmailId])
+  @@index([sentAt(sort: Desc)])
 }
 
 // =============================================================================

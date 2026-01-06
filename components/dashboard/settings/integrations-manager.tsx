@@ -72,11 +72,6 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
   const [newClientForm, setNewClientForm] = useState(emptyNewClientForm);
   const [integrationsForm, setIntegrationsForm] = useState(emptyIntegrationsForm);
 
-  // Fetch clients on mount
-  useEffect(() => {
-    fetchClients();
-  }, []);
-
   async function fetchClients() {
     setIsLoading(true);
     const result = await getClients();
@@ -91,6 +86,11 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     }
     setIsLoading(false);
   }
+
+  // Fetch clients on mount
+  useEffect(() => {
+    fetchClients();
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

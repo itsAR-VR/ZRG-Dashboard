@@ -933,7 +933,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     }}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Used in messages as {"{companyName}"} - e.g., "Hey John - Sarah from {"{companyName}"} again"
+                    Used in messages as {"{companyName}"} - e.g., &quot;Hey John - Sarah from {"{companyName}"} again&quot;
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -951,7 +951,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     }}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Used in messages as {"{result}"} - e.g., "in case you were still interested in {"{result}"}"
+                    Used in messages as {"{result}"} - e.g., &quot;in case you were still interested in {"{result}"}&quot;
                   </p>
                 </div>
               </CardContent>
@@ -1521,7 +1521,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Examples: "What is your current monthly budget for this solution?", "Who else is involved in this decision?"
+                    Examples: &quot;What is your current monthly budget for this solution?&quot;, &quot;Who else is involved in this decision?&quot;
                   </p>
                 </div>
 
