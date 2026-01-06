@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { applyAirtableModeToDefaultSequences } from "@/actions/followup-sequence-actions";
 import { computeWorkspaceFollowUpsPausedUntil } from "@/lib/workspace-followups-pause";
+import { requireClientAccess, requireClientAdminAccess } from "@/lib/workspace-access";
 
 export interface UserSettingsData {
   id: string;
@@ -122,6 +123,8 @@ export async function getUserSettings(clientId?: string | null): Promise<{
       };
     }
 
+    await requireClientAccess(clientId);
+
     // Try to find existing settings for this workspace
     let settings = await prisma.workspaceSettings.findUnique({
       where: { clientId },
@@ -225,6 +228,7 @@ export async function updateUserSettings(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -315,6 +319,7 @@ export async function updateAISignature(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -348,6 +353,7 @@ export async function updateAIPersonality(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -388,6 +394,7 @@ export async function updateAutomationRules(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -414,6 +421,7 @@ export async function setAirtableMode(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAdminAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -441,6 +449,7 @@ export async function getAutoFollowUpsOnReply(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
 
     const settings = await prisma.workspaceSettings.findUnique({
       where: { clientId },
@@ -462,6 +471,7 @@ export async function setAutoFollowUpsOnReply(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -483,6 +493,7 @@ export async function pauseWorkspaceFollowUps(
 ): Promise<{ success: boolean; pausedUntil?: Date; error?: string }> {
   try {
     if (!clientId) return { success: false, error: "No workspace selected" };
+    await requireClientAccess(clientId);
     if (!Number.isFinite(days)) return { success: false, error: "Invalid number of days" };
 
     const daysInt = Math.floor(days);
@@ -529,6 +540,7 @@ export async function resumeWorkspaceFollowUps(
 ): Promise<{ success: boolean; error?: string }> {
   try {
     if (!clientId) return { success: false, error: "No workspace selected" };
+    await requireClientAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -563,6 +575,7 @@ export async function addKnowledgeAsset(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
 
     // Ensure settings exist
     const settings = await prisma.workspaceSettings.upsert({
@@ -605,6 +618,7 @@ export async function addFileKnowledgeAsset(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
 
     // Ensure settings exist
     const settings = await prisma.workspaceSettings.upsert({
@@ -641,6 +655,13 @@ export async function updateAssetTextContent(
   textContent: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const asset = await prisma.knowledgeAsset.findUnique({
+      where: { id: assetId },
+      select: { id: true, workspaceSettings: { select: { clientId: true } } },
+    });
+    if (!asset) return { success: false, error: "Asset not found" };
+    await requireClientAccess(asset.workspaceSettings.clientId);
+
     await prisma.knowledgeAsset.update({
       where: { id: assetId },
       data: { textContent },
@@ -661,6 +682,13 @@ export async function deleteKnowledgeAsset(
   assetId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const asset = await prisma.knowledgeAsset.findUnique({
+      where: { id: assetId },
+      select: { id: true, workspaceSettings: { select: { clientId: true } } },
+    });
+    if (!asset) return { success: false, error: "Asset not found" };
+    await requireClientAccess(asset.workspaceSettings.clientId);
+
     await prisma.knowledgeAsset.delete({
       where: { id: assetId },
     });
@@ -680,6 +708,7 @@ export async function getKnowledgeAssetsForAI(
   clientId: string
 ): Promise<{ name: string; content: string }[]> {
   try {
+    await requireClientAccess(clientId);
     const settings = await prisma.workspaceSettings.findUnique({
       where: { clientId },
       include: {
@@ -746,6 +775,7 @@ export async function getCalendarLinks(
     if (!clientId) {
       return { success: true, data: [] };
     }
+    await requireClientAccess(clientId);
 
     const links = await prisma.calendarLink.findMany({
       where: { clientId },
@@ -783,6 +813,7 @@ export async function addCalendarLink(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
 
     // Auto-detect calendar type
     const type = detectCalendarType(data.url);
@@ -833,6 +864,7 @@ export async function deleteCalendarLink(
     if (!link) {
       return { success: false, error: "Calendar link not found" };
     }
+    await requireClientAccess(link.clientId);
 
     await prisma.calendarLink.delete({
       where: { id: calendarLinkId },
@@ -871,6 +903,14 @@ export async function setDefaultCalendarLink(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
+
+    const link = await prisma.calendarLink.findUnique({
+      where: { id: calendarLinkId },
+      select: { clientId: true },
+    });
+    if (!link) return { success: false, error: "Calendar link not found" };
+    if (link.clientId !== clientId) return { success: false, error: "Calendar link does not belong to this workspace" };
 
     // Unset current default
     await prisma.calendarLink.updateMany({

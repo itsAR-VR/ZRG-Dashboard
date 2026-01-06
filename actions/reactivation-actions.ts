@@ -6,6 +6,7 @@ import { findOrCreateLead } from "@/lib/lead-matching";
 import { refreshSenderEmailSnapshotsDue, resolveReactivationEnrollmentsDue, processReactivationSendsDue } from "@/lib/reactivation-engine";
 import Papa from "papaparse";
 import { Prisma } from "@prisma/client";
+import { requireClientAdminAccess } from "@/lib/workspace-access";
 
 type ReactivationCampaignData = {
   id: string;
@@ -24,6 +25,7 @@ type ReactivationCampaignData = {
 
 export async function getReactivationCampaigns(clientId: string): Promise<{ success: boolean; data?: ReactivationCampaignData[]; error?: string }> {
   try {
+    await requireClientAdminAccess(clientId);
     const campaigns = await prisma.reactivationCampaign.findMany({
       where: { clientId },
       include: { _count: { select: { enrollments: true } } },
@@ -46,6 +48,7 @@ export async function createReactivationCampaign(input: {
   allowedSenderEmailIds?: unknown | null;
 }): Promise<{ success: boolean; campaignId?: string; error?: string }> {
   try {
+    await requireClientAdminAccess(input.clientId);
     const name = input.name.trim();
     if (!name) return { success: false, error: "Campaign name is required" };
 
@@ -88,6 +91,13 @@ export async function updateReactivationCampaign(
   }>
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const existing = await prisma.reactivationCampaign.findUnique({
+      where: { id: campaignId },
+      select: { clientId: true },
+    });
+    if (!existing) return { success: false, error: "Campaign not found" };
+    await requireClientAdminAccess(existing.clientId);
+
     const data: any = {};
     if (typeof input.name === "string") {
       const name = input.name.trim();
@@ -112,6 +122,13 @@ export async function updateReactivationCampaign(
 
 export async function deleteReactivationCampaign(campaignId: string): Promise<{ success: boolean; error?: string }> {
   try {
+    const existing = await prisma.reactivationCampaign.findUnique({
+      where: { id: campaignId },
+      select: { clientId: true },
+    });
+    if (!existing) return { success: false, error: "Campaign not found" };
+    await requireClientAdminAccess(existing.clientId);
+
     await prisma.reactivationCampaign.delete({ where: { id: campaignId } });
     revalidatePath("/");
     return { success: true };
@@ -144,6 +161,13 @@ export async function getReactivationEnrollments(campaignId: string): Promise<{
   error?: string;
 }> {
   try {
+    const campaign = await prisma.reactivationCampaign.findUnique({
+      where: { id: campaignId },
+      select: { clientId: true },
+    });
+    if (!campaign) return { success: false, error: "Campaign not found" };
+    await requireClientAdminAccess(campaign.clientId);
+
     const rows = await prisma.reactivationEnrollment.findMany({
       where: { campaignId },
       include: {
@@ -161,6 +185,13 @@ export async function getReactivationEnrollments(campaignId: string): Promise<{
 
 export async function resetReactivationEnrollment(enrollmentId: string): Promise<{ success: boolean; error?: string }> {
   try {
+    const enrollment = await prisma.reactivationEnrollment.findUnique({
+      where: { id: enrollmentId },
+      select: { campaign: { select: { clientId: true } } },
+    });
+    if (!enrollment) return { success: false, error: "Enrollment not found" };
+    await requireClientAdminAccess(enrollment.campaign.clientId);
+
     await prisma.reactivationEnrollment.update({
       where: { id: enrollmentId },
       data: {
@@ -199,6 +230,7 @@ export async function importReactivationCsv(input: {
       select: { id: true, clientId: true },
     });
     if (!campaign) return { success: false, error: "Campaign not found" };
+    await requireClientAdminAccess(campaign.clientId);
 
     const parsed = Papa.parse<Record<string, unknown>>(input.csvText, {
       header: true,
@@ -357,6 +389,7 @@ export async function runReactivationNow(input: {
   sendLimit?: number;
 }): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
+    await requireClientAdminAccess(input.clientId);
     const snapshots = await refreshSenderEmailSnapshotsDue({ clientId: input.clientId, ttlMinutes: 0, limitClients: 1 });
     const resolved = await resolveReactivationEnrollmentsDue({ clientId: input.clientId, limit: input.resolveLimit ?? 200 });
     const sent = await processReactivationSendsDue({ clientId: input.clientId, limit: input.sendLimit ?? 50 });

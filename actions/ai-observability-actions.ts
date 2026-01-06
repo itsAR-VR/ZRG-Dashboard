@@ -1,7 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
+import { requireClientAdminAccess } from "@/lib/workspace-access";
 import { listAIPromptTemplates } from "@/lib/ai/prompt-registry";
 import { estimateCostUsd } from "@/lib/ai/pricing";
 import { pruneOldAIInteractionsMaybe } from "@/lib/ai/retention";
@@ -67,28 +67,7 @@ export type ObservabilitySummary = {
 };
 
 async function requireWorkspaceAdmin(clientId: string): Promise<{ userId: string }> {
-  const supabase = await createClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
-
-  if (error || !user) {
-    throw new Error("Not authenticated");
-  }
-
-  const client = await prisma.client.findUnique({
-    where: { id: clientId },
-    select: { userId: true },
-  });
-
-  if (!client) {
-    throw new Error("Workspace not found");
-  }
-
-  // Treat "admin" as the workspace owner for now.
-  if (client.userId !== user.id) {
-    throw new Error("Unauthorized");
-  }
-
-  return { userId: user.id };
+  return requireClientAdminAccess(clientId);
 }
 
 function windowToMs(window: AiObservabilityWindow): number {

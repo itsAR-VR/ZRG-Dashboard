@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useTransition } from "react";
-import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil, Eraser, Linkedin } from "lucide-react";
+import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil, Eraser, Linkedin, Users } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,9 +17,11 @@ import {
 } from "@/components/ui/table";
 import { Separator } from "@/components/ui/separator";
 import { getClients, createClient, deleteClient, updateClient } from "@/actions/client-actions";
+import { getGlobalAdminStatus } from "@/actions/access-actions";
 import { syncCampaignsFromGHL } from "@/actions/campaign-actions";
 import { syncEmailCampaignsFromEmailBison } from "@/actions/email-campaign-actions";
 import { cleanupBounceLeads } from "@/actions/message-actions";
+import { getClientAssignments, setClientAssignments } from "@/actions/client-membership-actions";
 import { toast } from "sonner";
 
 interface Client {
@@ -44,6 +46,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
   const [clients, setClients] = useState<Client[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [isAdminLoading, setIsAdminLoading] = useState(true);
   const [syncingClientId, setSyncingClientId] = useState<string | null>(null);
   const [syncingEmailClientId, setSyncingEmailClientId] = useState<string | null>(null);
   const [cleaningUpClientId, setCleaningUpClientId] = useState<string | null>(null);
@@ -51,6 +55,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
   const [showForm, setShowForm] = useState(false);
   const [showEmailFields, setShowEmailFields] = useState(false);
   const [editingClientId, setEditingClientId] = useState<string | null>(null);
+  const [isLoadingAssignments, setIsLoadingAssignments] = useState(false);
 
   const emptyNewClientForm = {
     name: "",
@@ -59,6 +64,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
     unipileAccountId: "",
+    setterEmailsRaw: "",
+    inboxManagerEmailsRaw: "",
   };
 
   const emptyIntegrationsForm = {
@@ -68,9 +75,15 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     unipileAccountId: "",
   };
 
+  const emptyAssignmentsForm = {
+    setterEmailsRaw: "",
+    inboxManagerEmailsRaw: "",
+  };
+
   // Separate form states to prevent cross-contamination between "Add Workspace" and per-client edits
   const [newClientForm, setNewClientForm] = useState(emptyNewClientForm);
   const [integrationsForm, setIntegrationsForm] = useState(emptyIntegrationsForm);
+  const [assignmentsForm, setAssignmentsForm] = useState(emptyAssignmentsForm);
 
   async function fetchClients() {
     setIsLoading(true);
@@ -92,6 +105,48 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     fetchClients();
   }, []);
 
+  useEffect(() => {
+    async function fetchAdminStatus() {
+      setIsAdminLoading(true);
+      const result = await getGlobalAdminStatus();
+      if (result.success) setIsAdmin(result.isAdmin);
+      setIsAdminLoading(false);
+    }
+    fetchAdminStatus();
+  }, []);
+
+  async function loadAssignments(clientId: string) {
+    setIsLoadingAssignments(true);
+    const res = await getClientAssignments(clientId);
+    if (res.success && res.data) {
+      setAssignmentsForm({
+        setterEmailsRaw: res.data.setters.join(", "),
+        inboxManagerEmailsRaw: res.data.inboxManagers.join(", "),
+      });
+    } else {
+      setAssignmentsForm(emptyAssignmentsForm);
+      toast.error(res.error || "Failed to load assignments");
+    }
+    setIsLoadingAssignments(false);
+  }
+
+  async function handleSaveAssignments(clientId: string) {
+    setError(null);
+
+    startTransition(async () => {
+      const res = await setClientAssignments(clientId, {
+        setterEmailsRaw: assignmentsForm.setterEmailsRaw,
+        inboxManagerEmailsRaw: assignmentsForm.inboxManagerEmailsRaw,
+      });
+      if (res.success) {
+        toast.success("Assignments updated");
+        await fetchClients();
+      } else {
+        toast.error(res.error || "Failed to update assignments");
+      }
+    });
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -105,8 +160,23 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
         emailBisonWorkspaceId: newClientForm.emailBisonWorkspaceId,
         unipileAccountId: newClientForm.unipileAccountId,
       });
-      if (result.success) {
+      if (result.success && result.data) {
+        const created = result.data as { id: string };
+        const wantsAssignments =
+          !!newClientForm.setterEmailsRaw.trim() || !!newClientForm.inboxManagerEmailsRaw.trim();
+
+        if (wantsAssignments) {
+          const assign = await setClientAssignments(created.id, {
+            setterEmailsRaw: newClientForm.setterEmailsRaw,
+            inboxManagerEmailsRaw: newClientForm.inboxManagerEmailsRaw,
+          });
+          if (!assign.success) {
+            toast.error(assign.error || "Workspace created, but failed to set assignments");
+          }
+        }
+
         setNewClientForm(emptyNewClientForm);
+        setAssignmentsForm(emptyAssignmentsForm);
         setShowForm(false);
         setShowEmailFields(false);
         toast.success("Workspace added successfully");
@@ -262,6 +332,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 const next = !prev;
                 if (next) {
                   setNewClientForm(emptyNewClientForm);
+                  setAssignmentsForm(emptyAssignmentsForm);
                   setShowEmailFields(false);
                 }
                 return next;
@@ -283,7 +354,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
         )}
 
         {/* Add New Client Form */}
-        {showForm && (
+        {showForm && isAdmin && (
           <>
             <form onSubmit={handleSubmit} className="space-y-4 p-4 border rounded-lg bg-muted/30">
               <div className="grid gap-4 sm:grid-cols-2">
@@ -331,6 +402,35 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 <p className="text-xs text-muted-foreground">
                   Found in GHL → Settings → Integrations → Private Integrations
                 </p>
+              </div>
+
+              <div className="border-t pt-4 mt-4">
+                <p className="text-sm font-medium mb-3 flex items-center gap-2">
+                  <Users className="h-4 w-4" />
+                  Assignments (Optional)
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="setterEmails" className="text-sm">Setter email(s)</Label>
+                    <Input
+                      id="setterEmails"
+                      placeholder="setter1@company.com, setter2@company.com"
+                      value={newClientForm.setterEmailsRaw}
+                      onChange={(e) => setNewClientForm({ ...newClientForm, setterEmailsRaw: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">Comma-separated. Users must already exist in Supabase Auth.</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="inboxManagerEmails" className="text-sm">Inbox manager email(s)</Label>
+                    <Input
+                      id="inboxManagerEmails"
+                      placeholder="manager@company.com"
+                      value={newClientForm.inboxManagerEmailsRaw}
+                      onChange={(e) => setNewClientForm({ ...newClientForm, inboxManagerEmailsRaw: e.target.value })}
+                    />
+                    <p className="text-xs text-muted-foreground">Used for provisioning auto-assignment + UI labeling.</p>
+                  </div>
+                </div>
               </div>
 
               {/* EmailBison Integration Section */}
@@ -418,6 +518,15 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 )}
               </Button>
             </form>
+            <Separator />
+          </>
+        )}
+
+        {showForm && !isAdmin && !isAdminLoading && (
+          <>
+            <div className="p-4 border rounded-lg bg-muted/30 text-sm text-muted-foreground">
+              You don&apos;t have permission to add or manage workspaces. Ask an admin to assign you to a workspace.
+            </div>
             <Separator />
           </>
         )}
@@ -510,6 +619,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             size="sm"
                             onClick={() => handleSyncCampaigns(client.id)}
                             disabled={syncingClientId === client.id}
+                            className={!isAdmin ? "hidden" : undefined}
                           >
                             {syncingClientId === client.id ? (
                               <Loader2 className="h-4 w-4 animate-spin" />
@@ -543,6 +653,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                 onClick={() => handleCleanupBounceLeads(client.id)}
                                 disabled={cleaningUpClientId === client.id}
                                 title="Clean up bounce email leads (Mail Delivery Subsystem, etc.)"
+                                className={!isAdmin ? "hidden" : undefined}
                               >
                                 {cleaningUpClientId === client.id ? (
                                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -555,51 +666,57 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                               </Button>
                             </>
                           )}
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => handleDelete(client.id)}
-                            disabled={isPending}
-                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          {isAdmin && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleDelete(client.id)}
+                              disabled={isPending}
+                              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
                         </div>
                         
                         {/* Configure/Edit EmailBison button - always available */}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-xs text-muted-foreground"
-                          onClick={() => {
-                            if (isEditingThis) {
-                              setEditingClientId(null);
-                              setIntegrationsForm(emptyIntegrationsForm);
-                            } else {
-                              setEditingClientId(client.id);
-                              setIntegrationsForm({
-                                name: client.name,
-                                emailBisonApiKey: "",
-                                emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
-                                unipileAccountId: client.unipileAccountId || "",
-                              });
-                            }
-                          }}
-                        >
-                          {isEditingThis ? (
-                            <>Cancel</>
-                          ) : (hasEmailBison || hasLinkedIn) ? (
-                            <>
-                              <Pencil className="h-3 w-3 mr-1" />
-                              Edit Integrations
-                            </>
-                          ) : (
-                            <>
-                              <Key className="h-3 w-3 mr-1" />
-                              Configure Integrations
-                            </>
-                          )}
-                        </Button>
+                        {isAdmin && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-xs text-muted-foreground"
+                            onClick={() => {
+                              if (isEditingThis) {
+                                setEditingClientId(null);
+                                setIntegrationsForm(emptyIntegrationsForm);
+                                setAssignmentsForm(emptyAssignmentsForm);
+                              } else {
+                                setEditingClientId(client.id);
+                                setIntegrationsForm({
+                                  name: client.name,
+                                  emailBisonApiKey: "",
+                                  emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
+                                  unipileAccountId: client.unipileAccountId || "",
+                                });
+                                loadAssignments(client.id);
+                              }
+                            }}
+                          >
+                            {isEditingThis ? (
+                              <>Cancel</>
+                            ) : (hasEmailBison || hasLinkedIn) ? (
+                              <>
+                                <Pencil className="h-3 w-3 mr-1" />
+                                Edit Integrations
+                              </>
+                            ) : (
+                              <>
+                                <Key className="h-3 w-3 mr-1" />
+                                Configure Integrations
+                              </>
+                            )}
+                          </Button>
+                        )}
                         
                         {/* Inline edit form for EmailBison credentials */}
                         {isEditingThis && (
@@ -673,6 +790,50 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             >
                               {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Changes"}
                             </Button>
+
+                            <div className="border-t pt-3 mt-3 space-y-2">
+                              <p className="text-xs font-medium flex items-center gap-2">
+                                <Users className="h-3 w-3" />
+                                Assignments
+                              </p>
+                              {isLoadingAssignments ? (
+                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                  Loading assignments…
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="space-y-2">
+                                    <Label htmlFor={`setters-${client.id}`} className="text-xs">Setter email(s)</Label>
+                                    <Input
+                                      id={`setters-${client.id}`}
+                                      placeholder="setter1@company.com, setter2@company.com"
+                                      value={assignmentsForm.setterEmailsRaw}
+                                      onChange={(e) => setAssignmentsForm({ ...assignmentsForm, setterEmailsRaw: e.target.value })}
+                                      className="h-8 text-sm"
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label htmlFor={`inboxManagers-${client.id}`} className="text-xs">Inbox manager email(s)</Label>
+                                    <Input
+                                      id={`inboxManagers-${client.id}`}
+                                      placeholder="manager@company.com"
+                                      value={assignmentsForm.inboxManagerEmailsRaw}
+                                      onChange={(e) => setAssignmentsForm({ ...assignmentsForm, inboxManagerEmailsRaw: e.target.value })}
+                                      className="h-8 text-sm"
+                                    />
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleSaveAssignments(client.id)}
+                                    disabled={isPending}
+                                  >
+                                    {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Save Assignments"}
+                                  </Button>
+                                </>
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>

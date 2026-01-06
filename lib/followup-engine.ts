@@ -17,7 +17,7 @@ import {
   bookMeetingOnGHL,
   getOfferedSlots,
   type OfferedSlot,
-} from "@/actions/booking-actions";
+} from "@/lib/booking";
 import { sendSlackNotification } from "@/lib/slack-notifications";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";

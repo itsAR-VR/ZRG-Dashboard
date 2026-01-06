@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { getWorkflows } from "@/lib/ghl-api";
 import { revalidatePath } from "next/cache";
+import { requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
 
 interface CampaignData {
   id: string;
@@ -24,8 +25,10 @@ export async function getCampaigns(clientId?: string): Promise<{
   error?: string;
 }> {
   try {
+    const scope = await resolveClientScope(clientId ?? null);
+    if (scope.clientIds.length === 0) return { success: true, data: [] };
     const campaigns = await prisma.campaign.findMany({
-      where: clientId ? { clientId } : undefined,
+      where: { clientId: { in: scope.clientIds } },
       include: {
         client: {
           select: { name: true },
@@ -64,6 +67,7 @@ export async function syncCampaignsFromGHL(clientId: string): Promise<{
   error?: string;
 }> {
   try {
+    await requireClientAdminAccess(clientId);
     // Get the client to get their GHL credentials
     const client = await prisma.client.findUnique({
       where: { id: clientId },
@@ -125,6 +129,16 @@ export async function linkLeadToCampaign(
   campaignId: string | null
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const { clientId } = await requireLeadAccessById(leadId);
+    if (campaignId) {
+      const campaign = await prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { clientId: true },
+      });
+      if (!campaign) return { success: false, error: "Campaign not found" };
+      if (campaign.clientId !== clientId) return { success: false, error: "Campaign does not belong to this workspace" };
+    }
+
     await prisma.lead.update({
       where: { id: leadId },
       data: { campaignId },
@@ -170,6 +184,8 @@ export async function deleteCampaign(campaignId: string): Promise<{
     };
   }
 }
+
+
 
 
 

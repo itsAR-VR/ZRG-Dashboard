@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolveClientScope } from "@/lib/workspace-access";
 
 /**
  * Export Leads API
@@ -109,6 +110,13 @@ export async function POST(request: NextRequest) {
         { error: "clientId is required" },
         { status: 400 }
       );
+    }
+
+    // Enforce authenticated, scoped access (setter/admin).
+    try {
+      await resolveClientScope(clientId);
+    } catch {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // First, count how many records match the filters

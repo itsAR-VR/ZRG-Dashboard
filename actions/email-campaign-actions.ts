@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { fetchEmailBisonCampaigns } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
+import { requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
 
 interface EmailCampaignData {
   id: string;
@@ -20,8 +21,10 @@ export async function getEmailCampaigns(clientId?: string): Promise<{
   error?: string;
 }> {
   try {
+    const scope = await resolveClientScope(clientId ?? null);
+    if (scope.clientIds.length === 0) return { success: true, data: [] };
     const campaigns = await prisma.emailCampaign.findMany({
-      where: clientId ? { clientId } : undefined,
+      where: { clientId: { in: scope.clientIds } },
       include: {
         client: {
           select: { name: true },
@@ -56,6 +59,7 @@ export async function syncEmailCampaignsFromEmailBison(clientId: string): Promis
   error?: string;
 }> {
   try {
+    await requireClientAdminAccess(clientId);
     const client = await prisma.client.findUnique({
       where: { id: clientId },
     });
@@ -112,6 +116,16 @@ export async function linkLeadToEmailCampaign(
   emailCampaignId: string | null
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const { clientId } = await requireLeadAccessById(leadId);
+    if (emailCampaignId) {
+      const campaign = await prisma.emailCampaign.findUnique({
+        where: { id: emailCampaignId },
+        select: { clientId: true },
+      });
+      if (!campaign) return { success: false, error: "Email campaign not found" };
+      if (campaign.clientId !== clientId) return { success: false, error: "Email campaign does not belong to this workspace" };
+    }
+
     await prisma.lead.update({
       where: { id: leadId },
       data: { emailCampaignId },
@@ -124,4 +138,3 @@ export async function linkLeadToEmailCampaign(
     return { success: false, error: "Failed to link lead to email campaign" };
   }
 }
-

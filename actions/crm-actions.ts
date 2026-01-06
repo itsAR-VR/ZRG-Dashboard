@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { shouldGenerateDraft } from "@/lib/ai-drafts";
 import { isPositiveSentiment, SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared";
+import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
 
 export interface CRMLeadData {
   id: string;
@@ -45,8 +46,10 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
   error?: string;
 }> {
   try {
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) return { success: true, data: [] };
     const leads = await prisma.lead.findMany({
-      where: clientId ? { clientId } : undefined,
+      where: { clientId: { in: scope.clientIds } },
       include: {
         client: {
           select: {
@@ -128,6 +131,7 @@ export async function updateLeadStatus(
   status: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    await requireLeadAccessById(leadId);
     await prisma.lead.update({
       where: { id: leadId },
       data: { status },
@@ -149,6 +153,7 @@ export async function updateLeadSentimentTag(
   sentimentTag: string
 ): Promise<{ success: boolean; sentimentTag?: string; error?: string }> {
   try {
+    await requireLeadAccessById(leadId);
     const nextTag = sentimentTag as SentimentTag;
     if (!SENTIMENT_TAGS.includes(nextTag)) {
       return { success: false, error: "Invalid sentiment tag" };
@@ -200,6 +205,7 @@ export async function updateLeadAutomationSettings(
   }
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    await requireLeadAccessById(leadId);
     const before = await prisma.lead.findUnique({
       where: { id: leadId },
       select: {
@@ -255,6 +261,7 @@ export async function enableAutoFollowUpsForAttentionLeads(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAccess(clientId);
 
     // Keep this list aligned with what the UI considers "requires attention".
     // Includes "Positive" for legacy rows.
@@ -325,6 +332,7 @@ export async function backfillNoResponseFollowUpsForAwaitingReplyLeads(
 }> {
   try {
     if (!clientId) return { success: false, error: "No workspace selected" };
+    await requireClientAdminAccess(clientId);
 
     const limit = opts?.limit ?? 200;
     const now = new Date();
@@ -425,6 +433,8 @@ export async function deleteLead(
   leadId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const { clientId } = await requireLeadAccessById(leadId);
+    await requireClientAdminAccess(clientId);
     await prisma.lead.delete({
       where: { id: leadId },
     });
@@ -442,6 +452,7 @@ export async function deleteLead(
  */
 export async function getLeadDetails(leadId: string) {
   try {
+    await requireLeadAccessById(leadId);
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       include: {
@@ -509,6 +520,7 @@ export async function snoozeLeadUntil(
   snoozedUntilIso: string
 ): Promise<{ success: boolean; snoozedUntil?: Date; error?: string }> {
   try {
+    await requireLeadAccessById(leadId);
     const snoozedUntil = new Date(snoozedUntilIso);
     if (Number.isNaN(snoozedUntil.getTime())) {
       return { success: false, error: "Invalid snooze date" };
@@ -552,6 +564,7 @@ export async function unsnoozeLead(
   leadId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    await requireLeadAccessById(leadId);
     await prisma.lead.update({
       where: { id: leadId },
       data: { snoozedUntil: null },
@@ -578,6 +591,7 @@ export async function bookMeeting(
   leadId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    await requireLeadAccessById(leadId);
     await prisma.lead.update({
       where: { id: leadId },
       data: { status: "meeting-booked" },
@@ -686,12 +700,15 @@ export async function getCRMLeadsCursor(
       sortDirection = "desc",
     } = options;
 
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) {
+      return { success: true, leads: [], nextCursor: null, hasMore: false };
+    }
+
     // Build the where clause for filtering
     const whereConditions: any[] = [];
 
-    if (clientId) {
-      whereConditions.push({ clientId });
-    }
+    whereConditions.push({ clientId: { in: scope.clientIds } });
 
     if (status && status !== "all") {
       whereConditions.push({ status });
@@ -790,12 +807,15 @@ export async function getCRMLeadsFromEnd(
       sortField = "updatedAt",
     } = options;
 
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) {
+      return { success: true, leads: [], nextCursor: null, hasMore: false };
+    }
+
     // Build the where clause
     const whereConditions: any[] = [];
 
-    if (clientId) {
-      whereConditions.push({ clientId });
-    }
+    whereConditions.push({ clientId: { in: scope.clientIds } });
 
     if (status && status !== "all") {
       whereConditions.push({ status });

@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { getAvailableChannels } from "@/lib/lead-matching";
+import { getAccessibleClientIdsForUser, requireAuthUser, resolveClientScope } from "@/lib/workspace-access";
 
 export type Channel = "sms" | "email" | "linkedin";
 
@@ -142,9 +143,11 @@ export async function getConversations(clientId?: string | null): Promise<{
   try {
     const now = new Date();
     const snoozeFilter = { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] };
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) return { success: true, data: [] };
 
     const leads = await prisma.lead.findMany({
-      where: clientId ? { clientId, ...snoozeFilter } : snoozeFilter,
+      where: { clientId: { in: scope.clientIds }, ...snoozeFilter },
       include: {
         client: {
           select: {
@@ -265,6 +268,17 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
   total: number;
 }> {
   try {
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) {
+      return {
+        allResponses: 0,
+        requiresAttention: 0,
+        previouslyRequiredAttention: 0,
+        awaitingReply: 0,
+        needsRepair: 0,
+        total: 0,
+      };
+    }
     const now = new Date();
     const snoozeFilter = { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] };
     const positiveSentimentTags = [
@@ -274,7 +288,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       "Interested",
       "Positive", // Legacy - treat as Interested
     ];
-    const clientFilter = clientId ? { clientId } : {};
+    const clientFilter = { clientId: { in: scope.clientIds } };
 
     const [allResponses, attention, previousAttention, total, blacklisted, needsRepair] = await Promise.all([
       // All inbound replies (latest message is inbound)
@@ -359,6 +373,8 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
  */
 export async function getConversation(leadId: string, channelFilter?: Channel) {
   try {
+    const user = await requireAuthUser();
+    const accessible = await getAccessibleClientIdsForUser(user.id);
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       include: {
@@ -384,6 +400,9 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
 
     if (!lead) {
       return { success: false, error: "Lead not found" };
+    }
+    if (!accessible.includes(lead.clientId)) {
+      return { success: false, error: "Unauthorized" };
     }
 
     const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
@@ -461,6 +480,8 @@ export async function getLeadWorkspaceId(leadId: string): Promise<{
   error?: string;
 }> {
   try {
+    const user = await requireAuthUser();
+    const accessible = await getAccessibleClientIdsForUser(user.id);
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       select: { clientId: true },
@@ -468,6 +489,9 @@ export async function getLeadWorkspaceId(leadId: string): Promise<{
 
     if (!lead) {
       return { success: false, error: "Lead not found" };
+    }
+    if (!accessible.includes(lead.clientId)) {
+      return { success: false, error: "Unauthorized" };
     }
 
     return { success: true, workspaceId: lead.clientId };
@@ -584,14 +608,17 @@ export async function getConversationsCursor(
       filter,
     } = options;
 
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) {
+      return { success: true, conversations: [], nextCursor: null, hasMore: false };
+    }
+
     // Build the where clause for filtering
     const whereConditions: any[] = [];
     const now = new Date();
     whereConditions.push({ OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] });
 
-    if (clientId) {
-      whereConditions.push({ clientId });
-    }
+    whereConditions.push({ clientId: { in: scope.clientIds } });
 
     // Search filter
     if (search && search.trim()) {
@@ -765,14 +792,17 @@ export async function getConversationsFromEnd(
       filter,
     } = options;
 
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) {
+      return { success: true, conversations: [], nextCursor: null, hasMore: false };
+    }
+
     // Build the where clause (same as cursor version)
     const whereConditions: any[] = [];
     const now = new Date();
     whereConditions.push({ OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] });
 
-    if (clientId) {
-      whereConditions.push({ clientId });
-    }
+    whereConditions.push({ clientId: { in: scope.clientIds } });
 
     if (search && search.trim()) {
       const searchTerm = search.trim();
@@ -932,7 +962,21 @@ export async function diagnoseSentimentTags(clientId?: string | null): Promise<{
   error?: string;
 }> {
   try {
-    const clientFilter = clientId ? { clientId } : {};
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) {
+      return {
+        success: true,
+        data: {
+          totalLeads: 0,
+          sentimentDistribution: {},
+          attentionTagsCount: 0,
+          blacklistedCount: 0,
+          leadsWithNullSentiment: 0,
+          sampleLeadsNeedingAttention: [],
+        },
+      };
+    }
+    const clientFilter = { clientId: { in: scope.clientIds } };
     const attentionTags = [
       "Meeting Requested",
       "Call Requested",

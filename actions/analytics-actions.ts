@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { resolveClientScope } from "@/lib/workspace-access";
 
 export interface AnalyticsData {
   overview: {
@@ -46,9 +47,11 @@ export interface AnalyticsData {
  */
 async function calculateAvgResponseTime(clientId?: string | null): Promise<string> {
   try {
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) return "N/A";
     // Get all leads with their messages ordered by actual message time
     const leads = await prisma.lead.findMany({
-      where: clientId ? { clientId } : undefined,
+      where: { clientId: { in: scope.clientIds } },
       include: {
         messages: {
           orderBy: { sentAt: "asc" }, // Use sentAt for accurate timing
@@ -118,7 +121,29 @@ export async function getAnalytics(clientId?: string | null): Promise<{
   error?: string;
 }> {
   try {
-    const clientFilter = clientId ? { clientId } : {};
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) {
+      return {
+        success: true,
+        data: {
+          overview: {
+            totalLeads: 0,
+            outboundLeadsContacted: 0,
+            responses: 0,
+            responseRate: 0,
+            meetingsBooked: 0,
+            avgResponseTime: "N/A",
+          },
+          sentimentBreakdown: [],
+          weeklyStats: [],
+          leadsByStatus: [],
+          topClients: [],
+          smsSubClients: [],
+        },
+      };
+    }
+
+    const clientFilter = { clientId: { in: scope.clientIds } };
 
     // Get total leads
     const totalLeads = await prisma.lead.count({
@@ -204,13 +229,7 @@ export async function getAnalytics(clientId?: string | null): Promise<{
 
     const messages = await prisma.message.findMany({
       where: {
-        ...(clientId
-          ? {
-              lead: {
-                clientId,
-              },
-            }
-          : {}),
+        lead: { clientId: { in: scope.clientIds } },
         sentAt: {
           gte: sevenDaysAgo,
         },
@@ -247,6 +266,7 @@ export async function getAnalytics(clientId?: string | null): Promise<{
 
     // Get top clients
     const clients = await prisma.client.findMany({
+      where: { id: { in: scope.clientIds } },
       include: {
         leads: {
           select: {

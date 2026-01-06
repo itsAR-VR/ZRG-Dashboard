@@ -20,6 +20,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -83,6 +84,7 @@ export function Sidebar({
 }: SidebarProps) {
   const [counts, setCounts] = useState<FilterCounts | null>(null)
   const [isLoadingCounts, setIsLoadingCounts] = useState(true)
+  const [workspaceSearch, setWorkspaceSearch] = useState("")
   const { user } = useUser()
 
   // Fetch counts when workspace changes and periodically
@@ -127,6 +129,15 @@ export function Sidebar({
   ]
 
   const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)
+  const workspaceQuery = workspaceSearch.trim().toLowerCase()
+  const filteredWorkspaces =
+    workspaceQuery.length === 0
+      ? workspaces
+      : workspaces.filter((w) => {
+          const name = w.name.toLowerCase()
+          const locationId = w.ghlLocationId.toLowerCase()
+          return name.includes(workspaceQuery) || locationId.includes(workspaceQuery)
+        })
 
   const getInitials = (name: string) => {
     return name
@@ -168,12 +179,21 @@ export function Sidebar({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56">
+              <div className="p-2">
+                <Input
+                  value={workspaceSearch}
+                  onChange={(e) => setWorkspaceSearch(e.target.value)}
+                  placeholder="Search workspaces…"
+                  className="h-8"
+                />
+              </div>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={() => onWorkspaceChange(null)}>
                 <span className={cn(!activeWorkspace && "font-semibold")}>
                   All Workspaces
                 </span>
               </DropdownMenuItem>
-              {workspaces.map((workspace) => (
+              {filteredWorkspaces.map((workspace) => (
                 <DropdownMenuItem
                   key={workspace.id}
                   onClick={() => onWorkspaceChange(workspace.id)}
@@ -183,6 +203,11 @@ export function Sidebar({
                   </span>
                 </DropdownMenuItem>
               ))}
+              {filteredWorkspaces.length === 0 && (
+                <div className="px-2 py-2 text-xs text-muted-foreground">
+                  No matching workspaces
+                </div>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

@@ -2,6 +2,16 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
+
+async function requireFollowUpTaskAccess(taskId: string): Promise<void> {
+  const scope = await resolveClientScope(null);
+  const task = await prisma.followUpTask.findFirst({
+    where: { id: taskId, lead: { clientId: { in: scope.clientIds } } },
+    select: { id: true },
+  });
+  if (!task) throw new Error("Unauthorized");
+}
 
 export interface FollowUpTaskData {
   id: string;
@@ -31,6 +41,8 @@ export async function getFollowUpTasks(
   error?: string;
 }> {
   try {
+    const scope = await resolveClientScope(clientId);
+    if (scope.clientIds.length === 0) return { success: true, data: [] };
     const now = new Date();
     const startOfDay = new Date(now);
     startOfDay.setHours(0, 0, 0, 0);
@@ -41,7 +53,7 @@ export async function getFollowUpTasks(
 
     let whereClause: any = {
       status: "pending",
-      ...(clientId && { lead: { clientId } }),
+      lead: { clientId: { in: scope.clientIds } },
     };
 
     switch (filter) {
@@ -119,6 +131,7 @@ export async function createFollowUpTask(data: {
   campaignName?: string;
 }): Promise<{ success: boolean; error?: string }> {
   try {
+    await requireLeadAccessById(data.leadId);
     await prisma.followUpTask.create({
       data: {
         leadId: data.leadId,
@@ -146,6 +159,7 @@ export async function completeFollowUpTask(taskId: string): Promise<{
   error?: string;
 }> {
   try {
+    await requireFollowUpTaskAccess(taskId);
     await prisma.followUpTask.update({
       where: { id: taskId },
       data: { status: "completed" },
@@ -167,6 +181,7 @@ export async function skipFollowUpTask(taskId: string): Promise<{
   error?: string;
 }> {
   try {
+    await requireFollowUpTaskAccess(taskId);
     await prisma.followUpTask.update({
       where: { id: taskId },
       data: { status: "skipped" },
@@ -194,6 +209,7 @@ export async function snoozeFollowUpTask(
   error?: string;
 }> {
   try {
+    await requireFollowUpTaskAccess(taskId);
     const newDueDate = new Date();
     newDueDate.setDate(newDueDate.getDate() + days);
     newDueDate.setHours(9, 0, 0, 0); // Set to 9 AM on the snooze date
@@ -221,6 +237,8 @@ export async function getFollowUpCounts(): Promise<{
   total: number;
 }> {
   try {
+    const scope = await resolveClientScope(null);
+    if (scope.clientIds.length === 0) return { today: 0, week: 0, overdue: 0, total: 0 };
     const now = new Date();
     const startOfDay = new Date(now);
     startOfDay.setHours(0, 0, 0, 0);
@@ -229,27 +247,31 @@ export async function getFollowUpCounts(): Promise<{
     const endOfWeek = new Date(now);
     endOfWeek.setDate(endOfWeek.getDate() + 7);
 
+    const leadFilter = { lead: { clientId: { in: scope.clientIds } } };
     const [today, week, overdue, total] = await Promise.all([
       prisma.followUpTask.count({
         where: {
           status: "pending",
+          ...leadFilter,
           dueDate: { gte: startOfDay, lte: endOfDay },
         },
       }),
       prisma.followUpTask.count({
         where: {
           status: "pending",
+          ...leadFilter,
           dueDate: { gte: startOfDay, lte: endOfWeek },
         },
       }),
       prisma.followUpTask.count({
         where: {
           status: "pending",
+          ...leadFilter,
           dueDate: { lt: startOfDay },
         },
       }),
       prisma.followUpTask.count({
-        where: { status: "pending" },
+        where: { status: "pending", ...leadFilter },
       }),
     ]);
 
@@ -325,9 +347,10 @@ export async function getFollowUpTaggedLeads(
   error?: string;
 }> {
   try {
+    const scope = await resolveClientScope(clientId);
     const leads = await prisma.lead.findMany({
       where: {
-        clientId,
+        clientId: { in: scope.clientIds },
         sentimentTag: { in: ["Follow Up", "Snoozed"] },
         status: { not: "blacklisted" },
       },
@@ -390,9 +413,10 @@ export async function getFollowUpTaggedLeadsCount(
   clientId: string
 ): Promise<number> {
   try {
+    const scope = await resolveClientScope(clientId);
     return await prisma.lead.count({
       where: {
-        clientId,
+        clientId: { in: scope.clientIds },
         sentimentTag: { in: ["Follow Up", "Snoozed"] },
         status: { not: "blacklisted" },
       },
@@ -440,6 +464,7 @@ export async function updateLeadFollowUpStatus(
   error?: string;
 }> {
   try {
+    await requireLeadAccessById(leadId);
     const newSentimentTag = OUTCOME_TO_SENTIMENT[outcome];
 
     // Build update data - always update sentiment tag
@@ -469,4 +494,3 @@ export async function updateLeadFollowUpStatus(
     return { success: false, error: "Failed to update follow-up status" };
   }
 }
-

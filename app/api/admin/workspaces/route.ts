@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
-import { Prisma } from "@prisma/client";
+import { ClientMemberRole, Prisma } from "@prisma/client";
 
 type ProvisionWorkspaceRequest = {
   // Required
@@ -17,6 +17,9 @@ type ProvisionWorkspaceRequest = {
   emailBisonApiKey?: string;
   emailBisonWorkspaceId?: string; // numeric string
   unipileAccountId?: string;
+
+  // Optional assignments (email inputs resolved server-side)
+  inboxManagerEmail?: string;
 
   // Optional behavior controls
   upsert?: boolean; // if true, update an existing workspace for same ghlLocationId
@@ -260,6 +263,7 @@ export async function POST(request: NextRequest) {
   const emailBisonApiKey = normalizeOptionalString(body?.emailBisonApiKey) ?? null;
   const emailBisonWorkspaceId = normalizeEmailBisonWorkspaceId(body?.emailBisonWorkspaceId) ?? null;
   const unipileAccountId = normalizeOptionalString(body?.unipileAccountId) ?? null;
+  const inboxManagerEmail = normalizeOptionalString(body?.inboxManagerEmail) ?? null;
   const upsert = body?.upsert === true;
 
   const workspaceIdError = validateEmailBisonWorkspaceId(emailBisonWorkspaceId ?? undefined);
@@ -292,6 +296,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const resolvedInboxManager =
+      inboxManagerEmail ? await resolveUserId({ userId: null, userEmail: inboxManagerEmail }) : null;
+    if (resolvedInboxManager && !resolvedInboxManager.ok) {
+      return NextResponse.json({ error: resolvedInboxManager.error }, { status: resolvedInboxManager.status });
+    }
+
     // Idempotency / conflict handling.
     const existing = await prisma.client.findUnique({ where: { ghlLocationId } });
 
@@ -360,6 +370,16 @@ export async function POST(request: NextRequest) {
                 bumpMessageTemplate:
                   "Hey {firstName} — just bumping this. Is it worth discussing this now, or should I circle back later?",
               },
+            });
+          }
+
+          if (resolvedInboxManager?.ok) {
+            await tx.clientMember.deleteMany({
+              where: { clientId: existing.id, role: ClientMemberRole.INBOX_MANAGER },
+            });
+            await tx.clientMember.createMany({
+              data: [{ clientId: existing.id, userId: resolvedInboxManager.userId, role: ClientMemberRole.INBOX_MANAGER }],
+              skipDuplicates: true,
             });
           }
 
@@ -442,6 +462,13 @@ export async function POST(request: NextRequest) {
             "Hey {firstName} — just bumping this. Is it worth discussing this now, or should I circle back later?",
         },
       });
+
+      if (resolvedInboxManager?.ok) {
+        await tx.clientMember.createMany({
+          data: [{ clientId: workspace.id, userId: resolvedInboxManager.userId, role: ClientMemberRole.INBOX_MANAGER }],
+          skipDuplicates: true,
+        });
+      }
 
       return workspace;
     });

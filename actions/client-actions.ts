@@ -1,7 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { createClient as createSupabaseClient } from "@/lib/supabase/server";
+import { requireAuthUser, getAccessibleClientIdsForUser, isGlobalAdminUser, requireClientAdminAccess } from "@/lib/workspace-access";
 import { revalidatePath } from "next/cache";
 
 export interface ClientData {
@@ -32,32 +32,16 @@ function validateEmailBisonWorkspaceId(value: string | undefined): string | null
 }
 
 /**
- * Get the current user's ID from Supabase
- */
-async function getCurrentUserId(): Promise<string | null> {
-  try {
-    const supabase = await createSupabaseClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    return user?.id || null;
-  } catch (error) {
-    console.error("Failed to get current user:", error);
-    return null;
-  }
-}
-
-/**
  * Fetch all GHL clients/workspaces owned by the current user
  */
 export async function getClients() {
   try {
-    const userId = await getCurrentUserId();
-
-    if (!userId) {
-      return { success: false, error: "Not authenticated" };
-    }
+    const user = await requireAuthUser();
+    const clientIds = await getAccessibleClientIdsForUser(user.id);
+    if (clientIds.length === 0) return { success: true, data: [] };
 
     const clients = await prisma.client.findMany({
-      where: { userId }, // Only fetch workspaces owned by this user
+      where: { id: { in: clientIds } },
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
@@ -84,11 +68,9 @@ export async function getClients() {
  */
 export async function createClient(data: ClientData) {
   try {
-    const userId = await getCurrentUserId();
-
-    if (!userId) {
-      return { success: false, error: "Not authenticated" };
-    }
+    const user = await requireAuthUser();
+    const isAdmin = await isGlobalAdminUser(user.id);
+    if (!isAdmin) return { success: false, error: "Unauthorized" };
 
     const name = data.name?.trim();
     const ghlLocationId = data.ghlLocationId?.trim();
@@ -134,7 +116,7 @@ export async function createClient(data: ClientData) {
         emailBisonApiKey: emailBisonApiKey || null,
         emailBisonWorkspaceId: emailBisonWorkspaceId || null,
         unipileAccountId: unipileAccountId || null,
-        userId, // Tie workspace to current user
+        userId: user.id, // Workspace owner (admin)
       },
     });
 
@@ -158,20 +140,9 @@ export async function createClient(data: ClientData) {
  */
 export async function updateClient(id: string, data: Partial<ClientData>) {
   try {
-    const userId = await getCurrentUserId();
-
-    if (!userId) {
-      return { success: false, error: "Not authenticated" };
-    }
-
-    // Verify ownership before updating
-    const client = await prisma.client.findFirst({
-      where: { id, userId },
-    });
-
-    if (!client) {
-      return { success: false, error: "Workspace not found or access denied" };
-    }
+    await requireClientAdminAccess(id);
+    const client = await prisma.client.findFirst({ where: { id } });
+    if (!client) return { success: false, error: "Workspace not found" };
 
     const name = normalizeOptionalString(data.name);
     const ghlLocationId = normalizeOptionalString(data.ghlLocationId);
@@ -238,20 +209,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
  */
 export async function deleteClient(id: string) {
   try {
-    const userId = await getCurrentUserId();
-
-    if (!userId) {
-      return { success: false, error: "Not authenticated" };
-    }
-
-    // Verify ownership before deleting
-    const client = await prisma.client.findFirst({
-      where: { id, userId },
-    });
-
-    if (!client) {
-      return { success: false, error: "Workspace not found or access denied" };
-    }
+    await requireClientAdminAccess(id);
 
     await prisma.client.delete({
       where: { id },

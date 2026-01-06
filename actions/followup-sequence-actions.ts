@@ -3,6 +3,16 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
+import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
+
+async function requireFollowUpInstanceAccess(instanceId: string): Promise<void> {
+  const scope = await resolveClientScope(null);
+  const instance = await prisma.followUpInstance.findFirst({
+    where: { id: instanceId, lead: { clientId: { in: scope.clientIds } } },
+    select: { id: true },
+  });
+  if (!instance) throw new Error("Unauthorized");
+}
 
 // =============================================================================
 // Types
@@ -64,6 +74,7 @@ export async function getFollowUpSequences(
   clientId: string
 ): Promise<{ success: boolean; data?: FollowUpSequenceData[]; error?: string }> {
   try {
+    await requireClientAccess(clientId);
     const sequences = await prisma.followUpSequence.findMany({
       where: { clientId },
       include: {
@@ -122,6 +133,7 @@ export async function getFollowUpSequence(
     if (!sequence) {
       return { success: false, error: "Sequence not found" };
     }
+    await requireClientAccess(sequence.clientId);
 
     const formattedSequence: FollowUpSequenceData = {
       id: sequence.id,
@@ -163,6 +175,7 @@ export async function createFollowUpSequence(data: {
   steps: Omit<FollowUpStepData, "id">[];
 }): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
   try {
+    await requireClientAdminAccess(data.clientId);
     const sequence = await prisma.followUpSequence.create({
       data: {
         clientId: data.clientId,
@@ -207,6 +220,13 @@ export async function updateFollowUpSequence(
   }
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const existing = await prisma.followUpSequence.findUnique({
+      where: { id: sequenceId },
+      select: { clientId: true },
+    });
+    if (!existing) return { success: false, error: "Sequence not found" };
+    await requireClientAdminAccess(existing.clientId);
+
     // If steps are provided, delete existing steps and recreate
     if (data.steps) {
       await prisma.followUpStep.deleteMany({
@@ -253,6 +273,13 @@ export async function deleteFollowUpSequence(
   sequenceId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const existing = await prisma.followUpSequence.findUnique({
+      where: { id: sequenceId },
+      select: { clientId: true },
+    });
+    if (!existing) return { success: false, error: "Sequence not found" };
+    await requireClientAdminAccess(existing.clientId);
+
     await prisma.followUpSequence.delete({
       where: { id: sequenceId },
     });
@@ -274,12 +301,13 @@ export async function toggleSequenceActive(
   try {
     const sequence = await prisma.followUpSequence.findUnique({
       where: { id: sequenceId },
-      select: { isActive: true },
+      select: { isActive: true, clientId: true },
     });
 
     if (!sequence) {
       return { success: false, error: "Sequence not found" };
     }
+    await requireClientAdminAccess(sequence.clientId);
 
     const updated = await prisma.followUpSequence.update({
       where: { id: sequenceId },
@@ -306,6 +334,7 @@ export async function startFollowUpSequence(
   sequenceId: string
 ): Promise<{ success: boolean; instanceId?: string; error?: string }> {
   try {
+    const { clientId: leadClientId } = await requireLeadAccessById(leadId);
     // Check if sequence exists and is active
     const sequence = await prisma.followUpSequence.findUnique({
       where: { id: sequenceId },
@@ -319,6 +348,9 @@ export async function startFollowUpSequence(
 
     if (!sequence) {
       return { success: false, error: "Sequence not found" };
+    }
+    if (sequence.clientId !== leadClientId) {
+      return { success: false, error: "Sequence does not belong to this workspace" };
     }
 
     if (!sequence.isActive) {
@@ -397,6 +429,7 @@ export async function pauseFollowUpInstance(
   reason?: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    await requireFollowUpInstanceAccess(instanceId);
     await prisma.followUpInstance.update({
       where: { id: instanceId },
       data: {
@@ -420,6 +453,7 @@ export async function resumeFollowUpInstance(
   instanceId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    await requireFollowUpInstanceAccess(instanceId);
     const instance = await prisma.followUpInstance.findUnique({
       where: { id: instanceId },
       include: {
@@ -469,6 +503,7 @@ export async function cancelFollowUpInstance(
   instanceId: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    await requireFollowUpInstanceAccess(instanceId);
     await prisma.followUpInstance.update({
       where: { id: instanceId },
       data: {
@@ -492,6 +527,7 @@ export async function getLeadFollowUpInstances(
   leadId: string
 ): Promise<{ success: boolean; data?: FollowUpInstanceData[]; error?: string }> {
   try {
+    await requireLeadAccessById(leadId);
     const instances = await prisma.followUpInstance.findMany({
       where: { leadId },
       include: {
@@ -542,6 +578,7 @@ export async function getWorkspaceFollowUpInstances(
   filter?: "active" | "paused" | "completed" | "all"
 ): Promise<{ success: boolean; data?: FollowUpInstanceData[]; error?: string }> {
   try {
+    await requireClientAccess(clientId);
     const whereClause: any = {
       sequence: { clientId },
     };
@@ -821,6 +858,7 @@ function sortStepsForScheduling<T extends { dayOffset: number; channel: string }
 export async function createDefaultSequence(
   clientId: string
 ): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
+  await requireClientAdminAccess(clientId);
   const noResponseSteps: Omit<FollowUpStepData, "id">[] = [
     // DAY 2 - Ask for phone number
     {
@@ -941,6 +979,7 @@ Where should we go from here?`,
 export async function createMeetingRequestedSequence(
   clientId: string
 ): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
+  await requireClientAdminAccess(clientId);
   const steps: Omit<FollowUpStepData, "id">[] = [
     // DAY 1 - LinkedIn connection request (note)
     {
@@ -1041,6 +1080,7 @@ I have {availability} available. Calendar link here as well: {calendarLink}
 export async function createPostBookingSequence(
   clientId: string
 ): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
+  await requireClientAdminAccess(clientId);
   const postBookingSteps: Omit<FollowUpStepData, "id">[] = [
     // DAY 0 - Booking confirmation + qualification questions
     {
@@ -1081,6 +1121,7 @@ Looking forward to speaking with you!
 export async function createAllDefaultSequences(
   clientId: string
 ): Promise<{ success: boolean; sequenceIds?: string[]; errors?: string[] }> {
+  await requireClientAdminAccess(clientId);
   const airtableMode = await isAirtableModeEnabled(clientId);
 
   const results = await Promise.all([
@@ -1115,6 +1156,7 @@ export async function applyAirtableModeToDefaultSequences(opts: {
     if (!opts.clientId) {
       return { success: false, error: "No workspace selected" };
     }
+    await requireClientAdminAccess(opts.clientId);
 
     if (!opts.enabled) {
       // NOTE: We intentionally do not attempt to restore email steps automatically.

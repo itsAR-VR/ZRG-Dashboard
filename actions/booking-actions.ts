@@ -17,6 +17,7 @@ import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
 import { getWorkspaceSlotOfferCountsForRange } from "@/lib/slot-offer-ledger";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
+import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById } from "@/lib/workspace-access";
 
 // Re-export types for use in components
 export type { GHLCalendar, GHLUser, GHLAppointment };
@@ -61,6 +62,7 @@ export async function shouldAutoBook(leadId: string): Promise<{
     reason?: string;
 }> {
     try {
+        await requireLeadAccessById(leadId);
         const lead = await prisma.lead.findUnique({
             where: { id: leadId },
             include: {
@@ -108,6 +110,7 @@ export async function updateLeadAutoBookSetting(
     enabled: boolean
 ): Promise<{ success: boolean; error?: string }> {
     try {
+        await requireLeadAccessById(leadId);
         await prisma.lead.update({
             where: { id: leadId },
             data: { autoBookMeetingsEnabled: enabled },
@@ -129,6 +132,7 @@ export async function setWorkspaceAutoBookEnabled(
     enabled: boolean
 ): Promise<{ success: boolean; updatedCount: number; error?: string }> {
     try {
+        await requireClientAdminAccess(clientId);
         // Update workspace setting
         await prisma.workspaceSettings.upsert({
             where: { clientId },
@@ -170,6 +174,7 @@ export async function storeOfferedSlots(
     slots: OfferedSlot[]
 ): Promise<{ success: boolean; error?: string }> {
     try {
+        await requireLeadAccessById(leadId);
         await prisma.lead.update({
             where: { id: leadId },
             data: { offeredSlots: JSON.stringify(slots) },
@@ -187,6 +192,7 @@ export async function storeOfferedSlots(
  */
 export async function getOfferedSlots(leadId: string): Promise<OfferedSlot[]> {
     try {
+        await requireLeadAccessById(leadId);
         const lead = await prisma.lead.findUnique({
             where: { id: leadId },
             select: { offeredSlots: true },
@@ -206,6 +212,7 @@ export async function getOfferedSlots(leadId: string): Promise<OfferedSlot[]> {
  */
 export async function clearOfferedSlots(leadId: string): Promise<void> {
     try {
+        await requireLeadAccessById(leadId);
         await prisma.lead.update({
             where: { id: leadId },
             data: { offeredSlots: null },
@@ -226,6 +233,7 @@ export async function fetchGHLCalendarsForWorkspace(
     clientId: string
 ): Promise<{ success: boolean; calendars?: GHLCalendar[]; error?: string }> {
     try {
+        await requireClientAdminAccess(clientId);
         const client = await prisma.client.findUnique({
             where: { id: clientId },
         });
@@ -254,6 +262,7 @@ export async function fetchGHLUsersForWorkspace(
     clientId: string
 ): Promise<{ success: boolean; users?: GHLUser[]; error?: string }> {
     try {
+        await requireClientAdminAccess(clientId);
         const client = await prisma.client.findUnique({
             where: { id: clientId },
         });
@@ -282,6 +291,7 @@ export async function testGHLConnectionForWorkspace(
     clientId: string
 ): Promise<{ success: boolean; calendarCount?: number; error?: string }> {
     try {
+        await requireClientAdminAccess(clientId);
         const client = await prisma.client.findUnique({
             where: { id: clientId },
         });
@@ -320,6 +330,7 @@ export async function bookMeetingOnGHL(
     calendarIdOverride?: string
 ): Promise<BookingResult> {
     try {
+        await requireLeadAccessById(leadId);
         // Get lead with client and settings
         const lead = await prisma.lead.findUnique({
             where: { id: leadId },
@@ -508,6 +519,7 @@ export async function getLeadBookingStatus(leadId: string): Promise<{
     bookedSlot?: string;
 }> {
     try {
+        await requireLeadAccessById(leadId);
         const lead = await prisma.lead.findUnique({
             where: { id: leadId },
             select: {
@@ -534,6 +546,7 @@ export async function getLeadBookingStatus(leadId: string): Promise<{
  */
 export async function isGHLBookingConfigured(clientId: string): Promise<boolean> {
     try {
+        await requireClientAccess(clientId);
         const client = await prisma.client.findUnique({
             where: { id: clientId },
             include: { settings: true },
@@ -561,6 +574,13 @@ export async function getFormattedAvailabilityForLead(
     clientId: string,
     leadId?: string
 ): Promise<Array<{ datetime: string; label: string }>> {
+    await requireClientAccess(clientId);
+    if (leadId) {
+        const { clientId: leadClientId } = await requireLeadAccessById(leadId);
+        if (leadClientId !== clientId) {
+            throw new Error("Lead does not belong to this workspace");
+        }
+    }
     const [settings, availability] = await Promise.all([
         prisma.workspaceSettings.findUnique({
             where: { clientId },
@@ -607,6 +627,11 @@ export async function getBookingAvailabilityForLead(
     clientId: string,
     leadId: string
 ): Promise<BookingAvailabilitySlot[]> {
+    await requireClientAccess(clientId);
+    const { clientId: leadClientId } = await requireLeadAccessById(leadId);
+    if (leadClientId !== clientId) {
+        throw new Error("Lead does not belong to this workspace");
+    }
     const [settings, availability, lead] = await Promise.all([
         prisma.workspaceSettings.findUnique({
             where: { clientId },
@@ -661,6 +686,7 @@ export async function getGhlCalendarMismatchInfo(clientId: string): Promise<{
     mismatch?: boolean;
     lastError?: string | null;
 }> {
+    await requireClientAccess(clientId);
     const settings = await prisma.workspaceSettings.findUnique({
         where: { clientId },
         select: { ghlDefaultCalendarId: true },

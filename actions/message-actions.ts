@@ -12,6 +12,7 @@ import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
 import { toGhlPhoneBestEffort } from "@/lib/phone-utils";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
+import { getAccessibleClientIdsForUser, requireAuthUser, requireClientAdminAccess } from "@/lib/workspace-access";
 import {
   sendLinkedInMessageWithWaterfall,
   checkLinkedInConnection,
@@ -53,6 +54,21 @@ function preClassifySentiment(
   return null;
 }
 
+async function requireLeadAccess(leadId: string): Promise<{ id: string; clientId: string }> {
+  const user = await requireAuthUser();
+  const [lead, accessible] = await Promise.all([
+    prisma.lead.findUnique({
+      where: { id: leadId },
+      select: { id: true, clientId: true },
+    }),
+    getAccessibleClientIdsForUser(user.id),
+  ]);
+
+  if (!lead) throw new Error("Lead not found");
+  if (!accessible.includes(lead.clientId)) throw new Error("Unauthorized");
+  return lead;
+}
+
 async function computeSentimentFromMessages(
   messages: { body: string; direction: string; channel?: string | null; subject?: string | null; sentAt: Date }[],
   opts: { clientId: string; leadId: string }
@@ -84,14 +100,7 @@ async function refreshLeadSentimentTag(leadId: string): Promise<{
   sentimentTag: SentimentTag;
   status: string;
 }> {
-  const lead = await prisma.lead.findUnique({
-    where: { id: leadId },
-    select: { id: true, clientId: true },
-  });
-
-  if (!lead) {
-    throw new Error("Lead not found");
-  }
+  const lead = await requireLeadAccess(leadId);
 
   // IMPORTANT: Get ALL messages across all channels (SMS, email, LinkedIn)
   // to ensure sentiment classification considers the full conversation history
@@ -158,14 +167,7 @@ export async function reanalyzeLeadSentiment(leadId: string): Promise<{
   error?: string;
 }> {
   try {
-    const leadExists = await prisma.lead.findUnique({
-      where: { id: leadId },
-      select: { id: true },
-    });
-
-    if (!leadExists) {
-      return { success: false, error: "Lead not found" };
-    }
+    await requireLeadAccess(leadId);
 
     const { sentimentTag, status } = await refreshLeadSentimentTag(leadId);
 
@@ -230,6 +232,7 @@ export async function getLeadSyncInfo(leadId: string): Promise<{
   error?: string;
 }> {
   try {
+    await requireLeadAccess(leadId);
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       select: {
@@ -442,6 +445,7 @@ async function messageExists(
  */
 export async function syncConversationHistory(leadId: string, options: SyncOptions = {}): Promise<SyncHistoryResult> {
   try {
+    await requireLeadAccess(leadId);
     // Get the lead with their client info
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
@@ -636,6 +640,7 @@ interface SyncAllResult {
  */
 export async function syncAllConversations(clientId: string, options: SyncOptions = {}): Promise<SyncAllResult> {
   try {
+    await requireClientAdminAccess(clientId);
     // Get ALL leads for this client (both SMS and Email capable)
     const leads = await prisma.lead.findMany({
       where: {
@@ -793,6 +798,7 @@ function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): str
  */
 export async function syncEmailConversationHistory(leadId: string, options: SyncOptions = {}): Promise<SyncHistoryResult> {
   try {
+    await requireLeadAccess(leadId);
     // Get the lead with their client info and message count
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
@@ -1091,6 +1097,7 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
  */
 export async function syncAllEmailConversations(clientId: string): Promise<SyncAllResult> {
   try {
+    await requireClientAdminAccess(clientId);
     // Get all leads for this client that have EmailBison lead IDs
     const leads = await prisma.lead.findMany({
       where: {
@@ -1197,6 +1204,7 @@ export async function sendMessage(
   message: string
 ): Promise<SendMessageResult> {
   try {
+    await requireLeadAccess(leadId);
     // Get the lead with their client (for API key)
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
@@ -1348,6 +1356,7 @@ export async function sendLinkedInMessage(
   inMailSubject?: string
 ): Promise<SendMessageResult & { messageType?: "dm" | "inmail" | "connection_request"; attemptedMethods?: string[] }> {
   try {
+    await requireLeadAccess(leadId);
     // Get the lead with their client (for Unipile account)
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
@@ -1454,6 +1463,7 @@ export async function sendLinkedInMessage(
  */
 export async function getPendingDrafts(leadId: string, channel?: "sms" | "email" | "linkedin") {
   try {
+    await requireLeadAccess(leadId);
     console.log("[getPendingDrafts] Fetching drafts for leadId:", leadId);
 
     const drafts = await prisma.aIDraft.findMany({
@@ -1487,6 +1497,9 @@ export async function approveAndSendDraft(
   editedContent?: string
 ): Promise<SendMessageResult> {
   try {
+    const user = await requireAuthUser();
+    const accessible = await getAccessibleClientIdsForUser(user.id);
+
     // Get the draft
     const draft = await prisma.aIDraft.findUnique({
       where: { id: draftId },
@@ -1505,6 +1518,9 @@ export async function approveAndSendDraft(
 
     if (!draft) {
       return { success: false, error: "Draft not found" };
+    }
+    if (!accessible.includes(draft.lead.clientId)) {
+      return { success: false, error: "Unauthorized" };
     }
 
     if (draft.status !== "pending") {
@@ -1569,6 +1585,15 @@ export async function approveAndSendDraft(
  */
 export async function rejectDraft(draftId: string): Promise<{ success: boolean; error?: string }> {
   try {
+    const user = await requireAuthUser();
+    const accessible = await getAccessibleClientIdsForUser(user.id);
+    const draft = await prisma.aIDraft.findUnique({
+      where: { id: draftId },
+      select: { id: true, leadId: true, lead: { select: { clientId: true } } },
+    });
+    if (!draft) return { success: false, error: "Draft not found" };
+    if (!accessible.includes(draft.lead.clientId)) return { success: false, error: "Unauthorized" };
+
     await prisma.aIDraft.update({
       where: { id: draftId },
       data: { status: "rejected" },
@@ -1601,6 +1626,7 @@ export async function regenerateDraft(
   error?: string
 }> {
   try {
+    await requireLeadAccess(leadId);
     // Get the lead with messages for context
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
@@ -1746,6 +1772,7 @@ export async function cleanupBounceLeads(clientId: string): Promise<CleanupBounc
   // BUG FIX: Track unique leads that have been blacklisted to avoid double-counting
   const blacklistedLeadIds = new Set<string>();
   try {
+    await requireClientAdminAccess(clientId);
     // Find fake bounce leads (mailer-daemon, Mail Delivery Subsystem, etc.)
     const fakeLeads = await prisma.lead.findMany({
       where: {
@@ -1901,6 +1928,7 @@ export async function checkLinkedInStatus(leadId: string): Promise<LinkedInStatu
   };
 
   try {
+    await requireLeadAccess(leadId);
     // Get the lead with their client (for Unipile account)
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },

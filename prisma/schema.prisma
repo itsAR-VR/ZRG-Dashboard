@@ -9,6 +9,12 @@ datasource db {
   provider = "postgresql"
 }
 
+enum ClientMemberRole {
+  ADMIN
+  SETTER
+  INBOX_MANAGER
+}
+
 // Stores GHL API Keys per sub-account for multi-tenancy
 // Each workspace is tied to a user (from Supabase Auth)
 model Client {
@@ -23,6 +29,7 @@ model Client {
   unipileAccountId     String?      // Unipile account ID for LinkedIn messaging
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
+  members       ClientMember[]
   leads         Lead[]
   campaigns     Campaign[]
   smsCampaigns  SmsCampaign[]
@@ -38,6 +45,21 @@ model Client {
   aiInteractions AIInteraction[]
 
   @@index([userId])
+}
+
+model ClientMember {
+  id        String           @id @default(uuid())
+  clientId  String
+  userId    String           // Supabase Auth user ID
+  role      ClientMemberRole
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, userId, role])
+  @@index([userId])
+  @@index([clientId])
 }
 
 // Workspace-specific settings (AI personality, automation, etc.)
