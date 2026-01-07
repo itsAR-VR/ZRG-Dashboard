@@ -42,6 +42,7 @@ interface Workspace {
   id: string
   name: string
   ghlLocationId: string
+  hasDefaultCalendarLink?: boolean
 }
 
 interface SidebarProps {
@@ -174,6 +175,12 @@ export function Sidebar({
                   <span className="truncate">
                     {selectedWorkspace ? selectedWorkspace.name : "All Workspaces"}
                   </span>
+                  {selectedWorkspace && selectedWorkspace.hasDefaultCalendarLink === false ? (
+                    <AlertCircle
+                      className="h-4 w-4 shrink-0 text-amber-500"
+                      title="No default calendar link configured"
+                    />
+                  ) : null}
                 </span>
                 <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
               </Button>
@@ -198,9 +205,17 @@ export function Sidebar({
                   key={workspace.id}
                   onClick={() => onWorkspaceChange(workspace.id)}
                 >
-                  <span className={cn(activeWorkspace === workspace.id && "font-semibold")}>
-                    {workspace.name}
-                  </span>
+                  <div className="flex w-full items-center justify-between gap-2">
+                    <span className={cn(activeWorkspace === workspace.id && "font-semibold")}>
+                      {workspace.name}
+                    </span>
+                    {workspace.hasDefaultCalendarLink === false ? (
+                      <AlertCircle
+                        className="h-4 w-4 shrink-0 text-amber-500"
+                        title="No default calendar link configured"
+                      />
+                    ) : null}
+                  </div>
                 </DropdownMenuItem>
               ))}
               {filteredWorkspaces.length === 0 && (

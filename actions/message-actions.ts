@@ -12,6 +12,7 @@ import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
 import { toGhlPhoneBestEffort } from "@/lib/phone-utils";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
+import { syncEmailConversationHistorySystem, syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { getAccessibleClientIdsForUser, requireAuthUser, requireClientAdminAccess } from "@/lib/workspace-access";
 import {
   sendLinkedInMessageWithWaterfall,
@@ -186,6 +187,7 @@ export async function reanalyzeLeadSentiment(leadId: string): Promise<{
 interface SendMessageResult {
   success: boolean;
   messageId?: string;
+  errorCode?: "sms_dnd";
   error?: string;
 }
 
@@ -446,170 +448,7 @@ async function messageExists(
 export async function syncConversationHistory(leadId: string, options: SyncOptions = {}): Promise<SyncHistoryResult> {
   try {
     await requireLeadAccess(leadId);
-    // Get the lead with their client info
-    const lead = await prisma.lead.findUnique({
-      where: { id: leadId },
-      include: {
-        client: {
-          select: {
-            ghlPrivateKey: true,
-            ghlLocationId: true,
-          },
-        },
-      },
-    });
-
-    if (!lead) {
-      return { success: false, error: "Lead not found" };
-    }
-
-    // Count SMS messages for this lead
-    const smsMessageCount = await prisma.message.count({
-      where: {
-        leadId,
-        channel: "sms",
-      },
-    });
-
-    if (!lead.ghlContactId) {
-      // Provide more helpful error message based on context
-      const hasSmsMessages = smsMessageCount > 0;
-      if (hasSmsMessages) {
-        return {
-          success: false,
-          error: "Cannot sync SMS: Lead was created from email only (no GHL contact ID)"
-        };
-      }
-      return { success: false, error: "Lead has no GHL contact ID" };
-    }
-
-    if (!lead.client.ghlPrivateKey || !lead.client.ghlLocationId) {
-      return { success: false, error: "Workspace is missing GHL configuration" };
-    }
-
-    console.log(`[Sync] Fetching conversation history for lead ${leadId} (contact: ${lead.ghlContactId})`);
-
-    // Fetch messages from GHL
-    const exportResult = await exportMessages(
-      lead.client.ghlLocationId,
-      lead.ghlContactId,
-      lead.client.ghlPrivateKey,
-      "SMS"
-    );
-
-    if (!exportResult.success || !exportResult.data) {
-      return { success: false, error: exportResult.error || "Failed to fetch messages from GHL" };
-    }
-
-    const ghlMessages = exportResult.data.messages || [];
-    console.log(`[Sync] Found ${ghlMessages.length} messages in GHL`);
-
-    // Intelligent sync using ghlId as source of truth
-    let importedCount = 0;
-    let healedCount = 0;
-    let skippedDuplicates = 0;
-
-    for (const msg of ghlMessages) {
-      try {
-        const msgTimestamp = new Date(msg.dateAdded); // Actual time from GHL
-        const ghlId = msg.id;
-
-        // Step 1: Check if message exists by ghlId (definitive match)
-        const existingByGhlId = await prisma.message.findUnique({
-          where: { ghlId },
-        });
-
-        if (existingByGhlId) {
-          // Message already exists with ghlId - just ensure timestamp is correct
-          if (existingByGhlId.sentAt.getTime() !== msgTimestamp.getTime()) {
-            await prisma.message.update({
-              where: { ghlId },
-              data: { sentAt: msgTimestamp },
-            });
-            console.log(`[Sync] Fixed timestamp for ghlId ${ghlId}`);
-            healedCount++;
-          } else {
-            skippedDuplicates++;
-          }
-          continue;
-        }
-
-        // Step 2: Check if message exists by body + direction (legacy match without ghlId)
-        const existingByContent = await prisma.message.findFirst({
-          where: {
-            leadId,
-            body: msg.body,
-            direction: msg.direction,
-            ghlId: null, // Only match messages without ghlId
-          },
-        });
-
-        if (existingByContent) {
-          // "Heal" the legacy message: add ghlId and correct timestamp
-          await prisma.message.update({
-            where: { id: existingByContent.id },
-            data: {
-              ghlId,
-              sentAt: msgTimestamp, // Fix the timestamp to GHL's actual time
-            },
-          });
-          healedCount++;
-          console.log(`[Sync] Healed: "${msg.body.substring(0, 30)}..." -> ghlId: ${ghlId}, sentAt: ${msgTimestamp.toISOString()}`);
-          continue;
-        }
-
-        // Step 3: No match found - create new message with ghlId
-        await prisma.message.create({
-          data: {
-            ghlId,
-            body: msg.body,
-            direction: msg.direction,
-            channel: "sms",
-            leadId,
-            sentAt: msgTimestamp,
-          },
-        });
-        importedCount++;
-        console.log(`[Sync] Imported: "${msg.body.substring(0, 30)}..." (${msg.direction}) @ ${msgTimestamp.toISOString()}`);
-      } catch (error) {
-        // Log but continue with other messages
-        console.error(`[Sync] Error processing message ${msg.id}: ${error}`);
-      }
-    }
-
-    console.log(`[Sync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
-
-    // Keep denormalized rollups in sync for inbox "fresh attention" logic.
-    await recomputeLeadMessageRollups(leadId);
-
-    // Re-run sentiment analysis if:
-    // 1. Messages were actually imported or healed, OR
-    // 2. forceReclassify option is enabled (user explicitly requested re-analysis)
-    let reclassifiedSentiment = false;
-    const shouldReclassify = importedCount > 0 || healedCount > 0 || options.forceReclassify;
-
-    if (shouldReclassify) {
-      try {
-        const { sentimentTag, status } = await refreshLeadSentimentTag(leadId);
-        reclassifiedSentiment = true;
-        console.log(`[Sync] Reclassified sentiment to ${sentimentTag} and status to ${status}${options.forceReclassify ? " (forced)" : ""}`);
-      } catch (reclassError) {
-        console.error("[Sync] Failed to refresh sentiment after sync:", reclassError);
-      }
-    } else {
-      console.log(`[Sync] Skipping sentiment reclassification - no new or healed messages`);
-    }
-
-    revalidatePath("/");
-
-    return {
-      success: true,
-      importedCount,
-      healedCount,
-      totalMessages: ghlMessages.length,
-      skippedDuplicates,
-      reclassifiedSentiment,
-    };
+    return await syncSmsConversationHistorySystem(leadId, options);
   } catch (error) {
     console.error("[Sync] Failed to sync conversation history:", error);
     return {
@@ -743,8 +582,6 @@ export async function syncAllConversations(clientId: string, options: SyncOption
       console.error("[SyncAll] Bounce cleanup failed:", cleanupError);
     }
 
-    revalidatePath("/");
-
     return {
       success: true,
       totalLeads: leads.length,
@@ -799,286 +636,7 @@ function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): str
 export async function syncEmailConversationHistory(leadId: string, options: SyncOptions = {}): Promise<SyncHistoryResult> {
   try {
     await requireLeadAccess(leadId);
-    // Get the lead with their client info and message count
-    const lead = await prisma.lead.findUnique({
-      where: { id: leadId },
-      include: {
-        client: {
-          select: {
-            emailBisonApiKey: true,
-          },
-        },
-        _count: {
-          select: {
-            messages: {
-              where: { channel: "email" },
-            },
-          },
-        },
-      },
-    });
-
-    if (!lead) {
-      return { success: false, error: "Lead not found" };
-    }
-
-    if (!lead.emailBisonLeadId) {
-      // Provide more helpful error message based on context
-      const hasEmailMessages = lead._count.messages > 0;
-      if (hasEmailMessages) {
-        return {
-          success: false,
-          error: "Cannot sync: Lead emails came from a bounce notification or external source (no EmailBison lead ID)"
-        };
-      }
-      return { success: false, error: "Lead has no EmailBison lead ID" };
-    }
-
-    if (!lead.client.emailBisonApiKey) {
-      return { success: false, error: "Workspace is missing EmailBison API key" };
-    }
-
-    console.log(`[EmailSync] Fetching conversation history for lead ${leadId} (EmailBison ID: ${lead.emailBisonLeadId})`);
-
-    // Fetch replies (inbound messages) from EmailBison
-    const repliesResult = await fetchEmailBisonReplies(
-      lead.client.emailBisonApiKey,
-      lead.emailBisonLeadId
-    );
-
-    if (!repliesResult.success) {
-      return { success: false, error: repliesResult.error || "Failed to fetch replies from EmailBison" };
-    }
-
-    // Fetch sent emails (outbound campaign messages) from EmailBison
-    const sentResult = await fetchEmailBisonSentEmails(
-      lead.client.emailBisonApiKey,
-      lead.emailBisonLeadId
-    );
-
-    if (!sentResult.success) {
-      return { success: false, error: sentResult.error || "Failed to fetch sent emails from EmailBison" };
-    }
-
-    const replies = repliesResult.data || [];
-    const sentEmails = sentResult.data || [];
-
-    console.log(`[EmailSync] Found ${replies.length} replies and ${sentEmails.length} sent emails in EmailBison`);
-
-    let importedCount = 0;
-    let healedCount = 0;
-    let skippedDuplicates = 0;
-
-    // Process replies (EmailBison "replies" endpoint includes inbound + outbound thread items)
-    for (const reply of replies) {
-      try {
-        const emailBisonReplyId = String(reply.id);
-        const msgTimestamp = reply.date_received
-          ? new Date(reply.date_received)
-          : reply.created_at
-            ? new Date(reply.created_at)
-            : new Date();
-        const body = cleanEmailBody(reply.html_body, reply.text_body);
-        const subject = reply.email_subject || null;
-        const folder = (reply.folder || "").toLowerCase();
-        const type = (reply.type || "").toLowerCase();
-        const isOutbound = folder === "sent" || type.includes("outgoing");
-        const direction = isOutbound ? ("outbound" as const) : ("inbound" as const);
-
-        // Skip if no body
-        if (!body) {
-          console.log(`[EmailSync] Skipping reply ${emailBisonReplyId}: empty body`);
-          continue;
-        }
-
-        // Step 1: Check if message exists by emailBisonReplyId (definitive match)
-        const existingByReplyId = await prisma.message.findUnique({
-          where: { emailBisonReplyId },
-        });
-
-        if (existingByReplyId) {
-          // Message already exists - heal any missing fields (timestamp / direction)
-          const updateData: Record<string, unknown> = {};
-          if (existingByReplyId.sentAt.getTime() !== msgTimestamp.getTime()) {
-            updateData.sentAt = msgTimestamp;
-          }
-          if (existingByReplyId.direction !== direction) {
-            updateData.direction = direction;
-          }
-          if (isOutbound && existingByReplyId.isRead !== true) {
-            updateData.isRead = true;
-          }
-
-          if (Object.keys(updateData).length > 0) {
-            await prisma.message.update({
-              where: { emailBisonReplyId },
-              data: updateData,
-            });
-            console.log(`[EmailSync] Healed replyId ${emailBisonReplyId} (${Object.keys(updateData).join(", ")})`);
-            healedCount++;
-          } else {
-            skippedDuplicates++;
-          }
-          continue;
-        }
-
-        // Step 2: Check for legacy message without emailBisonReplyId (match by body/subject)
-        const existingByContent = await prisma.message.findFirst({
-          where: {
-            leadId,
-            channel: "email",
-            emailBisonReplyId: null,
-            OR: [
-              { body: { contains: body.substring(0, 100) } },
-              ...(subject ? [{ subject }] : []),
-            ],
-            ...(isOutbound ? {} : { direction: "inbound" }),
-          },
-        });
-
-        if (existingByContent) {
-          // Heal the legacy message
-          await prisma.message.update({
-            where: { id: existingByContent.id },
-            data: {
-              emailBisonReplyId,
-              sentAt: msgTimestamp,
-              subject: subject || existingByContent.subject,
-              direction,
-              ...(isOutbound ? { isRead: true } : {}),
-            },
-          });
-          healedCount++;
-          console.log(`[EmailSync] Healed reply: "${body.substring(0, 30)}..." -> replyId: ${emailBisonReplyId}`);
-          continue;
-        }
-
-        // Step 3: Create new message
-        await prisma.message.create({
-          data: {
-            emailBisonReplyId,
-            channel: "email",
-            source: "zrg",
-            body,
-            rawHtml: reply.html_body ?? null,
-            rawText: reply.text_body ?? null,
-            subject,
-            direction,
-            ...(isOutbound ? { isRead: true } : {}),
-            leadId,
-            sentAt: msgTimestamp,
-          },
-        });
-        importedCount++;
-        console.log(`[EmailSync] Imported reply: "${body.substring(0, 30)}..." @ ${msgTimestamp.toISOString()}`);
-      } catch (error) {
-        console.error(`[EmailSync] Error processing reply ${reply.id}:`, error);
-      }
-    }
-
-    // Process outbound sent emails
-    for (const sentEmail of sentEmails) {
-      try {
-        const inboxxiaScheduledEmailId = String(sentEmail.id);
-        const msgTimestamp = sentEmail.sent_at
-          ? new Date(sentEmail.sent_at)
-          : new Date();
-        const body = sentEmail.email_body || "";
-        const subject = sentEmail.email_subject || null;
-
-        // Skip if no body
-        if (!body) {
-          continue;
-        }
-
-        // Check if already exists by scheduled email ID
-        const existingByEmailId = await prisma.message.findUnique({
-          where: { inboxxiaScheduledEmailId },
-        });
-
-        if (existingByEmailId) {
-          skippedDuplicates++;
-          continue;
-        }
-
-        // Check for legacy message
-        const existingByContent = await prisma.message.findFirst({
-          where: {
-            leadId,
-            direction: "outbound",
-            channel: "email",
-            inboxxiaScheduledEmailId: null,
-            body: { contains: body.substring(0, 100) },
-          },
-        });
-
-        if (existingByContent) {
-          await prisma.message.update({
-            where: { id: existingByContent.id },
-            data: {
-              inboxxiaScheduledEmailId,
-              sentAt: msgTimestamp,
-            },
-          });
-          healedCount++;
-          continue;
-        }
-
-        // Create new message
-        await prisma.message.create({
-          data: {
-            inboxxiaScheduledEmailId,
-            channel: "email",
-            source: "inboxxia_campaign",
-            body,
-            rawHtml: body,
-            subject,
-            direction: "outbound",
-            isRead: true,
-            leadId,
-            sentAt: msgTimestamp,
-          },
-        });
-        importedCount++;
-        console.log(`[EmailSync] Imported sent email: "${body.substring(0, 30)}..."`);
-      } catch (error) {
-        console.error(`[EmailSync] Error processing sent email ${sentEmail.id}:`, error);
-      }
-    }
-
-    console.log(`[EmailSync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
-
-    // Keep denormalized rollups in sync for inbox "fresh attention" logic.
-    await recomputeLeadMessageRollups(leadId);
-
-    // Re-run sentiment analysis if:
-    // 1. Messages were actually imported or healed, OR
-    // 2. forceReclassify option is enabled (user explicitly requested re-analysis)
-    let reclassifiedSentiment = false;
-    const shouldReclassify = importedCount > 0 || healedCount > 0 || options.forceReclassify;
-
-    if (shouldReclassify) {
-      try {
-        const { sentimentTag } = await refreshLeadSentimentTag(leadId);
-        reclassifiedSentiment = true;
-        console.log(`[EmailSync] Reclassified sentiment to ${sentimentTag}${options.forceReclassify ? " (forced)" : ""}`);
-      } catch (reclassError) {
-        console.error("[EmailSync] Failed to refresh sentiment after sync:", reclassError);
-      }
-    } else {
-      console.log(`[EmailSync] Skipping sentiment reclassification - no new or healed messages`);
-    }
-
-    revalidatePath("/");
-
-    return {
-      success: true,
-      importedCount,
-      healedCount,
-      totalMessages: replies.length + sentEmails.length,
-      skippedDuplicates,
-      reclassifiedSentiment,
-    };
+    return await syncEmailConversationHistorySystem(leadId, options);
   } catch (error) {
     console.error("[EmailSync] Failed to sync email conversation history:", error);
     return {
@@ -1167,8 +725,6 @@ export async function syncAllEmailConversations(clientId: string): Promise<SyncA
 
     console.log(`[EmailSyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalDraftsGenerated} drafts, ${errors} errors`);
 
-    revalidatePath("/");
-
     return {
       success: true,
       totalLeads: leads.length,
@@ -1199,6 +755,14 @@ export async function syncAllEmailConversations(clientId: string): Promise<SyncA
  * @param leadId - The internal lead ID
  * @param message - The message content
  */
+function isGhlSmsDndErrorText(errorText: string): boolean {
+  const lower = (errorText || "").toLowerCase();
+  return (
+    lower.includes("dnd is active") ||
+    (lower.includes("dnd") && lower.includes("sms") && lower.includes("cannot send"))
+  );
+}
+
 export async function sendMessage(
   leadId: string,
   message: string
@@ -1240,6 +804,30 @@ export async function sendMessage(
 
     // Send SMS via GHL API
     let result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey);
+
+    // If GHL indicates the contact is in DND for SMS, mark the lead and return a typed error.
+    if (
+      !result.success &&
+      (result.errorCode === "sms_dnd" ||
+        isGhlSmsDndErrorText(result.errorMessage || result.error || ""))
+    ) {
+      const now = new Date();
+      await prisma.lead
+        .update({
+          where: { id: leadId },
+          data: {
+            smsDndActive: true,
+            smsDndUpdatedAt: now,
+          },
+        })
+        .catch(() => undefined);
+
+      return {
+        success: false,
+        errorCode: "sms_dnd",
+        error: "Cannot send SMS right now (DND active in GoHighLevel).",
+      };
+    }
 
     // Common failure mode: contact exists but does not have a phone number saved in GHL.
     // If we have a phone in our DB, try to patch it onto the contact and retry once.
@@ -1317,7 +905,10 @@ export async function sendMessage(
     // Update the lead's updatedAt timestamp
     await prisma.lead.update({
       where: { id: leadId },
-      data: { updatedAt: new Date() },
+      data: {
+        updatedAt: new Date(),
+        ...(lead.smsDndActive ? { smsDndActive: false, smsDndUpdatedAt: new Date() } : {}),
+      },
     });
 
     // Kick off no-response follow-ups starting from this outbound touch (if enabled)

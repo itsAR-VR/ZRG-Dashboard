@@ -34,10 +34,17 @@ async function countInputTokensViaApi(opts: {
   if (!enabled) return null;
 
   try {
+    const timeoutMs = Math.max(
+      500,
+      Number.parseInt(process.env.OPENAI_INPUT_TOKENS_TIMEOUT_MS || "2500", 10) || 2_500
+    );
     const resp = await openai.responses.inputTokens.count({
       model: opts.model,
       instructions: opts.instructions ?? null,
       input: (opts.input ?? null) as any,
+    }, {
+      timeout: timeoutMs,
+      maxRetries: 0,
     });
     return typeof resp?.input_tokens === "number" ? resp.input_tokens : null;
   } catch {

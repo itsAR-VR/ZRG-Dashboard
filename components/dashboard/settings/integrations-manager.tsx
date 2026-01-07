@@ -28,6 +28,7 @@ interface Client {
   id: string;
   name: string;
   ghlLocationId: string;
+  hasDefaultCalendarLink?: boolean;
   emailBisonApiKey: string | null;
   emailBisonWorkspaceId: string | null;
   unipileAccountId: string | null;
@@ -39,7 +40,7 @@ interface Client {
 }
 
 interface IntegrationsManagerProps {
-  onWorkspacesChange?: (workspaces: Array<Pick<Client, "id" | "name" | "ghlLocationId">>) => void;
+  onWorkspacesChange?: (workspaces: Array<Pick<Client, "id" | "name" | "ghlLocationId" | "hasDefaultCalendarLink">>) => void;
 }
 
 export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerProps) {
@@ -92,7 +93,12 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
       const nextClients = result.data as Client[];
       setClients(nextClients);
       onWorkspacesChange?.(
-        nextClients.map((c) => ({ id: c.id, name: c.name, ghlLocationId: c.ghlLocationId })),
+        nextClients.map((c) => ({
+          id: c.id,
+          name: c.name,
+          ghlLocationId: c.ghlLocationId,
+          hasDefaultCalendarLink: c.hasDefaultCalendarLink,
+        })),
       );
     } else {
       setError(result.error || "Failed to load clients");

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { syncConversationHistory, approveAndSendDraft } from "@/actions/message-actions";
+import { approveAndSendDraft } from "@/actions/message-actions";
 import { buildSentimentTranscriptFromMessages, classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
 import { findOrCreateLead, normalizePhone } from "@/lib/lead-matching";
 import { normalizeSmsCampaignLabel } from "@/lib/sms-campaign";
@@ -490,6 +490,7 @@ export async function POST(request: NextRequest) {
     const sentimentTag = await classifySentiment(transcript || messageBody, {
       clientId: client.id,
       leadId: leadResult.lead.id,
+      maxRetries: 1,
     });
     console.log(`AI Classification: ${sentimentTag}`);
 
@@ -520,9 +521,7 @@ export async function POST(request: NextRequest) {
     });
 
     // Any inbound message pauses active follow-up sequences (re-engage after 7 days of no inbound).
-    pauseFollowUpsOnReply(lead.id).catch((err) =>
-      console.error("[Webhook] Failed to pause follow-ups on reply:", err)
-    );
+    await pauseFollowUpsOnReply(lead.id);
 
     // If the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
     const inboundText = (messageBody || "").trim();
@@ -618,15 +617,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Always trigger background sync to normalize conversation by date/time
-    // This runs as a fire-and-forget background job to:
-    // 1. Fetch full conversation from GHL with accurate timestamps
-    // 2. Heal any messages saved without ghlId
-    // 3. Re-order messages by actual GHL dateAdded timestamp
-    // 4. Re-classify sentiment based on complete conversation
-    syncConversationHistory(lead.id).catch((err) =>
-      console.error("[Webhook] Background sync failed:", err)
-    );
+    // NOTE: Avoid invoking Server Actions from webhook context (no user session cookies).
+    // If message healing/backfill is required beyond the first inbound import, run it from an
+    // internal/cron-safe path instead of a user-authenticated Server Action.
 
     // Auto-booking: only books when the lead clearly accepts one of the offered slots.
     // If ambiguous, it creates a follow-up task instead (no booking).

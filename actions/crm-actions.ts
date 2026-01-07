@@ -24,6 +24,7 @@ export interface CRMLeadData {
   messageCount: number;
   autoReplyEnabled: boolean;
   autoFollowUpEnabled: boolean;
+  smsDndActive: boolean;
   // Enrichment data
   linkedinUrl: string | null;
   companyName: string | null;
@@ -669,6 +670,7 @@ function transformLeadToCRM(lead: any): CRMLeadData {
     messageCount: lead._count.messages,
     autoReplyEnabled: lead.autoReplyEnabled,
     autoFollowUpEnabled: lead.autoFollowUpEnabled,
+    smsDndActive: lead.smsDndActive,
     // Enrichment data
     linkedinUrl: lead.linkedinUrl,
     companyName: lead.companyName,

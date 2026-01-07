@@ -27,6 +27,7 @@ import {
   ChevronsUp,
   ChevronsDown,
   RefreshCw,
+  Moon,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -175,23 +176,35 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h4 className="font-semibold text-sm uppercase text-muted-foreground tracking-wider">Contact Info</h4>
-              {lead.enrichmentStatus && (
-                <Badge 
-                  variant="outline" 
-                  className={cn(
-                    "text-[10px]",
+              <div className="flex items-center gap-2">
+                {lead.smsDndActive ? (
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] border-amber-500/30 bg-amber-500/10 text-amber-600"
+                    title="SMS DND detected in GoHighLevel"
+                  >
+                    <Moon className="h-3 w-3 mr-1" />
+                    DND
+                  </Badge>
+                ) : null}
+                {lead.enrichmentStatus && (
+                  <Badge 
+                    variant="outline" 
+                    className={cn(
+                      "text-[10px]",
                     lead.enrichmentStatus === "enriched" && "text-green-500 border-green-500/30 bg-green-500/10",
                     lead.enrichmentStatus === "pending" && "text-amber-500 border-amber-500/30 bg-amber-500/10",
                     lead.enrichmentStatus === "not_found" && "text-red-500 border-red-500/30 bg-red-500/10",
                     lead.enrichmentStatus === "not_needed" && "text-muted-foreground"
                   )}
                 >
-                  {lead.enrichmentStatus === "enriched" ? "Enriched" :
-                   lead.enrichmentStatus === "pending" ? "Pending" :
-                   lead.enrichmentStatus === "not_found" ? "Not Found" :
-                   lead.enrichmentStatus === "not_needed" ? "Complete" : lead.enrichmentStatus}
-                </Badge>
-              )}
+                    {lead.enrichmentStatus === "enriched" ? "Enriched" :
+                     lead.enrichmentStatus === "pending" ? "Pending" :
+                     lead.enrichmentStatus === "not_found" ? "Not Found" :
+                     lead.enrichmentStatus === "not_needed" ? "Complete" : lead.enrichmentStatus}
+                  </Badge>
+                )}
+              </div>
             </div>
             <div className="space-y-3">
               <div className="flex items-center gap-3">
@@ -739,13 +752,25 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                     
                     {/* Sentiment */}
                     <div className="w-[150px]">
-                      {lead.sentimentTag ? (
-                        <Badge variant="outline" className="text-xs">
-                          {lead.sentimentTag}
-                        </Badge>
-                      ) : (
-                        <span className="text-muted-foreground text-sm">—</span>
-                      )}
+                      <div className="flex flex-wrap items-center gap-1">
+                        {lead.sentimentTag ? (
+                          <Badge variant="outline" className="text-xs">
+                            {lead.sentimentTag}
+                          </Badge>
+                        ) : (
+                          <span className="text-muted-foreground text-sm">—</span>
+                        )}
+                        {lead.smsDndActive ? (
+                          <Badge
+                            variant="outline"
+                            className="text-xs border-amber-500/30 bg-amber-500/10 text-amber-600"
+                            title="SMS DND detected in GoHighLevel"
+                          >
+                            <Moon className="h-3 w-3 mr-1" />
+                            DND
+                          </Badge>
+                        ) : null}
+                      </div>
                     </div>
                     
                     {/* Score */}

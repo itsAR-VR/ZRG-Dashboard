@@ -842,6 +842,14 @@ export async function addCalendarLink(
       },
     });
 
+    // Ensure availability cache refreshes promptly after calendar link changes.
+    await prisma.workspaceAvailabilityCache
+      .updateMany({
+        where: { clientId },
+        data: { staleAt: new Date(0) },
+      })
+      .catch(() => undefined);
+
     revalidatePath("/");
     return { success: true, linkId: link.id };
   } catch (error) {
@@ -884,6 +892,14 @@ export async function deleteCalendarLink(
       }
     }
 
+    // Ensure availability cache refreshes promptly after calendar link changes.
+    await prisma.workspaceAvailabilityCache
+      .updateMany({
+        where: { clientId: link.clientId },
+        data: { staleAt: new Date(0) },
+      })
+      .catch(() => undefined);
+
     revalidatePath("/");
     return { success: true };
   } catch (error) {
@@ -923,6 +939,14 @@ export async function setDefaultCalendarLink(
       where: { id: calendarLinkId },
       data: { isDefault: true },
     });
+
+    // Ensure availability cache refreshes promptly after calendar link changes.
+    await prisma.workspaceAvailabilityCache
+      .updateMany({
+        where: { clientId },
+        data: { staleAt: new Date(0) },
+      })
+      .catch(() => undefined);
 
     revalidatePath("/");
     return { success: true };

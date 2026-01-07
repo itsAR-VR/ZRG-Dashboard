@@ -14,6 +14,7 @@ interface Client {
   id: string
   name: string
   ghlLocationId: string
+  hasDefaultCalendarLink?: boolean
 }
 
 export default function DashboardPage() {

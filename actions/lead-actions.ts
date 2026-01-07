@@ -19,6 +19,7 @@ export interface ConversationData {
     autoReplyEnabled: boolean;
     autoFollowUpEnabled: boolean;
     autoBookMeetingsEnabled: boolean;
+    smsDndActive: boolean;
     clientId: string;  // For follow-up sequence management
     smsCampaignId: string | null;
     smsCampaignName: string | null;
@@ -214,6 +215,7 @@ export async function getConversations(clientId?: string | null): Promise<{
           autoReplyEnabled: lead.autoReplyEnabled,
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
           autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
+          smsDndActive: lead.smsDndActive,
           clientId: lead.clientId,
           smsCampaignId: lead.smsCampaignId,
           smsCampaignName: lead.smsCampaign?.name ?? null,
@@ -432,6 +434,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           autoReplyEnabled: lead.autoReplyEnabled,
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
           autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
+          smsDndActive: lead.smsDndActive,
           clientId: lead.clientId,
           smsCampaignId: lead.smsCampaignId,
           smsCampaignName: lead.smsCampaign?.name ?? null,
@@ -559,6 +562,7 @@ function transformLeadToConversation(lead: any): ConversationData {
       autoReplyEnabled: lead.autoReplyEnabled,
       autoFollowUpEnabled: lead.autoFollowUpEnabled,
       autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
+      smsDndActive: lead.smsDndActive,
       clientId: lead.clientId,
       smsCampaignId: lead.smsCampaignId,
       smsCampaignName: lead.smsCampaign?.name ?? null,

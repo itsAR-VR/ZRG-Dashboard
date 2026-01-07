@@ -15,6 +15,7 @@ import {
   Clock, 
   Calendar, 
   BellOff, 
+  Moon,
   Edit3, 
   X, 
   Loader2,
@@ -660,30 +661,42 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Contact</h4>
-              {lead.enrichmentStatus && (
-                <Badge 
-                  variant="outline" 
-                  className={cn(
-                    "text-[10px]",
-                    lead.enrichmentStatus === "enriched" && "text-green-500 border-green-500/30 bg-green-500/10",
-                    lead.enrichmentStatus === "pending" && "text-amber-500 border-amber-500/30 bg-amber-500/10",
-                    lead.enrichmentStatus === "not_found" && "text-red-500 border-red-500/30 bg-red-500/10",
-                    lead.enrichmentStatus === "failed" && "text-red-500 border-red-500/30 bg-red-500/10",
-                    lead.enrichmentStatus === "not_needed" && "text-muted-foreground"
-                  )}
-                >
-                  {lead.enrichmentStatus === "enriched" ? "Enriched" :
-                   lead.enrichmentStatus === "pending" ? (
-                     <span className="flex items-center gap-1">
-                       <Loader2 className="h-3 w-3 animate-spin" />
-                       Enriching...
-                     </span>
-                   ) :
-                   lead.enrichmentStatus === "not_found" ? "Not Found" :
-                   lead.enrichmentStatus === "failed" ? "Failed" :
-                   lead.enrichmentStatus === "not_needed" ? "Complete" : lead.enrichmentStatus}
-                </Badge>
-              )}
+              <div className="flex items-center gap-2">
+                {lead.smsDndActive ? (
+                  <Badge
+                    variant="outline"
+                    className="text-[10px] border-amber-500/30 bg-amber-500/10 text-amber-600"
+                    title="SMS DND detected in GoHighLevel"
+                  >
+                    <Moon className="h-3 w-3 mr-1" />
+                    DND
+                  </Badge>
+                ) : null}
+                {lead.enrichmentStatus && (
+                  <Badge 
+                    variant="outline" 
+                    className={cn(
+                      "text-[10px]",
+                      lead.enrichmentStatus === "enriched" && "text-green-500 border-green-500/30 bg-green-500/10",
+                      lead.enrichmentStatus === "pending" && "text-amber-500 border-amber-500/30 bg-amber-500/10",
+                      lead.enrichmentStatus === "not_found" && "text-red-500 border-red-500/30 bg-red-500/10",
+                      lead.enrichmentStatus === "failed" && "text-red-500 border-red-500/30 bg-red-500/10",
+                      lead.enrichmentStatus === "not_needed" && "text-muted-foreground"
+                    )}
+                  >
+                    {lead.enrichmentStatus === "enriched" ? "Enriched" :
+                     lead.enrichmentStatus === "pending" ? (
+                       <span className="flex items-center gap-1">
+                         <Loader2 className="h-3 w-3 animate-spin" />
+                         Enriching...
+                       </span>
+                     ) :
+                     lead.enrichmentStatus === "not_found" ? "Not Found" :
+                     lead.enrichmentStatus === "failed" ? "Failed" :
+                     lead.enrichmentStatus === "not_needed" ? "Complete" : lead.enrichmentStatus}
+                  </Badge>
+                )}
+              </div>
             </div>
             <div className="space-y-2.5">
               <div className="flex items-center gap-3 text-sm">

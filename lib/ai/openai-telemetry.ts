@@ -116,16 +116,22 @@ export async function runResponseWithInteraction(opts: {
   featureId: string;
   promptKey?: string | null;
   params: OpenAI.Responses.ResponseCreateParamsNonStreaming;
+  requestOptions?: OpenAI.RequestOptions;
 }): Promise<{ response: OpenAI.Responses.Response; interactionId: string | null }> {
   const start = Date.now();
   try {
     let resp: OpenAI.Responses.Response;
+    const defaultTimeout = Math.max(5_000, Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "90000", 10) || 90_000);
+    const requestOptions: OpenAI.RequestOptions = {
+      timeout: defaultTimeout,
+      ...opts.requestOptions,
+    };
     try {
-      resp = await openai.responses.create(opts.params);
+      resp = await openai.responses.create(opts.params, requestOptions);
     } catch (error) {
       // Some models reject `temperature` (400 invalid_request_error). Retry once without it.
       if ("temperature" in (opts.params as any) && isUnsupportedTemperatureError(error)) {
-        resp = await openai.responses.create(omitTemperature(opts.params));
+        resp = await openai.responses.create(omitTemperature(opts.params), requestOptions);
       } else {
         throw error;
       }
@@ -182,6 +188,7 @@ export async function runResponse(opts: {
   featureId: string;
   promptKey?: string | null;
   params: OpenAI.Responses.ResponseCreateParamsNonStreaming;
+  requestOptions?: OpenAI.RequestOptions;
 }): Promise<OpenAI.Responses.Response> {
   const { response } = await runResponseWithInteraction(opts);
   return response;

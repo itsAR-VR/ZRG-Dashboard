@@ -41,6 +41,8 @@ export interface Lead {
   ghlLocationId?: string | null
   // Sentiment/classification
   sentimentTag?: string | null
+  // SMS deliverability flags
+  smsDndActive?: boolean
 }
 
 export type Channel = "sms" | "email" | "linkedin";

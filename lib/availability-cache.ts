@@ -12,6 +12,8 @@ import {
 const DEFAULT_LOOKAHEAD_DAYS = 30;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const REQUIRED_DURATION_MINUTES = 30;
+const UNCONFIGURED_BACKOFF_MS = 24 * 60 * 60 * 1000; // 24 hours
+const UNSUPPORTED_DURATION_BACKOFF_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 function normalizeCalendarUrl(input: string): string {
   const trimmed = (input || "").trim();
@@ -76,7 +78,7 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
             slotsUtc: [],
             providerMeta: {},
             fetchedAt: now,
-            staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+            staleAt: new Date(now.getTime() + UNCONFIGURED_BACKOFF_MS),
             lastError: error,
           },
           create: {
@@ -90,7 +92,7 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
             slotsUtc: [],
             providerMeta: {},
             fetchedAt: now,
-            staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+            staleAt: new Date(now.getTime() + UNCONFIGURED_BACKOFF_MS),
             lastError: error,
           },
         })
@@ -115,7 +117,7 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
           slotsUtc: [],
           providerMeta: {},
           fetchedAt: now,
-          staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+          staleAt: new Date(now.getTime() + UNSUPPORTED_DURATION_BACKOFF_MS),
           lastError: error,
         },
         create: {
@@ -129,7 +131,7 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
           slotsUtc: [],
           providerMeta: {},
           fetchedAt: now,
-          staleAt: new Date(now.getTime() + CACHE_TTL_MS),
+          staleAt: new Date(now.getTime() + UNSUPPORTED_DURATION_BACKOFF_MS),
           lastError: error,
         },
       });
@@ -270,6 +272,7 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
       calendarLinkId: true,
       calendarType: true,
       calendarUrl: true,
+      slotDurationMinutes: true,
       slotsUtc: true,
       providerMeta: true,
       fetchedAt: true,
@@ -278,19 +281,28 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
     },
   });
 
-  const defaultLink = refreshIfStale
-    ? await prisma.calendarLink.findFirst({
-        where: { clientId, isDefault: true },
-        select: { id: true, url: true },
-      })
-    : null;
+  const [defaultLink, settings] = refreshIfStale
+    ? await Promise.all([
+        prisma.calendarLink.findFirst({
+          where: { clientId, isDefault: true },
+          select: { id: true, url: true },
+        }),
+        prisma.workspaceSettings.findUnique({
+          where: { clientId },
+          select: { meetingDurationMinutes: true },
+        }),
+      ])
+    : [null, null];
 
   const defaultUrl = defaultLink?.url ? normalizeCalendarUrl(defaultLink.url) : "";
   const cachedUrl = cache?.calendarUrl ? normalizeCalendarUrl(cache.calendarUrl) : "";
   const defaultChanged =
     !!defaultLink && !!cache && (cache.calendarLinkId !== defaultLink.id || cachedUrl !== defaultUrl);
 
-  if (!cache || (refreshIfStale && (cache.staleAt <= now || defaultChanged))) {
+  const currentDuration = settings?.meetingDurationMinutes ?? REQUIRED_DURATION_MINUTES;
+  const durationChanged = !!cache && cache.slotDurationMinutes !== currentDuration;
+
+  if (!cache || (refreshIfStale && (cache.staleAt <= now || defaultChanged || durationChanged))) {
     const refresh = await refreshWorkspaceAvailabilityCache(clientId);
     const refreshed = await prisma.workspaceAvailabilityCache.findUnique({
       where: { clientId },
@@ -298,6 +310,7 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
         calendarLinkId: true,
         calendarType: true,
         calendarUrl: true,
+        slotDurationMinutes: true,
         slotsUtc: true,
         providerMeta: true,
         fetchedAt: true,
@@ -368,6 +381,8 @@ export async function getWorkspaceAvailabilitySlotsUtc(clientId: string, opts?: 
 export async function refreshAvailabilityCachesDue(opts?: { limit?: number }): Promise<{
   checked: number;
   refreshed: number;
+  skippedNoDefault: number;
+  skippedUnsupportedDuration: number;
   errors: string[];
 }> {
   const now = new Date();
@@ -392,15 +407,25 @@ export async function refreshAvailabilityCachesDue(opts?: { limit?: number }): P
 
   const errors: string[] = [];
   let refreshed = 0;
+  let skippedNoDefault = 0;
+  let skippedUnsupportedDuration = 0;
 
   for (const clientId of clientIds) {
     const result = await refreshWorkspaceAvailabilityCache(clientId);
     if (result.success) {
       refreshed++;
     } else if (result.error) {
+      if (result.error === "No default calendar link configured") {
+        skippedNoDefault++;
+        continue;
+      }
+      if (result.error.startsWith("Unsupported meeting duration")) {
+        skippedUnsupportedDuration++;
+        continue;
+      }
       errors.push(`${clientId}: ${result.error}`);
     }
   }
 
-  return { checked: clientIds.length, refreshed, errors };
+  return { checked: clientIds.length, refreshed, skippedNoDefault, skippedUnsupportedDuration, errors };
 }

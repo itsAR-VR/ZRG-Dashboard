@@ -631,8 +631,30 @@ export async function classifySentiment(
   }
 
   const lastLeadCombined = (lastLeadText || "").replace(/\u00a0/g, " ").trim();
-  if (matchesAnyPattern(BOUNCE_PATTERNS, lastLeadCombined.toLowerCase())) return "Blacklist";
+  const lastLeadLower = lastLeadCombined.toLowerCase();
+  if (matchesAnyPattern(BOUNCE_PATTERNS, lastLeadLower)) return "Blacklist";
   if (isOptOutText(lastLeadCombined)) return "Blacklist";
+
+  // Fast-path: avoid AI calls for very common, unambiguous replies.
+  // This prevents webhook/runtime timeouts when OpenAI is slow.
+  if (
+    matchesAnyPattern(
+      [
+        /\bnot interested\b/i,
+        /\bno thanks\b/i,
+        /\bno thank you\b/i,
+        /\bnot a fit\b/i,
+        /\bnot for me\b/i,
+        /\bnot at this time\b/i,
+      ],
+      lastLeadCombined
+    )
+  ) {
+    return "Not Interested";
+  }
+  if (matchesAnyPattern([/\bout of office\b/i, /\bOOO\b/i, /\breturning\b.*\b(on|at)\b/i], lastLeadCombined)) {
+    return "Out of Office";
+  }
 
   const promptTemplate = getAIPromptTemplate("sentiment.classify.v1");
   const systemPrompt =
@@ -660,6 +682,11 @@ export async function classifySentiment(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      const timeoutMs = Math.max(
+        5_000,
+        Number.parseInt(process.env.OPENAI_SENTIMENT_TIMEOUT_MS || "25000", 10) || 25_000
+      );
+
       const { response, interactionId } = await runResponseWithInteraction({
         clientId: opts.clientId,
         leadId: opts.leadId,
@@ -690,6 +717,11 @@ export async function classifySentiment(
               },
             },
           },
+        },
+        requestOptions: {
+          timeout: timeoutMs,
+          // Retries are handled explicitly in this function.
+          maxRetries: 0,
         },
       });
 

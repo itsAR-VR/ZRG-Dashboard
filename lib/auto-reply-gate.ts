@@ -120,6 +120,11 @@ Output MUST be valid JSON:
     let lastErrorMessage: string | null = null;
 
     for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
+      const timeoutMs = Math.max(
+        5_000,
+        Number.parseInt(process.env.OPENAI_AUTO_REPLY_TIMEOUT_MS || "25000", 10) || 25_000
+      );
+
       const { response, interactionId } = await runResponseWithInteraction({
         clientId: opts.clientId,
         leadId: opts.leadId,
@@ -150,6 +155,11 @@ Output MUST be valid JSON:
             },
           },
           input,
+        },
+        requestOptions: {
+          timeout: timeoutMs,
+          // Retries are handled explicitly by this loop.
+          maxRetries: 0,
         },
       });
 

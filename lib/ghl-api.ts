@@ -14,6 +14,33 @@ interface GHLApiResponse<T> {
   success: boolean;
   data?: T;
   error?: string;
+  statusCode?: number;
+  errorCode?: "sms_dnd";
+  errorMessage?: string;
+}
+
+function tryParseJson<T>(value: string): T | null {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
+
+function isSmsDndErrorMessage(message: string): boolean {
+  const lower = (message || "").toLowerCase();
+  return (
+    lower.includes("dnd is active") ||
+    (lower.includes("dnd") && lower.includes("sms") && lower.includes("cannot send"))
+  );
+}
+
+function parseGhlErrorPayload(errorText: string): { message?: string; errorCode?: "sms_dnd" } {
+  const parsed = tryParseJson<{ message?: unknown }>(errorText);
+  const message = typeof parsed?.message === "string" ? parsed.message : undefined;
+  const candidate = message || errorText;
+  const errorCode = isSmsDndErrorMessage(candidate) ? "sms_dnd" : undefined;
+  return { message, errorCode };
 }
 
 interface GHLConversation {
@@ -74,10 +101,14 @@ async function ghlRequest<T>(
 
     if (!response.ok) {
       const errorText = await response.text();
+      const parsed = parseGhlErrorPayload(errorText);
       console.error(`GHL API error (${response.status}):`, errorText);
       return {
         success: false,
         error: `GHL API error: ${response.status} - ${errorText}`,
+        statusCode: response.status,
+        errorCode: parsed.errorCode,
+        errorMessage: parsed.message,
       };
     }
 

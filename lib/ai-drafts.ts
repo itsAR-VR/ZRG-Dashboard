@@ -1,6 +1,7 @@
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { runResponse } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
+import { getFirstRefusal, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { prisma } from "@/lib/prisma";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
@@ -503,36 +504,96 @@ Generate an appropriate ${channel} response following the guidelines above.
           : "draft.generate.sms.v1";
     const promptTemplate = getAIPromptTemplate(promptKey);
 
-    const model = "gpt-5.1";
+    const timeoutMs = Math.max(
+      10_000,
+      Number.parseInt(process.env.OPENAI_DRAFT_TIMEOUT_MS || "120000", 10) || 120_000
+    );
+
+    const primaryModel = "gpt-5.1";
+    const reasoningEffort = channel === "email" ? ("minimal" as const) : ("low" as const);
+
     const budget = await computeAdaptiveMaxOutputTokens({
-      model,
+      model: primaryModel,
       instructions: systemPrompt,
       input: inputMessages,
-      min: channel === "email" ? 800 : 160,
-      max: channel === "email" ? 1400 : 360,
+      min: channel === "email" ? 500 : 160,
+      max: channel === "email" ? 1100 : 360,
       overheadTokens: 256,
       outputScale: 0.2,
       preferApiCount: true,
     });
 
-    const response = await runResponse({
-      clientId: lead.clientId,
-      leadId,
-      featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-      promptKey: promptTemplate?.key || promptKey,
-      params: {
-        model,
+    let response: any;
+    try {
+      response = await runResponse({
+        clientId: lead.clientId,
+        leadId,
+        featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
+        promptKey: promptTemplate?.key || promptKey,
+        params: {
+          model: primaryModel,
+          instructions: systemPrompt,
+          input: inputMessages,
+          reasoning: { effort: reasoningEffort },
+          max_output_tokens: budget.maxOutputTokens,
+        },
+        requestOptions: {
+          timeout: timeoutMs,
+          // Draft generation has its own fallback below.
+          maxRetries: 0,
+        },
+      });
+    } catch (error) {
+      console.error("[AI Drafts] Primary draft generation failed:", error);
+    }
+
+    let draftContent = response ? getTrimmedOutputText(response)?.trim() : null;
+
+    // Fallback: smaller model if the primary model failed or returned no output.
+    if (!draftContent) {
+      const fallbackModel = "gpt-5-mini";
+      const fallbackBudget = await computeAdaptiveMaxOutputTokens({
+        model: fallbackModel,
         instructions: systemPrompt,
         input: inputMessages,
-        reasoning: { effort: "low" },
-        max_output_tokens: budget.maxOutputTokens,
-      },
-    });
+        min: channel === "email" ? 300 : 120,
+        max: channel === "email" ? 800 : 280,
+        overheadTokens: 256,
+        outputScale: 0.18,
+        preferApiCount: true,
+      });
 
-    const draftContent = response.output_text?.trim();
+      const fallback = await runResponse({
+        clientId: lead.clientId,
+        leadId,
+        featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
+        promptKey: `${promptTemplate?.key || promptKey}.fallback`,
+        params: {
+          model: fallbackModel,
+          instructions: systemPrompt,
+          input: inputMessages,
+          reasoning: { effort: "minimal" },
+          max_output_tokens: fallbackBudget.maxOutputTokens,
+        },
+        requestOptions: {
+          timeout: timeoutMs,
+          maxRetries: 0,
+        },
+      });
+
+      draftContent = getTrimmedOutputText(fallback)?.trim() || null;
+      response = fallback;
+    }
 
     if (!draftContent) {
-      return { success: false, error: "Failed to generate draft content" };
+      const refusal = response ? getFirstRefusal(response) : null;
+      const details = response ? summarizeResponseForTelemetry(response) : null;
+      return {
+        success: false,
+        error: refusal
+          ? `AI refused to generate a draft (${refusal.slice(0, 180)})`
+          : `Failed to generate draft content${details ? ` (${details})` : ""}`,
+      };
     }
 
     const draft = await prisma.aIDraft.create({

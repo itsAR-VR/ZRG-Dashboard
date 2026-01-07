@@ -51,12 +51,24 @@ export async function getClients() {
         emailBisonWorkspaceId: true,
         unipileAccountId: true,
         createdAt: true,
+        calendarLinks: {
+          where: { isDefault: true },
+          select: { id: true },
+          take: 1,
+        },
         _count: {
           select: { leads: true },
         },
       },
     });
-    return { success: true, data: clients };
+    const withHealth = clients.map((client) => {
+      const { calendarLinks, ...rest } = client;
+      return {
+        ...rest,
+        hasDefaultCalendarLink: calendarLinks.length > 0,
+      };
+    });
+    return { success: true, data: withHealth };
   } catch (error) {
     console.error("Failed to fetch clients:", error);
     return { success: false, error: "Failed to fetch clients" };

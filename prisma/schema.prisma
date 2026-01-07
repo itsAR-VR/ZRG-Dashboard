@@ -178,6 +178,9 @@ model Lead {
   // Automation settings
   autoReplyEnabled Boolean   @default(false)
   autoFollowUpEnabled Boolean @default(false)
+  // SMS deliverability flags
+  smsDndActive Boolean @default(false) // GHL indicates contact is in SMS DND window
+  smsDndUpdatedAt DateTime? // Last time we detected/cleared SMS DND
   // Meeting booking settings
   autoBookMeetingsEnabled Boolean   @default(true)   // Lead-level auto-book toggle
   offeredSlots            String?   @db.Text         // JSON array of offered time slots

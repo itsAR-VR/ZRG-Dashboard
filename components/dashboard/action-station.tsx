@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle } from "lucide-react"
+import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, Moon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { sendMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
 import { toast } from "sonner"
@@ -390,6 +390,16 @@ export function ActionStation({
               <Badge variant="outline" className={cn("text-xs", getScoreColor(lead.leadScore))}>
                 Score: {lead.leadScore}
               </Badge>
+              {lead.smsDndActive ? (
+                <Badge
+                  variant="outline"
+                  className="text-xs border-amber-500/30 bg-amber-500/10 text-amber-600"
+                  title="SMS DND detected in GoHighLevel"
+                >
+                  <Moon className="h-3 w-3 mr-1" />
+                  DND
+                </Badge>
+              ) : null}
             </div>
             <p className="text-sm text-muted-foreground">
               {lead.title ? `${lead.title} at ` : ""}

@@ -1017,6 +1017,36 @@ export async function executeFollowUpStep(
         const msg = sendResult.error || "Failed to send SMS";
         const lower = msg.toLowerCase();
 
+        // Contact is in SMS DND in GHL. Marked on the lead by sendMessage().
+        // Treat as non-retriable for follow-up sequences so cron doesn't loop on permanent DND.
+        if (
+          sendResult.errorCode === "sms_dnd" ||
+          lower.includes("dnd is active for sms") ||
+          (lower.includes("dnd is active") && lower.includes("sms"))
+        ) {
+          await prisma.followUpTask
+            .create({
+              data: {
+                leadId: lead.id,
+                type: "sms",
+                dueDate: new Date(),
+                status: "skipped",
+                suggestedMessage: content,
+                instanceId: instanceId,
+                stepOrder: step.stepOrder,
+              },
+            })
+            .catch(() => undefined);
+
+          console.log(`[FollowUp] SMS step skipped for lead ${lead.id} - DND active in GHL`);
+          return {
+            success: true,
+            action: "skipped",
+            message: "SMS skipped - DND active in GoHighLevel",
+            advance: true,
+          };
+        }
+
         // Avoid hard-failing and retry-spamming cron when SMS is impossible (most commonly: no phone on contact).
         if (
           lower.includes("missing phone") ||

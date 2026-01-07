@@ -28,3 +28,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 /lib/generated/prisma
+
+# local log exports / debugging artifacts
+ZRG Dashboard Logs*.json

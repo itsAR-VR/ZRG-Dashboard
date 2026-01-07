@@ -2,7 +2,7 @@
 
 import { cn } from "@/lib/utils"
 import type { Conversation } from "@/lib/mock-data"
-import { Mail, MessageSquare, Linkedin, AlertCircle, Loader2 } from "lucide-react"
+import { Mail, MessageSquare, Linkedin, AlertCircle, Loader2, Moon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { formatDistanceToNow } from "date-fns"
 
@@ -164,6 +164,16 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
             {ch === "email" ? "Email" : ch.toUpperCase()}
           </Badge>
         ))}
+        {conversation.lead.smsDndActive ? (
+          <Badge
+            variant="outline"
+            className="text-xs border-amber-500/30 bg-amber-500/10 text-amber-600"
+            title="SMS DND detected in GoHighLevel"
+          >
+            <Moon className="h-3 w-3 mr-1" />
+            DND
+          </Badge>
+        ) : null}
         <Badge variant="outline" className={cn("text-xs", classification.className)}>
           {classification.label}
         </Badge>

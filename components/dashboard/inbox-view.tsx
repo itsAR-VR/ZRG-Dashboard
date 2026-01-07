@@ -58,6 +58,7 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
       clientId: conv.lead.clientId,
       smsCampaignId: conv.lead.smsCampaignId,
       smsCampaignName: conv.lead.smsCampaignName,
+      smsDndActive: conv.lead.smsDndActive,
       status: conv.lead.status as Lead["status"],
       qualification: {
         budget: false,

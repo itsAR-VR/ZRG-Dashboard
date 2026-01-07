@@ -3,7 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { sendEmailBisonReply } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
-import { syncEmailConversationHistory } from "@/actions/message-actions";
+import { syncEmailConversationHistorySystem } from "@/lib/conversation-sync";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { isOptOutText } from "@/lib/sentiment";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
@@ -228,7 +228,7 @@ export async function sendEmailReply(
 
     // Trigger background sync to ensure thread consistency
     // This runs async and doesn't block the response
-    syncEmailConversationHistory(lead.id).catch((err) => {
+    syncEmailConversationHistorySystem(lead.id).catch((err) => {
       console.error("[Email] Background sync failed:", err);
     });
 
