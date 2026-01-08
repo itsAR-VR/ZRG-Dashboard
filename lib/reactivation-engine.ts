@@ -271,7 +271,17 @@ export async function resolveReactivationEnrollmentsDue(opts?: {
       lead: { email: { not: null } },
     },
     include: {
-      lead: { select: { id: true, email: true, firstName: true, lastName: true, status: true, sentimentTag: true } },
+      lead: {
+        select: {
+          id: true,
+          email: true,
+          emailBisonLeadId: true,
+          firstName: true,
+          lastName: true,
+          status: true,
+          sentimentTag: true,
+        },
+      },
       campaign: {
         select: {
           id: true,

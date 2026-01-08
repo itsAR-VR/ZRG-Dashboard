@@ -6,7 +6,7 @@ import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraft } from "@/actions/message-actions";
 import { findOrCreateLead } from "@/lib/lead-matching";
 import { createEmailBisonLead, fetchEmailBisonLead, fetchEmailBisonSentEmails, getCustomVariable } from "@/lib/emailbison-api";
-import { extractContactFromSignature, extractContactFromMessageContent } from "@/lib/signature-extractor";
+import { extractContactFromSignature, extractLinkedInFromText, extractPhoneFromText, extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { normalizePhone } from "@/lib/lead-matching";
@@ -517,6 +517,24 @@ async function enrichLeadFromSignature(
   const result: { phone?: string; linkedinUrl?: string } = {};
 
   try {
+    const getSignatureTail = (text: string) => {
+      const normalized = (text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const lines = normalized.split("\n");
+      const tailLines = lines.slice(Math.max(0, lines.length - 40));
+      return tailLines.join("\n").trim();
+    };
+
+    const looksLikeMatchesSender = (tail: string, email: string, name: string) => {
+      const lower = (tail || "").toLowerCase();
+      const emailNeedle = (email || "").trim().toLowerCase();
+      if (emailNeedle && lower.includes(emailNeedle)) return true;
+      const nameNeedle = (name || "").trim().toLowerCase();
+      if (nameNeedle && nameNeedle.length >= 3 && lower.includes(nameNeedle)) return true;
+      const first = nameNeedle.split(/\s+/).filter(Boolean)[0] || "";
+      if (first.length >= 3 && lower.includes(first)) return true;
+      return false;
+    };
+
     // Get current lead to check what's missing
     const currentLead = await prisma.lead.findUnique({ where: { id: leadId } });
 
@@ -531,9 +549,56 @@ async function enrichLeadFromSignature(
       leadId,
     });
 
-    // Only use extraction if from actual lead and high confidence
-    if (!extraction.isFromLead) {
-      console.log(`[Signature Extraction] Email not from lead (possibly assistant), skipping`);
+    // Only use extraction if from actual lead and high confidence.
+    // IMPORTANT: "unknown" is reserved for AI failures/parse issues; do not treat it as "no".
+    if (extraction.isFromLead === "no") {
+      console.log(`[Signature Extraction] Email not from lead (likely assistant), skipping`);
+      return result;
+    }
+
+    // If the AI couldn't determine sender (parse failure / refusal / drift), attempt a cautious regex fallback
+    // on the signature tail, but only when it appears to match the sender.
+    if (extraction.isFromLead === "unknown") {
+      const tail = getSignatureTail(emailBody);
+      if (!tail) return result;
+
+      if (!looksLikeMatchesSender(tail, leadEmail, leadName)) {
+        console.log(`[Signature Extraction] isFromLead unknown and tail does not match sender, skipping`);
+        return result;
+      }
+
+      const fallbackPhone = !currentLead?.phone ? extractPhoneFromText(tail) : null;
+      const fallbackLinkedIn = !currentLead?.linkedinUrl ? extractLinkedInFromText(tail) : null;
+
+      if (!fallbackPhone && !fallbackLinkedIn) {
+        console.log(`[Signature Extraction] isFromLead unknown and no deterministic contact info found`);
+        return result;
+      }
+
+      const updates: Record<string, unknown> = {};
+      if (!currentLead?.phone && fallbackPhone) {
+        updates.phone = fallbackPhone;
+        result.phone = fallbackPhone;
+        console.log(`[Signature Extraction] Extracted phone (regex) for lead ${leadId}`);
+      }
+      if (!currentLead?.linkedinUrl && fallbackLinkedIn) {
+        updates.linkedinUrl = fallbackLinkedIn;
+        result.linkedinUrl = fallbackLinkedIn;
+        console.log(`[Signature Extraction] Extracted LinkedIn (regex) for lead ${leadId}`);
+      }
+
+      if (Object.keys(updates).length > 0) {
+        updates.enrichmentStatus = "enriched";
+        updates.enrichmentSource = "signature";
+        updates.enrichedAt = new Date();
+
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: updates,
+        });
+        console.log(`[Signature Extraction] Updated lead ${leadId} from signature (regex fallback)`);
+      }
+
       return result;
     }
 
@@ -548,14 +613,14 @@ async function enrichLeadFromSignature(
     if (!currentLead?.phone && extraction.phone) {
       updates.phone = extraction.phone;
       result.phone = extraction.phone;
-      console.log(`[Signature Extraction] Extracted phone for lead ${leadId}: ${extraction.phone}`);
+      console.log(`[Signature Extraction] Extracted phone for lead ${leadId}`);
     }
 
     // Extract LinkedIn if missing
     if (!currentLead?.linkedinUrl && extraction.linkedinUrl) {
       updates.linkedinUrl = extraction.linkedinUrl;
       result.linkedinUrl = extraction.linkedinUrl;
-      console.log(`[Signature Extraction] Extracted LinkedIn for lead ${leadId}: ${extraction.linkedinUrl}`);
+      console.log(`[Signature Extraction] Extracted LinkedIn for lead ${leadId}`);
     }
 
     if (Object.keys(updates).length > 0) {

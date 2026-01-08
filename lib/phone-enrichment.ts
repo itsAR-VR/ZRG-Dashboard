@@ -75,7 +75,7 @@ async function tryHydratePhoneFromSignatureAi(opts: {
     leadId: opts.leadId,
   });
 
-  if (!extraction.isFromLead) return null;
+  if (extraction.isFromLead !== "yes") return null;
   if (!extraction.phone) return null;
   return toStoredPhone(extraction.phone) || extraction.phone;
 }
