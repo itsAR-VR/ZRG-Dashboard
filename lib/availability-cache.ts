@@ -156,7 +156,7 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
       providerMeta.ghlCalendarId = ghl.calendarId;
       providerMeta.resolvedUrl = ghl.resolvedUrl;
     } else {
-      const error = `Unknown calendar type for URL`;
+      const error = `Unknown calendar type for URL: ${normalizedUrl || "(empty)"}`;
       await prisma.workspaceAvailabilityCache.upsert({
         where: { clientId },
         update: {

@@ -107,7 +107,7 @@ ${emailBody.slice(0, 5000)}`;
             },
           },
           input: signatureInput,
-          reasoning: { effort: "minimal" },
+          reasoning: { effort: "low" },
           // `max_output_tokens` includes reasoning tokens; keep headroom so we don't
           // end up with an empty/truncated JSON body.
           max_output_tokens: budget.maxOutputTokens,
@@ -141,7 +141,7 @@ ${emailBody.slice(0, 5000)}`;
           model: "gpt-5-nano",
           instructions,
           input: signatureInput,
-          reasoning: { effort: "minimal" },
+          reasoning: { effort: "low" },
           max_output_tokens: budget.maxOutputTokens,
         },
       });

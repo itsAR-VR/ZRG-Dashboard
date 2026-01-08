@@ -1797,7 +1797,7 @@ export async function parseAcceptedTimeFromMessage(
         model,
         instructions: systemPrompt,
         input: message,
-        reasoning: { effort: "minimal" },
+        reasoning: { effort: "low" },
         max_output_tokens: budget.maxOutputTokens,
       },
     });
@@ -1861,7 +1861,7 @@ export async function detectMeetingAcceptedIntent(
         model,
         instructions: systemPrompt,
         input: message,
-        reasoning: { effort: "minimal" },
+        reasoning: { effort: "low" },
         max_output_tokens: budget.maxOutputTokens,
       },
     });

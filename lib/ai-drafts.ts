@@ -510,7 +510,7 @@ Generate an appropriate ${channel} response following the guidelines above.
     );
 
     const primaryModel = "gpt-5.1";
-    const reasoningEffort = channel === "email" ? ("minimal" as const) : ("low" as const);
+    const reasoningEffort = "low" as const;
 
     const budget = await computeAdaptiveMaxOutputTokens({
       model: primaryModel,
@@ -572,7 +572,7 @@ Generate an appropriate ${channel} response following the guidelines above.
           model: fallbackModel,
           instructions: systemPrompt,
           input: inputMessages,
-          reasoning: { effort: "minimal" },
+          reasoning: { effort: "low" },
           max_output_tokens: fallbackBudget.maxOutputTokens,
         },
         requestOptions: {

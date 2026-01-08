@@ -77,10 +77,74 @@ interface CalendlyEventInfo {
     availability_timezone: string;
 }
 
+type ParsedCalendlyUrl =
+    | { kind: "event"; profileSlug: string; eventSlug: string }
+    | { kind: "single"; slug: string };
+
+const CALENDLY_DEFAULT_TIMEOUT_MS = 12_000;
+
+async function fetchJsonWithTimeout(url: string, timeoutMs: number): Promise<any | null> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const response = await fetch(url, {
+            headers: { Accept: "application/json" },
+            cache: "no-store",
+            redirect: "follow",
+            signal: controller.signal,
+        });
+
+        if (!response.ok) return null;
+        return await response.json();
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.toLowerCase().includes("abort")) {
+            console.warn("Calendly request timed out:", url);
+            return null;
+        }
+        console.error("Calendly request failed:", url, error);
+        return null;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+async function fetchTextWithTimeout(
+    url: string,
+    init: Omit<RequestInit, "signal">,
+    timeoutMs: number
+): Promise<{ ok: boolean; status: number; url: string; text: string } | null> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+        const response = await fetch(url, {
+            ...init,
+            cache: "no-store",
+            redirect: "follow",
+            signal: controller.signal,
+        });
+
+        const text = await response.text();
+        return { ok: response.ok, status: response.status, url: response.url, text };
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.toLowerCase().includes("abort")) {
+            console.warn("Request timed out:", url);
+            return null;
+        }
+        console.error("Request failed:", url, error);
+        return null;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 /**
  * Parse Calendly URL to extract profile and event slugs
  */
-function parseCalendlyUrl(url: string): { profileSlug: string; eventSlug: string } | null {
+function parseCalendlyUrl(url: string): ParsedCalendlyUrl | null {
     try {
         // Clean URL - remove query params for parsing
         const cleanUrl = url.split("?")[0];
@@ -89,15 +153,15 @@ function parseCalendlyUrl(url: string): { profileSlug: string; eventSlug: string
 
         if (pathParts.length >= 2) {
             return {
-                profileSlug: pathParts[0],
-                eventSlug: pathParts[1],
+                kind: "event",
+                profileSlug: pathParts[0]!,
+                eventSlug: pathParts[1]!,
             };
         }
-        // Single path might be a scheduling link
         if (pathParts.length === 1) {
             return {
-                profileSlug: "",
-                eventSlug: pathParts[0],
+                kind: "single",
+                slug: pathParts[0]!,
             };
         }
     } catch {
@@ -111,22 +175,51 @@ function parseCalendlyUrl(url: string): { profileSlug: string; eventSlug: string
  */
 async function getCalendlyEventUUID(profileSlug: string, eventSlug: string): Promise<CalendlyEventInfo | null> {
     try {
-        const response = await fetch(
+        const data = await fetchJsonWithTimeout(
             `https://calendly.com/api/booking/event_types/lookup?event_type_slug=${encodeURIComponent(eventSlug)}&profile_slug=${encodeURIComponent(profileSlug)}`,
-            { headers: { Accept: "application/json" } }
+            CALENDLY_DEFAULT_TIMEOUT_MS
         );
 
-        if (response.ok) {
-            const data = await response.json();
-            return {
-                uuid: data.uuid,
-                availability_timezone: data.availability_timezone || "UTC",
-            };
-        }
+        if (!data) return null;
+        return {
+            uuid: data.uuid,
+            availability_timezone: data.availability_timezone || "UTC",
+        };
     } catch (error) {
         console.error("Failed to get Calendly event UUID:", error);
     }
     return null;
+}
+
+async function getCalendlyProfileDefaultEventInfo(profileSlug: string): Promise<CalendlyEventInfo | null> {
+    const profile = await fetchJsonWithTimeout(
+        `https://calendly.com/api/booking/profiles/${encodeURIComponent(profileSlug)}`,
+        CALENDLY_DEFAULT_TIMEOUT_MS
+    );
+    if (!profile) return null;
+
+    const eventTypes = await fetchJsonWithTimeout(
+        `https://calendly.com/api/booking/profiles/${encodeURIComponent(profileSlug)}/event_types`,
+        CALENDLY_DEFAULT_TIMEOUT_MS
+    );
+
+    if (!Array.isArray(eventTypes) || eventTypes.length === 0) return null;
+
+    const first = eventTypes[0];
+    if (!first?.uuid) return null;
+
+    if (eventTypes.length > 1) {
+        console.warn(
+            "Calendly profile URL has multiple event types; using first:",
+            profileSlug,
+            String(first?.slug || first?.name || "")
+        );
+    }
+
+    return {
+        uuid: first.uuid,
+        availability_timezone: profile.timezone || "UTC",
+    };
 }
 
 /**
@@ -135,26 +228,24 @@ async function getCalendlyEventUUID(profileSlug: string, eventSlug: string): Pro
 async function getCalendlySchedulingLinkUUID(slug: string): Promise<CalendlyEventInfo | null> {
     try {
         // First, get the scheduling link info
-        const linkResponse = await fetch(`https://calendly.com/api/booking/scheduling_links/${encodeURIComponent(slug)}`, {
-            headers: { Accept: "application/json" },
-        });
-
-        if (!linkResponse.ok) return null;
-        const linkData = await linkResponse.json();
-
-        // Then get the event type using the owner_uuid
-        const eventResponse = await fetch(
-            `https://calendly.com/api/booking/event_types/lookup?share_uuid=${encodeURIComponent(linkData.owner_uuid)}`,
-            { headers: { Accept: "application/json" } }
+        const linkData = await fetchJsonWithTimeout(
+            `https://calendly.com/api/booking/scheduling_links/${encodeURIComponent(slug)}`,
+            CALENDLY_DEFAULT_TIMEOUT_MS
         );
 
-        if (eventResponse.ok) {
-            const eventData = await eventResponse.json();
-            return {
-                uuid: eventData.uuid,
-                availability_timezone: eventData.availability_timezone || "UTC",
-            };
-        }
+        if (!linkData) return null;
+
+        // Then get the event type using the owner_uuid
+        const eventData = await fetchJsonWithTimeout(
+            `https://calendly.com/api/booking/event_types/lookup?share_uuid=${encodeURIComponent(linkData.owner_uuid)}`,
+            CALENDLY_DEFAULT_TIMEOUT_MS
+        );
+        if (!eventData) return null;
+
+        return {
+            uuid: eventData.uuid,
+            availability_timezone: eventData.availability_timezone || "UTC",
+        };
     } catch (error) {
         console.error("Failed to get Calendly scheduling link UUID:", error);
     }
@@ -174,12 +265,17 @@ export async function fetchCalendlyAvailability(url: string, days: number = 28):
     // Try standard URL first, then scheduling link
     let eventInfo: CalendlyEventInfo | null = null;
 
-    if (parsed.profileSlug) {
+    if (parsed.kind === "event") {
         eventInfo = await getCalendlyEventUUID(parsed.profileSlug, parsed.eventSlug);
-    }
-
-    if (!eventInfo) {
-        eventInfo = await getCalendlySchedulingLinkUUID(parsed.eventSlug);
+        if (!eventInfo) {
+            eventInfo = await getCalendlySchedulingLinkUUID(parsed.eventSlug);
+        }
+    } else {
+        // Single-segment Calendly URLs can be either a scheduling link or a profile slug.
+        eventInfo = await getCalendlySchedulingLinkUUID(parsed.slug);
+        if (!eventInfo) {
+            eventInfo = await getCalendlyProfileDefaultEventInfo(parsed.slug);
+        }
     }
 
     if (!eventInfo) {
@@ -192,17 +288,15 @@ export async function fetchCalendlyAvailability(url: string, days: number = 28):
         const rangeStart = now.toISOString().split("T")[0];
         const rangeEnd = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
 
-        const response = await fetch(
+        const data = await fetchJsonWithTimeout(
             `https://calendly.com/api/booking/event_types/${eventInfo.uuid}/calendar/range?range_start=${rangeStart}&range_end=${rangeEnd}&timezone=${encodeURIComponent(eventInfo.availability_timezone)}`,
-            { headers: { Accept: "application/json" } }
+            Math.max(CALENDLY_DEFAULT_TIMEOUT_MS, 20_000)
         );
 
-        if (!response.ok) {
-            console.error("Calendly availability request failed:", response.status);
+        if (!data) {
+            console.error("Calendly availability request failed");
             return [];
         }
-
-        const data = await response.json();
         const slots: AvailabilitySlot[] = [];
 
         // Parse the days/spots structure
@@ -272,17 +366,15 @@ export async function fetchHubSpotAvailability(url: string, days: number = 28): 
 
     try {
         for (let monthOffset = 0; monthOffset < monthsNeeded; monthOffset++) {
-            const response = await fetch(
+            const data = await fetchJsonWithTimeout(
                 `https://api.hubspot.com/meetings-public/v3/book/availability-page?slug=${encodeURIComponent(slug)}&monthOffset=${monthOffset}&timezone=UTC`,
-                { headers: { Accept: "application/json" } }
+                CALENDLY_DEFAULT_TIMEOUT_MS
             );
 
-            if (!response.ok) {
-                console.error("HubSpot availability request failed:", response.status);
+            if (!data) {
+                console.error("HubSpot availability request failed");
                 break;
             }
-
-            const data = await response.json();
 
             // Parse the availability structure
             // HubSpot returns: linkAvailability.linkAvailabilityByDuration['1800000'].availabilities
@@ -375,42 +467,60 @@ export async function fetchGHLAvailabilityWithMeta(
 }> {
     try {
         // First, fetch the calendar page HTML to get the calendar ID
-        const pageResponse = await fetch(url, {
-            redirect: "follow",
-            headers: {
-                Accept: "text/html",
-                "User-Agent": "Mozilla/5.0 (compatible; ZRG-Dashboard/1.0)",
+        const page = await fetchTextWithTimeout(
+            url,
+            {
+                headers: {
+                    Accept: "text/html",
+                    "User-Agent": "Mozilla/5.0 (compatible; ZRG-Dashboard/1.0)",
+                },
             },
-        });
+            Math.max(CALENDLY_DEFAULT_TIMEOUT_MS, 15_000)
+        );
 
-        if (!pageResponse.ok) {
-            console.error("Failed to fetch GHL calendar page:", pageResponse.status);
-            return { slots: [], calendarId: null, resolvedUrl: pageResponse.url, error: `GHL booking page fetch failed (${pageResponse.status})` };
+        if (!page || !page.ok) {
+            const status = page?.status || "unknown";
+            const resolvedUrl = page?.url;
+            console.error("Failed to fetch GHL calendar page:", status);
+            return {
+                slots: [],
+                calendarId: null,
+                resolvedUrl,
+                error: `GHL booking page fetch failed (${status})`,
+            };
         }
 
-        const html = await pageResponse.text();
+        const html = page.text;
         const calendarId = extractGHLCalendarId(html);
 
         if (!calendarId) {
             console.error("Could not extract calendar ID from GHL page");
-            return { slots: [], calendarId: null, resolvedUrl: pageResponse.url, error: "Could not extract calendar ID from GHL booking page" };
+            return {
+                slots: [],
+                calendarId: null,
+                resolvedUrl: page.url,
+                error: "Could not extract calendar ID from GHL booking page",
+            };
         }
 
         // Now fetch the free slots
         const now = Date.now();
         const endDate = now + days * 24 * 60 * 60 * 1000;
 
-        const slotsResponse = await fetch(
+        const data = await fetchJsonWithTimeout(
             `https://backend.leadconnectorhq.com/calendars/${calendarId}/free-slots?startDate=${now}&endDate=${endDate}&timezone=UTC`,
-            { headers: { Accept: "application/json" } }
+            Math.max(CALENDLY_DEFAULT_TIMEOUT_MS, 15_000)
         );
 
-        if (!slotsResponse.ok) {
-            console.error("GHL free-slots request failed:", slotsResponse.status);
-            return { slots: [], calendarId, resolvedUrl: pageResponse.url, error: `GHL free-slots request failed (${slotsResponse.status})` };
+        if (!data) {
+            console.error("GHL free-slots request failed");
+            return {
+                slots: [],
+                calendarId,
+                resolvedUrl: page.url,
+                error: "GHL free-slots request failed",
+            };
         }
-
-        const data = await slotsResponse.json();
         const slots: AvailabilitySlot[] = [];
 
         // Parse GHL response - it returns date keys with slots arrays
@@ -434,7 +544,7 @@ export async function fetchGHLAvailabilityWithMeta(
             }
         }
 
-        return { slots, calendarId, resolvedUrl: pageResponse.url };
+        return { slots, calendarId, resolvedUrl: page.url };
     } catch (error) {
         console.error("Failed to fetch GHL availability:", error);
         return { slots: [], calendarId: null, error: error instanceof Error ? error.message : "Unknown error" };

@@ -39,8 +39,13 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const availabilityLimit = Math.max(
+      1,
+      Number.parseInt(process.env.AVAILABILITY_CRON_LIMIT || "20", 10) || 20
+    );
+
     console.log("[Cron] Refreshing availability caches...");
-    const availability = await refreshAvailabilityCachesDue({ limit: 50 });
+    const availability = await refreshAvailabilityCachesDue({ limit: availabilityLimit });
     console.log("[Cron] Availability refresh complete:", availability);
 
     console.log("[Cron] Resuming snoozed follow-ups...");
@@ -118,8 +123,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const availabilityLimit = Math.max(
+      1,
+      Number.parseInt(process.env.AVAILABILITY_CRON_LIMIT || "20", 10) || 20
+    );
+
     console.log("[Cron] Refreshing availability caches (POST)...");
-    const availability = await refreshAvailabilityCachesDue({ limit: 50 });
+    const availability = await refreshAvailabilityCachesDue({ limit: availabilityLimit });
     console.log("[Cron] Availability refresh complete:", availability);
 
     console.log("[Cron] Resuming snoozed follow-ups (POST)...");
