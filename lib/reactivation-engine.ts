@@ -7,6 +7,7 @@ import {
   sendEmailBisonReply,
   type EmailBisonReplyMessage,
 } from "@/lib/emailbison-api";
+import { emailBisonHtmlFromPlainText } from "@/lib/email-format";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
@@ -673,7 +674,7 @@ export async function processReactivationSendsDue(opts?: {
       }
 
       const sendResult = await sendEmailBisonReply(client.emailBisonApiKey, enrollment.anchorReplyId, {
-        message: content.replace(/\n/g, "<br>"),
+        message: emailBisonHtmlFromPlainText(content),
         sender_email_id: senderEmailIdNum,
         to_emails: [{ name: enrollment.lead.firstName || null, email_address: enrollment.lead.email! }],
         inject_previous_email_body: true,

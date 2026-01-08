@@ -36,6 +36,7 @@ interface ConversationFeedProps {
   conversations: Conversation[]
   activeConversationId: string | null
   onSelectConversation: (id: string) => void
+  onDebouncedSearchChange?: (query: string) => void
   activeSentiments?: string[]
   onSentimentsChange?: (sentiments: string[]) => void
   activeSmsClient?: string
@@ -60,6 +61,7 @@ export function ConversationFeed({
   conversations, 
   activeConversationId, 
   onSelectConversation,
+  onDebouncedSearchChange,
   activeSentiments = [],
   onSentimentsChange,
   activeSmsClient = "all",
@@ -89,6 +91,7 @@ export function ConversationFeed({
   // Debounced search
   const debouncedSetSearch = useDebouncedCallback((value: string) => {
     setDebouncedSearch(value)
+    onDebouncedSearchChange?.(value)
   }, 300)
 
   const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -104,6 +107,7 @@ export function ConversationFeed({
     return conversations.filter(
       (conv) =>
         conv.lead.name.toLowerCase().includes(searchLower) ||
+        (conv.lead.email || "").toLowerCase().includes(searchLower) ||
         conv.lead.company.toLowerCase().includes(searchLower) ||
         (conv.lead.smsCampaignName || "").toLowerCase().includes(searchLower) ||
         conv.lastMessage.toLowerCase().includes(searchLower) ||

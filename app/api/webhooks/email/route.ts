@@ -802,12 +802,41 @@ async function upsertLead(
   leadData: { id?: number | string; email?: string; first_name?: string | null; last_name?: string | null; status?: string | null } | null,
   emailCampaignId: string | null,
   senderAccountId: string | undefined,
-  fromEmail?: string
+  fromEmail?: string,
+  fromName?: string | null
 ) {
   const email = fromEmail || leadData?.email;
   if (!email) return null;
 
+  const parseFromName = (full: string | null | undefined) => {
+    const trimmed = (full || "").trim();
+    if (!trimmed) return { firstName: null as string | null, lastName: null as string | null };
+    const parts = trimmed.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return { firstName: null, lastName: null };
+    return {
+      firstName: parts[0] || null,
+      lastName: parts.length > 1 ? parts.slice(1).join(" ") : null,
+    };
+  };
+
   const emailBisonLeadId = leadData?.id ? String(leadData.id) : undefined;
+  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedLeadEmail = (leadData?.email || "").trim().toLowerCase();
+  const canUseEmailBisonLeadIdForMatching =
+    Boolean(emailBisonLeadId) && (!normalizedLeadEmail || normalizedEmail === normalizedLeadEmail);
+
+  if (emailBisonLeadId && normalizedLeadEmail && normalizedEmail !== normalizedLeadEmail) {
+    console.log("[Email Webhook] Reply sender differs from campaign lead email; skipping emailBisonLeadId matching");
+  }
+
+  const isSenderDifferentFromCampaignLead = Boolean(normalizedLeadEmail && normalizedEmail !== normalizedLeadEmail);
+  const parsedFromName = parseFromName(fromName);
+  const firstName = isSenderDifferentFromCampaignLead
+    ? parsedFromName.firstName
+    : leadData?.first_name || parsedFromName.firstName || null;
+  const lastName = isSenderDifferentFromCampaignLead
+    ? parsedFromName.lastName
+    : leadData?.last_name || parsedFromName.lastName || null;
 
   // Use findOrCreateLead for cross-channel deduplication
   // This will match by email OR phone to find existing leads from SMS channel
@@ -815,10 +844,10 @@ async function upsertLead(
     client.id,
     {
       email,
-      firstName: leadData?.first_name || null,
-      lastName: leadData?.last_name || null,
+      firstName,
+      lastName,
     },
-    { emailBisonLeadId },
+    canUseEmailBisonLeadIdForMatching ? { emailBisonLeadId } : undefined,
     { emailCampaignId, senderAccountId }
   );
 
@@ -958,7 +987,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   }
 
   // Upsert lead
-  const lead = await upsertLead(client, data?.lead ?? null, emailCampaign?.id ?? null, senderAccountId, fromEmail);
+  const lead = await upsertLead(client, data?.lead ?? null, emailCampaign?.id ?? null, senderAccountId, fromEmail, reply.from_name ?? null);
   if (!lead) {
     return NextResponse.json({ error: "Failed to create/find lead" }, { status: 500 });
   }
@@ -1391,7 +1420,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     return NextResponse.json({ error: "Missing from email" }, { status: 400 });
   }
 
-  const lead = await upsertLead(client, data?.lead ?? null, emailCampaign?.id ?? null, senderAccountId, fromEmail);
+  const lead = await upsertLead(client, data?.lead ?? null, emailCampaign?.id ?? null, senderAccountId, fromEmail, reply.from_name ?? null);
   if (!lead) {
     return NextResponse.json({ error: "Failed to create/find lead" }, { status: 500 });
   }
@@ -1628,12 +1657,13 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     client,
     {
       email: fromEmail,
-      first_name: fromName?.split(" ")[0] || null,
-      last_name: fromName?.split(" ").slice(1).join(" ") || null,
+      first_name: null,
+      last_name: null,
     },
     null, // No campaign
     senderAccountId,
-    fromEmail
+    fromEmail,
+    fromName ?? null
   );
 
   if (!lead) {

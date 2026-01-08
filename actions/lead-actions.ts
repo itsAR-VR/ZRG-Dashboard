@@ -627,15 +627,24 @@ export async function getConversationsCursor(
     // Search filter
     if (search && search.trim()) {
       const searchTerm = search.trim();
-      whereConditions.push({
+      const terms = searchTerm.split(/\s+/).filter(Boolean);
+
+      const buildTermFilter = (term: string) => ({
         OR: [
-          { firstName: { contains: searchTerm, mode: "insensitive" } },
-          { lastName: { contains: searchTerm, mode: "insensitive" } },
-          { email: { contains: searchTerm, mode: "insensitive" } },
-          { companyName: { contains: searchTerm, mode: "insensitive" } },
-          { smsCampaign: { is: { name: { contains: searchTerm, mode: "insensitive" } } } },
+          { firstName: { contains: term, mode: "insensitive" } },
+          { lastName: { contains: term, mode: "insensitive" } },
+          { email: { contains: term, mode: "insensitive" } },
+          { companyName: { contains: term, mode: "insensitive" } },
+          { phone: { contains: term } },
+          { smsCampaign: { is: { name: { contains: term, mode: "insensitive" } } } },
         ],
       });
+
+      whereConditions.push(
+        terms.length > 1
+          ? { AND: terms.map(buildTermFilter) }
+          : buildTermFilter(searchTerm)
+      );
     }
 
     // Channel filter - filter by messages having any selected channel

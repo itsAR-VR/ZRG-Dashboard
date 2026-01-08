@@ -112,6 +112,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   const [activeSentiments, setActiveSentiments] = useState<string[]>([]);
   const [activeSmsClient, setActiveSmsClient] = useState<string>("all");
   const [newConversationCount, setNewConversationCount] = useState(0);
+  const [searchQuery, setSearchQuery] = useState<string>("");
   
   // Sync state management - track which leads are currently syncing
   const [syncingLeadIds, setSyncingLeadIds] = useState<Set<string>>(new Set());
@@ -189,7 +190,8 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
     smsCampaignUnattributed: activeSmsClient === "unattributed" ? true : undefined,
     filter: activeFilter as "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "all" | undefined,
     limit: 50,
-  }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter]);
+    search: searchQuery.trim() ? searchQuery.trim() : undefined,
+  }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter, searchQuery]);
 
   // Infinite query for conversations
   const {
@@ -756,6 +758,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
 		        conversations={filteredConversations}
 		        activeConversationId={activeConversationId}
 		        onSelectConversation={handleLeadSelect}
+            onDebouncedSearchChange={setSearchQuery}
 		        activeSentiments={activeSentiments}
 		        onSentimentsChange={setActiveSentiments}
 		        activeSmsClient={activeSmsClient}

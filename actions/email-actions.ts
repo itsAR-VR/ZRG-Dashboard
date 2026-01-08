@@ -7,6 +7,7 @@ import { syncEmailConversationHistorySystem } from "@/lib/conversation-sync";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { isOptOutText } from "@/lib/sentiment";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
+import { emailBisonHtmlFromPlainText } from "@/lib/email-format";
 
 interface SendEmailResult {
   success: boolean;
@@ -160,12 +161,7 @@ export async function sendEmailReply(
     const messageContent = editedContent || draft.content;
     const subject = latestInboundEmail?.subject || null;
 
-    // Convert plain text newlines to HTML <br> tags for proper email formatting
-    const htmlMessage = messageContent
-      .replace(/\n\n/g, '</p><p>')  // Double newlines become paragraph breaks
-      .replace(/\n/g, '<br>')       // Single newlines become line breaks
-      .replace(/^/, '<p>')          // Wrap in paragraph tags
-      .replace(/$/, '</p>');
+    const htmlMessage = emailBisonHtmlFromPlainText(messageContent);
 
     // Construct to_emails array (required by EmailBison API)
     const toEmails = lead.email
