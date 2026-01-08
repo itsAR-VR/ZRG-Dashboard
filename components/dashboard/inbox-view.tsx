@@ -27,6 +27,7 @@ interface InboxViewProps {
   activeFilter: string;
   activeWorkspace: string | null;
   initialConversationId?: string | null;
+  initialCrmOpen?: boolean;
   onLeadSelect?: (leadId: string | null) => void;
   onClearFilters?: () => void;
 }
@@ -95,7 +96,15 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
   };
 }
 
-export function InboxView({ activeChannels, activeFilter, activeWorkspace, initialConversationId, onLeadSelect, onClearFilters }: InboxViewProps) {
+export function InboxView({
+  activeChannels,
+  activeFilter,
+  activeWorkspace,
+  initialConversationId,
+  initialCrmOpen,
+  onLeadSelect,
+  onClearFilters,
+}: InboxViewProps) {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -106,7 +115,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   }, [onLeadSelect]);
   
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
-  const [isCrmOpen, setIsCrmOpen] = useState(false);
+  const [isCrmOpen, setIsCrmOpen] = useState<boolean>(() => Boolean(initialCrmOpen));
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isLive, setIsLive] = useState(false);
   const [activeSentiments, setActiveSentiments] = useState<string[]>([]);
@@ -132,6 +141,13 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   // Reset SMS sub-client filter when switching workspaces
   useEffect(() => {
     setActiveSmsClient("all");
+  }, [activeWorkspace]);
+
+  // Reset selection when switching workspaces to avoid showing a lead from another workspace.
+  useEffect(() => {
+    setActiveConversationId(null);
+    setActiveConversation(null);
+    setIsCrmOpen(false);
   }, [activeWorkspace]);
 
   // Load workspace auto-followups-on-reply setting for the inbox sidebar switch
@@ -546,6 +562,13 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
     }
   }, [initialConversationId]);
 
+  // Open CRM drawer for deep links (e.g., Follow-ups "Start sequence")
+  useEffect(() => {
+    if (initialCrmOpen) {
+      setIsCrmOpen(true);
+    }
+  }, [initialCrmOpen]);
+
   // Fetch active conversation when selection changes
   useEffect(() => {
     // Only show loading spinner when the conversation ID actually changes (user switched conversations)
@@ -662,7 +685,7 @@ export function InboxView({ activeChannels, activeFilter, activeWorkspace, initi
   }
 
   // Empty state when no conversations (only show if not loading)
-  if (conversations.length === 0 && !isLoading) {
+  if (conversations.length === 0 && !isLoading && !activeConversationId) {
     // Show different message if filters are active vs no conversations at all
     if (hasActiveFilters) {
       return (

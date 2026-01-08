@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { Suspense, useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { Sidebar, type ViewType } from "@/components/dashboard/sidebar"
 import { InboxView } from "@/components/dashboard/inbox-view"
 import { FollowUpsView } from "@/components/dashboard/follow-ups-view"
@@ -8,6 +9,7 @@ import { CRMView } from "@/components/dashboard/crm-view"
 import { AnalyticsView } from "@/components/dashboard/analytics-view"
 import { SettingsView } from "@/components/dashboard/settings-view"
 import { getClients } from "@/actions/client-actions"
+import { getLeadWorkspaceId } from "@/actions/lead-actions"
 import type { Channel } from "@/actions/lead-actions"
 
 interface Client {
@@ -17,7 +19,9 @@ interface Client {
   hasDefaultCalendarLink?: boolean
 }
 
-export default function DashboardPage() {
+function DashboardPageInner() {
+  const searchParams = useSearchParams()
+  const searchParamsKey = searchParams.toString()
   const [activeView, setActiveView] = useState<ViewType>("inbox")
   const [activeChannels, setActiveChannels] = useState<Channel[]>([])
   const [activeFilter, setActiveFilter] = useState("")
@@ -60,6 +64,40 @@ export default function DashboardPage() {
     fetchWorkspaces()
   }, [])
 
+  // Sync view/lead selection from URL params (used by Follow-ups deep links)
+  useEffect(() => {
+    const params = new URLSearchParams(searchParamsKey)
+    const viewParam = params.get("view")
+    const leadIdParam = params.get("leadId")
+
+    if (leadIdParam) {
+      // Lead links should always land in inbox
+      setActiveView("inbox")
+      setSelectedLeadId(leadIdParam)
+
+      // Ensure the correct workspace is selected so the inbox list isn't empty
+      getLeadWorkspaceId(leadIdParam)
+        .then((result) => {
+          if (result.success && result.workspaceId) {
+            setActiveWorkspace(result.workspaceId)
+          }
+        })
+        .catch(() => undefined)
+
+      return
+    }
+
+    if (
+      viewParam === "inbox" ||
+      viewParam === "followups" ||
+      viewParam === "crm" ||
+      viewParam === "analytics" ||
+      viewParam === "settings"
+    ) {
+      setActiveView(viewParam)
+    }
+  }, [searchParamsKey])
+
   const renderContent = () => {
     switch (activeView) {
       case "followups":
@@ -85,6 +123,7 @@ export default function DashboardPage() {
             activeFilter={activeFilter}
             activeWorkspace={activeWorkspace}
             initialConversationId={selectedLeadId}
+            initialCrmOpen={searchParams.get("action") === "sequence"}
             onClearFilters={handleClearFilters}
           />
         )
@@ -106,5 +145,13 @@ export default function DashboardPage() {
       />
       <main className="flex flex-1 overflow-hidden">{renderContent()}</main>
     </div>
+  )
+}
+
+export default function DashboardPage() {
+  return (
+    <Suspense fallback={<div className="flex h-screen bg-background" />}>
+      <DashboardPageInner />
+    </Suspense>
   )
 }
