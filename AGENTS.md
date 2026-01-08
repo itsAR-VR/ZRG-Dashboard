@@ -191,6 +191,8 @@ Configured MCP servers (no tokens in repo — keep them in env):
 - supabase — inspect tables/policies/data (be careful with prod)
 - jam — capture/share repros with context
 
+Supabase project for this repo: `ZRG Dashboard` (project ref: `pzaptpgrcezknnsfytob`).
+
 
 
 If a task needs cross-repo work, explicitly state which repo(s) are in scope before editing.

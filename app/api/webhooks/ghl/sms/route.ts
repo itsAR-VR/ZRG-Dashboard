@@ -12,6 +12,69 @@ import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 
+function normalizeLooseKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function coerceToLabelString(value: unknown): string | null {
+  if (typeof value === "string") {
+    const s = value.trim();
+    return s ? s : null;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  if (value && typeof value === "object") {
+    const anyVal = value as any;
+    const candidates = [anyVal.name, anyVal.label, anyVal.value, anyVal.text];
+    for (const c of candidates) {
+      if (typeof c === "string") {
+        const s = c.trim();
+        if (s) return s;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractSmsSubClientLabelFromWebhookPayload(payload: GHLWebhookPayload): string | null {
+  const direct = coerceToLabelString(payload.customData?.Client ?? payload.customData?.client);
+  if (direct) return direct;
+
+  const normalizedKeysByPriority = [
+    "client",
+    "clientname",
+    "subclient",
+    "subclientname",
+    "smsclient",
+    "smsclientname",
+    "smssubclient",
+    "smssubclientname",
+    "smscampaign",
+    "smscampaignname",
+    "campaign",
+    "campaignname",
+  ];
+  const allowed = new Set(normalizedKeysByPriority);
+
+  const maybeSources: Array<unknown> = [payload.customData, payload.triggerData];
+  for (const source of maybeSources) {
+    if (!source || typeof source !== "object") continue;
+
+    for (const [rawKey, rawValue] of Object.entries(source as Record<string, unknown>)) {
+      const key = normalizeLooseKey(rawKey);
+      if (!allowed.has(key)) continue;
+      const label = coerceToLabelString(rawValue);
+      if (label) return label;
+    }
+  }
+
+  return null;
+}
+
 /**
  * GHL Workflow Webhook Payload Structure
  * Based on actual GHL webhook data
@@ -271,7 +334,20 @@ export async function POST(request: NextRequest) {
     const payload: GHLWebhookPayload = await request.json();
 
     console.log("=== GHL SMS Webhook Received ===");
-    console.log("Payload:", JSON.stringify(payload, null, 2));
+    console.log(
+      "Payload meta:",
+      JSON.stringify(
+        {
+          locationId: payload.location?.id,
+          contactId: payload.contact_id,
+          workflowName: payload.workflow?.name,
+          hasCustomData: !!payload.customData,
+          customDataKeys: payload.customData ? Object.keys(payload.customData) : [],
+        },
+        null,
+        2
+      )
+    );
 
     // Extract location ID (for client lookup)
     const locationId = payload.location?.id;
@@ -359,14 +435,28 @@ export async function POST(request: NextRequest) {
       console.log(`[Webhook] Using current time as fallback: ${webhookMessageTime.toISOString()}`);
     }
 
-    console.log(`Processing message from ${firstName} ${lastName}: "${messageBody}"`);
-    console.log(`Contact info - Email: ${email}, Phone: ${phone} (normalized: ${normalizedPhone})`);
+    console.log(
+      `Processing inbound SMS (contactId=${contactId}) name=${(firstName || "").trim()} ${(lastName || "").trim()} bodyLen=${
+        (messageBody || "").length
+      }`
+    );
+    console.log(
+      `Contact fields present: email=${!!email} phone=${!!phone} normalizedPhone=${!!normalizedPhone}`
+    );
 
     // Extract SMS sub-client campaign label (e.g. customData.Client)
-    const smsCampaignLabel = normalizeSmsCampaignLabel(
-      payload.customData?.Client ?? payload.customData?.client
-    );
+    const extractedSubClientLabel = extractSmsSubClientLabelFromWebhookPayload(payload);
+    const smsCampaignLabel = normalizeSmsCampaignLabel(extractedSubClientLabel);
     let smsCampaignId: string | null = null;
+
+    if (!smsCampaignLabel) {
+      console.log(
+        `[Webhook] No SMS sub-client label found (contactId=${contactId}, locationId=${locationId}, customDataKeys=${
+          payload.customData ? Object.keys(payload.customData).join(",") : ""
+        })`
+      );
+    }
+
     if (smsCampaignLabel) {
       const smsCampaign = await prisma.smsCampaign.upsert({
         where: {

@@ -3,6 +3,7 @@
  *
  * Run with:
  *   npx tsx scripts/backfill-sms-campaign.ts --dry-run
+ *   npx tsx scripts/backfill-sms-campaign.ts --apply --clientId <workspaceId> --limit 200
  *   npx tsx scripts/backfill-sms-campaign.ts --clientId <workspaceId> --limit 200
  *
  * Env:
@@ -29,17 +30,32 @@ type Args = {
   dryRun: boolean;
   useLlm: boolean;
   tagPrefixes: string[];
+  preferCustomFields: boolean;
+  customFieldKeys: string[];
+  debugMissing: boolean;
+  probeContactId?: string;
+  probeExpected?: string;
+  forceSingleCampaign: boolean;
 };
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     limit: 500,
-    dryRun: false,
+    dryRun: true,
     useLlm: true,
     tagPrefixes: (process.env.BACKFILL_TAG_PREFIXES || "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    preferCustomFields: true,
+    customFieldKeys: (process.env.BACKFILL_CUSTOM_FIELD_KEYS || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    debugMissing: false,
+    probeContactId: undefined,
+    probeExpected: undefined,
+    forceSingleCampaign: false,
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -47,9 +63,16 @@ function parseArgs(argv: string[]): Args {
     if (a === "--clientId") args.clientId = argv[++i];
     else if (a === "--limit") args.limit = Number(argv[++i] || "0") || args.limit;
     else if (a === "--dry-run") args.dryRun = true;
+    else if (a === "--apply") args.dryRun = false;
     else if (a === "--use-llm") args.useLlm = true;
     else if (a === "--no-llm") args.useLlm = false;
     else if (a === "--tag-prefix") args.tagPrefixes.push(argv[++i] || "");
+    else if (a === "--custom-field-key") args.customFieldKeys.push(argv[++i] || "");
+    else if (a === "--no-custom-fields") args.preferCustomFields = false;
+    else if (a === "--debug-missing") args.debugMissing = true;
+    else if (a === "--probe-contact") args.probeContactId = argv[++i];
+    else if (a === "--probe-expected") args.probeExpected = argv[++i];
+    else if (a === "--force-single-campaign") args.forceSingleCampaign = true;
   }
 
   if (args.tagPrefixes.length === 0) {
@@ -65,6 +88,23 @@ function parseArgs(argv: string[]): Args {
   }
 
   args.tagPrefixes = args.tagPrefixes.map((s) => s.trim()).filter(Boolean);
+
+  if (args.customFieldKeys.length === 0) {
+    args.customFieldKeys = [
+      "client",
+      "Client",
+      "client name",
+      "Client Name",
+      "sub-client",
+      "subclient",
+      "sms client",
+      "sms subclient",
+      "sms campaign",
+      "campaign",
+    ];
+  }
+  args.customFieldKeys = args.customFieldKeys.map((s) => s.trim()).filter(Boolean);
+
   return args;
 }
 
@@ -109,7 +149,20 @@ async function fetchWithRetry(
   throw new Error("fetchWithRetry: exhausted retries");
 }
 
-async function fetchGhlContactTags(contactId: string, privateKey: string): Promise<string[] | null> {
+const GHL_CONTACTS_API_VERSION = "2021-07-28";
+const GHL_LEGACY_API_VERSION = "2021-04-15";
+
+function contactSignalScore(contact: Record<string, unknown>): number {
+  const tags = coerceTags((contact as any).tags);
+  const customKeys = listCustomFieldKeysForDebug(contact);
+  return tags.length * 10 + customKeys.length;
+}
+
+async function fetchGhlContactWithVersion(
+  contactId: string,
+  privateKey: string,
+  apiVersion: string
+): Promise<Record<string, unknown> | null> {
   const url = `https://services.leadconnectorhq.com/contacts/${encodeURIComponent(contactId)}`;
 
   try {
@@ -119,7 +172,7 @@ async function fetchGhlContactTags(contactId: string, privateKey: string): Promi
         method: "GET",
         headers: {
           Authorization: `Bearer ${privateKey}`,
-          Version: "2021-04-15",
+          Version: apiVersion,
           Accept: "application/json",
         },
       },
@@ -128,13 +181,218 @@ async function fetchGhlContactTags(contactId: string, privateKey: string): Promi
 
     if (!response.ok) return null;
 
-    const data = (await response.json()) as { contact?: { tags?: unknown } };
-    const tags = data?.contact?.tags;
-    if (!Array.isArray(tags)) return [];
-    return tags.filter((t): t is string => typeof t === "string").filter(Boolean);
+    const data = (await response.json()) as { contact?: unknown };
+    const contact = data?.contact;
+    if (!contact || typeof contact !== "object") return null;
+    return contact as Record<string, unknown>;
   } catch {
     return null;
   }
+}
+
+async function fetchGhlContact(contactId: string, privateKey: string): Promise<Record<string, unknown> | null> {
+  const [newer, legacy] = await Promise.all([
+    fetchGhlContactWithVersion(contactId, privateKey, GHL_CONTACTS_API_VERSION),
+    fetchGhlContactWithVersion(contactId, privateKey, GHL_LEGACY_API_VERSION),
+  ]);
+
+  if (newer && !legacy) return newer;
+  if (!newer && legacy) return legacy;
+  if (!newer && !legacy) return null;
+
+  // Prefer the payload that contains more usable signal (tags/custom fields).
+  const newerScore = contactSignalScore(newer!);
+  const legacyScore = contactSignalScore(legacy!);
+  return newerScore >= legacyScore ? newer! : legacy!;
+}
+
+function normalizeFieldKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function coerceString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const s = value.trim();
+  return s ? s : null;
+}
+
+function coerceTags(tags: unknown): string[] {
+  if (Array.isArray(tags)) {
+    return tags.filter((t): t is string => typeof t === "string").map((t) => t.trim()).filter(Boolean);
+  }
+  if (typeof tags === "string") {
+    // Some payloads represent tags as a comma-separated string.
+    return tags
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function pickInterestingTags(tags: string[]): string[] {
+  const interesting = tags.filter((t) => /\b(sms|client|subclient|sub-client|campaign)\b/i.test(t));
+  return interesting.slice(0, 25);
+}
+
+function extractLabelFromCustomFields(contact: Record<string, unknown>, preferredKeys: string[]): string | null {
+  const preferred = preferredKeys
+    .map((k) => ({ raw: k, norm: normalizeFieldKey(k) }))
+    .filter((k) => k.norm);
+
+  if (preferred.length === 0) return null;
+
+  // 1) Direct top-level keys (some GHL payloads flatten custom fields)
+  for (const k of preferred) {
+    for (const [rawKey, rawVal] of Object.entries(contact)) {
+      if (normalizeFieldKey(rawKey) !== k.norm) continue;
+      const s = coerceString(rawVal);
+      if (s) return s;
+    }
+  }
+
+  // 2) Known custom field containers
+  const containers: unknown[] = [
+    (contact as any).customFields,
+    (contact as any).customField,
+    (contact as any).customFieldValues,
+    (contact as any).customValues,
+    (contact as any).custom_fields,
+    (contact as any).custom_field,
+    (contact as any).custom_field_values,
+  ];
+
+  for (const container of containers) {
+    if (!container) continue;
+
+    // 2a) Map/object: { fieldKeyOrId: value }
+    if (!Array.isArray(container) && typeof container === "object") {
+      const obj = container as Record<string, unknown>;
+      for (const k of preferred) {
+        for (const [rawKey, rawVal] of Object.entries(obj)) {
+          if (normalizeFieldKey(rawKey) !== k.norm) continue;
+          const s = coerceString(rawVal);
+          if (s) return s;
+        }
+      }
+      continue;
+    }
+
+    // 2b) Array of objects: [{ key/name/id, value/fieldValue/... }]
+    if (Array.isArray(container)) {
+      const arr = container as unknown[];
+
+      for (const k of preferred) {
+        for (const item of arr) {
+          if (!item || typeof item !== "object") continue;
+          const anyItem = item as any;
+          const idKey =
+            coerceString(anyItem.key) ||
+            coerceString(anyItem.name) ||
+            coerceString(anyItem.fieldKey) ||
+            coerceString(anyItem.fieldName) ||
+            coerceString(anyItem.id);
+          if (!idKey) continue;
+          if (normalizeFieldKey(idKey) !== k.norm) continue;
+
+          const rawVal = anyItem.value ?? anyItem.fieldValue ?? anyItem.field_value ?? anyItem.val;
+          const s = coerceString(rawVal);
+          if (s) return s;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function listCustomFieldKeysForDebug(contact: Record<string, unknown>): string[] {
+  const keys = new Set<string>();
+
+  const containers: unknown[] = [
+    (contact as any).customFields,
+    (contact as any).customField,
+    (contact as any).customFieldValues,
+    (contact as any).customValues,
+    (contact as any).custom_fields,
+    (contact as any).custom_field,
+    (contact as any).custom_field_values,
+  ];
+
+  for (const container of containers) {
+    if (!container) continue;
+    if (!Array.isArray(container) && typeof container === "object") {
+      for (const k of Object.keys(container as Record<string, unknown>)) keys.add(k);
+      continue;
+    }
+    if (Array.isArray(container)) {
+      for (const item of container) {
+        if (!item || typeof item !== "object") continue;
+        const anyItem = item as any;
+        const idKey =
+          coerceString(anyItem.key) ||
+          coerceString(anyItem.name) ||
+          coerceString(anyItem.fieldKey) ||
+          coerceString(anyItem.fieldName) ||
+          coerceString(anyItem.id);
+        if (idKey) keys.add(idKey);
+      }
+    }
+  }
+
+  return Array.from(keys).sort((a, b) => a.localeCompare(b));
+}
+
+function findCustomFieldKeysMatchingValue(contact: Record<string, unknown>, expected: string): string[] {
+  const expectedNorm = expected.trim().toLowerCase();
+  if (!expectedNorm) return [];
+
+  const matches = new Set<string>();
+
+  const containers: unknown[] = [
+    (contact as any).customFields,
+    (contact as any).customField,
+    (contact as any).customFieldValues,
+    (contact as any).customValues,
+    (contact as any).custom_fields,
+    (contact as any).custom_field,
+    (contact as any).custom_field_values,
+  ];
+
+  for (const container of containers) {
+    if (!container) continue;
+
+    if (!Array.isArray(container) && typeof container === "object") {
+      const obj = container as Record<string, unknown>;
+      for (const [k, v] of Object.entries(obj)) {
+        const s = coerceString(v);
+        if (!s) continue;
+        if (s.toLowerCase().includes(expectedNorm)) matches.add(k);
+      }
+      continue;
+    }
+
+    if (Array.isArray(container)) {
+      for (const item of container as unknown[]) {
+        if (!item || typeof item !== "object") continue;
+        const anyItem = item as any;
+        const idKey =
+          coerceString(anyItem.key) ||
+          coerceString(anyItem.name) ||
+          coerceString(anyItem.fieldKey) ||
+          coerceString(anyItem.fieldName) ||
+          coerceString(anyItem.id);
+        if (!idKey) continue;
+
+        const rawVal = anyItem.value ?? anyItem.fieldValue ?? anyItem.field_value ?? anyItem.val;
+        const s = coerceString(rawVal);
+        if (!s) continue;
+        if (s.toLowerCase().includes(expectedNorm)) matches.add(idKey);
+      }
+    }
+  }
+
+  return Array.from(matches).sort((a, b) => a.localeCompare(b));
 }
 
 function extractCandidatesFromTags(tags: string[], prefixes: string[]): string[] {
@@ -249,6 +507,78 @@ async function main() {
 
   const openai = args.useLlm ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 
+  let singleCampaignFallback: { id: string; name: string } | null = null;
+  if (args.forceSingleCampaign) {
+    if (!args.clientId) {
+      throw new Error("--clientId is required when using --force-single-campaign");
+    }
+
+    const campaigns = await prisma.smsCampaign.findMany({
+      where: { clientId: args.clientId },
+      select: { id: true, name: true },
+      orderBy: { nameNormalized: "asc" },
+    });
+
+    if (campaigns.length === 1) {
+      singleCampaignFallback = campaigns[0];
+      console.log(
+        `[INFO] --force-single-campaign enabled; using existing SmsCampaign "${singleCampaignFallback.name}" (${singleCampaignFallback.id})`
+      );
+    } else {
+      console.log(
+        `[WARN] --force-single-campaign enabled but workspace has ${campaigns.length} SmsCampaign rows; fallback will not be applied.`
+      );
+    }
+  }
+
+  if (args.probeContactId) {
+    if (!args.clientId) throw new Error("--clientId is required when using --probe-contact");
+    const client = await prisma.client.findUnique({
+      where: { id: args.clientId },
+      select: { id: true, name: true, ghlPrivateKey: true },
+    });
+    if (!client?.ghlPrivateKey) throw new Error("Client not found or missing ghlPrivateKey");
+
+    const contact = await fetchGhlContact(args.probeContactId, client.ghlPrivateKey);
+    if (!contact) throw new Error("Failed to fetch contact");
+
+    const tags = coerceTags((contact as any).tags);
+
+    const expected = (args.probeExpected || "").trim();
+    if (!expected) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            tagsCount: tags.length,
+            interestingTags: pickInterestingTags(tags),
+            customFieldKeys: listCustomFieldKeysForDebug(contact),
+          },
+          null,
+          2
+        )
+      );
+    } else {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            expected,
+            tagsCount: tags.length,
+            interestingTags: pickInterestingTags(tags),
+            matchingKeys: findCustomFieldKeysMatchingValue(contact, expected),
+            allCustomFieldKeys: args.debugMissing ? listCustomFieldKeysForDebug(contact) : undefined,
+          },
+          null,
+          2
+        )
+      );
+    }
+
+    await prisma.$disconnect();
+    return;
+  }
+
   const leads = await prisma.lead.findMany({
     where: {
       clientId: args.clientId,
@@ -267,6 +597,8 @@ async function main() {
   );
 
   let updated = 0;
+  let updatedFromCustomFields = 0;
+  let updatedFromTags = 0;
   let skipped = 0;
   let ambiguous = 0;
   let failed = 0;
@@ -275,23 +607,46 @@ async function main() {
     const contactId = lead.ghlContactId!;
     const privateKey = (lead as any).client.ghlPrivateKey as string;
 
-    const tags = await fetchGhlContactTags(contactId, privateKey);
-    if (!tags) {
+    const contact = await fetchGhlContact(contactId, privateKey);
+    if (!contact) {
       failed++;
-      console.log(`[FAIL] lead=${lead.id} contact=${contactId} err=failed_to_fetch_tags`);
+      console.log(`[FAIL] lead=${lead.id} contact=${contactId} err=failed_to_fetch_contact`);
       await sleep(150);
       continue;
     }
 
-    const candidates = extractCandidatesFromTags(tags, args.tagPrefixes);
+    const customFieldLabel = args.preferCustomFields
+      ? extractLabelFromCustomFields(contact, args.customFieldKeys)
+      : null;
 
-    let chosen: string | null = null;
-    if (openai && tags.length > 0) {
-      chosen = await chooseWithLlm(openai, tags, candidates);
-    }
+    let chosen: string | null = customFieldLabel;
+
+    // Fallback: derive from tags (heuristic + optional LLM)
+    const tags = coerceTags((contact as any).tags);
+    const candidates = chosen ? [] : extractCandidatesFromTags(tags, args.tagPrefixes);
+
     if (!chosen) {
-      if (candidates.length > 1) ambiguous++;
-      if (candidates.length === 1) chosen = candidates[0];
+      if (args.debugMissing) {
+        const customKeys = listCustomFieldKeysForDebug(contact);
+        const interestingTags = pickInterestingTags(tags);
+        console.log(
+          `[DEBUG] lead=${lead.id} contact=${contactId} tagsCount=${tags.length} interestingTags=${
+            interestingTags.join("|") || "<none>"
+          } customFieldKeys=${customKeys.join(",") || "<none>"}`
+        );
+      }
+
+      if (openai && tags.length > 0) {
+        chosen = await chooseWithLlm(openai, tags, candidates);
+      }
+      if (!chosen) {
+        if (candidates.length > 1) ambiguous++;
+        if (candidates.length === 1) chosen = candidates[0];
+      }
+    }
+
+    if (!chosen && singleCampaignFallback) {
+      chosen = singleCampaignFallback.name;
     }
 
     const normalized = normalizeSmsCampaignLabel(chosen);
@@ -303,6 +658,11 @@ async function main() {
 
     if (args.dryRun) {
       updated++;
+      if (customFieldLabel) {
+        updatedFromCustomFields++;
+      } else {
+        updatedFromTags++;
+      }
       console.log(`[DRY] lead=${lead.id} -> "${normalized.name}"`);
       await sleep(150);
       continue;
@@ -329,6 +689,11 @@ async function main() {
     });
 
     updated++;
+    if (customFieldLabel) {
+      updatedFromCustomFields++;
+    } else {
+      updatedFromTags++;
+    }
     console.log(`[OK] lead=${lead.id} -> "${normalized.name}"`);
     await sleep(150);
   }
@@ -337,7 +702,16 @@ async function main() {
 
   console.log(
     JSON.stringify(
-      { updated, skipped, ambiguous, failed, limit: args.limit, dryRun: args.dryRun },
+      {
+        updated,
+        updatedFromCustomFields,
+        updatedFromTags,
+        skipped,
+        ambiguous,
+        failed,
+        limit: args.limit,
+        dryRun: args.dryRun,
+      },
       null,
       2
     )

@@ -30,6 +30,9 @@ export async function POST(request: NextRequest) {
       locationId = firstClient.ghlLocationId;
     }
     
+    const incomingCustomData =
+      body.customData && typeof body.customData === "object" ? (body.customData as Record<string, unknown>) : null;
+
     // Build a test payload matching GHL webhook structure
     const testPayload = {
       contact_id: body.contactId || `test_contact_${Date.now()}`,
@@ -62,6 +65,7 @@ export async function POST(request: NextRequest) {
         "Last Name": body.lastName || "User",
         Email: body.email || "test@example.com",
         Message: body.message || "This is a test message",
+        ...(incomingCustomData || {}),
         Client: body.client || body.Client || "demo-subclient",
         Date: new Date().toLocaleDateString(),
         Time: new Date().toLocaleTimeString(),
