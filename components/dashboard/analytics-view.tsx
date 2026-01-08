@@ -261,10 +261,10 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Sub-client</TableHead>
-                      <TableHead className="text-right">Leads</TableHead>
+                      <TableHead className="text-right">Leads (Positive)</TableHead>
                       <TableHead className="text-right">Replies</TableHead>
                       <TableHead className="text-right">Meetings</TableHead>
-                      <TableHead className="text-right">Reply Rate</TableHead>
+                      <TableHead className="text-right">Positive Rate</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -275,8 +275,8 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                         <TableCell className="text-right">{row.responses}</TableCell>
                         <TableCell className="text-right">{row.meetingsBooked}</TableCell>
                         <TableCell className="text-right">
-                          <Badge variant={row.responses > 0 ? "default" : "secondary"}>
-                            {row.leads > 0 ? Math.round((row.responses / row.leads) * 100) : 0}%
+                          <Badge variant={row.leads > 0 ? "default" : "secondary"}>
+                            {row.responses > 0 ? Math.round((row.leads / row.responses) * 100) : 0}%
                           </Badge>
                         </TableCell>
                       </TableRow>

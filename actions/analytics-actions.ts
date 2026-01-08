@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { POSITIVE_SENTIMENTS } from "@/lib/sentiment-shared";
 import { resolveClientScope } from "@/lib/workspace-access";
 
 export interface AnalyticsData {
@@ -289,6 +290,8 @@ export async function getAnalytics(clientId?: string | null): Promise<{
     // SMS sub-client breakdown inside a workspace (Lead.smsCampaignId)
     const smsSubClients: AnalyticsData["smsSubClients"] = [];
     if (clientId) {
+      const positiveSentimentTags = [...POSITIVE_SENTIMENTS, "Positive"] as unknown as string[];
+
       const [campaigns, leadsBySmsCampaign, responsesBySmsCampaign, meetingsBySmsCampaign] = await Promise.all([
         prisma.smsCampaign.findMany({
           where: { clientId },
@@ -296,7 +299,10 @@ export async function getAnalytics(clientId?: string | null): Promise<{
         }),
         prisma.lead.groupBy({
           by: ["smsCampaignId"],
-          where: { clientId },
+          where: {
+            clientId,
+            sentimentTag: { in: positiveSentimentTags },
+          },
           _count: { _all: true },
         }),
         prisma.lead.groupBy({
