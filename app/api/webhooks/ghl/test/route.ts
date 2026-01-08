@@ -65,10 +65,10 @@ export async function POST(request: NextRequest) {
         "Last Name": body.lastName || "User",
         Email: body.email || "test@example.com",
         Message: body.message || "This is a test message",
-        ...(incomingCustomData || {}),
         Client: body.client || body.Client || "demo-subclient",
         Date: new Date().toLocaleDateString(),
         Time: new Date().toLocaleTimeString(),
+        ...(incomingCustomData || {}),
       },
     };
 
