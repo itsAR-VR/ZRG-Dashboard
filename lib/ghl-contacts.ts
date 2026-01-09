@@ -68,7 +68,7 @@ export async function resolveGhlContactIdForLead(leadId: string): Promise<Resolv
 
   const emailNormalized = normalizeEmail(lead.email);
   if (!emailNormalized) {
-    return { success: true, error: "No email available to resolve GHL contact" };
+    return { success: false, error: "No email available to resolve GHL contact" };
   }
 
   try {
