@@ -6,6 +6,7 @@ import { format } from "date-fns"
 import { Bot, User, UserCircle } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useState } from "react"
+import { safeLinkifiedHtmlFromText } from "@/lib/safe-html"
 
 interface ChatMessageProps {
   message: Message
@@ -79,7 +80,7 @@ export function ChatMessage({ message, leadName, userName = "You", userAvatar }:
           ) : (
             <div
               className="text-sm leading-relaxed text-foreground whitespace-pre-wrap"
-              dangerouslySetInnerHTML={{ __html: (message.content || "").replace(/\n/g, "<br />") }}
+              dangerouslySetInnerHTML={{ __html: safeLinkifiedHtmlFromText(message.content || "") }}
             />
           )}
           {isEmail && (message.rawHtml || message.rawText) && (

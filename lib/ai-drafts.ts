@@ -460,7 +460,7 @@ export async function generateResponseDraft(
           availability,
         });
 
-    // GPT-5.1 with low reasoning effort for draft generation using Responses API
+    // gpt-5-mini with high reasoning effort for draft generation using Responses API
     const inputMessages =
       channel === "email"
         ? [
@@ -509,8 +509,8 @@ Generate an appropriate ${channel} response following the guidelines above.
       Number.parseInt(process.env.OPENAI_DRAFT_TIMEOUT_MS || "120000", 10) || 120_000
     );
 
-    const primaryModel = "gpt-5.1";
-    const reasoningEffort = "low" as const;
+    const primaryModel = "gpt-5-mini";
+    const reasoningEffort = "high" as const;
 
     const budget = await computeAdaptiveMaxOutputTokens({
       model: primaryModel,
@@ -549,7 +549,7 @@ Generate an appropriate ${channel} response following the guidelines above.
 
     let draftContent = response ? getTrimmedOutputText(response)?.trim() : null;
 
-    // Fallback: smaller model if the primary model failed or returned no output.
+    // Fallback: same model with lower reasoning effort if the primary call failed or returned no output.
     if (!draftContent) {
       const fallbackModel = "gpt-5-mini";
       const fallbackBudget = await computeAdaptiveMaxOutputTokens({

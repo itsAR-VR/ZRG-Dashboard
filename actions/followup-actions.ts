@@ -352,7 +352,7 @@ export async function getFollowUpTaggedLeads(
       where: {
         clientId: { in: scope.clientIds },
         sentimentTag: { in: ["Follow Up", "Snoozed"] },
-        status: { not: "blacklisted" },
+        status: { notIn: ["blacklisted", "unqualified"] },
       },
       include: {
         client: {
@@ -418,7 +418,7 @@ export async function getFollowUpTaggedLeadsCount(
       where: {
         clientId: { in: scope.clientIds },
         sentimentTag: { in: ["Follow Up", "Snoozed"] },
-        status: { not: "blacklisted" },
+        status: { notIn: ["blacklisted", "unqualified"] },
       },
     });
   } catch (error) {

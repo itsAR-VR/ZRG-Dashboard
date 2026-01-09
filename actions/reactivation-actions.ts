@@ -293,7 +293,7 @@ export async function importReactivationCsv(input: {
     if (unique.length === 0) return { success: false, error: "No valid emails found in CSV" };
 
     const leadIds: string[] = [];
-    const blacklistedLeadIds = new Set<string>();
+    const blockedLeadReasonById = new Map<string, string>();
 
     for (const row of unique) {
       const leadResult = await findOrCreateLead(
@@ -303,7 +303,12 @@ export async function importReactivationCsv(input: {
         undefined
       );
       leadIds.push(leadResult.lead.id);
-      if (leadResult.lead.status === "blacklisted") blacklistedLeadIds.add(leadResult.lead.id);
+      if (leadResult.lead.status === "blacklisted") {
+        blockedLeadReasonById.set(leadResult.lead.id, "Lead is blacklisted/opted out");
+      }
+      if (leadResult.lead.status === "unqualified") {
+        blockedLeadReasonById.set(leadResult.lead.id, "Lead is unqualified");
+      }
     }
 
     const existing = await prisma.reactivationEnrollment.findMany({
@@ -318,15 +323,16 @@ export async function importReactivationCsv(input: {
 
     for (const leadId of leadIds) {
       const existingStatus = existingMap.get(leadId);
-      const isBlacklisted = blacklistedLeadIds.has(leadId);
+      const blockedReason = blockedLeadReasonById.get(leadId) || null;
+      const isBlocked = Boolean(blockedReason);
 
       if (!existingStatus) {
         imported++;
         createRows.push({
           campaignId: input.campaignId,
           leadId,
-          status: isBlacklisted ? "needs_review" : "pending_resolution",
-          ...(isBlacklisted ? { needsReviewReason: "Lead is blacklisted/opted out" } : {}),
+          status: isBlocked ? "needs_review" : "pending_resolution",
+          ...(isBlocked ? { needsReviewReason: blockedReason } : {}),
         });
         continue;
       }
@@ -334,7 +340,7 @@ export async function importReactivationCsv(input: {
       deduped++;
       if ((existingStatus || "").toLowerCase() === "sent") continue;
 
-      if (isBlacklisted) updateNeedsReviewLeadIds.push(leadId);
+      if (isBlocked) updateNeedsReviewLeadIds.push(leadId);
       else updatePendingLeadIds.push(leadId);
     }
 

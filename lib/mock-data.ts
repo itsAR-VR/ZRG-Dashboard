@@ -21,7 +21,16 @@ export interface Lead {
   clientId: string  // Workspace/client ID for follow-up sequence management
   smsCampaignId?: string | null
   smsCampaignName?: string | null
-  status: "new" | "qualified" | "meeting-booked" | "blacklisted" | "not-interested" | "meeting-requested" | "information-requested" | "call-requested"
+  status:
+    | "new"
+    | "qualified"
+    | "unqualified"
+    | "meeting-booked"
+    | "blacklisted"
+    | "not-interested"
+    | "meeting-requested"
+    | "information-requested"
+    | "call-requested"
   qualification: {
     budget: boolean
     authority: boolean

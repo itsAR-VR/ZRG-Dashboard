@@ -57,6 +57,8 @@ import { IntegrationsManager } from "./settings/integrations-manager"
 	  getUserSettings, 
 	  updateUserSettings, 
 	  addKnowledgeAsset,
+	  uploadKnowledgeAssetFile,
+	  addWebsiteKnowledgeAsset,
 	  deleteKnowledgeAsset,
 	  getCalendarLinks,
 	  addCalendarLink,
@@ -126,7 +128,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [knowledgeAssets, setKnowledgeAssets] = useState<KnowledgeAssetData[]>([])
   const [newAssetName, setNewAssetName] = useState("")
   const [newAssetContent, setNewAssetContent] = useState("")
-  const [newAssetType, setNewAssetType] = useState<"text" | "url">("text")
+  const [newAssetType, setNewAssetType] = useState<"text" | "url" | "file">("text")
+  const [newAssetFile, setNewAssetFile] = useState<File | null>(null)
 
   // Company/Outreach context state
   const [companyContext, setCompanyContext] = useState({
@@ -585,8 +588,66 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   // Knowledge asset handlers
   const handleAddAsset = useCallback(async () => {
-    if (!newAssetName.trim() || !newAssetContent.trim()) {
-      toast.error("Please provide both name and content for the asset")
+    if (!newAssetName.trim()) {
+      toast.error("Please provide a name for the asset")
+      return
+    }
+
+    if (newAssetType === "file") {
+      if (!activeWorkspace) {
+        toast.error("No workspace selected")
+        return
+      }
+      if (!newAssetFile) {
+        toast.error("Please select a file to upload")
+        return
+      }
+
+      const formData = new FormData()
+      formData.append("clientId", activeWorkspace)
+      formData.append("name", newAssetName.trim())
+      formData.append("file", newAssetFile)
+
+      const result = await uploadKnowledgeAssetFile(formData)
+      if (result.success && result.asset) {
+        setKnowledgeAssets(prev => [result.asset!, ...prev])
+        setNewAssetName("")
+        setNewAssetContent("")
+        setNewAssetFile(null)
+        toast.success("File uploaded and processed")
+      } else {
+        toast.error(result.error || "Failed to upload file")
+      }
+      return
+    }
+
+    if (!newAssetContent.trim()) {
+      toast.error("Please provide content for the asset")
+      return
+    }
+
+    if (newAssetType === "url") {
+      if (!activeWorkspace) {
+        toast.error("No workspace selected")
+        return
+      }
+
+      const formData = new FormData()
+      formData.append("clientId", activeWorkspace)
+      formData.append("name", newAssetName.trim())
+      formData.append("url", newAssetContent.trim())
+
+      toast.message("Scraping website…", { description: "This can take up to a couple minutes." })
+
+      const result = await addWebsiteKnowledgeAsset(formData)
+      if (result.success && result.asset) {
+        setKnowledgeAssets(prev => [result.asset!, ...prev])
+        setNewAssetName("")
+        setNewAssetContent("")
+        toast.success("Website ingested")
+      } else {
+        toast.error(result.error || "Failed to ingest website")
+      }
       return
     }
 
@@ -613,7 +674,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     } else {
       toast.error(result.error || "Failed to add asset")
     }
-  }, [activeWorkspace, newAssetName, newAssetContent, newAssetType])
+  }, [activeWorkspace, newAssetName, newAssetContent, newAssetFile, newAssetType])
 
   const handleDeleteAsset = useCallback(async (assetId: string) => {
     const result = await deleteKnowledgeAsset(assetId)
@@ -1550,7 +1611,21 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium truncate">{asset.name}</p>
                             <p className="text-xs text-muted-foreground truncate">
-                              {asset.type === "url" ? asset.textContent : `${asset.textContent?.slice(0, 100)}...`}
+                              {asset.type === "url"
+                                ? (() => {
+                                    const source =
+                                      asset.fileUrl ||
+                                      ((asset.textContent || "").trim().startsWith("http") ? asset.textContent : "")
+                                    const summary = asset.fileUrl ? asset.textContent : null
+                                    if (source && summary) {
+                                      const s = summary.trim()
+                                      return `${source} — ${s.slice(0, 80)}${s.length > 80 ? "..." : ""}`
+                                    }
+                                    return source || asset.textContent || ""
+                                  })()
+                                : asset.textContent
+                                  ? `${asset.textContent.slice(0, 100)}${asset.textContent.length > 100 ? "..." : ""}`
+                                  : "No extracted text yet"}
                             </p>
                           </div>
                           <Badge variant="outline" className="text-xs">
@@ -1582,42 +1657,69 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       </div>
                       <div className="space-y-1.5">
                         <Label className="text-xs">Type</Label>
-                        <Select value={newAssetType} onValueChange={(v) => setNewAssetType(v as "text" | "url")}>
+                        <Select
+                          value={newAssetType}
+                          onValueChange={(v) => setNewAssetType(v as "text" | "url" | "file")}
+                        >
                           <SelectTrigger>
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="text">Text Snippet</SelectItem>
-                            <SelectItem value="url">URL / Link</SelectItem>
+                            <SelectItem value="url">Website (Scrape)</SelectItem>
+                            <SelectItem value="file">File Upload</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
                     </div>
                     <div className="space-y-1.5">
                       <Label className="text-xs">
-                        {newAssetType === "url" ? "URL" : "Content"}
+                        {newAssetType === "file" ? "File" : newAssetType === "url" ? "URL" : "Content"}
                       </Label>
-                      <Textarea
-                        placeholder={newAssetType === "url" 
-                          ? "https://example.com/pricing" 
-                          : "Paste content here that the AI can reference..."
-                        }
-                        value={newAssetContent}
-                        onChange={(e) => setNewAssetContent(e.target.value)}
-                        rows={3}
-                      />
+                      {newAssetType === "file" ? (
+                        <div className="space-y-2">
+                          <Input
+                            type="file"
+                            accept=".pdf,.docx,.txt,.md,image/*"
+                            onChange={(e) => {
+                              const f = e.target.files?.[0] || null
+                              setNewAssetFile(f)
+                            }}
+                          />
+                          {newAssetFile ? (
+                            <p className="text-xs text-muted-foreground">
+                              Selected: {newAssetFile.name} ({Math.round(newAssetFile.size / 1024)} KB)
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <Textarea
+                          placeholder={newAssetType === "url"
+                            ? "https://example.com/pricing"
+                            : "Paste content here that the AI can reference..."
+                          }
+                          value={newAssetContent}
+                          onChange={(e) => setNewAssetContent(e.target.value)}
+                          rows={3}
+                        />
+                      )}
                     </div>
                     <Button 
                       variant="outline" 
                       size="sm"
                       onClick={handleAddAsset}
-                      disabled={!newAssetName.trim() || !newAssetContent.trim()}
+                      disabled={
+                        !newAssetName.trim() ||
+                        (newAssetType === "file" ? !newAssetFile : !newAssetContent.trim())
+                      }
                     >
                       <Plus className="h-4 w-4 mr-1.5" />
                       Add Asset
                     </Button>
                     <p className="text-xs text-muted-foreground">
-                      File uploads coming soon. For now, paste text content directly.
+                      {newAssetType === "url"
+                        ? "Website scraping uses Crawl4AI. If not configured, this will error until a Crawl4AI runner is available."
+                        : "Supported: PDF, DOCX, TXT/MD, and images. Uploaded files are processed into concise notes for AI."}
                     </p>
                   </div>
                 </div>

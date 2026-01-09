@@ -7,9 +7,10 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, Moon } from "lucide-react"
+import { Calendar, ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, Moon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { sendMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
+import { getCalendarLinkForLead } from "@/actions/settings-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
 
@@ -283,6 +284,26 @@ export function ActionStation({
     }
     
     setIsSending(false)
+  }
+
+  const handleInsertCalendarLink = async () => {
+    if (!conversation) return
+    try {
+      const result = await getCalendarLinkForLead(conversation.id)
+      if (!result.success || !result.url) {
+        toast.error(result.error || "No calendar link configured")
+        return
+      }
+
+      setComposeMessage((prev) => {
+        const needsGap = prev.trim().length > 0 && !prev.endsWith("\n")
+        const separator = needsGap ? "\n\n" : ""
+        return `${prev}${separator}${result.url}`
+      })
+    } catch (error) {
+      console.error("[ActionStation] Failed to insert calendar link:", error)
+      toast.error("Failed to insert calendar link")
+    }
   }
 
   const handleRejectDraft = async () => {
@@ -716,6 +737,18 @@ export function ActionStation({
           <div className="flex flex-col gap-1.5 self-end">
             {hasAiDraft ? (
               <>
+                {/* Insert calendar link */}
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleInsertCalendarLink}
+                  disabled={isSending || isRegenerating}
+                  className="h-8 w-8"
+                  title="Insert calendar link"
+                >
+                  <Calendar className="h-4 w-4" />
+                </Button>
+
                 {/* Reject button */}
                 <Button 
                   variant="outline"
@@ -763,21 +796,35 @@ export function ActionStation({
               </>
             ) : (
               /* Regular send button when no AI draft */
-              <Button 
-                onClick={handleSendMessage} 
-                disabled={isEmail || !composeMessage.trim() || isSending || isRegenerating}
-                className="h-8 px-3"
-              >
-                {isSending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <>
-                    {isLinkedIn && <Linkedin className="h-4 w-4 mr-2" />}
-                    {!isLinkedIn && <Send className="h-4 w-4 mr-2" />}
-                    Send
-                  </>
-                )}
-              </Button>
+              <>
+                {/* Insert calendar link */}
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleInsertCalendarLink}
+                  disabled={isSending || isRegenerating}
+                  className="h-8 w-8"
+                  title="Insert calendar link"
+                >
+                  <Calendar className="h-4 w-4" />
+                </Button>
+
+                <Button 
+                  onClick={handleSendMessage} 
+                  disabled={isEmail || !composeMessage.trim() || isSending || isRegenerating}
+                  className="h-8 px-3"
+                >
+                  {isSending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <>
+                      {isLinkedIn && <Linkedin className="h-4 w-4 mr-2" />}
+                      {!isLinkedIn && <Send className="h-4 w-4 mr-2" />}
+                      Send
+                    </>
+                  )}
+                </Button>
+              </>
             )}
           </div>
         </div>

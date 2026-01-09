@@ -552,8 +552,13 @@ export async function syncAllConversations(clientId: string, options: SyncOption
               select: { sentimentTag: true, status: true },
             });
 
-            // Only generate draft if not blacklisted
-            if (lead && shouldGenerateDraft(lead.sentimentTag || "Neutral")) {
+            // Only generate draft if eligible (skip blacklisted/unqualified)
+            if (
+              lead &&
+              lead.status !== "blacklisted" &&
+              lead.status !== "unqualified" &&
+              shouldGenerateDraft(lead.sentimentTag || "Neutral")
+            ) {
               const syncResult = result.value as SmartSyncResult;
 
               // BUG FIX: Generate drafts for BOTH channels that were synced

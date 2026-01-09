@@ -90,6 +90,7 @@ function leadRequiresAttention(lead: {
   lastMessageDirection?: string | null;
 }): boolean {
   if (lead.status === "blacklisted") return false;
+  if (lead.status === "unqualified") return false;
   if (lead.sentimentTag === "Blacklist") return false;
   if (!isAttentionSentimentTag(lead.sentimentTag)) return false;
   return lead.lastMessageDirection === "inbound";
@@ -238,8 +239,12 @@ export async function getConversations(clientId?: string | null): Promise<{
         lastMessage: latestMessage?.body || "No messages yet",
         lastSubject: latestMessage?.subject || null,
         lastMessageTime: latestMessage?.sentAt || lead.createdAt, // Use sentAt for actual message time
-        // Hide drafts for blacklisted leads
-        hasAiDraft: lead.status !== "blacklisted" && lead.sentimentTag !== "Blacklist" && channelDrafts.length > 0,
+        // Hide drafts for blacklisted/unqualified leads
+        hasAiDraft:
+          lead.status !== "blacklisted" &&
+          lead.status !== "unqualified" &&
+          lead.sentimentTag !== "Blacklist" &&
+          channelDrafts.length > 0,
         requiresAttention: leadRequiresAttention(lead),
         sentimentTag: lead.sentimentTag,
         campaignId,
@@ -310,7 +315,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
           ...snoozeFilter,
           sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
           lastMessageDirection: "inbound",
-          status: { not: "blacklisted" },
+          status: { notIn: ["blacklisted", "unqualified"] },
         },
       }),
       // Leads that previously required attention (positive + had inbound history + latest message is outbound)
@@ -321,7 +326,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
           sentimentTag: { in: positiveSentimentTags },
           lastInboundAt: { not: null },
           lastMessageDirection: "outbound",
-          status: { not: "blacklisted" },
+          status: { notIn: ["blacklisted", "unqualified"] },
         },
       }),
       // Total leads (excluding blacklisted)
@@ -329,7 +334,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
         where: {
           ...clientFilter,
           ...snoozeFilter,
-          status: { not: "blacklisted" },
+          status: { notIn: ["blacklisted", "unqualified"] },
         },
       }),
       // Count blacklisted separately for debugging
@@ -585,7 +590,11 @@ function transformLeadToConversation(lead: any): ConversationData {
     lastMessage: latestMessage?.body || "No messages yet",
     lastSubject: latestMessage?.subject || null,
     lastMessageTime: latestMessage?.sentAt || lead.createdAt,
-    hasAiDraft: lead.status !== "blacklisted" && lead.sentimentTag !== "Blacklist" && channelDrafts.length > 0,
+    hasAiDraft:
+      lead.status !== "blacklisted" &&
+      lead.status !== "unqualified" &&
+      lead.sentimentTag !== "Blacklist" &&
+      channelDrafts.length > 0,
     requiresAttention: leadRequiresAttention(lead),
     sentimentTag: lead.sentimentTag,
     campaignId,
@@ -690,14 +699,14 @@ export async function getConversationsCursor(
       whereConditions.push({
         sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
         lastMessageDirection: "inbound",
-        status: { not: "blacklisted" },
+        status: { notIn: ["blacklisted", "unqualified"] },
       });
     } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
         sentimentTag: { in: ["Meeting Requested", "Call Requested", "Information Requested", "Interested", "Positive"] },
         lastInboundAt: { not: null },
         lastMessageDirection: "outbound",
-        status: { not: "blacklisted" },
+        status: { notIn: ["blacklisted", "unqualified"] },
       });
     } else if (filter === "needs_repair") {
       whereConditions.push({ status: "needs_repair" });
@@ -869,14 +878,14 @@ export async function getConversationsFromEnd(
       whereConditions.push({
         sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
         lastMessageDirection: "inbound",
-        status: { not: "blacklisted" },
+        status: { notIn: ["blacklisted", "unqualified"] },
       });
     } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
         sentimentTag: { in: ["Meeting Requested", "Call Requested", "Information Requested", "Interested", "Positive"] },
         lastInboundAt: { not: null },
         lastMessageDirection: "outbound",
-        status: { not: "blacklisted" },
+        status: { notIn: ["blacklisted", "unqualified"] },
       });
     } else if (filter === "needs_repair") {
       whereConditions.push({ status: "needs_repair" });
@@ -1029,7 +1038,9 @@ export async function diagnoseSentimentTags(clientId?: string | null): Promise<{
 
     // Count leads that should require attention
     const attentionLeads = leads.filter(
-      (lead) => attentionTags.includes(lead.sentimentTag || "") && lead.status !== "blacklisted"
+      (lead) =>
+        attentionTags.includes(lead.sentimentTag || "") &&
+        !["blacklisted", "unqualified"].includes(lead.status)
     );
 
     // Count blacklisted

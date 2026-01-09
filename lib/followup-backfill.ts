@@ -93,7 +93,7 @@ export async function backfillNoResponseFollowUpsDueOnCron(opts?: {
       const leads = await prisma.lead.findMany({
         where: {
           clientId: ws.clientId,
-          status: { not: "blacklisted" },
+          status: { notIn: ["blacklisted", "unqualified"] },
           sentimentTag: { in: POSITIVE_SENTIMENT_TAGS },
           lastInboundAt: { not: null },
           lastMessageDirection: "outbound",

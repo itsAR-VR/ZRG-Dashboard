@@ -4,7 +4,11 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { applyAirtableModeToDefaultSequences } from "@/actions/followup-sequence-actions";
 import { computeWorkspaceFollowUpsPausedUntil } from "@/lib/workspace-followups-pause";
-import { requireClientAccess, requireClientAdminAccess } from "@/lib/workspace-access";
+import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById } from "@/lib/workspace-access";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { extractKnowledgeNotesFromFile, extractKnowledgeNotesFromText } from "@/lib/knowledge-asset-extraction";
+import { crawl4aiExtractMarkdown } from "@/lib/crawl4ai";
+import { isIP } from "node:net";
 
 export interface UserSettingsData {
   id: string;
@@ -647,6 +651,243 @@ export async function addFileKnowledgeAsset(
   }
 }
 
+function sanitizeStorageFilename(input: string): string {
+  const name = (input || "file").trim();
+  // Prevent path traversal / odd characters in object paths.
+  return name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120) || "file";
+}
+
+function detectDocxMimeType(file: File): boolean {
+  const type = (file.type || "").toLowerCase();
+  if (type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return true;
+  const name = (file.name || "").toLowerCase();
+  return name.endsWith(".docx");
+}
+
+function isPrivateNetworkHostname(hostname: string): boolean {
+  const host = (hostname || "").toLowerCase();
+  if (!host) return true;
+  if (host === "localhost") return true;
+  if (host.endsWith(".local")) return true;
+  if (host === "0.0.0.0") return true;
+
+  const ipKind = isIP(host);
+  if (ipKind === 4) {
+    const [a, b] = host.split(".").map((p) => Number.parseInt(p, 10));
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return true;
+    if (a === 10) return true;
+    if (a === 127) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+  }
+
+  if (ipKind === 6) {
+    if (host === "::1") return true;
+    if (host.startsWith("fc") || host.startsWith("fd")) return true; // unique local
+    if (host.startsWith("fe80")) return true; // link-local
+  }
+
+  return false;
+}
+
+/**
+ * Upload a file to Knowledge Assets and extract high-signal notes for AI.
+ * Uses `gpt-5-mini` (low reasoning) for OCR/extraction.
+ */
+export async function uploadKnowledgeAssetFile(
+  formData: FormData
+): Promise<{ success: boolean; asset?: KnowledgeAssetData; error?: string }> {
+  try {
+    const clientIdRaw = formData.get("clientId");
+    const nameRaw = formData.get("name");
+    const fileRaw = formData.get("file");
+
+    const clientId = typeof clientIdRaw === "string" ? clientIdRaw : "";
+    const name = typeof nameRaw === "string" ? nameRaw.trim() : "";
+    const file = fileRaw instanceof File ? fileRaw : null;
+
+    if (!clientId) return { success: false, error: "No workspace selected" };
+    if (!name) return { success: false, error: "Missing asset name" };
+    if (!file) return { success: false, error: "Missing file" };
+
+    await requireClientAccess(clientId);
+
+    const maxBytes = Math.max(1, Number.parseInt(process.env.KNOWLEDGE_ASSET_MAX_BYTES || "12582912", 10) || 12_582_912); // 12MB
+    if (file.size > maxBytes) {
+      return { success: false, error: `File too large (max ${(maxBytes / (1024 * 1024)).toFixed(0)}MB)` };
+    }
+
+    // Ensure settings exist
+    const settings = await prisma.workspaceSettings.upsert({
+      where: { clientId },
+      update: {},
+      create: { clientId },
+    });
+
+    const bytes = Buffer.from(await file.arrayBuffer());
+    const mimeType = (file.type || "application/octet-stream").toLowerCase();
+
+    // Upload to Supabase Storage (best-effort; extraction can still succeed without it).
+    let fileUrl: string | null = null;
+    let uploadPath: string | null = null;
+    try {
+      const supabase = createSupabaseAdminClient();
+      const bucket = process.env.SUPABASE_KNOWLEDGE_ASSETS_BUCKET || "knowledge-assets";
+      const safeName = sanitizeStorageFilename(file.name);
+      uploadPath = `${clientId}/${crypto.randomUUID()}-${safeName}`;
+
+      const { error: uploadError } = await supabase.storage.from(bucket).upload(uploadPath, bytes, {
+        contentType: mimeType,
+        upsert: false,
+        cacheControl: "3600",
+      });
+      if (uploadError) throw uploadError;
+
+      const { data } = supabase.storage.from(bucket).getPublicUrl(uploadPath);
+      fileUrl = data?.publicUrl ?? null;
+    } catch (storageError) {
+      console.error("[KnowledgeAssets] Storage upload failed (continuing):", storageError);
+    }
+
+    // DOCX: extract locally, then summarize to notes via gpt-5-mini (low).
+    let fallbackText: string | null = null;
+    if (detectDocxMimeType(file)) {
+      try {
+        const mammoth = await import("mammoth");
+        const result = await mammoth.extractRawText({ buffer: bytes });
+        fallbackText = (result?.value || "").trim() || null;
+      } catch (docxError) {
+        console.error("[KnowledgeAssets] DOCX extraction failed (will fallback):", docxError);
+      }
+    }
+
+    const textContent = await extractKnowledgeNotesFromFile({
+      clientId,
+      filename: file.name || "uploaded_file",
+      mimeType,
+      bytes,
+      fallbackText,
+    });
+
+    const created = await prisma.knowledgeAsset.create({
+      data: {
+        workspaceSettingsId: settings.id,
+        name,
+        type: "file",
+        fileUrl,
+        originalFileName: file.name || null,
+        mimeType: mimeType || null,
+        textContent: textContent || null,
+      },
+    });
+
+    revalidatePath("/");
+    return {
+      success: true,
+      asset: {
+        id: created.id,
+        name: created.name,
+        type: created.type as KnowledgeAssetData["type"],
+        fileUrl: created.fileUrl,
+        textContent: created.textContent,
+        originalFileName: created.originalFileName,
+        mimeType: created.mimeType,
+        createdAt: created.createdAt,
+      },
+    };
+  } catch (error) {
+    console.error("Failed to upload knowledge asset file:", error);
+    return { success: false, error: "Failed to upload file asset" };
+  }
+}
+
+/**
+ * Add a website knowledge asset by crawling the URL via crawl4ai and summarizing to AI-ready notes.
+ */
+export async function addWebsiteKnowledgeAsset(
+  formData: FormData
+): Promise<{ success: boolean; asset?: KnowledgeAssetData; error?: string }> {
+  try {
+    const clientIdRaw = formData.get("clientId");
+    const nameRaw = formData.get("name");
+    const urlRaw = formData.get("url");
+
+    const clientId = typeof clientIdRaw === "string" ? clientIdRaw : "";
+    const name = typeof nameRaw === "string" ? nameRaw.trim() : "";
+    const url = typeof urlRaw === "string" ? urlRaw.trim() : "";
+
+    if (!clientId) return { success: false, error: "No workspace selected" };
+    if (!name) return { success: false, error: "Missing asset name" };
+    if (!url) return { success: false, error: "Missing URL" };
+
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { success: false, error: "Invalid URL" };
+    }
+
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return { success: false, error: "Only http(s) URLs are supported" };
+    }
+
+    if (isPrivateNetworkHostname(parsed.hostname)) {
+      return { success: false, error: "URL hostname is not allowed" };
+    }
+
+    await requireClientAccess(clientId);
+
+    const settings = await prisma.workspaceSettings.upsert({
+      where: { clientId },
+      update: {},
+      create: { clientId },
+    });
+
+    const created = await prisma.knowledgeAsset.create({
+      data: {
+        workspaceSettingsId: settings.id,
+        name,
+        type: "url",
+        fileUrl: url,
+        textContent: null,
+      },
+    });
+
+    const crawl = await crawl4aiExtractMarkdown(url);
+    const markdown =
+      crawl.markdown.length > 180_000 ? `${crawl.markdown.slice(0, 180_000)}\n\n[TRUNCATED]` : crawl.markdown;
+
+    const notes = await extractKnowledgeNotesFromText({
+      clientId,
+      sourceLabel: url,
+      text: markdown,
+    });
+
+    const updated = await prisma.knowledgeAsset.update({
+      where: { id: created.id },
+      data: { textContent: notes || null },
+    });
+
+    revalidatePath("/");
+    return {
+      success: true,
+      asset: {
+        id: updated.id,
+        name: updated.name,
+        type: updated.type as KnowledgeAssetData["type"],
+        fileUrl: updated.fileUrl,
+        textContent: updated.textContent,
+        originalFileName: updated.originalFileName,
+        mimeType: updated.mimeType,
+        createdAt: updated.createdAt,
+      },
+    };
+  } catch (error) {
+    console.error("Failed to add website knowledge asset:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to add website asset" };
+  }
+}
+
 /**
  * Update extracted text content for a knowledge asset
  */
@@ -795,6 +1036,45 @@ export async function getCalendarLinks(
   } catch (error) {
     console.error("Failed to get calendar links:", error);
     return { success: false, error: "Failed to fetch calendar links" };
+  }
+}
+
+/**
+ * Resolve the calendar link URL to use for a lead (lead override or workspace default).
+ */
+export async function getCalendarLinkForLead(
+  leadId: string
+): Promise<{ success: boolean; url?: string | null; name?: string | null; error?: string }> {
+  try {
+    if (!leadId) return { success: false, error: "Missing leadId" };
+    await requireLeadAccessById(leadId);
+
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: {
+        id: true,
+        preferredCalendarLink: { select: { name: true, url: true } },
+        client: {
+          select: {
+            calendarLinks: {
+              where: { isDefault: true },
+              take: 1,
+              select: { name: true, url: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!lead) return { success: false, error: "Lead not found" };
+
+    const link = lead.preferredCalendarLink || lead.client.calendarLinks[0] || null;
+    if (!link?.url) return { success: false, error: "No calendar link configured" };
+
+    return { success: true, url: link.url, name: link.name || null };
+  } catch (error) {
+    console.error("Failed to resolve calendar link for lead:", error);
+    return { success: false, error: "Failed to resolve calendar link" };
   }
 }
 

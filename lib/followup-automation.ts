@@ -54,6 +54,8 @@ export async function autoStartMeetingRequestedSequenceIfEligible(opts: {
     select: {
       id: true,
       clientId: true,
+      status: true,
+      sentimentTag: true,
       autoFollowUpEnabled: true,
       autoBookMeetingsEnabled: true,
       ghlAppointmentId: true,
@@ -64,6 +66,9 @@ export async function autoStartMeetingRequestedSequenceIfEligible(opts: {
   if (!lead) return { started: false, reason: "lead_not_found" };
   if (isWorkspaceFollowUpsPaused({ followUpsPausedUntil: lead.client.settings?.followUpsPausedUntil })) {
     return { started: false, reason: "workspace_paused" };
+  }
+  if (lead.status === "blacklisted" || lead.status === "unqualified" || lead.sentimentTag === "Blacklist") {
+    return { started: false, reason: lead.status === "unqualified" ? "unqualified" : "blacklisted" };
   }
   if (lead.ghlAppointmentId) return { started: false, reason: "already_booked" };
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
@@ -89,6 +94,8 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
     select: {
       id: true,
       clientId: true,
+      status: true,
+      sentimentTag: true,
       autoFollowUpEnabled: true,
       ghlAppointmentId: true,
       client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
@@ -98,6 +105,9 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
   if (!lead) return { started: false, reason: "lead_not_found" };
   if (isWorkspaceFollowUpsPaused({ followUpsPausedUntil: lead.client.settings?.followUpsPausedUntil })) {
     return { started: false, reason: "workspace_paused" };
+  }
+  if (lead.status === "blacklisted" || lead.status === "unqualified" || lead.sentimentTag === "Blacklist") {
+    return { started: false, reason: lead.status === "unqualified" ? "unqualified" : "blacklisted" };
   }
   if (!lead.ghlAppointmentId) return { started: false, reason: "no_appointment" };
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
@@ -140,7 +150,9 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
     return { started: false, reason: "workspace_paused" };
   }
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
-  if (lead.status === "blacklisted" || lead.sentimentTag === "Blacklist") return { started: false, reason: "blacklisted" };
+  if (lead.status === "blacklisted" || lead.status === "unqualified" || lead.sentimentTag === "Blacklist") {
+    return { started: false, reason: lead.status === "unqualified" ? "unqualified" : "blacklisted" };
+  }
   if (lead.ghlAppointmentId) return { started: false, reason: "already_booked" };
 
   const activeInstances = lead.followUpInstances.filter((i) => i.status === "active");

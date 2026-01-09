@@ -618,10 +618,20 @@ export async function processReactivationSendsDue(opts?: {
   for (const enrollment of enrollments) {
     results.processed++;
     try {
-      if (enrollment.lead.status === "blacklisted" || enrollment.lead.sentimentTag === "Blacklist") {
+      if (
+        enrollment.lead.status === "blacklisted" ||
+        enrollment.lead.status === "unqualified" ||
+        enrollment.lead.sentimentTag === "Blacklist"
+      ) {
         await prisma.reactivationEnrollment.update({
           where: { id: enrollment.id },
-          data: { status: "needs_review", needsReviewReason: "Lead is blacklisted/opted out" },
+          data: {
+            status: "needs_review",
+            needsReviewReason:
+              enrollment.lead.status === "unqualified"
+                ? "Lead is unqualified"
+                : "Lead is blacklisted/opted out",
+          },
         });
         results.needsReview++;
         continue;

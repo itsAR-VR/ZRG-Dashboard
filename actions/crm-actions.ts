@@ -277,7 +277,7 @@ export async function enableAutoFollowUpsForAttentionLeads(
 
     const whereEligible = {
       clientId,
-      status: { not: "blacklisted" },
+      status: { notIn: ["blacklisted", "unqualified"] },
       sentimentTag: { in: eligibleSentiments },
     };
 
@@ -351,7 +351,7 @@ export async function backfillNoResponseFollowUpsForAwaitingReplyLeads(
     const candidateLeads = await prisma.lead.findMany({
       where: {
         clientId,
-        status: { not: "blacklisted" },
+        status: { notIn: ["blacklisted", "unqualified"] },
         sentimentTag: { in: positiveSentiments },
         OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }],
       },

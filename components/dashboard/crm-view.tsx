@@ -50,11 +50,12 @@ import { subscribeToLeads, unsubscribe } from "@/lib/supabase"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
-type LeadStatus = "new" | "qualified" | "meeting-booked" | "not-interested" | "blacklisted"
+type LeadStatus = "new" | "qualified" | "unqualified" | "meeting-booked" | "not-interested" | "blacklisted"
 
 const statusColors: Record<LeadStatus, string> = {
   new: "bg-blue-500/10 text-blue-500 border-blue-500/20",
   qualified: "bg-green-500/10 text-green-500 border-green-500/20",
+  unqualified: "bg-slate-500/10 text-slate-500 border-slate-500/20",
   "meeting-booked": "bg-primary/10 text-primary border-primary/20",
   "not-interested": "bg-muted text-muted-foreground border-muted",
   blacklisted: "bg-destructive/10 text-destructive border-destructive/20",
@@ -63,6 +64,7 @@ const statusColors: Record<LeadStatus, string> = {
 const statusLabels: Record<LeadStatus, string> = {
   new: "New",
   qualified: "Qualified",
+  unqualified: "Unqualified",
   "meeting-booked": "Meeting Booked",
   "not-interested": "Not Interested",
   blacklisted: "Blacklisted",
@@ -289,6 +291,7 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
               <SelectContent>
                 <SelectItem value="new">New</SelectItem>
                 <SelectItem value="qualified">Qualified</SelectItem>
+                <SelectItem value="unqualified">Unqualified</SelectItem>
                 <SelectItem value="meeting-booked">Meeting Booked</SelectItem>
                 <SelectItem value="not-interested">Not Interested</SelectItem>
                 <SelectItem value="blacklisted">Blacklisted</SelectItem>
@@ -631,6 +634,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
               <SelectItem value="all">All Statuses</SelectItem>
               <SelectItem value="new">New</SelectItem>
               <SelectItem value="qualified">Qualified</SelectItem>
+              <SelectItem value="unqualified">Unqualified</SelectItem>
               <SelectItem value="meeting-booked">Meeting Booked</SelectItem>
               <SelectItem value="not-interested">Not Interested</SelectItem>
               <SelectItem value="blacklisted">Blacklisted</SelectItem>
@@ -792,6 +796,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                         <SelectContent>
                           <SelectItem value="new">New</SelectItem>
                           <SelectItem value="qualified">Qualified</SelectItem>
+                          <SelectItem value="unqualified">Unqualified</SelectItem>
                           <SelectItem value="meeting-booked">Meeting Booked</SelectItem>
                           <SelectItem value="not-interested">Not Interested</SelectItem>
                           <SelectItem value="blacklisted">Blacklisted</SelectItem>

@@ -81,6 +81,7 @@ interface CrmDrawerProps {
 const statusOptions = [
   { value: "new", label: "New Lead" },
   { value: "qualified", label: "Qualified" },
+  { value: "unqualified", label: "Unqualified" },
   { value: "meeting-booked", label: "Meeting Booked" },
   { value: "meeting-requested", label: "Meeting Requested" },
   { value: "information-requested", label: "Information Requested" },
@@ -385,6 +386,8 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
         return "bg-blue-500/10 text-blue-500 border-blue-500/30"
       case "qualified":
         return "bg-blue-500/10 text-blue-500 border-blue-500/30"
+      case "unqualified":
+        return "bg-slate-500/10 text-slate-500 border-slate-500/30"
       case "information-requested":
         return "bg-amber-500/10 text-amber-500 border-amber-500/30"
       case "call-requested":

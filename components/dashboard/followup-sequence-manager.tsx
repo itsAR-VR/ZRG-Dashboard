@@ -309,6 +309,12 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
     setFormData({ ...formData, steps: newSteps });
   };
 
+  const appendToStepMessageTemplate = (index: number, snippet: string) => {
+    const current = formData.steps[index]?.messageTemplate || "";
+    const needsSpacer = current.length > 0 && !current.endsWith(" ") && !current.endsWith("\n");
+    handleUpdateStep(index, { messageTemplate: `${current}${needsSpacer ? " " : ""}${snippet}` });
+  };
+
   if (!clientId) {
     return (
       <Card>
@@ -707,6 +713,20 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
 
                       <div className="space-y-1.5">
                         <Label className="text-xs">Message Template</Label>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => appendToStepMessageTemplate(index, "{calendarLink}")}
+                            disabled={isUnsupported}
+                            className="h-7 px-2 text-xs"
+                            title="Insert {calendarLink}"
+                          >
+                            <Calendar className="h-3.5 w-3.5 mr-1.5" />
+                            Calendar Link
+                          </Button>
+                        </div>
                         <Textarea
                           placeholder={`Hi {firstName},\n\nYour message here...`}
                           value={step.messageTemplate || ""}
@@ -717,7 +737,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                           disabled={isUnsupported}
                         />
                         <p className="text-xs text-muted-foreground">
-                          Variables: {"{firstName}"}, {"{lastName}"}, {"{email}"}, {"{availability}"}
+                          Variables: {"{firstName}"}, {"{lastName}"}, {"{email}"}, {"{availability}"}, {"{calendarLink}"}
                         </p>
                       </div>
 
