@@ -282,13 +282,15 @@ export async function getLeadChannels(leadId: string): Promise<("sms" | "email" 
  */
 export function getAvailableChannels(lead: {
   phone?: string | null;
+  ghlContactId?: string | null;
   email?: string | null;
   linkedinUrl?: string | null;
   linkedinId?: string | null;
 }): ("sms" | "email" | "linkedin")[] {
   const channels: ("sms" | "email" | "linkedin")[] = [];
 
-  if (lead.phone) {
+  // SMS is available if we have a phone OR a linked GHL contact (we can reply via contactId).
+  if (lead.phone || lead.ghlContactId) {
     channels.push("sms");
   }
   if (lead.email) {

@@ -482,19 +482,19 @@ export function ActionStation({
                 const Icon = CHANNEL_ICONS[ch]
                 const count = messageCounts[ch]
                 const hasMessages = count > 0
-                const isActive = channels.includes(ch)
                 
                 // LinkedIn is now enabled if lead has linkedinUrl
-                const linkedInEnabled = ch === "linkedin" ? (hasLinkedIn || hasMessages) : true
+                const isLinkedInChannel = ch === "linkedin"
+                const linkedInEnabled = isLinkedInChannel ? (hasLinkedIn || hasMessages) : true
                 
                 return (
                   <TabsTrigger 
                     key={ch} 
                     value={ch}
-                    disabled={!isActive && ch !== activeChannel && !linkedInEnabled}
+                    disabled={isLinkedInChannel ? (!linkedInEnabled && ch !== activeChannel) : false}
                     className={cn(
                       "text-xs gap-1.5 px-3",
-                      !isActive && !linkedInEnabled && "opacity-50"
+                      isLinkedInChannel && !linkedInEnabled && "opacity-50"
                     )}
                   >
                     <Icon className="h-3.5 w-3.5" />

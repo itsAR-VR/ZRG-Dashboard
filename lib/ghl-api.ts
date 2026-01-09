@@ -4,11 +4,15 @@
  * Handles all API calls to GHL's v2 API for conversations and workflows.
  */
 
-import "@/lib/server-dns";
+import "./server-dns";
 
 const GHL_API_BASE = "https://services.leadconnectorhq.com";
 const GHL_API_VERSION = "2021-04-15";
 const GHL_CONTACTS_API_VERSION = "2021-07-28";
+
+const GHL_RATE_WINDOW_MS = 10_000;
+const DEFAULT_GHL_REQUESTS_PER_10S = 90; // buffer under the documented 100/10s burst limit
+const DEFAULT_GHL_MAX_429_RETRIES = 3;
 
 interface GHLApiResponse<T> {
   success: boolean;
@@ -19,12 +23,27 @@ interface GHLApiResponse<T> {
   errorMessage?: string;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function tryParseJson<T>(value: string): T | null {
   try {
     return JSON.parse(value) as T;
   } catch {
     return null;
   }
+}
+
+function redactPotentialPii(value: string): string {
+  // Best-effort redaction to avoid leaking emails/phones in logs or user-facing errors.
+  return (
+    value
+      // emails
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+      // phone-ish sequences (very loose)
+      .replace(/\+?\d[\d\s().-]{7,}\d/g, "[redacted-phone]")
+  );
 }
 
 function isSmsDndErrorMessage(message: string): boolean {
@@ -41,6 +60,50 @@ function parseGhlErrorPayload(errorText: string): { message?: string; errorCode?
   const candidate = message || errorText;
   const errorCode = isSmsDndErrorMessage(candidate) ? "sms_dnd" : undefined;
   return { message, errorCode };
+}
+
+function parseRetryAfterMs(value: string | null): number | null {
+  if (!value) return null;
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+
+  const dateMs = Date.parse(value);
+  if (!Number.isNaN(dateMs)) {
+    const delta = dateMs - Date.now();
+    return delta > 0 ? delta : 0;
+  }
+
+  return null;
+}
+
+type GhlRateLimiterState = {
+  nextAllowedAtMs: number;
+  queue: Promise<void>;
+};
+
+const ghlRateLimiters = new Map<string, GhlRateLimiterState>();
+
+async function throttleGhlRequest(key: string): Promise<void> {
+  const configured = Number(process.env.GHL_REQUESTS_PER_10S || "");
+  const requestsPerWindow =
+    Number.isFinite(configured) && configured > 0 ? Math.min(100, Math.floor(configured)) : DEFAULT_GHL_REQUESTS_PER_10S;
+
+  const minIntervalMs = Math.max(1, Math.ceil(GHL_RATE_WINDOW_MS / requestsPerWindow));
+
+  const now = Date.now();
+  const state = ghlRateLimiters.get(key) || { nextAllowedAtMs: now, queue: Promise.resolve() };
+
+  state.queue = state.queue
+    .catch(() => undefined)
+    .then(async () => {
+      const waitMs = Math.max(0, state.nextAllowedAtMs - Date.now());
+      if (waitMs > 0) await sleep(waitMs);
+      state.nextAllowedAtMs = Math.max(state.nextAllowedAtMs, Date.now()) + minIntervalMs;
+    });
+
+  ghlRateLimiters.set(key, state);
+  return state.queue;
 }
 
 interface GHLConversation {
@@ -84,38 +147,71 @@ interface GHLSendMessageResponse {
 async function ghlRequest<T>(
   endpoint: string,
   privateKey: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  rateLimitKey?: string
 ): Promise<GHLApiResponse<T>> {
   try {
     const url = `${GHL_API_BASE}${endpoint}`;
 
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${privateKey}`,
-        Version: GHL_API_VERSION,
-        "Content-Type": "application/json",
-        ...options.headers,
-      },
-    });
+    const requestKey = rateLimitKey || privateKey;
+    const configuredMaxRetries = Number(process.env.GHL_MAX_429_RETRIES || "");
+    const max429Retries =
+      Number.isFinite(configuredMaxRetries) && configuredMaxRetries >= 0
+        ? Math.floor(configuredMaxRetries)
+        : DEFAULT_GHL_MAX_429_RETRIES;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      const parsed = parseGhlErrorPayload(errorText);
-      console.error(`GHL API error (${response.status}):`, errorText);
-      return {
-        success: false,
-        error: `GHL API error: ${response.status} - ${errorText}`,
-        statusCode: response.status,
-        errorCode: parsed.errorCode,
-        errorMessage: parsed.message,
-      };
+    for (let attempt = 0; attempt <= max429Retries; attempt++) {
+      await throttleGhlRequest(requestKey);
+
+      const response = await fetch(url, {
+        ...options,
+        headers: {
+          Authorization: `Bearer ${privateKey}`,
+          Version: GHL_API_VERSION,
+          "Content-Type": "application/json",
+          ...options.headers,
+        },
+      });
+
+      if (response.status === 429 && attempt < max429Retries) {
+        const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After")) ?? 10_000;
+        const jitterMs = Math.floor(Math.random() * 250);
+        console.warn(`[GHL] Rate limited (429). Retrying after ${retryAfterMs + jitterMs}ms.`);
+        await sleep(retryAfterMs + jitterMs);
+        continue;
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        const parsed = parseGhlErrorPayload(errorText);
+        const safeMessage = redactPotentialPii(parsed.message || "").trim();
+
+        console.error(`[GHL] API error ${response.status} ${options.method || "GET"} ${endpoint}${safeMessage ? `: ${safeMessage}` : ""}`);
+
+        return {
+          success: false,
+          error: `GHL API error: ${response.status}${safeMessage ? ` - ${safeMessage}` : ""}`,
+          statusCode: response.status,
+          errorCode: parsed.errorCode,
+          errorMessage: safeMessage || undefined,
+        };
+      }
+
+      // Some endpoints can return empty bodies; handle that gracefully.
+      const text = await response.text();
+      if (!text) return { success: true, data: undefined as unknown as T };
+
+      const parsedJson = tryParseJson<T>(text);
+      if (!parsedJson) {
+        return { success: false, error: "GHL API returned non-JSON response" };
+      }
+
+      return { success: true, data: parsedJson };
     }
 
-    const data = await response.json();
-    return { success: true, data };
+    return { success: false, error: "GHL API rate limited (max retries exceeded)" };
   } catch (error) {
-    console.error("GHL API request failed:", error);
+    console.error("GHL API request failed:", error instanceof Error ? error.message : error);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
@@ -133,7 +229,8 @@ async function ghlRequest<T>(
 export async function sendSMS(
   contactId: string,
   message: string,
-  privateKey: string
+  privateKey: string,
+  opts?: { locationId?: string }
 ): Promise<GHLApiResponse<GHLSendMessageResponse>> {
   return ghlRequest<GHLSendMessageResponse>(
     "/conversations/messages",
@@ -145,7 +242,8 @@ export async function sendSMS(
         contactId,
         message,
       }),
-    }
+    },
+    opts?.locationId
   );
 }
 
@@ -193,7 +291,9 @@ export async function getWorkflows(
 ): Promise<GHLApiResponse<{ workflows: GHLWorkflow[] }>> {
   return ghlRequest<{ workflows: GHLWorkflow[] }>(
     `/workflows/?locationId=${locationId}`,
-    privateKey
+    privateKey,
+    {},
+    locationId
   );
 }
 
@@ -265,7 +365,9 @@ export async function exportMessages(
 
   return ghlRequest<GHLExportResponse>(
     `/conversations/messages/export?${params.toString()}`,
-    privateKey
+    privateKey,
+    {},
+    locationId
   );
 }
 
@@ -431,7 +533,9 @@ export async function getGHLCalendars(
 ): Promise<GHLApiResponse<{ calendars: GHLCalendar[] }>> {
   return ghlRequest<{ calendars: GHLCalendar[] }>(
     `/calendars/?locationId=${encodeURIComponent(locationId)}`,
-    privateKey
+    privateKey,
+    {},
+    locationId
   );
 }
 
@@ -447,7 +551,9 @@ export async function getGHLUsers(
 ): Promise<GHLApiResponse<{ users: GHLUser[] }>> {
   return ghlRequest<{ users: GHLUser[] }>(
     `/users/?locationId=${encodeURIComponent(locationId)}`,
-    privateKey
+    privateKey,
+    {},
+    locationId
   );
 }
 
@@ -468,7 +574,8 @@ export async function createGHLContact(
       method: "POST",
       body: JSON.stringify(params),
       headers: { Version: GHL_CONTACTS_API_VERSION },
-    }
+    },
+    params.locationId
   );
 }
 
@@ -480,12 +587,14 @@ export async function createGHLContact(
  */
 export async function getGHLContact(
   contactId: string,
-  privateKey: string
+  privateKey: string,
+  opts?: { locationId?: string }
 ): Promise<GHLApiResponse<{ contact: GHLContact }>> {
   return ghlRequest<{ contact: GHLContact }>(
     `/contacts/${encodeURIComponent(contactId)}`,
     privateKey,
-    { headers: { Version: GHL_CONTACTS_API_VERSION } }
+    { headers: { Version: GHL_CONTACTS_API_VERSION } },
+    opts?.locationId
   );
 }
 
@@ -499,7 +608,8 @@ export type UpdateContactParams = Omit<UpsertContactParams, "locationId">;
 export async function updateGHLContact(
   contactId: string,
   params: UpdateContactParams,
-  privateKey: string
+  privateKey: string,
+  opts?: { locationId?: string }
 ): Promise<GHLApiResponse<{ contact?: GHLContact }>> {
   return ghlRequest<{ contact?: GHLContact }>(
     `/contacts/${encodeURIComponent(contactId)}`,
@@ -508,7 +618,8 @@ export async function updateGHLContact(
       method: "PUT",
       body: JSON.stringify(params),
       headers: { Version: GHL_CONTACTS_API_VERSION },
-    }
+    },
+    opts?.locationId
   );
 }
 
@@ -525,7 +636,7 @@ export async function searchGHLContactsAdvanced(
     method: "POST",
     body: JSON.stringify(params),
     headers: { Version: GHL_CONTACTS_API_VERSION },
-  });
+  }, params.locationId);
 }
 
 /**
@@ -542,7 +653,7 @@ export async function upsertGHLContact(
     method: "POST",
     body: JSON.stringify(params),
     headers: { Version: GHL_CONTACTS_API_VERSION },
-  });
+  }, params.locationId);
 }
 
 /**
@@ -566,7 +677,8 @@ export async function createGHLAppointment(
     {
       method: "POST",
       body: JSON.stringify(body),
-    }
+    },
+    params.locationId
   );
 }
 

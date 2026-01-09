@@ -11,6 +11,13 @@ export interface EnsureGhlContactIdResult {
   error?: string;
 }
 
+export interface ResolveGhlContactIdResult {
+  success: boolean;
+  ghlContactId?: string;
+  linkedExisting?: boolean;
+  error?: string;
+}
+
 function pickFirstContact(payload: unknown): (GHLContact & Record<string, unknown>) | null {
   const data = payload as any;
   const contacts: unknown[] =
@@ -21,6 +28,98 @@ function pickFirstContact(payload: unknown): (GHLContact & Record<string, unknow
   const first = contacts[0] as any;
   if (!first || typeof first.id !== "string") return null;
   return first as GHLContact & Record<string, unknown>;
+}
+
+/**
+ * Resolve a lead's `ghlContactId` by searching for an existing GHL contact (no create/upsert).
+ *
+ * Policy: sync/backfill should only search/link/hydrate and must not create contacts implicitly.
+ * Creation/upsert is reserved for explicit workflows (e.g. EmailBison Interested, booking, sending SMS).
+ */
+export async function resolveGhlContactIdForLead(leadId: string): Promise<ResolveGhlContactIdResult> {
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      companyName: true,
+      enrichmentStatus: true,
+      ghlContactId: true,
+      client: {
+        select: {
+          ghlLocationId: true,
+          ghlPrivateKey: true,
+        },
+      },
+    },
+  });
+
+  if (!lead) return { success: false, error: "Lead not found" };
+  if (lead.ghlContactId) return { success: true, ghlContactId: lead.ghlContactId, linkedExisting: true };
+
+  const locationId = lead.client.ghlLocationId;
+  const privateKey = lead.client.ghlPrivateKey;
+  if (!locationId || !privateKey) {
+    return { success: false, error: "Workspace is missing GHL configuration" };
+  }
+
+  const emailNormalized = normalizeEmail(lead.email);
+  if (!emailNormalized) {
+    return { success: true, error: "No email available to resolve GHL contact" };
+  }
+
+  try {
+    const search = await searchGHLContactsAdvanced(
+      {
+        locationId,
+        page: 1,
+        pageLimit: 1,
+        filters: [{ field: "email", operator: "eq", value: emailNormalized }],
+      },
+      privateKey
+    );
+
+    if (!search.success || !search.data) {
+      return { success: false, error: search.error || "Failed to search contacts in GHL" };
+    }
+
+    const first = pickFirstContact(search.data);
+    if (!first?.id) {
+      return { success: true }; // Not found
+    }
+
+    const updateData: Record<string, unknown> = { ghlContactId: first.id };
+
+    // Best-effort hydration from the contact record.
+    if (!lead.phone && first.phone) {
+      updateData.phone = toStoredPhone(first.phone) || first.phone;
+    }
+    if (!lead.firstName && first.firstName) {
+      updateData.firstName = first.firstName;
+    }
+    if (!lead.lastName && first.lastName) {
+      updateData.lastName = first.lastName;
+    }
+    if (!lead.companyName && (first as any).companyName) {
+      updateData.companyName = (first as any).companyName;
+    }
+
+    if (updateData.phone && lead.enrichmentStatus !== "not_needed") {
+      updateData.enrichmentStatus = "enriched";
+      updateData.enrichmentSource = "ghl";
+      updateData.enrichedAt = new Date();
+    }
+
+    await prisma.lead.update({ where: { id: leadId }, data: updateData });
+
+    return { success: true, ghlContactId: first.id, linkedExisting: true };
+  } catch (error) {
+    console.warn("[resolveGhlContactIdForLead] search failed:", error instanceof Error ? error.message : error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to search contacts in GHL" };
+  }
 }
 
 /**
@@ -42,6 +141,7 @@ export async function ensureGhlContactIdForLead(
       companyName: true,
       companyWebsite: true,
       timezone: true,
+      enrichmentStatus: true,
       ghlContactId: true,
       client: {
         select: {
@@ -87,16 +187,39 @@ export async function ensureGhlContactIdForLead(
       if (search.success && search.data) {
         const first = pickFirstContact(search.data);
         if (first?.id) {
-          await prisma.lead.update({ where: { id: leadId }, data: { ghlContactId: first.id } });
+          const updateData: Record<string, unknown> = { ghlContactId: first.id };
+
+          // Best-effort hydration from the contact record (fixes cases where webhook payloads omitted fields).
+          if (!lead.phone && first.phone) {
+            updateData.phone = toStoredPhone(first.phone) || first.phone;
+          }
+          if (!lead.firstName && first.firstName) {
+            updateData.firstName = first.firstName;
+          }
+          if (!lead.lastName && first.lastName) {
+            updateData.lastName = first.lastName;
+          }
+          if (!lead.companyName && (first as any).companyName) {
+            updateData.companyName = (first as any).companyName;
+          }
+
+          // If we found a phone, mark enrichment as complete for this lead.
+          if (updateData.phone && lead.enrichmentStatus !== "not_needed") {
+            updateData.enrichmentStatus = "enriched";
+            updateData.enrichmentSource = "ghl";
+            updateData.enrichedAt = new Date();
+          }
+
+          await prisma.lead.update({ where: { id: leadId }, data: updateData });
 
           // If we have fresher standard fields, upsert them onto this contact (best-effort, no tags).
           const existingPhone = normalizePhoneDigits(first.phone as any);
           const ourPhone = phoneNormalized;
           const shouldSendPhone = !!ourPhone && (!existingPhone || existingPhone !== ourPhone);
 
-          await upsertGHLContact(
+          await updateGHLContact(
+            first.id,
             {
-              locationId,
               firstName: lead.firstName || undefined,
               lastName: lead.lastName || undefined,
               email: emailNormalized || undefined,
@@ -106,8 +229,14 @@ export async function ensureGhlContactIdForLead(
               timezone: lead.timezone || undefined,
               source: "zrg-dashboard",
             },
-            privateKey
-          ).catch((err) => console.warn("[ensureGhlContactIdForLead] upsert after search failed:", err));
+            privateKey,
+            { locationId }
+          ).catch((err) =>
+            console.warn(
+              "[ensureGhlContactIdForLead] update after search failed:",
+              err instanceof Error ? err.message : err
+            )
+          );
 
           // Ensure our stored phone is canonical (best-effort)
           if (lead.phone) {
@@ -192,6 +321,7 @@ export async function syncGhlContactPhoneForLead(
         client: {
           select: {
             ghlPrivateKey: true,
+            ghlLocationId: true,
           },
         },
       },
@@ -228,7 +358,8 @@ export async function syncGhlContactPhoneForLead(
         timezone: lead.timezone || undefined,
         source: "zrg-dashboard",
       },
-      lead.client.ghlPrivateKey
+      lead.client.ghlPrivateKey,
+      { locationId: lead.client.ghlLocationId || undefined }
     );
 
     if (!update.success) {

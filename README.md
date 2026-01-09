@@ -102,6 +102,12 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - **Auth:** Private Integration API Key per workspace
 - **Note:** Outbound SMS sent by GHL automations is not ingested yet, so any “Outbound leads contacted” KPI derived purely from our DB will be incomplete until outbound SMS webhooks or export syncing is added.
 
+#### Always-on Contact Hydration (SMS Sync)
+- Sync (single lead + Sync All) will **search/link** missing `Lead.ghlContactId` via GHL contact search by email (no contact creation), then hydrate missing lead fields from the GHL contact (notably `phone`).
+- One-time repair for existing data (all clients/leads, including non-responders):
+  - Dry run: `npx tsx scripts/backfill-ghl-lead-hydration.ts --dry-run`
+  - Apply + resumable: `npx tsx scripts/backfill-ghl-lead-hydration.ts --apply --resume`
+
 #### SMS Sub-clients (Attribution)
 - Inbound SMS webhooks can include a sub-client/campaign label in `customData.Client` (stored per workspace as `SmsCampaign` and linked via `Lead.smsCampaignId`).
 - Optional backfill for legacy leads (tags-based): `npx tsx scripts/backfill-sms-campaign.ts --dry-run`
@@ -233,6 +239,10 @@ model Message {
 | `UNIPILE_DSN` | Unipile base DSN (e.g. `https://apiXX.unipile.com:PORT`) |
 | `UNIPILE_API_KEY` | Unipile API key |
 | `EMAIL_GUARD_API_KEY` | (Optional) EmailGuard API key for email validation before sending |
+| `GHL_DEFAULT_COUNTRY_CALLING_CODE` | (Optional) Default calling code for phone normalization (commonly `1`) |
+| `GHL_REQUESTS_PER_10S` | (Optional) Throttle cap for GHL API requests per 10s window (default `90`, documented burst is `100`) |
+| `GHL_MAX_429_RETRIES` | (Optional) Max retries when GHL returns `429` with `Retry-After` (default `3`) |
+| `SYNC_ALL_CONCURRENCY` | (Optional) Concurrency for “Sync All” batches (default `15`) |
 
 ### Prisma Schema Changes
 

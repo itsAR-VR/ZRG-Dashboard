@@ -389,16 +389,26 @@ export function InboxView({
       if (result.success) {
         const imported = result.importedCount || 0;
         const healed = result.healedCount || 0;
+        const leadUpdated = !!result.leadUpdated;
         const hasChanges = imported > 0 || healed > 0;
+        const hasAnyChanges = hasChanges || leadUpdated;
 
-        if (hasChanges) {
-          const parts = [];
-          if (imported > 0) parts.push(`${imported} new`);
-          if (healed > 0) parts.push(`${healed} fixed`);
-          
-          toast.success(`Synced: ${parts.join(", ")}`, {
-            description: `Total messages: ${result.totalMessages}`
-          });
+        if (hasAnyChanges) {
+          if (hasChanges) {
+            const parts = [];
+            if (imported > 0) parts.push(`${imported} new`);
+            if (healed > 0) parts.push(`${healed} fixed`);
+            if (leadUpdated) parts.push(`contact updated`);
+
+            toast.success(`Synced: ${parts.join(", ")}`, {
+              description: `Total messages: ${result.totalMessages}`,
+            });
+          } else if (leadUpdated) {
+            toast.success("Contact updated", {
+              description: "Pulled missing fields from GoHighLevel",
+            });
+          }
+
           // Refresh the active conversation if it's the one we synced
           if (leadId === activeConversationId) {
             fetchActiveConversation();
@@ -443,13 +453,14 @@ export function InboxView({
       const result = await syncAllConversations(activeWorkspace, { forceReclassify });
       
       if (result.success) {
-        const { totalLeads, totalImported, totalHealed, totalDraftsGenerated, totalReclassified, errors } = result;
+        const { totalLeads, totalImported, totalHealed, totalDraftsGenerated, totalReclassified, totalLeadUpdated, errors } = result;
         
-        if (totalImported > 0 || totalHealed > 0 || totalDraftsGenerated > 0 || totalReclassified > 0) {
+        if (totalImported > 0 || totalHealed > 0 || totalDraftsGenerated > 0 || totalReclassified > 0 || totalLeadUpdated > 0) {
           const parts = [];
           if (totalImported > 0) parts.push(`${totalImported} new messages`);
           if (totalHealed > 0) parts.push(`${totalHealed} fixed`);
           if (totalReclassified > 0) parts.push(`${totalReclassified} sentiments re-analyzed`);
+          if (totalLeadUpdated > 0) parts.push(`${totalLeadUpdated} contacts updated`);
           if (totalDraftsGenerated > 0) parts.push(`${totalDraftsGenerated} AI drafts`);
           if (errors > 0) parts.push(`${errors} errors`);
           

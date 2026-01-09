@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { exportMessages } from "@/lib/ghl-api";
+import { exportMessages, getGHLContact } from "@/lib/ghl-api";
 import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbison-api";
 import { recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
 import {
@@ -13,6 +13,8 @@ import {
   type SentimentTag,
 } from "@/lib/sentiment";
 import { shouldGenerateDraft } from "@/lib/ai-drafts";
+import { normalizeEmail } from "@/lib/lead-matching";
+import { toStoredPhone } from "@/lib/phone-utils";
 
 export type SyncOptions = {
   forceReclassify?: boolean;
@@ -25,6 +27,7 @@ export type SyncHistoryResult = {
   totalMessages?: number;
   skippedDuplicates?: number;
   reclassifiedSentiment?: boolean;
+  leadUpdated?: boolean;
   error?: string;
 };
 
@@ -159,6 +162,56 @@ export async function syncSmsConversationHistorySystem(
       return { success: false, error: "Workspace is missing GHL configuration" };
     }
 
+    // Best-effort: hydrate missing lead fields from the GHL contact record.
+    // This fixes cases where the SMS webhook payload omitted phone/email, which prevents the UI
+    // from showing the SMS channel and blocks follow-up automation.
+    let leadUpdated = false;
+    if (!lead.phone || !lead.email || !lead.firstName || !lead.lastName || !lead.companyName) {
+      try {
+        const contactResult = await getGHLContact(lead.ghlContactId, lead.client.ghlPrivateKey, {
+          locationId: lead.client.ghlLocationId,
+        });
+        const contact = contactResult.success ? contactResult.data?.contact : null;
+
+        if (contact) {
+          const updateData: Record<string, unknown> = {};
+
+          if (!lead.phone && contact.phone) {
+            updateData.phone = toStoredPhone(contact.phone) || contact.phone;
+          }
+          if (!lead.email && contact.email) {
+            updateData.email = normalizeEmail(contact.email) || contact.email;
+          }
+          if (!lead.firstName && contact.firstName) {
+            updateData.firstName = contact.firstName;
+          }
+          if (!lead.lastName && contact.lastName) {
+            updateData.lastName = contact.lastName;
+          }
+          if (!lead.companyName && contact.companyName) {
+            updateData.companyName = contact.companyName;
+          }
+
+          // If we found a phone, treat this as enrichment completion.
+          if (updateData.phone && lead.enrichmentStatus !== "not_needed") {
+            updateData.enrichmentStatus = "enriched";
+            updateData.enrichmentSource = "ghl";
+            updateData.enrichedAt = new Date();
+          }
+
+          if (Object.keys(updateData).length > 0) {
+            await prisma.lead.update({
+              where: { id: leadId },
+              data: updateData,
+            });
+            leadUpdated = true;
+          }
+        }
+      } catch (err) {
+        console.warn("[Sync] Failed to hydrate lead from GHL contact:", err);
+      }
+    }
+
     console.log(`[Sync] Fetching conversation history for lead ${leadId} (contact: ${lead.ghlContactId})`);
 
     const exportResult = await exportMessages(
@@ -273,6 +326,7 @@ export async function syncSmsConversationHistorySystem(
       totalMessages: ghlMessages.length,
       skippedDuplicates,
       reclassifiedSentiment,
+      leadUpdated,
     };
   } catch (error) {
     console.error("[Sync] Failed to sync conversation history:", error);
@@ -559,4 +613,3 @@ export async function syncEmailConversationHistorySystem(
     };
   }
 }
-

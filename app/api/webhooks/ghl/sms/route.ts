@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { getGHLContact } from "@/lib/ghl-api";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraft } from "@/actions/message-actions";
 import { buildSentimentTranscriptFromMessages, classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
@@ -387,10 +388,34 @@ export async function POST(request: NextRequest) {
     console.log(`Found client: ${client.name} (${client.id})`);
 
     // Extract contact info from root level fields
-    const firstName = payload.first_name || payload.customData?.["First Name"] || null;
-    const lastName = payload.last_name || payload.customData?.["Last Name"] || null;
-    const email = payload.email || payload.customData?.Email || null;
-    const phone = payload.phone || payload.customData?.["Phone Number"] || null;
+    let firstName = payload.first_name || payload.customData?.["First Name"] || null;
+    let lastName = payload.last_name || payload.customData?.["Last Name"] || null;
+    let email = payload.email || payload.customData?.Email || null;
+    let phone = payload.phone || payload.customData?.["Phone Number"] || null;
+
+    // Best-effort: hydrate missing fields directly from the GHL contact record.
+    // Some workflow webhooks omit phone/email; fetching the contact fixes cross-channel lead matching
+    // and prevents the UI from hiding the SMS channel due to a missing phone.
+    if ((!email || !phone || !firstName || !lastName) && client.ghlPrivateKey) {
+      try {
+        const contactResult = await getGHLContact(contactId, client.ghlPrivateKey, { locationId });
+        const contact = contactResult.success ? contactResult.data?.contact : null;
+
+        if (contact) {
+          if (!email && contact.email) email = contact.email;
+          if (!phone && contact.phone) phone = contact.phone;
+          if (!firstName && contact.firstName) firstName = contact.firstName;
+          if (!lastName && contact.lastName) lastName = contact.lastName;
+
+          console.log(
+            `[Webhook] Hydrated contact fields from GHL: email=${!!email} phone=${!!phone} first=${!!firstName} last=${!!lastName}`
+          );
+        }
+      } catch (err) {
+        console.warn("[Webhook] Failed to hydrate contact fields from GHL:", err);
+      }
+    }
+
     const normalizedPhone = normalizePhone(phone);
 
     // Get the message body from current webhook

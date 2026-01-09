@@ -193,6 +193,7 @@ export async function getConversations(clientId?: string | null): Promise<{
       const channels = getChannelsFromMessages(lead.messages);
       const availableChannels = getAvailableChannels({
         phone: lead.phone,
+        ghlContactId: lead.ghlContactId,
         email: lead.email,
         linkedinUrl: lead.linkedinUrl,
         linkedinId: lead.linkedinId,
@@ -413,6 +414,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
     const channels = getChannelsFromMessages(lead.messages);
     const availableChannels = getAvailableChannels({
       phone: lead.phone,
+      ghlContactId: lead.ghlContactId,
       email: lead.email,
       linkedinUrl: lead.linkedinUrl,
       linkedinId: lead.linkedinId,
@@ -540,6 +542,7 @@ function transformLeadToConversation(lead: any): ConversationData {
   const channels = getChannelsFromMessages(lead.messages);
   const availableChannels = getAvailableChannels({
     phone: lead.phone,
+    ghlContactId: lead.ghlContactId,
     email: lead.email,
     linkedinUrl: lead.linkedinUrl,
     linkedinId: lead.linkedinId,

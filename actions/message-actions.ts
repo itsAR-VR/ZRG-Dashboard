@@ -7,7 +7,7 @@ import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, isPositiveSentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply } from "@/actions/email-actions";
-import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
+import { ensureGhlContactIdForLead, resolveGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
 import { toGhlPhoneBestEffort } from "@/lib/phone-utils";
@@ -198,13 +198,13 @@ interface SyncHistoryResult {
   totalMessages?: number;
   skippedDuplicates?: number;
   reclassifiedSentiment?: boolean;  // Whether sentiment was re-analyzed
+  leadUpdated?: boolean; // Non-message updates (e.g., hydrate phone from GHL)
   error?: string;
 }
 
 // Options for sync operations
 interface SyncOptions {
   forceReclassify?: boolean;  // Force sentiment re-analysis even if no new messages
-  resolveMissingGhlContactId?: boolean; // Try to resolve missing GHL contact IDs (manual sync)
 }
 
 // Extended result that tracks which channels were synced (for draft generation)
@@ -305,11 +305,11 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
 
   let { canSyncSms, canSyncEmail, hasEmailMessages, hasSmsMessages, emailBisonLeadId, ghlContactId } = syncInfo.data;
 
-  // Manual sync should try to resolve missing GHL contact IDs (email-first leads)
-  if (!canSyncSms && !ghlContactId && options.resolveMissingGhlContactId !== false) {
-    const ensureResult = await ensureGhlContactIdForLead(leadId);
-    if (ensureResult.success && ensureResult.ghlContactId) {
-      ghlContactId = ensureResult.ghlContactId;
+  // Always-on: try to resolve missing GHL contact IDs for email-first leads (search/link only; no create).
+  if (!canSyncSms && !ghlContactId) {
+    const resolveResult = await resolveGhlContactIdForLead(leadId);
+    if (resolveResult.success && resolveResult.ghlContactId) {
+      ghlContactId = resolveResult.ghlContactId;
       canSyncSms = true;
     }
   }
@@ -342,6 +342,7 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
   let totalMessages = 0;
   let totalSkipped = 0;
   let reclassifiedSentiment = false;
+  let leadUpdated = false;
   const errors: string[] = [];
 
   let syncedSms = false;
@@ -355,6 +356,7 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
       totalMessages += smsResult.totalMessages || 0;
       totalSkipped += smsResult.skippedDuplicates || 0;
       reclassifiedSentiment = reclassifiedSentiment || smsResult.reclassifiedSentiment || false;
+      leadUpdated = leadUpdated || smsResult.leadUpdated || false;
       syncedSms = true;
     } else if (smsResult.error) {
       errors.push(`SMS: ${smsResult.error}`);
@@ -370,6 +372,7 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
       totalMessages += emailResult.totalMessages || 0;
       totalSkipped += emailResult.skippedDuplicates || 0;
       reclassifiedSentiment = reclassifiedSentiment || emailResult.reclassifiedSentiment || false;
+      leadUpdated = leadUpdated || emailResult.leadUpdated || false;
       syncedEmail = true;
     } else if (emailResult.error) {
       errors.push(`Email: ${emailResult.error}`);
@@ -379,7 +382,14 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
   // If all attempted syncs failed and no messages were processed at all, return error
   // Include totalSkipped check - if we skipped duplicates, that means sync worked but messages already existed
   // Also check reclassifiedSentiment - if we reclassified, the sync was at least partially successful
-  if (errors.length > 0 && totalImported === 0 && totalHealed === 0 && totalSkipped === 0 && !reclassifiedSentiment) {
+  if (
+    errors.length > 0 &&
+    totalImported === 0 &&
+    totalHealed === 0 &&
+    totalSkipped === 0 &&
+    !reclassifiedSentiment &&
+    !leadUpdated
+  ) {
     return { success: false, error: errors.join("; "), reclassifiedSentiment: false };
   }
 
@@ -390,6 +400,7 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
     totalMessages,
     skippedDuplicates: totalSkipped,
     reclassifiedSentiment,
+    leadUpdated,
     syncedSms,
     syncedEmail,
   };
@@ -465,6 +476,7 @@ interface SyncAllResult {
   totalHealed: number;
   totalDraftsGenerated: number;
   totalReclassified: number;
+  totalLeadUpdated: number;
   errors: number;
   error?: string;
 }
@@ -503,18 +515,20 @@ export async function syncAllConversations(clientId: string, options: SyncOption
     let totalHealed = 0;
     let totalDraftsGenerated = 0;
     let totalReclassified = 0;
+    let totalLeadUpdated = 0;
     let errors = 0;
 
-    // Process leads in parallel with a concurrency limit (5 at a time to avoid overwhelming APIs)
-    const BATCH_SIZE = 5;
+    // Process leads in parallel with a concurrency limit.
+    // Throughput is also governed by the centralized GHL rate limiter in `lib/ghl-api.ts`.
+    const configuredBatchSize = Number(process.env.SYNC_ALL_CONCURRENCY || "");
+    const BATCH_SIZE =
+      Number.isFinite(configuredBatchSize) && configuredBatchSize > 0 ? Math.floor(configuredBatchSize) : 15;
 
     for (let i = 0; i < leads.length; i += BATCH_SIZE) {
       const batch = leads.slice(i, i + BATCH_SIZE);
 
       // Use smartSyncConversation which handles both SMS and Email
-      const results = await Promise.allSettled(
-        batch.map((lead) => smartSyncConversation(lead.id, { ...options, resolveMissingGhlContactId: false }))
-      );
+      const results = await Promise.allSettled(batch.map((lead) => smartSyncConversation(lead.id, { ...options })));
 
       // Process sync results and generate drafts for eligible leads
       for (let j = 0; j < results.length; j++) {
@@ -526,6 +540,9 @@ export async function syncAllConversations(clientId: string, options: SyncOption
           totalHealed += result.value.healedCount || 0;
           if (result.value.reclassifiedSentiment) {
             totalReclassified++;
+          }
+          if (result.value.leadUpdated) {
+            totalLeadUpdated++;
           }
 
           // After successful sync, regenerate AI draft if eligible
@@ -569,7 +586,9 @@ export async function syncAllConversations(clientId: string, options: SyncOption
       }
     }
 
-    console.log(`[SyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalReclassified} reclassified, ${totalDraftsGenerated} drafts, ${errors} errors`);
+    console.log(
+      `[SyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalReclassified} reclassified, ${totalDraftsGenerated} drafts, ${totalLeadUpdated} contacts updated, ${errors} errors`
+    );
 
     // Auto-run bounce cleanup after syncing
     console.log(`[SyncAll] Running bounce cleanup for client ${clientId}...`);
@@ -589,6 +608,7 @@ export async function syncAllConversations(clientId: string, options: SyncOption
       totalHealed,
       totalDraftsGenerated,
       totalReclassified,
+      totalLeadUpdated,
       errors,
     };
   } catch (error) {
@@ -600,6 +620,7 @@ export async function syncAllConversations(clientId: string, options: SyncOption
       totalHealed: 0,
       totalDraftsGenerated: 0,
       totalReclassified: 0,
+      totalLeadUpdated: 0,
       errors: 1,
       error: error instanceof Error ? error.message : "Unknown error",
     };
@@ -776,6 +797,7 @@ export async function sendMessage(
         client: {
           select: {
             ghlPrivateKey: true,
+            ghlLocationId: true,
           },
         },
       },
@@ -803,7 +825,9 @@ export async function sendMessage(
     }
 
     // Send SMS via GHL API
-    let result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey);
+    let result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey, {
+      locationId: lead.client.ghlLocationId || undefined,
+    });
 
     // If GHL indicates the contact is in DND for SMS, mark the lead and return a typed error.
     if (
@@ -848,14 +872,17 @@ export async function sendMessage(
             timezone: lead.timezone || undefined,
             source: "zrg-dashboard",
           },
-          lead.client.ghlPrivateKey
+          lead.client.ghlPrivateKey,
+          { locationId: lead.client.ghlLocationId || undefined }
         );
 
       // 1) If we already have a phone, try to sync it immediately.
       if (phoneForGhl) {
         const patch = await patchAttempt(phoneForGhl);
         if (patch.success) {
-          result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey);
+          result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey, {
+            locationId: lead.client.ghlLocationId || undefined,
+          });
         }
       }
 
@@ -865,7 +892,9 @@ export async function sendMessage(
         const enriched = await enrichPhoneThenSyncToGhl(leadId, { includeSignatureAi });
 
         if (enriched.phoneFound) {
-          result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey);
+          result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey, {
+            locationId: lead.client.ghlLocationId || undefined,
+          });
         } else {
           return {
             success: false,

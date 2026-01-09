@@ -1,18 +1,19 @@
 import "@/lib/server-dns";
 
 import { prisma } from "@/lib/prisma";
+import { getGHLContact } from "@/lib/ghl-api";
 import { fetchEmailBisonLead, getCustomVariable } from "@/lib/emailbison-api";
 import { triggerEnrichmentForLead, type ClayEnrichmentRequest } from "@/lib/clay-api";
 import { extractContactFromMessageContent, extractContactFromSignature } from "@/lib/signature-extractor";
 import { toStoredPhone } from "@/lib/phone-utils";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
-import { syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
+import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 
 export type PhoneEnrichmentAttemptResult = {
   success: boolean;
   phoneFound?: boolean;
   phone?: string | null;
-  source?: "lead" | "message_content" | "emailbison" | "signature" | "clay_triggered" | "none";
+  source?: "lead" | "ghl" | "message_content" | "emailbison" | "signature" | "clay_triggered" | "none";
   ghlSynced?: boolean;
   clayTriggered?: boolean;
   error?: string;
@@ -157,6 +158,8 @@ export async function enrichPhoneThenSyncToGhl(leadId: string, opts?: {
         client: {
           select: {
             emailBisonApiKey: true,
+            ghlPrivateKey: true,
+            ghlLocationId: true,
           },
         },
       },
@@ -184,6 +187,48 @@ export async function enrichPhoneThenSyncToGhl(leadId: string, opts?: {
         source: "lead",
         ghlSynced: Boolean(sync.success && sync.updated),
       };
+    }
+
+    // 0) GHL contact hydration (fast path): if the lead is linked to (or can be linked to) a GHL contact,
+    // pull the phone from GHL before triggering any external enrichment.
+    let ghlContactId = lead.ghlContactId;
+    if (!ghlContactId) {
+      const ensure = await ensureGhlContactIdForLead(lead.id);
+      if (ensure.success && ensure.ghlContactId) {
+        ghlContactId = ensure.ghlContactId;
+      }
+    }
+
+    if (ghlContactId && lead.client.ghlPrivateKey) {
+      try {
+        const contactResult = await getGHLContact(ghlContactId, lead.client.ghlPrivateKey, {
+          locationId: lead.client.ghlLocationId || undefined,
+        });
+        const contact = contactResult.success ? contactResult.data?.contact : null;
+        const phoneRaw = contact?.phone?.trim();
+
+        if (phoneRaw) {
+          const stored = toStoredPhone(phoneRaw) || phoneRaw;
+          await prisma.lead.update({
+            where: { id: lead.id },
+            data: {
+              phone: stored,
+              enrichmentStatus: "enriched",
+              enrichmentSource: "ghl",
+              enrichedAt: new Date(),
+            },
+          });
+
+          return {
+            success: true,
+            phoneFound: true,
+            phone: stored,
+            source: "ghl",
+          };
+        }
+      } catch (err) {
+        console.warn("[PhoneEnrichment] Failed to hydrate phone from GHL contact:", err);
+      }
     }
 
     // 1) Message content extraction (fast, no AI)
