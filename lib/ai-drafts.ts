@@ -180,7 +180,6 @@ function buildEmailPrompt(opts: {
     "Interested",
     "Positive",
     "Information Requested",
-    "Follow Up",
   ].includes(opts.sentimentTag);
 
   const availabilityBlock = shouldConsiderScheduling
@@ -343,7 +342,6 @@ export async function generateResponseDraft(
       "Interested",
       "Positive",
       "Information Requested",
-      "Follow Up",
     ].includes(sentimentTag);
 
     let availability: string[] = [];
@@ -625,7 +623,8 @@ function getResponseStrategy(sentimentTag: string): string {
     "Call Requested": "Acknowledge their request for a call. Confirm the best number to reach them and propose specific call times.",
     "Not Interested": "Acknowledge their decision respectfully. Ask if they'd like to be contacted in the future or if there's anything specific they're looking for.",
     "Information Requested": "Provide the requested information clearly and concisely. Offer to schedule a call for more details.",
-    "Follow Up": "Check in on their interest level. Reference any previous context and offer value.",
+    "Follow Up":
+      "Acknowledge the timing and keep it low-pressure. Ask a single timeline question (e.g., 6–12 months, 1–2 years, later) and if it’s okay to check back then. Don’t push for a meeting.",
     "Out of Office": "Acknowledge and ask when would be a good time to reconnect. Be understanding.",
     "Automated Reply": "DO NOT GENERATE A RESPONSE - This is an automated acknowledgement.",
     "Interested": "Build on the positive momentum. Move towards scheduling a conversation or next steps.",
@@ -658,7 +657,7 @@ export function isBounceEmailAddress(email: string | null | undefined): boolean 
  * Determine if an AI draft should be generated for a lead.
  * Uses a whitelist approach - only generate drafts for leads who have engaged.
  * 
- * Excludes: Neutral (no engagement), Blacklist (opted out), Snoozed (temporarily hidden)
+ * Includes: positive intents + Follow Up deferrals
  */
 export function shouldGenerateDraft(sentimentTag: string, email?: string | null): boolean {
   // Never generate drafts for bounce email addresses
@@ -666,8 +665,8 @@ export function shouldGenerateDraft(sentimentTag: string, email?: string | null)
     return false;
   }
 
-  // Only generate drafts for strictly positive sentiments.
+  // Generate drafts for positive intents, plus "Follow Up" (deferrals / not-now timing).
   // (Legacy: "Positive" is treated as "Interested".)
   const normalized = sentimentTag === "Positive" ? "Interested" : sentimentTag;
-  return isPositiveSentiment(normalized);
+  return normalized === "Follow Up" || isPositiveSentiment(normalized);
 }

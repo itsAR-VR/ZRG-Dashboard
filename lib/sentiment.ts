@@ -292,6 +292,7 @@ export type EmailInboxClassification =
   | "Meeting Requested"
   | "Call Requested"
   | "Information Requested"
+  | "Follow Up"
   | "Not Interested"
   | "Automated Reply"
   | "Out Of Office"
@@ -308,7 +309,7 @@ export type EmailInboxAnalysis = {
 
 const EMAIL_INBOX_MANAGER_SYSTEM = `Output your response in the following strict JSON format:
 {
-  "classification": "One of: Meeting Booked, Meeting Requested, Call Requested, Information Requested, Not Interested, Automated Reply, Out Of Office, Blacklist",
+  "classification": "One of: Meeting Booked, Meeting Requested, Call Requested, Information Requested, Follow Up, Not Interested, Automated Reply, Out Of Office, Blacklist",
   "cleaned_response": "Plain-text body including at most a short closing + name/job title. If the scheduling link is not in the signature and is in the main part of the email body do not omit it from the cleaned email body.",
   "mobile_number": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
   "direct_phone": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
@@ -347,6 +348,10 @@ Automated Reply vs Out Of Office:
 
 Blacklist classification notes:
 - Use "Blacklist" for explicit unsubscribe/removal requests, hostile opt-out language, spam complaints, bounces, or "inbox not monitored / no longer in use".
+
+Follow Up classification notes:
+- Use "Follow Up" when the lead is not ready / not right now but leaves the door open (timing deferral).
+- Examples: "not ready to sell", "not looking to sell right now", "maybe next year", "in a couple of years", "reach back out in 6 months".
 
 Newsletter / marketing detection notes:
 - is_newsletter = true ONLY if you are very certain this is a marketing/newsletter blast (unsubscribe footer, digest/promotional template, broad marketing content, no reference to the outreach).
@@ -403,6 +408,7 @@ export async function analyzeInboundEmailReply(opts: {
             "Meeting Requested",
             "Call Requested",
             "Information Requested",
+            "Follow Up",
             "Not Interested",
             "Automated Reply",
             "Out Of Office",
@@ -445,7 +451,8 @@ export async function analyzeInboundEmailReply(opts: {
             "Meeting Requested: Recipient asks to arrange a meeting/demo but no confirmed time and no instruction to self-book.",
             "Call Requested: Recipient asks to arrange a phone call but no confirmed time (explicit phone call).",
             "Information Requested: Asks for details/clarifications/pricing/more information.",
-            "Not Interested: Decline, negative response, or no interest expressed without explicit unsubscribe request.",
+            "Follow Up: Defers timing / not right now but leaves the door open (e.g., 'not ready', 'maybe next year', 'reach out in 6 months').",
+            "Not Interested: Clear hard decline with no future openness and no explicit unsubscribe request.",
           ],
         },
         {
@@ -492,7 +499,7 @@ export async function analyzeInboundEmailReply(opts: {
     constraints: [
       "Always choose exactly one category from allowed list.",
       "Meeting Booked MUST satisfy the guardrails; otherwise use Meeting Requested / Call Requested / other best fit.",
-      "If multiple cues exist, apply decision_rules priority order: Blacklist > Automated Reply > Out Of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Not Interested.",
+      "If multiple cues exist, apply decision_rules priority order: Blacklist > Automated Reply > Out Of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Follow Up > Not Interested.",
       "Signature data must be excluded from cleaned_response and only output under the correct JSON keys.",
       "Omit signature keys entirely if not present.",
       "Do NOT use scheduling links found only in signatures to decide classification unless the body explicitly references using that link.",
@@ -525,6 +532,7 @@ export async function analyzeInboundEmailReply(opts: {
           "Meeting Requested",
           "Call Requested",
           "Information Requested",
+          "Follow Up",
           "Not Interested",
           "Automated Reply",
           "Out Of Office",

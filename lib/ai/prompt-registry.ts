@@ -36,9 +36,10 @@ SUBJECT + HISTORY (DISAMBIGUATION)
 HIGH-SIGNAL EDGE CASES
 - If the subject or body indicates the inbox/email address is not monitored or no longer in use (e.g., "email address no longer in use", "inbox unmanned", "mailbox not monitored"), classify as "Blacklist" (treat as invalid channel).
 - Polite closures like "all set", "all good", "we're good", "I'm good", "no need" (often paired with "thank you") are usually a decline → "Not Interested" (unless they also request info or scheduling).
+- Timing deferrals are NOT hard declines: "not ready", "not right now", "not looking right now", "maybe next year", "in a couple years" → usually "Follow Up".
 
 PRIORITY ORDER (if multiple cues exist)
-Blacklist > Automated Reply > Out of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Not Interested > Follow Up > Interested > Neutral
+Blacklist > Automated Reply > Out of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Follow Up > Not Interested > Interested > Neutral
 
 CATEGORIES
 - "Blacklist": Opt-out/unsubscribe/removal request, hostile opt-out language, spam complaint, email bounces, or inbox/address not monitored/no longer in use.
@@ -50,8 +51,8 @@ CATEGORIES
 - "Call Requested": Lead explicitly asks for a PHONE call (ring/phone/call me/us) without a confirmed time.
   Do NOT use this just because a phone number appears in a signature.
 - "Information Requested": Asks for details/clarifications/pricing/more information about the offer.
-- "Not Interested": Clear decline or polite closure with no request.
-- "Follow Up": Defers timing ("later", "not now", "reach out in X", "next month").
+- "Follow Up": Defers timing / "not now" (e.g., "not ready to sell", "not right now", "not looking right now", "reach out in X", "next month", "maybe next year", "in a couple years").
+- "Not Interested": Clear hard decline with no future openness (e.g., "not interested", "no thanks", "don't want to sell", "not looking to sell").
 - "Interested": Positive interest without a clear next step.
 - "Neutral": Truly ambiguous (rare).
 
@@ -61,7 +62,7 @@ Return ONLY valid JSON (no markdown/code-fences, no extra keys):
 
 const EMAIL_INBOX_MANAGER_ANALYZE_SYSTEM = `Output your response in the following strict JSON format:
 {
-  "classification": "One of: Meeting Booked, Meeting Requested, Call Requested, Information Requested, Not Interested, Automated Reply, Out Of Office, Blacklist",
+  "classification": "One of: Meeting Booked, Meeting Requested, Call Requested, Information Requested, Follow Up, Not Interested, Automated Reply, Out Of Office, Blacklist",
   "cleaned_response": "Plain-text body including at most a short closing + name/job title. If the scheduling link is not in the signature and is in the main part of the email body do not omit it from the cleaned email body.",
   "mobile_number": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
   "direct_phone": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
@@ -94,6 +95,10 @@ Automated Reply vs Out Of Office:
 
 Blacklist classification notes:
 - Use "Blacklist" for explicit unsubscribe/removal requests, hostile opt-out language, spam complaints, bounces, or "inbox not monitored / no longer in use".
+
+Follow Up classification notes:
+- Use "Follow Up" when the lead is not ready / not right now but leaves the door open (timing deferral).
+- Examples: "not ready to sell", "not looking to sell right now", "maybe next year", "in a couple of years", "reach back out in 6 months".
 
 Newsletter / marketing detection notes:
 - is_newsletter = true ONLY if you are very certain this is a marketing/newsletter blast (unsubscribe footer, digest/promotional template, broad marketing content, no reference to the outreach).

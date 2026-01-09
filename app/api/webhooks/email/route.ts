@@ -118,6 +118,8 @@ function mapEmailInboxClassificationToSentimentTag(classification: string): Sent
       return "Call Requested";
     case "Information Requested":
       return "Information Requested";
+    case "Follow Up":
+      return "Follow Up";
     case "Not Interested":
       return "Not Interested";
     case "Automated Reply":

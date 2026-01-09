@@ -374,6 +374,8 @@ npm run dev
 - [ ] **Channel-Aware Analytics** - Open/reply rates by channel, sentiment trends
 - [ ] **Email Opens Persistence** - Store EMAIL_OPENED events for analytics
 - [ ] **Lead Scoring** - AI-powered prioritization across channels
+- [ ] **Per-Sentiment/Status Draft Prompts** - Create more specific prompt templates per sentiment/status for higher-quality draft generation
+- [ ] **Multi-Channel Auto Follow-Ups + Auto-Booking** - Harden and expand automated follow-ups + booking flows across SMS/Email/LinkedIn to replace setters and increase booking rates
 
 ### 📋 Future Phases (see `lib/future-integrations.ts` for detailed specs)
 - [ ] **Phase V: AI Voice Caller** - Retell AI via SIP trunking for qualification calls and double-dial touchpoints
