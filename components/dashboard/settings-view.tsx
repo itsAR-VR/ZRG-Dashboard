@@ -417,20 +417,25 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   // Save all settings
   const handleSaveSettings = async () => {
     setIsSaving(true)
+
+    const toNullableText = (value: string | null | undefined) => {
+      const trimmed = value?.trim()
+      return trimmed ? value : null
+    }
     
     const result = await updateUserSettings(activeWorkspace, {
-      aiPersonaName: aiPersona.name || undefined,
+      aiPersonaName: toNullableText(aiPersona.name),
       aiTone: aiPersona.tone,
-      aiGreeting: aiPersona.greeting,
-      aiSmsGreeting: aiPersona.smsGreeting,
-      aiSignature: aiPersona.signature || undefined,
-      aiGoals: aiPersona.goals || undefined,
-      serviceDescription: aiPersona.serviceDescription || undefined,
-      companyName: companyContext.companyName || undefined,
-      targetResult: companyContext.targetResult || undefined,
+      aiGreeting: toNullableText(aiPersona.greeting),
+      aiSmsGreeting: toNullableText(aiPersona.smsGreeting),
+      aiSignature: toNullableText(aiPersona.signature),
+      aiGoals: toNullableText(aiPersona.goals),
+      serviceDescription: toNullableText(aiPersona.serviceDescription),
+      companyName: toNullableText(companyContext.companyName),
+      targetResult: toNullableText(companyContext.targetResult),
       qualificationQuestions: qualificationQuestions.length > 0 
         ? JSON.stringify(qualificationQuestions) 
-        : undefined,
+        : null,
       autoApproveMeetings: automationRules.autoApproveMeetings,
       flagUncertainReplies: automationRules.flagUncertainReplies,
       pauseForOOO: automationRules.pauseForOOO,
