@@ -194,8 +194,8 @@ export function InboxView({
     [activeSentiments]
   );
 
-  // Build query options for cursor-based pagination
-  const queryOptions: ConversationsCursorOptions = useMemo(() => ({
+  // Build base query options for cursor-based pagination (everything except search)
+  const baseQueryOptions: Omit<ConversationsCursorOptions, "search"> = useMemo(() => ({
     clientId: activeWorkspace,
     channels: normalizedChannels.length > 0 ? normalizedChannels : undefined,
     sentimentTags: normalizedSentiments.length > 0 ? normalizedSentiments : undefined,
@@ -206,8 +206,13 @@ export function InboxView({
     smsCampaignUnattributed: activeSmsClient === "unattributed" ? true : undefined,
     filter: activeFilter as "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "all" | undefined,
     limit: 50,
+  }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter]);
+
+  // Full query options (includes search)
+  const queryOptions: ConversationsCursorOptions = useMemo(() => ({
+    ...baseQueryOptions,
     search: searchQuery.trim() ? searchQuery.trim() : undefined,
-  }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter, searchQuery]);
+  }), [baseQueryOptions, searchQuery]);
 
   // Infinite query for conversations
   const {
@@ -221,7 +226,7 @@ export function InboxView({
     error,
     refetch,
   } = useInfiniteQuery({
-    queryKey: ["conversations", queryOptions],
+    queryKey: ["conversations", baseQueryOptions, queryOptions.search ?? ""],
     queryFn: async ({ pageParam }) => {
       const result = await getConversationsCursor({
         ...queryOptions,
@@ -234,6 +239,12 @@ export function InboxView({
     },
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor,
+    placeholderData: (previousData, previousQuery) => {
+      const previousKey = previousQuery?.queryKey;
+      const previousBase = Array.isArray(previousKey) ? previousKey[1] : null;
+      if (previousBase !== baseQueryOptions) return undefined;
+      return previousData;
+    },
     staleTime: 30000,
     refetchInterval: 30000, // Poll every 30 seconds as fallback
   });

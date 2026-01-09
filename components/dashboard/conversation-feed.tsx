@@ -84,13 +84,14 @@ export function ConversationFeed({
   const [searchInput, setSearchInput] = useState("")
   const [debouncedSearch, setDebouncedSearch] = useState("")
   const [sortBy, setSortBy] = useState<SortOption>("recent")
+  const isServerSearch = Boolean(onDebouncedSearchChange)
   
   // Ref for virtualization
   const parentRef = useRef<HTMLDivElement>(null)
 
   // Debounced search
   const debouncedSetSearch = useDebouncedCallback((value: string) => {
-    setDebouncedSearch(value)
+    if (!isServerSearch) setDebouncedSearch(value)
     onDebouncedSearchChange?.(value)
   }, 300)
 
@@ -101,6 +102,8 @@ export function ConversationFeed({
 
   // Filter conversations by search query
   const filteredConversations = useMemo(() => {
+    // Inbox search is server-side; client-side filtering causes flicker / incorrect counts while fetching.
+    if (isServerSearch) return conversations
     if (!debouncedSearch) return conversations
     
     const searchLower = debouncedSearch.toLowerCase()
@@ -113,7 +116,7 @@ export function ConversationFeed({
         conv.lastMessage.toLowerCase().includes(searchLower) ||
         (conv.lastSubject && conv.lastSubject.toLowerCase().includes(searchLower)),
     )
-  }, [conversations, debouncedSearch])
+  }, [conversations, debouncedSearch, isServerSearch])
 
   // Sort filtered conversations
   const sortedConversations = useMemo(() => {
