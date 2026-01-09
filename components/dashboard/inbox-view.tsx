@@ -194,6 +194,35 @@ export function InboxView({
     [activeSentiments]
   );
 
+  const isSameQueryFilters = useCallback((
+    previousBase: unknown,
+    nextBase: Omit<ConversationsCursorOptions, "search">
+  ) => {
+    if (!previousBase || typeof previousBase !== "object") return false;
+
+    const previous = previousBase as Partial<Omit<ConversationsCursorOptions, "search">>;
+
+    const isSameStringArray = (a?: string[], b?: string[]) => {
+      if (!a && !b) return true;
+      if (!a || !b) return false;
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i += 1) {
+        if (a[i] !== b[i]) return false;
+      }
+      return true;
+    };
+
+    return (
+      previous.clientId === nextBase.clientId &&
+      previous.smsCampaignId === nextBase.smsCampaignId &&
+      previous.smsCampaignUnattributed === nextBase.smsCampaignUnattributed &&
+      previous.filter === nextBase.filter &&
+      previous.limit === nextBase.limit &&
+      isSameStringArray(previous.channels as string[] | undefined, nextBase.channels as string[] | undefined) &&
+      isSameStringArray(previous.sentimentTags, nextBase.sentimentTags)
+    );
+  }, []);
+
   // Build base query options for cursor-based pagination (everything except search)
   const baseQueryOptions: Omit<ConversationsCursorOptions, "search"> = useMemo(() => ({
     clientId: activeWorkspace,
@@ -242,7 +271,7 @@ export function InboxView({
     placeholderData: (previousData, previousQuery) => {
       const previousKey = previousQuery?.queryKey;
       const previousBase = Array.isArray(previousKey) ? previousKey[1] : null;
-      if (previousBase !== baseQueryOptions) return undefined;
+      if (!isSameQueryFilters(previousBase, baseQueryOptions)) return undefined;
       return previousData;
     },
     staleTime: 30000,
