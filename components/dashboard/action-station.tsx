@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Calendar, ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, Moon } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { sendMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
+import { sendMessage, sendEmailMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
 import { getCalendarLinkForLead } from "@/actions/settings-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
@@ -200,10 +200,6 @@ export function ActionStation({
 
   const handleSendMessage = async () => {
     if (!composeMessage.trim() || !conversation) return
-    if (isEmail) {
-      toast.error("Approve and send the email draft instead.")
-      return
-    }
 
     setIsSending(true)
     
@@ -221,6 +217,12 @@ export function ActionStation({
                            result.messageType === "connection_request" ? "Connection Request" : "message"
         toast.success(`LinkedIn ${messageType} sent!`)
         setConnectionNote("") // Clear connection note after sending
+      }
+    } else if (isEmail) {
+      // Manual email reply (no AI draft required)
+      result = await sendEmailMessage(conversation.id, composeMessage)
+      if (result.success) {
+        toast.success("Email sent!")
       }
     } else {
       // Regular SMS send
@@ -811,7 +813,7 @@ export function ActionStation({
 
                 <Button 
                   onClick={handleSendMessage} 
-                  disabled={isEmail || !composeMessage.trim() || isSending || isRegenerating}
+                  disabled={!composeMessage.trim() || isSending || isRegenerating}
                   className="h-8 px-3"
                 >
                   {isSending ? (

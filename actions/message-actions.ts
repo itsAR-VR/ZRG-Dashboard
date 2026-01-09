@@ -6,7 +6,7 @@ import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbi
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, isPositiveSentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
-import { sendEmailReply } from "@/actions/email-actions";
+import { sendEmailReply, sendEmailReplyForLead } from "@/actions/email-actions";
 import { ensureGhlContactIdForLead, resolveGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
@@ -147,7 +147,7 @@ async function refreshLeadSentimentTag(leadId: string): Promise<{
     });
   }
 
-  // Policy/backstop: drafts only exist for strictly positive sentiments.
+  // Policy/backstop: drafts only exist for positive intents (plus Follow Up deferrals).
   if (!shouldGenerateDraft(sentimentTag)) {
     await prisma.aIDraft.updateMany({
       where: {
@@ -962,6 +962,27 @@ export async function sendMessage(
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
     };
+  }
+}
+
+/**
+ * Send an email reply for a lead (no AI draft required).
+ * This is the UI-safe wrapper that enforces lead access.
+ */
+export async function sendEmailMessage(
+  leadId: string,
+  message: string
+): Promise<SendMessageResult> {
+  try {
+    await requireLeadAccess(leadId);
+    const result = await sendEmailReplyForLead(leadId, message);
+    if (!result.success) {
+      return { success: false, error: result.error || "Failed to send email reply" };
+    }
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    console.error("[Email] Failed to send email message:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
   }
 }
 

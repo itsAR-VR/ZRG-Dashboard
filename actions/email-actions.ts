@@ -234,3 +234,161 @@ export async function sendEmailReply(
     return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
   }
 }
+
+/**
+ * Send a manual email reply for a lead (no AI draft required).
+ *
+ * Security note: this function does NOT enforce workspace/user access checks.
+ * Callers invoked from the client/UI must verify lead access before calling.
+ */
+export async function sendEmailReplyForLead(
+  leadId: string,
+  messageContent: string
+): Promise<SendEmailResult> {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      include: {
+        client: true,
+      },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    if (!lead.email) {
+      return { success: false, error: "Lead has no email" };
+    }
+
+    // Compliance/backstop: never send to blacklisted/opted-out leads.
+    if (lead.status === "blacklisted" || lead.sentimentTag === "Blacklist") {
+      return { success: false, error: "Lead is blacklisted (opted out)" };
+    }
+
+    if (!lead.senderAccountId) {
+      return { success: false, error: "Lead is missing sender account for EmailBison" };
+    }
+
+    const client = lead.client;
+    if (!client?.emailBisonApiKey) {
+      return { success: false, error: "Client missing EmailBison API key" };
+    }
+
+    // Validate recipient via EmailGuard
+    const guardResult = await validateWithEmailGuard(lead.email);
+    if (!guardResult.valid) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          status: "blacklisted",
+          sentimentTag: "Blacklist",
+        },
+      });
+      await prisma.lead.updateMany({
+        where: { id: lead.id, enrichmentStatus: "pending" },
+        data: { enrichmentStatus: "not_needed" },
+      });
+
+      return { success: false, error: `Email validation failed: ${guardResult.reason}` };
+    }
+
+    // Find the latest inbound email to reply to (thread)
+    const latestInboundEmail = await prisma.message.findFirst({
+      where: {
+        leadId: lead.id,
+        direction: "inbound",
+        emailBisonReplyId: { not: null },
+      },
+      orderBy: { sentAt: "desc" },
+    });
+
+    const replyId = latestInboundEmail?.emailBisonReplyId;
+    if (!replyId) {
+      return { success: false, error: "No inbound email thread to reply to" };
+    }
+
+    // Compliance/backstop: refuse to reply if the latest inbound email contains an opt-out request.
+    const latestInboundText = `Subject: ${latestInboundEmail.subject || ""} | ${latestInboundEmail.body || ""}`;
+    if (isOptOutText(latestInboundText)) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          status: "blacklisted",
+          sentimentTag: "Blacklist",
+        },
+      });
+      await prisma.lead.updateMany({
+        where: { id: lead.id, enrichmentStatus: "pending" },
+        data: { enrichmentStatus: "not_needed" },
+      });
+
+      await prisma.aIDraft.updateMany({
+        where: {
+          leadId: lead.id,
+          status: "pending",
+        },
+        data: { status: "rejected" },
+      });
+
+      return { success: false, error: "Lead requested unsubscribe (opt-out)" };
+    }
+
+    const subject = latestInboundEmail?.subject || null;
+    const htmlMessage = emailBisonHtmlFromPlainText(messageContent);
+
+    // Construct to_emails array (required by EmailBison API)
+    const toEmails = lead.email
+      ? [{ name: lead.firstName || null, email_address: lead.email }]
+      : [];
+
+    // Convert CC/BCC string arrays to EmailBisonRecipient format
+    const ccEmails = latestInboundEmail?.cc?.map((address) => ({ name: null, email_address: address })) || [];
+    const bccEmails = latestInboundEmail?.bcc?.map((address) => ({ name: null, email_address: address })) || [];
+
+    const sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, {
+      message: htmlMessage,
+      sender_email_id: parseInt(lead.senderAccountId),
+      to_emails: toEmails,
+      subject: subject || undefined,
+      cc_emails: ccEmails,
+      bcc_emails: bccEmails,
+      inject_previous_email_body: true,
+      content_type: "html",
+    });
+
+    if (!sendResult.success) {
+      return { success: false, error: sendResult.error || "Failed to send email reply" };
+    }
+
+    const message = await prisma.message.create({
+      data: {
+        body: messageContent,
+        subject,
+        channel: "email",
+        cc: latestInboundEmail?.cc || [],
+        bcc: latestInboundEmail?.bcc || [],
+        direction: "outbound",
+        leadId: lead.id,
+        sentAt: new Date(),
+      },
+    });
+
+    await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt: message.sentAt });
+
+    revalidatePath("/");
+
+    autoStartNoResponseSequenceOnOutbound({ leadId: lead.id, outboundAt: message.sentAt }).catch((err) => {
+      console.error("[Email] Failed to auto-start no-response sequence:", err);
+    });
+
+    syncEmailConversationHistorySystem(lead.id).catch((err) => {
+      console.error("[Email] Background sync failed:", err);
+    });
+
+    return { success: true, messageId: message.id };
+  } catch (error) {
+    console.error("[Email] Failed to send manual email reply:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
