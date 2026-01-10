@@ -10,6 +10,7 @@ import { sendEmailReply, sendEmailReplyForLead } from "@/actions/email-actions";
 import { ensureGhlContactIdForLead, resolveGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
+import { sendSmsSystem } from "@/lib/system-sender";
 import { toGhlPhoneBestEffort } from "@/lib/phone-utils";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { syncEmailConversationHistorySystem, syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
@@ -781,181 +782,15 @@ export async function syncAllEmailConversations(clientId: string): Promise<SyncA
  * @param leadId - The internal lead ID
  * @param message - The message content
  */
-function isGhlSmsDndErrorText(errorText: string): boolean {
-  const lower = (errorText || "").toLowerCase();
-  return (
-    lower.includes("dnd is active") ||
-    (lower.includes("dnd") && lower.includes("sms") && lower.includes("cannot send"))
-  );
-}
-
 export async function sendMessage(
   leadId: string,
   message: string
 ): Promise<SendMessageResult> {
   try {
     await requireLeadAccess(leadId);
-    // Get the lead with their client (for API key)
-    const lead = await prisma.lead.findUnique({
-      where: { id: leadId },
-      include: {
-        client: {
-          select: {
-            ghlPrivateKey: true,
-            ghlLocationId: true,
-          },
-        },
-      },
-    });
-
-    if (!lead) {
-      return { success: false, error: "Lead not found" };
-    }
-
-    if (lead.status === "blacklisted") {
-      return { success: false, error: "Lead is blacklisted" };
-    }
-
-    if (!lead.client.ghlPrivateKey) {
-      return { success: false, error: "Workspace has no GHL API key configured" };
-    }
-
-    let ghlContactId = lead.ghlContactId;
-    if (!ghlContactId) {
-      const ensureResult = await ensureGhlContactIdForLead(leadId, { requirePhone: true });
-      if (!ensureResult.success || !ensureResult.ghlContactId) {
-        return { success: false, error: ensureResult.error || "Lead has no GHL contact ID" };
-      }
-      ghlContactId = ensureResult.ghlContactId;
-    }
-
-    // Send SMS via GHL API
-    let result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey, {
-      locationId: lead.client.ghlLocationId || undefined,
-    });
-
-    // If GHL indicates the contact is in DND for SMS, mark the lead and return a typed error.
-    if (
-      !result.success &&
-      (result.errorCode === "sms_dnd" ||
-        isGhlSmsDndErrorText(result.errorMessage || result.error || ""))
-    ) {
-      const now = new Date();
-      await prisma.lead
-        .update({
-          where: { id: leadId },
-          data: {
-            smsDndActive: true,
-            smsDndUpdatedAt: now,
-          },
-        })
-        .catch(() => undefined);
-
-      return {
-        success: false,
-        errorCode: "sms_dnd",
-        error: "Cannot send SMS right now (DND active in GoHighLevel).",
-      };
-    }
-
-    // Common failure mode: contact exists but does not have a phone number saved in GHL.
-    // If we have a phone in our DB, try to patch it onto the contact and retry once.
-    if (!result.success && (result.error || "").toLowerCase().includes("missing phone number")) {
-      const defaultCountryCallingCode = (process.env.GHL_DEFAULT_COUNTRY_CALLING_CODE || "1").trim();
-      const phoneForGhl = toGhlPhoneBestEffort(lead.phone, { defaultCountryCallingCode });
-
-      const patchAttempt = async (phone: string) =>
-        updateGHLContact(
-          ghlContactId,
-          {
-            firstName: lead.firstName || undefined,
-            lastName: lead.lastName || undefined,
-            email: lead.email || undefined,
-            phone,
-            companyName: lead.companyName || undefined,
-            website: lead.companyWebsite || undefined,
-            timezone: lead.timezone || undefined,
-            source: "zrg-dashboard",
-          },
-          lead.client.ghlPrivateKey,
-          { locationId: lead.client.ghlLocationId || undefined }
-        );
-
-      // 1) If we already have a phone, try to sync it immediately.
-      if (phoneForGhl) {
-        const patch = await patchAttempt(phoneForGhl);
-        if (patch.success) {
-          result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey, {
-            locationId: lead.client.ghlLocationId || undefined,
-          });
-        }
-      }
-
-      // 2) If still failing, attempt the enrichment pipeline (message content → EmailBison → optional signature AI → Clay).
-      if (!result.success && (result.error || "").toLowerCase().includes("missing phone number")) {
-        const includeSignatureAi = process.env.PHONE_ENRICHMENT_SIGNATURE_AI_ENABLED === "true";
-        const enriched = await enrichPhoneThenSyncToGhl(leadId, { includeSignatureAi });
-
-        if (enriched.phoneFound) {
-          result = await sendSMS(ghlContactId, message, lead.client.ghlPrivateKey, {
-            locationId: lead.client.ghlLocationId || undefined,
-          });
-        } else {
-          return {
-            success: false,
-            error:
-              enriched.source === "clay_triggered"
-                ? "Cannot send SMS: phone missing. Enrichment triggered; SMS will be disabled until a phone is found."
-                : "Cannot send SMS: phone missing. Add a phone number to the lead and re-sync to GHL.",
-          };
-        }
-      }
-    }
-
-    if (!result.success) {
-      return { success: false, error: result.error || "Failed to send message via GHL" };
-    }
-
-    // Extract GHL message ID and timestamp from response
-    const ghlMessageId = result.data?.messageId || null;
-    const ghlDateAdded = result.data?.dateAdded ? new Date(result.data.dateAdded) : new Date();
-
-    console.log(`[sendMessage] GHL messageId: ${ghlMessageId}, dateAdded: ${ghlDateAdded.toISOString()}`);
-
-    // Save the outbound message to our database with GHL ID
-    const savedMessage = await prisma.message.create({
-      data: {
-        ghlId: ghlMessageId, // Store GHL message ID for deduplication
-        body: message,
-        direction: "outbound",
-        channel: "sms",
-        leadId: lead.id,
-        sentAt: ghlDateAdded, // Use GHL timestamp for accuracy
-      },
-    });
-
-    await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt: ghlDateAdded });
-
-    // Update the lead's updatedAt timestamp
-    await prisma.lead.update({
-      where: { id: leadId },
-      data: {
-        updatedAt: new Date(),
-        ...(lead.smsDndActive ? { smsDndActive: false, smsDndUpdatedAt: new Date() } : {}),
-      },
-    });
-
-    // Kick off no-response follow-ups starting from this outbound touch (if enabled)
-    autoStartNoResponseSequenceOnOutbound({ leadId, outboundAt: ghlDateAdded }).catch((err) => {
-      console.error("[sendMessage] Failed to auto-start no-response sequence:", err);
-    });
-
-    revalidatePath("/");
-
-    return {
-      success: true,
-      messageId: savedMessage.id,
-    };
+    const result = await sendSmsSystem(leadId, message, { sentBy: "setter" });
+    if (result.success) revalidatePath("/");
+    return result;
   } catch (error) {
     console.error("Failed to send message:", error);
     return {
@@ -975,7 +810,7 @@ export async function sendEmailMessage(
 ): Promise<SendMessageResult> {
   try {
     await requireLeadAccess(leadId);
-    const result = await sendEmailReplyForLead(leadId, message);
+    const result = await sendEmailReplyForLead(leadId, message, { sentBy: "setter" });
     if (!result.success) {
       return { success: false, error: result.error || "Failed to send email reply" };
     }
@@ -999,10 +834,20 @@ export async function sendLinkedInMessage(
   leadId: string,
   message: string,
   connectionNote?: string,
-  inMailSubject?: string
+  inMailSubject?: string,
+  meta?: { sentBy?: "ai" | "setter" | null; aiDraftId?: string | null }
 ): Promise<SendMessageResult & { messageType?: "dm" | "inmail" | "connection_request"; attemptedMethods?: string[] }> {
   try {
     await requireLeadAccess(leadId);
+
+    if (meta?.aiDraftId) {
+      const existing = await prisma.message.findUnique({
+        where: { aiDraftId: meta.aiDraftId },
+        select: { id: true },
+      });
+      if (existing) return { success: true, messageId: existing.id };
+    }
+
     // Get the lead with their client (for Unipile account)
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
@@ -1067,6 +912,8 @@ export async function sendLinkedInMessage(
         source: "zrg",
         leadId: lead.id,
         sentAt: new Date(),
+        sentBy: meta?.sentBy ?? "setter",
+        aiDraftId: meta?.aiDraftId || undefined,
       },
     });
 
@@ -1138,6 +985,75 @@ export async function getPendingDrafts(leadId: string, channel?: "sms" | "email"
  * @param draftId - The draft ID
  * @param editedContent - Optional edited content (uses original if not provided)
  */
+export async function approveAndSendDraftSystem(
+  draftId: string,
+  opts: { sentBy: "ai" | "setter"; editedContent?: string } = { sentBy: "setter" }
+): Promise<SendMessageResult> {
+  try {
+    const [draft, existingMessage] = await Promise.all([
+      prisma.aIDraft.findUnique({
+        where: { id: draftId },
+        select: {
+          id: true,
+          leadId: true,
+          content: true,
+          channel: true,
+          status: true,
+        },
+      }),
+      prisma.message.findUnique({
+        where: { aiDraftId: draftId },
+        select: { id: true },
+      }),
+    ]);
+
+    if (existingMessage) {
+      await prisma.aIDraft
+        .updateMany({ where: { id: draftId, status: "pending" }, data: { status: "approved" } })
+        .catch(() => undefined);
+      return { success: true, messageId: existingMessage.id };
+    }
+
+    if (!draft) {
+      return { success: false, error: "Draft not found" };
+    }
+
+    if (draft.status !== "pending") {
+      return { success: false, error: "Draft is not pending" };
+    }
+
+    if (draft.channel === "email") {
+      const result = await sendEmailReply(draftId, opts.editedContent, { sentBy: opts.sentBy });
+      if (!result.success) return { success: false, error: result.error || "Failed to send email reply" };
+      return { success: true, messageId: result.messageId };
+    }
+
+    if (draft.channel === "linkedin") {
+      return { success: false, error: "System send for LinkedIn drafts is not supported" };
+    }
+
+    const messageContent = opts.editedContent || draft.content;
+    const sendResult = await sendSmsSystem(draft.leadId, messageContent, {
+      sentBy: opts.sentBy,
+      aiDraftId: draftId,
+    });
+
+    if (!sendResult.success) {
+      return sendResult;
+    }
+
+    await prisma.aIDraft.update({
+      where: { id: draftId },
+      data: { status: "approved" },
+    });
+
+    return { success: true, messageId: sendResult.messageId };
+  } catch (error) {
+    console.error("[approveAndSendDraftSystem] Failed:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
 export async function approveAndSendDraft(
   draftId: string,
   editedContent?: string
@@ -1174,13 +1090,16 @@ export async function approveAndSendDraft(
     }
 
     if (draft.channel === "email") {
-      return await sendEmailReply(draftId, editedContent);
+      return await approveAndSendDraftSystem(draftId, { sentBy: "setter", editedContent });
     }
 
     if (draft.channel === "linkedin") {
       // Send LinkedIn message via Unipile
       const messageContent = editedContent || draft.content;
-      const linkedInResult = await sendLinkedInMessage(draft.leadId, messageContent);
+      const linkedInResult = await sendLinkedInMessage(draft.leadId, messageContent, undefined, undefined, {
+        sentBy: "setter",
+        aiDraftId: draftId,
+      });
 
       if (!linkedInResult.success) {
         return linkedInResult;
@@ -1197,20 +1116,12 @@ export async function approveAndSendDraft(
       return { success: true, messageId: linkedInResult.messageId };
     }
 
-    const messageContent = editedContent || draft.content;
-
     // Send the message (SMS)
-    const sendResult = await sendMessage(draft.leadId, messageContent);
+    const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "setter", editedContent });
 
     if (!sendResult.success) {
       return sendResult;
     }
-
-    // Mark draft as approved
-    await prisma.aIDraft.update({
-      where: { id: draftId },
-      data: { status: "approved" },
-    });
 
     revalidatePath("/");
 

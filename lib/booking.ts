@@ -88,6 +88,7 @@ export async function shouldAutoBook(leadId: string): Promise<{
       lead.status === "meeting-booked" ||
       !!lead.ghlAppointmentId ||
       !!lead.calendlyInviteeUri ||
+      !!lead.calendlyScheduledEventUri ||
       !!lead.appointmentBookedAt;
     if (alreadyBooked) {
       return { shouldBook: false, reason: "Lead already has an appointment booked" };
@@ -153,6 +154,7 @@ export async function bookMeetingOnGHL(
       lead.status === "meeting-booked" ||
       !!lead.ghlAppointmentId ||
       !!lead.calendlyInviteeUri ||
+      !!lead.calendlyScheduledEventUri ||
       !!lead.appointmentBookedAt;
     if (alreadyBooked) {
       return { success: false, error: "Lead already has an appointment booked" };
@@ -321,6 +323,7 @@ export async function bookMeetingOnCalendly(leadId: string, selectedSlot: string
       lead.status === "meeting-booked" ||
       !!lead.ghlAppointmentId ||
       !!lead.calendlyInviteeUri ||
+      !!lead.calendlyScheduledEventUri ||
       !!lead.appointmentBookedAt;
     if (alreadyBooked) {
       return { success: false, error: "Lead already has an appointment booked" };

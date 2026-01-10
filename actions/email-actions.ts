@@ -8,6 +8,7 @@ import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation
 import { isOptOutText } from "@/lib/sentiment";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { emailBisonHtmlFromPlainText } from "@/lib/email-format";
+import type { OutboundSentBy } from "@/lib/system-sender";
 
 interface SendEmailResult {
   success: boolean;
@@ -49,7 +50,8 @@ async function validateWithEmailGuard(email: string) {
 
 export async function sendEmailReply(
   draftId: string,
-  editedContent?: string
+  editedContent?: string,
+  opts: { sentBy?: OutboundSentBy | null } = {}
 ): Promise<SendEmailResult> {
   try {
     const draft = await prisma.aIDraft.findUnique({
@@ -65,6 +67,17 @@ export async function sendEmailReply(
 
     if (!draft) {
       return { success: false, error: "Draft not found" };
+    }
+
+    const existingMessage = await prisma.message.findUnique({
+      where: { aiDraftId: draftId },
+      select: { id: true },
+    });
+    if (existingMessage) {
+      await prisma.aIDraft
+        .updateMany({ where: { id: draftId, status: "pending" }, data: { status: "approved" } })
+        .catch(() => undefined);
+      return { success: true, messageId: existingMessage.id };
     }
 
     if (draft.status !== "pending") {
@@ -202,6 +215,8 @@ export async function sendEmailReply(
         direction: "outbound",
         leadId: lead.id,
         sentAt: new Date(),
+        sentBy: opts.sentBy || undefined,
+        aiDraftId: draftId,
       },
     });
 
@@ -243,7 +258,8 @@ export async function sendEmailReply(
  */
 export async function sendEmailReplyForLead(
   leadId: string,
-  messageContent: string
+  messageContent: string,
+  opts: { sentBy?: OutboundSentBy | null } = {}
 ): Promise<SendEmailResult> {
   try {
     const lead = await prisma.lead.findUnique({
@@ -371,6 +387,7 @@ export async function sendEmailReplyForLead(
         direction: "outbound",
         leadId: lead.id,
         sentAt: new Date(),
+        sentBy: opts.sentBy || undefined,
       },
     });
 

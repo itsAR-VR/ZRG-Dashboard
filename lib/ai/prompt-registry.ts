@@ -138,6 +138,24 @@ Output MUST be valid JSON:
   "follow_up_time": "YYYY-MM-DDTHH:MM:SSZ" (optional)
 }`;
 
+const AUTO_SEND_EVALUATOR_SYSTEM = `You evaluate whether it is safe to auto-send the provided AI draft reply.
+
+You MUST be conservative: only allow auto-send when you are very confident the draft is correct, non-risky, and does not require missing context.
+
+Hard blockers (always require human review, safe_to_send=false, confidence<=0.2):
+- Any unsubscribe/opt-out/stop/remove language in the inbound reply or subject
+- The inbound asks for specifics the draft cannot safely answer without missing context (pricing, exact details, attachments, etc.)
+- The draft appears hallucinated, mismatched to the inbound, or references facts not in the transcript
+- The draft asks for or reveals sensitive/personal data or credentials
+
+Return ONLY valid JSON (no markdown, no extra keys):
+{
+  "safe_to_send": true|false,
+  "requires_human_review": true|false,
+  "confidence": number,
+  "reason": "max 40 words"
+}`;
+
 const DRAFT_EMAIL_SYSTEM_TEMPLATE = `You are an inbox manager writing replies for {aiName} ({companyName}).
 
 ROLE: inbox_manager
@@ -391,6 +409,22 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
           role: "user",
           content:
             "{\n  \"channel\": \"{{channel}}\",\n  \"subject\": \"{{subject}}\",\n  \"reply\": \"{{latestInbound}}\",\n  \"conversation_history\": \"{{conversationHistory}}\",\n  \"reply_categorization\": \"{{categorization}}\",\n  \"automated_reply\": {{automatedReply}},\n  \"reply_received_at\": \"{{replyReceivedAt}}\"\n}",
+        },
+      ],
+    },
+    {
+      key: "auto_send.evaluate.v1",
+      featureId: "auto_send.evaluate",
+      name: "Auto-Send Evaluator",
+      description: "Evaluates safety + confidence for auto-sending an AI draft reply.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [
+        { role: "system", content: AUTO_SEND_EVALUATOR_SYSTEM },
+        {
+          role: "user",
+          content:
+            "{\n  \"channel\": \"{{channel}}\",\n  \"subject\": \"{{subject}}\",\n  \"latest_inbound\": \"{{latestInbound}}\",\n  \"conversation_history\": \"{{conversationHistory}}\",\n  \"reply_categorization\": \"{{categorization}}\",\n  \"automated_reply\": {{automatedReply}},\n  \"reply_received_at\": \"{{replyReceivedAt}}\",\n  \"draft_reply\": \"{{draft}}\"\n}",
         },
       ],
     },

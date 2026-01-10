@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { isMeetingBooked } from "@/lib/meeting-booking-provider";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 
 const MEETING_REQUESTED_SEQUENCE_NAME = "Meeting Requested Day 1/2/5/7";
@@ -60,7 +61,12 @@ export async function autoStartMeetingRequestedSequenceIfEligible(opts: {
       autoBookMeetingsEnabled: true,
       ghlAppointmentId: true,
       calendlyInviteeUri: true,
-      client: { select: { settings: { select: { autoBookMeetings: true, followUpsPausedUntil: true } } } },
+      calendlyScheduledEventUri: true,
+      client: {
+        select: {
+          settings: { select: { autoBookMeetings: true, followUpsPausedUntil: true, meetingBookingProvider: true } },
+        },
+      },
     },
   });
 
@@ -71,7 +77,8 @@ export async function autoStartMeetingRequestedSequenceIfEligible(opts: {
   if (lead.status === "blacklisted" || lead.status === "unqualified" || lead.sentimentTag === "Blacklist") {
     return { started: false, reason: lead.status === "unqualified" ? "unqualified" : "blacklisted" };
   }
-  if (lead.ghlAppointmentId || lead.calendlyInviteeUri) return { started: false, reason: "already_booked" };
+  const meetingBookingProvider = lead.client.settings?.meetingBookingProvider ?? "GHL";
+  if (isMeetingBooked(lead, { meetingBookingProvider })) return { started: false, reason: "already_booked" };
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
   if (!lead.autoBookMeetingsEnabled) return { started: false, reason: "lead_auto_book_disabled" };
   if (!lead.client.settings?.autoBookMeetings) return { started: false, reason: "workspace_auto_book_disabled" };
@@ -100,7 +107,8 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
       autoFollowUpEnabled: true,
       ghlAppointmentId: true,
       calendlyInviteeUri: true,
-      client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
+      calendlyScheduledEventUri: true,
+      client: { select: { settings: { select: { followUpsPausedUntil: true, meetingBookingProvider: true } } } },
     },
   });
 
@@ -111,7 +119,8 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
   if (lead.status === "blacklisted" || lead.status === "unqualified" || lead.sentimentTag === "Blacklist") {
     return { started: false, reason: lead.status === "unqualified" ? "unqualified" : "blacklisted" };
   }
-  if (!lead.ghlAppointmentId && !lead.calendlyInviteeUri) return { started: false, reason: "no_appointment" };
+  const postBookingProvider = lead.client.settings?.meetingBookingProvider ?? "GHL";
+  if (!isMeetingBooked(lead, { meetingBookingProvider: postBookingProvider })) return { started: false, reason: "no_appointment" };
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
 
   const sequence = await prisma.followUpSequence.findFirst({
@@ -139,7 +148,8 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
       autoFollowUpEnabled: true,
       ghlAppointmentId: true,
       calendlyInviteeUri: true,
-      client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
+      calendlyScheduledEventUri: true,
+      client: { select: { settings: { select: { followUpsPausedUntil: true, meetingBookingProvider: true } } } },
       followUpInstances: {
         where: { status: { in: ["active", "paused"] } },
         select: { id: true, status: true, pausedReason: true, sequenceId: true, currentStep: true },
@@ -156,7 +166,8 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
   if (lead.status === "blacklisted" || lead.status === "unqualified" || lead.sentimentTag === "Blacklist") {
     return { started: false, reason: lead.status === "unqualified" ? "unqualified" : "blacklisted" };
   }
-  if (lead.ghlAppointmentId || lead.calendlyInviteeUri) return { started: false, reason: "already_booked" };
+  const noResponseProvider = lead.client.settings?.meetingBookingProvider ?? "GHL";
+  if (isMeetingBooked(lead, { meetingBookingProvider: noResponseProvider })) return { started: false, reason: "already_booked" };
 
   const activeInstances = lead.followUpInstances.filter((i) => i.status === "active");
   if (activeInstances.length > 0) return { started: false, reason: "instance_already_active" };

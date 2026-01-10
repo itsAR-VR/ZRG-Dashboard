@@ -1,26 +1,28 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Users, MessageSquare, Calendar, Clock, ArrowUpRight, ArrowDownRight, Loader2, BarChart3 } from "lucide-react"
+import { Users, MessageSquare, Calendar, Clock, ArrowUpRight, ArrowDownRight, Loader2, BarChart3, Download } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
 import {
-  PieChart,
-  Pie,
   Cell,
+  BarChart,
+  Bar,
   XAxis,
   YAxis,
   CartesianGrid,
   Legend,
   LineChart,
   Line,
+  LabelList,
 } from "recharts"
-import { getAnalytics, type AnalyticsData } from "@/actions/analytics-actions"
+import { getAnalytics, getEmailCampaignAnalytics, type AnalyticsData, type EmailCampaignKpiRow } from "@/actions/analytics-actions"
 
-// Sentiment colors for the pie chart
+// Sentiment colors for charts
 const SENTIMENT_COLORS: Record<string, string> = {
   "Meeting Requested": "#10B981",
   "Positive": "#22C55E",
@@ -33,6 +35,24 @@ const SENTIMENT_COLORS: Record<string, string> = {
   "Unknown": "#9CA3AF",
 }
 
+function hashStringToHue(value: string): number {
+  let hash = 0
+  for (let i = 0; i < value.length; i++) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0
+  }
+  return hash % 360
+}
+
+function getSentimentColor(sentiment: string): string {
+  return SENTIMENT_COLORS[sentiment] ?? `hsl(${hashStringToHue(sentiment)}, 70%, 55%)`
+}
+
+function truncateLabel(value: string, maxLength: number): string {
+  const trimmed = value.trim()
+  if (trimmed.length <= maxLength) return trimmed
+  return `${trimmed.slice(0, Math.max(0, maxLength - 1))}…`
+}
+
 interface AnalyticsViewProps {
   activeWorkspace?: string | null
 }
@@ -40,6 +60,8 @@ interface AnalyticsViewProps {
 export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [campaignRows, setCampaignRows] = useState<EmailCampaignKpiRow[] | null>(null)
+  const [campaignLoading, setCampaignLoading] = useState(true)
 
   useEffect(() => {
     async function fetchAnalytics() {
@@ -55,7 +77,19 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
       setIsLoading(false)
     }
 
+    async function fetchCampaignAnalytics() {
+      setCampaignLoading(true)
+      const result = await getEmailCampaignAnalytics({ clientId: activeWorkspace })
+      if (result.success && result.data) {
+        setCampaignRows(result.data.campaigns)
+      } else {
+        setCampaignRows(null)
+      }
+      setCampaignLoading(false)
+    }
+
     fetchAnalytics()
+    fetchCampaignAnalytics()
   }, [activeWorkspace])
 
   const kpiCards = [
@@ -67,12 +101,42 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
     { label: "Avg Response Time", value: data?.overview.avgResponseTime || "—", icon: Clock, change: 0, up: true },
   ]
 
-  // Prepare sentiment breakdown for pie chart
-  const sentimentData = data?.sentimentBreakdown.map((s) => ({
-    name: s.sentiment,
-    value: s.percentage,
-    color: SENTIMENT_COLORS[s.sentiment] || SENTIMENT_COLORS["Unknown"],
-  })) || []
+  // Prepare sentiment breakdown for bar chart (top N + Other)
+  const sentimentBarData = (() => {
+    const breakdown = data?.sentimentBreakdown ?? []
+    const totalLeads = data?.overview.totalLeads ?? 0
+
+    const sorted = breakdown
+      .map((row) => ({
+        sentiment: row.sentiment || "Unknown",
+        count: row.count,
+      }))
+      .filter((row) => row.count > 0)
+      .sort((a, b) => b.count - a.count)
+
+    const TOP_N = 10
+    const top = sorted.slice(0, TOP_N)
+    const rest = sorted.slice(TOP_N)
+
+    const dataRows = top.map((row) => ({
+      sentiment: row.sentiment,
+      count: row.count,
+      percentage: totalLeads > 0 ? (row.count / totalLeads) * 100 : 0,
+      fill: getSentimentColor(row.sentiment),
+    }))
+
+    const otherCount = rest.reduce((sum, row) => sum + row.count, 0)
+    if (otherCount > 0) {
+      dataRows.push({
+        sentiment: "Other",
+        count: otherCount,
+        percentage: totalLeads > 0 ? (otherCount / totalLeads) * 100 : 0,
+        fill: SENTIMENT_COLORS["Unknown"],
+      })
+    }
+
+    return dataRows
+  })()
 
   // Prepare weekly stats for line chart
   const weeklyData = data?.weeklyStats.map((s) => ({
@@ -80,6 +144,10 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
     inbound: s.inbound,
     outbound: s.outbound,
   })) || []
+
+  const sortedCampaignRows = (campaignRows || [])
+    .slice()
+    .sort((a, b) => b.rates.bookedPerPositive - a.rates.bookedPerPositive)
 
   if (isLoading) {
     return (
@@ -125,17 +193,30 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
             <h1 className="text-2xl font-bold">Analytics</h1>
             <p className="text-muted-foreground">Track your outreach performance</p>
           </div>
-          <Select defaultValue="7d">
-            <SelectTrigger className="w-[150px]">
-              <SelectValue placeholder="Select period" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="24h">Last 24 hours</SelectItem>
-              <SelectItem value="7d">Last 7 days</SelectItem>
-              <SelectItem value="30d">Last 30 days</SelectItem>
-              <SelectItem value="90d">Last 90 days</SelectItem>
-            </SelectContent>
-          </Select>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              disabled={!activeWorkspace}
+              onClick={() => {
+                if (!activeWorkspace) return
+                window.location.href = `/api/export/chatgpt?clientId=${activeWorkspace}`
+              }}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Download dataset for ChatGPT
+            </Button>
+            <Select defaultValue="7d">
+              <SelectTrigger className="w-[150px]" disabled title="Time range filtering is coming soon">
+                <SelectValue placeholder="Select period" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="24h">Last 24 hours</SelectItem>
+                <SelectItem value="7d">Last 7 days</SelectItem>
+                <SelectItem value="30d">Last 30 days</SelectItem>
+                <SelectItem value="90d">Last 90 days</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </div>
 
@@ -157,41 +238,73 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
 
         {/* Charts Row */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Sentiment Breakdown Pie Chart */}
+          {/* Sentiment Breakdown Bar Chart */}
           <Card>
             <CardHeader>
               <CardTitle>Response Sentiment</CardTitle>
-              <CardDescription>Breakdown of lead response sentiment</CardDescription>
+              <CardDescription>Top sentiments by volume (shown as % of leads; smaller categories grouped as “Other”)</CardDescription>
             </CardHeader>
             <CardContent>
-              {sentimentData.length > 0 ? (
+              {sentimentBarData.length > 0 ? (
                 <ChartContainer
                   config={{
-                    interested: { label: "Interested", color: "#10B981" },
-                    neutral: { label: "Neutral", color: "#6B7280" },
-                    notInterested: { label: "Not Interested", color: "#EF4444" },
-                    outOfOffice: { label: "Out of Office", color: "#F59E0B" },
+                    percentage: { label: "Sentiment", color: "#6B7280" },
                   }}
-                  className="h-[250px]"
+                  className="h-[250px] aspect-auto"
                 >
-                  <PieChart>
-                    <Pie
-                      data={sentimentData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={100}
-                      paddingAngle={2}
-                      dataKey="value"
-                      label={({ name, value }) => `${name}: ${value}%`}
-                      labelLine={false}
-                    >
-                      {sentimentData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
+                  <BarChart
+                    data={sentimentBarData}
+                    layout="vertical"
+                    margin={{ top: 0, right: 24, left: 0, bottom: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                    <XAxis
+                      type="number"
+                      domain={[0, 100]}
+                      tickFormatter={(value) => `${value}%`}
+                    />
+                    <YAxis
+                      type="category"
+                      dataKey="sentiment"
+                      width={130}
+                      tickFormatter={(value: string) => truncateLabel(value, 18)}
+                    />
+                    <ChartTooltip
+                      content={
+                        <ChartTooltipContent
+                          hideLabel
+                          formatter={(_value, _name, _item, _index, payload) => {
+                            const row = payload as
+                              | { sentiment?: string; count?: number; percentage?: number }
+                              | undefined
+
+                            const sentiment = row?.sentiment ?? "Unknown"
+                            const count = typeof row?.count === "number" ? row.count : 0
+                            const pct = typeof row?.percentage === "number" ? row.percentage : 0
+
+                            return (
+                              <div className="flex flex-1 justify-between gap-4">
+                                <span className="text-muted-foreground">{sentiment}</span>
+                                <span className="text-foreground font-mono font-medium tabular-nums">
+                                  {count.toLocaleString()} ({pct.toFixed(1)}%)
+                                </span>
+                              </div>
+                            )
+                          }}
+                        />
+                      }
+                    />
+                    <Bar dataKey="percentage" radius={[0, 4, 4, 0]}>
+                      {sentimentBarData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.fill} />
                       ))}
-                    </Pie>
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                  </PieChart>
+                      <LabelList
+                        dataKey="percentage"
+                        position="right"
+                        formatter={(value: number) => `${value.toFixed(0)}%`}
+                      />
+                    </Bar>
+                  </BarChart>
                 </ChartContainer>
               ) : (
                 <div className="h-[250px] flex items-center justify-center text-muted-foreground">
@@ -228,7 +341,7 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                   inbound: { label: "Inbound", color: "#3B82F6" },
                   outbound: { label: "Outbound", color: "#10B981" },
                 }}
-                className="h-[250px]"
+                className="h-[250px] aspect-auto"
               >
                 <LineChart data={weeklyData}>
                   <CartesianGrid strokeDasharray="3 3" />
@@ -291,6 +404,59 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
             </CardContent>
           </Card>
         ) : null}
+
+        {/* Email Campaign KPIs */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Email Campaign KPIs</CardTitle>
+            <CardDescription>Last 7 days (positive replies → meetings requested/booked)</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {campaignLoading ? (
+              <div className="h-[120px] flex items-center justify-center text-muted-foreground">
+                <Loader2 className="h-5 w-5 animate-spin" />
+              </div>
+            ) : sortedCampaignRows.length > 0 ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Campaign</TableHead>
+                    <TableHead className="text-right">Positive</TableHead>
+                    <TableHead className="text-right">Requested</TableHead>
+                    <TableHead className="text-right">Booked</TableHead>
+                    <TableHead className="text-right">Booked / Positive</TableHead>
+                    <TableHead className="text-right">Booked / Requested</TableHead>
+                    <TableHead className="text-right">Mode</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sortedCampaignRows.map((row) => (
+                    <TableRow key={row.id}>
+                      <TableCell className="font-medium">
+                        <div className="flex flex-col">
+                          <span>{row.name}</span>
+                          <span className="text-xs text-muted-foreground">{row.bisonCampaignId}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right">{row.positiveReplies}</TableCell>
+                      <TableCell className="text-right">{row.meetingsRequested}</TableCell>
+                      <TableCell className="text-right">{row.meetingsBooked}</TableCell>
+                      <TableCell className="text-right">{Math.round(row.rates.bookedPerPositive * 100)}%</TableCell>
+                      <TableCell className="text-right">{Math.round(row.rates.bookedPerRequested * 100)}%</TableCell>
+                      <TableCell className="text-right">
+                        <Badge variant="secondary">{row.responseMode}</Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <div className="py-8 text-center text-muted-foreground">
+                No campaign data available
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Top Clients */}
         <Card>

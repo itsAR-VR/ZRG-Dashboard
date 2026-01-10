@@ -2,16 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getGHLContact } from "@/lib/ghl-api";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { approveAndSendDraft } from "@/actions/message-actions";
+import { approveAndSendDraftSystem } from "@/actions/message-actions";
 import { buildSentimentTranscriptFromMessages, classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
 import { findOrCreateLead, normalizePhone } from "@/lib/lead-matching";
 import { normalizeSmsCampaignLabel } from "@/lib/sms-campaign";
 import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
 import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBooking } from "@/lib/followup-engine";
 import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
+import { evaluateAutoSend } from "@/lib/auto-send-evaluator";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
+import { sendSlackDmByEmail } from "@/lib/slack-dm";
+import { getPublicAppUrl } from "@/lib/app-url";
 
 function normalizeLooseKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -755,11 +758,79 @@ export async function POST(request: NextRequest) {
         );
         if (draftResult.success) {
           draftId = draftResult.draftId;
+          const draftContent = draftResult.content || "";
           console.log(`Generated AI draft: ${draftId}`);
 
-          // Auto-Reply Logic: Check if enabled for this lead
-          // lead.autoReplyEnabled comes from the database (via upsert)
-          if (lead.autoReplyEnabled && draftId) {
+          const emailCampaign = lead.emailCampaignId
+            ? await prisma.emailCampaign.findUnique({
+                where: { id: lead.emailCampaignId },
+                select: { responseMode: true, autoSendConfidenceThreshold: true, name: true, bisonCampaignId: true },
+              })
+            : null;
+
+          const responseMode = emailCampaign?.responseMode ?? null;
+          const autoSendThreshold = emailCampaign?.autoSendConfidenceThreshold ?? 0.9;
+
+          if (responseMode === "AI_AUTO_SEND" && draftId && draftContent) {
+            const evaluation = await evaluateAutoSend({
+              clientId: client.id,
+              leadId: lead.id,
+              channel: "sms",
+              latestInbound: messageBody,
+              subject: null,
+              conversationHistory: transcript || `Lead: ${messageBody}`,
+              categorization: sentimentTag,
+              automatedReply: null,
+              replyReceivedAt: webhookMessageTime,
+              draft: draftContent,
+            });
+
+            if (evaluation.safeToSend && evaluation.confidence >= autoSendThreshold) {
+              console.log(
+                `[Auto-Send] Sending draft ${draftId} for lead ${lead.id} (confidence ${evaluation.confidence.toFixed(2)} >= ${autoSendThreshold.toFixed(2)})`
+              );
+              const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
+              if (sendResult.success) {
+                console.log(`[Auto-Send] Sent message: ${sendResult.messageId}`);
+                // Draft status is now 'approved' in DB
+              } else {
+                console.error(`[Auto-Send] Failed to send draft: ${sendResult.error}`);
+              }
+            } else {
+              const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
+              const campaignLabel = emailCampaign ? `${emailCampaign.name} (${emailCampaign.bisonCampaignId})` : "Unknown campaign";
+              const url = `${getPublicAppUrl()}/?view=inbox&leadId=${lead.id}`;
+              const confidenceText = `${evaluation.confidence.toFixed(2)} < ${autoSendThreshold.toFixed(2)}`;
+
+              const dmResult = await sendSlackDmByEmail({
+                email: "jon@zeroriskgrowth.com",
+                dedupeKey: `auto_send_review:${draftId}`,
+                text: `AI auto-send review needed (${confidenceText})`,
+                blocks: [
+                  { type: "header", text: { type: "plain_text", text: "AI Auto-Send: Review Needed", emoji: true } },
+                  {
+                    type: "section",
+                    fields: [
+                      { type: "mrkdwn", text: `*Lead:*\n${leadName}${lead.email ? `\n${lead.email}` : ""}` },
+                      { type: "mrkdwn", text: `*Campaign:*\n${campaignLabel}` },
+                      { type: "mrkdwn", text: `*Sentiment:*\n${sentimentTag || "Unknown"}` },
+                      { type: "mrkdwn", text: `*Confidence:*\n${evaluation.confidence.toFixed(2)} (thresh ${autoSendThreshold.toFixed(2)})` },
+                    ],
+                  },
+                  { type: "section", text: { type: "mrkdwn", text: `*Reason:*\n${evaluation.reason}` } },
+                  {
+                    type: "section",
+                    text: { type: "mrkdwn", text: `*Draft Preview:*\n\`\`\`\n${draftContent.slice(0, 1400)}\n\`\`\`` },
+                  },
+                  { type: "section", text: { type: "mrkdwn", text: `<${url}|Open lead in dashboard>` } },
+                ],
+              });
+              if (!dmResult.success) {
+                console.error(`[Slack DM] Failed to notify Jon for draft ${draftId}: ${dmResult.error || "unknown error"}`);
+              }
+            }
+          } else if (!emailCampaign && lead.autoReplyEnabled && draftId) {
+            // Legacy per-lead auto-reply path (only when no EmailCampaign is present).
             const decision = await decideShouldAutoReply({
               clientId: client.id,
               leadId: lead.id,
@@ -776,7 +847,7 @@ export async function POST(request: NextRequest) {
               console.log(`[Auto-Reply] Skipped auto-send for lead ${lead.id}: ${decision.reason}`);
             } else {
               console.log(`[Auto-Reply] Auto-approving draft ${draftId} for lead ${lead.id}`);
-              const sendResult = await approveAndSendDraft(draftId);
+              const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
               if (sendResult.success) {
                 console.log(`[Auto-Reply] Sent message: ${sendResult.messageId}`);
                 // Draft status is now 'approved' in DB

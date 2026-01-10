@@ -4,7 +4,7 @@ import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { runResponse } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
-import { sendMessage } from "@/actions/message-actions";
+import { sendSmsSystem } from "@/lib/system-sender";
 import { sendEmailReply } from "@/actions/email-actions";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
@@ -21,6 +21,7 @@ import {
 import { sendSlackNotification } from "@/lib/slack-notifications";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
+import { getBookingLink } from "@/lib/meeting-booking-provider";
 
 // =============================================================================
 // Types
@@ -52,11 +53,8 @@ interface WorkspaceSettings {
   targetResult: string | null;
   qualificationQuestions: string | null; // JSON array of questions
   calendarSlotsToShow: number | null;
-}
-
-interface CalendarLinkData {
-  url: string;
-  name: string;
+  meetingBookingProvider?: "GHL" | "CALENDLY" | null;
+  calendlyEventTypeLink?: string | null;
 }
 
 interface ExecutionResult {
@@ -336,27 +334,6 @@ function parseQualificationQuestions(json: string | null): Array<{ id: string; q
 }
 
 /**
- * Get default calendar link for a workspace
- */
-async function getDefaultCalendarLink(clientId: string): Promise<CalendarLinkData | null> {
-  try {
-    const calendarLink = await prisma.calendarLink.findFirst({
-      where: {
-        clientId,
-        isDefault: true,
-      },
-      select: {
-        url: true,
-        name: true,
-      },
-    });
-    return calendarLink;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Generate a follow-up message from template
  * Supports variables: {firstName}, {lastName}, {email}, {phone}, {availability},
  * {senderName}, {companyName}, {result}, {calendarLink}, {qualificationQuestion1}, {qualificationQuestion2}
@@ -366,8 +343,8 @@ export async function generateFollowUpMessage(
   lead: LeadContext,
   settings: WorkspaceSettings | null
 ): Promise<{ content: string; subject: string | null; offeredSlots: OfferedSlot[] }> {
-  // Fetch calendar link for the workspace
-  const calendarLink = await getDefaultCalendarLink(lead.clientId);
+  // Provider-aware booking link for {calendarLink}
+  const bookingLink = await getBookingLink(lead.clientId, settings as any);
 
   // Parse qualification questions
   const qualificationQuestions = parseQualificationQuestions(settings?.qualificationQuestions || null);
@@ -467,7 +444,7 @@ export async function generateFollowUpMessage(
       .replace(/\{result\}/g, settings?.targetResult || "achieving your goals")
       // Calendar/availability variables
       .replace(/\{availability\}/g, availabilityText)
-      .replace(/\{calendarLink\}/g, calendarLink?.url || "[calendar link]")
+      .replace(/\{calendarLink\}/g, bookingLink || "[calendar link]")
       // Qualification questions
       .replace(/\{qualificationQuestion1\}/g, question1)
       .replace(/\{qualificationQuestion2\}/g, question2);
@@ -1012,12 +989,12 @@ export async function executeFollowUpStep(
     }
 
     if (step.channel === "sms") {
-      const sendResult = await sendMessage(lead.id, content);
+      const sendResult = await sendSmsSystem(lead.id, content);
       if (!sendResult.success) {
         const msg = sendResult.error || "Failed to send SMS";
         const lower = msg.toLowerCase();
 
-        // Contact is in SMS DND in GHL. Marked on the lead by sendMessage().
+        // Contact is in SMS DND in GHL. Marked on the lead by sendSmsSystem().
         // Treat as non-retriable for follow-up sequences so cron doesn't loop on permanent DND.
         if (
           sendResult.errorCode === "sms_dnd" ||

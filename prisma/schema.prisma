@@ -20,6 +20,11 @@ enum MeetingBookingProvider {
   CALENDLY
 }
 
+enum CampaignResponseMode {
+  SETTER_MANAGED
+  AI_AUTO_SEND
+}
+
 // Stores GHL API Keys per sub-account for multi-tenancy
 // Each workspace is tied to a user (from Supabase Auth)
 model Client {
@@ -174,6 +179,8 @@ model Lead {
   companyName      String?   // Lead's actual company name
   companyWebsite   String?   // Company website URL
   companyState     String?   // Company state/region
+  industry         String?   // Company industry (EmailBison custom variable)
+  employeeHeadcount String?  // Company employee headcount (EmailBison custom variable; raw)
   // Status and sentiment
   status       String        @default("new")
   sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.
@@ -235,6 +242,8 @@ model Lead {
   @@index([email])          // For cross-channel matching
   @@index([phone])          // For cross-channel matching
   @@index([linkedinUrl])    // For LinkedIn matching
+  @@index([industry])
+  @@index([employeeHeadcount])
   @@index([enrichmentStatus]) // For batch enrichment queries
   @@index([preferredCalendarLinkId])
   @@index([lastInboundAt(sort: Desc)])
@@ -271,9 +280,13 @@ model Message {
   // Status
   isRead    Boolean  @default(false)
   direction String   // 'inbound' or 'outbound'
+  // Tracking
+  sentBy    String?  // 'ai' | 'setter' (outbound only)
+  aiDraftId String?  @unique // When an outbound message was sent from an AI draft
   // Lead association
   leadId    String
   lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  aiDraft   AIDraft? @relation(fields: [aiDraftId], references: [id], onDelete: SetNull)
   // Timestamps
   sentAt    DateTime @default(now()) // Actual timestamp when message was sent/received
   createdAt DateTime @default(now()) // When record was created in our database
@@ -318,6 +331,7 @@ model AIDraft {
   content   String   @db.Text
   channel   String   @default("sms") // sms | email
   status    String   @default("pending") // pending, approved, rejected
+  sentMessage Message?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -365,6 +379,8 @@ model EmailCampaign {
   client         Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   leads          Lead[]
   reactivationCampaigns ReactivationCampaign[]
+  responseMode   CampaignResponseMode @default(SETTER_MANAGED)
+  autoSendConfidenceThreshold Float @default(0.9)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { analyzeInboundEmailReply, buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, isOptOutText, SENTIMENT_TO_STATUS, isPositiveSentiment, type SentimentTag } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { approveAndSendDraft } from "@/actions/message-actions";
+import { approveAndSendDraftSystem } from "@/actions/message-actions";
 import { findOrCreateLead } from "@/lib/lead-matching";
 import { createEmailBisonLead, fetchEmailBisonLead, fetchEmailBisonSentEmails, getCustomVariable } from "@/lib/emailbison-api";
 import { extractContactFromSignature, extractLinkedInFromText, extractPhoneFromText, extractContactFromMessageContent } from "@/lib/signature-extractor";
@@ -14,6 +14,7 @@ import { toStoredPhone } from "@/lib/phone-utils";
 import { autoStartMeetingRequestedSequenceIfEligible, autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
+import { evaluateAutoSend } from "@/lib/auto-send-evaluator";
 import {
   pauseFollowUpsOnReply,
   pauseFollowUpsUntil,
@@ -23,6 +24,8 @@ import {
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
+import { sendSlackDmByEmail } from "@/lib/slack-dm";
+import { getPublicAppUrl } from "@/lib/app-url";
 
 // =============================================================================
 // Type Definitions
@@ -345,6 +348,8 @@ interface EmailBisonEnrichmentResult {
   companyName?: string;
   companyWebsite?: string;
   companyState?: string;
+  industry?: string;
+  employeeHeadcount?: string;
   timezoneRaw?: string;
   // Additional data for Clay enrichment
   clayData: EmailBisonEnrichmentData;
@@ -427,6 +432,23 @@ async function enrichLeadFromEmailBison(
       result.companyState = companyState;
     }
 
+    // Industry from custom variables
+    const industry = getCustomVariable(customVars, "industry");
+    if (industry && industry !== "-") {
+      result.clayData.industry = industry;
+      result.industry = industry;
+    }
+
+    // Employee headcount from custom variables
+    const employeeHeadcount =
+      getCustomVariable(customVars, "employee_headcount") ||
+      getCustomVariable(customVars, "employee headcount") ||
+      getCustomVariable(customVars, "headcount");
+    if (employeeHeadcount && employeeHeadcount !== "-") {
+      result.clayData.employeeHeadcount = employeeHeadcount;
+      result.employeeHeadcount = employeeHeadcount;
+    }
+
     // Timezone from custom variables (best-effort; may be IANA or an abbreviation)
     const timezoneRaw =
       getCustomVariable(customVars, "timezone") ||
@@ -439,7 +461,16 @@ async function enrichLeadFromEmailBison(
     }
 
     // Update lead with enriched data
-    if (result.linkedinUrl || result.phone || result.companyName || result.companyWebsite || result.companyState || result.timezoneRaw) {
+    if (
+      result.linkedinUrl ||
+      result.phone ||
+      result.companyName ||
+      result.companyWebsite ||
+      result.companyState ||
+      result.industry ||
+      result.employeeHeadcount ||
+      result.timezoneRaw
+    ) {
       const updates: Record<string, unknown> = {};
 
       // Get current lead to check what's missing
@@ -459,6 +490,12 @@ async function enrichLeadFromEmailBison(
       }
       if (result.companyState && !currentLead?.companyState) {
         updates.companyState = result.companyState;
+      }
+      if (result.industry && !currentLead?.industry) {
+        updates.industry = result.industry;
+      }
+      if (result.employeeHeadcount && !currentLead?.employeeHeadcount) {
+        updates.employeeHeadcount = result.employeeHeadcount;
       }
       if (result.timezoneRaw && (!currentLead?.timezone || currentLead.timezone.trim() === "")) {
         const raw = result.timezoneRaw.trim();
@@ -650,6 +687,8 @@ interface EmailBisonEnrichmentData {
   companyName?: string;
   companyDomain?: string;  // From 'website' custom var
   state?: string;          // From 'company state' custom var
+  industry?: string;       // From 'industry' custom var
+  employeeHeadcount?: string; // From 'employee_headcount' custom var
   linkedInProfile?: string; // From 'linkedin url' custom var
   existingPhone?: string;  // From 'phone' custom var (to skip enrichment if exists)
 }
@@ -1329,6 +1368,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
 
   // Generate AI draft if appropriate (skip bounce emails)
   let draftId: string | undefined;
+  let draftContent: string | undefined;
   let autoReplySent = false;
 
   if (!autoBook.booked && shouldGenerateDraft(sentimentTag, fromEmail)) {
@@ -1340,9 +1380,86 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     );
     if (draftResult.success) {
       draftId = draftResult.draftId;
+      draftContent = draftResult.content || undefined;
       console.log(`[LEAD_REPLIED] Generated AI draft: ${draftId}`);
 
-      if (lead.autoReplyEnabled && draftId) {
+      const responseMode = emailCampaign?.responseMode ?? null;
+      const autoSendThreshold = emailCampaign?.autoSendConfidenceThreshold ?? 0.9;
+
+      if (responseMode === "AI_AUTO_SEND" && draftId && draftContent) {
+        const evaluation = await evaluateAutoSend({
+          clientId: client.id,
+          leadId: lead.id,
+          channel: "email",
+          latestInbound: cleaned.cleaned || contentForClassification,
+          subject: reply.email_subject ?? null,
+          conversationHistory: transcript,
+          categorization: sentimentTag,
+          automatedReply: reply.automated_reply ?? null,
+          replyReceivedAt: sentAt,
+          draft: draftContent,
+        });
+
+        if (evaluation.safeToSend && evaluation.confidence >= autoSendThreshold) {
+          console.log(
+            `[Auto-Send] Sending draft ${draftId} for lead ${lead.id} (confidence ${evaluation.confidence.toFixed(2)} >= ${autoSendThreshold.toFixed(2)})`
+          );
+          const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
+          if (sendResult.success) {
+            console.log(`[Auto-Send] Sent message: ${sendResult.messageId}`);
+            autoReplySent = true;
+          } else {
+            console.error(`[Auto-Send] Failed to send draft: ${sendResult.error}`);
+          }
+        } else {
+          const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
+          const campaignLabel = emailCampaign
+            ? `${emailCampaign.name} (${emailCampaign.bisonCampaignId})`
+            : "Unknown campaign";
+          const url = `${getPublicAppUrl()}/?view=inbox&leadId=${lead.id}`;
+          const confidenceText = `${evaluation.confidence.toFixed(2)} < ${autoSendThreshold.toFixed(2)}`;
+
+          const dmResult = await sendSlackDmByEmail({
+            email: "jon@zeroriskgrowth.com",
+            dedupeKey: `auto_send_review:${draftId}`,
+            text: `AI auto-send review needed (${confidenceText})`,
+            blocks: [
+              {
+                type: "header",
+                text: { type: "plain_text", text: "AI Auto-Send: Review Needed", emoji: true },
+              },
+              {
+                type: "section",
+                fields: [
+                  { type: "mrkdwn", text: `*Lead:*\n${leadName}${lead.email ? `\n${lead.email}` : ""}` },
+                  { type: "mrkdwn", text: `*Campaign:*\n${campaignLabel}` },
+                  { type: "mrkdwn", text: `*Sentiment:*\n${sentimentTag || "Unknown"}` },
+                  { type: "mrkdwn", text: `*Confidence:*\n${evaluation.confidence.toFixed(2)} (thresh ${autoSendThreshold.toFixed(2)})` },
+                ],
+              },
+              {
+                type: "section",
+                text: { type: "mrkdwn", text: `*Reason:*\n${evaluation.reason}` },
+              },
+              {
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: `*Draft Preview:*\n\`\`\`\n${draftContent.slice(0, 1400)}\n\`\`\``,
+                },
+              },
+              {
+                type: "section",
+                text: { type: "mrkdwn", text: `<${url}|Open lead in dashboard>` },
+              },
+            ],
+          });
+          if (!dmResult.success) {
+            console.error(`[Slack DM] Failed to notify Jon for draft ${draftId}: ${dmResult.error || "unknown error"}`);
+          }
+        }
+      } else if (!emailCampaign && lead.autoReplyEnabled && draftId) {
+        // Legacy per-lead auto-reply path (only when no EmailCampaign is present).
         const decision = await decideShouldAutoReply({
           clientId: client.id,
           leadId: lead.id,
@@ -1359,7 +1476,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
           console.log(`[Auto-Reply] Skipped auto-send for lead ${lead.id}: ${decision.reason}`);
         } else {
           console.log(`[Auto-Reply] Auto-approving draft ${draftId} for lead ${lead.id}`);
-          const sendResult = await approveAndSendDraft(draftId);
+          const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
           if (sendResult.success) {
             console.log(`[Auto-Reply] Sent message: ${sendResult.messageId}`);
             autoReplySent = true;
