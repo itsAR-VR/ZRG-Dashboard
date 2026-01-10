@@ -2,7 +2,7 @@ import "@/lib/server-dns";
 import { prisma } from "@/lib/prisma";
 import {
   detectCalendarType,
-  fetchCalendlyAvailability,
+  fetchCalendlyAvailabilityWithMeta,
   fetchGHLAvailabilityWithMeta,
   fetchHubSpotAvailability,
   type AvailabilitySlot,
@@ -40,6 +40,7 @@ function dedupeSortedIso(slotsUtc: string[]): string[] {
 export type AvailabilityCacheMeta = {
   ghlCalendarId?: string | null;
   resolvedUrl?: string;
+  calendlyEventTypeUuid?: string | null;
 };
 
 export async function refreshWorkspaceAvailabilityCache(clientId: string): Promise<{
@@ -147,7 +148,9 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
     const providerMeta: AvailabilityCacheMeta = {};
 
     if (calendarType === "calendly") {
-      rawSlots = await fetchCalendlyAvailability(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS);
+      const calendly = await fetchCalendlyAvailabilityWithMeta(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS);
+      rawSlots = calendly.slots;
+      providerMeta.calendlyEventTypeUuid = calendly.eventTypeUuid;
     } else if (calendarType === "hubspot") {
       rawSlots = await fetchHubSpotAvailability(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS);
     } else if (calendarType === "ghl") {
@@ -302,7 +305,15 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
   const currentDuration = settings?.meetingDurationMinutes ?? REQUIRED_DURATION_MINUTES;
   const durationChanged = !!cache && cache.slotDurationMinutes !== currentDuration;
 
-  if (!cache || (refreshIfStale && (cache.staleAt <= now || defaultChanged || durationChanged))) {
+  const existingMeta = (cache?.providerMeta || {}) as AvailabilityCacheMeta;
+  const metaMissing =
+    refreshIfStale &&
+    !!cache &&
+    cache.calendarType === "calendly" &&
+    !!cache.calendarUrl &&
+    !existingMeta.calendlyEventTypeUuid;
+
+  if (!cache || (refreshIfStale && (cache.staleAt <= now || defaultChanged || durationChanged || metaMissing))) {
     const refresh = await refreshWorkspaceAvailabilityCache(clientId);
     const refreshed = await prisma.workspaceAvailabilityCache.findUnique({
       where: { clientId },

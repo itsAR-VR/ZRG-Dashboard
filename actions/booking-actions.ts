@@ -18,6 +18,7 @@ import { formatAvailabilitySlots } from "@/lib/availability-format";
 import { getWorkspaceSlotOfferCountsForRange } from "@/lib/slot-offer-ledger";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById } from "@/lib/workspace-access";
+import { resolveCalendlyEventTypeUuidFromLink } from "@/lib/calendly-link";
 
 // Re-export types for use in components
 export type { GHLCalendar, GHLUser, GHLAppointment };
@@ -730,6 +731,82 @@ export async function getGhlCalendarMismatchInfo(clientId: string): Promise<{
         success: true,
         ghlDefaultCalendarId,
         calendarLinkGhlCalendarId,
+        mismatch,
+        lastError: cacheError ?? cache?.lastError ?? null,
+    };
+}
+
+function extractCalendlyEventTypeUuidFromUri(input: string | null | undefined): string | null {
+    const raw = typeof input === "string" ? input.trim() : "";
+    if (!raw) return null;
+
+    // Accept:
+    // - https://api.calendly.com/event_types/<uuid>
+    // - /event_types/<uuid>
+    // - event_types/<uuid>
+    try {
+        const url = new URL(raw);
+        const parts = url.pathname.split("/").filter(Boolean);
+        const idx = parts.findIndex((p) => p === "event_types");
+        if (idx !== -1 && parts[idx + 1]) return parts[idx + 1]!;
+    } catch {
+        // ignore non-URL inputs
+    }
+
+    const match = raw.match(/event_types\/([^/?#]+)/i);
+    return match?.[1] ?? null;
+}
+
+export async function getCalendlyCalendarMismatchInfo(clientId: string): Promise<{
+    success: boolean;
+    calendlyEventTypeUuid?: string | null;
+    calendarLinkCalendlyEventTypeUuid?: string | null;
+    mismatch?: boolean;
+    lastError?: string | null;
+}> {
+    await requireClientAccess(clientId);
+
+    const settings = await prisma.workspaceSettings.findUnique({
+        where: { clientId },
+        select: { calendlyEventTypeUri: true, calendlyEventTypeLink: true },
+    });
+
+    let calendlyEventTypeUuid = extractCalendlyEventTypeUuidFromUri(settings?.calendlyEventTypeUri);
+
+    if (!calendlyEventTypeUuid) {
+        const link = settings?.calendlyEventTypeLink?.trim() || "";
+        if (link) {
+            const resolved = await resolveCalendlyEventTypeUuidFromLink(link).catch(() => null);
+            calendlyEventTypeUuid = resolved?.uuid || null;
+        }
+    }
+
+    let cache:
+        | (Awaited<ReturnType<typeof getWorkspaceAvailabilityCache>> & {
+              providerMeta?: { calendlyEventTypeUuid?: string | null };
+          })
+        | null = null;
+    let cacheError: string | null = null;
+
+    try {
+        cache = await getWorkspaceAvailabilityCache(clientId, { refreshIfStale: true });
+    } catch (error) {
+        cacheError = error instanceof Error ? error.message : "Unknown error";
+        console.warn("[getCalendlyCalendarMismatchInfo] availability cache unavailable:", cacheError);
+    }
+
+    const calendarLinkCalendlyEventTypeUuid =
+        cache?.calendarType === "calendly" ? (cache as any)?.providerMeta?.calendlyEventTypeUuid || null : null;
+
+    const mismatch =
+        !!calendlyEventTypeUuid &&
+        !!calendarLinkCalendlyEventTypeUuid &&
+        calendlyEventTypeUuid !== calendarLinkCalendlyEventTypeUuid;
+
+    return {
+        success: true,
+        calendlyEventTypeUuid,
+        calendarLinkCalendlyEventTypeUuid,
         mismatch,
         lastError: cacheError ?? cache?.lastError ?? null,
     };

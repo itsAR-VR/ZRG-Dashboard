@@ -255,11 +255,18 @@ async function getCalendlySchedulingLinkUUID(slug: string): Promise<CalendlyEven
 /**
  * Fetch availability from Calendly
  */
-export async function fetchCalendlyAvailability(url: string, days: number = 28): Promise<AvailabilitySlot[]> {
+export async function fetchCalendlyAvailabilityWithMeta(
+    url: string,
+    days: number = 28
+): Promise<{
+    slots: AvailabilitySlot[];
+    eventTypeUuid: string | null;
+    availabilityTimezone: string | null;
+}> {
     const parsed = parseCalendlyUrl(url);
     if (!parsed) {
         console.error("Failed to parse Calendly URL:", url);
-        return [];
+        return { slots: [], eventTypeUuid: null, availabilityTimezone: null };
     }
 
     // Try standard URL first, then scheduling link
@@ -280,7 +287,7 @@ export async function fetchCalendlyAvailability(url: string, days: number = 28):
 
     if (!eventInfo) {
         console.error("Could not resolve Calendly event UUID for:", url);
-        return [];
+        return { slots: [], eventTypeUuid: null, availabilityTimezone: null };
     }
 
     try {
@@ -295,7 +302,7 @@ export async function fetchCalendlyAvailability(url: string, days: number = 28):
 
         if (!data) {
             console.error("Calendly availability request failed");
-            return [];
+            return { slots: [], eventTypeUuid: eventInfo.uuid, availabilityTimezone: eventInfo.availability_timezone || null };
         }
         const slots: AvailabilitySlot[] = [];
 
@@ -314,11 +321,16 @@ export async function fetchCalendlyAvailability(url: string, days: number = 28):
             }
         }
 
-        return slots;
+        return { slots, eventTypeUuid: eventInfo.uuid, availabilityTimezone: eventInfo.availability_timezone || null };
     } catch (error) {
         console.error("Failed to fetch Calendly availability:", error);
-        return [];
+        return { slots: [], eventTypeUuid: eventInfo.uuid, availabilityTimezone: eventInfo.availability_timezone || null };
     }
+}
+
+export async function fetchCalendlyAvailability(url: string, days: number = 28): Promise<AvailabilitySlot[]> {
+    const result = await fetchCalendlyAvailabilityWithMeta(url, days);
+    return result.slots;
 }
 
 // =============================================================================

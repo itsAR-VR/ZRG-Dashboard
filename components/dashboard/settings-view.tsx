@@ -85,6 +85,7 @@ import {
   testGHLConnectionForWorkspace,
   setWorkspaceAutoBookEnabled,
   getGhlCalendarMismatchInfo,
+  getCalendlyCalendarMismatchInfo,
   type GHLCalendar,
   type GHLUser,
 } from "@/actions/booking-actions"
@@ -102,6 +103,23 @@ interface SettingsViewProps {
   activeTab?: string
   onTabChange?: (tab: string) => void
   onWorkspacesChange?: (workspaces: Array<{ id: string; name: string; ghlLocationId: string }>) => void
+}
+
+function extractCalendlyEventTypeUuidFromUri(input: string | null | undefined): string | null {
+  const raw = typeof input === "string" ? input.trim() : ""
+  if (!raw) return null
+
+  try {
+    const url = new URL(raw)
+    const parts = url.pathname.split("/").filter(Boolean)
+    const idx = parts.findIndex((p) => p === "event_types")
+    if (idx !== -1 && parts[idx + 1]) return parts[idx + 1]!
+  } catch {
+    // ignore non-URL inputs
+  }
+
+  const match = raw.match(/event_types\/([^/?#]+)/i)
+  return match?.[1] ?? null
 }
 
 export function SettingsView({ activeWorkspace, activeTab = "general", onTabChange, onWorkspacesChange }: SettingsViewProps) {
@@ -175,6 +193,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     mismatch: boolean
     ghlDefaultCalendarId: string | null
     calendarLinkGhlCalendarId: string | null
+    lastError: string | null
+  } | null>(null)
+  const [calendlyCalendarMismatchInfo, setCalendlyCalendarMismatchInfo] = useState<{
+    mismatch: boolean
+    calendlyEventTypeUuid: string | null
+    calendarLinkCalendlyEventTypeUuid: string | null
     lastError: string | null
   } | null>(null)
 
@@ -289,22 +313,44 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
         const provider = result?.success && result.data?.meetingBookingProvider ? result.data.meetingBookingProvider : "ghl"
         if (provider === "ghl") {
-          const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
-          if (mismatch.success) {
-            setCalendarMismatchInfo({
-              mismatch: mismatch.mismatch ?? false,
-              ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
-              calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
-              lastError: mismatch.lastError ?? null,
-            })
-          } else {
+          try {
+            const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+            if (mismatch.success) {
+              setCalendarMismatchInfo({
+                mismatch: mismatch.mismatch ?? false,
+                ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+                calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+                lastError: mismatch.lastError ?? null,
+              })
+            } else {
+              setCalendarMismatchInfo(null)
+            }
+          } catch (e) {
+            console.warn("Failed to load GHL mismatch info:", e)
             setCalendarMismatchInfo(null)
           }
+          setCalendlyCalendarMismatchInfo(null)
 
           // Load GHL calendars and users for meeting booking config
           loadGHLData(activeWorkspace)
         } else {
           setCalendarMismatchInfo(null)
+          try {
+            const mismatch = await getCalendlyCalendarMismatchInfo(activeWorkspace)
+            if (mismatch.success) {
+              setCalendlyCalendarMismatchInfo({
+                mismatch: mismatch.mismatch ?? false,
+                calendlyEventTypeUuid: mismatch.calendlyEventTypeUuid ?? null,
+                calendarLinkCalendlyEventTypeUuid: mismatch.calendarLinkCalendlyEventTypeUuid ?? null,
+                lastError: mismatch.lastError ?? null,
+              })
+            } else {
+              setCalendlyCalendarMismatchInfo(null)
+            }
+          } catch (e) {
+            console.warn("Failed to load Calendly mismatch info:", e)
+            setCalendlyCalendarMismatchInfo(null)
+          }
           setGhlCalendars([])
           setGhlUsers([])
           setGhlConnectionStatus("unknown")
@@ -313,6 +359,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       } else {
         setCalendarLinks([])
         setCalendarMismatchInfo(null)
+        setCalendlyCalendarMismatchInfo(null)
         setCalendlyIntegration(null)
         setCalendlyConnectionStatus("unknown")
       }
@@ -768,14 +815,42 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       if (calendarResult.success && calendarResult.data) {
         setCalendarLinks(calendarResult.data)
       }
-      const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
-      if (mismatch.success) {
-        setCalendarMismatchInfo({
-          mismatch: mismatch.mismatch ?? false,
-          ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
-          calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
-          lastError: mismatch.lastError ?? null,
-        })
+      if (meetingBooking.meetingBookingProvider === "ghl") {
+        try {
+          const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+          if (mismatch.success) {
+            setCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+              calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendarMismatchInfo(null)
+          }
+        } catch (e) {
+          console.warn("Failed to refresh GHL mismatch info:", e)
+          setCalendarMismatchInfo(null)
+        }
+        setCalendlyCalendarMismatchInfo(null)
+      } else {
+        try {
+          const mismatch = await getCalendlyCalendarMismatchInfo(activeWorkspace)
+          if (mismatch.success) {
+            setCalendlyCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              calendlyEventTypeUuid: mismatch.calendlyEventTypeUuid ?? null,
+              calendarLinkCalendlyEventTypeUuid: mismatch.calendarLinkCalendlyEventTypeUuid ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendlyCalendarMismatchInfo(null)
+          }
+        } catch (e) {
+          console.warn("Failed to refresh Calendly mismatch info:", e)
+          setCalendlyCalendarMismatchInfo(null)
+        }
+        setCalendarMismatchInfo(null)
       }
       setNewCalendarName("")
       setNewCalendarUrl("")
@@ -784,7 +859,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       toast.error(result.error || "Failed to add calendar link")
     }
     setIsAddingCalendar(false)
-  }, [activeWorkspace, newCalendarName, newCalendarUrl, calendarLinks.length])
+  }, [activeWorkspace, newCalendarName, newCalendarUrl, calendarLinks.length, meetingBooking.meetingBookingProvider])
 
   const handleDeleteCalendarLink = useCallback(async (linkId: string) => {
     if (!activeWorkspace) {
@@ -798,20 +873,48 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       if (calendarResult.success && calendarResult.data) {
         setCalendarLinks(calendarResult.data)
       }
-      const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
-      if (mismatch.success) {
-        setCalendarMismatchInfo({
-          mismatch: mismatch.mismatch ?? false,
-          ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
-          calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
-          lastError: mismatch.lastError ?? null,
-        })
+      if (meetingBooking.meetingBookingProvider === "ghl") {
+        try {
+          const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+          if (mismatch.success) {
+            setCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+              calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendarMismatchInfo(null)
+          }
+        } catch (e) {
+          console.warn("Failed to refresh GHL mismatch info:", e)
+          setCalendarMismatchInfo(null)
+        }
+        setCalendlyCalendarMismatchInfo(null)
+      } else {
+        try {
+          const mismatch = await getCalendlyCalendarMismatchInfo(activeWorkspace)
+          if (mismatch.success) {
+            setCalendlyCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              calendlyEventTypeUuid: mismatch.calendlyEventTypeUuid ?? null,
+              calendarLinkCalendlyEventTypeUuid: mismatch.calendarLinkCalendlyEventTypeUuid ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendlyCalendarMismatchInfo(null)
+          }
+        } catch (e) {
+          console.warn("Failed to refresh Calendly mismatch info:", e)
+          setCalendlyCalendarMismatchInfo(null)
+        }
+        setCalendarMismatchInfo(null)
       }
       toast.success("Calendar link deleted")
     } else {
       toast.error(result.error || "Failed to delete calendar link")
     }
-  }, [activeWorkspace])
+  }, [activeWorkspace, meetingBooking.meetingBookingProvider])
 
   const handleSetDefaultCalendarLink = useCallback(async (linkId: string) => {
     if (!activeWorkspace) {
@@ -824,20 +927,48 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         ...link,
         isDefault: link.id === linkId,
       })))
-      const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
-      if (mismatch.success) {
-        setCalendarMismatchInfo({
-          mismatch: mismatch.mismatch ?? false,
-          ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
-          calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
-          lastError: mismatch.lastError ?? null,
-        })
+      if (meetingBooking.meetingBookingProvider === "ghl") {
+        try {
+          const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+          if (mismatch.success) {
+            setCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+              calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendarMismatchInfo(null)
+          }
+        } catch (e) {
+          console.warn("Failed to refresh GHL mismatch info:", e)
+          setCalendarMismatchInfo(null)
+        }
+        setCalendlyCalendarMismatchInfo(null)
+      } else {
+        try {
+          const mismatch = await getCalendlyCalendarMismatchInfo(activeWorkspace)
+          if (mismatch.success) {
+            setCalendlyCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              calendlyEventTypeUuid: mismatch.calendlyEventTypeUuid ?? null,
+              calendarLinkCalendlyEventTypeUuid: mismatch.calendarLinkCalendlyEventTypeUuid ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendlyCalendarMismatchInfo(null)
+          }
+        } catch (e) {
+          console.warn("Failed to refresh Calendly mismatch info:", e)
+          setCalendlyCalendarMismatchInfo(null)
+        }
+        setCalendarMismatchInfo(null)
       }
       toast.success("Default calendar updated")
     } else {
       toast.error(result.error || "Failed to set default")
     }
-  }, [activeWorkspace])
+  }, [activeWorkspace, meetingBooking.meetingBookingProvider])
 
   // Get user display info
   const userDisplayName = user?.fullName || user?.email?.split("@")[0] || "User"
@@ -1243,11 +1374,28 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   <Label>Booking Provider</Label>
                   <Select
                     value={meetingBooking.meetingBookingProvider}
-                    onValueChange={(v) => {
+                    onValueChange={async (v) => {
                       const provider = v as "ghl" | "calendly"
                       setMeetingBooking((prev) => ({ ...prev, meetingBookingProvider: provider }))
                       handleChange()
                       if (provider === "ghl" && activeWorkspace) {
+                        try {
+                          const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+                          if (mismatch.success) {
+                            setCalendarMismatchInfo({
+                              mismatch: mismatch.mismatch ?? false,
+                              ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+                              calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+                              lastError: mismatch.lastError ?? null,
+                            })
+                          } else {
+                            setCalendarMismatchInfo(null)
+                          }
+                        } catch (e) {
+                          console.warn("Failed to refresh GHL mismatch info:", e)
+                          setCalendarMismatchInfo(null)
+                        }
+                        setCalendlyCalendarMismatchInfo(null)
                         loadGHLData(activeWorkspace)
                       } else {
                         setCalendarMismatchInfo(null)
@@ -1255,8 +1403,25 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                         setGhlUsers([])
                         setGhlConnectionStatus("unknown")
                         if (provider === "calendly" && activeWorkspace) {
+                          try {
+                            const mismatch = await getCalendlyCalendarMismatchInfo(activeWorkspace)
+                            if (mismatch.success) {
+                              setCalendlyCalendarMismatchInfo({
+                                mismatch: mismatch.mismatch ?? false,
+                                calendlyEventTypeUuid: mismatch.calendlyEventTypeUuid ?? null,
+                                calendarLinkCalendlyEventTypeUuid: mismatch.calendarLinkCalendlyEventTypeUuid ?? null,
+                                lastError: mismatch.lastError ?? null,
+                              })
+                            } else {
+                              setCalendlyCalendarMismatchInfo(null)
+                            }
+                          } catch (e) {
+                            console.warn("Failed to refresh Calendly mismatch info:", e)
+                            setCalendlyCalendarMismatchInfo(null)
+                          }
                           loadCalendlyStatus(activeWorkspace)
                         } else {
+                          setCalendlyCalendarMismatchInfo(null)
                           setCalendlyIntegration(null)
                           setCalendlyConnectionStatus("unknown")
                         }
@@ -1568,7 +1733,30 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                         value={meetingBooking.calendlyEventTypeLink}
                         onChange={(e) => {
                           setMeetingBooking((prev) => ({ ...prev, calendlyEventTypeLink: e.target.value }))
+                          if (!meetingBooking.calendlyEventTypeUri.trim()) {
+                            setCalendlyCalendarMismatchInfo((prev) =>
+                              prev ? { ...prev, calendlyEventTypeUuid: null, mismatch: false } : prev
+                            )
+                          }
                           handleChange()
+                        }}
+                        onBlur={async () => {
+                          if (!activeWorkspace) return
+                          try {
+                            const mismatch = await getCalendlyCalendarMismatchInfo(activeWorkspace)
+                            if (mismatch.success) {
+                              setCalendlyCalendarMismatchInfo({
+                                mismatch: mismatch.mismatch ?? false,
+                                calendlyEventTypeUuid: mismatch.calendlyEventTypeUuid ?? null,
+                                calendarLinkCalendlyEventTypeUuid: mismatch.calendarLinkCalendlyEventTypeUuid ?? null,
+                                lastError: mismatch.lastError ?? null,
+                              })
+                            } else {
+                              setCalendlyCalendarMismatchInfo(null)
+                            }
+                          } catch (e) {
+                            console.warn("Failed to refresh Calendly mismatch info:", e)
+                          }
                         }}
                       />
                       <p className="text-xs text-muted-foreground">
@@ -1582,14 +1770,67 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                         placeholder="https://api.calendly.com/event_types/..."
                         value={meetingBooking.calendlyEventTypeUri}
                         onChange={(e) => {
+                          const nextUri = e.target.value
                           setMeetingBooking((prev) => ({ ...prev, calendlyEventTypeUri: e.target.value }))
+                          setCalendlyCalendarMismatchInfo((prev) => {
+                            if (!prev) return prev
+                            const uuid = extractCalendlyEventTypeUuidFromUri(nextUri)
+                            return {
+                              ...prev,
+                              calendlyEventTypeUuid: uuid,
+                              mismatch:
+                                !!uuid &&
+                                !!prev.calendarLinkCalendlyEventTypeUuid &&
+                                uuid !== prev.calendarLinkCalendlyEventTypeUuid,
+                            }
+                          })
                           handleChange()
+                        }}
+                        onBlur={async () => {
+                          if (!activeWorkspace) return
+                          try {
+                            const mismatch = await getCalendlyCalendarMismatchInfo(activeWorkspace)
+                            if (mismatch.success) {
+                              setCalendlyCalendarMismatchInfo({
+                                mismatch: mismatch.mismatch ?? false,
+                                calendlyEventTypeUuid: mismatch.calendlyEventTypeUuid ?? null,
+                                calendarLinkCalendlyEventTypeUuid: mismatch.calendarLinkCalendlyEventTypeUuid ?? null,
+                                lastError: mismatch.lastError ?? null,
+                              })
+                            } else {
+                              setCalendlyCalendarMismatchInfo(null)
+                            }
+                          } catch (e) {
+                            console.warn("Failed to refresh Calendly mismatch info:", e)
+                          }
                         }}
                       />
                       <p className="text-xs text-muted-foreground">
                         Optional. If provided, this is used directly for scheduling.
                       </p>
                     </div>
+
+                    {calendlyCalendarMismatchInfo?.mismatch && (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+                        <p className="font-medium text-amber-700">
+                          Warning: Calendar Link & Booking Event differ
+                        </p>
+                        <p className="mt-1 text-amber-700/90">
+                          Slots shown come from your default Calendar Link, but bookings will be created on the configured Calendly event type.
+                        </p>
+                        <p className="mt-2 text-amber-700/90">
+                          Link event: <span className="font-mono">{calendlyCalendarMismatchInfo.calendarLinkCalendlyEventTypeUuid}</span>
+                          <br />
+                          Booking event: <span className="font-mono">{calendlyCalendarMismatchInfo.calendlyEventTypeUuid}</span>
+                        </p>
+                      </div>
+                    )}
+
+                    {calendlyCalendarMismatchInfo?.lastError && (
+                      <p className="text-xs text-muted-foreground">
+                        Availability status: {calendlyCalendarMismatchInfo.lastError}
+                      </p>
+                    )}
 
                     <div className="grid grid-cols-2 gap-4">
                       {/* Meeting Duration */}
