@@ -578,25 +578,16 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
             {clients.length > collapsedWorkspaceCount && (
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs text-muted-foreground">
-                  Showing {Math.min(collapsedWorkspaceCount, visibleClients.length)} of {clients.length} workspaces
+                  {showAllWorkspaces
+                    ? `Showing all ${clients.length} workspaces`
+                    : `Showing ${Math.min(collapsedWorkspaceCount, clients.length)} of ${clients.length} workspaces`}
+                  {!showAllWorkspaces &&
+                    visibleClients.length > Math.min(collapsedWorkspaceCount, clients.length) && (
+                      <span className="ml-2 text-[10px] text-muted-foreground/80">
+                        (+1 open)
+                      </span>
+                    )}
                 </p>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs text-muted-foreground"
-                  onClick={() => setShowAllWorkspaces((prev) => !prev)}
-                >
-                  {showAllWorkspaces ? (
-                    <>
-                      Show fewer <ChevronUp className="h-4 w-4 ml-1" />
-                    </>
-                  ) : (
-                    <>
-                      Show all <ChevronDown className="h-4 w-4 ml-1" />
-                    </>
-                  )}
-                </Button>
               </div>
             )}
 
@@ -935,9 +926,34 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                     </TableCell>
                   </TableRow>
                 );
-              })}
+                })}
               </TableBody>
             </Table>
+
+            {clients.length > collapsedWorkspaceCount && (
+              <div className="relative pt-3">
+                <div className="pointer-events-none absolute inset-x-0 -top-3 h-6 bg-gradient-to-b from-transparent via-background/30 to-background" />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setShowAllWorkspaces((prev) => !prev)}
+                  aria-expanded={showAllWorkspaces}
+                  className="w-full justify-center gap-2 border-border/60 bg-muted/30 hover:bg-muted/45"
+                >
+                  {showAllWorkspaces ? (
+                    <>
+                      Show fewer ({collapsedWorkspaceCount})
+                      <ChevronUp className="h-4 w-4" />
+                    </>
+                  ) : (
+                    <>
+                      Show all {clients.length} workspaces
+                      <ChevronDown className="h-4 w-4" />
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
           </>
         )}
 
