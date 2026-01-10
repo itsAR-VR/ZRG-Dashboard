@@ -9,6 +9,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { extractKnowledgeNotesFromFile, extractKnowledgeNotesFromText } from "@/lib/knowledge-asset-extraction";
 import { crawl4aiExtractMarkdown } from "@/lib/crawl4ai";
 import { isIP } from "node:net";
+import { MeetingBookingProvider } from "@prisma/client";
 
 export interface UserSettingsData {
   id: string;
@@ -47,6 +48,9 @@ export interface UserSettingsData {
   autoBookMeetings: boolean;
   meetingDurationMinutes: number;
   meetingTitle: string | null;
+  meetingBookingProvider: "ghl" | "calendly";
+  calendlyEventTypeLink: string | null;
+  calendlyEventTypeUri: string | null;
 }
 
 export interface KnowledgeAssetData {
@@ -122,6 +126,9 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           autoBookMeetings: false,
           meetingDurationMinutes: 30,
           meetingTitle: "Intro to {companyName}",
+          meetingBookingProvider: "ghl",
+          calendlyEventTypeLink: null,
+          calendlyEventTypeUri: null,
         },
         knowledgeAssets: [],
       };
@@ -210,6 +217,10 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         autoBookMeetings: settings.autoBookMeetings,
         meetingDurationMinutes: settings.meetingDurationMinutes,
         meetingTitle: settings.meetingTitle,
+        meetingBookingProvider:
+          settings.meetingBookingProvider === MeetingBookingProvider.CALENDLY ? "calendly" : "ghl",
+        calendlyEventTypeLink: settings.calendlyEventTypeLink,
+        calendlyEventTypeUri: settings.calendlyEventTypeUri,
       },
       knowledgeAssets,
     };
@@ -266,6 +277,14 @@ export async function updateUserSettings(
         autoBookMeetings: data.autoBookMeetings,
         meetingDurationMinutes: data.meetingDurationMinutes,
         meetingTitle: data.meetingTitle,
+        meetingBookingProvider:
+          data.meetingBookingProvider === "calendly"
+            ? MeetingBookingProvider.CALENDLY
+            : data.meetingBookingProvider === "ghl"
+              ? MeetingBookingProvider.GHL
+              : undefined,
+        calendlyEventTypeLink: data.calendlyEventTypeLink,
+        calendlyEventTypeUri: data.calendlyEventTypeUri,
       },
       create: {
         clientId,
@@ -298,6 +317,10 @@ export async function updateUserSettings(
         autoBookMeetings: data.autoBookMeetings ?? false,
         meetingDurationMinutes: data.meetingDurationMinutes ?? 30,
         meetingTitle: data.meetingTitle ?? "Intro to {companyName}",
+        meetingBookingProvider:
+          data.meetingBookingProvider === "calendly" ? MeetingBookingProvider.CALENDLY : MeetingBookingProvider.GHL,
+        calendlyEventTypeLink: data.calendlyEventTypeLink,
+        calendlyEventTypeUri: data.calendlyEventTypeUri,
       },
     });
 

@@ -11,6 +11,7 @@ export interface ClientData {
   emailBisonApiKey?: string;
   emailBisonWorkspaceId?: string;
   unipileAccountId?: string;
+  calendlyAccessToken?: string;
 }
 
 function normalizeOptionalString(value: string | undefined): string | undefined {
@@ -50,6 +51,8 @@ export async function getClients() {
         emailBisonApiKey: true,
         emailBisonWorkspaceId: true,
         unipileAccountId: true,
+        calendlyAccessToken: true,
+        calendlyWebhookSubscriptionUri: true,
         createdAt: true,
         calendarLinks: {
           where: { isDefault: true },
@@ -62,10 +65,12 @@ export async function getClients() {
       },
     });
     const withHealth = clients.map((client) => {
-      const { calendarLinks, ...rest } = client;
+      const { calendarLinks, calendlyAccessToken, calendlyWebhookSubscriptionUri, ...rest } = client;
       return {
         ...rest,
         hasDefaultCalendarLink: calendarLinks.length > 0,
+        hasCalendlyAccessToken: !!calendlyAccessToken,
+        hasCalendlyWebhookSubscription: !!calendlyWebhookSubscriptionUri,
       };
     });
     return { success: true, data: withHealth };
@@ -90,6 +95,7 @@ export async function createClient(data: ClientData) {
     const emailBisonApiKey = normalizeOptionalString(data.emailBisonApiKey);
     const emailBisonWorkspaceId = normalizeEmailBisonWorkspaceId(data.emailBisonWorkspaceId);
     const unipileAccountId = normalizeOptionalString(data.unipileAccountId);
+    const calendlyAccessToken = normalizeOptionalString(data.calendlyAccessToken);
 
     // Validate required fields
     if (!name || !ghlLocationId || !ghlPrivateKey) {
@@ -128,6 +134,7 @@ export async function createClient(data: ClientData) {
         emailBisonApiKey: emailBisonApiKey || null,
         emailBisonWorkspaceId: emailBisonWorkspaceId || null,
         unipileAccountId: unipileAccountId || null,
+        calendlyAccessToken: calendlyAccessToken || null,
         userId: user.id, // Workspace owner (admin)
       },
     });
@@ -162,6 +169,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
     const emailBisonApiKey = normalizeOptionalString(data.emailBisonApiKey);
     const emailBisonWorkspaceId = normalizeEmailBisonWorkspaceId(data.emailBisonWorkspaceId);
     const unipileAccountId = normalizeOptionalString(data.unipileAccountId);
+    const calendlyAccessToken = normalizeOptionalString(data.calendlyAccessToken);
 
     if (name !== undefined && !name) return { success: false, error: "Workspace name cannot be empty" };
     if (ghlLocationId !== undefined && !ghlLocationId) return { success: false, error: "GHL Location ID cannot be empty" };
@@ -202,6 +210,15 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
     if (data.emailBisonApiKey !== undefined) updateData.emailBisonApiKey = emailBisonApiKey || null;
     if (data.emailBisonWorkspaceId !== undefined) updateData.emailBisonWorkspaceId = emailBisonWorkspaceId || null;
     if (data.unipileAccountId !== undefined) updateData.unipileAccountId = unipileAccountId || null;
+    if (data.calendlyAccessToken !== undefined) {
+      updateData.calendlyAccessToken = calendlyAccessToken || null;
+      if (!calendlyAccessToken) {
+        updateData.calendlyUserUri = null;
+        updateData.calendlyOrganizationUri = null;
+        updateData.calendlyWebhookSubscriptionUri = null;
+        updateData.calendlyWebhookSigningKey = null;
+      }
+    }
 
     const updatedClient = await prisma.client.update({
       where: { id },

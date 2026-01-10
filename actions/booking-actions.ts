@@ -78,8 +78,12 @@ export async function shouldAutoBook(leadId: string): Promise<{
             return { shouldBook: false, reason: "Lead not found" };
         }
 
-        // Check if lead already has an appointment booked
-        if (lead.ghlAppointmentId) {
+        const alreadyBooked =
+            lead.status === "meeting-booked" ||
+            !!lead.ghlAppointmentId ||
+            !!lead.calendlyInviteeUri ||
+            !!lead.appointmentBookedAt;
+        if (alreadyBooked) {
             return { shouldBook: false, reason: "Lead already has an appointment booked" };
         }
 
@@ -347,8 +351,12 @@ export async function bookMeetingOnGHL(
             return { success: false, error: "Lead not found" };
         }
 
-        // Check if lead already has an appointment
-        if (lead.ghlAppointmentId) {
+        const alreadyBooked =
+            lead.status === "meeting-booked" ||
+            !!lead.ghlAppointmentId ||
+            !!lead.calendlyInviteeUri ||
+            !!lead.appointmentBookedAt;
+        if (alreadyBooked) {
             return { success: false, error: "Lead already has an appointment booked" };
         }
 
@@ -524,14 +532,16 @@ export async function getLeadBookingStatus(leadId: string): Promise<{
             where: { id: leadId },
             select: {
                 ghlAppointmentId: true,
+                calendlyInviteeUri: true,
+                calendlyScheduledEventUri: true,
                 appointmentBookedAt: true,
                 bookedSlot: true,
             },
         });
 
         return {
-            hasAppointment: !!lead?.ghlAppointmentId,
-            appointmentId: lead?.ghlAppointmentId || undefined,
+            hasAppointment: !!lead?.ghlAppointmentId || !!lead?.calendlyInviteeUri,
+            appointmentId: lead?.ghlAppointmentId || lead?.calendlyScheduledEventUri || lead?.calendlyInviteeUri || undefined,
             bookedAt: lead?.appointmentBookedAt || undefined,
             bookedSlot: lead?.bookedSlot || undefined,
         };

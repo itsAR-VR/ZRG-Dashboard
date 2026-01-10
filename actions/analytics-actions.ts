@@ -184,7 +184,7 @@ export async function getAnalytics(clientId?: string | null): Promise<{
     const meetingsBooked = await prisma.lead.count({
       where: {
         ...clientFilter,
-        ghlAppointmentId: { not: null },
+        OR: [{ ghlAppointmentId: { not: null } }, { calendlyInviteeUri: { not: null } }],
       },
     });
 
@@ -273,6 +273,7 @@ export async function getAnalytics(clientId?: string | null): Promise<{
           select: {
             id: true,
             ghlAppointmentId: true,
+            calendlyInviteeUri: true,
           },
         },
       },
@@ -282,7 +283,7 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       .map((client) => ({
         name: client.name,
         leads: client.leads.length,
-        meetings: client.leads.filter((l) => l.ghlAppointmentId != null).length,
+        meetings: client.leads.filter((l) => l.ghlAppointmentId != null || l.calendlyInviteeUri != null).length,
       }))
       .sort((a, b) => b.leads - a.leads)
       .slice(0, 5);
@@ -317,7 +318,7 @@ export async function getAnalytics(clientId?: string | null): Promise<{
           by: ["smsCampaignId"],
           where: {
             clientId,
-            ghlAppointmentId: { not: null },
+            OR: [{ ghlAppointmentId: { not: null } }, { calendlyInviteeUri: { not: null } }],
           },
           _count: { _all: true },
         }),

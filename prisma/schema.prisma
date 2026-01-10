@@ -15,6 +15,11 @@ enum ClientMemberRole {
   INBOX_MANAGER
 }
 
+enum MeetingBookingProvider {
+  GHL
+  CALENDLY
+}
+
 // Stores GHL API Keys per sub-account for multi-tenancy
 // Each workspace is tied to a user (from Supabase Auth)
 model Client {
@@ -27,6 +32,12 @@ model Client {
   userId        String              // Supabase Auth user ID - ties workspace to user
   // LinkedIn/Unipile integration (per-workspace account)
   unipileAccountId     String?      // Unipile account ID for LinkedIn messaging
+  // Calendly integration (per-workspace)
+  calendlyAccessToken          String?
+  calendlyUserUri              String?
+  calendlyOrganizationUri      String?
+  calendlyWebhookSubscriptionUri String?
+  calendlyWebhookSigningKey    String?
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
   members       ClientMember[]
@@ -106,6 +117,9 @@ model WorkspaceSettings {
   autoBookMeetings       Boolean  @default(false)  // Workspace-level auto-book toggle
   meetingDurationMinutes Int      @default(30)     // Default meeting duration in minutes
   meetingTitle           String?  @default("Intro to {companyName}")  // Title template for appointments
+  meetingBookingProvider MeetingBookingProvider @default(GHL)
+  calendlyEventTypeLink  String?              // Public Calendly link for the event type (calendly.com/...)
+  calendlyEventTypeUri   String?              // API URI for the event type (https://api.calendly.com/event_types/...)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
   // Relations
@@ -186,6 +200,8 @@ model Lead {
   offeredSlots            String?   @db.Text         // JSON array of offered time slots
   bookedSlot              String?                    // ISO datetime of booked slot (for filtering availability)
   ghlAppointmentId        String?                    // GHL appointment ID after booking
+  calendlyInviteeUri          String? @unique        // Calendly invitee resource URI after booking
+  calendlyScheduledEventUri   String? @unique        // Calendly scheduled event resource URI after booking
   appointmentBookedAt     DateTime?                  // When the appointment was booked
   // Workspace and campaign associations
   clientId     String

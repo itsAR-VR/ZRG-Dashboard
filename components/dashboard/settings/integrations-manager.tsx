@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useTransition } from "react";
-import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil, Eraser, Linkedin, Users } from "lucide-react";
+import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil, Eraser, Linkedin, Users, Calendar } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,6 +32,8 @@ interface Client {
   emailBisonApiKey: string | null;
   emailBisonWorkspaceId: string | null;
   unipileAccountId: string | null;
+  hasCalendlyAccessToken?: boolean;
+  hasCalendlyWebhookSubscription?: boolean;
   createdAt: Date;
   _count: {
     leads: number;
@@ -65,6 +67,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
     unipileAccountId: "",
+    calendlyAccessToken: "",
     setterEmailsRaw: "",
     inboxManagerEmailsRaw: "",
   };
@@ -74,6 +77,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
     unipileAccountId: "",
+    calendlyAccessToken: "",
   };
 
   const emptyAssignmentsForm = {
@@ -165,6 +169,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
         emailBisonApiKey: newClientForm.emailBisonApiKey,
         emailBisonWorkspaceId: newClientForm.emailBisonWorkspaceId,
         unipileAccountId: newClientForm.unipileAccountId,
+        calendlyAccessToken: newClientForm.calendlyAccessToken,
       });
       if (result.success && result.data) {
         const created = result.data as { id: string };
@@ -201,7 +206,13 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
 
     startTransition(async () => {
       // Build update payload - only include fields that have values or are being explicitly changed
-      const updatePayload: { name?: string; emailBisonApiKey?: string; emailBisonWorkspaceId?: string; unipileAccountId?: string } = {};
+      const updatePayload: {
+        name?: string;
+        emailBisonApiKey?: string;
+        emailBisonWorkspaceId?: string;
+        unipileAccountId?: string;
+        calendlyAccessToken?: string;
+      } = {};
 
       const nextName = integrationsForm.name.trim();
       if (!nextName) {
@@ -225,6 +236,11 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
       // Update Unipile Account ID if changed
       if (integrationsForm.unipileAccountId !== (currentClient?.unipileAccountId || "")) {
         updatePayload.unipileAccountId = integrationsForm.unipileAccountId;
+      }
+
+      // Only update Calendly token if user entered a new one (not blank placeholder)
+      if (integrationsForm.calendlyAccessToken) {
+        updatePayload.calendlyAccessToken = integrationsForm.calendlyAccessToken;
       }
 
       if (Object.keys(updatePayload).length === 0) {
@@ -563,6 +579,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
               {clients.map((client) => {
                 const hasEmailBison = !!client.emailBisonApiKey;
                 const hasLinkedIn = !!client.unipileAccountId;
+                const hasCalendly = !!client.hasCalendlyAccessToken;
                 const isEditingThis = editingClientId === client.id;
                 
                 return (
@@ -599,6 +616,17 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             <Badge variant="outline" className="text-muted-foreground text-[10px]">
                               <Linkedin className="h-3 w-3 mr-1" />
                               No LinkedIn
+                            </Badge>
+                          )}
+                          {hasCalendly ? (
+                            <Badge variant="outline" className="text-indigo-600 border-indigo-600/30 bg-indigo-600/10 text-[10px]">
+                              <Calendar className="h-3 w-3 mr-1" />
+                              Calendly
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-muted-foreground text-[10px]">
+                              <Calendar className="h-3 w-3 mr-1" />
+                              No Calendly
                             </Badge>
                           )}
                         </div>
@@ -703,6 +731,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                   emailBisonApiKey: "",
                                   emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
                                   unipileAccountId: client.unipileAccountId || "",
+                                  calendlyAccessToken: "",
                                 });
                                 loadAssignments(client.id);
                               }
@@ -787,6 +816,31 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                               <p className="text-[10px] text-muted-foreground">
                                 Found in Unipile dashboard under your connected LinkedIn account
                               </p>
+                            </div>
+
+                            {/* Calendly Integration */}
+                            <div className="space-y-2 border-t pt-3 mt-3">
+                              <Label htmlFor={`calendlyToken-${client.id}`} className="text-xs flex items-center gap-1">
+                                <Calendar className="h-3 w-3" />
+                                Calendly Access Token {client.hasCalendlyAccessToken && "(leave blank to keep current)"}
+                              </Label>
+                              <Input
+                                id={`calendlyToken-${client.id}`}
+                                type="password"
+                                autoComplete="off"
+                                placeholder={client.hasCalendlyAccessToken ? "••••••••" : "cal_live_..."}
+                                value={integrationsForm.calendlyAccessToken}
+                                onChange={(e) => setIntegrationsForm({ ...integrationsForm, calendlyAccessToken: e.target.value })}
+                                className="h-8 text-sm"
+                              />
+                              <p className="text-[10px] text-muted-foreground">
+                                Used for Calendly scheduling + webhook subscriptions (server-side only).
+                              </p>
+                              {client.hasCalendlyWebhookSubscription && (
+                                <p className="text-[10px] text-muted-foreground">
+                                  Webhook subscription: <span className="text-green-600">configured</span>
+                                </p>
+                              )}
                             </div>
                             
                             <Button
@@ -901,6 +955,20 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 </p>
                 <p className="text-xs text-muted-foreground mt-2">
                   <strong>Important:</strong> Set your LinkedIn Account ID above for each workspace. Include the <code className="bg-background px-1 py-0.5 rounded">x-unipile-secret</code> header when creating webhooks.
+                </p>
+              </div>
+
+              {/* Calendly Webhook */}
+              <div className="p-4 rounded-lg bg-muted/50 space-y-2">
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Calendar className="h-4 w-4" />
+                  Webhook URL for Calendly (per workspace)
+                </p>
+                <code className="block text-xs bg-background p-2 rounded border break-all">
+                  {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/calendly/&lt;workspaceId&gt;
+                </code>
+                <p className="text-xs text-muted-foreground">
+                  Calendly webhook subscriptions are created automatically when Calendly is connected. The webhook endpoint includes the workspace ID so we can verify and route events.
                 </p>
               </div>
 

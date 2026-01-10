@@ -59,6 +59,7 @@ export async function autoStartMeetingRequestedSequenceIfEligible(opts: {
       autoFollowUpEnabled: true,
       autoBookMeetingsEnabled: true,
       ghlAppointmentId: true,
+      calendlyInviteeUri: true,
       client: { select: { settings: { select: { autoBookMeetings: true, followUpsPausedUntil: true } } } },
     },
   });
@@ -70,7 +71,7 @@ export async function autoStartMeetingRequestedSequenceIfEligible(opts: {
   if (lead.status === "blacklisted" || lead.status === "unqualified" || lead.sentimentTag === "Blacklist") {
     return { started: false, reason: lead.status === "unqualified" ? "unqualified" : "blacklisted" };
   }
-  if (lead.ghlAppointmentId) return { started: false, reason: "already_booked" };
+  if (lead.ghlAppointmentId || lead.calendlyInviteeUri) return { started: false, reason: "already_booked" };
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
   if (!lead.autoBookMeetingsEnabled) return { started: false, reason: "lead_auto_book_disabled" };
   if (!lead.client.settings?.autoBookMeetings) return { started: false, reason: "workspace_auto_book_disabled" };
@@ -98,6 +99,7 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
       sentimentTag: true,
       autoFollowUpEnabled: true,
       ghlAppointmentId: true,
+      calendlyInviteeUri: true,
       client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
     },
   });
@@ -109,7 +111,7 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
   if (lead.status === "blacklisted" || lead.status === "unqualified" || lead.sentimentTag === "Blacklist") {
     return { started: false, reason: lead.status === "unqualified" ? "unqualified" : "blacklisted" };
   }
-  if (!lead.ghlAppointmentId) return { started: false, reason: "no_appointment" };
+  if (!lead.ghlAppointmentId && !lead.calendlyInviteeUri) return { started: false, reason: "no_appointment" };
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
 
   const sequence = await prisma.followUpSequence.findFirst({
@@ -136,6 +138,7 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
       sentimentTag: true,
       autoFollowUpEnabled: true,
       ghlAppointmentId: true,
+      calendlyInviteeUri: true,
       client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
       followUpInstances: {
         where: { status: { in: ["active", "paused"] } },
@@ -153,7 +156,7 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
   if (lead.status === "blacklisted" || lead.status === "unqualified" || lead.sentimentTag === "Blacklist") {
     return { started: false, reason: lead.status === "unqualified" ? "unqualified" : "blacklisted" };
   }
-  if (lead.ghlAppointmentId) return { started: false, reason: "already_booked" };
+  if (lead.ghlAppointmentId || lead.calendlyInviteeUri) return { started: false, reason: "already_booked" };
 
   const activeInstances = lead.followUpInstances.filter((i) => i.status === "active");
   if (activeInstances.length > 0) return { started: false, reason: "instance_already_active" };

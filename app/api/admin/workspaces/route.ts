@@ -19,7 +19,9 @@ type ProvisionWorkspaceRequest = {
   unipileAccountId?: string;
 
   // Optional assignments (email inputs resolved server-side)
-  inboxManagerEmail?: string;
+  inboxManagerEmail?: string; // legacy single inbox manager
+  inboxManagerEmails?: string[] | string;
+  setterEmails?: string[] | string;
 
   // Optional behavior controls
   upsert?: boolean; // if true, update an existing workspace for same ghlLocationId
@@ -67,6 +69,22 @@ function normalizeEmailBisonWorkspaceId(value: unknown): string | undefined {
   return trimmed.replace(/^#\s*/, "");
 }
 
+function normalizeEmailList(value: unknown): string[] {
+  if (!value) return [];
+
+  const raw: string[] = Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === "string")
+    : typeof value === "string"
+      ? value.split(/[\n,;]+/g)
+      : [];
+
+  const emails = raw
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+  return Array.from(new Set(emails));
+}
+
 function validateEmailBisonWorkspaceId(value: string | undefined): string | null {
   if (value === undefined) return null;
   if (!/^\d+$/.test(value)) return "emailBisonWorkspaceId must be a numeric string";
@@ -105,6 +123,9 @@ function pickWorkspaceSettings(input: Record<string, unknown>): Record<string, u
     "autoBookMeetings",
     "meetingDurationMinutes",
     "meetingTitle",
+    "meetingBookingProvider",
+    "calendlyEventTypeLink",
+    "calendlyEventTypeUri",
   ] as const;
 
   const out: Record<string, unknown> = {};
@@ -264,6 +285,17 @@ export async function POST(request: NextRequest) {
   const emailBisonWorkspaceId = normalizeEmailBisonWorkspaceId(body?.emailBisonWorkspaceId) ?? null;
   const unipileAccountId = normalizeOptionalString(body?.unipileAccountId) ?? null;
   const inboxManagerEmail = normalizeOptionalString(body?.inboxManagerEmail) ?? null;
+  const setterEmails = normalizeEmailList(body?.setterEmails);
+  const inboxManagerEmails = [
+    ...normalizeEmailList(body?.inboxManagerEmails),
+    ...(inboxManagerEmail ? [inboxManagerEmail.trim().toLowerCase()] : []),
+  ];
+  const uniqueInboxManagerEmails = Array.from(new Set(inboxManagerEmails));
+  const assignmentsSpecified =
+    !!body &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    ("setterEmails" in body || "inboxManagerEmails" in body || "inboxManagerEmail" in body);
   const upsert = body?.upsert === true;
 
   const workspaceIdError = validateEmailBisonWorkspaceId(emailBisonWorkspaceId ?? undefined);
@@ -296,10 +328,27 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const resolvedInboxManager =
-      inboxManagerEmail ? await resolveUserId({ userId: null, userEmail: inboxManagerEmail }) : null;
-    if (resolvedInboxManager && !resolvedInboxManager.ok) {
-      return NextResponse.json({ error: resolvedInboxManager.error }, { status: resolvedInboxManager.status });
+    const setterUserIds: string[] = [];
+    const inboxManagerUserIds: string[] = [];
+    const missingAssignmentEmails: string[] = [];
+
+    for (const email of setterEmails) {
+      const resolved = await resolveUserId({ userId: null, userEmail: email });
+      if (!resolved.ok) missingAssignmentEmails.push(email);
+      else setterUserIds.push(resolved.userId);
+    }
+
+    for (const email of uniqueInboxManagerEmails) {
+      const resolved = await resolveUserId({ userId: null, userEmail: email });
+      if (!resolved.ok) missingAssignmentEmails.push(email);
+      else inboxManagerUserIds.push(resolved.userId);
+    }
+
+    if (missingAssignmentEmails.length > 0) {
+      return NextResponse.json(
+        { error: `User(s) not found for assignments: ${missingAssignmentEmails.join(", ")}` },
+        { status: 404 }
+      );
     }
 
     // Idempotency / conflict handling.
@@ -373,14 +422,22 @@ export async function POST(request: NextRequest) {
             });
           }
 
-          if (resolvedInboxManager?.ok) {
+          if (assignmentsSpecified) {
             await tx.clientMember.deleteMany({
-              where: { clientId: existing.id, role: ClientMemberRole.INBOX_MANAGER },
+              where: { clientId: existing.id, role: { in: [ClientMemberRole.SETTER, ClientMemberRole.INBOX_MANAGER] } },
             });
-            await tx.clientMember.createMany({
-              data: [{ clientId: existing.id, userId: resolvedInboxManager.userId, role: ClientMemberRole.INBOX_MANAGER }],
-              skipDuplicates: true,
-            });
+
+            const rows = [
+              ...setterUserIds.map((userId) => ({ clientId: existing.id, userId, role: ClientMemberRole.SETTER })),
+              ...inboxManagerUserIds.map((userId) => ({
+                clientId: existing.id,
+                userId,
+                role: ClientMemberRole.INBOX_MANAGER,
+              })),
+            ];
+            if (rows.length > 0) {
+              await tx.clientMember.createMany({ data: rows, skipDuplicates: true });
+            }
           }
 
           return workspace;
@@ -463,11 +520,14 @@ export async function POST(request: NextRequest) {
         },
       });
 
-      if (resolvedInboxManager?.ok) {
-        await tx.clientMember.createMany({
-          data: [{ clientId: workspace.id, userId: resolvedInboxManager.userId, role: ClientMemberRole.INBOX_MANAGER }],
-          skipDuplicates: true,
-        });
+      if (assignmentsSpecified) {
+        const rows = [
+          ...setterUserIds.map((userId) => ({ clientId: workspace.id, userId, role: ClientMemberRole.SETTER })),
+          ...inboxManagerUserIds.map((userId) => ({ clientId: workspace.id, userId, role: ClientMemberRole.INBOX_MANAGER })),
+        ];
+        if (rows.length > 0) {
+          await tx.clientMember.createMany({ data: rows, skipDuplicates: true });
+        }
       }
 
       return workspace;

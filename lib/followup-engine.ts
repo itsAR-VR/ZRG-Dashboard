@@ -14,7 +14,7 @@ import { selectDistributedAvailabilitySlots } from "@/lib/availability-distribut
 import { getWorkspaceSlotOfferCountsForRange, incrementWorkspaceSlotOffersBatch } from "@/lib/slot-offer-ledger";
 import {
   shouldAutoBook,
-  bookMeetingOnGHL,
+  bookMeetingForLead,
   getOfferedSlots,
   type OfferedSlot,
 } from "@/lib/booking";
@@ -1958,7 +1958,7 @@ export async function processMessageForAutoBooking(
     }
 
     // Book the accepted slot
-    const bookingResult = await bookMeetingOnGHL(leadId, acceptedSlot.datetime);
+    const bookingResult = await bookMeetingForLead(leadId, acceptedSlot.datetime);
     if (bookingResult.success) {
       // Send Slack notification for auto-booking
       await sendAutoBookingSlackNotification(leadId, acceptedSlot);

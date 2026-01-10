@@ -88,6 +88,11 @@ import {
   type GHLCalendar,
   type GHLUser,
 } from "@/actions/booking-actions"
+import {
+  ensureCalendlyWebhookSubscriptionForWorkspace,
+  getCalendlyIntegrationStatusForWorkspace,
+  testCalendlyConnectionForWorkspace,
+} from "@/actions/calendly-actions"
 import { backfillNoResponseFollowUpsForAwaitingReplyLeads } from "@/actions/crm-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
@@ -143,18 +148,29 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [newCalendarUrl, setNewCalendarUrl] = useState("")
   const [isAddingCalendar, setIsAddingCalendar] = useState(false)
 
-  // GHL Meeting Booking state
+  // Meeting Booking state (GHL or Calendly)
   const [meetingBooking, setMeetingBooking] = useState({
+    meetingBookingProvider: "ghl" as "ghl" | "calendly",
     ghlDefaultCalendarId: "",
     ghlAssignedUserId: "",
     autoBookMeetings: false,
     meetingDurationMinutes: 30,
     meetingTitle: "Intro to {companyName}",
+    calendlyEventTypeLink: "",
+    calendlyEventTypeUri: "",
   })
   const [ghlCalendars, setGhlCalendars] = useState<GHLCalendar[]>([])
   const [ghlUsers, setGhlUsers] = useState<GHLUser[]>([])
   const [isLoadingGhlData, setIsLoadingGhlData] = useState(false)
   const [ghlConnectionStatus, setGhlConnectionStatus] = useState<"unknown" | "connected" | "error">("unknown")
+  const [calendlyIntegration, setCalendlyIntegration] = useState<{
+    hasAccessToken: boolean
+    hasWebhookSubscription: boolean
+    organizationUri: string | null
+    userUri: string | null
+  } | null>(null)
+  const [isLoadingCalendlyData, setIsLoadingCalendlyData] = useState(false)
+  const [calendlyConnectionStatus, setCalendlyConnectionStatus] = useState<"unknown" | "connected" | "error">("unknown")
   const [calendarMismatchInfo, setCalendarMismatchInfo] = useState<{
     mismatch: boolean
     ghlDefaultCalendarId: string | null
@@ -253,11 +269,14 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         }
         // Set meeting booking settings
         setMeetingBooking({
+          meetingBookingProvider: result.data.meetingBookingProvider || "ghl",
           ghlDefaultCalendarId: result.data.ghlDefaultCalendarId || "",
           ghlAssignedUserId: result.data.ghlAssignedUserId || "",
           autoBookMeetings: result.data.autoBookMeetings,
           meetingDurationMinutes: result.data.meetingDurationMinutes,
           meetingTitle: result.data.meetingTitle || "Intro to {companyName}",
+          calendlyEventTypeLink: result.data.calendlyEventTypeLink || "",
+          calendlyEventTypeUri: result.data.calendlyEventTypeUri || "",
         })
       }
 
@@ -268,23 +287,34 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           setCalendarLinks(calendarResult.data)
         }
 
-        const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
-        if (mismatch.success) {
-          setCalendarMismatchInfo({
-            mismatch: mismatch.mismatch ?? false,
-            ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
-            calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
-            lastError: mismatch.lastError ?? null,
-          })
+        const provider = result?.success && result.data?.meetingBookingProvider ? result.data.meetingBookingProvider : "ghl"
+        if (provider === "ghl") {
+          const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+          if (mismatch.success) {
+            setCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+              calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendarMismatchInfo(null)
+          }
+
+          // Load GHL calendars and users for meeting booking config
+          loadGHLData(activeWorkspace)
         } else {
           setCalendarMismatchInfo(null)
+          setGhlCalendars([])
+          setGhlUsers([])
+          setGhlConnectionStatus("unknown")
+          loadCalendlyStatus(activeWorkspace)
         }
-
-        // Load GHL calendars and users for meeting booking config
-        loadGHLData(activeWorkspace)
       } else {
         setCalendarLinks([])
         setCalendarMismatchInfo(null)
+        setCalendlyIntegration(null)
+        setCalendlyConnectionStatus("unknown")
       }
       
       setIsLoading(false)
@@ -393,6 +423,26 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     }
   }
 
+  const loadCalendlyStatus = async (clientId: string) => {
+    setIsLoadingCalendlyData(true)
+    try {
+      const result = await getCalendlyIntegrationStatusForWorkspace(clientId)
+      if (result.success && result.data) {
+        setCalendlyIntegration(result.data)
+        setCalendlyConnectionStatus(result.data.hasAccessToken ? "connected" : "unknown")
+      } else {
+        setCalendlyIntegration(null)
+        setCalendlyConnectionStatus("error")
+      }
+    } catch (error) {
+      console.error("Failed to load Calendly status:", error)
+      setCalendlyIntegration(null)
+      setCalendlyConnectionStatus("error")
+    } finally {
+      setIsLoadingCalendlyData(false)
+    }
+  }
+
   // Handle auto-book toggle with workspace-level update
   const handleAutoBookToggle = async (enabled: boolean) => {
     if (!activeWorkspace) return
@@ -451,6 +501,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       autoBookMeetings: meetingBooking.autoBookMeetings,
       meetingDurationMinutes: meetingBooking.meetingDurationMinutes,
       meetingTitle: meetingBooking.meetingTitle || null,
+      meetingBookingProvider: meetingBooking.meetingBookingProvider,
+      calendlyEventTypeLink: toNullableText(meetingBooking.calendlyEventTypeLink),
+      calendlyEventTypeUri: toNullableText(meetingBooking.calendlyEventTypeUri),
     })
 
     if (result.success) {
@@ -1181,136 +1234,360 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   Meeting Booking
                 </CardTitle>
                 <CardDescription>
-                  Configure automatic meeting booking via GoHighLevel
+                  Configure automatic meeting booking via GoHighLevel or Calendly
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {/* Connection Status */}
-                <div className="flex items-center justify-between p-3 rounded-lg border">
-                  <div className="flex items-center gap-3">
-                    <div className={`p-2 rounded-lg ${
-                      ghlConnectionStatus === "connected" ? "bg-green-500/10" : 
-                      ghlConnectionStatus === "error" ? "bg-red-500/10" : "bg-muted"
-                    }`}>
-                      {isLoadingGhlData ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                      ) : ghlConnectionStatus === "connected" ? (
-                        <Check className="h-4 w-4 text-green-500" />
-                      ) : (
-                        <HelpCircle className="h-4 w-4 text-muted-foreground" />
-                      )}
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium">
-                        {ghlConnectionStatus === "connected" 
-                          ? "GHL Connected" 
-                          : ghlConnectionStatus === "error"
-                          ? "GHL Connection Error"
-                          : "GHL Connection Unknown"}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {ghlConnectionStatus === "connected" 
-                          ? `${ghlCalendars.length} calendar(s) available`
-                          : "Configure GHL credentials in workspace settings"}
-                      </p>
-                    </div>
-                  </div>
-                  <Button 
-                    variant="outline" 
-                    size="sm"
-                    onClick={() => activeWorkspace && loadGHLData(activeWorkspace)}
-                    disabled={!activeWorkspace || isLoadingGhlData}
+                {/* Provider Selection */}
+                <div className="space-y-2">
+                  <Label>Booking Provider</Label>
+                  <Select
+                    value={meetingBooking.meetingBookingProvider}
+                    onValueChange={(v) => {
+                      const provider = v as "ghl" | "calendly"
+                      setMeetingBooking((prev) => ({ ...prev, meetingBookingProvider: provider }))
+                      handleChange()
+                      if (provider === "ghl" && activeWorkspace) {
+                        loadGHLData(activeWorkspace)
+                      } else {
+                        setCalendarMismatchInfo(null)
+                        setGhlCalendars([])
+                        setGhlUsers([])
+                        setGhlConnectionStatus("unknown")
+                        if (provider === "calendly" && activeWorkspace) {
+                          loadCalendlyStatus(activeWorkspace)
+                        } else {
+                          setCalendlyIntegration(null)
+                          setCalendlyConnectionStatus("unknown")
+                        }
+                      }
+                    }}
                   >
-                    {isLoadingGhlData ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      "Test Connection"
-                    )}
-                  </Button>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ghl">GoHighLevel</SelectItem>
+                      <SelectItem value="calendly">Calendly</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Auto-booking will schedule using the selected provider.
+                  </p>
                 </div>
 
-                {ghlConnectionStatus === "connected" && (
+                {meetingBooking.meetingBookingProvider === "ghl" ? (
                   <>
-                    <Separator />
-
-                    {/* Calendar Selection */}
-                    <div className="space-y-2">
-                      <Label>Default GHL Calendar</Label>
-                      <Select
-                        value={meetingBooking.ghlDefaultCalendarId}
-                        onValueChange={(v) => {
-                          setMeetingBooking(prev => ({ ...prev, ghlDefaultCalendarId: v }))
-                          setCalendarMismatchInfo(prev => prev ? ({
-                            ...prev,
-                            ghlDefaultCalendarId: v,
-                            mismatch: !!prev.calendarLinkGhlCalendarId && prev.calendarLinkGhlCalendarId !== v,
-                          }) : prev)
-                          handleChange()
-                        }}
-                        disabled={ghlCalendars.length === 0}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select a calendar for booking" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ghlCalendars.map((cal) => (
-                            <SelectItem key={cal.id} value={cal.id}>
-                              {cal.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground">
-                        Appointments will be created on this calendar
-                      </p>
-
-                      {calendarMismatchInfo?.mismatch && (
-                        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
-                          <p className="font-medium text-amber-700">
-                            Warning: Calendar Link & Booking Calendar differ
+                    {/* Connection Status */}
+                    <div className="flex items-center justify-between p-3 rounded-lg border">
+                      <div className="flex items-center gap-3">
+                        <div className={`p-2 rounded-lg ${
+                          ghlConnectionStatus === "connected" ? "bg-green-500/10" : 
+                          ghlConnectionStatus === "error" ? "bg-red-500/10" : "bg-muted"
+                        }`}>
+                          {isLoadingGhlData ? (
+                            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                          ) : ghlConnectionStatus === "connected" ? (
+                            <Check className="h-4 w-4 text-green-500" />
+                          ) : (
+                            <HelpCircle className="h-4 w-4 text-muted-foreground" />
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">
+                            {ghlConnectionStatus === "connected" 
+                              ? "GHL Connected" 
+                              : ghlConnectionStatus === "error"
+                              ? "GHL Connection Error"
+                              : "GHL Connection Unknown"}
                           </p>
-                          <p className="mt-1 text-amber-700/90">
-                            Slots shown come from your default Calendar Link, but bookings will be created on the selected GHL calendar.
-                          </p>
-                          <p className="mt-2 text-amber-700/90">
-                            Link calendar: <span className="font-mono">{calendarMismatchInfo.calendarLinkGhlCalendarId}</span>
-                            <br />
-                            Booking calendar: <span className="font-mono">{calendarMismatchInfo.ghlDefaultCalendarId}</span>
+                          <p className="text-xs text-muted-foreground">
+                            {ghlConnectionStatus === "connected" 
+                              ? `${ghlCalendars.length} calendar(s) available`
+                              : "Configure GHL credentials in workspace settings"}
                           </p>
                         </div>
-                      )}
-
-                      {calendarMismatchInfo?.lastError && (
-                        <p className="text-xs text-muted-foreground">
-                          Availability status: {calendarMismatchInfo.lastError}
-                        </p>
-                      )}
+                      </div>
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        onClick={() => activeWorkspace && loadGHLData(activeWorkspace)}
+                        disabled={!activeWorkspace || isLoadingGhlData}
+                      >
+                        {isLoadingGhlData ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          "Test Connection"
+                        )}
+                      </Button>
                     </div>
 
-                    {/* Assigned User */}
+                    {ghlConnectionStatus === "connected" && (
+                      <>
+                        <Separator />
+
+                        {/* Calendar Selection */}
+                        <div className="space-y-2">
+                          <Label>Default GHL Calendar</Label>
+                          <Select
+                            value={meetingBooking.ghlDefaultCalendarId}
+                            onValueChange={(v) => {
+                              setMeetingBooking(prev => ({ ...prev, ghlDefaultCalendarId: v }))
+                              setCalendarMismatchInfo(prev => prev ? ({
+                                ...prev,
+                                ghlDefaultCalendarId: v,
+                                mismatch: !!prev.calendarLinkGhlCalendarId && prev.calendarLinkGhlCalendarId !== v,
+                              }) : prev)
+                              handleChange()
+                            }}
+                            disabled={ghlCalendars.length === 0}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select a calendar for booking" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {ghlCalendars.map((cal) => (
+                                <SelectItem key={cal.id} value={cal.id}>
+                                  {cal.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            Appointments will be created on this calendar
+                          </p>
+
+                          {calendarMismatchInfo?.mismatch && (
+                            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+                              <p className="font-medium text-amber-700">
+                                Warning: Calendar Link & Booking Calendar differ
+                              </p>
+                              <p className="mt-1 text-amber-700/90">
+                                Slots shown come from your default Calendar Link, but bookings will be created on the selected GHL calendar.
+                              </p>
+                              <p className="mt-2 text-amber-700/90">
+                                Link calendar: <span className="font-mono">{calendarMismatchInfo.calendarLinkGhlCalendarId}</span>
+                                <br />
+                                Booking calendar: <span className="font-mono">{calendarMismatchInfo.ghlDefaultCalendarId}</span>
+                              </p>
+                            </div>
+                          )}
+
+                          {calendarMismatchInfo?.lastError && (
+                            <p className="text-xs text-muted-foreground">
+                              Availability status: {calendarMismatchInfo.lastError}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Assigned User */}
+                        <div className="space-y-2">
+                          <Label>Assigned Team Member</Label>
+                          <Select
+                            value={meetingBooking.ghlAssignedUserId}
+                            onValueChange={(v) => {
+                              setMeetingBooking(prev => ({ ...prev, ghlAssignedUserId: v }))
+                              handleChange()
+                            }}
+                            disabled={ghlUsers.length === 0}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select team member" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {ghlUsers.map((user) => (
+                                <SelectItem key={user.id} value={user.id}>
+                                  {user.name || `${user.firstName} ${user.lastName}`}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            This person will be assigned to all booked appointments
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          {/* Meeting Duration */}
+                          <div className="space-y-2">
+                            <Label>Meeting Duration</Label>
+                            <Select
+                              value={String(meetingBooking.meetingDurationMinutes)}
+                              onValueChange={(v) => {
+                                const minutes = parseInt(v)
+                                setMeetingBooking(prev => ({ ...prev, meetingDurationMinutes: minutes }))
+                                handleChange()
+                                if (minutes !== 30) {
+                                  toast.error("Only 30-minute meetings are supported for live availability + auto-booking. Set it back to 30.")
+                                }
+                              }}
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="15">15 minutes</SelectItem>
+                                <SelectItem value="30">30 minutes</SelectItem>
+                                <SelectItem value="45">45 minutes</SelectItem>
+                                <SelectItem value="60">60 minutes</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
+                          {/* Meeting Title */}
+                          <div className="space-y-2">
+                            <Label>Meeting Title Template</Label>
+                            <Input
+                              value={meetingBooking.meetingTitle}
+                              onChange={(e) => {
+                                setMeetingBooking(prev => ({ ...prev, meetingTitle: e.target.value }))
+                                handleChange()
+                              }}
+                              placeholder="Intro to {companyName}"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Use {"{companyName}"} for your company name
+                            </p>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {/* Calendly Connection Status */}
+                    <div className="flex items-center justify-between p-3 rounded-lg border">
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`p-2 rounded-lg ${
+                            calendlyIntegration?.hasAccessToken
+                              ? "bg-green-500/10"
+                              : calendlyConnectionStatus === "error"
+                                ? "bg-red-500/10"
+                                : "bg-muted"
+                          }`}
+                        >
+                          {isLoadingCalendlyData ? (
+                            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                          ) : calendlyIntegration?.hasAccessToken ? (
+                            <Check className="h-4 w-4 text-green-500" />
+                          ) : (
+                            <HelpCircle className="h-4 w-4 text-muted-foreground" />
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">
+                            {calendlyIntegration?.hasAccessToken ? "Calendly Token Configured" : "Calendly Not Connected"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {calendlyIntegration?.hasWebhookSubscription
+                              ? "Webhook subscription configured"
+                              : "Webhook subscription not configured"}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            if (!activeWorkspace) return
+                            setIsLoadingCalendlyData(true)
+                            try {
+                              const res = await testCalendlyConnectionForWorkspace(activeWorkspace)
+                              if (res.success) {
+                                toast.success("Calendly connected")
+                                setCalendlyConnectionStatus("connected")
+                              } else {
+                                toast.error("Calendly connection failed", { description: res.error || "Unknown error" })
+                                setCalendlyConnectionStatus("error")
+                              }
+                            } catch (e) {
+                              toast.error("Calendly connection failed", {
+                                description: e instanceof Error ? e.message : "Unknown error",
+                              })
+                              setCalendlyConnectionStatus("error")
+                            } finally {
+                              setIsLoadingCalendlyData(false)
+                              loadCalendlyStatus(activeWorkspace)
+                            }
+                          }}
+                          disabled={!activeWorkspace || isLoadingCalendlyData}
+                        >
+                          {isLoadingCalendlyData ? <Loader2 className="h-4 w-4 animate-spin" /> : "Test Connection"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            if (!activeWorkspace) return
+                            setIsLoadingCalendlyData(true)
+                            try {
+                              const res = await ensureCalendlyWebhookSubscriptionForWorkspace(activeWorkspace)
+                              if (res.success) {
+                                toast.success("Calendly webhooks configured")
+                              } else {
+                                toast.error("Failed to configure Calendly webhooks", {
+                                  description: res.error || "Unknown error",
+                                })
+                              }
+                            } catch (e) {
+                              toast.error("Failed to configure Calendly webhooks", {
+                                description: e instanceof Error ? e.message : "Unknown error",
+                              })
+                            } finally {
+                              setIsLoadingCalendlyData(false)
+                              loadCalendlyStatus(activeWorkspace)
+                            }
+                          }}
+                          disabled={!activeWorkspace || isLoadingCalendlyData}
+                        >
+                          {isLoadingCalendlyData ? <Loader2 className="h-4 w-4 animate-spin" /> : "Ensure Webhooks"}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border p-4 bg-muted/30">
+                      <div className="flex items-start gap-3">
+                        <div className="mt-0.5 rounded-lg bg-muted p-2">
+                          <Calendar className="h-4 w-4 text-muted-foreground" />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium">Calendly Booking</p>
+                          <p className="text-xs text-muted-foreground">
+                            Configure a Calendly event type to enable scheduling via Calendly. (Access token + webhooks are configured in the workspace integrations.)
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="space-y-2">
-                      <Label>Assigned Team Member</Label>
-                      <Select
-                        value={meetingBooking.ghlAssignedUserId}
-                        onValueChange={(v) => {
-                          setMeetingBooking(prev => ({ ...prev, ghlAssignedUserId: v }))
+                      <Label>Calendly Event Type Link</Label>
+                      <Input
+                        placeholder="https://calendly.com/yourname/intro-call"
+                        value={meetingBooking.calendlyEventTypeLink}
+                        onChange={(e) => {
+                          setMeetingBooking((prev) => ({ ...prev, calendlyEventTypeLink: e.target.value }))
                           handleChange()
                         }}
-                        disabled={ghlUsers.length === 0}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select team member" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {ghlUsers.map((user) => (
-                            <SelectItem key={user.id} value={user.id}>
-                              {user.name || `${user.firstName} ${user.lastName}`}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      />
                       <p className="text-xs text-muted-foreground">
-                        This person will be assigned to all booked appointments
+                        Use a specific event type link (not just the profile link) so booking + availability match.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Event Type URI (advanced)</Label>
+                      <Input
+                        placeholder="https://api.calendly.com/event_types/..."
+                        value={meetingBooking.calendlyEventTypeUri}
+                        onChange={(e) => {
+                          setMeetingBooking((prev) => ({ ...prev, calendlyEventTypeUri: e.target.value }))
+                          handleChange()
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Optional. If provided, this is used directly for scheduling.
                       </p>
                     </div>
 
@@ -1357,25 +1634,25 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                         </p>
                       </div>
                     </div>
-
-                    <Separator />
-
-                    {/* Auto-Book Toggle */}
-                    <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
-                      <div className="space-y-1">
-                        <Label className="text-base font-medium">Auto-Book Meetings</Label>
-                        <p className="text-sm text-muted-foreground">
-                          Automatically book meetings when leads accept a time slot.
-                          When enabled, all leads will have auto-booking on by default.
-                        </p>
-                      </div>
-                      <Switch
-                        checked={meetingBooking.autoBookMeetings}
-                        onCheckedChange={handleAutoBookToggle}
-                      />
-                    </div>
                   </>
                 )}
+
+                <Separator />
+
+                {/* Auto-Book Toggle */}
+                <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
+                  <div className="space-y-1">
+                    <Label className="text-base font-medium">Auto-Book Meetings</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Automatically book meetings when leads accept a time slot.
+                      When enabled, all leads will have auto-booking on by default.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={meetingBooking.autoBookMeetings}
+                    onCheckedChange={handleAutoBookToggle}
+                  />
+                </div>
               </CardContent>
             </Card>
 

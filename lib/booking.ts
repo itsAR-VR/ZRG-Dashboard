@@ -1,13 +1,17 @@
 import { prisma } from "@/lib/prisma";
 import { autoStartPostBookingSequenceIfEligible } from "@/lib/followup-automation";
-import { createGHLAppointment, type GHLAppointment } from "@/lib/ghl-api";
+import { createGHLAppointment, getGHLContact, type GHLAppointment } from "@/lib/ghl-api";
 import { getWorkspaceAvailabilityCache } from "@/lib/availability-cache";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
+import { createCalendlyInvitee } from "@/lib/calendly-api";
+import { resolveCalendlyEventTypeUuidFromLink, toCalendlyEventTypeUri } from "@/lib/calendly-link";
 
 export interface BookingResult {
   success: boolean;
+  provider?: "ghl" | "calendly";
   appointmentId?: string;
   appointment?: GHLAppointment;
+  calendly?: { inviteeUri: string; scheduledEventUri: string | null };
   error?: string;
 }
 
@@ -80,7 +84,12 @@ export async function shouldAutoBook(leadId: string): Promise<{
       return { shouldBook: false, reason: "Lead not found" };
     }
 
-    if (lead.ghlAppointmentId) {
+    const alreadyBooked =
+      lead.status === "meeting-booked" ||
+      !!lead.ghlAppointmentId ||
+      !!lead.calendlyInviteeUri ||
+      !!lead.appointmentBookedAt;
+    if (alreadyBooked) {
       return { shouldBook: false, reason: "Lead already has an appointment booked" };
     }
 
@@ -100,6 +109,23 @@ export async function shouldAutoBook(leadId: string): Promise<{
     console.error("Failed to check auto-book setting:", error);
     return { shouldBook: false, reason: "Failed to check auto-book setting" };
   }
+}
+
+export async function bookMeetingForLead(
+  leadId: string,
+  selectedSlot: string,
+  opts?: { calendarIdOverride?: string }
+): Promise<BookingResult> {
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+    include: { client: { include: { settings: true } } },
+  });
+  if (!lead) return { success: false, error: "Lead not found" };
+
+  const provider = lead.client.settings?.meetingBookingProvider === "CALENDLY" ? "calendly" : "ghl";
+  return provider === "calendly"
+    ? bookMeetingOnCalendly(leadId, selectedSlot)
+    : bookMeetingOnGHL(leadId, selectedSlot, opts?.calendarIdOverride);
 }
 
 export async function bookMeetingOnGHL(
@@ -123,7 +149,12 @@ export async function bookMeetingOnGHL(
       return { success: false, error: "Lead not found" };
     }
 
-    if (lead.ghlAppointmentId) {
+    const alreadyBooked =
+      lead.status === "meeting-booked" ||
+      !!lead.ghlAppointmentId ||
+      !!lead.calendlyInviteeUri ||
+      !!lead.appointmentBookedAt;
+    if (alreadyBooked) {
       return { success: false, error: "Lead already has an appointment booked" };
     }
 
@@ -259,6 +290,7 @@ export async function bookMeetingOnGHL(
 
     return {
       success: true,
+      provider: "ghl",
       appointmentId: appointmentResult.data.id,
       appointment: appointmentResult.data,
     };
@@ -268,3 +300,134 @@ export async function bookMeetingOnGHL(
   }
 }
 
+export async function bookMeetingOnCalendly(leadId: string, selectedSlot: string): Promise<BookingResult> {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      include: {
+        client: {
+          include: {
+            settings: true,
+          },
+        },
+      },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    const alreadyBooked =
+      lead.status === "meeting-booked" ||
+      !!lead.ghlAppointmentId ||
+      !!lead.calendlyInviteeUri ||
+      !!lead.appointmentBookedAt;
+    if (alreadyBooked) {
+      return { success: false, error: "Lead already has an appointment booked" };
+    }
+
+    const client = lead.client;
+    const settings = client.settings;
+
+    if (!client.calendlyAccessToken) {
+      return { success: false, error: "Calendly access token not configured for this workspace" };
+    }
+
+    const startTimeIso = new Date(selectedSlot).toISOString();
+
+    let eventTypeUri = (settings?.calendlyEventTypeUri || "").trim();
+    if (!eventTypeUri) {
+      const link = (settings?.calendlyEventTypeLink || "").trim();
+      if (!link) {
+        return { success: false, error: "No Calendly event type configured" };
+      }
+
+      const resolved = await resolveCalendlyEventTypeUuidFromLink(link);
+      if (!resolved?.uuid) {
+        return { success: false, error: "Failed to resolve Calendly event type from link" };
+      }
+
+      eventTypeUri = toCalendlyEventTypeUri(resolved.uuid);
+
+      await prisma.workspaceSettings.update({
+        where: { clientId: client.id },
+        data: { calendlyEventTypeUri: eventTypeUri },
+      });
+    }
+
+    let inviteeEmail = lead.email?.trim() || "";
+    if (!inviteeEmail && lead.ghlContactId && client.ghlPrivateKey) {
+      const contact = await getGHLContact(lead.ghlContactId, client.ghlPrivateKey, { locationId: client.ghlLocationId });
+      const email = contact.success ? contact.data?.contact?.email?.trim() : "";
+      if (email) {
+        inviteeEmail = email;
+        await prisma.lead.update({ where: { id: leadId }, data: { email } });
+      }
+    }
+
+    if (!inviteeEmail) {
+      return { success: false, error: "Lead email is required for Calendly booking" };
+    }
+
+    const inviteeName = [lead.firstName, lead.lastName].filter(Boolean).join(" ").trim() || "Lead";
+    const inviteeTz = lead.timezone || settings?.timezone || "UTC";
+
+    const invitee = await createCalendlyInvitee(client.calendlyAccessToken, {
+      eventTypeUri,
+      startTimeIso,
+      invitee: {
+        email: inviteeEmail,
+        name: inviteeName,
+        timezone: inviteeTz,
+      },
+    });
+
+    if (!invitee.success) {
+      return { success: false, error: invitee.error || "Failed to create Calendly invitee" };
+    }
+
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: {
+        calendlyInviteeUri: invitee.data.inviteeUri,
+        calendlyScheduledEventUri: invitee.data.scheduledEventUri,
+        appointmentBookedAt: new Date(),
+        bookedSlot: selectedSlot,
+        status: "meeting-booked",
+        offeredSlots: null,
+      },
+    });
+
+    await autoStartPostBookingSequenceIfEligible({ leadId });
+
+    const activeInstances = await prisma.followUpInstance.findMany({
+      where: {
+        leadId,
+        status: { in: ["active", "paused"] },
+        sequence: { triggerOn: { not: "meeting_selected" } },
+      },
+      select: { id: true },
+    });
+
+    if (activeInstances.length > 0) {
+      await prisma.followUpInstance.updateMany({
+        where: { id: { in: activeInstances.map((i) => i.id) } },
+        data: {
+          status: "completed",
+          completedAt: new Date(),
+          nextStepDue: null,
+        },
+      });
+    }
+
+    return {
+      success: true,
+      provider: "calendly",
+      appointmentId: invitee.data.scheduledEventUri || invitee.data.inviteeUri,
+      calendly: invitee.data,
+    };
+  } catch (error) {
+    console.error("Failed to book meeting on Calendly:", error);
+    return { success: false, error: "Failed to book meeting" };
+  }
+}
