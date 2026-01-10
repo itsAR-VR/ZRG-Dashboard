@@ -52,6 +52,7 @@ import {
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { IntegrationsManager } from "./settings/integrations-manager"
+import { AiCampaignAssignmentPanel } from "./settings/ai-campaign-assignment"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 	import { 
 	  getUserSettings, 
@@ -2414,6 +2415,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 	                </div>
 	              </CardContent>
 	            </Card>
+
+            {/* Campaign assignment (AI auto-send vs setter-managed) */}
+            <AiCampaignAssignmentPanel activeWorkspace={activeWorkspace} />
 
             {canViewAiObs ? (
               <>

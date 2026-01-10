@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { fetchEmailBisonCampaigns } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
 import { requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
+import { CampaignResponseMode } from "@prisma/client";
 
 interface EmailCampaignData {
   id: string;
@@ -12,6 +13,8 @@ interface EmailCampaignData {
   clientId: string;
   clientName: string;
   leadCount: number;
+  responseMode: CampaignResponseMode;
+  autoSendConfidenceThreshold: number;
   createdAt: Date;
 }
 
@@ -43,6 +46,8 @@ export async function getEmailCampaigns(clientId?: string): Promise<{
       clientId: c.clientId,
       clientName: c.client.name,
       leadCount: c._count.leads,
+      responseMode: c.responseMode,
+      autoSendConfidenceThreshold: c.autoSendConfidenceThreshold,
       createdAt: c.createdAt,
     }));
 
@@ -50,6 +55,66 @@ export async function getEmailCampaigns(clientId?: string): Promise<{
   } catch (error) {
     console.error("[EmailCampaign] Failed to fetch campaigns:", error);
     return { success: false, error: "Failed to fetch email campaigns" };
+  }
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value <= 0) return 0;
+  if (value >= 1) return 1;
+  return value;
+}
+
+export async function updateEmailCampaignConfig(
+  emailCampaignId: string,
+  opts: { responseMode?: CampaignResponseMode; autoSendConfidenceThreshold?: number }
+): Promise<{
+  success: boolean;
+  data?: { responseMode: CampaignResponseMode; autoSendConfidenceThreshold: number };
+  error?: string;
+}> {
+  try {
+    const campaign = await prisma.emailCampaign.findUnique({
+      where: { id: emailCampaignId },
+      select: { clientId: true },
+    });
+    if (!campaign) return { success: false, error: "Email campaign not found" };
+
+    await requireClientAdminAccess(campaign.clientId);
+
+    const data: {
+      responseMode?: CampaignResponseMode;
+      autoSendConfidenceThreshold?: number;
+    } = {};
+
+    if (opts.responseMode) data.responseMode = opts.responseMode;
+
+    if (opts.autoSendConfidenceThreshold !== undefined) {
+      const normalized = clamp01(Number(opts.autoSendConfidenceThreshold));
+      data.autoSendConfidenceThreshold = normalized;
+    }
+
+    const updated = await prisma.emailCampaign.update({
+      where: { id: emailCampaignId },
+      data,
+      select: { responseMode: true, autoSendConfidenceThreshold: true },
+    });
+
+    revalidatePath("/");
+
+    return {
+      success: true,
+      data: {
+        responseMode: updated.responseMode,
+        autoSendConfidenceThreshold: updated.autoSendConfidenceThreshold,
+      },
+    };
+  } catch (error) {
+    console.error("[EmailCampaign] Failed to update config:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to update email campaign config",
+    };
   }
 }
 

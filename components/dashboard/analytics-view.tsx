@@ -431,16 +431,22 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                       </TableCell>
                       <TableCell className="text-right">{row.positiveReplies}</TableCell>
                       <TableCell className="text-right">{row.meetingsRequested}</TableCell>
-                      <TableCell className="text-right">{row.meetingsBooked}</TableCell>
-                      <TableCell className="text-right">{Math.round(row.rates.bookedPerPositive * 100)}%</TableCell>
-                      <TableCell className="text-right">{Math.round(row.rates.bookedPerRequested * 100)}%</TableCell>
-                      <TableCell className="text-right">
-                        <Badge variant="secondary">{row.responseMode}</Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+	                      <TableCell className="text-right">{row.meetingsBooked}</TableCell>
+	                      <TableCell className="text-right">{Math.round(row.rates.bookedPerPositive * 100)}%</TableCell>
+	                      <TableCell className="text-right">{Math.round(row.rates.bookedPerRequested * 100)}%</TableCell>
+	                      <TableCell className="text-right">
+	                        {row.responseMode === "AI_AUTO_SEND" ? (
+	                          <Badge variant="default">
+	                            AI ≥ {Math.round(row.autoSendConfidenceThreshold * 100)}%
+	                          </Badge>
+	                        ) : (
+	                          <Badge variant="secondary">Setter</Badge>
+	                        )}
+	                      </TableCell>
+	                    </TableRow>
+	                  ))}
+	                </TableBody>
+	              </Table>
             ) : (
               <div className="py-8 text-center text-muted-foreground">
                 No campaign data available
