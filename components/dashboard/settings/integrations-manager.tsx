@@ -59,6 +59,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
   const [showEmailFields, setShowEmailFields] = useState(false);
   const [editingClientId, setEditingClientId] = useState<string | null>(null);
   const [isLoadingAssignments, setIsLoadingAssignments] = useState(false);
+  const [showAllWorkspaces, setShowAllWorkspaces] = useState(false);
 
   const emptyNewClientForm = {
     name: "",
@@ -335,6 +336,14 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     setSyncingClientId(null);
   }
 
+  const collapsedWorkspaceCount = 5;
+  const editingClient = editingClientId ? clients.find((c) => c.id === editingClientId) : undefined;
+  const baseVisibleClients = showAllWorkspaces ? clients : clients.slice(0, collapsedWorkspaceCount);
+  const visibleClients =
+    showAllWorkspaces || !editingClient || baseVisibleClients.some((c) => c.id === editingClient.id)
+      ? baseVisibleClients
+      : [...baseVisibleClients, editingClient];
+
   return (
     <Card>
       <CardHeader>
@@ -565,25 +574,51 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
             <p className="text-sm">Add a GHL workspace to start receiving SMS webhooks.</p>
           </div>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Location ID</TableHead>
-                <TableHead>Leads</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {clients.map((client) => {
-                const hasEmailBison = !!client.emailBisonApiKey;
-                const hasLinkedIn = !!client.unipileAccountId;
-                const hasCalendly = !!client.hasCalendlyAccessToken;
-                const isEditingThis = editingClientId === client.id;
-                
-                return (
-                  <TableRow key={client.id}>
+          <>
+            {clients.length > collapsedWorkspaceCount && (
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  Showing {Math.min(collapsedWorkspaceCount, visibleClients.length)} of {clients.length} workspaces
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs text-muted-foreground"
+                  onClick={() => setShowAllWorkspaces((prev) => !prev)}
+                >
+                  {showAllWorkspaces ? (
+                    <>
+                      Show fewer <ChevronUp className="h-4 w-4 ml-1" />
+                    </>
+                  ) : (
+                    <>
+                      Show all <ChevronDown className="h-4 w-4 ml-1" />
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
+
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Location ID</TableHead>
+                  <TableHead>Leads</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visibleClients.map((client) => {
+                  const hasEmailBison = !!client.emailBisonApiKey;
+                  const hasLinkedIn = !!client.unipileAccountId;
+                  const hasCalendly = !!client.hasCalendlyAccessToken;
+                  const isEditingThis = editingClientId === client.id;
+
+                  return (
+                    <TableRow key={client.id}>
                     <TableCell className="font-medium">
                       <div className="flex flex-col gap-1">
                         <span>{client.name}</span>
@@ -901,8 +936,9 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                   </TableRow>
                 );
               })}
-            </TableBody>
-          </Table>
+              </TableBody>
+            </Table>
+          </>
         )}
 
         {/* Webhook URLs Info */}
