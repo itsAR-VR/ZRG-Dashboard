@@ -53,6 +53,12 @@ function truncateLabel(value: string, maxLength: number): string {
   return `${trimmed.slice(0, Math.max(0, maxLength - 1))}…`
 }
 
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0%"
+  if (value < 1) return `${value.toFixed(1)}%`
+  return `${value.toFixed(0)}%`
+}
+
 interface AnalyticsViewProps {
   activeWorkspace?: string | null
 }
@@ -101,42 +107,25 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
     { label: "Avg Response Time", value: data?.overview.avgResponseTime || "—", icon: Clock, change: 0, up: true },
   ]
 
-  // Prepare sentiment breakdown for bar chart (top N + Other)
+  // Prepare response sentiment breakdown for bar chart
   const sentimentBarData = (() => {
     const breakdown = data?.sentimentBreakdown ?? []
-    const totalLeads = data?.overview.totalLeads ?? 0
 
-    const sorted = breakdown
-      .map((row) => ({
-        sentiment: row.sentiment || "Unknown",
-        count: row.count,
-      }))
+    return breakdown
+      .map((row) => {
+        const sentiment = row.sentiment?.trim() || "Unknown"
+        return {
+          sentiment,
+          count: row.count,
+          percentage: row.percentage,
+          fill: getSentimentColor(sentiment),
+        }
+      })
       .filter((row) => row.count > 0)
       .sort((a, b) => b.count - a.count)
-
-    const TOP_N = 10
-    const top = sorted.slice(0, TOP_N)
-    const rest = sorted.slice(TOP_N)
-
-    const dataRows = top.map((row) => ({
-      sentiment: row.sentiment,
-      count: row.count,
-      percentage: totalLeads > 0 ? (row.count / totalLeads) * 100 : 0,
-      fill: getSentimentColor(row.sentiment),
-    }))
-
-    const otherCount = rest.reduce((sum, row) => sum + row.count, 0)
-    if (otherCount > 0) {
-      dataRows.push({
-        sentiment: "Other",
-        count: otherCount,
-        percentage: totalLeads > 0 ? (otherCount / totalLeads) * 100 : 0,
-        fill: SENTIMENT_COLORS["Unknown"],
-      })
-    }
-
-    return dataRows
   })()
+
+  const sentimentChartHeight = Math.max(250, sentimentBarData.length * 28)
 
   // Prepare weekly stats for line chart
   const weeklyData = data?.weeklyStats.map((s) => ({
@@ -151,7 +140,7 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col h-full items-center justify-center">
+      <div className="flex flex-1 flex-col items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     )
@@ -242,7 +231,7 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
           <Card>
             <CardHeader>
               <CardTitle>Response Sentiment</CardTitle>
-              <CardDescription>Top sentiments by volume (shown as % of leads; smaller categories grouped as “Other”)</CardDescription>
+              <CardDescription>Sentiment breakdown by responses (hover for counts)</CardDescription>
             </CardHeader>
             <CardContent>
               {sentimentBarData.length > 0 ? (
@@ -250,7 +239,8 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                   config={{
                     percentage: { label: "Sentiment", color: "#6B7280" },
                   }}
-                  className="h-[250px] aspect-auto"
+                  className="aspect-auto"
+                  style={{ height: sentimentChartHeight }}
                 >
                   <BarChart
                     data={sentimentBarData}
@@ -266,8 +256,9 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                     <YAxis
                       type="category"
                       dataKey="sentiment"
-                      width={130}
-                      tickFormatter={(value: string) => truncateLabel(value, 18)}
+                      width={170}
+                      interval={0}
+                      tickFormatter={(value: string) => truncateLabel(value, 28)}
                     />
                     <ChartTooltip
                       content={
@@ -301,7 +292,7 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                       <LabelList
                         dataKey="percentage"
                         position="right"
-                        formatter={(value: number) => `${value.toFixed(0)}%`}
+                        formatter={(value: number) => formatPercent(value)}
                       />
                     </Bar>
                   </BarChart>

@@ -750,7 +750,7 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
 
   if (isLoading) {
     return (
-      <div className="flex flex-col h-full items-center justify-center">
+      <div className="flex flex-1 flex-col items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     )

@@ -532,7 +532,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col h-full items-center justify-center">
+      <div className="flex flex-1 flex-col items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     )
@@ -540,7 +540,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
 
   if (isError) {
     return (
-      <div className="flex flex-col h-full items-center justify-center">
+      <div className="flex flex-1 flex-col items-center justify-center">
         <p className="text-destructive">Error: {error?.message}</p>
         <Button variant="outline" onClick={() => refetch()} className="mt-4">
           <RefreshCw className="h-4 w-4 mr-2" />

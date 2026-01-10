@@ -164,16 +164,18 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       },
     });
 
-    // Responses = unique leads with inbound messages
-    const responses = await prisma.lead.count({
-      where: {
-        ...clientFilter,
-        messages: {
-          some: {
-            direction: "inbound",
-          },
+    const respondedLeadFilter = {
+      ...clientFilter,
+      messages: {
+        some: {
+          direction: "inbound",
         },
       },
+    };
+
+    // Responses = unique leads with inbound messages
+    const responses = await prisma.lead.count({
+      where: respondedLeadFilter,
     });
 
     // Response rate = responses / outbound leads contacted
@@ -194,21 +196,27 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       },
     });
 
-    // Get sentiment breakdown
+    // Response sentiment breakdown (responded leads only)
     const sentimentCounts = await prisma.lead.groupBy({
       by: ["sentimentTag"],
-      where: clientFilter,
+      where: respondedLeadFilter,
       _count: {
-        sentimentTag: true,
+        _all: true,
       },
     });
 
-    const sentimentBreakdown = sentimentCounts.map((s) => ({
-      sentiment: s.sentimentTag || "Unknown",
-      count: s._count.sentimentTag,
-      percentage: totalLeads > 0
-        ? Math.round((s._count.sentimentTag / totalLeads) * 100)
-        : 0,
+    const sentimentAgg = new Map<string, number>();
+    for (const row of sentimentCounts) {
+      const raw = row.sentimentTag;
+      // "New" means "no inbound replies yet" and shouldn't show up in response sentiment.
+      const sentiment = !raw || raw === "New" ? "Unknown" : raw;
+      sentimentAgg.set(sentiment, (sentimentAgg.get(sentiment) ?? 0) + row._count._all);
+    }
+
+    const sentimentBreakdown = Array.from(sentimentAgg.entries()).map(([sentiment, count]) => ({
+      sentiment,
+      count,
+      percentage: responses > 0 ? (count / responses) * 100 : 0,
     }));
 
     // Get status breakdown
