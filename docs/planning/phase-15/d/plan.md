@@ -12,8 +12,11 @@ Run validations and ensure the new controls are documented in the phase plan.
 - Ensure new UI copy matches the actual behavior.
 
 ## Output
-- Verified, shippable UI controls for campaign assignment.
+- Validated:
+  - `npm run lint` (warnings only) and `npm run build` succeeded.
+  - Campaign upserts/sync do not overwrite config:
+    - Sync updates `EmailCampaign.name` only: `actions/email-campaign-actions.ts`.
+    - Webhook campaign upsert updates `name` only: `app/api/webhooks/email/route.ts` (`upsertCampaign`).
 
 ## Handoff
 If desired, follow-up phase could add “AI vs Setter” analytics segmentation by `Message.sentBy`.
-

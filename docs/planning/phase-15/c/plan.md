@@ -14,8 +14,8 @@ Make Analytics reflect the campaign config clearly so operators can verify assig
 - Keep the table compact and scannable.
 
 ## Output
-- Analytics page reflects configuration choices directly.
+- Analytics “Email Campaign KPIs” now reflects campaign assignment:
+  - Mode column shows `Setter` for `SETTER_MANAGED`, or `AI ≥ {threshold}%` for `AI_AUTO_SEND`: `components/dashboard/analytics-view.tsx`.
 
 ## Handoff
-Phase 15d runs QA (lint/build) and ensures docs match behavior.
-
+Phase 15d: run `npm run lint` + `npm run build`, confirm campaign sync/webhooks do not overwrite mode/threshold, and update root plan success criteria + phase summary.

@@ -16,8 +16,9 @@ Expose safe, admin-scoped server actions to read and update `EmailCampaign.respo
   - Update DB and `revalidatePath("/")`.
 
 ## Output
-- Server actions available for UI to fetch/update campaign assignment config.
+- Implemented server actions to read/update campaign assignment config:
+  - `actions/email-campaign-actions.ts` now returns `responseMode` + `autoSendConfidenceThreshold` in `getEmailCampaigns()`.
+  - Added `updateEmailCampaignConfig(emailCampaignId, { responseMode, autoSendConfidenceThreshold })` (admin-scoped, clamps threshold to `0..1`, `revalidatePath("/")`).
 
 ## Handoff
-Phase 15b consumes these actions to render and save settings from the client UI.
-
+Phase 15b: build the AI Personality UI panel that lists campaigns and calls `updateEmailCampaignConfig` per row (mode + threshold + save/revert UX).

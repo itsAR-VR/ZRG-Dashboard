@@ -19,8 +19,9 @@ Add a polished UI panel to Settings → AI Personality to configure per-campaign
 - Mount the panel inside the AI Personality tab.
 
 ## Output
-- Operators can configure campaign assignment without Prisma/DB access.
+- Added an AI Personality “Campaign Assignment” panel that configures EmailBison campaigns without Prisma/DB access:
+  - New component: `components/dashboard/settings/ai-campaign-assignment.tsx` (per-row mode + threshold, Save/Revert, refresh, 80/20 helper copy).
+  - Mounted in Settings → AI Personality: `components/dashboard/settings-view.tsx`.
 
 ## Handoff
-Phase 15c optionally improves the Analytics table to display mode + threshold clearly.
-
+Phase 15c: update Analytics “Email Campaign KPIs” to show `Setter` vs `AI ≥ {threshold}%` so assignment is visible at a glance.
