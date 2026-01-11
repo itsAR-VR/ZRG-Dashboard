@@ -1,12 +1,13 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Users, MessageSquare, Calendar, Clock, ArrowUpRight, ArrowDownRight, Loader2, BarChart3, Download } from "lucide-react"
+import { Users, MessageSquare, Calendar, Clock, ArrowUpRight, ArrowDownRight, Loader2, BarChart3 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { ChatgptExportControls } from "@/components/dashboard/chatgpt-export-controls"
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
 import {
   Cell,
@@ -181,23 +182,13 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
           <div>
             <h1 className="text-2xl font-bold">Analytics</h1>
             <p className="text-muted-foreground">Track your outreach performance</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              disabled={!activeWorkspace}
-              onClick={() => {
-                if (!activeWorkspace) return
-                window.location.href = `/api/export/chatgpt?clientId=${activeWorkspace}`
-              }}
-            >
-              <Download className="h-4 w-4 mr-2" />
-              Download dataset for ChatGPT
-            </Button>
-            <Select defaultValue="7d">
-              <SelectTrigger className="w-[150px]" disabled title="Time range filtering is coming soon">
-                <SelectValue placeholder="Select period" />
-              </SelectTrigger>
+	          </div>
+	          <div className="flex items-center gap-2">
+	            <ChatgptExportControls activeWorkspace={activeWorkspace} />
+	            <Select defaultValue="7d">
+	              <SelectTrigger className="w-[150px]" disabled title="Time range filtering is coming soon">
+	                <SelectValue placeholder="Select period" />
+	              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="24h">Last 24 hours</SelectItem>
                 <SelectItem value="7d">Last 7 days</SelectItem>

@@ -90,6 +90,7 @@ model WorkspaceSettings {
   aiSmsGreeting        String?  // Default greeting for SMS channel (falls back to aiGreeting if null)
   aiSignature          String?  @db.Text
   aiGoals              String?  @db.Text
+  chatgptExportDefaults String? @db.Text // JSON string (see lib/chatgpt-export.ts)
   // AI Context Fields (for better AI responses)
   serviceDescription      String?  @db.Text  // Business/service description for AI context
   qualificationQuestions  String?  @db.Text  // JSON array of qualification questions

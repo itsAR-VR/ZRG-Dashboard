@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import JSZip from "jszip";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resolveClientScope } from "@/lib/workspace-access";
+import { POSITIVE_SENTIMENTS } from "@/lib/sentiment-shared";
+import {
+  DEFAULT_CHATGPT_EXPORT_OPTIONS,
+  computeChatgptExportDateRange,
+  parseChatgptExportOptionsJson,
+  type ChatgptExportOptions,
+} from "@/lib/chatgpt-export";
 
 function escapeCsvField(value: string): string {
   if (value.includes(",") || value.includes('"') || value.includes("\n")) {
@@ -37,77 +45,119 @@ export async function GET(request: NextRequest) {
 
   const settings = await prisma.workspaceSettings.findUnique({
     where: { clientId },
-    select: { meetingBookingProvider: true },
+    select: { meetingBookingProvider: true, chatgptExportDefaults: true },
   });
 
-  const leads = await prisma.lead.findMany({
-    where: { clientId },
-    include: {
-      emailCampaign: { select: { id: true, bisonCampaignId: true, name: true } },
-      smsCampaign: { select: { id: true, name: true } },
-    },
-    orderBy: { updatedAt: "desc" },
-  });
+  const optsFromQuery = parseChatgptExportOptionsJson(searchParams.get("opts"));
+  const optsFromSettings = parseChatgptExportOptionsJson(settings?.chatgptExportDefaults || null);
+  const exportOptions: ChatgptExportOptions = optsFromQuery ?? optsFromSettings ?? DEFAULT_CHATGPT_EXPORT_OPTIONS;
 
-  const leadRows = leads.map((lead) => ({
-    leadId: lead.id,
-    firstName: lead.firstName || "",
-    lastName: lead.lastName || "",
-    email: lead.email || "",
-    sentimentTag: lead.sentimentTag || "",
-    emailCampaignId: lead.emailCampaign?.id || "",
-    emailCampaignBisonId: lead.emailCampaign?.bisonCampaignId || "",
-    emailCampaignName: lead.emailCampaign?.name || "",
-    smsCampaignId: lead.smsCampaign?.id || "",
-    smsCampaignName: lead.smsCampaign?.name || "",
-    meetingBookingProvider: settings?.meetingBookingProvider || "GHL",
-    ghlAppointmentId: lead.ghlAppointmentId || "",
-    calendlyInviteeUri: lead.calendlyInviteeUri || "",
-    calendlyScheduledEventUri: lead.calendlyScheduledEventUri || "",
-    appointmentBookedAt: lead.appointmentBookedAt ? lead.appointmentBookedAt.toISOString() : "",
-    industry: lead.industry || "",
-    employeeHeadcount: lead.employeeHeadcount || "",
-  }));
+  const { from, to } = computeChatgptExportDateRange(exportOptions, new Date());
 
-  const leadsCsv = toCsv(leadRows);
+  const messageSomeWhere: Prisma.MessageWhereInput = {
+    ...(exportOptions.channels.length > 0 ? { channel: { in: exportOptions.channels } } : {}),
+    ...(exportOptions.directions.length > 0 ? { direction: { in: exportOptions.directions } } : {}),
+    ...(from && to ? { sentAt: { gte: from, lt: to } } : {}),
+  };
 
-  const messages = await prisma.message.findMany({
-    where: { lead: { clientId } },
-    orderBy: { sentAt: "asc" },
-    select: {
-      id: true,
-      leadId: true,
-      channel: true,
-      direction: true,
-      sentAt: true,
-      body: true,
-      subject: true,
-      sentBy: true,
-      aiDraftId: true,
-      source: true,
-    },
-  });
+  const leadWhere: Prisma.LeadWhereInput = {
+    clientId,
+    ...(exportOptions.positiveOnly ? { sentimentTag: { in: Array.from(POSITIVE_SENTIMENTS) } } : {}),
+    ...(Object.keys(messageSomeWhere).length > 0 ? { messages: { some: messageSomeWhere } } : {}),
+  };
 
-  const messagesJsonl = messages
-    .map((m) =>
-      JSON.stringify({
-        messageId: m.id,
-        leadId: m.leadId,
-        channel: m.channel,
-        direction: m.direction,
-        sentAt: m.sentAt.toISOString(),
-        subject: m.subject,
-        body: m.body,
-        source: m.source,
-        sentBy: m.sentBy,
-        aiDraftId: m.aiDraftId,
-      })
-    )
-    .join("\n");
+  let leadsCsv = "";
+  let leadIds: string[] = [];
+
+  if (exportOptions.includeLeadsCsv) {
+    const leads = await prisma.lead.findMany({
+      where: leadWhere,
+      include: {
+        emailCampaign: { select: { id: true, bisonCampaignId: true, name: true } },
+        smsCampaign: { select: { id: true, name: true } },
+      },
+      orderBy: { updatedAt: "desc" },
+    });
+
+    leadIds = leads.map((l) => l.id);
+
+    const leadRows = leads.map((lead) => ({
+      leadId: lead.id,
+      firstName: lead.firstName || "",
+      lastName: lead.lastName || "",
+      email: lead.email || "",
+      sentimentTag: lead.sentimentTag || "",
+      emailCampaignId: lead.emailCampaign?.id || "",
+      emailCampaignBisonId: lead.emailCampaign?.bisonCampaignId || "",
+      emailCampaignName: lead.emailCampaign?.name || "",
+      smsCampaignId: lead.smsCampaign?.id || "",
+      smsCampaignName: lead.smsCampaign?.name || "",
+      meetingBookingProvider: settings?.meetingBookingProvider || "GHL",
+      ghlAppointmentId: lead.ghlAppointmentId || "",
+      calendlyInviteeUri: lead.calendlyInviteeUri || "",
+      calendlyScheduledEventUri: lead.calendlyScheduledEventUri || "",
+      appointmentBookedAt: lead.appointmentBookedAt ? lead.appointmentBookedAt.toISOString() : "",
+      industry: lead.industry || "",
+      employeeHeadcount: lead.employeeHeadcount || "",
+    }));
+
+    leadsCsv = toCsv(leadRows);
+  } else {
+    const leads = await prisma.lead.findMany({
+      where: leadWhere,
+      select: { id: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    leadIds = leads.map((l) => l.id);
+  }
+
+  let messagesJsonl = "";
+  if (exportOptions.includeMessagesJsonl && leadIds.length > 0) {
+    const messageWhere: Prisma.MessageWhereInput = {
+      leadId: { in: leadIds },
+      ...(exportOptions.channels.length > 0 ? { channel: { in: exportOptions.channels } } : {}),
+      ...(exportOptions.directions.length > 0 ? { direction: { in: exportOptions.directions } } : {}),
+      ...(from && to && exportOptions.messagesWithinRangeOnly ? { sentAt: { gte: from, lt: to } } : {}),
+    };
+
+    const messages = await prisma.message.findMany({
+      where: messageWhere,
+      orderBy: { sentAt: "asc" },
+      select: {
+        id: true,
+        leadId: true,
+        channel: true,
+        direction: true,
+        sentAt: true,
+        body: true,
+        subject: true,
+        sentBy: true,
+        aiDraftId: true,
+        source: true,
+      },
+    });
+
+    messagesJsonl = messages
+      .map((m) =>
+        JSON.stringify({
+          messageId: m.id,
+          leadId: m.leadId,
+          channel: m.channel,
+          direction: m.direction,
+          sentAt: m.sentAt.toISOString(),
+          subject: m.subject,
+          body: m.body,
+          source: m.source,
+          sentBy: m.sentBy,
+          aiDraftId: m.aiDraftId,
+        })
+      )
+      .join("\n");
+  }
 
   const zip = new JSZip();
-  zip.file("leads.csv", leadsCsv);
-  zip.file("messages.jsonl", messagesJsonl);
+  if (exportOptions.includeLeadsCsv) zip.file("leads.csv", leadsCsv);
+  if (exportOptions.includeMessagesJsonl) zip.file("messages.jsonl", messagesJsonl);
 
   const buffer = await zip.generateAsync({
     type: "nodebuffer",
@@ -124,4 +174,3 @@ export async function GET(request: NextRequest) {
     },
   });
 }
-
