@@ -64,9 +64,9 @@ const EMAIL_INBOX_MANAGER_ANALYZE_SYSTEM = `Output your response in the followin
 {
   "classification": "One of: Meeting Booked, Meeting Requested, Call Requested, Information Requested, Follow Up, Not Interested, Automated Reply, Out Of Office, Blacklist",
   "cleaned_response": "Plain-text body including at most a short closing + name/job title. If the scheduling link is not in the signature and is in the main part of the email body do not omit it from the cleaned email body.",
-  "mobile_number": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
-  "direct_phone": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
-  "scheduling_link": "String (URL), omit key if not found",
+  "mobile_number": "E.164 formatted string or null. It MUST be in E.164 format when present",
+  "direct_phone": "E.164 formatted string or null. It MUST be in E.164 format when present",
+  "scheduling_link": "String (URL) or null",
   "is_newsletter": "Boolean, true if this appears to be a newsletter or marketing email rather than a genuine reply"
 }
 
@@ -80,7 +80,7 @@ Rules for cleaned_response:
 Rules for signature fields:
 - Extract only mobile_number, direct_phone, and scheduling_link.
 - Normalize phone numbers to E.164 format where possible. If no country code is present, leave in original format (do NOT guess).
-- Omit these keys entirely if not present.
+- Use null for these keys if not present.
 - Do not include extracted values inside cleaned_response.
 
 Meeting Booked classification notes:
@@ -104,7 +104,7 @@ Newsletter / marketing detection notes:
 - is_newsletter = true ONLY if you are very certain this is a marketing/newsletter blast (unsubscribe footer, digest/promotional template, broad marketing content, no reference to the outreach).
 - is_newsletter = false for genuine human replies, auto-replies, or transactional emails.
 
-Always output valid JSON. Always include classification, cleaned_response, and is_newsletter.`;
+Always output valid JSON. Always include classification, cleaned_response, is_newsletter, and set signature fields to null when not present.`;
 
 const AUTO_REPLY_GATE_SYSTEM = `You decide whether an inbound reply warrants sending a reply back.
 

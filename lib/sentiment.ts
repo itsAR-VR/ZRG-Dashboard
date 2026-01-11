@@ -311,9 +311,9 @@ const EMAIL_INBOX_MANAGER_SYSTEM = `Output your response in the following strict
 {
   "classification": "One of: Meeting Booked, Meeting Requested, Call Requested, Information Requested, Follow Up, Not Interested, Automated Reply, Out Of Office, Blacklist",
   "cleaned_response": "Plain-text body including at most a short closing + name/job title. If the scheduling link is not in the signature and is in the main part of the email body do not omit it from the cleaned email body.",
-  "mobile_number": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
-  "direct_phone": "E.164 formatted string, omit key if not found. It MUST be in E.164 format when present",
-  "scheduling_link": "String (URL), omit key if not found",
+  "mobile_number": "E.164 formatted string or null. It MUST be in E.164 format when present",
+  "direct_phone": "E.164 formatted string or null. It MUST be in E.164 format when present",
+  "scheduling_link": "String (URL) or null",
   "is_newsletter": "Boolean, true if this appears to be a newsletter or marketing email rather than a genuine reply"
 }
 
@@ -333,7 +333,7 @@ Primary weighting (avoid common misreads):
 Rules for signature fields:
 - Extract only mobile_number, direct_phone, and scheduling_link.
 - Normalize phone numbers to E.164 format where possible. If no country code is present, leave in original format (do NOT guess).
-- Omit these keys entirely if not present.
+- Use null for these keys if not present.
 - Do not include extracted values inside cleaned_response.
 
 Meeting Booked classification notes:
@@ -357,7 +357,7 @@ Newsletter / marketing detection notes:
 - is_newsletter = true ONLY if you are very certain this is a marketing/newsletter blast (unsubscribe footer, digest/promotional template, broad marketing content, no reference to the outreach).
 - is_newsletter = false for genuine human replies, auto-replies, or transactional emails.
 
-Always output valid JSON. Always include classification, cleaned_response, and is_newsletter.`;
+Always output valid JSON. Always include classification, cleaned_response, is_newsletter, and set signature fields to null when not present.`;
 
 function defaultAvailabilityText(clientName?: string | null): string {
   return `Here is the current availability for ${clientName || "the client"}:\n\nNO TIMES AVAILABLE - ASSUME THE TIME IS AVAILABLE AND CATEGORIZE AS 'Meeting Booked' IF A TIME HAS BEEN AGREED`;
@@ -501,7 +501,7 @@ export async function analyzeInboundEmailReply(opts: {
       "Meeting Booked MUST satisfy the guardrails; otherwise use Meeting Requested / Call Requested / other best fit.",
       "If multiple cues exist, apply decision_rules priority order: Blacklist > Automated Reply > Out Of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Follow Up > Not Interested.",
       "Signature data must be excluded from cleaned_response and only output under the correct JSON keys.",
-      "Omit signature keys entirely if not present.",
+      "Use null for signature keys if not present.",
       "Do NOT use scheduling links found only in signatures to decide classification unless the body explicitly references using that link.",
       "Use the 'automated_reply' field from context to help identify Automated Reply vs Out Of Office classifications.",
     ],
@@ -540,12 +540,14 @@ export async function analyzeInboundEmailReply(opts: {
         ],
       },
       cleaned_response: { type: "string" },
-      mobile_number: { type: "string" },
-      direct_phone: { type: "string" },
-      scheduling_link: { type: "string" },
+      mobile_number: { type: ["string", "null"] },
+      direct_phone: { type: ["string", "null"] },
+      scheduling_link: { type: ["string", "null"] },
       is_newsletter: { type: "boolean" },
     },
-    required: ["classification", "cleaned_response", "is_newsletter"],
+    // NOTE: OpenAI Structured Outputs requires `required` to include every key
+    // in `properties` (no optional keys). Use `null` for "not present".
+    required: ["classification", "cleaned_response", "mobile_number", "direct_phone", "scheduling_link", "is_newsletter"],
   } as const;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -585,12 +587,41 @@ export async function analyzeInboundEmailReply(opts: {
       }
 
       const jsonText = extractJsonObjectFromText(raw);
-      const parsed = JSON.parse(jsonText) as EmailInboxAnalysis;
-      if (!parsed?.classification || typeof parsed.cleaned_response !== "string" || typeof parsed.is_newsletter !== "boolean") {
+      const parsed = JSON.parse(jsonText) as {
+        classification?: EmailInboxClassification;
+        cleaned_response?: unknown;
+        is_newsletter?: unknown;
+        mobile_number?: unknown;
+        direct_phone?: unknown;
+        scheduling_link?: unknown;
+      };
+      if (
+        !parsed.classification ||
+        typeof parsed.cleaned_response !== "string" ||
+        typeof parsed.is_newsletter !== "boolean"
+      ) {
         if (attempt < maxRetries) continue;
         return null;
       }
-      return parsed;
+
+      const normalizeOptString = (value: unknown): string | undefined => {
+        if (typeof value !== "string") return undefined;
+        const trimmed = value.trim();
+        return trimmed ? trimmed : undefined;
+      };
+
+      const mobileNumber = normalizeOptString(parsed.mobile_number);
+      const directPhone = normalizeOptString(parsed.direct_phone);
+      const schedulingLink = normalizeOptString(parsed.scheduling_link);
+
+      return {
+        classification: parsed.classification,
+        cleaned_response: parsed.cleaned_response,
+        is_newsletter: parsed.is_newsletter,
+        ...(mobileNumber ? { mobile_number: mobileNumber } : {}),
+        ...(directPhone ? { direct_phone: directPhone } : {}),
+        ...(schedulingLink ? { scheduling_link: schedulingLink } : {}),
+      };
     } catch (error) {
       const isRetryable =
         error instanceof Error &&

@@ -507,8 +507,8 @@ Generate an appropriate ${channel} response following the guidelines above.
       Number.parseInt(process.env.OPENAI_DRAFT_TIMEOUT_MS || "120000", 10) || 120_000
     );
 
-    const primaryModel = "gpt-5-mini";
-    const reasoningEffort = "high" as const;
+    const primaryModel = channel === "email" ? "gpt-5.1" : "gpt-5-mini";
+    const reasoningEffort = (channel === "email" ? "medium" : "high") as const;
 
     const budget = await computeAdaptiveMaxOutputTokens({
       model: primaryModel,
@@ -549,7 +549,7 @@ Generate an appropriate ${channel} response following the guidelines above.
 
     // Fallback: same model with lower reasoning effort if the primary call failed or returned no output.
     if (!draftContent) {
-      const fallbackModel = "gpt-5-mini";
+      const fallbackModel = primaryModel;
       const fallbackBudget = await computeAdaptiveMaxOutputTokens({
         model: fallbackModel,
         instructions: systemPrompt,

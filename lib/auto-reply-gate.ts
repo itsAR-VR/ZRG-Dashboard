@@ -150,7 +150,7 @@ Output MUST be valid JSON:
                   reason: { type: "string" },
                   follow_up_time: { type: ["string", "null"] },
                 },
-                required: ["should_reply", "reason"],
+                required: ["should_reply", "reason", "follow_up_time"],
               },
             },
           },
