@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { requireAuthUser, getAccessibleClientIdsForUser, isGlobalAdminUser, requireClientAdminAccess } from "@/lib/workspace-access";
 import { revalidatePath } from "next/cache";
+import { ensureDefaultSequencesIncludeLinkedInStepsForClient } from "@/lib/followup-sequence-linkedin";
 
 export interface ClientData {
   name: string;
@@ -224,6 +225,15 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
       where: { id },
       data: updateData,
     });
+
+    // If LinkedIn is newly configured, auto-augment default follow-up sequences to include LinkedIn steps.
+    if (data.unipileAccountId !== undefined) {
+      const before = client.unipileAccountId?.trim() || "";
+      const after = unipileAccountId?.trim() || "";
+      if (!before && !!after) {
+        await ensureDefaultSequencesIncludeLinkedInStepsForClient({ prisma, clientId: id });
+      }
+    }
 
     revalidatePath("/");
     return { success: true, data: updatedClient };

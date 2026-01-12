@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
+import { ensureDefaultSequencesIncludeLinkedInStepsForClient } from "@/lib/followup-sequence-linkedin";
 
 async function requireFollowUpInstanceAccess(instanceId: string): Promise<void> {
   const scope = await resolveClientScope(null);
@@ -837,6 +838,33 @@ function defaultNoResponseLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
   ];
 }
 
+function defaultMeetingRequestedLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
+  return [
+    // DAY 1 - LinkedIn connection request (note)
+    {
+      stepOrder: 1, // temporary; will be renumbered
+      dayOffset: 1,
+      channel: "linkedin",
+      messageTemplate: `Hi {firstName} — thanks for reaching out. Happy to connect and share details about {result}.`,
+      subject: null,
+      condition: { type: "always" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 2 - LinkedIn DM after connection accepted
+    {
+      stepOrder: 1, // temporary; will be renumbered
+      dayOffset: 2,
+      channel: "linkedin",
+      messageTemplate: `Thanks for connecting, {firstName}. If you’d like, here’s my calendar to grab a quick call: {calendarLink}`,
+      subject: null,
+      condition: { type: "linkedin_connected" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+  ];
+}
+
 function sortStepsForScheduling<T extends { dayOffset: number; channel: string }>(steps: T[]): T[] {
   const priority: Record<string, number> = {
     email: 1,
@@ -953,15 +981,13 @@ Where should we go from here?`,
   ];
 
   const airtableMode = await isAirtableModeEnabled(clientId);
-  const hasLinkedIn = airtableMode ? await isLinkedInConfigured(clientId) : false;
-  const steps = airtableMode
-    ? (() => {
-        const base = stripEmailSteps(noResponseSteps);
-        if (!hasLinkedIn) return base;
-        const augmented = sortStepsForScheduling([...base, ...defaultNoResponseLinkedInSteps()]);
-        return augmented.map((s, idx) => ({ ...s, stepOrder: idx + 1 }));
-      })()
-    : noResponseSteps;
+  const hasLinkedIn = await isLinkedInConfigured(clientId);
+  const baseSteps = airtableMode ? stripEmailSteps(noResponseSteps) : noResponseSteps;
+  const steps = (() => {
+    if (!hasLinkedIn) return baseSteps;
+    const augmented = sortStepsForScheduling([...baseSteps, ...defaultNoResponseLinkedInSteps()]);
+    return augmented.map((s, idx) => ({ ...s, stepOrder: idx + 1 }));
+  })();
 
   return createFollowUpSequence({
     clientId,
@@ -980,21 +1006,11 @@ export async function createMeetingRequestedSequence(
   clientId: string
 ): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
   await requireClientAdminAccess(clientId);
+  const hasLinkedIn = await isLinkedInConfigured(clientId);
   const steps: Omit<FollowUpStepData, "id">[] = [
-    // DAY 1 - LinkedIn connection request (note)
-    {
-      stepOrder: 1,
-      dayOffset: 1,
-      channel: "linkedin",
-      messageTemplate: `Hi {firstName} — thanks for reaching out. Happy to connect and share details about {result}.`,
-      subject: null,
-      condition: { type: "always" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
     // DAY 1 - Email: confirm and offer calendar
     {
-      stepOrder: 2,
+      stepOrder: 1,
       dayOffset: 1,
       channel: "email",
       messageTemplate: `Hi {firstName},
@@ -1011,7 +1027,7 @@ I have {availability}. If it’s easier, you can grab a time here: {calendarLink
     },
     // DAY 2 - SMS nudge (only if phone provided)
     {
-      stepOrder: 3,
+      stepOrder: 2,
       dayOffset: 2,
       channel: "sms",
       messageTemplate: `Hey {firstName} — want to lock in a quick call about {result}? Here’s my calendar: {calendarLink}`,
@@ -1020,20 +1036,9 @@ I have {availability}. If it’s easier, you can grab a time here: {calendarLink
       requiresApproval: false,
       fallbackStepId: null,
     },
-    // DAY 2 - LinkedIn DM after connection accepted
-    {
-      stepOrder: 4,
-      dayOffset: 2,
-      channel: "linkedin",
-      messageTemplate: `Thanks for connecting, {firstName}. If you’d like, here’s my calendar to grab a quick call: {calendarLink}`,
-      subject: null,
-      condition: { type: "linkedin_connected" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
     // DAY 5 - Email reminder with availability
     {
-      stepOrder: 5,
+      stepOrder: 3,
       dayOffset: 5,
       channel: "email",
       messageTemplate: `Hi {firstName},
@@ -1050,7 +1055,7 @@ I have {availability} available. Calendar link here as well: {calendarLink}
     },
     // DAY 7 - Final SMS check-in (only if phone provided)
     {
-      stepOrder: 6,
+      stepOrder: 4,
       dayOffset: 7,
       channel: "sms",
       messageTemplate: `Hey {firstName} — should I close the loop on this, or do you still want to chat about {result}?`,
@@ -1062,15 +1067,40 @@ I have {availability} available. Calendar link here as well: {calendarLink}
   ];
 
   const airtableMode = await isAirtableModeEnabled(clientId);
-  const filteredSteps = airtableMode ? stripEmailSteps(steps) : steps;
+  const withOptionalLinkedIn = hasLinkedIn
+    ? sortStepsForScheduling([...steps, ...defaultMeetingRequestedLinkedInSteps()]).map((s, idx) => ({
+        ...s,
+        stepOrder: idx + 1,
+      }))
+    : steps;
+  const filteredSteps = airtableMode ? stripEmailSteps(withOptionalLinkedIn) : withOptionalLinkedIn;
+  const description = hasLinkedIn
+    ? 'Triggered when sentiment becomes "Meeting Requested": Day 1 (email + LinkedIn connect), Day 2 (SMS + LinkedIn DM if connected), Day 5 (reminder), Day 7 (final check-in)'
+    : 'Triggered when sentiment becomes "Meeting Requested": Day 1 (email), Day 2 (SMS if phone), Day 5 (reminder), Day 7 (final check-in)';
 
   return createFollowUpSequence({
     clientId,
     name: DEFAULT_SEQUENCE_NAMES.meetingRequested,
-    description: "Triggered when sentiment becomes \"Meeting Requested\": Day 1 (email + LinkedIn connect), Day 2 (SMS + LinkedIn DM if connected), Day 5 (reminder), Day 7 (final check-in)",
+    description,
     triggerOn: "manual",
     steps: filteredSteps,
   });
+}
+
+export async function ensureDefaultSequencesIncludeLinkedInSteps(
+  clientId: string
+): Promise<{ success: boolean; updated?: number; error?: string }> {
+  try {
+    await requireClientAdminAccess(clientId);
+    const hasLinkedIn = await isLinkedInConfigured(clientId);
+    if (!hasLinkedIn) return { success: true, updated: 0 };
+    const result = await ensureDefaultSequencesIncludeLinkedInStepsForClient({ prisma, clientId });
+    revalidatePath("/");
+    return { success: true, updated: result.updatedSequences };
+  } catch (error) {
+    console.error("Failed to ensure LinkedIn steps on default sequences:", error);
+    return { success: false, error: "Failed to update default sequences" };
+  }
 }
 
 /**

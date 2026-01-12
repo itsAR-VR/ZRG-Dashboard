@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { ClientMemberRole, Prisma } from "@prisma/client";
+import { ensureDefaultSequencesIncludeLinkedInStepsForClient } from "@/lib/followup-sequence-linkedin";
 
 type ProvisionWorkspaceRequest = {
   // Required
@@ -379,9 +380,9 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      if (upsert) {
-        const updated = await prisma.$transaction(async (tx) => {
-          const workspace = await tx.client.update({
+	      if (upsert) {
+	        const updated = await prisma.$transaction(async (tx) => {
+	          const workspace = await tx.client.update({
             where: { id: existing.id },
             data: {
               name,
@@ -440,11 +441,17 @@ export async function POST(request: NextRequest) {
             }
           }
 
-          return workspace;
-        });
+	          return workspace;
+	        });
 
-        return NextResponse.json({ success: true, existed: true, updated: true, workspace: updated }, { status: 200 });
-      }
+	        const before = (existing.unipileAccountId ?? "").trim();
+	        const after = (updated.unipileAccountId ?? "").trim();
+	        if (!before && after) {
+	          await ensureDefaultSequencesIncludeLinkedInStepsForClient({ prisma, clientId: updated.id });
+	        }
+
+	        return NextResponse.json({ success: true, existed: true, updated: true, workspace: updated }, { status: 200 });
+	      }
 
       return NextResponse.json(
         {
@@ -479,8 +486,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const created = await prisma.$transaction(async (tx) => {
-      const workspace = await tx.client.create({
+	    const created = await prisma.$transaction(async (tx) => {
+	      const workspace = await tx.client.create({
         data: {
           name,
           ghlLocationId,
@@ -530,11 +537,15 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      return workspace;
-    });
+	      return workspace;
+	    });
 
-    return NextResponse.json({ success: true, existed: false, workspace: created }, { status: 201 });
-  } catch (error) {
+	    if ((created.unipileAccountId ?? "").trim()) {
+	      await ensureDefaultSequencesIncludeLinkedInStepsForClient({ prisma, clientId: created.id });
+	    }
+
+	    return NextResponse.json({ success: true, existed: false, workspace: created }, { status: 201 });
+	  } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       // Unique constraint violation (race condition)
       return NextResponse.json({ error: "Workspace already exists (unique constraint)" }, { status: 409 });
