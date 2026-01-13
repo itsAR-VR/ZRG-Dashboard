@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getGHLContact } from "@/lib/ghl-api";
+import { exportMessages, getGHLContact } from "@/lib/ghl-api";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { approveAndSendDraftSystem } from "@/actions/message-actions";
 import { buildSentimentTranscriptFromMessages, classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
@@ -184,32 +184,16 @@ async function fetchGHLConversationHistory(
   privateKey: string
 ): Promise<{ messages: GHLExportedMessage[]; transcript: string }> {
   try {
-    const url = new URL("https://services.leadconnectorhq.com/conversations/messages/export");
-    url.searchParams.set("locationId", locationId);
-    url.searchParams.set("contactId", contactId);
-    url.searchParams.set("channel", "SMS");
+    console.log(`[GHL API] Fetching conversation history (export) for contact ${contactId}`);
 
-    console.log(`[GHL API] Fetching conversation history: ${url.toString()}`);
-
-    const response = await fetch(url.toString(), {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${privateKey}`,
-        Version: "2021-04-15",
-        Accept: "application/json",
-      },
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[GHL API] Error ${response.status}: ${errorText}`);
+    const exportResult = await exportMessages(locationId, contactId, privateKey, "SMS");
+    if (!exportResult.success || !exportResult.data) {
+      console.error(`[GHL API] Export failed: ${exportResult.error || "unknown error"}`);
       return { messages: [], transcript: "" };
     }
 
-    const data: GHLExportResponse = await response.json();
+    const data: GHLExportResponse = exportResult.data as unknown as GHLExportResponse;
     const messages = data.messages || [];
-
-    console.log(`[GHL API] Fetched ${messages.length} messages (total: ${data.total})`);
 
     // Sort messages by date (oldest first for transcript)
     const sortedMessages = [...messages].sort(
@@ -690,30 +674,53 @@ export async function POST(request: NextRequest) {
         } else {
           // Not in history - save without ghlId (will be healed on next sync)
           console.log(`[Webhook] Current message not in history, saving without ghlId...`);
-          await prisma.message.create({
-            data: {
-              body: messageBody,
-              direction: "inbound",
-              channel: "sms",
+          const windowStart = new Date(webhookMessageTime.getTime() - 60_000);
+          const windowEnd = new Date(webhookMessageTime.getTime() + 60_000);
+
+          const existing = await prisma.message.findFirst({
+            where: {
               leadId: lead.id,
-              sentAt: webhookMessageTime,
-              // ghlId will be added on next sync
+              channel: "sms",
+              direction: "inbound",
+              body: messageBody,
+              sentAt: { gte: windowStart, lte: windowEnd },
             },
-          } as any);
-          await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt: webhookMessageTime });
-          importedMessagesCount++;
-          console.log(`[Webhook] Saved current inbound message @ ${webhookMessageTime.toISOString()}`);
+            select: { id: true },
+          });
+
+          if (existing) {
+            console.log(`[Webhook] Skipping duplicate inbound message (existing id: ${existing.id})`);
+          } else {
+            await prisma.message.create({
+              data: {
+                body: messageBody,
+                direction: "inbound",
+                channel: "sms",
+                leadId: lead.id,
+                sentAt: webhookMessageTime,
+                // ghlId will be added on next sync
+              },
+            } as any);
+            await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt: webhookMessageTime });
+            importedMessagesCount++;
+            console.log(`[Webhook] Saved current inbound message @ ${webhookMessageTime.toISOString()}`);
+          }
         }
       }
     } else if (messageBody) {
       // For existing leads with messages, save the current message
       // Check by ghlId first (if we have it from a previous sync)
       // Webhook payload doesn't include ghlId, so we check by content
+      const windowStart = new Date(webhookMessageTime.getTime() - 60_000);
+      const windowEnd = new Date(webhookMessageTime.getTime() + 60_000);
+
       const existingByContent = await prisma.message.findFirst({
         where: {
           leadId: lead.id,
+          channel: "sms",
           body: messageBody,
           direction: "inbound",
+          sentAt: { gte: windowStart, lte: windowEnd },
         },
       });
 

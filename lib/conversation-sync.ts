@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { exportMessages, getGHLContact } from "@/lib/ghl-api";
+import { exportMessages, getConversationByContact, getConversationMessages, getGHLContact } from "@/lib/ghl-api";
 import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbison-api";
 import { recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
 import {
@@ -212,21 +212,150 @@ export async function syncSmsConversationHistorySystem(
       }
     }
 
-    console.log(`[Sync] Fetching conversation history for lead ${leadId} (contact: ${lead.ghlContactId})`);
+    console.log(`[Sync] Fetching SMS history for lead ${leadId} (contact: ${lead.ghlContactId})`);
 
-    const exportResult = await exportMessages(
-      lead.client.ghlLocationId,
-      lead.ghlContactId,
-      lead.client.ghlPrivateKey,
-      "SMS"
-    );
+    const startedAtMs = Date.now();
+    const maxPages = Number(process.env.GHL_EXPORT_MAX_PAGES || "") || 5;
+    const maxMessages = Number(process.env.GHL_EXPORT_MAX_MESSAGES || "") || 2000;
 
-    if (!exportResult.success || !exportResult.data) {
-      return { success: false, error: exportResult.error || "Failed to fetch messages from GHL" };
+    type NormalizedGhlMessage = {
+      id: string;
+      direction: "inbound" | "outbound";
+      body: string;
+      dateAdded: string;
+    };
+
+    let ghlMessages: NormalizedGhlMessage[] = [];
+
+    let exportError: string | null = null;
+
+    const fetchViaExport = async (): Promise<NormalizedGhlMessage[]> => {
+      try {
+        const seenCursors = new Set<string>();
+        let cursor: string | null = null;
+        const collected: NormalizedGhlMessage[] = [];
+
+        for (let page = 0; page < maxPages; page += 1) {
+          const exportResult = await exportMessages(
+            lead.client.ghlLocationId,
+            lead.ghlContactId,
+            lead.client.ghlPrivateKey,
+            "SMS",
+            { cursor }
+          );
+
+          if (!exportResult.success || !exportResult.data) {
+            exportError = exportResult.error || "Failed to fetch messages from GHL";
+            break;
+          }
+
+          const pageMessages = exportResult.data.messages || [];
+          for (const msg of pageMessages) {
+            collected.push({
+              id: msg.id,
+              direction: msg.direction,
+              body: msg.body,
+              dateAdded: msg.dateAdded,
+            });
+          }
+
+          if (collected.length >= maxMessages) break;
+
+          const nextCursor = exportResult.data.nextCursor;
+          if (!nextCursor) break;
+          if (seenCursors.has(nextCursor)) break;
+          seenCursors.add(nextCursor);
+          cursor = nextCursor;
+        }
+
+        return collected;
+      } catch (err) {
+        exportError = err instanceof Error ? err.message : "Failed to fetch messages from GHL";
+        return [];
+      }
+    };
+
+    const fetchViaConversation = async (): Promise<{
+      conversationId: string | null;
+      conversationLastMs: number | null;
+      messages: NormalizedGhlMessage[];
+    }> => {
+      try {
+        const conv = await getConversationByContact(lead.ghlContactId, lead.client.ghlPrivateKey, {
+          locationId: lead.client.ghlLocationId,
+        });
+        const conversationId = conv.success ? conv.data?.id || null : null;
+        const candidateLastMs =
+          conv.success && conv.data?.lastMessageDate ? Date.parse(conv.data.lastMessageDate) : NaN;
+        const conversationLastMs = Number.isNaN(candidateLastMs) ? null : candidateLastMs;
+
+        if (!conversationId) {
+          return { conversationId: null, conversationLastMs, messages: [] };
+        }
+
+        const messagesResult = await getConversationMessages(conversationId, lead.client.ghlPrivateKey);
+        const messages = messagesResult.success ? messagesResult.data?.messages || [] : [];
+
+        const mapped = messages
+          .map((m: any) => {
+            const messageType = typeof m.messageType === "string" ? m.messageType.toLowerCase() : "";
+            const isSms = !messageType || messageType.includes("sms");
+            if (!isSms) return null;
+
+            return {
+              id: String(m.id),
+              direction: m.direction === "inbound" ? ("inbound" as const) : ("outbound" as const),
+              body: String(m.body || ""),
+              dateAdded: String(m.dateAdded || ""),
+            };
+          })
+          .filter((m): m is NormalizedGhlMessage => Boolean(m))
+          .filter((m) => Boolean(m.id) && Boolean(m.dateAdded));
+
+        return { conversationId, conversationLastMs, messages: mapped };
+      } catch {
+        return { conversationId: null, conversationLastMs: null, messages: [] };
+      }
+    };
+
+    const preferConversation = smsMessageCount > 0;
+
+    if (preferConversation) {
+      const conv = await fetchViaConversation();
+      ghlMessages = conv.messages;
+
+      if (ghlMessages.length === 0) {
+        ghlMessages = await fetchViaExport();
+      }
+    } else {
+      ghlMessages = await fetchViaExport();
+
+      const conv = await fetchViaConversation();
+      const convMessages = conv.messages;
+
+      const newestExportMs =
+        ghlMessages.length > 0 ? Math.max(...ghlMessages.map((m) => Date.parse(m.dateAdded))) : null;
+
+      const exportLooksStale =
+        newestExportMs != null &&
+        Number.isFinite(newestExportMs) &&
+        conv.conversationLastMs != null &&
+        Number.isFinite(conv.conversationLastMs) &&
+        conv.conversationLastMs > newestExportMs + 60_000;
+
+      if (convMessages.length > 0 && (ghlMessages.length === 0 || exportLooksStale)) {
+        const byId = new Map(ghlMessages.map((m) => [m.id, m]));
+        for (const m of convMessages) byId.set(m.id, m);
+        ghlMessages = Array.from(byId.values());
+      }
     }
 
-    const ghlMessages = exportResult.data.messages || [];
-    console.log(`[Sync] Found ${ghlMessages.length} messages in GHL`);
+    const durationMs = Date.now() - startedAtMs;
+    console.log(`[Sync] Fetched ${ghlMessages.length} SMS messages from GHL in ${durationMs}ms`);
+
+    if (ghlMessages.length === 0 && exportError) {
+      return { success: false, error: exportError };
+    }
 
     let importedCount = 0;
     let healedCount = 0;
@@ -255,12 +384,19 @@ export async function syncSmsConversationHistorySystem(
           continue;
         }
 
+        const windowStart = new Date(msgTimestamp.getTime() - 60_000);
+        const windowEnd = new Date(msgTimestamp.getTime() + 60_000);
         const existingByContent = await prisma.message.findFirst({
           where: {
             leadId,
+            channel: "sms",
             body: msg.body,
             direction: msg.direction,
             ghlId: null,
+            sentAt: {
+              gte: windowStart,
+              lte: windowEnd,
+            },
           },
         });
 

@@ -9,11 +9,53 @@ import { isOptOutText } from "@/lib/sentiment";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { emailBisonHtmlFromPlainText } from "@/lib/email-format";
 import type { OutboundSentBy } from "@/lib/system-sender";
+import { refreshSenderEmailSnapshotsDue } from "@/lib/reactivation-engine";
 
 interface SendEmailResult {
   success: boolean;
   messageId?: string;
   error?: string;
+}
+
+function parseSenderEmailId(value: string | null | undefined): number | null {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isInvalidSenderEmailIdErrorText(errorText: string): boolean {
+  const lower = (errorText || "").toLowerCase();
+  return lower.includes("sender email id") && lower.includes("invalid");
+}
+
+async function pickSendableSenderEmailId(opts: {
+  clientId: string;
+  preferredSenderEmailId: string | null;
+  refreshIfStale: boolean;
+}): Promise<{ senderEmailId: string | null; reason?: string }> {
+  if (opts.refreshIfStale) {
+    await refreshSenderEmailSnapshotsDue({ clientId: opts.clientId, ttlMinutes: 0, limitClients: 1 }).catch(() => undefined);
+  }
+
+  if (opts.preferredSenderEmailId) {
+    const preferred = await prisma.emailBisonSenderEmailSnapshot.findUnique({
+      where: {
+        clientId_senderEmailId: { clientId: opts.clientId, senderEmailId: opts.preferredSenderEmailId },
+      },
+      select: { senderEmailId: true, isSendable: true },
+    });
+    if (preferred?.isSendable) return { senderEmailId: preferred.senderEmailId };
+  }
+
+  const fallback = await prisma.emailBisonSenderEmailSnapshot.findFirst({
+    where: { clientId: opts.clientId, isSendable: true },
+    select: { senderEmailId: true },
+    orderBy: { senderEmailId: "asc" },
+  });
+
+  if (!fallback?.senderEmailId) return { senderEmailId: null, reason: "no_sendable_senders" };
+  return { senderEmailId: fallback.senderEmailId, reason: "fallback_sender" };
 }
 
 async function validateWithEmailGuard(email: string) {
@@ -185,21 +227,69 @@ export async function sendEmailReply(
     const ccEmails = latestInboundEmail?.cc?.map(address => ({ name: null, email_address: address })) || [];
     const bccEmails = latestInboundEmail?.bcc?.map(address => ({ name: null, email_address: address })) || [];
 
-    // Call sendEmailBisonReply with correct 3 parameters: (apiKey, replyId, payload)
-    const sendResult = await sendEmailBisonReply(
-      client.emailBisonApiKey,
-      replyId,
-      {
-        message: htmlMessage,
-        sender_email_id: parseInt(lead.senderAccountId), // Must be number
-        to_emails: toEmails, // Required field
-        subject: subject || undefined,
-        cc_emails: ccEmails, // Correct field name
-        bcc_emails: bccEmails, // Correct field name
-        inject_previous_email_body: true,
-        content_type: "html", // Send as HTML to preserve formatting
+    let senderEmailId = lead.senderAccountId;
+
+    // Ensure sender id is numeric and sendable; pick a fallback when possible.
+    const senderEmailIdNum = parseSenderEmailId(senderEmailId);
+    if (!senderEmailIdNum) {
+      const picked = await pickSendableSenderEmailId({
+        clientId: client.id,
+        preferredSenderEmailId: senderEmailId,
+        refreshIfStale: true,
+      });
+      senderEmailId = picked.senderEmailId;
+      if (!senderEmailId) {
+        return { success: false, error: "No sendable EmailBison sender account is configured for this workspace" };
       }
-    );
+      await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+    } else {
+      const preferred = await prisma.emailBisonSenderEmailSnapshot
+        .findUnique({
+          where: { clientId_senderEmailId: { clientId: client.id, senderEmailId } },
+          select: { isSendable: true },
+        })
+        .catch(() => null);
+
+      if (preferred && preferred.isSendable === false) {
+        const picked = await pickSendableSenderEmailId({
+          clientId: client.id,
+          preferredSenderEmailId: null,
+          refreshIfStale: false,
+        });
+        if (picked.senderEmailId) {
+          senderEmailId = picked.senderEmailId;
+          await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+        }
+      }
+    }
+
+    const buildPayload = (sender: string) => ({
+      message: htmlMessage,
+      sender_email_id: parseSenderEmailId(sender)!, // validated above
+      to_emails: toEmails, // Required field
+      subject: subject || undefined,
+      cc_emails: ccEmails, // Correct field name
+      bcc_emails: bccEmails, // Correct field name
+      inject_previous_email_body: true,
+      content_type: "html" as const, // Send as HTML to preserve formatting
+    });
+
+    // Call sendEmailBisonReply with correct 3 parameters: (apiKey, replyId, payload)
+    let sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, buildPayload(senderEmailId));
+
+    // Retry once with a fallback sender if the configured sender was invalid in EmailBison.
+    if (!sendResult.success && isInvalidSenderEmailIdErrorText(sendResult.error || "")) {
+      const picked = await pickSendableSenderEmailId({
+        clientId: client.id,
+        preferredSenderEmailId: null,
+        refreshIfStale: true,
+      });
+      if (picked.senderEmailId && picked.senderEmailId !== senderEmailId) {
+        senderEmailId = picked.senderEmailId;
+        await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+        sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, buildPayload(senderEmailId));
+      }
+    }
 
     if (!sendResult.success) {
       return { success: false, error: sendResult.error || "Failed to send email reply" };
@@ -362,16 +452,65 @@ export async function sendEmailReplyForLead(
     const ccEmails = latestInboundEmail?.cc?.map((address) => ({ name: null, email_address: address })) || [];
     const bccEmails = latestInboundEmail?.bcc?.map((address) => ({ name: null, email_address: address })) || [];
 
-    const sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, {
+    let senderEmailId = lead.senderAccountId;
+    const senderEmailIdNum = parseSenderEmailId(senderEmailId);
+    if (!senderEmailIdNum) {
+      const picked = await pickSendableSenderEmailId({
+        clientId: client.id,
+        preferredSenderEmailId: senderEmailId,
+        refreshIfStale: true,
+      });
+      senderEmailId = picked.senderEmailId;
+      if (!senderEmailId) {
+        return { success: false, error: "No sendable EmailBison sender account is configured for this workspace" };
+      }
+      await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+    } else {
+      const preferred = await prisma.emailBisonSenderEmailSnapshot
+        .findUnique({
+          where: { clientId_senderEmailId: { clientId: client.id, senderEmailId } },
+          select: { isSendable: true },
+        })
+        .catch(() => null);
+
+      if (preferred && preferred.isSendable === false) {
+        const picked = await pickSendableSenderEmailId({
+          clientId: client.id,
+          preferredSenderEmailId: null,
+          refreshIfStale: false,
+        });
+        if (picked.senderEmailId) {
+          senderEmailId = picked.senderEmailId;
+          await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+        }
+      }
+    }
+
+    const buildPayload = (sender: string) => ({
       message: htmlMessage,
-      sender_email_id: parseInt(lead.senderAccountId),
+      sender_email_id: parseSenderEmailId(sender)!, // validated above
       to_emails: toEmails,
       subject: subject || undefined,
       cc_emails: ccEmails,
       bcc_emails: bccEmails,
       inject_previous_email_body: true,
-      content_type: "html",
+      content_type: "html" as const,
     });
+
+    let sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, buildPayload(senderEmailId));
+
+    if (!sendResult.success && isInvalidSenderEmailIdErrorText(sendResult.error || "")) {
+      const picked = await pickSendableSenderEmailId({
+        clientId: client.id,
+        preferredSenderEmailId: null,
+        refreshIfStale: true,
+      });
+      if (picked.senderEmailId && picked.senderEmailId !== senderEmailId) {
+        senderEmailId = picked.senderEmailId;
+        await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+        sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, buildPayload(senderEmailId));
+      }
+    }
 
     if (!sendResult.success) {
       return { success: false, error: sendResult.error || "Failed to send email reply" };

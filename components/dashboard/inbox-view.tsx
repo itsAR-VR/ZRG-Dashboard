@@ -15,7 +15,7 @@ import {
 import { getSmsCampaignFilters } from "@/actions/sms-campaign-actions";
 import { syncConversationHistory, syncAllConversations, syncEmailConversationHistory, syncAllEmailConversations, smartSyncConversation, reanalyzeLeadSentiment } from "@/actions/message-actions";
 import { getAutoFollowUpsOnReply, setAutoFollowUpsOnReply } from "@/actions/settings-actions";
-import { subscribeToMessages, subscribeToLeads, unsubscribe } from "@/lib/supabase";
+import { subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff, Inbox, RefreshCw, FilterX } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
 import { Badge } from "@/components/ui/badge";
@@ -107,6 +107,8 @@ export function InboxView({
 }: InboxViewProps) {
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const queryClient = useQueryClient();
+  const leadLastMessageAtRef = useRef<Map<string, number>>(new Map());
+  const workspaceLastMessageAtRef = useRef<number>(0);
 
   // Wrapper to update both local state and notify parent
   const handleLeadSelect = useCallback((leadId: string | null) => {
@@ -126,6 +128,7 @@ export function InboxView({
   // Sync state management - track which leads are currently syncing
   const [syncingLeadIds, setSyncingLeadIds] = useState<Set<string>>(new Set());
   const [isSyncingAll, setIsSyncingAll] = useState(false);
+  const [syncAllCursor, setSyncAllCursor] = useState<number | null>(null);
   const [reanalyzingLeadId, setReanalyzingLeadId] = useState<string | null>(null);
   const [isReanalyzingAllSentiments, setIsReanalyzingAllSentiments] = useState(false);
   const [autoFollowUpsOnReplyEnabled, setAutoFollowUpsOnReplyEnabled] = useState(false);
@@ -148,6 +151,10 @@ export function InboxView({
     setActiveConversationId(null);
     setActiveConversation(null);
     setIsCrmOpen(false);
+    setNewConversationCount(0);
+    setSyncAllCursor(null);
+    leadLastMessageAtRef.current = new Map();
+    workspaceLastMessageAtRef.current = 0;
   }, [activeWorkspace]);
 
   // Load workspace auto-followups-on-reply setting for the inbox sidebar switch
@@ -297,6 +304,23 @@ export function InboxView({
   const conversations: ConversationWithSentiment[] = useMemo(() => {
     return allConversations.map(convertToComponentFormat);
   }, [allConversations]);
+
+  // Track the most recent message timestamp we know about for each lead currently in view.
+  // Supabase realtime UPDATE payloads typically do not include the full previous row, so we
+  // cannot reliably compare `payload.old.lastMessageAt`.
+  useEffect(() => {
+    const next = new Map<string, number>();
+    let maxMs = 0;
+    for (const conv of conversations) {
+      const lastMs = conv.lastMessageTime instanceof Date ? conv.lastMessageTime.getTime() : Date.parse(String(conv.lastMessageTime));
+      if (Number.isFinite(lastMs)) {
+        next.set(conv.id, lastMs);
+        if (lastMs > maxMs) maxMs = lastMs;
+      }
+    }
+    leadLastMessageAtRef.current = next;
+    workspaceLastMessageAtRef.current = maxMs;
+  }, [conversations, activeWorkspace]);
 
   // Legacy fetchConversations for sync operations (just triggers refetch)
   const fetchConversations = useCallback(async () => {
@@ -450,41 +474,66 @@ export function InboxView({
     setSyncingLeadIds(new Set(smsLeadIds));
     
     try {
-      const result = await syncAllConversations(activeWorkspace, { forceReclassify });
-      
-      if (result.success) {
-        const { totalLeads, totalImported, totalHealed, totalDraftsGenerated, totalReclassified, totalLeadUpdated, errors } = result;
-        
-        if (totalImported > 0 || totalHealed > 0 || totalDraftsGenerated > 0 || totalReclassified > 0 || totalLeadUpdated > 0) {
-          const parts = [];
-          if (totalImported > 0) parts.push(`${totalImported} new messages`);
-          if (totalHealed > 0) parts.push(`${totalHealed} fixed`);
-          if (totalReclassified > 0) parts.push(`${totalReclassified} sentiments re-analyzed`);
-          if (totalLeadUpdated > 0) parts.push(`${totalLeadUpdated} contacts updated`);
-          if (totalDraftsGenerated > 0) parts.push(`${totalDraftsGenerated} AI drafts`);
-          if (errors > 0) parts.push(`${errors} errors`);
-          
-          toast.success(`Synced ${totalLeads} conversations`, {
-            description: parts.join(", ")
-          });
-          // Refresh conversations list
-          fetchConversations();
-          fetchActiveConversation();
-        } else {
-          toast.info("All conversations already synced", {
-            description: `Checked ${totalLeads} SMS conversations`
-          });
-        }
-      } else {
+      const result = await syncAllConversations(activeWorkspace, {
+        forceReclassify,
+        cursor: syncAllCursor,
+        maxSeconds: 60,
+        // Explicitly disable expensive side-effects during bulk sync.
+        runBounceCleanup: false,
+      });
+
+      if (!result.success) {
         toast.error(result.error || "Failed to sync all conversations");
+        return;
       }
+
+      const {
+        totalLeads,
+        processedLeads = 0,
+        nextCursor,
+        hasMore,
+        totalImported,
+        totalHealed,
+        totalReclassified,
+        totalLeadUpdated,
+        errors,
+      } = result;
+
+      const processedSoFar = hasMore && typeof nextCursor === "number" ? nextCursor : totalLeads;
+      setSyncAllCursor(hasMore && typeof nextCursor === "number" ? nextCursor : null);
+
+      const parts = [];
+      if (totalImported > 0) parts.push(`${totalImported} new messages`);
+      if (totalHealed > 0) parts.push(`${totalHealed} fixed`);
+      if (totalReclassified > 0) parts.push(`${totalReclassified} sentiments re-analyzed`);
+      if (totalLeadUpdated > 0) parts.push(`${totalLeadUpdated} contacts updated`);
+      if (errors > 0) parts.push(`${errors} errors`);
+
+      toast.success(
+        hasMore
+          ? `Synced ${processedSoFar}/${totalLeads} leads`
+          : `Sync complete (${processedSoFar}/${totalLeads})`,
+        {
+          description: [
+            processedLeads ? `Processed ${processedLeads} in this chunk.` : null,
+            parts.length ? parts.join(", ") : null,
+            hasMore ? "Click Sync All again to continue." : null,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        }
+      );
+
+      // Refresh conversations list
+      fetchConversations();
+      fetchActiveConversation();
     } catch (err) {
       toast.error("Failed to sync all conversations");
     } finally {
       setIsSyncingAll(false);
       setSyncingLeadIds(new Set());
     }
-  }, [activeWorkspace, conversations, fetchConversations, fetchActiveConversation]);
+  }, [activeWorkspace, conversations, fetchConversations, fetchActiveConversation, syncAllCursor]);
 
   const handleReanalyzeSentiment = useCallback(async (leadId: string) => {
     setReanalyzingLeadId(leadId);
@@ -630,43 +679,72 @@ export function InboxView({
     fetchActiveConversation(isNewConversation);
   }, [fetchActiveConversation, activeConversationId]);
 
-  // Set up realtime subscriptions for new conversation badge
+  const parseRealtimeTimestampMs = (value: unknown): number | null => {
+    if (!value) return null;
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === "string") {
+      const ms = Date.parse(value);
+      return Number.isNaN(ms) ? null : ms;
+    }
+    return null;
+  };
+
+  // Workspace-scoped realtime subscription for "new" badge.
+  // IMPORTANT: do NOT subscribe to Message rows in the browser (too noisy + higher PII risk).
   useEffect(() => {
-    console.log("[Realtime] Setting up subscriptions...");
+    if (!activeWorkspace) {
+      setIsLive(false);
+      return;
+    }
 
-    const messagesChannel = subscribeToMessages((payload) => {
-      console.log("[Realtime] New message received:", payload);
-      realtimeConnectedRef.current = true;
-      setIsLive(true);
-      // Increment new conversation count instead of immediate refetch
-      if (payload.eventType === "INSERT") {
-        setNewConversationCount((prev) => prev + 1);
-      }
-    });
+    realtimeConnectedRef.current = false;
 
-    const leadsChannel = subscribeToLeads((payload) => {
-      console.log("[Realtime] Lead updated:", payload);
-      realtimeConnectedRef.current = true;
-      setIsLive(true);
-      if (payload.eventType === "INSERT") {
-        setNewConversationCount((prev) => prev + 1);
-      }
-    });
+    const channel = subscribeToLeads(
+      (payload) => {
+        realtimeConnectedRef.current = true;
+        setIsLive(true);
+
+        const leadId =
+          typeof payload.new?.id === "string"
+            ? (payload.new.id as string)
+            : typeof payload.old?.id === "string"
+              ? (payload.old.id as string)
+              : null;
+
+        if (!leadId) return;
+
+        const newLastMessageAt = parseRealtimeTimestampMs(payload.new?.lastMessageAt);
+        if (newLastMessageAt == null) return;
+
+        const previousLastMessageAt = leadLastMessageAtRef.current.get(leadId) ?? workspaceLastMessageAtRef.current ?? 0;
+        if (newLastMessageAt <= previousLastMessageAt) return;
+
+        // Update our local baseline so repeated UPDATEs don't inflate the badge.
+        leadLastMessageAtRef.current.set(leadId, newLastMessageAt);
+        if (newLastMessageAt > workspaceLastMessageAtRef.current) {
+          workspaceLastMessageAtRef.current = newLastMessageAt;
+        }
+
+        // Only increment when this update indicates a *new inbound* message.
+        const direction = payload.new?.lastMessageDirection;
+        if (direction === "inbound") {
+          setNewConversationCount((prev) => prev + 1);
+        }
+      },
+      { clientId: activeWorkspace }
+    );
 
     const checkConnection = setTimeout(() => {
       if (!realtimeConnectedRef.current) {
-        console.log("[Realtime] No connection detected, relying on polling");
         setIsLive(false);
       }
     }, 5000);
 
     return () => {
-      console.log("[Realtime] Cleaning up subscriptions...");
       clearTimeout(checkConnection);
-      unsubscribe(messagesChannel);
-      unsubscribe(leadsChannel);
+      unsubscribe(channel);
     };
-  }, []);
+  }, [activeWorkspace]);
 
   // Handle new conversations badge click
   const handleNewConversationsClick = useCallback(() => {

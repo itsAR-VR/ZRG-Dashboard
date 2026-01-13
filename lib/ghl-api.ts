@@ -13,6 +13,8 @@ const GHL_CONTACTS_API_VERSION = "2021-07-28";
 const GHL_RATE_WINDOW_MS = 10_000;
 const DEFAULT_GHL_REQUESTS_PER_10S = 90; // buffer under the documented 100/10s burst limit
 const DEFAULT_GHL_MAX_429_RETRIES = 3;
+const DEFAULT_GHL_FETCH_TIMEOUT_MS = 15_000;
+const DEFAULT_GHL_MAX_NETWORK_RETRIES = 1;
 
 interface GHLApiResponse<T> {
   success: boolean;
@@ -116,6 +118,27 @@ interface GHLConversation {
   unreadCount: number;
 }
 
+function normalizeGhlConversationSearchResult(data: unknown): GHLConversation | null {
+  if (!data || typeof data !== "object") return null;
+  const record = data as Record<string, unknown>;
+
+  if (typeof record.id === "string") return record as unknown as GHLConversation;
+
+  const candidates: unknown[] = [];
+
+  if (record.conversation) candidates.push(record.conversation);
+  if (Array.isArray(record.conversations) && record.conversations.length) candidates.push(record.conversations[0]);
+  if (Array.isArray(record.results) && record.results.length) candidates.push(record.results[0]);
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const candidateRecord = candidate as Record<string, unknown>;
+    if (typeof candidateRecord.id === "string") return candidateRecord as unknown as GHLConversation;
+  }
+
+  return null;
+}
+
 interface GHLMessage {
   id: string;
   body: string;
@@ -160,55 +183,100 @@ async function ghlRequest<T>(
         ? Math.floor(configuredMaxRetries)
         : DEFAULT_GHL_MAX_429_RETRIES;
 
-    for (let attempt = 0; attempt <= max429Retries; attempt++) {
+    const configuredTimeoutMs = Number(process.env.GHL_FETCH_TIMEOUT_MS || "");
+    const timeoutMs =
+      Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+        ? Math.floor(configuredTimeoutMs)
+        : DEFAULT_GHL_FETCH_TIMEOUT_MS;
+
+    const configuredNetworkRetries = Number(process.env.GHL_MAX_NETWORK_RETRIES || "");
+    const maxNetworkRetries =
+      Number.isFinite(configuredNetworkRetries) && configuredNetworkRetries >= 0
+        ? Math.floor(configuredNetworkRetries)
+        : DEFAULT_GHL_MAX_NETWORK_RETRIES;
+
+    const method = (options.method || "GET").toUpperCase();
+    const maxAttempts = Math.max(max429Retries, maxNetworkRetries);
+
+    for (let attempt = 0; attempt <= maxAttempts; attempt++) {
       await throttleGhlRequest(requestKey);
 
-      const response = await fetch(url, {
-        ...options,
-        headers: {
-          Authorization: `Bearer ${privateKey}`,
-          Version: GHL_API_VERSION,
-          "Content-Type": "application/json",
-          ...options.headers,
-        },
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-      if (response.status === 429 && attempt < max429Retries) {
-        const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After")) ?? 10_000;
-        const jitterMs = Math.floor(Math.random() * 250);
-        console.warn(`[GHL] Rate limited (429). Retrying after ${retryAfterMs + jitterMs}ms.`);
-        await sleep(retryAfterMs + jitterMs);
-        continue;
+      try {
+        const response = await fetch(url, {
+          ...options,
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${privateKey}`,
+            Version: GHL_API_VERSION,
+            "Content-Type": "application/json",
+            ...options.headers,
+          },
+        });
+
+        if (response.status === 429 && attempt < max429Retries) {
+          const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After")) ?? 10_000;
+          const jitterMs = Math.floor(Math.random() * 250);
+          console.warn(`[GHL] Rate limited (429). Retrying after ${retryAfterMs + jitterMs}ms.`);
+          await sleep(retryAfterMs + jitterMs);
+          continue;
+        }
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          const parsed = parseGhlErrorPayload(errorText);
+          const safeMessage = redactPotentialPii(parsed.message || "").trim();
+
+          console.error(
+            `[GHL] API error ${response.status} ${method} ${endpoint}${safeMessage ? `: ${safeMessage}` : ""}`
+          );
+
+          return {
+            success: false,
+            error: `GHL API error: ${response.status}${safeMessage ? ` - ${safeMessage}` : ""}`,
+            statusCode: response.status,
+            errorCode: parsed.errorCode,
+            errorMessage: safeMessage || undefined,
+          };
+        }
+
+        // Some endpoints can return empty bodies; handle that gracefully.
+        const text = await response.text();
+        if (!text) return { success: true, data: undefined as unknown as T };
+
+        const parsedJson = tryParseJson<T>(text);
+        if (!parsedJson) {
+          return { success: false, error: "GHL API returned non-JSON response" };
+        }
+
+        return { success: true, data: parsedJson };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const isAbort = error instanceof Error && error.name === "AbortError";
+        const safeMessage = redactPotentialPii(message).trim();
+
+        const canRetry = method === "GET" && attempt < maxNetworkRetries;
+        if (canRetry) {
+          const backoffMs = 500 + attempt * 500;
+          console.warn(
+            `[GHL] Network error (${isAbort ? "timeout" : "fetch failed"}) on ${method} ${endpoint}. Retrying after ${backoffMs}ms.`
+          );
+          await sleep(backoffMs);
+          continue;
+        }
+
+        console.error(`[GHL] Request failed ${method} ${endpoint}${safeMessage ? `: ${safeMessage}` : ""}`);
+        return { success: false, error: isAbort ? "GHL request timed out" : safeMessage || "GHL request failed" };
+      } finally {
+        clearTimeout(timeout);
       }
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        const parsed = parseGhlErrorPayload(errorText);
-        const safeMessage = redactPotentialPii(parsed.message || "").trim();
-
-        console.error(`[GHL] API error ${response.status} ${options.method || "GET"} ${endpoint}${safeMessage ? `: ${safeMessage}` : ""}`);
-
-        return {
-          success: false,
-          error: `GHL API error: ${response.status}${safeMessage ? ` - ${safeMessage}` : ""}`,
-          statusCode: response.status,
-          errorCode: parsed.errorCode,
-          errorMessage: safeMessage || undefined,
-        };
-      }
-
-      // Some endpoints can return empty bodies; handle that gracefully.
-      const text = await response.text();
-      if (!text) return { success: true, data: undefined as unknown as T };
-
-      const parsedJson = tryParseJson<T>(text);
-      if (!parsedJson) {
-        return { success: false, error: "GHL API returned non-JSON response" };
-      }
-
-      return { success: true, data: parsedJson };
     }
 
+    if (method === "GET") {
+      return { success: false, error: "GHL request failed (max retries exceeded)" };
+    }
     return { success: false, error: "GHL API rate limited (max retries exceeded)" };
   } catch (error) {
     console.error("GHL API request failed:", error instanceof Error ? error.message : error);
@@ -255,12 +323,20 @@ export async function sendSMS(
  */
 export async function getConversationByContact(
   contactId: string,
-  privateKey: string
-): Promise<GHLApiResponse<GHLConversation>> {
-  return ghlRequest<GHLConversation>(
-    `/conversations/search?contactId=${contactId}`,
-    privateKey
-  );
+  privateKey: string,
+  opts?: { locationId?: string }
+): Promise<GHLApiResponse<GHLConversation | null>> {
+  const params = new URLSearchParams();
+  params.set("contactId", contactId);
+  if (opts?.locationId) params.set("locationId", opts.locationId);
+
+  const result = await ghlRequest<unknown>(`/conversations/search?${params.toString()}`, privateKey, {}, opts?.locationId);
+  if (!result.success) return result as GHLApiResponse<GHLConversation | null>;
+
+  return {
+    ...result,
+    data: normalizeGhlConversationSearchResult(result.data),
+  };
 }
 
 /**
@@ -355,13 +431,14 @@ export async function exportMessages(
   locationId: string,
   contactId: string,
   privateKey: string,
-  channel: string = "SMS"
+  channel: string = "SMS",
+  opts?: { cursor?: string | null }
 ): Promise<GHLApiResponse<GHLExportResponse>> {
-  const params = new URLSearchParams({
-    locationId,
-    contactId,
-    channel,
-  });
+  const params = new URLSearchParams();
+  params.set("locationId", locationId);
+  params.set("contactId", contactId);
+  params.set("channel", channel);
+  if (opts?.cursor) params.set("cursor", opts.cursor);
 
   return ghlRequest<GHLExportResponse>(
     `/conversations/messages/export?${params.toString()}`,

@@ -473,6 +473,10 @@ export async function syncConversationHistory(leadId: string, options: SyncOptio
 interface SyncAllResult {
   success: boolean;
   totalLeads: number;
+  processedLeads?: number;
+  nextCursor?: number | null;
+  hasMore?: boolean;
+  durationMs?: number;
   totalImported: number;
   totalHealed: number;
   totalDraftsGenerated: number;
@@ -482,6 +486,12 @@ interface SyncAllResult {
   error?: string;
 }
 
+type SyncAllOptions = SyncOptions & {
+  cursor?: number | null;
+  maxSeconds?: number;
+  runBounceCleanup?: boolean;
+};
+
 /**
  * Sync all SMS conversations for a workspace (client)
  * Iterates through all leads with GHL contact IDs and syncs their history
@@ -490,7 +500,7 @@ interface SyncAllResult {
  * @param clientId - The workspace/client ID to sync
  * @param options - Sync options including forceReclassify to re-analyze sentiment for all leads
  */
-export async function syncAllConversations(clientId: string, options: SyncOptions = {}): Promise<SyncAllResult> {
+export async function syncAllConversations(clientId: string, options: SyncAllOptions = {}): Promise<SyncAllResult> {
   try {
     await requireClientAdminAccess(clientId);
     // Get ALL leads for this client (both SMS and Email capable)
@@ -508,9 +518,18 @@ export async function syncAllConversations(clientId: string, options: SyncOption
         ghlContactId: true,
         emailBisonLeadId: true,
       },
+      orderBy: { id: "asc" },
     });
 
-    console.log(`[SyncAll] Starting sync for ${leads.length} leads in client ${clientId}${options.forceReclassify ? " (with sentiment re-analysis)" : ""}`);
+    const startedAtMs = Date.now();
+    const maxSeconds = Number.isFinite(options.maxSeconds) && (options.maxSeconds || 0) > 0 ? options.maxSeconds! : 90;
+    const deadlineMs = startedAtMs + maxSeconds * 1000;
+
+    const startIndex = options.cursor && options.cursor > 0 ? Math.floor(options.cursor) : 0;
+
+    console.log(
+      `[SyncAll] Starting sync for ${leads.length} leads in client ${clientId} starting at ${startIndex}${options.forceReclassify ? " (with sentiment re-analysis)" : ""}`
+    );
 
     let totalImported = 0;
     let totalHealed = 0;
@@ -518,6 +537,7 @@ export async function syncAllConversations(clientId: string, options: SyncOption
     let totalReclassified = 0;
     let totalLeadUpdated = 0;
     let errors = 0;
+    let processedLeads = 0;
 
     // Process leads in parallel with a concurrency limit.
     // Throughput is also governed by the centralized GHL rate limiter in `lib/ghl-api.ts`.
@@ -525,8 +545,16 @@ export async function syncAllConversations(clientId: string, options: SyncOption
     const BATCH_SIZE =
       Number.isFinite(configuredBatchSize) && configuredBatchSize > 0 ? Math.floor(configuredBatchSize) : 15;
 
-    for (let i = 0; i < leads.length; i += BATCH_SIZE) {
+    let nextIndex: number | null = null;
+
+    for (let i = startIndex; i < leads.length; i += BATCH_SIZE) {
+      if (Date.now() >= deadlineMs) {
+        nextIndex = i;
+        break;
+      }
+
       const batch = leads.slice(i, i + BATCH_SIZE);
+      processedLeads += batch.length;
 
       // Use smartSyncConversation which handles both SMS and Email
       const results = await Promise.allSettled(batch.map((lead) => smartSyncConversation(lead.id, { ...options })));
@@ -534,7 +562,6 @@ export async function syncAllConversations(clientId: string, options: SyncOption
       // Process sync results and generate drafts for eligible leads
       for (let j = 0; j < results.length; j++) {
         const result = results[j];
-        const leadId = batch[j].id;
 
         if (result.status === "fulfilled" && result.value.success) {
           totalImported += result.value.importedCount || 0;
@@ -544,42 +571,6 @@ export async function syncAllConversations(clientId: string, options: SyncOption
           }
           if (result.value.leadUpdated) {
             totalLeadUpdated++;
-          }
-
-          // After successful sync, regenerate AI draft if eligible
-          try {
-            const lead = await prisma.lead.findUnique({
-              where: { id: leadId },
-              select: { sentimentTag: true, status: true },
-            });
-
-            // Only generate draft if eligible (skip blacklisted/unqualified)
-            if (
-              lead &&
-              lead.status !== "blacklisted" &&
-              lead.status !== "unqualified" &&
-              shouldGenerateDraft(lead.sentimentTag || "Neutral")
-            ) {
-              const syncResult = result.value as SmartSyncResult;
-
-              // BUG FIX: Generate drafts for BOTH channels that were synced
-              if (syncResult.syncedSms) {
-                const smsDraftResult = await regenerateDraft(leadId, "sms");
-                if (smsDraftResult.success) {
-                  totalDraftsGenerated++;
-                  console.log(`[SyncAll] Generated SMS draft for lead ${leadId}`);
-                }
-              }
-              if (syncResult.syncedEmail) {
-                const emailDraftResult = await regenerateDraft(leadId, "email");
-                if (emailDraftResult.success) {
-                  totalDraftsGenerated++;
-                  console.log(`[SyncAll] Generated Email draft for lead ${leadId}`);
-                }
-              }
-            }
-          } catch (draftError) {
-            console.error(`[SyncAll] Failed to generate draft for lead ${leadId}:`, draftError);
           }
         } else {
           errors++;
@@ -592,24 +583,39 @@ export async function syncAllConversations(clientId: string, options: SyncOption
       }
     }
 
+    if (nextIndex == null && startIndex + processedLeads < leads.length) {
+      nextIndex = startIndex + processedLeads;
+    }
+
+    const hasMore = nextIndex != null && nextIndex < leads.length;
+    const durationMs = Date.now() - startedAtMs;
+
     console.log(
       `[SyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalReclassified} reclassified, ${totalDraftsGenerated} drafts, ${totalLeadUpdated} contacts updated, ${errors} errors`
     );
 
-    // Auto-run bounce cleanup after syncing
-    console.log(`[SyncAll] Running bounce cleanup for client ${clientId}...`);
-    try {
-      const cleanupResult = await cleanupBounceLeads(clientId);
-      if (cleanupResult.fakeLeadsFound > 0) {
-        console.log(`[SyncAll] Bounce cleanup: ${cleanupResult.fakeLeadsFound} fake leads found, ${cleanupResult.leadsDeleted} deleted, ${cleanupResult.leadsBlacklisted} blacklisted`);
+    // Optional: bounce cleanup is expensive; only run when explicitly enabled (and ideally only on a full run).
+    if (options.runBounceCleanup === true && !hasMore) {
+      console.log(`[SyncAll] Running bounce cleanup for client ${clientId}...`);
+      try {
+        const cleanupResult = await cleanupBounceLeads(clientId);
+        if (cleanupResult.fakeLeadsFound > 0) {
+          console.log(
+            `[SyncAll] Bounce cleanup: ${cleanupResult.fakeLeadsFound} fake leads found, ${cleanupResult.leadsDeleted} deleted, ${cleanupResult.leadsBlacklisted} blacklisted`
+          );
+        }
+      } catch (cleanupError) {
+        console.error("[SyncAll] Bounce cleanup failed:", cleanupError);
       }
-    } catch (cleanupError) {
-      console.error("[SyncAll] Bounce cleanup failed:", cleanupError);
     }
 
     return {
       success: true,
       totalLeads: leads.length,
+      processedLeads,
+      nextCursor: hasMore ? nextIndex : null,
+      hasMore,
+      durationMs,
       totalImported,
       totalHealed,
       totalDraftsGenerated,
@@ -622,6 +628,9 @@ export async function syncAllConversations(clientId: string, options: SyncOption
     return {
       success: false,
       totalLeads: 0,
+      processedLeads: 0,
+      nextCursor: null,
+      hasMore: false,
       totalImported: 0,
       totalHealed: 0,
       totalDraftsGenerated: 0,

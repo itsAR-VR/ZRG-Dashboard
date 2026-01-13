@@ -242,6 +242,10 @@ model Message {
 | `GHL_DEFAULT_COUNTRY_CALLING_CODE` | (Optional) Default calling code for phone normalization (commonly `1`) |
 | `GHL_REQUESTS_PER_10S` | (Optional) Throttle cap for GHL API requests per 10s window (default `90`, documented burst is `100`) |
 | `GHL_MAX_429_RETRIES` | (Optional) Max retries when GHL returns `429` with `Retry-After` (default `3`) |
+| `GHL_FETCH_TIMEOUT_MS` | (Optional) Per-request timeout for GHL API calls (default `15000`) |
+| `GHL_MAX_NETWORK_RETRIES` | (Optional) Extra retries for GET requests on network errors/timeouts (default `1`) |
+| `GHL_EXPORT_MAX_PAGES` | (Optional) Max pages to fetch from `/conversations/messages/export` per lead during sync (default `5`) |
+| `GHL_EXPORT_MAX_MESSAGES` | (Optional) Cap messages fetched via export per lead during sync (default `2000`) |
 | `SYNC_ALL_CONCURRENCY` | (Optional) Concurrency for “Sync All” batches (default `15`) |
 
 ### Prisma Schema Changes

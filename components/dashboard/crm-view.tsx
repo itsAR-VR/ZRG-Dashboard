@@ -462,15 +462,21 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
     }
   }, [lastVirtualItem?.index, hasNextPage, isFetchingNextPage, allLeads.length, fetchNextPage])
 
-  // Subscribe to realtime lead updates
+  // Subscribe to realtime lead inserts for the active workspace.
   useEffect(() => {
-    const channel = subscribeToLeads((payload) => {
-      if (payload.eventType === "INSERT") {
-        setNewLeadCount((prev) => prev + 1)
-      }
-    })
+    setNewLeadCount(0)
+    if (!activeWorkspace) return
+
+    const channel = subscribeToLeads(
+      (payload) => {
+        if (payload.eventType === "INSERT") {
+          setNewLeadCount((prev) => prev + 1)
+        }
+      },
+      { clientId: activeWorkspace }
+    )
     return () => unsubscribe(channel)
-  }, [])
+  }, [activeWorkspace])
 
   // Handle sort change
   const handleSort = (field: typeof sortField) => {
