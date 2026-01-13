@@ -212,7 +212,8 @@ function stripQuotedSections(text: string): string {
 
 function htmlToPlain(html: string): string {
   return stripQuotedSections(
-    html
+    decodeBasicHtmlEntities(
+      html
       .replace(/<style[\s\S]*?<\/style>/gi, "")
       .replace(/<script[\s\S]*?<\/script>/gi, "")
       .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, "")
@@ -220,12 +221,33 @@ function htmlToPlain(html: string): string {
       .replace(/<\/p>/gi, "\n")
       .replace(/<\/div>/gi, "\n")
       .replace(/<[^>]+>/g, "")
+    )
   );
+}
+
+function decodeBasicHtmlEntities(input: string): string {
+  return input
+    .replaceAll("&nbsp;", " ")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&#x27;", "'");
+}
+
+function looksLikeHtml(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (!trimmed.includes("<") || !trimmed.includes(">")) return false;
+  // Basic tag heuristic (avoid treating things like "<3" as HTML)
+  return /<\/?[a-z][\s\S]*>/i.test(trimmed);
 }
 
 function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): { cleaned: string; rawText?: string; rawHtml?: string } {
   const rawText = textBody ?? undefined;
-  const rawHtml = htmlBody ?? undefined;
+  const isHtmlTextBody = typeof textBody === "string" && looksLikeHtml(textBody);
+  const rawHtml = htmlBody ?? (isHtmlTextBody ? textBody ?? undefined : undefined);
 
   const source = textBody || htmlBody || "";
   if (!source.trim()) {
@@ -233,7 +255,7 @@ function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): { c
   }
 
   const cleaned = textBody
-    ? stripQuotedSections(textBody)
+    ? (isHtmlTextBody ? htmlToPlain(textBody) : stripQuotedSections(textBody))
     : htmlToPlain(htmlBody || "");
 
   return {

@@ -133,6 +133,48 @@ function getChannelsFromMessages(messages: { channel?: string | null }[]): Chann
   return Array.from(channelSet);
 }
 
+function looksLikeHtml(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (!trimmed.includes("<") || !trimmed.includes(">")) return false;
+  return /<\/?[a-z][\s\S]*>/i.test(trimmed);
+}
+
+function decodeBasicHtmlEntities(input: string): string {
+  return input
+    .replaceAll("&nbsp;", " ")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&#x27;", "'");
+}
+
+function htmlToPlainTextForDisplay(html: string): string {
+  const withoutScripts = html
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, "");
+
+  const withBreaks = withoutScripts
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/div>/gi, "\n");
+
+  const noTags = withBreaks.replace(/<[^>]+>/g, "");
+  const decoded = decodeBasicHtmlEntities(noTags);
+
+  return decoded.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function toPlainTextIfHtml(input: string | null | undefined): string {
+  const value = input ?? "";
+  if (!value) return "";
+  if (!looksLikeHtml(value)) return value;
+  return htmlToPlainTextForDisplay(value);
+}
+
 /**
  * Fetch all conversations (leads with messages) for the inbox
  * @param clientId - Optional client ID to filter by workspace
@@ -236,7 +278,7 @@ export async function getConversations(clientId?: string | null): Promise<{
         availableChannels,
         primaryChannel,
         classification: mapSentimentToClassification(lead.sentimentTag),
-        lastMessage: latestMessage?.body || "No messages yet",
+        lastMessage: toPlainTextIfHtml(latestMessage?.body) || "No messages yet",
         lastSubject: latestMessage?.subject || null,
         lastMessageTime: latestMessage?.sentAt || lead.createdAt, // Use sentAt for actual message time
         // Hide drafts for blacklisted/unqualified leads
@@ -462,7 +504,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
         messages: lead.messages.map((msg) => ({
           id: msg.id,
           sender: msg.direction === "inbound" ? ("lead" as const) : ("ai" as const),
-          content: msg.body,
+          content: toPlainTextIfHtml(msg.body),
           subject: msg.subject || undefined,
           rawHtml: msg.rawHtml || undefined,
           rawText: msg.rawText || undefined,
@@ -587,7 +629,7 @@ function transformLeadToConversation(lead: any): ConversationData {
     availableChannels,
     primaryChannel,
     classification: mapSentimentToClassification(lead.sentimentTag),
-    lastMessage: latestMessage?.body || "No messages yet",
+    lastMessage: toPlainTextIfHtml(latestMessage?.body) || "No messages yet",
     lastSubject: latestMessage?.subject || null,
     lastMessageTime: latestMessage?.sentAt || lead.createdAt,
     hasAiDraft:
