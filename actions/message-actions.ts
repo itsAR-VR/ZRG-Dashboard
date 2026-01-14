@@ -543,7 +543,7 @@ export async function syncAllConversations(clientId: string, options: SyncAllOpt
     // Throughput is also governed by the centralized GHL rate limiter in `lib/ghl-api.ts`.
     const configuredBatchSize = Number(process.env.SYNC_ALL_CONCURRENCY || "");
     const BATCH_SIZE =
-      Number.isFinite(configuredBatchSize) && configuredBatchSize > 0 ? Math.floor(configuredBatchSize) : 15;
+      Number.isFinite(configuredBatchSize) && configuredBatchSize > 0 ? Math.floor(configuredBatchSize) : 3;
 
     let nextIndex: number | null = null;
 

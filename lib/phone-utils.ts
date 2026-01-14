@@ -78,6 +78,9 @@ export function toGhlPhone(phone: string | null | undefined): string | null {
 
   const looksExplicitInternational = raw.startsWith("+") || raw.startsWith("00");
   const looksLikeIncludesCountryCode = normalized.length > 10;
+  // Common bad input: "+5551234567" (US national number with a leading "+").
+  // Treat as non-E.164 so callers can fall back to best-effort formatting.
+  if (looksExplicitInternational && normalized.length <= 10) return null;
   if (!looksExplicitInternational && !looksLikeIncludesCountryCode) return null;
 
   return `+${normalized}`;

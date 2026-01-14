@@ -232,35 +232,57 @@ export async function findOrCreateLead(
     enrichmentStatus = "pending";
   }
 
-  // Create new lead
-  const newLead = await prisma.lead.create({
-    data: {
-      clientId,
-      email: normalizedEmail,
-      phone: toStoredPhone(contactInfo.phone),
-      linkedinUrl: normalizedLinkedInUrl,
-      linkedinId: externalIds?.linkedinId || null,
-      firstName: contactInfo.firstName || null,
-      lastName: contactInfo.lastName || null,
-      ghlContactId: externalIds?.ghlContactId || null,
-      emailBisonLeadId: externalIds?.emailBisonLeadId || null,
-      campaignId: campaignIds?.campaignId || null,
-      smsCampaignId: campaignIds?.smsCampaignId || null,
-      emailCampaignId: campaignIds?.emailCampaignId || null,
-      senderAccountId: campaignIds?.senderAccountId || null,
-      status: "new",
-      enrichmentStatus,
-      enrichmentLastRetry: enrichmentStatus === "pending" ? new Date() : null,
-    },
-  });
+  // Create new lead (race-safe under webhook retries)
+  try {
+    const newLead = await prisma.lead.create({
+      data: {
+        clientId,
+        email: normalizedEmail,
+        phone: toStoredPhone(contactInfo.phone),
+        linkedinUrl: normalizedLinkedInUrl,
+        linkedinId: externalIds?.linkedinId || null,
+        firstName: contactInfo.firstName || null,
+        lastName: contactInfo.lastName || null,
+        ghlContactId: externalIds?.ghlContactId || null,
+        emailBisonLeadId: externalIds?.emailBisonLeadId || null,
+        campaignId: campaignIds?.campaignId || null,
+        smsCampaignId: campaignIds?.smsCampaignId || null,
+        emailCampaignId: campaignIds?.emailCampaignId || null,
+        senderAccountId: campaignIds?.senderAccountId || null,
+        status: "new",
+        enrichmentStatus,
+        enrichmentLastRetry: enrichmentStatus === "pending" ? new Date() : null,
+      },
+    });
 
-  console.log(`[Lead Matching] Created new lead ${newLead.id} (email: ${normalizedEmail}, phone: ${normalizedPhone}, linkedin: ${normalizedLinkedInUrl})`);
+    console.log(`[Lead Matching] Created new lead ${newLead.id} (email: ${normalizedEmail}, phone: ${normalizedPhone}, linkedin: ${normalizedLinkedInUrl})`);
 
-  return {
-    lead: newLead,
-    isNew: true,
-    matchedBy: "new",
-  };
+    return {
+      lead: newLead,
+      isNew: true,
+      matchedBy: "new",
+    };
+  } catch (error) {
+    const errorCode = (error as { code?: unknown })?.code;
+    const ghlContactId = externalIds?.ghlContactId;
+
+    if (errorCode === "P2002" && ghlContactId) {
+      const existingLead = await prisma.lead.findUnique({
+        where: { ghlContactId },
+      });
+
+      if (existingLead) {
+        console.warn(`[Lead Matching] Lead create race on ghlContactId; returning existing lead ${existingLead.id}`);
+        return {
+          lead: existingLead,
+          isNew: false,
+          matchedBy: "ghlContactId",
+        };
+      }
+    }
+
+    throw error;
+  }
 }
 
 /**

@@ -176,6 +176,7 @@ async function refreshSenderEmailSnapshotsForClient(clientId: string): Promise<{
 
   const now = new Date();
   let count = 0;
+  const seenSenderIds = new Set<string>();
 
   for (const sender of senderResult.data) {
     if (!sender?.id) continue;
@@ -211,7 +212,25 @@ async function refreshSenderEmailSnapshotsForClient(clientId: string): Promise<{
       },
     });
     count++;
+    seenSenderIds.add(normalized.senderEmailId);
   }
+
+  // If a sender disappears from the provider API, treat it as non-sendable so we don't keep selecting
+  // a stale/invalid sender_email_id (common cause of 422 invalid sender id errors).
+  await prisma.emailBisonSenderEmailSnapshot
+    .updateMany({
+      where: {
+        clientId,
+        senderEmailId: { notIn: Array.from(seenSenderIds) },
+        isSendable: true,
+      },
+      data: {
+        isSendable: false,
+        status: "missing_in_provider",
+        fetchedAt: now,
+      },
+    })
+    .catch(() => undefined);
 
   return { refreshed: true, count };
 }

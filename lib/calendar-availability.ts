@@ -257,12 +257,52 @@ async function getCalendlySchedulingLinkUUID(slug: string): Promise<CalendlyEven
  */
 export async function fetchCalendlyAvailabilityWithMeta(
     url: string,
-    days: number = 28
+    days: number = 28,
+    opts?: { eventTypeUuid?: string | null; availabilityTimezone?: string | null }
 ): Promise<{
     slots: AvailabilitySlot[];
     eventTypeUuid: string | null;
     availabilityTimezone: string | null;
 }> {
+    const cachedUuid = typeof opts?.eventTypeUuid === "string" && opts.eventTypeUuid ? opts.eventTypeUuid : null;
+    const cachedTz =
+        typeof opts?.availabilityTimezone === "string" && opts.availabilityTimezone ? opts.availabilityTimezone : null;
+
+    if (cachedUuid) {
+        try {
+            const now = new Date();
+            const rangeStart = now.toISOString().split("T")[0];
+            const rangeEnd = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+
+            const data = await fetchJsonWithTimeout(
+                `https://calendly.com/api/booking/event_types/${cachedUuid}/calendar/range?range_start=${rangeStart}&range_end=${rangeEnd}&timezone=${encodeURIComponent(cachedTz || "UTC")}`,
+                Math.max(CALENDLY_DEFAULT_TIMEOUT_MS, 20_000)
+            );
+
+            if (data) {
+                const slots: AvailabilitySlot[] = [];
+
+                if (data.days && Array.isArray(data.days)) {
+                    for (const day of data.days) {
+                        if (day.spots && Array.isArray(day.spots)) {
+                            for (const spot of day.spots) {
+                                if (spot.start_time) {
+                                    slots.push({
+                                        startTime: new Date(spot.start_time),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return { slots, eventTypeUuid: cachedUuid, availabilityTimezone: cachedTz };
+            }
+        } catch (error) {
+            console.error("Failed to fetch Calendly availability using cached event type:", error);
+        }
+    }
+
     const parsed = parseCalendlyUrl(url);
     if (!parsed) {
         console.error("Failed to parse Calendly URL:", url);
@@ -470,7 +510,8 @@ function extractGHLCalendarId(html: string): string | null {
  */
 export async function fetchGHLAvailabilityWithMeta(
     url: string,
-    days: number = 28
+    days: number = 28,
+    opts?: { calendarIdHint?: string | null }
 ): Promise<{
     slots: AvailabilitySlot[];
     calendarId: string | null;
@@ -478,6 +519,41 @@ export async function fetchGHLAvailabilityWithMeta(
     error?: string;
 }> {
     try {
+        const hint = typeof opts?.calendarIdHint === "string" && opts.calendarIdHint ? opts.calendarIdHint : null;
+
+        if (hint) {
+            const now = Date.now();
+            const endDate = now + days * 24 * 60 * 60 * 1000;
+
+            const direct = await fetchJsonWithTimeout(
+                `https://backend.leadconnectorhq.com/calendars/${hint}/free-slots?startDate=${now}&endDate=${endDate}&timezone=UTC`,
+                Math.max(CALENDLY_DEFAULT_TIMEOUT_MS, 15_000)
+            );
+
+            if (direct) {
+                const slots: AvailabilitySlot[] = [];
+
+                for (const [key, value] of Object.entries(direct)) {
+                    if (key === "traceId") continue;
+
+                    const daySlots = (value as any)?.slots;
+                    if (Array.isArray(daySlots)) {
+                        for (const slot of daySlots) {
+                            const startTime = typeof slot === "string" ? slot : (slot as any)?.startTime;
+                            if (typeof startTime === "string" && startTime) {
+                                slots.push({ startTime: new Date(startTime) });
+                            }
+                        }
+                    }
+                }
+
+                return { slots, calendarId: hint, resolvedUrl: url };
+            }
+
+            // If the hinted calendarId failed, fall back to resolving from the booking page.
+            console.warn("GHL free-slots request failed for cached calendarId; attempting to re-resolve from page.");
+        }
+
         // First, fetch the calendar page HTML to get the calendar ID
         const page = await fetchTextWithTimeout(
             url,

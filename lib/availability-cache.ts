@@ -41,6 +41,7 @@ export type AvailabilityCacheMeta = {
   ghlCalendarId?: string | null;
   resolvedUrl?: string;
   calendlyEventTypeUuid?: string | null;
+  calendlyAvailabilityTimezone?: string | null;
 };
 
 export async function refreshWorkspaceAvailabilityCache(clientId: string): Promise<{
@@ -50,15 +51,26 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
   const now = new Date();
 
   try {
-    const [calendarLink, settings] = await Promise.all([
+    const [calendarLink, settings, existingCache] = await Promise.all([
       prisma.calendarLink.findFirst({
         where: { clientId, isDefault: true },
         select: { id: true, url: true, type: true },
       }),
       prisma.workspaceSettings.findUnique({
         where: { clientId },
-        select: { meetingDurationMinutes: true },
+        select: {
+          meetingDurationMinutes: true,
+          meetingBookingProvider: true,
+          ghlDefaultCalendarId: true,
+          calendlyEventTypeLink: true,
+        },
       }),
+      prisma.workspaceAvailabilityCache
+        .findUnique({
+          where: { clientId },
+          select: { calendarLinkId: true, calendarUrl: true, providerMeta: true },
+        })
+        .catch(() => null),
     ]);
 
     if (!calendarLink) {
@@ -146,18 +158,65 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
 
     let rawSlots: AvailabilitySlot[] = [];
     const providerMeta: AvailabilityCacheMeta = {};
+    let lastError: string | null = null;
+
+    const cachedMeta =
+      existingCache &&
+      existingCache.calendarLinkId === calendarLink.id &&
+      existingCache.calendarUrl === calendarLink.url &&
+      existingCache.providerMeta &&
+      typeof existingCache.providerMeta === "object"
+        ? (existingCache.providerMeta as AvailabilityCacheMeta)
+        : null;
 
     if (calendarType === "calendly") {
-      const calendly = await fetchCalendlyAvailabilityWithMeta(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS);
+      const calendly = await fetchCalendlyAvailabilityWithMeta(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS, {
+        eventTypeUuid: cachedMeta?.calendlyEventTypeUuid ?? null,
+        availabilityTimezone: cachedMeta?.calendlyAvailabilityTimezone ?? null,
+      });
       rawSlots = calendly.slots;
       providerMeta.calendlyEventTypeUuid = calendly.eventTypeUuid;
+      providerMeta.calendlyAvailabilityTimezone = calendly.availabilityTimezone;
+
+      const fallbackLink = (settings?.calendlyEventTypeLink || "").trim();
+      if (rawSlots.length === 0 && fallbackLink && fallbackLink !== calendarLink.url) {
+        const fallback = await fetchCalendlyAvailabilityWithMeta(fallbackLink, DEFAULT_LOOKAHEAD_DAYS, {
+          eventTypeUuid: cachedMeta?.calendlyEventTypeUuid ?? null,
+          availabilityTimezone: cachedMeta?.calendlyAvailabilityTimezone ?? null,
+        });
+
+        if (fallback.slots.length > 0) {
+          rawSlots = fallback.slots;
+          providerMeta.calendlyEventTypeUuid = fallback.eventTypeUuid;
+          providerMeta.calendlyAvailabilityTimezone = fallback.availabilityTimezone;
+          providerMeta.resolvedUrl = fallbackLink;
+          lastError = "Default calendar link failed; used Calendly auto-book link fallback.";
+        }
+      }
     } else if (calendarType === "hubspot") {
       rawSlots = await fetchHubSpotAvailability(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS);
     } else if (calendarType === "ghl") {
-      const ghl = await fetchGHLAvailabilityWithMeta(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS);
+      const calendarIdHint = cachedMeta?.ghlCalendarId || settings?.ghlDefaultCalendarId || null;
+      const ghl = await fetchGHLAvailabilityWithMeta(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS, { calendarIdHint });
       rawSlots = ghl.slots;
       providerMeta.ghlCalendarId = ghl.calendarId;
       providerMeta.resolvedUrl = ghl.resolvedUrl;
+      if (!rawSlots.length && ghl.error) lastError = ghl.error;
+
+      if (!rawSlots.length && settings?.ghlDefaultCalendarId && settings.ghlDefaultCalendarId !== ghl.calendarId) {
+        const fallback = await fetchGHLAvailabilityWithMeta(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS, {
+          calendarIdHint: settings.ghlDefaultCalendarId,
+        });
+
+        if (fallback.slots.length > 0) {
+          rawSlots = fallback.slots;
+          providerMeta.ghlCalendarId = fallback.calendarId;
+          providerMeta.resolvedUrl = fallback.resolvedUrl;
+          lastError = "Default calendar link failed; used GHL auto-book calendar fallback.";
+        } else if (fallback.error && !lastError) {
+          lastError = fallback.error;
+        }
+      }
     } else {
       const error = `Unsupported calendar link. Supported: Calendly, HubSpot, or GoHighLevel. URL: ${normalizedUrl || "(empty)"}`;
       await prisma.workspaceAvailabilityCache.upsert({
@@ -209,7 +268,7 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
         providerMeta: providerMeta as any,
         fetchedAt: now,
         staleAt: new Date(now.getTime() + CACHE_TTL_MS),
-        lastError: rawSlots.length === 0 ? "No availability slots found" : null,
+        lastError: rawSlots.length === 0 ? lastError || "No availability slots found" : lastError,
       },
       create: {
         clientId,
@@ -223,7 +282,7 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
         providerMeta: providerMeta as any,
         fetchedAt: now,
         staleAt: new Date(now.getTime() + CACHE_TTL_MS),
-        lastError: rawSlots.length === 0 ? "No availability slots found" : null,
+        lastError: rawSlots.length === 0 ? lastError || "No availability slots found" : lastError,
       },
     });
 

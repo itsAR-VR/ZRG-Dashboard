@@ -27,6 +27,11 @@ import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
 
+export const maxDuration = 900;
+
+const WEBHOOK_DRAFT_TIMEOUT_MS =
+  Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "20000", 10) || 20_000;
+
 // =============================================================================
 // Type Definitions
 // =============================================================================
@@ -1398,7 +1403,8 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
       lead.id,
       `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,
       sentimentTag,
-      "email"
+      "email",
+      { timeoutMs: WEBHOOK_DRAFT_TIMEOUT_MS }
     );
     if (draftResult.success) {
       draftId = draftResult.draftId;
@@ -1603,7 +1609,8 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
       existingMessage.leadId,
       `Subject: ${reply.email_subject ?? ""}\n\n${existingMessage.body}`,
       "Interested",
-      "email"
+      "email",
+      { timeoutMs: WEBHOOK_DRAFT_TIMEOUT_MS }
     );
 
     console.log(`[LEAD_INTERESTED] Updated existing lead ${existingMessage.leadId} to Interested`);
@@ -1727,7 +1734,8 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
         lead.id,
         `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,
         sentimentTag,
-        "email"
+        "email",
+        { timeoutMs: WEBHOOK_DRAFT_TIMEOUT_MS }
       )
     : { success: false as const, draftId: undefined as string | undefined };
 
@@ -2117,7 +2125,8 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
       lead.id,
       `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,
       sentimentTag,
-      "email"
+      "email",
+      { timeoutMs: WEBHOOK_DRAFT_TIMEOUT_MS }
     );
     if (draftResult.success) {
       draftId = draftResult.draftId;

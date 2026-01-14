@@ -19,6 +19,24 @@ interface DraftGenerationResult {
   error?: string;
 }
 
+export type DraftGenerationOptions = {
+  /**
+   * Hard timeout for the OpenAI Responses request (ms).
+   * Use a lower timeout in webhook contexts to avoid Vercel timeouts.
+   */
+  timeoutMs?: number;
+  /**
+   * Multiplier applied to the adaptive output token budget (min/max/overhead/outputScale).
+   * Defaults to `OPENAI_DRAFT_TOKEN_BUDGET_MULTIPLIER` or 3.
+   */
+  tokenBudgetMultiplier?: number;
+  /**
+   * If true, attempts to call OpenAI's input-tokens count endpoint to size budgets.
+   * Adds an extra request; consider disabling for latency-sensitive contexts.
+   */
+  preferApiCount?: boolean;
+};
+
 const EMAIL_FORBIDDEN_TERMS = [
   "Tailored",
   "Surface",
@@ -260,7 +278,8 @@ export async function generateResponseDraft(
   leadId: string,
   conversationTranscript: string,
   sentimentTag: string,
-  channel: DraftChannel = "sms"
+  channel: DraftChannel = "sms",
+  opts: DraftGenerationOptions = {}
 ): Promise<DraftGenerationResult> {
   try {
     const lead = await prisma.lead.findUnique({
@@ -502,23 +521,36 @@ Generate an appropriate ${channel} response following the guidelines above.
           : "draft.generate.sms.v1";
     const promptTemplate = getAIPromptTemplate(promptKey);
 
-    const timeoutMs = Math.max(
-      10_000,
-      Number.parseInt(process.env.OPENAI_DRAFT_TIMEOUT_MS || "120000", 10) || 120_000
-    );
+    const envTimeoutMs = Number.parseInt(process.env.OPENAI_DRAFT_TIMEOUT_MS || "120000", 10) || 120_000;
+    const timeoutMs = Math.max(5_000, opts.timeoutMs ?? envTimeoutMs);
+
+    const envMultiplier = Number.parseFloat(process.env.OPENAI_DRAFT_TOKEN_BUDGET_MULTIPLIER || "3");
+    const tokenBudgetMultiplier = Number.isFinite(opts.tokenBudgetMultiplier)
+      ? Math.max(1, Math.min(10, opts.tokenBudgetMultiplier!))
+      : Number.isFinite(envMultiplier)
+        ? Math.max(1, Math.min(10, envMultiplier))
+        : 3;
+
+    const preferApiCount =
+      typeof opts.preferApiCount === "boolean"
+        ? opts.preferApiCount
+        : (process.env.OPENAI_DRAFT_PREFER_API_TOKEN_COUNT ?? "false").toLowerCase() === "true";
 
     const primaryModel = channel === "email" ? "gpt-5.1" : "gpt-5-mini";
     const reasoningEffort = (channel === "email" ? "medium" : "high") as const;
+
+    const primaryBudgetMin = (channel === "email" ? 500 : 160) * tokenBudgetMultiplier;
+    const primaryBudgetMax = (channel === "email" ? 1100 : 360) * tokenBudgetMultiplier;
 
     const budget = await computeAdaptiveMaxOutputTokens({
       model: primaryModel,
       instructions: systemPrompt,
       input: inputMessages,
-      min: channel === "email" ? 500 : 160,
-      max: channel === "email" ? 1100 : 360,
-      overheadTokens: 256,
-      outputScale: 0.2,
-      preferApiCount: true,
+      min: Math.max(1, Math.floor(primaryBudgetMin)),
+      max: Math.max(1, Math.floor(primaryBudgetMax)),
+      overheadTokens: 256 * tokenBudgetMultiplier,
+      outputScale: 0.2 * tokenBudgetMultiplier,
+      preferApiCount,
     });
 
     let response: any;
@@ -547,18 +579,53 @@ Generate an appropriate ${channel} response following the guidelines above.
 
     let draftContent = response ? getTrimmedOutputText(response)?.trim() : null;
 
+    // Retry once with more headroom if we hit the output token ceiling (reasoning tokens count here).
+    if (!draftContent && response?.incomplete_details?.reason === "max_output_tokens") {
+      const cap = Math.max(800, Number.parseInt(process.env.OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP || "8000", 10) || 8000);
+      const retryMaxOutputTokens = Math.min(Math.max(budget.maxOutputTokens + 400, budget.maxOutputTokens * 2), cap);
+
+      try {
+        const retry = await runResponse({
+          clientId: lead.clientId,
+          leadId,
+          featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
+          promptKey: `${promptTemplate?.key || promptKey}.retry_max_tokens`,
+          params: {
+            model: primaryModel,
+            instructions: systemPrompt,
+            input: inputMessages,
+            // Lower effort to keep the budget for actual output.
+            reasoning: { effort: "low" },
+            max_output_tokens: retryMaxOutputTokens,
+          },
+          requestOptions: {
+            timeout: timeoutMs,
+            maxRetries: 0,
+          },
+        });
+
+        draftContent = getTrimmedOutputText(retry)?.trim() || null;
+        response = retry;
+      } catch (error) {
+        console.error("[AI Drafts] Retry after max_output_tokens failed:", error);
+      }
+    }
+
     // Fallback: same model with lower reasoning effort if the primary call failed or returned no output.
     if (!draftContent) {
       const fallbackModel = primaryModel;
+      const fallbackBudgetMin = (channel === "email" ? 300 : 120) * tokenBudgetMultiplier;
+      const fallbackBudgetMax = (channel === "email" ? 800 : 280) * tokenBudgetMultiplier;
+
       const fallbackBudget = await computeAdaptiveMaxOutputTokens({
         model: fallbackModel,
         instructions: systemPrompt,
         input: inputMessages,
-        min: channel === "email" ? 300 : 120,
-        max: channel === "email" ? 800 : 280,
-        overheadTokens: 256,
-        outputScale: 0.18,
-        preferApiCount: true,
+        min: Math.max(1, Math.floor(fallbackBudgetMin)),
+        max: Math.max(1, Math.floor(fallbackBudgetMax)),
+        overheadTokens: 256 * tokenBudgetMultiplier,
+        outputScale: 0.18 * tokenBudgetMultiplier,
+        preferApiCount,
       });
 
       const fallback = await runResponse({

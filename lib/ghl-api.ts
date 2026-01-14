@@ -217,7 +217,20 @@ async function ghlRequest<T>(
         });
 
         if (response.status === 429 && attempt < max429Retries) {
-          const retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After")) ?? 10_000;
+          let retryAfterMs = parseRetryAfterMs(response.headers.get("Retry-After")) ?? 10_000;
+
+          // Some GHL endpoints return 429 for PIT-context overload; these typically need a longer cool-down
+          // than the default 10s to recover.
+          try {
+            const body = await response.text();
+            const lower = body.toLowerCase();
+            if (lower.includes("point in time") || lower.includes("max_open_pit_context") || lower.includes("pit context")) {
+              retryAfterMs = Math.max(retryAfterMs, 30_000);
+            }
+          } catch {
+            // ignore
+          }
+
           const jitterMs = Math.floor(Math.random() * 250);
           console.warn(`[GHL] Rate limited (429). Retrying after ${retryAfterMs + jitterMs}ms.`);
           await sleep(retryAfterMs + jitterMs);

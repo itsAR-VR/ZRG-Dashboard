@@ -279,6 +279,13 @@ export async function sendEmailReply(
 
     // Retry once with a fallback sender if the configured sender was invalid in EmailBison.
     if (!sendResult.success && isInvalidSenderEmailIdErrorText(sendResult.error || "")) {
+      await prisma.emailBisonSenderEmailSnapshot
+        .updateMany({
+          where: { clientId: client.id, senderEmailId },
+          data: { isSendable: false, status: "invalid_sender_email_id", fetchedAt: new Date() },
+        })
+        .catch(() => undefined);
+
       const picked = await pickSendableSenderEmailId({
         clientId: client.id,
         preferredSenderEmailId: null,
@@ -500,6 +507,13 @@ export async function sendEmailReplyForLead(
     let sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, buildPayload(senderEmailId));
 
     if (!sendResult.success && isInvalidSenderEmailIdErrorText(sendResult.error || "")) {
+      await prisma.emailBisonSenderEmailSnapshot
+        .updateMany({
+          where: { clientId: client.id, senderEmailId },
+          data: { isSendable: false, status: "invalid_sender_email_id", fetchedAt: new Date() },
+        })
+        .catch(() => undefined);
+
       const picked = await pickSendableSenderEmailId({
         clientId: client.id,
         preferredSenderEmailId: null,

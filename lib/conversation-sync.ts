@@ -31,6 +31,10 @@ export type SyncHistoryResult = {
   error?: string;
 };
 
+function isValidGhlContactId(value: string): boolean {
+  return /^[A-Za-z0-9]{15,64}$/.test(value);
+}
+
 function preClassifySentiment(messages: { direction: string }[]): SentimentTag | null {
   if (messages.length === 0) {
     return "New";
@@ -156,6 +160,19 @@ export async function syncSmsConversationHistorySystem(
         };
       }
       return { success: false, error: "Lead has no GHL contact ID" };
+    }
+
+    if (!isValidGhlContactId(lead.ghlContactId)) {
+      console.warn(`[Sync] Skipping SMS history sync for invalid GHL contact ID on lead ${leadId}`);
+      return {
+        success: true,
+        importedCount: 0,
+        healedCount: 0,
+        totalMessages: smsMessageCount,
+        skippedDuplicates: 0,
+        reclassifiedSentiment: false,
+        leadUpdated: false,
+      };
     }
 
     if (!lead.client.ghlPrivateKey || !lead.client.ghlLocationId) {

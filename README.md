@@ -229,6 +229,11 @@ model Message {
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anonymous key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (for webhooks) |
 | `OPENAI_API_KEY` | OpenAI API key |
+| `OPENAI_DRAFT_TIMEOUT_MS` | (Optional) Max time for AI draft generation (default `120000`) |
+| `OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS` | (Optional) Max time for AI draft generation inside webhooks (default `20000`) |
+| `OPENAI_DRAFT_TOKEN_BUDGET_MULTIPLIER` | (Optional) Output token budget multiplier for drafts (default `3`) |
+| `OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP` | (Optional) Hard cap for `max_output_tokens` on draft retries (default `8000`) |
+| `OPENAI_DRAFT_PREFER_API_TOKEN_COUNT` | (Optional) Use OpenAI input-tokens count API for sizing draft budgets (default `false`) |
 | `AI_MODEL_PRICING_JSON` | (Optional) Override per-model token pricing for cost estimates |
 | `DATABASE_URL` | Transaction pooler connection (port 6543, `?pgbouncer=true`) |
 | `DIRECT_URL` | Direct DB connection (port 5432) used for Prisma CLI (`db push`, migrations) |
@@ -236,6 +241,7 @@ model Message {
 | `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |
 | `WORKSPACE_PROVISIONING_SECRET` | Secret for `/api/admin/workspaces` automation authentication (generate with `openssl rand -hex 32`) |
 | `ADMIN_ACTIONS_SECRET` | (Optional) Shared secret for admin endpoints (fallback if provisioning secret is unset) |
+| `SUPABASE_MIDDLEWARE_TIMEOUT_MS` | (Optional) Abort timeout for Supabase auth refresh in middleware (default `8000`) |
 | `UNIPILE_DSN` | Unipile base DSN (e.g. `https://apiXX.unipile.com:PORT`) |
 | `UNIPILE_API_KEY` | Unipile API key |
 | `EMAIL_GUARD_API_KEY` | (Optional) EmailGuard API key for email validation before sending |
@@ -246,7 +252,7 @@ model Message {
 | `GHL_MAX_NETWORK_RETRIES` | (Optional) Extra retries for GET requests on network errors/timeouts (default `1`) |
 | `GHL_EXPORT_MAX_PAGES` | (Optional) Max pages to fetch from `/conversations/messages/export` per lead during sync (default `5`) |
 | `GHL_EXPORT_MAX_MESSAGES` | (Optional) Cap messages fetched via export per lead during sync (default `2000`) |
-| `SYNC_ALL_CONCURRENCY` | (Optional) Concurrency for “Sync All” batches (default `15`) |
+| `SYNC_ALL_CONCURRENCY` | (Optional) Concurrency for “Sync All” batches (default `3`) |
 
 ### Prisma Schema Changes
 
