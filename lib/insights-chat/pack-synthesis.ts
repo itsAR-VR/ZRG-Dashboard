@@ -91,7 +91,6 @@ async function runStructuredJson<T>(opts: {
     },
     requestOptions: {
       timeout: opts.timeoutMs,
-      maxRetries: 0,
     },
   });
 
@@ -373,4 +372,3 @@ export async function synthesizeInsightContextPack(opts: {
     throw new Error(message);
   }
 }
-

@@ -83,7 +83,6 @@ RULES:
     },
     requestOptions: {
       timeout: Math.max(8_000, Number.parseInt(process.env.OPENAI_INSIGHTS_ANSWER_TIMEOUT_MS || "90000", 10) || 90_000),
-      maxRetries: 0,
     },
   });
 
@@ -97,4 +96,3 @@ RULES:
 
   return { answer: text, interactionId };
 }
-

@@ -156,7 +156,6 @@ export async function evaluateInsightsAnswer(opts: {
     },
     requestOptions: {
       timeout: Math.max(8_000, Number.parseInt(process.env.OPENAI_INSIGHTS_EVAL_TIMEOUT_MS || "45000", 10) || 45_000),
-      maxRetries: 0,
     },
   });
 
@@ -172,4 +171,3 @@ export async function evaluateInsightsAnswer(opts: {
 
   return validated.data;
 }
-

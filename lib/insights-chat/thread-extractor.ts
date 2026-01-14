@@ -86,7 +86,6 @@ async function runStructuredJson<T>(opts: {
     },
     requestOptions: {
       timeout: opts.timeoutMs,
-      maxRetries: 0,
     },
   });
 
@@ -320,4 +319,3 @@ export async function extractConversationInsightForLead(opts: {
 
   throw new Error(lastErrorMessage || "Failed to extract conversation insight");
 }
-
