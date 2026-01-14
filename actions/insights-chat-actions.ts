@@ -43,6 +43,8 @@ export type InsightContextPackPublic = {
   id: string;
   sessionId: string;
   status: InsightContextPackStatus;
+  model: string;
+  reasoningEffort: string;
   windowPreset: InsightsWindowPreset;
   windowFrom: Date;
   windowTo: Date;
@@ -407,6 +409,8 @@ async function createOrResetContextPack(opts: {
   selectedCampaignIds: string[];
   allCampaigns: boolean;
   campaignCap: number | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
   auditAction: "CONTEXT_PACK_CREATED" | "CONTEXT_PACK_RECOMPUTED";
 }): Promise<{ packId: string }> {
   const resolved = resolveInsightsWindow({
@@ -436,6 +440,11 @@ async function createOrResetContextPack(opts: {
   }
 
   const runtime = await getInsightsRuntimeConfig(opts.clientId);
+  const effectiveModel = opts.model ? coerceInsightsChatModel(opts.model) : runtime.model;
+  const effectiveEffort = coerceInsightsChatReasoningEffort({
+    model: effectiveModel,
+    storedValue: opts.reasoningEffort ?? runtime.reasoningStored,
+  }).stored;
 
   const created = await prisma.insightContextPack.upsert({
     where: { sessionId_scopeKey: { sessionId: opts.sessionId, scopeKey } },
@@ -459,8 +468,8 @@ async function createOrResetContextPack(opts: {
       metricsSnapshot: null,
       synthesis: null,
       seedAssistantMessageId: null,
-      model: runtime.model,
-      reasoningEffort: runtime.reasoningStored,
+      model: effectiveModel,
+      reasoningEffort: effectiveEffort,
       lastError: null,
       computedAt: null,
       computedByUserId: opts.userId,
@@ -483,8 +492,8 @@ async function createOrResetContextPack(opts: {
       metricsSnapshot: null,
       synthesis: null,
       seedAssistantMessageId: null,
-      model: runtime.model,
-      reasoningEffort: runtime.reasoningStored,
+      model: effectiveModel,
+      reasoningEffort: effectiveEffort,
       lastError: null,
       computedAt: null,
       computedByUserId: opts.userId,
@@ -507,8 +516,8 @@ async function createOrResetContextPack(opts: {
       selectedCampaignIds,
       allCampaigns: opts.allCampaigns,
       campaignCap,
-      model: runtime.model,
-      reasoningEffort: runtime.reasoningStored,
+      model: effectiveModel,
+      reasoningEffort: effectiveEffort,
     },
   });
 
@@ -519,6 +528,8 @@ function toPublicPack(pack: {
   id: string;
   sessionId: string;
   status: InsightContextPackStatus;
+  model: string;
+  reasoningEffort: string;
   windowPreset: InsightsWindowPreset;
   windowFrom: Date;
   windowTo: Date;
@@ -538,6 +549,8 @@ function toPublicPack(pack: {
     id: pack.id,
     sessionId: pack.sessionId,
     status: pack.status,
+    model: pack.model,
+    reasoningEffort: pack.reasoningEffort,
     windowPreset: pack.windowPreset,
     windowFrom: pack.windowFrom,
     windowTo: pack.windowTo,
@@ -566,6 +579,8 @@ export async function startInsightsChatSeedQuestion(opts: {
   campaignIds?: string[] | null;
   allCampaigns?: boolean | null;
   campaignCap?: number | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
 }): Promise<{
   success: boolean;
   data?: { sessionId: string; contextPackId: string; userMessageId: string };
@@ -636,6 +651,8 @@ export async function startInsightsChatSeedQuestion(opts: {
       selectedCampaignIds: allCampaigns ? [] : campaignIds,
       allCampaigns,
       campaignCap,
+      model: opts.model ?? null,
+      reasoningEffort: opts.reasoningEffort ?? null,
       userEmail,
       auditAction: "CONTEXT_PACK_CREATED",
     });
@@ -708,6 +725,8 @@ export async function getLatestInsightContextPack(
         id: true,
         sessionId: true,
         status: true,
+        model: true,
+        reasoningEffort: true,
         windowPreset: true,
         allCampaigns: true,
         campaignCap: true,
@@ -741,6 +760,8 @@ export async function recomputeInsightContextPack(opts: {
   campaignIds?: string[] | null;
   allCampaigns?: boolean | null;
   campaignCap?: number | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
 }): Promise<{ success: boolean; data?: { contextPackId: string }; error?: string }> {
   try {
     const clientId = opts.clientId;
@@ -780,6 +801,8 @@ export async function recomputeInsightContextPack(opts: {
       selectedCampaignIds: allCampaigns ? [] : campaignIds,
       allCampaigns,
       campaignCap,
+      model: opts.model ?? null,
+      reasoningEffort: opts.reasoningEffort ?? null,
       userEmail,
       auditAction: "CONTEXT_PACK_RECOMPUTED",
     });
@@ -916,6 +939,8 @@ export async function runInsightContextPackStep(opts: {
             id: pack.id,
             sessionId: pack.sessionId,
             status: pack.status,
+            model: pack.model,
+            reasoningEffort: pack.reasoningEffort,
             windowPreset: pack.windowPreset,
             windowFrom: pack.windowFrom,
             windowTo: pack.windowTo,
@@ -970,6 +995,8 @@ export async function runInsightContextPackStep(opts: {
             id: true,
             sessionId: true,
             status: true,
+            model: true,
+            reasoningEffort: true,
             windowPreset: true,
             windowFrom: true,
             windowTo: true,
@@ -1015,6 +1042,8 @@ export async function runInsightContextPackStep(opts: {
           id: true,
           sessionId: true,
           status: true,
+          model: true,
+          reasoningEffort: true,
           windowPreset: true,
           windowFrom: true,
           windowTo: true,
@@ -1122,6 +1151,8 @@ export async function runInsightContextPackStep(opts: {
           id: true,
           sessionId: true,
           status: true,
+          model: true,
+          reasoningEffort: true,
           windowPreset: true,
           windowFrom: true,
           windowTo: true,
@@ -1150,6 +1181,8 @@ export async function runInsightContextPackStep(opts: {
           id: true,
           sessionId: true,
           status: true,
+          model: true,
+          reasoningEffort: true,
           windowPreset: true,
           windowFrom: true,
           windowTo: true,
@@ -1178,6 +1211,8 @@ export async function runInsightContextPackStep(opts: {
           id: true,
           sessionId: true,
           status: true,
+          model: true,
+          reasoningEffort: true,
           windowPreset: true,
           windowFrom: true,
           windowTo: true,
@@ -1252,6 +1287,8 @@ export async function runInsightContextPackStep(opts: {
           id: true,
           sessionId: true,
           status: true,
+          model: true,
+          reasoningEffort: true,
           windowPreset: true,
           windowFrom: true,
           windowTo: true,
@@ -1282,6 +1319,8 @@ export async function runInsightContextPackStep(opts: {
           id: true,
           sessionId: true,
           status: true,
+          model: true,
+          reasoningEffort: true,
           windowPreset: true,
           windowFrom: true,
           windowTo: true,
@@ -1325,6 +1364,8 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
           clientId: true,
           sessionId: true,
           status: true,
+          model: true,
+          reasoningEffort: true,
           windowPreset: true,
           allCampaigns: true,
           campaignCap: true,
@@ -1348,7 +1389,8 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
     if (pack.status !== "COMPLETE" || !packMarkdown) return { success: false, error: "Context pack is not ready" };
     if (!userMsg || userMsg.sessionId !== opts.sessionId) return { success: false, error: "Seed message not found" };
 
-    const runtime = await getInsightsRuntimeConfig(clientId);
+    const model = coerceInsightsChatModel(pack.model);
+    const effort = coerceInsightsChatReasoningEffort({ model, storedValue: pack.reasoningEffort });
 
     const windowLabel = formatInsightsWindowLabel({
       preset: pack.windowPreset,
@@ -1370,8 +1412,8 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
       analyticsSnapshot: pack.metricsSnapshot,
       contextPackMarkdown: packMarkdown,
       recentMessages: [],
-      model: runtime.model,
-      reasoningEffort: runtime.reasoning,
+      model,
+      reasoningEffort: effort.api,
     });
 
     const assistantMessage = await prisma.insightChatMessage.create({
@@ -1435,6 +1477,8 @@ export async function sendInsightsChatMessage(opts: {
       orderBy: { createdAt: "desc" },
       select: {
         id: true,
+        model: true,
+        reasoningEffort: true,
         windowPreset: true,
         allCampaigns: true,
         campaignCap: true,
@@ -1469,7 +1513,8 @@ export async function sendInsightsChatMessage(opts: {
       take: 16,
     });
 
-    const runtime = await getInsightsRuntimeConfig(clientId);
+    const model = coerceInsightsChatModel(pack.model);
+    const effort = coerceInsightsChatReasoningEffort({ model, storedValue: pack.reasoningEffort });
     const windowLabel = formatInsightsWindowLabel({
       preset: pack.windowPreset,
       from: pack.windowFrom,
@@ -1493,8 +1538,8 @@ export async function sendInsightsChatMessage(opts: {
         .reverse()
         .map((m) => ({ role: roleToPublic(m.role), content: m.content }))
         .filter((m) => m.role === "user" || m.role === "assistant") as Array<{ role: "user" | "assistant"; content: string }>,
-      model: runtime.model,
-      reasoningEffort: runtime.reasoning,
+      model,
+      reasoningEffort: effort.api,
     });
 
     const assistantMessage = await prisma.insightChatMessage.create({

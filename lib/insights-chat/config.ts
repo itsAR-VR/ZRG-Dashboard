@@ -1,5 +1,3 @@
-import "server-only";
-
 export const INSIGHTS_CHAT_MODELS = ["gpt-5-mini", "gpt-5.1", "gpt-5.2"] as const;
 export type InsightsChatModel = (typeof INSIGHTS_CHAT_MODELS)[number];
 
@@ -41,4 +39,3 @@ export function coerceInsightsChatReasoningEffort(opts: {
   if (stored === "high") return { stored, api: "high" };
   return { stored: "medium", api: "medium" };
 }
-

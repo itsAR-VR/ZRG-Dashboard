@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
@@ -35,6 +35,13 @@ import {
   type InsightContextPackPublic,
 } from "@/actions/insights-chat-actions";
 import type { InsightsWindowPreset } from "@prisma/client";
+import {
+  INSIGHTS_CHAT_EFFORTS,
+  coerceInsightsChatModel,
+  coerceInsightsChatReasoningEffort,
+  type InsightsChatModel,
+  type InsightsChatReasoningEffort,
+} from "@/lib/insights-chat/config";
 
 type CampaignOption = { id: string; name: string };
 
@@ -272,6 +279,9 @@ function InsightsConsoleBody({
   const [campaignCap, setCampaignCap] = useState(10);
   const [prefsSaved, setPrefsSaved] = useState(false);
 
+  const [model, setModel] = useState<InsightsChatModel>("gpt-5-mini");
+  const [reasoningEffort, setReasoningEffort] = useState<InsightsChatReasoningEffort>("medium");
+
   const [campaigns, setCampaigns] = useState<CampaignOption[]>([]);
   const [campaignsLoading, setCampaignsLoading] = useState(false);
   const [campaignPickerOpen, setCampaignPickerOpen] = useState(false);
@@ -298,6 +308,10 @@ function InsightsConsoleBody({
     const end = customEnd ? customEnd.toISOString().slice(0, 10) : "—";
     return `Custom (${start} → ${end})`;
   }, [customEnd, customStart, windowPreset]);
+
+  const availableReasoningEfforts = useMemo(() => {
+    return (model === "gpt-5.2" ? INSIGHTS_CHAT_EFFORTS : INSIGHTS_CHAT_EFFORTS.filter((v) => v !== "extra_high")) as InsightsChatReasoningEffort[];
+  }, [model]);
 
   const loadWorkspaceMeta = useCallback(async () => {
     if (!activeWorkspace) return;
@@ -383,6 +397,13 @@ function InsightsConsoleBody({
 
         if (packRes.success && packRes.data) {
           setPack(packRes.data.pack);
+          if (packRes.data.pack) {
+            const nextModel = coerceInsightsChatModel(packRes.data.pack.model);
+            setModel(nextModel);
+            setReasoningEffort(
+              coerceInsightsChatReasoningEffort({ model: nextModel, storedValue: packRes.data.pack.reasoningEffort }).stored
+            );
+          }
         } else {
           setPack(null);
         }
@@ -524,6 +545,8 @@ function InsightsConsoleBody({
         clientId: activeWorkspace,
         sessionId: selectedSessionId,
         question,
+        model,
+        reasoningEffort,
         windowPreset,
         windowFrom: customStart,
         windowTo: customEnd,
@@ -557,6 +580,8 @@ function InsightsConsoleBody({
     hasEmailCampaigns,
     loadSession,
     loadSessions,
+    model,
+    reasoningEffort,
     selectedCampaignIds,
     selectedSessionId,
     windowPreset,
@@ -601,6 +626,8 @@ function InsightsConsoleBody({
         campaignIds: hasEmailCampaigns ? selectedCampaignIds : [],
         allCampaigns: hasEmailCampaigns ? allCampaigns : false,
         campaignCap,
+        model,
+        reasoningEffort,
       });
       if (!res.success || !res.data) {
         toast.error(res.error || "Failed to start recompute");
@@ -618,6 +645,8 @@ function InsightsConsoleBody({
     customEnd,
     customStart,
     hasEmailCampaigns,
+    model,
+    reasoningEffort,
     selectedCampaignIds,
     selectedSessionId,
     windowPreset,
@@ -654,25 +683,27 @@ function InsightsConsoleBody({
 
   return (
     <div className="flex h-full flex-col">
-        <SheetHeader className="pb-2">
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <SheetTitle className="flex items-center gap-2">
-                <Bot className="h-5 w-5" />
-                Insights Console
-              </SheetTitle>
-              <SheetDescription>Read-only insights grounded in your analytics and representative threads.</SheetDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              {isWorkspaceAdmin ? (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Shield className="h-4 w-4" />
-                  Admin
-                </div>
-              ) : null}
-            </div>
+      <div className="border-b px-6 py-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <h1 className="flex items-center gap-2 text-xl font-bold">
+              <Bot className="h-5 w-5" />
+              Insights Console
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Read-only insights grounded in your analytics and representative threads.
+            </p>
           </div>
-        </SheetHeader>
+          <div className="flex items-center gap-2">
+            {isWorkspaceAdmin ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Shield className="h-4 w-4" />
+                Admin
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </div>
 
         {!activeWorkspace ? (
           <div className="p-4 text-sm text-muted-foreground">Select a workspace to use the Insights Console.</div>
@@ -753,14 +784,14 @@ function InsightsConsoleBody({
 
             {/* Main pane */}
             <div className="flex flex-col overflow-hidden rounded-lg border">
-              {/* Controls */}
-              <div className="border-b p-3">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Window</Label>
-                      <Select
-                        value={windowPreset}
+	              {/* Controls */}
+	              <div className="border-b p-3">
+	                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+	                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+	                    <div className="space-y-1">
+	                      <Label className="text-xs text-muted-foreground">Window</Label>
+	                      <Select
+	                        value={windowPreset}
                         onValueChange={(v) => {
                           const preset = v as InsightsWindowPreset;
                           setWindowPreset(preset);
@@ -776,13 +807,57 @@ function InsightsConsoleBody({
                           <SelectItem value="D7">Last 7 days</SelectItem>
                           <SelectItem value="D30">Last 30 days</SelectItem>
                           <SelectItem value="CUSTOM">Custom</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
+	                        </SelectContent>
+	                      </Select>
+	                    </div>
 
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Campaign scope</Label>
-                      <Button
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Model</Label>
+                        <Select
+                          value={model}
+                          onValueChange={(v) => {
+                            const nextModel = coerceInsightsChatModel(v);
+                            setModel(nextModel);
+                            setReasoningEffort(
+                              coerceInsightsChatReasoningEffort({ model: nextModel, storedValue: reasoningEffort }).stored
+                            );
+                          }}
+                        >
+                          <SelectTrigger className="h-9">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="gpt-5-mini">GPT-5 Mini (default)</SelectItem>
+                            <SelectItem value="gpt-5.1">GPT-5.1</SelectItem>
+                            <SelectItem value="gpt-5.2">GPT-5.2</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-1">
+                        <Label className="text-xs text-muted-foreground">Reasoning</Label>
+                        <Select
+                          value={reasoningEffort}
+                          onValueChange={(v) => setReasoningEffort(v as InsightsChatReasoningEffort)}
+                        >
+                          <SelectTrigger className="h-9">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {availableReasoningEfforts.map((effort) => (
+                              <SelectItem key={effort} value={effort}>
+                                {effort === "extra_high"
+                                  ? "Extra high (GPT-5.2 only)"
+                                  : effort.charAt(0).toUpperCase() + effort.slice(1)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+	
+	                    <div className="space-y-1">
+	                      <Label className="text-xs text-muted-foreground">Campaign scope</Label>
+	                      <Button
                         variant="outline"
                         className="h-9 w-full justify-between"
                         onClick={() => setCampaignPickerOpen(true)}
@@ -876,10 +951,11 @@ function InsightsConsoleBody({
                   </div>
                 ) : pack ? (
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="text-xs text-muted-foreground">
-                      <span className="font-medium text-foreground">Pack:</span> {packStatusLabel(pack.status)} · {presetLabel(pack.windowPreset)} ·{" "}
-                      {pack.targetThreadsTotal ? `${pack.processedThreads}/${pack.targetThreadsTotal}` : "—"}
-                    </div>
+	                    <div className="text-xs text-muted-foreground">
+	                      <span className="font-medium text-foreground">Pack:</span> {packStatusLabel(pack.status)} · {presetLabel(pack.windowPreset)} ·{" "}
+                        {pack.model} · {pack.reasoningEffort} ·{" "}
+	                      {pack.targetThreadsTotal ? `${pack.processedThreads}/${pack.targetThreadsTotal}` : "—"}
+	                    </div>
                     {pack.status === "FAILED" && pack.lastError ? (
                       <div className="text-xs text-destructive">{pack.lastError}</div>
                     ) : null}
