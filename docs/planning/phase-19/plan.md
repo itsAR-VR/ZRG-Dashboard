@@ -24,13 +24,13 @@ Add SmartLead and Instantly as first-class email providers, with EmailBison-pari
 - Prefer reusing existing models/fields (no Prisma schema changes) unless absolutely required.
 
 ## Success Criteria
-- [ ] Existing EmailBison workspaces continue to ingest email webhooks and send replies without requiring changes.
-- [ ] A workspace can select exactly one provider (EmailBison/SmartLead/Instantly); server rejects ambiguous configurations.
-- [ ] SmartLead and Instantly inbound replies create `Message(channel="email", direction="inbound")` and trigger sentiment + draft generation.
-- [ ] SmartLead and Instantly “email sent” events create `Message(channel="email", direction="outbound")` and kick off no-response follow-ups.
-- [ ] Replies from the UI (manual + AI-approved) send through the selected provider.
-- [ ] `npm run lint` and `npm run build` pass.
-- [ ] Branch is pushed to GitHub.
+- [x] Existing EmailBison workspaces continue to ingest email webhooks and send replies without requiring changes.
+- [x] A workspace can select exactly one provider (EmailBison/SmartLead/Instantly); server rejects ambiguous configurations.
+- [x] SmartLead and Instantly inbound replies create `Message(channel="email", direction="inbound")` and trigger sentiment + draft generation.
+- [x] SmartLead and Instantly “email sent” events create `Message(channel="email", direction="outbound")` and kick off no-response follow-ups.
+- [x] Replies from the UI (manual + AI-approved) send through the selected provider.
+- [x] `npm run lint` and `npm run build` pass.
+- [x] Branch is pushed to GitHub.
 
 ## Subphase Index
 * a — Provider selection + workspace safety
@@ -40,3 +40,18 @@ Add SmartLead and Instantly as first-class email providers, with EmailBison-pari
 * e — Settings UI + README updates
 * f — QA + GitHub push
 
+---
+
+## Phase Summary
+- Added email provider resolution + single-select enforcement:
+  - `lib/email-integration.ts`
+  - `actions/client-actions.ts`
+  - `app/api/admin/workspaces/route.ts`
+- Added SmartLead + Instantly provider support:
+  - API clients: `lib/smartlead-api.ts`, `lib/instantly-api.ts`
+  - Reply handle encoding: `lib/email-reply-handle.ts` (stored in `Message.emailBisonReplyId`)
+  - Webhooks: `app/api/webhooks/smartlead/route.ts`, `app/api/webhooks/instantly/route.ts`
+- Updated UI + docs:
+  - `components/dashboard/settings/integrations-manager.tsx`
+  - `README.md`
+- Pushed branch: `feat/email-providers-smartlead-instantly`

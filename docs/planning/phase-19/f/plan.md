@@ -12,8 +12,10 @@ Validate correctness with lint/build and push the completed work to GitHub.
 - Commit with a clear message and push branch to `origin`.
 
 ## Output
-(fill in during execution)
+- Ran `npm run lint` (warnings only) and `npm run build` (success).
+- Committed and pushed branch:
+  - Branch: `feat/email-providers-smartlead-instantly`
+  - Commit: `feat(email): add SmartLead & Instantly providers`
 
 ## Handoff
-(fill in during execution)
-
+- Open a PR from `feat/email-providers-smartlead-instantly` to `main` and deploy to a preview environment for end-to-end webhook testing.
