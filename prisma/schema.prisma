@@ -25,6 +25,50 @@ enum CampaignResponseMode {
   AI_AUTO_SEND
 }
 
+enum EmailIntegrationProvider {
+  EMAILBISON
+  SMARTLEAD
+  INSTANTLY
+}
+
+enum InsightsWindowPreset {
+  H24
+  D7
+  D30
+  CUSTOM
+}
+
+enum InsightChatRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum InsightContextPackStatus {
+  PENDING
+  RUNNING
+  COMPLETE
+  FAILED
+}
+
+enum ConversationInsightOutcome {
+  BOOKED
+  REQUESTED
+  STALLED
+  NO_RESPONSE
+  UNKNOWN
+}
+
+enum InsightChatAuditAction {
+  SESSION_CREATED
+  SESSION_DELETED
+  SESSION_RESTORED
+  MESSAGE_CREATED
+  CONTEXT_PACK_CREATED
+  CONTEXT_PACK_RECOMPUTED
+  CONTEXT_PACK_DELETED
+}
+
 // Stores GHL API Keys per sub-account for multi-tenancy
 // Each workspace is tied to a user (from Supabase Auth)
 model Client {
@@ -32,8 +76,14 @@ model Client {
   name          String
   ghlLocationId String              @unique // Used to identify which client sent the webhook
   ghlPrivateKey String              // The generic API key for this sub-account
+  // Email integrations (single-select; EmailBison | SmartLead | Instantly)
+  emailProvider         EmailIntegrationProvider?
   emailBisonApiKey     String?
   emailBisonWorkspaceId String?     @unique // EmailBison workspace ID for webhook matching
+  smartLeadApiKey       String?
+  smartLeadWebhookSecret String?
+  instantlyApiKey       String?
+  instantlyWebhookSecret String?
   userId        String              // Supabase Auth user ID - ties workspace to user
   // LinkedIn/Unipile integration (per-workspace account)
   unipileAccountId     String?      // Unipile account ID for LinkedIn messaging
@@ -59,6 +109,10 @@ model Client {
   availabilityCache WorkspaceAvailabilityCache?
   offeredSlots   WorkspaceOfferedSlot[]
   aiInteractions AIInteraction[]
+  insightChatSessions InsightChatSession[]
+  insightContextPacks InsightContextPack[]
+  insightChatUserPreferences InsightChatUserPreference[]
+  insightChatAuditEvents InsightChatAuditEvent[]
 
   @@index([userId])
 }
@@ -91,6 +145,12 @@ model WorkspaceSettings {
   aiSignature          String?  @db.Text
   aiGoals              String?  @db.Text
   chatgptExportDefaults String? @db.Text // JSON string (see lib/chatgpt-export.ts)
+  // Insights Chatbot (read-only v1; action tools are gated by toggles)
+  insightsChatModel String? @default("gpt-5-mini")
+  insightsChatReasoningEffort String? @default("medium") // low | medium | high | extra_high (gpt-5.2 only)
+  insightsChatEnableCampaignChanges Boolean @default(false)
+  insightsChatEnableExperimentWrites Boolean @default(false)
+  insightsChatEnableFollowupPauses Boolean @default(false)
   // AI Context Fields (for better AI responses)
   serviceDescription      String?  @db.Text  // Business/service description for AI context
   qualificationQuestions  String?  @db.Text  // JSON array of qualification questions
@@ -231,6 +291,7 @@ model Lead {
   reactivationEnrollments ReactivationEnrollment[]
   aiDrafts          AIDraft[]
   aiInteractions    AIInteraction[]
+  conversationInsight LeadConversationInsight?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -259,6 +320,157 @@ model Lead {
   @@index([clientId, sentimentTag, updatedAt(sort: Desc)]) // Sentiment filter + sort
   @@index([clientId, firstName])                 // Name search
   @@index([clientId, lastName])                  // Name search
+}
+
+// =============================================================================
+// Insights Console (Workspace-scoped chatbot + context packs)
+// =============================================================================
+
+model InsightChatSession {
+  id              String   @id @default(uuid())
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  title           String
+  seedQuestion    String?  @db.Text
+  createdByUserId String
+  createdByEmail  String?
+  deletedAt       DateTime?
+  deletedByUserId String?
+  deleteReason    String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  messages     InsightChatMessage[]
+  contextPacks InsightContextPack[]
+  auditEvents  InsightChatAuditEvent[]
+
+  @@index([clientId])
+  @@index([deletedAt])
+  @@index([updatedAt(sort: Desc)])
+}
+
+model InsightChatMessage {
+  id            String   @id @default(uuid())
+  clientId      String
+  sessionId     String
+  session       InsightChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role          InsightChatRole
+  content       String   @db.Text
+  authorUserId  String?
+  authorEmail   String?
+  contextPackId String?
+  contextPack   InsightContextPack? @relation(fields: [contextPackId], references: [id], onDelete: SetNull)
+  createdAt     DateTime @default(now())
+
+  @@index([clientId])
+  @@index([contextPackId])
+  @@index([createdAt(sort: Desc)])
+  @@index([sessionId])
+}
+
+model InsightContextPack {
+  id            String   @id @default(uuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  sessionId     String
+  session       InsightChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  scopeKey      String
+  status        InsightContextPackStatus @default(PENDING)
+
+  allCampaigns  Boolean  @default(false)
+  windowPreset  InsightsWindowPreset @default(D7)
+  windowFrom    DateTime
+  windowTo      DateTime
+
+  campaignCap          Int?
+  selectedCampaignIds  String[] @default([])
+  effectiveCampaignIds String[] @default([])
+
+  targetThreadsTotal Int      @default(0)
+  processedThreads   Int      @default(0)
+  selectedLeadIds    String[] @default([])
+  processedLeadIds   String[] @default([])
+  selectedLeadsMeta  Json?
+
+  metricsSnapshot Json?
+  synthesis        Json?
+
+  seedAssistantMessageId String?
+  model                  String
+  reasoningEffort        String
+  lastError              String?  @db.Text
+  computedAt             DateTime?
+  computedByUserId       String?
+  computedByEmail        String?
+
+  deletedAt       DateTime?
+  deletedByUserId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  messages    InsightChatMessage[]
+  auditEvents InsightChatAuditEvent[]
+
+  @@unique([sessionId, scopeKey])
+  @@index([clientId])
+  @@index([sessionId])
+  @@index([status])
+  @@index([computedAt(sort: Desc)])
+  @@index([deletedAt])
+}
+
+model LeadConversationInsight {
+  id               String                     @id @default(uuid())
+  leadId           String                     @unique
+  lead             Lead                       @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  outcome          ConversationInsightOutcome @default(UNKNOWN)
+  insight          Json
+  model            String
+  reasoningEffort  String
+  source           String                     @default("chat_pack")
+  computedAt       DateTime                   @default(now())
+  computedByUserId String?
+  computedByEmail  String?
+  updatedAt        DateTime                   @updatedAt
+
+  @@index([computedAt(sort: Desc)])
+}
+
+model InsightChatUserPreference {
+  id           String   @id @default(uuid())
+  clientId     String
+  client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId       String
+  windowPreset InsightsWindowPreset @default(D7)
+  windowFrom   DateTime?
+  windowTo     DateTime?
+  campaignCap  Int @default(10)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([clientId, userId])
+  @@index([clientId])
+  @@index([userId])
+}
+
+model InsightChatAuditEvent {
+  id            String   @id @default(uuid())
+  clientId      String
+  client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  userId        String
+  userEmail     String?
+  sessionId     String?
+  session       InsightChatSession? @relation(fields: [sessionId], references: [id])
+  contextPackId String?
+  contextPack   InsightContextPack? @relation(fields: [contextPackId], references: [id])
+  action        InsightChatAuditAction
+  details       Json?
+  createdAt     DateTime @default(now())
+
+  @@index([clientId])
+  @@index([contextPackId])
+  @@index([createdAt(sort: Desc)])
+  @@index([sessionId])
 }
 
 // Conversation messages across all channels (SMS, Email, LinkedIn)

@@ -20,6 +20,12 @@ export interface UserSettingsData {
   aiSmsGreeting: string | null;  // SMS greeting template (falls back to aiGreeting if null)
   aiSignature: string | null;
   aiGoals: string | null;
+  // Insights Chatbot (workspace-level, admin-gated updates)
+  insightsChatModel: string | null;
+  insightsChatReasoningEffort: string | null;
+  insightsChatEnableCampaignChanges: boolean;
+  insightsChatEnableExperimentWrites: boolean;
+  insightsChatEnableFollowupPauses: boolean;
   // AI Context Fields
   serviceDescription: string | null;
   qualificationQuestions: string | null; // JSON array
@@ -103,6 +109,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           aiSmsGreeting: "Hi {firstName},",
           aiSignature: null,
           aiGoals: null,
+          insightsChatModel: "gpt-5-mini",
+          insightsChatReasoningEffort: "medium",
+          insightsChatEnableCampaignChanges: false,
+          insightsChatEnableExperimentWrites: false,
+          insightsChatEnableFollowupPauses: false,
           serviceDescription: null,
           qualificationQuestions: null,
           companyName: null,
@@ -194,6 +205,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         aiSmsGreeting: settings.aiSmsGreeting,
         aiSignature: settings.aiSignature,
         aiGoals: settings.aiGoals,
+        insightsChatModel: settings.insightsChatModel ?? "gpt-5-mini",
+        insightsChatReasoningEffort: settings.insightsChatReasoningEffort ?? "medium",
+        insightsChatEnableCampaignChanges: settings.insightsChatEnableCampaignChanges ?? false,
+        insightsChatEnableExperimentWrites: settings.insightsChatEnableExperimentWrites ?? false,
+        insightsChatEnableFollowupPauses: settings.insightsChatEnableFollowupPauses ?? false,
         serviceDescription: settings.serviceDescription,
         qualificationQuestions: settings.qualificationQuestions,
         companyName: settings.companyName,
@@ -245,6 +261,16 @@ export async function updateUserSettings(
     }
     await requireClientAccess(clientId);
 
+    const wantsInsightsUpdate =
+      data.insightsChatModel !== undefined ||
+      data.insightsChatReasoningEffort !== undefined ||
+      data.insightsChatEnableCampaignChanges !== undefined ||
+      data.insightsChatEnableExperimentWrites !== undefined ||
+      data.insightsChatEnableFollowupPauses !== undefined;
+    if (wantsInsightsUpdate) {
+      await requireClientAdminAccess(clientId);
+    }
+
     await prisma.workspaceSettings.upsert({
       where: { clientId },
       update: {
@@ -254,6 +280,11 @@ export async function updateUserSettings(
         aiSmsGreeting: data.aiSmsGreeting,
         aiSignature: data.aiSignature,
         aiGoals: data.aiGoals,
+        insightsChatModel: data.insightsChatModel,
+        insightsChatReasoningEffort: data.insightsChatReasoningEffort,
+        insightsChatEnableCampaignChanges: data.insightsChatEnableCampaignChanges,
+        insightsChatEnableExperimentWrites: data.insightsChatEnableExperimentWrites,
+        insightsChatEnableFollowupPauses: data.insightsChatEnableFollowupPauses,
         serviceDescription: data.serviceDescription,
         qualificationQuestions: data.qualificationQuestions,
         companyName: data.companyName,
@@ -294,6 +325,11 @@ export async function updateUserSettings(
         aiSmsGreeting: data.aiSmsGreeting,
         aiSignature: data.aiSignature,
         aiGoals: data.aiGoals,
+        insightsChatModel: data.insightsChatModel,
+        insightsChatReasoningEffort: data.insightsChatReasoningEffort,
+        insightsChatEnableCampaignChanges: data.insightsChatEnableCampaignChanges ?? false,
+        insightsChatEnableExperimentWrites: data.insightsChatEnableExperimentWrites ?? false,
+        insightsChatEnableFollowupPauses: data.insightsChatEnableFollowupPauses ?? false,
         serviceDescription: data.serviceDescription,
         qualificationQuestions: data.qualificationQuestions,
         companyName: data.companyName,

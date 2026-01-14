@@ -1,6 +1,6 @@
 "use server";
 
-import { isGlobalAdminUser, requireAuthUser } from "@/lib/workspace-access";
+import { isGlobalAdminUser, requireAuthUser, requireClientAdminAccess } from "@/lib/workspace-access";
 
 export async function getGlobalAdminStatus(): Promise<{ success: boolean; isAdmin: boolean; error?: string }> {
   try {
@@ -12,3 +12,14 @@ export async function getGlobalAdminStatus(): Promise<{ success: boolean; isAdmi
   }
 }
 
+export async function getWorkspaceAdminStatus(
+  clientId: string | null | undefined
+): Promise<{ success: boolean; isAdmin: boolean; error?: string }> {
+  try {
+    if (!clientId) return { success: true, isAdmin: false };
+    await requireClientAdminAccess(clientId);
+    return { success: true, isAdmin: true };
+  } catch (error) {
+    return { success: true, isAdmin: false, error: error instanceof Error ? error.message : "Not an admin" };
+  }
+}

@@ -36,16 +36,16 @@ export async function getAccessibleClientIdsForUser(userId: string): Promise<str
   return Array.from(ids);
 }
 
-export async function requireClientAccess(clientId: string): Promise<{ userId: string }> {
+export async function requireClientAccess(clientId: string): Promise<{ userId: string; userEmail: string | null }> {
   const user = await requireAuthUser();
   const accessible = await getAccessibleClientIdsForUser(user.id);
   if (!accessible.includes(clientId)) {
     throw new Error("Unauthorized");
   }
-  return { userId: user.id };
+  return { userId: user.id, userEmail: user.email };
 }
 
-export async function requireClientAdminAccess(clientId: string): Promise<{ userId: string }> {
+export async function requireClientAdminAccess(clientId: string): Promise<{ userId: string; userEmail: string | null }> {
   const user = await requireAuthUser();
 
   const [client, adminMembership] = await Promise.all([
@@ -62,7 +62,7 @@ export async function requireClientAdminAccess(clientId: string): Promise<{ user
   if (!client) throw new Error("Workspace not found");
   if (client.userId !== user.id && !adminMembership) throw new Error("Unauthorized");
 
-  return { userId: user.id };
+  return { userId: user.id, userEmail: user.email };
 }
 
 export async function resolveClientScope(clientId?: string | null): Promise<{

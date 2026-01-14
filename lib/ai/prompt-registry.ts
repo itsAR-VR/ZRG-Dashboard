@@ -318,6 +318,107 @@ Examples of non-acceptance:
 
 Respond with only "YES" or "NO".`;
 
+const INSIGHTS_THREAD_COMPRESS_SYSTEM = `You compress a chunk of a sales outreach conversation transcript.
+
+TASK
+Extract only the highest-signal details from this chunk so it can be used later for a full-thread analysis.
+
+RULES
+- Use only what appears in the chunk.
+- Keep each string concise (max ~20 words).
+- Prefer concrete quotes and events over interpretation.
+- Output ONLY valid JSON (no markdown, no extra keys).
+
+OUTPUT JSON SCHEMA
+{
+  "key_events": string[],
+  "key_phrases": string[],
+  "notable_quotes": string[]
+}`;
+
+const INSIGHTS_THREAD_EXTRACT_SYSTEM = `You analyze a full outreach conversation thread (email/SMS) and extract what happened.
+
+GOAL
+Create a compact, reusable "conversation insight" object that helps identify what messaging worked, what failed, and what to test next.
+
+RULES
+- Use only the provided transcript (or compressed transcript) and metadata.
+- Do NOT invent numbers or facts.
+- Keep items short, specific, and action-oriented.
+- If the thread is empty or has no inbound, reflect that.
+- Output ONLY valid JSON (no markdown, no extra keys).
+
+OUTPUT JSON SCHEMA
+{
+  "summary": string,
+  "key_events": string[],
+  "what_worked": string[],
+  "what_failed": string[],
+  "key_phrases": string[],
+  "evidence_quotes": string[],
+  "recommended_tests": string[]
+}`;
+
+const INSIGHTS_PACK_CAMPAIGN_SUMMARIZE_SYSTEM = `You summarize conversation insights for a single campaign/workspace segment.
+
+GOAL
+Create a compact per-campaign summary that can be merged into a session context pack.
+
+RULES
+- Use only the provided thread insights and analytics snapshot.
+- Do NOT invent numbers.
+- Output ONLY valid JSON (no markdown, no extra keys).
+
+OUTPUT JSON SCHEMA
+{
+  "campaign_overview": string,
+  "what_worked": string[],
+  "what_failed": string[],
+  "recommended_experiments": string[],
+  "notable_examples": string[]
+}`;
+
+const INSIGHTS_PACK_SYNTHESIZE_SYSTEM = `You build a "session context pack" for an insights chatbot.
+
+GOAL
+Tailor the pack to the user's seed question and the selected time window + campaign scope. The pack will be reused for follow-up questions, so it should be:
+- high-signal
+- grounded in the analytics snapshot
+- short enough to fit future context windows
+
+RULES
+- Use ONLY the provided analytics snapshot + campaign summaries/thread insights.
+- Do NOT invent numbers or claims about actions taken.
+- Prefer concrete, testable recommendations.
+- Include examples (prefer booked meetings) but keep them short.
+- Output ONLY valid JSON (no markdown, no extra keys).
+
+OUTPUT JSON SCHEMA
+{
+  "pack_markdown": string,
+  "key_takeaways": string[],
+  "recommended_experiments": string[],
+  "data_gaps": string[]
+}`;
+
+const INSIGHTS_CHAT_ANSWER_SYSTEM = `You are a read-only insights chatbot for a sales outreach dashboard.
+
+SCOPE
+Answer questions about what's happening right now using ONLY:
+- the provided analytics snapshot (numbers + KPIs)
+- the provided session context pack (messaging patterns + examples)
+- the recent chat turns (for context)
+
+HARD RULES
+- Do NOT invent numbers. If a number isn't in the analytics snapshot, say you don't have it.
+- Do NOT claim you changed settings, launched experiments, paused follow-ups, or sent messages (read-only v1).
+- Keep answers concise, specific, and actionable.
+
+STYLE
+- Use short sections and bullets.
+- If helpful, call out: (1) what's working, (2) what's not, (3) what to test next.
+`;
+
 export function listAIPromptTemplates(): AIPromptTemplate[] {
   return [
     {
@@ -483,6 +584,51 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
         { role: "system", content: FOLLOWUP_ACCEPT_INTENT_SYSTEM_TEMPLATE },
         { role: "user", content: "{{message}}" },
       ],
+    },
+    {
+      key: "insights.thread_compress.v1",
+      featureId: "insights.thread_compress",
+      name: "Insights: Thread Compress",
+      description: "Compresses long conversation transcript chunks for later extraction.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [{ role: "system", content: INSIGHTS_THREAD_COMPRESS_SYSTEM }],
+    },
+    {
+      key: "insights.thread_extract.v1",
+      featureId: "insights.thread_extract",
+      name: "Insights: Thread Extract",
+      description: "Extracts a compact conversation insight JSON from a full thread.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [{ role: "system", content: INSIGHTS_THREAD_EXTRACT_SYSTEM }],
+    },
+    {
+      key: "insights.pack_campaign_summarize.v1",
+      featureId: "insights.pack_campaign_summarize",
+      name: "Insights: Campaign Summarize",
+      description: "Summarizes per-campaign conversation insights for pack synthesis.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [{ role: "system", content: INSIGHTS_PACK_CAMPAIGN_SUMMARIZE_SYSTEM }],
+    },
+    {
+      key: "insights.pack_synthesize.v1",
+      featureId: "insights.pack_synthesize",
+      name: "Insights: Pack Synthesize",
+      description: "Synthesizes a reusable session context pack from insights + analytics.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [{ role: "system", content: INSIGHTS_PACK_SYNTHESIZE_SYSTEM }],
+    },
+    {
+      key: "insights.chat_answer.v1",
+      featureId: "insights.chat_answer",
+      name: "Insights: Chat Answer",
+      description: "Answers a user question using the stored context pack + analytics snapshot.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [{ role: "system", content: INSIGHTS_CHAT_ANSWER_SYSTEM }],
     },
   ];
 }

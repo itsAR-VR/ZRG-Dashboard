@@ -54,6 +54,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { IntegrationsManager } from "./settings/integrations-manager"
 import { AiCampaignAssignmentPanel } from "./settings/ai-campaign-assignment"
 // Note: FollowUpSequenceManager moved to Follow-ups view
+import { getWorkspaceAdminStatus } from "@/actions/access-actions"
 	import { 
 	  getUserSettings, 
 	  updateUserSettings, 
@@ -144,6 +145,14 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     serviceDescription: "",
   })
 
+  const [insightsChatSettings, setInsightsChatSettings] = useState({
+    model: "gpt-5-mini",
+    reasoningEffort: "medium",
+    enableCampaignChanges: false,
+    enableExperimentWrites: false,
+    enableFollowupPauses: false,
+  })
+
   // Qualification questions state
   const [qualificationQuestions, setQualificationQuestions] = useState<QualificationQuestion[]>([])
   const [newQuestion, setNewQuestion] = useState("")
@@ -229,6 +238,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 	  const [isApplyingAirtableMode, setIsApplyingAirtableMode] = useState(false)
 
   // AI observability (admin-only)
+  const [isWorkspaceAdmin, setIsWorkspaceAdmin] = useState(false)
   const [aiObsWindow, setAiObsWindow] = useState<AiObservabilityWindow>("24h")
   const [aiObs, setAiObs] = useState<ObservabilitySummary | null>(null)
   const [aiObsLoading, setAiObsLoading] = useState(false)
@@ -243,7 +253,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   useEffect(() => {
     async function loadSettings() {
       setIsLoading(true)
-      const result = await getUserSettings(activeWorkspace)
+      const [result, adminStatus] = await Promise.all([
+        getUserSettings(activeWorkspace),
+        activeWorkspace ? getWorkspaceAdminStatus(activeWorkspace) : Promise.resolve({ success: true, isAdmin: false }),
+      ])
+
+      setIsWorkspaceAdmin(Boolean(adminStatus.success && adminStatus.isAdmin))
       
       if (result.success && result.data) {
         setSettings(result.data)
@@ -256,6 +271,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           signature: result.data.aiSignature || "",
           goals: result.data.aiGoals || "",
           serviceDescription: result.data.serviceDescription || "",
+        })
+        setInsightsChatSettings({
+          model: result.data.insightsChatModel || "gpt-5-mini",
+          reasoningEffort: result.data.insightsChatReasoningEffort || "medium",
+          enableCampaignChanges: result.data.insightsChatEnableCampaignChanges ?? false,
+          enableExperimentWrites: result.data.insightsChatEnableExperimentWrites ?? false,
+          enableFollowupPauses: result.data.insightsChatEnableFollowupPauses ?? false,
         })
         setCompanyContext({
           companyName: result.data.companyName || "",
@@ -521,7 +543,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       return trimmed ? value : null
     }
     
-    const result = await updateUserSettings(activeWorkspace, {
+    const payload: Partial<UserSettingsData> = {
       aiPersonaName: toNullableText(aiPersona.name),
       aiTone: aiPersona.tone,
       aiGreeting: toNullableText(aiPersona.greeting),
@@ -552,7 +574,17 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       meetingBookingProvider: meetingBooking.meetingBookingProvider,
       calendlyEventTypeLink: toNullableText(meetingBooking.calendlyEventTypeLink),
       calendlyEventTypeUri: toNullableText(meetingBooking.calendlyEventTypeUri),
-    })
+    }
+
+    if (isWorkspaceAdmin) {
+      payload.insightsChatModel = insightsChatSettings.model
+      payload.insightsChatReasoningEffort = insightsChatSettings.reasoningEffort
+      payload.insightsChatEnableCampaignChanges = insightsChatSettings.enableCampaignChanges
+      payload.insightsChatEnableExperimentWrites = insightsChatSettings.enableExperimentWrites
+      payload.insightsChatEnableFollowupPauses = insightsChatSettings.enableFollowupPauses
+    }
+
+    const result = await updateUserSettings(activeWorkspace, payload)
 
     if (result.success) {
       toast.success("Settings saved", {
@@ -2415,6 +2447,152 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 	                </div>
 	              </CardContent>
 	            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Sparkles className="h-5 w-5" />
+                  Insights Chatbot
+                </CardTitle>
+                <CardDescription>
+                  Model + reasoning settings for the Insights Console (read-only v1). Action tools are wired but disabled by default.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-3">
+                  <div className="space-y-0.5">
+                    <span className="text-sm font-medium">Workspace-wide</span>
+                    <p className="text-xs text-muted-foreground">Only admins can change these settings.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {!isWorkspaceAdmin ? (
+                      <>
+                        <Lock className="h-4 w-4 text-muted-foreground" />
+                        <Badge variant="outline">Locked</Badge>
+                      </>
+                    ) : (
+                      <Badge variant="secondary">Admin</Badge>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Model</Label>
+                    <Select
+                      value={insightsChatSettings.model}
+                      onValueChange={(v) => {
+                        const nextModel = v
+                        setInsightsChatSettings((prev) => ({
+                          ...prev,
+                          model: nextModel,
+                          reasoningEffort:
+                            nextModel === "gpt-5.2"
+                              ? prev.reasoningEffort
+                              : prev.reasoningEffort === "extra_high"
+                                ? "high"
+                                : prev.reasoningEffort,
+                        }))
+                        handleChange()
+                      }}
+                      disabled={!isWorkspaceAdmin}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="gpt-5-mini">GPT-5 Mini (default)</SelectItem>
+                        <SelectItem value="gpt-5.1">GPT-5.1</SelectItem>
+                        <SelectItem value="gpt-5.2">GPT-5.2</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">Used by the Insights Console and background summaries.</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Reasoning Effort</Label>
+                    <Select
+                      value={insightsChatSettings.reasoningEffort}
+                      onValueChange={(v) => {
+                        setInsightsChatSettings((prev) => ({ ...prev, reasoningEffort: v }))
+                        handleChange()
+                      }}
+                      disabled={!isWorkspaceAdmin}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="low">Low</SelectItem>
+                        <SelectItem value="medium">Medium</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
+                        {insightsChatSettings.model === "gpt-5.2" ? (
+                          <SelectItem value="extra_high">Extra High (GPT-5.2 only)</SelectItem>
+                        ) : null}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">Higher effort improves quality but increases latency/cost.</p>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between p-3 rounded-lg border">
+                    <div className="space-y-0.5">
+                      <span className="text-sm">Enable campaign changes (future)</span>
+                      <p className="text-xs text-muted-foreground">Allow the chatbot to change campaign response mode (disabled in v1).</p>
+                    </div>
+                    <Switch
+                      checked={insightsChatSettings.enableCampaignChanges}
+                      disabled={!isWorkspaceAdmin}
+                      onCheckedChange={(v) => {
+                        setInsightsChatSettings((prev) => ({ ...prev, enableCampaignChanges: v }))
+                        handleChange()
+                      }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between p-3 rounded-lg border">
+                    <div className="space-y-0.5">
+                      <span className="text-sm">Enable experiment writes (future)</span>
+                      <p className="text-xs text-muted-foreground">Allow the chatbot to create experiments with human approval (disabled in v1).</p>
+                    </div>
+                    <Switch
+                      checked={insightsChatSettings.enableExperimentWrites}
+                      disabled={!isWorkspaceAdmin}
+                      onCheckedChange={(v) => {
+                        setInsightsChatSettings((prev) => ({ ...prev, enableExperimentWrites: v }))
+                        handleChange()
+                      }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between p-3 rounded-lg border">
+                    <div className="space-y-0.5">
+                      <span className="text-sm">Enable follow-up pauses (future)</span>
+                      <p className="text-xs text-muted-foreground">Allow the chatbot to pause follow-ups with human approval (disabled in v1).</p>
+                    </div>
+                    <Switch
+                      checked={insightsChatSettings.enableFollowupPauses}
+                      disabled={!isWorkspaceAdmin}
+                      onCheckedChange={(v) => {
+                        setInsightsChatSettings((prev) => ({ ...prev, enableFollowupPauses: v }))
+                        handleChange()
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2 rounded-lg border bg-muted/30 p-3 text-sm">
+                  <AlertTriangle className="h-4 w-4 mt-0.5 text-muted-foreground" />
+                  <div className="space-y-1">
+                    <div className="font-medium">Read-only v1</div>
+                    <p className="text-xs text-muted-foreground">
+                      The Insights Console does not execute writes yet. These toggles are scaffolding for future controlled rollouts.
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
 
             {/* Campaign assignment (AI auto-send vs setter-managed) */}
             <AiCampaignAssignmentPanel activeWorkspace={activeWorkspace} />
