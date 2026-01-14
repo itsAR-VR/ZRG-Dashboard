@@ -53,6 +53,7 @@ export interface ConversationData {
  */
 function mapSentimentToClassification(sentimentTag: string | null): string {
   const mapping: Record<string, string> = {
+    "Meeting Booked": "meeting-booked",
     "Meeting Requested": "meeting-requested",
     "Call Requested": "call-requested",
     "Not Interested": "not-interested",
@@ -72,6 +73,7 @@ function mapSentimentToClassification(sentimentTag: string | null): string {
  * Tags that can require action when the latest message is inbound.
  */
 const ATTENTION_SENTIMENT_TAGS = [
+  "Meeting Booked",
   "Meeting Requested",
   "Call Requested",
   "Information Requested",
@@ -332,6 +334,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     const now = new Date();
     const snoozeFilter = { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] };
     const positiveSentimentTags = [
+      "Meeting Booked",
       "Meeting Requested",
       "Call Requested",
       "Information Requested",
@@ -745,7 +748,7 @@ export async function getConversationsCursor(
       });
     } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
-        sentimentTag: { in: ["Meeting Requested", "Call Requested", "Information Requested", "Interested", "Positive"] },
+        sentimentTag: { in: ["Meeting Booked", "Meeting Requested", "Call Requested", "Information Requested", "Interested", "Positive"] },
         lastInboundAt: { not: null },
         lastMessageDirection: "outbound",
         status: { notIn: ["blacklisted", "unqualified"] },
@@ -924,7 +927,7 @@ export async function getConversationsFromEnd(
       });
     } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
-        sentimentTag: { in: ["Meeting Requested", "Call Requested", "Information Requested", "Interested", "Positive"] },
+        sentimentTag: { in: ["Meeting Booked", "Meeting Requested", "Call Requested", "Information Requested", "Interested", "Positive"] },
         lastInboundAt: { not: null },
         lastMessageDirection: "outbound",
         status: { notIn: ["blacklisted", "unqualified"] },
@@ -1045,6 +1048,7 @@ export async function diagnoseSentimentTags(clientId?: string | null): Promise<{
     }
     const clientFilter = { clientId: { in: scope.clientIds } };
     const attentionTags = [
+      "Meeting Booked",
       "Meeting Requested",
       "Call Requested",
       "Information Requested",

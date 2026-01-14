@@ -20,6 +20,7 @@ const ESTIMATED_CARD_HEIGHT = 160
 // Available sentiment tags for filtering
 const SENTIMENT_OPTIONS = [
   { value: "all", label: "All Sentiments" },
+  { value: "Meeting Booked", label: "Meeting Booked" },
   { value: "Meeting Requested", label: "Meeting Requested" },
   { value: "Call Requested", label: "Call Requested" },
   { value: "Information Requested", label: "Info Requested" },

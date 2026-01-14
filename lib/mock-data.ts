@@ -78,7 +78,7 @@ export interface Conversation {
   availableChannels: Channel[]  // Channels available based on contact info
   primaryChannel: Channel       // Most recent/active channel
   platform?: Channel            // @deprecated - use primaryChannel instead
-  classification: "meeting-requested" | "not-interested" | "out-of-office" | "follow-up" | "new" | "information-requested" | "call-requested" | "blacklist" | "positive" | "neutral" | "interested"
+  classification: "meeting-booked" | "meeting-requested" | "not-interested" | "out-of-office" | "follow-up" | "new" | "information-requested" | "call-requested" | "blacklist" | "positive" | "neutral" | "interested"
   lastMessage: string
   lastSubject?: string | null
   lastMessageTime: Date

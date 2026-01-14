@@ -1218,31 +1218,32 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
 
-  // Create inbound message
-  await prisma.message.create({
-    data: {
-      emailBisonReplyId,
-      channel: "email",
-      source: "zrg", // Inbound replies are processed by ZRG
-      body: cleanedBodyForStorage,
-      rawText: cleaned.rawText ?? null,
-      rawHtml: cleaned.rawHtml ?? null,
-      subject: reply.email_subject ?? null,
-      cc: ccAddresses,
-      bcc: bccAddresses,
-      isRead: false,
-      direction: "inbound",
-      leadId: lead.id,
-      sentAt,
-    },
-  });
+  // Create inbound message + bump rollups + persist sentiment in ONE transaction
+  await prisma.$transaction(async (tx) => {
+    await tx.message.create({
+      data: {
+        emailBisonReplyId,
+        channel: "email",
+        source: "zrg", // Inbound replies are processed by ZRG
+        body: cleanedBodyForStorage,
+        rawText: cleaned.rawText ?? null,
+        rawHtml: cleaned.rawHtml ?? null,
+        subject: reply.email_subject ?? null,
+        cc: ccAddresses,
+        bcc: bccAddresses,
+        isRead: false,
+        direction: "inbound",
+        leadId: lead.id,
+        sentAt,
+      },
+    });
 
-  await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
+    await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt }, tx);
 
-  // Update lead sentiment/status
-  await prisma.lead.update({
-    where: { id: lead.id },
-    data: { sentimentTag, status: leadStatus },
+    await tx.lead.update({
+      where: { id: lead.id },
+      data: { sentimentTag, status: leadStatus },
+    });
   });
 
   await applyAutoFollowUpPolicyOnInboundEmail({
@@ -1653,29 +1654,31 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
 
-  await prisma.message.create({
-    data: {
-      emailBisonReplyId,
-      channel: "email",
-      source: "zrg",
-      body: cleanedBodyForStorage,
-      rawText: cleaned.rawText ?? null,
-      rawHtml: cleaned.rawHtml ?? null,
-      subject: reply.email_subject ?? null,
-      cc: ccAddresses,
-      bcc: bccAddresses,
-      isRead: false,
-      direction: "inbound",
-      leadId: lead.id,
-      sentAt,
-    },
-  });
+  await prisma.$transaction(async (tx) => {
+    await tx.message.create({
+      data: {
+        emailBisonReplyId,
+        channel: "email",
+        source: "zrg",
+        body: cleanedBodyForStorage,
+        rawText: cleaned.rawText ?? null,
+        rawHtml: cleaned.rawHtml ?? null,
+        subject: reply.email_subject ?? null,
+        cc: ccAddresses,
+        bcc: bccAddresses,
+        isRead: false,
+        direction: "inbound",
+        leadId: lead.id,
+        sentAt,
+      },
+    });
 
-  await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
+    await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt }, tx);
 
-  await prisma.lead.update({
-    where: { id: lead.id },
-    data: { sentimentTag, status: leadStatus },
+    await tx.lead.update({
+      where: { id: lead.id },
+      data: { sentimentTag, status: leadStatus },
+    });
   });
 
   await applyAutoFollowUpPolicyOnInboundEmail({
@@ -1807,31 +1810,33 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
         const sentAt = parseDate(reply.date_received, reply.created_at);
 
         // Create bounce message attached to the ORIGINAL lead
-        await prisma.message.create({
-          data: {
-            emailBisonReplyId,
-            channel: "email",
-            source: "bounce",
-            body: cleaned.cleaned || `Email delivery failed to ${originalRecipient}`,
-            rawText: cleaned.rawText ?? null,
-            rawHtml: cleaned.rawHtml ?? null,
-            subject: reply.email_subject ?? "Delivery Status Notification (Failure)",
-            isRead: false,
-            direction: "inbound",
-            leadId: originalLead.id,
-            sentAt,
-          },
-        });
+        await prisma.$transaction(async (tx) => {
+          await tx.message.create({
+            data: {
+              emailBisonReplyId,
+              channel: "email",
+              source: "bounce",
+              body: cleaned.cleaned || `Email delivery failed to ${originalRecipient}`,
+              rawText: cleaned.rawText ?? null,
+              rawHtml: cleaned.rawHtml ?? null,
+              subject: reply.email_subject ?? "Delivery Status Notification (Failure)",
+              isRead: false,
+              direction: "inbound",
+              leadId: originalLead.id,
+              sentAt,
+            },
+          });
 
-        await bumpLeadMessageRollup({ leadId: originalLead.id, direction: "inbound", sentAt });
+          await bumpLeadMessageRollup({ leadId: originalLead.id, direction: "inbound", sentAt }, tx);
 
-        // Mark the original lead as blacklisted (email is invalid)
-        await prisma.lead.update({
-          where: { id: originalLead.id },
-          data: {
-            status: "blacklisted",
-            sentimentTag: "Blacklist",
-          },
+          // Mark the original lead as blacklisted (email is invalid)
+          await tx.lead.update({
+            where: { id: originalLead.id },
+            data: {
+              status: "blacklisted",
+              sentimentTag: "Blacklist",
+            },
+          });
         });
 
         // Auto-reject any pending drafts for this lead
@@ -2004,29 +2009,31 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
 
-  await prisma.message.create({
-    data: {
-      emailBisonReplyId,
-      channel: "email",
-      source: "zrg",
-      body: cleanedBodyForStorage,
-      rawText: cleaned.rawText ?? null,
-      rawHtml: cleaned.rawHtml ?? null,
-      subject: reply.email_subject ?? null,
-      cc: ccAddresses,
-      bcc: bccAddresses,
-      isRead: false,
-      direction: "inbound",
-      leadId: lead.id,
-      sentAt,
-    },
-  });
+  await prisma.$transaction(async (tx) => {
+    await tx.message.create({
+      data: {
+        emailBisonReplyId,
+        channel: "email",
+        source: "zrg",
+        body: cleanedBodyForStorage,
+        rawText: cleaned.rawText ?? null,
+        rawHtml: cleaned.rawHtml ?? null,
+        subject: reply.email_subject ?? null,
+        cc: ccAddresses,
+        bcc: bccAddresses,
+        isRead: false,
+        direction: "inbound",
+        leadId: lead.id,
+        sentAt,
+      },
+    });
 
-  await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
+    await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt }, tx);
 
-  await prisma.lead.update({
-    where: { id: lead.id },
-    data: { sentimentTag, status: leadStatus },
+    await tx.lead.update({
+      where: { id: lead.id },
+      data: { sentimentTag, status: leadStatus },
+    });
   });
 
   await applyAutoFollowUpPolicyOnInboundEmail({

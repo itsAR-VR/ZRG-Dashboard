@@ -1,15 +1,19 @@
 import "server-only";
 
+import type { Prisma, PrismaClient } from "@prisma/client";
+
 import { prisma } from "@/lib/prisma";
+
+type LeadRollupDb = Pick<PrismaClient, "lead"> | Pick<Prisma.TransactionClient, "lead">;
 
 export async function bumpLeadMessageRollup(opts: {
   leadId: string;
   direction: "inbound" | "outbound";
   sentAt: Date;
-}): Promise<void> {
+}, db: LeadRollupDb = prisma): Promise<void> {
   const { leadId, direction, sentAt } = opts;
 
-  await prisma.lead.updateMany({
+  await db.lead.updateMany({
     where: {
       id: leadId,
       OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: sentAt } }],
@@ -18,7 +22,7 @@ export async function bumpLeadMessageRollup(opts: {
   });
 
   if (direction === "inbound") {
-    await prisma.lead.updateMany({
+    await db.lead.updateMany({
       where: {
         id: leadId,
         OR: [{ lastInboundAt: null }, { lastInboundAt: { lt: sentAt } }],
@@ -28,7 +32,7 @@ export async function bumpLeadMessageRollup(opts: {
     return;
   }
 
-  await prisma.lead.updateMany({
+  await db.lead.updateMany({
     where: {
       id: leadId,
       OR: [{ lastOutboundAt: null }, { lastOutboundAt: { lt: sentAt } }],

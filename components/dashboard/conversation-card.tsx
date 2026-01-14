@@ -22,6 +22,10 @@ const platformIcons = {
 // Extended classification styles for all sentiment tags
 const classificationStyles: Record<string, { label: string; className: string }> = {
   // AI Sentiment Tags (from OpenAI classification)
+  "meeting-booked": {
+    label: "Meeting Booked",
+    className: "bg-teal-500/10 text-teal-500 border-teal-500/20",
+  },
   "meeting-requested": {
     label: "Meeting Requested",
     className: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
@@ -85,8 +89,17 @@ function getClassificationStyle(classification: string) {
     return classificationStyles[lowerClass]
   }
   
-  // Default to "new" style
-  return classificationStyles["new"]
+  const label = lowerClass
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ")
+
+  // Unknown classification: don't mislabel as "New"
+  return {
+    label: label || "Unknown",
+    className: "bg-muted text-muted-foreground border-muted",
+  }
 }
 
 export function ConversationCard({ conversation, isActive, onClick, isSyncing = false }: ConversationCardProps) {
