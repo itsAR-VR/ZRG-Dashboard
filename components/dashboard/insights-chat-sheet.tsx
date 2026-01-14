@@ -246,8 +246,13 @@ function CampaignPickerDialog(props: {
   );
 }
 
-export function InsightsChatSheet({ activeWorkspace }: { activeWorkspace?: string | null }) {
-  const [open, setOpen] = useState(false);
+function InsightsConsoleBody({
+  activeWorkspace,
+  isVisible,
+}: {
+  activeWorkspace?: string | null;
+  isVisible: boolean;
+}) {
   const [isWorkspaceAdmin, setIsWorkspaceAdmin] = useState(false);
 
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -393,27 +398,27 @@ export function InsightsChatSheet({ activeWorkspace }: { activeWorkspace?: strin
   );
 
   useEffect(() => {
-    if (!open) return;
+    if (!isVisible) return;
     if (!activeWorkspace) return;
 
     loadWorkspaceMeta();
     loadSessions();
-  }, [activeWorkspace, loadSessions, loadWorkspaceMeta, open]);
+  }, [activeWorkspace, isVisible, loadSessions, loadWorkspaceMeta]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!isVisible) return;
     if (!activeWorkspace) return;
     if (!selectedSessionId) return;
     loadSession(selectedSessionId);
-  }, [activeWorkspace, loadSession, open, selectedSessionId]);
+  }, [activeWorkspace, isVisible, loadSession, selectedSessionId]);
 
   useEffect(() => {
-    if (!open) {
-      pollCancelRef.current.cancelled = true;
-      return;
-    }
-    pollCancelRef.current.cancelled = false;
-  }, [open]);
+    const cancelToken = pollCancelRef.current;
+    cancelToken.cancelled = !isVisible;
+    return () => {
+      cancelToken.cancelled = true;
+    };
+  }, [isVisible]);
 
   const savePreferences = useCallback(
     async (next?: Partial<{ windowPreset: InsightsWindowPreset; customStart: Date | null; customEnd: Date | null; campaignCap: number }>) => {
@@ -648,15 +653,7 @@ export function InsightsChatSheet({ activeWorkspace }: { activeWorkspace?: strin
   const showIncludeDeleted = isWorkspaceAdmin;
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger asChild>
-        <Button variant="outline" size="sm" disabled={!activeWorkspace} title={!activeWorkspace ? "Select a workspace first" : undefined}>
-          <MessageSquareText className="h-4 w-4 mr-2" />
-          Insights Console
-        </Button>
-      </SheetTrigger>
-
-      <SheetContent side="right" className="w-[95vw] sm:max-w-5xl">
+    <div className="flex h-full flex-col">
         <SheetHeader className="pb-2">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1">
@@ -680,7 +677,7 @@ export function InsightsChatSheet({ activeWorkspace }: { activeWorkspace?: strin
         {!activeWorkspace ? (
           <div className="p-4 text-sm text-muted-foreground">Select a workspace to use the Insights Console.</div>
         ) : (
-          <div className="grid h-full grid-cols-1 gap-4 overflow-hidden md:grid-cols-[280px_1fr]">
+          <div className="grid flex-1 min-h-0 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[280px_1fr]">
             {/* Sessions sidebar */}
             <div className="flex flex-col overflow-hidden rounded-lg border">
               <div className="flex items-center justify-between gap-2 border-b p-3">
@@ -999,6 +996,28 @@ export function InsightsChatSheet({ activeWorkspace }: { activeWorkspace?: strin
             </div>
           </div>
         )}
+    </div>
+  );
+}
+
+export function InsightsConsole({ activeWorkspace }: { activeWorkspace?: string | null }) {
+  return <InsightsConsoleBody activeWorkspace={activeWorkspace} isVisible={true} />;
+}
+
+export function InsightsChatSheet({ activeWorkspace }: { activeWorkspace?: string | null }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetTrigger asChild>
+        <Button variant="outline" size="sm" disabled={!activeWorkspace} title={!activeWorkspace ? "Select a workspace first" : undefined}>
+          <MessageSquareText className="h-4 w-4 mr-2" />
+          Insights Console
+        </Button>
+      </SheetTrigger>
+
+      <SheetContent side="right" className="w-[95vw] sm:max-w-5xl">
+        <InsightsConsoleBody activeWorkspace={activeWorkspace} isVisible={open} />
       </SheetContent>
     </Sheet>
   );

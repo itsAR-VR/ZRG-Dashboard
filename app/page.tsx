@@ -7,6 +7,7 @@ import { InboxView } from "@/components/dashboard/inbox-view"
 import { FollowUpsView } from "@/components/dashboard/follow-ups-view"
 import { CRMView } from "@/components/dashboard/crm-view"
 import { AnalyticsView } from "@/components/dashboard/analytics-view"
+import { InsightsView } from "@/components/dashboard/insights-view"
 import { SettingsView } from "@/components/dashboard/settings-view"
 import { getClients } from "@/actions/client-actions"
 import { getLeadWorkspaceId } from "@/actions/lead-actions"
@@ -92,6 +93,7 @@ function DashboardPageInner() {
       viewParam === "followups" ||
       viewParam === "crm" ||
       viewParam === "analytics" ||
+      viewParam === "insights" ||
       viewParam === "settings"
     ) {
       setActiveView(viewParam)
@@ -106,6 +108,8 @@ function DashboardPageInner() {
         return <CRMView activeWorkspace={activeWorkspace} onOpenInInbox={handleOpenInInbox} />
       case "analytics":
         return <AnalyticsView activeWorkspace={activeWorkspace} />
+      case "insights":
+        return <InsightsView activeWorkspace={activeWorkspace} />
       case "settings":
         return (
           <SettingsView 

@@ -7,6 +7,7 @@ import {
   Clock,
   Users,
   BarChart3,
+  Bot,
   Settings,
   AlertCircle,
   FileEdit,
@@ -36,7 +37,7 @@ import { signOut } from "@/actions/auth-actions"
 import { useUser } from "@/contexts/user-context"
 import type { Channel } from "@/actions/lead-actions"
 
-export type ViewType = "inbox" | "followups" | "crm" | "analytics" | "settings"
+export type ViewType = "inbox" | "followups" | "crm" | "analytics" | "insights" | "settings"
 
 interface Workspace {
   id: string
@@ -62,6 +63,7 @@ const navItems = [
   { id: "followups" as ViewType, label: "Follow-ups", icon: Clock },
   { id: "crm" as ViewType, label: "CRM / Leads", icon: Users },
   { id: "analytics" as ViewType, label: "Analytics", icon: BarChart3 },
+  { id: "insights" as ViewType, label: "Insights", icon: Bot },
   { id: "settings" as ViewType, label: "Settings", icon: Settings },
 ]
 

@@ -8,7 +8,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ChatgptExportControls } from "@/components/dashboard/chatgpt-export-controls"
-import { InsightsChatSheet } from "@/components/dashboard/insights-chat-sheet"
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
 import {
   Cell,
@@ -184,13 +183,12 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
             <h1 className="text-2xl font-bold">Analytics</h1>
             <p className="text-muted-foreground">Track your outreach performance</p>
 	          </div>
-	          <div className="flex items-center gap-2">
-	            <InsightsChatSheet activeWorkspace={activeWorkspace} />
-	            <ChatgptExportControls activeWorkspace={activeWorkspace} />
-	            <Select defaultValue="7d">
-	              <SelectTrigger className="w-[150px]" disabled title="Time range filtering is coming soon">
-	                <SelectValue placeholder="Select period" />
-	              </SelectTrigger>
+          <div className="flex items-center gap-2">
+            <ChatgptExportControls activeWorkspace={activeWorkspace} />
+            <Select defaultValue="7d">
+              <SelectTrigger className="w-[150px]" disabled title="Time range filtering is coming soon">
+                <SelectValue placeholder="Select period" />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="24h">Last 24 hours</SelectItem>
                 <SelectItem value="7d">Last 7 days</SelectItem>
