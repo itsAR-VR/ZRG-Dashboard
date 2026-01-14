@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, CheckCircle2, Clock, Loader2, MessageSquareText, Plus, RefreshCcw, Settings2, Shield, Trash2 } from "lucide-react";
+import { ArrowUp, Bot, CheckCircle2, Clock, Loader2, MessageSquareText, Plus, RefreshCcw, Settings2, Shield, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,6 +16,7 @@ import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 
 import { getWorkspaceAdminStatus } from "@/actions/access-actions";
 import { getEmailCampaigns } from "@/actions/email-campaign-actions";
@@ -113,22 +115,71 @@ function parseDateInputValue(value: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+const assistantMarkdownComponents: Components = {
+  h1: ({ children }) => <h1 className="text-base font-semibold tracking-tight">{children}</h1>,
+  h2: ({ children }) => <h2 className="text-sm font-semibold tracking-tight">{children}</h2>,
+  h3: ({ children }) => <h3 className="text-sm font-semibold tracking-tight">{children}</h3>,
+  p: ({ children }) => <p className="whitespace-pre-wrap leading-relaxed [&:not(:first-child)]:mt-3">{children}</p>,
+  ul: ({ children }) => <ul className="mt-3 list-disc space-y-1 pl-5 leading-relaxed">{children}</ul>,
+  ol: ({ children }) => <ol className="mt-3 list-decimal space-y-1 pl-5 leading-relaxed">{children}</ol>,
+  li: ({ children }) => <li className="whitespace-pre-wrap">{children}</li>,
+  a: ({ children, href }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-primary underline underline-offset-4 hover:opacity-90"
+    >
+      {children}
+    </a>
+  ),
+  blockquote: ({ children }) => (
+    <blockquote className="mt-3 border-l-2 border-border pl-4 text-muted-foreground">{children}</blockquote>
+  ),
+  hr: () => <hr className="my-4 border-border" />,
+  pre: ({ children }) => (
+    <pre className="mt-3 overflow-x-auto rounded-xl border bg-muted/40 p-3 text-xs leading-relaxed">{children}</pre>
+  ),
+  code: ({ className, children, node: _node }) => {
+    const inline = !(className || "").includes("language-");
+    if (inline) {
+      return (
+        <code className="rounded-md border bg-muted/40 px-1.5 py-0.5 font-mono text-[12px] text-foreground">
+          {children}
+        </code>
+      );
+    }
+    return <code className="font-mono text-[12px] text-foreground">{children}</code>;
+  },
+};
+
+function AssistantMarkdown({ content }: { content: string }) {
+  const cleaned = (content || "").trim();
+  if (!cleaned) return null;
+
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={assistantMarkdownComponents}>
+      {cleaned}
+    </ReactMarkdown>
+  );
+}
+
 function ChatBubble({ role, content }: { role: "user" | "assistant" | "system"; content: string }) {
   const isUser = role === "user";
   const isSystem = role === "system";
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}>
       <div
         className={[
-          "max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed",
+          "max-w-[46rem] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm",
           isSystem
-            ? "bg-muted/50 text-muted-foreground border"
+            ? "bg-muted/40 text-muted-foreground border"
             : isUser
               ? "bg-primary text-primary-foreground"
-              : "bg-muted text-foreground",
+              : "bg-card/60 text-foreground border",
         ].join(" ")}
       >
-        {content}
+        {role === "assistant" ? <AssistantMarkdown content={content} /> : <div className="whitespace-pre-wrap">{content}</div>}
       </div>
     </div>
   );
@@ -708,9 +759,9 @@ function InsightsConsoleBody({
         {!activeWorkspace ? (
           <div className="p-4 text-sm text-muted-foreground">Select a workspace to use the Insights Console.</div>
         ) : (
-          <div className="grid flex-1 min-h-0 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[280px_1fr]">
+          <div className="grid flex-1 min-h-0 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[320px_1fr] lg:grid-cols-[360px_1fr]">
             {/* Sessions sidebar */}
-            <div className="flex flex-col overflow-hidden rounded-lg border">
+            <div className="flex flex-col overflow-hidden rounded-xl border bg-card/30">
               <div className="flex items-center justify-between gap-2 border-b p-3">
                 <div className="text-sm font-medium">Sessions</div>
                 <Button size="sm" variant="outline" onClick={handleNewSession} disabled={sending}>
@@ -734,21 +785,29 @@ function InsightsConsoleBody({
                         <button
                           key={s.id}
                           className={[
-                            "w-full rounded-lg border px-3 py-2 text-left transition",
-                            selected ? "border-primary bg-primary/5" : "hover:bg-muted/40",
+                            "w-full rounded-xl border px-3 py-2.5 text-left transition",
+                            selected ? "border-primary bg-primary/5" : "hover:bg-muted/30",
                             s.deletedAt ? "opacity-60" : "",
                           ].join(" ")}
                           onClick={() => setSelectedSessionId(s.id)}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="truncate text-sm font-medium">{s.title}</div>
-                            <div className="shrink-0 text-[11px] text-muted-foreground">{formatRelativeTime(s.updatedAt)}</div>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="line-clamp-2 text-sm font-medium leading-snug" title={s.title}>
+                                {s.title}
+                              </div>
+                            </div>
+                            <div className="shrink-0 pt-0.5 text-[11px] text-muted-foreground">
+                              {formatRelativeTime(s.updatedAt)}
+                            </div>
                           </div>
                           {s.createdByEmail ? (
                             <div className="mt-0.5 text-[11px] text-muted-foreground">by {s.createdByEmail}</div>
                           ) : null}
                           {s.lastMessagePreview ? (
-                            <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{s.lastMessagePreview}</div>
+                            <div className="mt-1 line-clamp-3 text-xs leading-snug text-muted-foreground" title={s.lastMessagePreview}>
+                              {s.lastMessagePreview}
+                            </div>
                           ) : (
                             <div className="mt-1 text-xs text-muted-foreground">No messages yet</div>
                           )}
@@ -783,7 +842,7 @@ function InsightsConsoleBody({
             </div>
 
             {/* Main pane */}
-            <div className="flex flex-col overflow-hidden rounded-lg border">
+            <div className="flex flex-col overflow-hidden rounded-xl border bg-card/20">
 	              {/* Controls */}
 	              <div className="border-b p-3">
 	                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -967,74 +1026,108 @@ function InsightsConsoleBody({
 
               {/* Messages */}
               <ScrollArea className="flex-1">
-                <div className="p-4 space-y-3">
+                <div className="mx-auto w-full max-w-3xl px-4 py-6">
                   {messagesLoading ? (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
                       <Loader2 className="h-4 w-4 animate-spin" /> Loading messages…
                     </div>
                   ) : messages.length === 0 ? (
-                    <Card className="border-dashed">
-                      <CardHeader>
-                        <CardTitle className="text-base">Ask a seed question</CardTitle>
-                        <CardDescription>
-                          The first question builds a reusable context pack by analyzing representative threads. Later follow-ups reuse it.
-                        </CardDescription>
-                      </CardHeader>
-                      <CardContent className="text-sm text-muted-foreground space-y-2">
-                        <div>
-                          <span className="font-medium text-foreground">Window:</span> {windowSummary}
+                    <div className="flex min-h-[55vh] flex-col items-center justify-center gap-7 text-center">
+                      <div className="space-y-2">
+                        <div className="text-2xl font-semibold tracking-tight">What are you working on?</div>
+                        <p className="text-sm text-muted-foreground">
+                          Ask a seed question to build a reusable context pack from representative threads.
+                        </p>
+                      </div>
+
+                      <div className="grid w-full max-w-2xl grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div className="rounded-xl border bg-background/40 p-3 text-left">
+                          <div className="text-xs text-muted-foreground">Window</div>
+                          <div className="mt-1 text-sm font-medium">{windowSummary}</div>
                         </div>
-                        <div>
-                          <span className="font-medium text-foreground">Scope:</span> {campaignScopeLabel}
+                        <div className="rounded-xl border bg-background/40 p-3 text-left">
+                          <div className="text-xs text-muted-foreground">Scope</div>
+                          <div className="mt-1 text-sm font-medium line-clamp-2" title={campaignScopeLabel}>
+                            {campaignScopeLabel}
+                          </div>
                         </div>
-                        <div className="text-xs">
-                          Note: v1 is read-only. Action tools are disabled even if configured in AI Personality settings.
+                        <div className="rounded-xl border bg-background/40 p-3 text-left">
+                          <div className="text-xs text-muted-foreground">Model</div>
+                          <div className="mt-1 text-sm font-medium">
+                            {model} · {reasoningEffort}
+                          </div>
                         </div>
-                      </CardContent>
-                    </Card>
+                      </div>
+
+                      <div className="text-xs text-muted-foreground">
+                        v1 is read-only. Action tools are disabled even if configured in AI Personality settings.
+                      </div>
+                    </div>
                   ) : (
-                    messages.map((m) => <ChatBubble key={m.id} role={m.role} content={m.content} />)
+                    <div className="space-y-5">
+                      {messages.map((m) => (
+                        <ChatBubble key={m.id} role={m.role} content={m.content} />
+                      ))}
+                    </div>
                   )}
                 </div>
               </ScrollArea>
 
               {/* Composer */}
-              <div className="border-t p-3">
-                <div className="flex items-end gap-2">
-                  <div className="flex-1 space-y-1">
-                    <Label className="text-xs text-muted-foreground">Message</Label>
-                    <Input
+              <div className="border-t bg-background/50 p-4">
+                <div className="mx-auto w-full max-w-3xl">
+                  <div className="relative rounded-2xl border bg-background/40 p-2 shadow-sm">
+                    <Textarea
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
-                      placeholder={canSendFollowups ? "Ask a follow-up question…" : "Ask your seed question…"}
+                      placeholder={messages.length === 0 ? "Ask your seed question…" : "Ask a follow-up question…"}
                       disabled={sending || isBuildingPack || (pack?.status === "FAILED")}
+                      className="min-h-[48px] max-h-[180px] resize-none border-0 bg-transparent px-3 py-2 pr-12 text-sm leading-relaxed focus-visible:ring-0 focus-visible:ring-offset-0"
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
+                          if (sending || isBuildingPack || (pack?.status === "FAILED")) return;
+                          if (!draft.trim()) return;
+                          if (messages.length > 0 && !canSendFollowups) return;
                           if (messages.length === 0) handleSeedSend();
                           else handleFollowupSend();
                         }
                       }}
                     />
-                    <div className="text-[11px] text-muted-foreground">
-                      {isBuildingPack ? "Building context pack… you can keep this open; it may take a while." : canSendFollowups ? "Pack ready." : "Send a seed question to build the pack."}
-                    </div>
+
+                    <Button
+                      size="icon"
+                      className="absolute bottom-2 right-2 h-9 w-9 rounded-full"
+                      onClick={() => {
+                        if (messages.length === 0) handleSeedSend();
+                        else handleFollowupSend();
+                      }}
+                      disabled={
+                        sending ||
+                        isBuildingPack ||
+                        (pack?.status === "FAILED") ||
+                        !draft.trim() ||
+                        (messages.length > 0 && !canSendFollowups)
+                      }
+                      title={messages.length === 0 ? "Send seed question" : "Send message"}
+                    >
+                      {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+                    </Button>
                   </div>
-                  <div className="flex flex-col gap-2">
-                    {messages.length === 0 ? (
-                      <Button onClick={handleSeedSend} disabled={sending || !draft.trim()}>
-                        {sending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <MessageSquareText className="h-4 w-4 mr-2" />}
-                        Send
-                      </Button>
-                    ) : (
-                      <Button onClick={handleFollowupSend} disabled={sending || !draft.trim() || !canSendFollowups}>
-                        {sending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <MessageSquareText className="h-4 w-4 mr-2" />}
-                        Send
-                      </Button>
-                    )}
+
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                    <div>
+                      {isBuildingPack
+                        ? "Building context pack… you can keep this open; it may take a while."
+                        : canSendFollowups
+                          ? "Pack ready."
+                          : "Send a seed question to build the pack."}
+                    </div>
                     {isBuildingPack ? (
                       <Button
-                        variant="outline"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2"
                         onClick={() => {
                           pollCancelRef.current.cancelled = true;
                           toast.message("Stopped waiting. You can resume by clicking Recompute or sending later.");
@@ -1048,7 +1141,7 @@ function InsightsConsoleBody({
                 </div>
 
                 {selectedSessionId && isWorkspaceAdmin ? (
-                  <div className="mt-3 flex items-center justify-between gap-2">
+                  <div className="mx-auto mt-4 flex w-full max-w-3xl items-center justify-between gap-2">
                     <div className="text-[11px] text-muted-foreground">Admin controls</div>
                     <div className="flex items-center gap-2">
                       <Button

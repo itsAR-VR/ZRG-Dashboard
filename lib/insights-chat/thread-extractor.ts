@@ -192,7 +192,7 @@ export async function extractConversationInsightForLead(opts: {
         preferApiCount: true,
       });
 
-      const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_TIMEOUT_MS || "45000", 10) || 45_000);
+      const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_TIMEOUT_MS || "90000", 10) || 90_000);
 
       const { parsed } = await runStructuredJson<ThreadChunkCompression>({
         clientId: opts.clientId,
@@ -263,7 +263,7 @@ export async function extractConversationInsightForLead(opts: {
   let lastErrorMessage: string | null = null;
 
   for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
-    const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_TIMEOUT_MS || "45000", 10) || 45_000);
+    const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_TIMEOUT_MS || "90000", 10) || 90_000);
 
     try {
       const { parsed, interactionId } = await runStructuredJson<ConversationInsight>({

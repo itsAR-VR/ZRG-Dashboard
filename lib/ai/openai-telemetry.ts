@@ -7,6 +7,12 @@ import { estimateCostUsd } from "@/lib/ai/pricing";
 import { pruneOldAIInteractionsMaybe } from "@/lib/ai/retention";
 import { openai } from "@/lib/ai/openai-client";
 
+function getDefaultMaxRetries(): number {
+  const parsed = Number.parseInt(process.env.OPENAI_MAX_RETRIES || "5", 10);
+  if (Number.isFinite(parsed) && parsed >= 0) return Math.min(10, parsed);
+  return 5;
+}
+
 function isUnsupportedTemperatureError(error: unknown): boolean {
   const anyErr = error as any;
   const message = error instanceof Error ? error.message : String(anyErr?.message || "");
@@ -122,8 +128,10 @@ export async function runResponseWithInteraction(opts: {
   try {
     let resp: OpenAI.Responses.Response;
     const defaultTimeout = Math.max(5_000, Number.parseInt(process.env.OPENAI_TIMEOUT_MS || "90000", 10) || 90_000);
+    const defaultMaxRetries = getDefaultMaxRetries();
     const requestOptions: OpenAI.RequestOptions = {
       timeout: defaultTimeout,
+      maxRetries: defaultMaxRetries,
       ...opts.requestOptions,
     };
     try {
