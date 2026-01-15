@@ -9,6 +9,10 @@
       "schedule": "*/10 * * * *"
     },
     {
+      "path": "/api/cron/background-jobs",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/cron/insights/booked-summaries",
       "schedule": "*/10 * * * *"
     },
