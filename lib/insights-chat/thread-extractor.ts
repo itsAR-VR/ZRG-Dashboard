@@ -50,6 +50,39 @@ function safeJsonParse<T>(text: string): T {
   return JSON.parse(extractJsonObjectFromText(text)) as T;
 }
 
+function getChunkCompressionConcurrency(): number {
+  const parsed = Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_CHUNK_CONCURRENCY || "3", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 3;
+  return Math.max(1, Math.min(6, Math.trunc(parsed)));
+}
+
+function getInsightsMaxRetries(): number {
+  const parsed = Number.parseInt(process.env.OPENAI_INSIGHTS_MAX_RETRIES || "2", 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 2;
+  return Math.min(10, Math.trunc(parsed));
+}
+
+async function mapWithConcurrency<TItem, TResult>(
+  items: TItem[],
+  concurrency: number,
+  fn: (item: TItem, index: number) => Promise<TResult>
+): Promise<TResult[]> {
+  if (items.length === 0) return [];
+  const results = new Array<TResult>(items.length);
+  let nextIndex = 0;
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const currentIndex = nextIndex++;
+      if (currentIndex >= items.length) break;
+      results[currentIndex] = await fn(items[currentIndex]!, currentIndex);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
 async function runStructuredJson<T>(opts: {
   clientId: string;
   leadId: string;
@@ -62,6 +95,7 @@ async function runStructuredJson<T>(opts: {
   jsonSchema: Record<string, unknown>;
   maxOutputTokens: number;
   timeoutMs: number;
+  maxRetries?: number;
 }): Promise<{ parsed: T; interactionId: string | null }> {
   const { response, interactionId } = await runResponseWithInteraction({
     clientId: opts.clientId,
@@ -86,6 +120,7 @@ async function runStructuredJson<T>(opts: {
     },
     requestOptions: {
       timeout: opts.timeoutMs,
+      maxRetries: opts.maxRetries,
     },
   });
 
@@ -162,20 +197,23 @@ export async function extractConversationInsightForLead(opts: {
     compressPrompt?.messages.find((m) => m.role === "system")?.content ||
     "Return ONLY valid JSON with keys: key_events, key_phrases, notable_quotes.";
 
+  const headerObj = JSON.parse(header) as unknown;
   const maxTranscriptChars = 28_000;
   let transcriptForModel = transcript;
 
   if (transcriptForModel.length > maxTranscriptChars) {
     const chunks = splitIntoChunks(transcriptForModel, { chunkSize: 12_000, overlap: 1_200 }).slice(0, 12);
-    const compressed: ThreadChunkCompression[] = [];
+    const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_TIMEOUT_MS || "90000", 10) || 90_000);
+    const concurrency = getChunkCompressionConcurrency();
+    const maxRetries = getInsightsMaxRetries();
 
-    for (let i = 0; i < chunks.length; i++) {
+    const compressed = await mapWithConcurrency(chunks, concurrency, async (chunk, i) => {
       const chunkInput = JSON.stringify(
         {
-          header: JSON.parse(header) as unknown,
+          header: headerObj,
           chunk_index: i + 1,
           chunk_count: chunks.length,
-          transcript_chunk: chunks[i],
+          transcript_chunk: chunk,
         },
         null,
         2
@@ -191,8 +229,6 @@ export async function extractConversationInsightForLead(opts: {
         outputScale: 0.18,
         preferApiCount: true,
       });
-
-      const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_TIMEOUT_MS || "90000", 10) || 90_000);
 
       const { parsed } = await runStructuredJson<ThreadChunkCompression>({
         clientId: opts.clientId,
@@ -215,14 +251,15 @@ export async function extractConversationInsightForLead(opts: {
         },
         maxOutputTokens: baseBudget.maxOutputTokens,
         timeoutMs,
+        maxRetries,
       });
 
       const validated = ChunkCompressionSchema.safeParse(parsed);
       if (!validated.success) {
         throw new Error(`Chunk compression schema mismatch: ${validated.error.message}`);
       }
-      compressed.push(validated.data);
-    }
+      return validated.data;
+    });
 
     transcriptForModel = compressed
       .map((c, idx) => {
@@ -237,7 +274,7 @@ export async function extractConversationInsightForLead(opts: {
 
   const extractInput = JSON.stringify(
     {
-      header: JSON.parse(header) as unknown,
+      header: headerObj,
       outcome: opts.outcome,
       sentimentTag: lead.sentimentTag || null,
       transcript: transcriptForModel,
@@ -264,6 +301,7 @@ export async function extractConversationInsightForLead(opts: {
 
   for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
     const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_TIMEOUT_MS || "90000", 10) || 90_000);
+    const maxRetries = getInsightsMaxRetries();
 
     try {
       const { parsed, interactionId } = await runStructuredJson<ConversationInsight>({
@@ -292,6 +330,7 @@ export async function extractConversationInsightForLead(opts: {
         },
         maxOutputTokens: attempts[attemptIndex],
         timeoutMs,
+        maxRetries,
       });
 
       lastInteractionId = interactionId;

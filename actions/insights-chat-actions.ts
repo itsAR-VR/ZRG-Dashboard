@@ -447,6 +447,8 @@ async function createOrResetContextPack(opts: {
     storedValue: opts.reasoningEffort ?? runtime.reasoningStored,
   }).stored;
 
+  const shouldResetSeedAnswer = opts.auditAction === "CONTEXT_PACK_CREATED";
+
   const created = await prisma.insightContextPack.upsert({
     where: { sessionId_scopeKey: { sessionId: opts.sessionId, scopeKey } },
     create: {
@@ -492,7 +494,7 @@ async function createOrResetContextPack(opts: {
       selectedLeadsMeta: null,
       metricsSnapshot: null,
       synthesis: null,
-      seedAssistantMessageId: null,
+      ...(shouldResetSeedAnswer ? { seedAssistantMessageId: null } : {}),
       model: effectiveModel,
       reasoningEffort: effectiveEffort,
       lastError: null,
@@ -1355,6 +1357,8 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
   sessionId: string;
   contextPackId: string;
   userMessageId: string;
+  model?: string | null;
+  reasoningEffort?: string | null;
 }): Promise<{ success: boolean; data?: { assistantMessageId: string; answer: string }; error?: string }> {
   return withAiTelemetrySourceIfUnset("action:insights_chat.finalize_seed_answer", async () => {
     try {
@@ -1362,7 +1366,7 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
       if (!clientId) return { success: false, error: "No workspace selected" };
       const { userId, userEmail } = await requireClientAccess(clientId);
 
-    const [pack, userMsg] = await Promise.all([
+      const [pack, userMsg] = await Promise.all([
       prisma.insightContextPack.findUnique({
         where: { id: opts.contextPackId },
         select: {
@@ -1381,6 +1385,7 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
           effectiveCampaignIds: true,
           metricsSnapshot: true,
           synthesis: true,
+          seedAssistantMessageId: true,
         },
       }),
       prisma.insightChatMessage.findUnique({
@@ -1395,8 +1400,18 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
     if (pack.status !== "COMPLETE" || !packMarkdown) return { success: false, error: "Context pack is not ready" };
     if (!userMsg || userMsg.sessionId !== opts.sessionId) return { success: false, error: "Seed message not found" };
 
-    const model = coerceInsightsChatModel(pack.model);
-    const effort = coerceInsightsChatReasoningEffort({ model, storedValue: pack.reasoningEffort });
+    if (pack.seedAssistantMessageId) {
+      const existing = await prisma.insightChatMessage.findUnique({
+        where: { id: pack.seedAssistantMessageId },
+        select: { id: true, content: true, sessionId: true },
+      });
+      if (existing && existing.sessionId === opts.sessionId) {
+        return { success: true, data: { assistantMessageId: existing.id, answer: existing.content } };
+      }
+    }
+
+    const model = coerceInsightsChatModel(opts.model ?? pack.model);
+    const effort = coerceInsightsChatReasoningEffort({ model, storedValue: opts.reasoningEffort ?? pack.reasoningEffort });
 
     const windowLabel = formatInsightsWindowLabel({
       preset: pack.windowPreset,
@@ -1459,10 +1474,131 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
   });
 }
 
+export async function regenerateInsightsChatSeedAnswer(opts: {
+  clientId: string | null | undefined;
+  sessionId: string;
+  model?: string | null;
+  reasoningEffort?: string | null;
+}): Promise<{ success: boolean; data?: { assistantMessageId: string; answer: string }; error?: string }> {
+  return withAiTelemetrySourceIfUnset("action:insights_chat.regenerate_seed_answer", async () => {
+    try {
+      const clientId = opts.clientId;
+      if (!clientId) return { success: false, error: "No workspace selected" };
+      const { userId, userEmail } = await requireClientAccess(clientId);
+
+      const session = await prisma.insightChatSession.findUnique({
+        where: { id: opts.sessionId },
+        select: { id: true, clientId: true, deletedAt: true, seedQuestion: true },
+      });
+      if (!session || session.clientId !== clientId) return { success: false, error: "Session not found" };
+      if (session.deletedAt) return { success: false, error: "Session is deleted" };
+
+      const pack = await prisma.insightContextPack.findFirst({
+        where: { clientId, sessionId: session.id, status: "COMPLETE", deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          clientId: true,
+          sessionId: true,
+          status: true,
+          model: true,
+          reasoningEffort: true,
+          windowPreset: true,
+          allCampaigns: true,
+          campaignCap: true,
+          windowFrom: true,
+          windowTo: true,
+          effectiveCampaignIds: true,
+          metricsSnapshot: true,
+          synthesis: true,
+        },
+      });
+
+      const synthesisObj = pack?.synthesis as any;
+      const packMarkdown = typeof synthesisObj?.pack_markdown === "string" ? synthesisObj.pack_markdown : null;
+      if (!pack || !packMarkdown) return { success: false, error: "Context pack is not ready" };
+
+      const seedQuestion =
+        (session.seedQuestion || "").trim() ||
+        (
+          await prisma.insightChatMessage.findFirst({
+            where: { clientId, sessionId: session.id, role: "USER" },
+            select: { content: true },
+            orderBy: { createdAt: "asc" },
+          })
+        )?.content ||
+        null;
+      if (!seedQuestion?.trim()) return { success: false, error: "Seed question not found" };
+
+      const model = coerceInsightsChatModel(opts.model ?? pack.model);
+      const effort = coerceInsightsChatReasoningEffort({ model, storedValue: opts.reasoningEffort ?? pack.reasoningEffort });
+      const windowLabel = formatInsightsWindowLabel({
+        preset: pack.windowPreset,
+        from: pack.windowFrom,
+        to: pack.windowTo,
+      });
+      const campaignLabel = pack.allCampaigns
+        ? `All campaigns (cap ${pack.campaignCap ?? 10})`
+        : pack.effectiveCampaignIds.length
+          ? `Selected campaigns (${pack.effectiveCampaignIds.length})`
+          : "Workspace (no campaign filter)";
+
+      const answer = await answerInsightsChatQuestion({
+        clientId,
+        sessionId: session.id,
+        question: seedQuestion,
+        windowLabel,
+        campaignContextLabel: campaignLabel,
+        analyticsSnapshot: pack.metricsSnapshot,
+        contextPackMarkdown: packMarkdown,
+        recentMessages: [],
+        model,
+        reasoningEffort: effort.api,
+      });
+
+      const assistantMessage = await prisma.insightChatMessage.create({
+        data: {
+          clientId,
+          sessionId: session.id,
+          role: "ASSISTANT",
+          content: answer.answer,
+          authorUserId: null,
+          authorEmail: null,
+          contextPackId: pack.id,
+        },
+        select: { id: true },
+      });
+
+      await prisma.insightContextPack.update({
+        where: { id: pack.id },
+        data: { seedAssistantMessageId: assistantMessage.id },
+      });
+
+      await recordAuditEvent({
+        clientId,
+        userId,
+        userEmail,
+        action: "MESSAGE_CREATED",
+        sessionId: session.id,
+        contextPackId: pack.id,
+        details: { role: "ASSISTANT", seed: true, regenerate: true },
+      });
+
+      revalidatePath("/");
+      return { success: true, data: { assistantMessageId: assistantMessage.id, answer: answer.answer } };
+    } catch (error) {
+      console.error("[InsightsChat] Failed to regenerate seed answer:", error);
+      return { success: false, error: error instanceof Error ? error.message : "Failed to regenerate answer" };
+    }
+  });
+}
+
 export async function sendInsightsChatMessage(opts: {
   clientId: string | null | undefined;
   sessionId: string;
   content: string;
+  model?: string | null;
+  reasoningEffort?: string | null;
 }): Promise<{ success: boolean; data?: { userMessageId: string; assistantMessageId: string; answer: string }; error?: string }> {
   return withAiTelemetrySourceIfUnset("action:insights_chat.send_message", async () => {
     try {
@@ -1521,8 +1657,8 @@ export async function sendInsightsChatMessage(opts: {
       take: 16,
     });
 
-    const model = coerceInsightsChatModel(pack.model);
-    const effort = coerceInsightsChatReasoningEffort({ model, storedValue: pack.reasoningEffort });
+    const model = coerceInsightsChatModel(opts.model ?? pack.model);
+    const effort = coerceInsightsChatReasoningEffort({ model, storedValue: opts.reasoningEffort ?? pack.reasoningEffort });
     const windowLabel = formatInsightsWindowLabel({
       preset: pack.windowPreset,
       from: pack.windowFrom,

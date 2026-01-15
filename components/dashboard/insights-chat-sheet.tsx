@@ -28,6 +28,7 @@ import {
   getInsightsChatUserPreference,
   getLatestInsightContextPack,
   listInsightChatSessions,
+  regenerateInsightsChatSeedAnswer,
   recomputeInsightContextPack,
   restoreInsightChatSession,
   runInsightContextPackStep,
@@ -62,6 +63,7 @@ type ChatMessage = {
   role: "user" | "assistant" | "system";
   content: string;
   createdAt: Date;
+  contextPackId: string | null;
 };
 
 function formatRelativeTime(ts: Date): string {
@@ -343,6 +345,7 @@ function InsightsConsoleBody({
   const [sending, setSending] = useState(false);
 
   const pollCancelRef = useRef<{ cancelled: boolean }>({ cancelled: false });
+  const activePackBuildRef = useRef<string | null>(null);
 
   const hasEmailCampaigns = campaigns.length > 0;
 
@@ -440,6 +443,7 @@ function InsightsConsoleBody({
               role: m.role,
               content: m.content,
               createdAt: m.createdAt,
+              contextPackId: m.contextPackId ?? null,
             }))
           );
         } else {
@@ -486,11 +490,15 @@ function InsightsConsoleBody({
 
   useEffect(() => {
     const cancelToken = pollCancelRef.current;
-    cancelToken.cancelled = !isVisible;
     return () => {
       cancelToken.cancelled = true;
     };
-  }, [isVisible]);
+  }, []);
+
+  useEffect(() => {
+    pollCancelRef.current.cancelled = true;
+    activePackBuildRef.current = null;
+  }, [activeWorkspace]);
 
   const savePreferences = useCallback(
     async (next?: Partial<{ windowPreset: InsightsWindowPreset; customStart: Date | null; customEnd: Date | null; campaignCap: number }>) => {
@@ -515,6 +523,7 @@ function InsightsConsoleBody({
   const buildContextPackLoop = useCallback(
     async (contextPackId: string, sessionId: string, seedMessageId?: string) => {
       if (!activeWorkspace) return;
+      activePackBuildRef.current = contextPackId;
       pollCancelRef.current.cancelled = false;
       setSending(true);
       setPackLoading(true);
@@ -549,6 +558,8 @@ function InsightsConsoleBody({
             sessionId,
             contextPackId,
             userMessageId: seedMessageId,
+            model,
+            reasoningEffort,
           });
           if (!done.success) {
             toast.error(done.error || "Failed to generate answer");
@@ -562,10 +573,31 @@ function InsightsConsoleBody({
       } finally {
         setSending(false);
         setPackLoading(false);
+        if (activePackBuildRef.current === contextPackId) {
+          activePackBuildRef.current = null;
+        }
       }
     },
-    [activeWorkspace, loadSession, loadSessions]
+    [activeWorkspace, loadSession, loadSessions, model, reasoningEffort]
   );
+
+  useEffect(() => {
+    if (!isVisible) return;
+    if (!activeWorkspace) return;
+    if (!selectedSessionId) return;
+    if (!pack) return;
+    if (!["PENDING", "RUNNING"].includes(pack.status)) return;
+    if (activePackBuildRef.current === pack.id) return;
+
+    const hasAssistantMessage = messages.some((m) => m.role === "assistant");
+    const seedUserMessageId = hasAssistantMessage
+      ? undefined
+      : messages.find((m) => m.role === "user" && m.contextPackId === pack.id)?.id ??
+        messages.find((m) => m.role === "user")?.id ??
+        undefined;
+
+    void buildContextPackLoop(pack.id, selectedSessionId, seedUserMessageId);
+  }, [activeWorkspace, buildContextPackLoop, isVisible, messages, pack, selectedSessionId]);
 
   const handleNewSession = useCallback(async () => {
     if (!activeWorkspace) return;
@@ -648,6 +680,8 @@ function InsightsConsoleBody({
         clientId: activeWorkspace,
         sessionId: selectedSessionId,
         content,
+        model,
+        reasoningEffort,
       });
       if (!res.success || !res.data) {
         toast.error(res.error || "Failed to send message");
@@ -659,10 +693,11 @@ function InsightsConsoleBody({
     } finally {
       setSending(false);
     }
-  }, [activeWorkspace, draft, loadSession, loadSessions, selectedSessionId]);
+  }, [activeWorkspace, draft, loadSession, loadSessions, model, reasoningEffort, selectedSessionId]);
 
   const canSendFollowups = Boolean(pack && pack.status === "COMPLETE" && pack.deletedAt == null);
   const isBuildingPack = Boolean(pack && ["PENDING", "RUNNING"].includes(pack.status));
+  const canRegenerate = Boolean(selectedSessionId && pack && pack.status === "COMPLETE" && pack.deletedAt == null);
 
   const handleRecomputePack = useCallback(async () => {
     if (!activeWorkspace || !selectedSessionId) return;
@@ -702,6 +737,27 @@ function InsightsConsoleBody({
     selectedSessionId,
     windowPreset,
   ]);
+
+  const handleRegenerateSeed = useCallback(async () => {
+    if (!activeWorkspace || !selectedSessionId) return;
+    setSending(true);
+    try {
+      const res = await regenerateInsightsChatSeedAnswer({
+        clientId: activeWorkspace,
+        sessionId: selectedSessionId,
+        model,
+        reasoningEffort,
+      });
+      if (!res.success || !res.data) {
+        toast.error(res.error || "Failed to regenerate answer");
+        return;
+      }
+      await loadSession(selectedSessionId);
+      await loadSessions();
+    } finally {
+      setSending(false);
+    }
+  }, [activeWorkspace, loadSession, loadSessions, model, reasoningEffort, selectedSessionId]);
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
@@ -930,10 +986,10 @@ function InsightsConsoleBody({
 
                     <div className="space-y-1">
                       <Label className="text-xs text-muted-foreground">Defaults</Label>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-col gap-2">
                         <Button
                           variant="outline"
-                          className="h-9 flex-1"
+                          className="h-9 justify-start"
                           onClick={() => savePreferences()}
                           disabled={prefLoading}
                           title="Save window + cap as defaults"
@@ -941,16 +997,28 @@ function InsightsConsoleBody({
                           {prefsSaved ? <CheckCircle2 className="h-4 w-4 mr-2" /> : <Clock className="h-4 w-4 mr-2" />}
                           {prefsSaved ? "Saved" : "Save"}
                         </Button>
-                        <Button
-                          variant="outline"
-                          className="h-9"
-                          onClick={handleRecomputePack}
-                          disabled={!selectedSessionId || packLoading || sending}
-                          title="Recompute context pack for this session"
-                        >
-                          <RefreshCcw className="h-4 w-4 mr-2" />
-                          Recompute
-                        </Button>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            className="h-9 flex-1 justify-start"
+                            onClick={handleRecomputePack}
+                            disabled={!selectedSessionId || packLoading || sending}
+                            title="Recompute context pack for this session (keeps existing answers)"
+                          >
+                            <RefreshCcw className="h-4 w-4 mr-2" />
+                            Recompute
+                          </Button>
+                          <Button
+                            variant="outline"
+                            className="h-9 flex-1 justify-start"
+                            onClick={handleRegenerateSeed}
+                            disabled={!canRegenerate || sending || packLoading}
+                            title="Regenerate the seed answer using the latest context pack"
+                          >
+                            <MessageSquareText className="h-4 w-4 mr-2" />
+                            Regenerate
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </div>

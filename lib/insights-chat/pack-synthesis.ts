@@ -34,6 +34,12 @@ function safeJsonParse<T>(text: string): T {
   return JSON.parse(extractJsonObjectFromText(text)) as T;
 }
 
+function getInsightsMaxRetries(): number {
+  const parsed = Number.parseInt(process.env.OPENAI_INSIGHTS_MAX_RETRIES || "2", 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 2;
+  return Math.min(10, Math.trunc(parsed));
+}
+
 function formatLeadLabel(lead: { firstName: string | null; lastName: string | null; email: string | null }): string {
   const name = `${lead.firstName || ""} ${lead.lastName || ""}`.trim();
   const email = (lead.email || "").trim();
@@ -91,6 +97,7 @@ async function runStructuredJson<T>(opts: {
     },
     requestOptions: {
       timeout: opts.timeoutMs,
+      maxRetries: getInsightsMaxRetries(),
     },
   });
 

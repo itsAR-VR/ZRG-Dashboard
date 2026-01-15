@@ -11,6 +11,10 @@
     {
       "path": "/api/cron/insights/booked-summaries",
       "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/insights/context-packs",
+      "schedule": "*/2 * * * *"
     }
   ]
 }

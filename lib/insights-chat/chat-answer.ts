@@ -11,6 +11,12 @@ function safeString(value: string | null | undefined): string {
   return (value || "").trim();
 }
 
+function getInsightsMaxRetries(): number {
+  const parsed = Number.parseInt(process.env.OPENAI_INSIGHTS_MAX_RETRIES || "2", 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 2;
+  return Math.min(10, Math.trunc(parsed));
+}
+
 export async function answerInsightsChatQuestion(opts: {
   clientId: string;
   sessionId: string;
@@ -83,6 +89,7 @@ RULES:
     },
     requestOptions: {
       timeout: Math.max(8_000, Number.parseInt(process.env.OPENAI_INSIGHTS_ANSWER_TIMEOUT_MS || "90000", 10) || 90_000),
+      maxRetries: getInsightsMaxRetries(),
     },
   });
 
