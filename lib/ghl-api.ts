@@ -84,6 +84,14 @@ function parseRetryAfterMs(value: string | null): number | null {
   return null;
 }
 
+function parseOptionalNumber(value: string | undefined): number | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 type GhlRateLimiterState = {
   nextAllowedAtMs: number;
   queue: Promise<void>;
@@ -182,9 +190,9 @@ async function ghlRequest<T>(
     const url = `${GHL_API_BASE}${endpoint}`;
 
     const requestKey = rateLimitKey || privateKey;
-    const configuredMaxRetries = Number(process.env.GHL_MAX_429_RETRIES || "");
+    const configuredMaxRetries = parseOptionalNumber(process.env.GHL_MAX_429_RETRIES);
     const max429Retries =
-      Number.isFinite(configuredMaxRetries) && configuredMaxRetries >= 0
+      configuredMaxRetries != null && configuredMaxRetries >= 0
         ? Math.floor(configuredMaxRetries)
         : DEFAULT_GHL_MAX_429_RETRIES;
 
@@ -194,15 +202,15 @@ async function ghlRequest<T>(
         ? Math.floor(configuredTimeoutMs)
         : DEFAULT_GHL_FETCH_TIMEOUT_MS;
 
-    const configuredNetworkRetries = Number(process.env.GHL_MAX_NETWORK_RETRIES || "");
+    const configuredNetworkRetries = parseOptionalNumber(process.env.GHL_MAX_NETWORK_RETRIES);
     const maxNetworkRetries =
-      Number.isFinite(configuredNetworkRetries) && configuredNetworkRetries >= 0
+      configuredNetworkRetries != null && configuredNetworkRetries >= 0
         ? Math.floor(configuredNetworkRetries)
         : DEFAULT_GHL_MAX_NETWORK_RETRIES;
 
-    const configured5xxRetries = Number(process.env.GHL_MAX_5XX_RETRIES || "");
+    const configured5xxRetries = parseOptionalNumber(process.env.GHL_MAX_5XX_RETRIES);
     const max5xxRetries =
-      Number.isFinite(configured5xxRetries) && configured5xxRetries >= 0
+      configured5xxRetries != null && configured5xxRetries >= 0
         ? Math.floor(configured5xxRetries)
         : DEFAULT_GHL_MAX_5XX_RETRIES;
 
