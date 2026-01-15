@@ -60,6 +60,26 @@ interface SidebarProps {
   workspaces: Workspace[]
 }
 
+function normalizeBrandLogoSrc(value?: string | null): string | null {
+  if (typeof value !== "string") return null
+
+  let normalized = value.trim()
+  if (!normalized) return null
+
+  normalized = normalized.replace(/\\/g, "/")
+
+  // Allow absolute URLs for hosted assets.
+  if (/^https?:\/\//i.test(normalized)) return normalized
+
+  // Normalize common user-provided values like "public/images/..." to "/images/...".
+  if (normalized.startsWith("public/")) normalized = normalized.slice("public".length)
+
+  if (!normalized.startsWith("/")) normalized = `/${normalized}`
+
+  if (normalized === "/") return null
+  return encodeURI(normalized)
+}
+
 const navItems = [
   { id: "inbox" as ViewType, label: "Master Inbox", icon: Inbox },
   { id: "followups" as ViewType, label: "Follow-ups", icon: Clock },
@@ -135,7 +155,7 @@ export function Sidebar({
 
   const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)
   const displayBrandName = (selectedWorkspace?.brandName || selectedWorkspace?.name || "Inbox").trim()
-  const displayBrandLogoUrl = selectedWorkspace?.brandLogoUrl ? encodeURI(selectedWorkspace.brandLogoUrl) : null
+  const displayBrandLogoUrl = normalizeBrandLogoSrc(selectedWorkspace?.brandLogoUrl)
   const workspaceQuery = workspaceSearch.trim().toLowerCase()
   const filteredWorkspaces =
     workspaceQuery.length === 0
@@ -170,6 +190,10 @@ export function Sidebar({
           src={displayBrandLogoUrl ?? "/images/zrg-logo-3.png"}
           alt={`${displayBrandName} Logo`}
           className="h-8 w-auto"
+          onError={(event) => {
+            event.currentTarget.onerror = null
+            event.currentTarget.src = "/images/zrg-logo-3.png"
+          }}
         />
         <div className="leading-tight">
           <div className="text-sm font-semibold text-foreground truncate">{displayBrandName}</div>

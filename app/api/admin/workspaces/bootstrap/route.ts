@@ -52,6 +52,27 @@ function normalizeOptionalNullableString(value: unknown): string | null | undefi
   return trimmed ? trimmed : null;
 }
 
+function normalizeBrandLogoUrl(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+
+  let normalized = value.trim();
+  if (!normalized) return null;
+
+  normalized = normalized.replace(/\\/g, "/");
+
+  // Allow absolute URLs for hosted assets.
+  if (/^https?:\/\//i.test(normalized)) return normalized;
+
+  // Callers sometimes pass filesystem-style public paths; normalize to web root.
+  if (normalized.startsWith("public/")) normalized = normalized.slice("public".length);
+
+  // Ensure a web-root-relative path for Next.js `public/` assets.
+  if (!normalized.startsWith("/")) normalized = `/${normalized}`;
+
+  return normalized === "/" ? null : normalized;
+}
+
 export async function POST(request: NextRequest) {
   const expectedSecret =
     process.env.WORKSPACE_PROVISIONING_SECRET ??
@@ -77,7 +98,7 @@ export async function POST(request: NextRequest) {
   const adminPassword = normalizeOptionalString(body?.adminPassword) ?? "";
   const upsert = body?.upsert === true;
   const brandName = normalizeOptionalNullableString(body?.brandName);
-  const brandLogoUrl = normalizeOptionalNullableString(body?.brandLogoUrl);
+  const brandLogoUrl = normalizeBrandLogoUrl(normalizeOptionalNullableString(body?.brandLogoUrl));
 
   if (!workspaceName) {
     return NextResponse.json({ error: "workspaceName is required" }, { status: 400 });
