@@ -20,9 +20,11 @@ We need a repeatable way to spin up “empty” workspaces for white-label deplo
 
 ## Success Criteria
 - [ ] `POST /api/admin/workspaces/bootstrap` can create a workspace + admin user (or attach existing user) with branding and no connected accounts.
-- [ ] Dashboard renders “connect accounts” guidance when a workspace has no connected accounts.
-- [ ] `README.md` documents local + production curl usage and required env vars.
-- [ ] Changes are committed and pushed to GitHub.
+- [x] Dashboard renders “connect accounts” guidance when a workspace has no connected accounts.
+- [x] `README.md` documents local + production curl usage and required env vars.
+- [x] Changes are committed and pushed to GitHub.
+
+Note: the endpoint is implemented and builds, but still needs a live smoke test by calling it with a real `WORKSPACE_PROVISIONING_SECRET` against the deployed app.
 
 ## Subphase Index
 * a — Define bootstrap contract and auth
@@ -30,3 +32,8 @@ We need a repeatable way to spin up “empty” workspaces for white-label deplo
 * c — Update UI for branding and empty-state
 * d — Document, verify, and ship
 
+## Phase Summary
+- Added `POST /api/admin/workspaces/bootstrap` to create an empty workspace + optional admin user (`app/api/admin/workspaces/bootstrap/route.ts`).
+- Updated Prisma schema to allow empty workspaces and store branding (`prisma/schema.prisma`).
+- Wired branding + “no connected accounts” UX into the dashboard (`actions/client-actions.ts`, `components/dashboard/sidebar.tsx`, `components/dashboard/inbox-view.tsx`).
+- Documented local + production provisioning cURL in `README.md`.
