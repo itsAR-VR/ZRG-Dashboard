@@ -263,7 +263,7 @@ model Message {
 | `DIRECT_URL` | Direct DB connection (port 5432) used for Prisma CLI (`db push`, migrations) |
 | `SLACK_WEBHOOK_URL` | (Optional) Slack notifications for meetings booked |
 | `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |
-| `WORKSPACE_PROVISIONING_SECRET` | Secret for `/api/admin/workspaces` automation authentication (generate with `openssl rand -hex 32`) |
+| `WORKSPACE_PROVISIONING_SECRET` | Secret for admin workspace provisioning endpoints (e.g. `/api/admin/workspaces`, `/api/admin/workspaces/bootstrap`) (generate with `openssl rand -hex 32`) |
 | `ADMIN_ACTIONS_SECRET` | (Optional) Shared secret for admin endpoints (fallback if provisioning secret is unset) |
 | `SUPABASE_MIDDLEWARE_TIMEOUT_MS` | (Optional) Abort timeout for Supabase auth refresh in middleware (default `8000`) |
 | `UNIPILE_DSN` | Unipile base DSN (e.g. `https://apiXX.unipile.com:PORT`) |
@@ -339,6 +339,93 @@ Example shape:
 **Response**
 - `201` on create: `{ "success": true, "existed": false, "workspace": { ... } }`
 - `200` if workspace already exists for the same `ghlLocationId`: `{ "success": true, "existed": true, ... }`
+
+### Workspace Bootstrap (White-Label / Empty Workspace)
+
+- **Endpoint:** `/api/admin/workspaces/bootstrap`
+- **Method:** `POST`
+- **Auth:** `Authorization: Bearer ${WORKSPACE_PROVISIONING_SECRET}` (or `x-workspace-provisioning-secret: ${WORKSPACE_PROVISIONING_SECRET}`; fallback to `ADMIN_ACTIONS_SECRET` or `CRON_SECRET` if provisioning secret is unset)
+- **Purpose:** Creates an “empty” workspace (no integrations connected yet) and (optionally) creates the initial Supabase Auth user.
+
+This is the recommended path for white-label onboarding (e.g., creating a new workspace like **Founders Club**) because it does **not** require GHL/Email/LinkedIn integrations at creation time.
+
+**Behavior**
+- If `adminEmail` does not exist in Supabase Auth:
+  - `adminPassword` is required and a new user is created (email is confirmed immediately).
+- If `adminEmail` already exists:
+  - Omitting `adminPassword` will **not** change the password.
+  - Providing `adminPassword` requires `upsert=true` (prevents accidental password resets).
+- Workspace is created with no integrations configured (`ghlLocationId=null`, `ghlPrivateKey=null`), and can be connected later in **Settings → Integrations**.
+- Branding fields (optional):
+  - `brandName` → stored on `WorkspaceSettings.brandName`
+  - `brandLogoUrl` → stored on `WorkspaceSettings.brandLogoUrl` and rendered in the sidebar
+    - If your filename contains spaces (e.g. `Founders Club Logo.svg`), prefer URL-encoding them (`%20`).
+
+**Request body (JSON)**
+
+```json
+{
+  "workspaceName": "Founders Club",
+  "brandName": "Founders Club",
+  "brandLogoUrl": "/images/Founders%20Club%20Logo.svg",
+  "adminEmail": "<ADMIN_EMAIL>",
+  "adminPassword": "<ADMIN_PASSWORD>",
+  "upsert": true
+}
+```
+
+**cURL (local dev)**
+
+```bash
+curl -sS -X POST "http://localhost:3000/api/admin/workspaces/bootstrap" \
+  -H "Authorization: Bearer $WORKSPACE_PROVISIONING_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workspaceName": "Founders Club",
+    "brandName": "Founders Club",
+    "brandLogoUrl": "/images/Founders%20Club%20Logo.svg",
+    "adminEmail": "<ADMIN_EMAIL>",
+    "adminPassword": "<ADMIN_PASSWORD>",
+    "upsert": true
+  }'
+```
+
+**cURL (live / production)**
+
+Replace `http://localhost:3000` with your deployed dashboard URL (e.g. `https://your-app-domain.com`).
+
+```bash
+curl -sS -X POST "https://your-app-domain.com/api/admin/workspaces/bootstrap" \
+  -H "Authorization: Bearer $WORKSPACE_PROVISIONING_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workspaceName": "Founders Club",
+    "brandName": "Founders Club",
+    "brandLogoUrl": "/images/Founders%20Club%20Logo.svg",
+    "adminEmail": "<ADMIN_EMAIL>",
+    "adminPassword": "<ADMIN_PASSWORD>",
+    "upsert": true
+  }'
+```
+
+If the user already exists and you **do not** want to reset the password, omit `adminPassword`:
+
+```bash
+curl -sS -X POST "https://your-app-domain.com/api/admin/workspaces/bootstrap" \
+  -H "Authorization: Bearer $WORKSPACE_PROVISIONING_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workspaceName": "Founders Club",
+    "brandName": "Founders Club",
+    "brandLogoUrl": "/images/Founders%20Club%20Logo.svg",
+    "adminEmail": "<ADMIN_EMAIL>",
+    "upsert": true
+  }'
+```
+
+**Response**
+- `201` on create: `{ "success": true, "userId": "...", "workspaceId": "...", "existedUser": false, "existedWorkspace": false }`
+- `200` if workspace already exists: `{ "success": true, "existedWorkspace": true, ... }`
 
 ### Vercel Cron Setup
 

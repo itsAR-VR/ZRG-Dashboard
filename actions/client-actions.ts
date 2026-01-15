@@ -98,6 +98,7 @@ export async function getClients() {
         id: true,
         name: true,
         ghlLocationId: true,
+        ghlPrivateKey: true,
         emailProvider: true,
         emailBisonApiKey: true,
         emailBisonWorkspaceId: true,
@@ -109,6 +110,12 @@ export async function getClients() {
         calendlyAccessToken: true,
         calendlyWebhookSubscriptionUri: true,
         createdAt: true,
+        settings: {
+          select: {
+            brandName: true,
+            brandLogoUrl: true,
+          },
+        },
         calendarLinks: {
           where: { isDefault: true },
           select: { id: true },
@@ -124,23 +131,44 @@ export async function getClients() {
         calendarLinks,
         calendlyAccessToken,
         calendlyWebhookSubscriptionUri,
+        ghlPrivateKey,
         emailBisonApiKey,
         smartLeadApiKey,
         smartLeadWebhookSecret,
         instantlyApiKey,
         instantlyWebhookSecret,
+        settings,
         ...rest
       } = client;
+
+      const hasGhlLocationId = Boolean((client.ghlLocationId ?? "").trim());
+      const hasGhlPrivateKey = Boolean((ghlPrivateKey ?? "").trim());
+      const hasGhlIntegration = hasGhlLocationId && hasGhlPrivateKey;
       return {
         ...rest,
         hasDefaultCalendarLink: calendarLinks.length > 0,
         hasCalendlyAccessToken: !!calendlyAccessToken,
         hasCalendlyWebhookSubscription: !!calendlyWebhookSubscriptionUri,
+        hasGhlLocationId,
+        hasGhlPrivateKey,
+        hasGhlIntegration,
         hasEmailBisonApiKey: !!emailBisonApiKey,
         hasSmartLeadApiKey: !!smartLeadApiKey,
         hasSmartLeadWebhookSecret: !!smartLeadWebhookSecret,
         hasInstantlyApiKey: !!instantlyApiKey,
         hasInstantlyWebhookSecret: !!instantlyWebhookSecret,
+        brandName: settings?.brandName ?? null,
+        brandLogoUrl: settings?.brandLogoUrl ?? null,
+        hasConnectedAccounts: Boolean(
+          hasGhlIntegration ||
+            !!calendlyAccessToken ||
+            !!emailBisonApiKey ||
+            !!smartLeadApiKey ||
+            !!smartLeadWebhookSecret ||
+            !!instantlyApiKey ||
+            !!instantlyWebhookSecret ||
+            (client.unipileAccountId ?? "").trim()
+        ),
       };
     });
     return { success: true, data: withHealth };

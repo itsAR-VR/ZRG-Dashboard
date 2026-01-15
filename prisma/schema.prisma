@@ -74,8 +74,8 @@ enum InsightChatAuditAction {
 model Client {
   id            String              @id @default(uuid())
   name          String
-  ghlLocationId String              @unique // Used to identify which client sent the webhook
-  ghlPrivateKey String              // The generic API key for this sub-account
+  ghlLocationId String?             @unique // Used to identify which client sent the webhook
+  ghlPrivateKey String?             // The generic API key for this sub-account
   // Email integrations (single-select; EmailBison | SmartLead | Instantly)
   emailProvider         EmailIntegrationProvider?
   emailBisonApiKey     String?
@@ -137,6 +137,9 @@ model WorkspaceSettings {
   id                   String   @id @default(uuid())
   clientId             String   @unique // Links to workspace
   client               Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  // White-label branding (workspace-level)
+  brandName             String?
+  brandLogoUrl          String?
   // AI Personality Settings
   aiPersonaName        String?
   aiTone               String?  @default("friendly-professional")

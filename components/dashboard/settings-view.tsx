@@ -105,7 +105,17 @@ interface SettingsViewProps {
   activeWorkspace?: string | null
   activeTab?: string
   onTabChange?: (tab: string) => void
-  onWorkspacesChange?: (workspaces: Array<{ id: string; name: string; ghlLocationId: string }>) => void
+  onWorkspacesChange?: (
+    workspaces: Array<{
+      id: string;
+      name: string;
+      ghlLocationId: string | null;
+      hasDefaultCalendarLink?: boolean;
+      brandName?: string | null;
+      brandLogoUrl?: string | null;
+      hasConnectedAccounts?: boolean;
+    }>
+  ) => void
 }
 
 function extractCalendlyEventTypeUuidFromUri(input: string | null | undefined): string | null {

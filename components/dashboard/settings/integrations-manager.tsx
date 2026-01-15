@@ -29,8 +29,14 @@ import type { EmailIntegrationProvider } from "@prisma/client";
 interface Client {
   id: string;
   name: string;
-  ghlLocationId: string;
+  ghlLocationId: string | null;
   hasDefaultCalendarLink?: boolean;
+  hasGhlLocationId: boolean;
+  hasGhlPrivateKey: boolean;
+  hasGhlIntegration: boolean;
+  brandName: string | null;
+  brandLogoUrl: string | null;
+  hasConnectedAccounts: boolean;
   emailProvider: EmailIntegrationProvider | null;
   emailBisonWorkspaceId: string | null;
   hasEmailBisonApiKey: boolean;
@@ -49,7 +55,20 @@ interface Client {
 }
 
 interface IntegrationsManagerProps {
-  onWorkspacesChange?: (workspaces: Array<Pick<Client, "id" | "name" | "ghlLocationId" | "hasDefaultCalendarLink">>) => void;
+  onWorkspacesChange?: (
+    workspaces: Array<
+      Pick<
+        Client,
+        | "id"
+        | "name"
+        | "ghlLocationId"
+        | "hasDefaultCalendarLink"
+        | "brandName"
+        | "brandLogoUrl"
+        | "hasConnectedAccounts"
+      >
+    >
+  ) => void;
 }
 
 export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerProps) {
@@ -110,6 +129,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
 
   const emptyIntegrationsForm = {
     name: "",
+    ghlLocationId: "",
+    ghlPrivateKey: "",
     emailProvider: "NONE" as EmailIntegrationProvider | "NONE",
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
@@ -143,6 +164,9 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
           name: c.name,
           ghlLocationId: c.ghlLocationId,
           hasDefaultCalendarLink: c.hasDefaultCalendarLink,
+          brandName: c.brandName,
+          brandLogoUrl: c.brandLogoUrl,
+          hasConnectedAccounts: c.hasConnectedAccounts,
         })),
       );
     } else {
@@ -254,6 +278,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
       // Build update payload - only include fields that have values or are being explicitly changed
       const updatePayload: {
         name?: string;
+        ghlLocationId?: string;
+        ghlPrivateKey?: string;
         emailProvider?: EmailIntegrationProvider | null;
         emailBisonApiKey?: string;
         emailBisonWorkspaceId?: string;
@@ -272,6 +298,17 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
       }
       if (nextName !== (currentClient?.name || "")) {
         updatePayload.name = nextName;
+      }
+
+      const nextGhlLocationId = integrationsForm.ghlLocationId.trim();
+      const currentGhlLocationId = (currentClient?.ghlLocationId ?? "").trim();
+      if (nextGhlLocationId && nextGhlLocationId !== currentGhlLocationId) {
+        updatePayload.ghlLocationId = nextGhlLocationId;
+      }
+
+      const nextGhlPrivateKey = integrationsForm.ghlPrivateKey.trim();
+      if (nextGhlPrivateKey) {
+        updatePayload.ghlPrivateKey = nextGhlPrivateKey;
       }
 
       const currentProvider = currentClient ? inferEmailProvider(currentClient) : null;
@@ -816,9 +853,16 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                       <div className="flex flex-col gap-1">
                         <span>{client.name}</span>
                         <div className="flex gap-1">
-                          <Badge variant="outline" className="text-green-500 border-green-500/30 bg-green-500/10 text-[10px]">
-                            SMS
-                          </Badge>
+                          {client.hasGhlIntegration ? (
+                            <Badge variant="outline" className="text-green-500 border-green-500/30 bg-green-500/10 text-[10px]">
+                              SMS
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-muted-foreground text-[10px]">
+                              <MessageSquare className="h-3 w-3 mr-1" />
+                              No SMS
+                            </Badge>
+                          )}
                           {emailProvider ? (
                             <Badge
                               variant="outline"
@@ -873,7 +917,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                     </TableCell>
                     <TableCell>
                       <code className="text-xs bg-muted px-2 py-1 rounded">
-                        {client.ghlLocationId}
+                        {client.ghlLocationId || "Not connected"}
                       </code>
                     </TableCell>
                     <TableCell>
@@ -891,7 +935,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             variant="outline"
                             size="sm"
                             onClick={() => handleSyncCampaigns(client.id)}
-                            disabled={syncingClientId === client.id}
+                            disabled={syncingClientId === client.id || !client.hasGhlIntegration}
                             className={!isAdmin ? "hidden" : undefined}
                           >
                             {syncingClientId === client.id ? (
@@ -967,6 +1011,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                 setEditingClientId(client.id);
                                 setIntegrationsForm({
                                   name: client.name,
+                                  ghlLocationId: client.ghlLocationId || "",
+                                  ghlPrivateKey: "",
                                   emailProvider: emailProvider ?? "NONE",
                                   emailBisonApiKey: "",
                                   emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
@@ -983,7 +1029,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                           >
                             {isEditingThis ? (
                               <>Cancel</>
-                            ) : (emailProvider || hasLinkedIn || hasCalendly) ? (
+                            ) : (client.hasGhlIntegration || emailProvider || hasLinkedIn || hasCalendly) ? (
                               <>
                                 <Pencil className="h-3 w-3 mr-1" />
                                 Edit Integrations
@@ -1001,6 +1047,16 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                         {isEditingThis && (
                           <div className="w-full mt-2 p-3 border rounded-lg bg-muted/30 space-y-3">
                             <div className="text-xs text-muted-foreground pb-2 border-b space-y-1">
+                              <p>
+                                GHL Location ID:{" "}
+                                <code className="bg-background px-1 rounded">{client.ghlLocationId || "Not set"}</code>
+                              </p>
+                              <p>
+                                GHL API Key:{" "}
+                                <code className="bg-background px-1 rounded">
+                                  {client.hasGhlPrivateKey ? "••••••••" : "Not set"}
+                                </code>
+                              </p>
                               <p>
                                 Current email provider:{" "}
                                 <code className="bg-background px-1 rounded">{providerLabel(emailProvider)}</code>
@@ -1059,6 +1115,35 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                 placeholder="e.g., Acme Corp"
                                 value={integrationsForm.name}
                                 onChange={(e) => setIntegrationsForm({ ...integrationsForm, name: e.target.value })}
+                                className="h-8 text-sm"
+                              />
+                            </div>
+
+                            {/* GoHighLevel (SMS) */}
+                            <div className="space-y-2">
+                              <Label htmlFor={`ghlLocationId-${client.id}`} className="text-xs">GHL Location ID</Label>
+                              <Input
+                                id={`ghlLocationId-${client.id}`}
+                                placeholder="e.g., AbCdEf123"
+                                value={integrationsForm.ghlLocationId}
+                                onChange={(e) => setIntegrationsForm({ ...integrationsForm, ghlLocationId: e.target.value })}
+                                className="h-8 text-sm"
+                              />
+                              <p className="text-[10px] text-muted-foreground">
+                                Used to route inbound SMS webhooks to this workspace.
+                              </p>
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor={`ghlPrivateKey-${client.id}`} className="text-xs">
+                                GHL Private Integration Key {client.hasGhlPrivateKey && "(leave blank to keep current)"}
+                              </Label>
+                              <Input
+                                id={`ghlPrivateKey-${client.id}`}
+                                type="password"
+                                autoComplete="off"
+                                placeholder={client.hasGhlPrivateKey ? "••••••••" : "ghl_xxxxxxxxxxxxxxxx"}
+                                value={integrationsForm.ghlPrivateKey}
+                                onChange={(e) => setIntegrationsForm({ ...integrationsForm, ghlPrivateKey: e.target.value })}
                                 className="h-8 text-sm"
                               />
                             </div>

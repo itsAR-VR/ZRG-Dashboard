@@ -42,8 +42,10 @@ export type ViewType = "inbox" | "followups" | "crm" | "analytics" | "insights" 
 interface Workspace {
   id: string
   name: string
-  ghlLocationId: string
+  ghlLocationId: string | null
   hasDefaultCalendarLink?: boolean
+  brandName?: string | null
+  brandLogoUrl?: string | null
 }
 
 interface SidebarProps {
@@ -132,13 +134,15 @@ export function Sidebar({
   ]
 
   const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)
+  const displayBrandName = (selectedWorkspace?.brandName || selectedWorkspace?.name || "Inbox").trim()
+  const displayBrandLogoUrl = selectedWorkspace?.brandLogoUrl ? encodeURI(selectedWorkspace.brandLogoUrl) : null
   const workspaceQuery = workspaceSearch.trim().toLowerCase()
   const filteredWorkspaces =
     workspaceQuery.length === 0
       ? workspaces
       : workspaces.filter((w) => {
           const name = w.name.toLowerCase()
-          const locationId = w.ghlLocationId.toLowerCase()
+          const locationId = (w.ghlLocationId ?? "").toLowerCase()
           return name.includes(workspaceQuery) || locationId.includes(workspaceQuery)
         })
 
@@ -162,8 +166,15 @@ export function Sidebar({
     <aside className="flex h-full w-[18.5rem] flex-col border-r border-border bg-card overflow-x-hidden">
       {/* Branding */}
       <div className="flex items-center gap-3 border-b border-border p-4">
-        <img src="/images/zrg-logo-3.png" alt="ZRG Logo" className="h-8 w-auto" />
-        <span className="text-lg font-semibold text-foreground">Inbox</span>
+        <img
+          src={displayBrandLogoUrl ?? "/images/zrg-logo-3.png"}
+          alt={`${displayBrandName} Logo`}
+          className="h-8 w-auto"
+        />
+        <div className="leading-tight">
+          <div className="text-sm font-semibold text-foreground truncate">{displayBrandName}</div>
+          <div className="text-xs text-muted-foreground">Inbox</div>
+        </div>
       </div>
 
       {/* Workspace Selector */}

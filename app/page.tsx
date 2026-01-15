@@ -16,8 +16,11 @@ import type { Channel } from "@/actions/lead-actions"
 interface Client {
   id: string
   name: string
-  ghlLocationId: string
+  ghlLocationId: string | null
   hasDefaultCalendarLink?: boolean
+  brandName?: string | null
+  brandLogoUrl?: string | null
+  hasConnectedAccounts?: boolean
 }
 
 function DashboardPageInner() {
@@ -70,6 +73,7 @@ function DashboardPageInner() {
     const params = new URLSearchParams(searchParamsKey)
     const viewParam = params.get("view")
     const leadIdParam = params.get("leadId")
+    const settingsTabParam = params.get("settingsTab")
 
     if (leadIdParam) {
       // Lead links should always land in inbox
@@ -97,6 +101,16 @@ function DashboardPageInner() {
       viewParam === "settings"
     ) {
       setActiveView(viewParam)
+    }
+
+    if (
+      viewParam === "settings" &&
+      (settingsTabParam === "general" ||
+        settingsTabParam === "integrations" ||
+        settingsTabParam === "ai" ||
+        settingsTabParam === "team")
+    ) {
+      setSettingsTab(settingsTabParam)
     }
   }, [searchParamsKey])
 
@@ -126,6 +140,9 @@ function DashboardPageInner() {
             activeChannels={activeChannels}
             activeFilter={activeFilter}
             activeWorkspace={activeWorkspace}
+            workspaceHasConnectedAccounts={Boolean(
+              workspaces.find((w) => w.id === activeWorkspace)?.hasConnectedAccounts
+            )}
             initialConversationId={selectedLeadId}
             initialCrmOpen={searchParams.get("action") === "sequence"}
             onClearFilters={handleClearFilters}

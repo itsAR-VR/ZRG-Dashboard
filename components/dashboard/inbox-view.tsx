@@ -21,11 +21,13 @@ import { type Conversation, type Lead } from "@/lib/mock-data";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import Link from "next/link";
 
 interface InboxViewProps {
   activeChannels: Channel[];
   activeFilter: string;
   activeWorkspace: string | null;
+  workspaceHasConnectedAccounts?: boolean;
   initialConversationId?: string | null;
   initialCrmOpen?: boolean;
   onLeadSelect?: (leadId: string | null) => void;
@@ -100,6 +102,7 @@ export function InboxView({
   activeChannels,
   activeFilter,
   activeWorkspace,
+  workspaceHasConnectedAccounts = false,
   initialConversationId,
   initialCrmOpen,
   onLeadSelect,
@@ -852,10 +855,19 @@ export function InboxView({
             <h3 className="text-lg font-semibold">No conversations yet</h3>
             <p className="text-sm text-muted-foreground max-w-sm">
               {activeWorkspace 
-                ? "This workspace doesn't have any conversations yet. They will appear here when leads start messaging."
+                ? (workspaceHasConnectedAccounts
+                    ? "This workspace doesn't have any conversations yet. They will appear here when leads start messaging."
+                    : "This workspace has no connected accounts yet. Connect an integration to start receiving messages here.")
                 : "Select a workspace or wait for incoming messages from your GHL integrations."
               }
             </p>
+            {activeWorkspace && !workspaceHasConnectedAccounts ? (
+              <Button asChild variant="outline" className="mt-4">
+                <Link href="/?view=settings&settingsTab=integrations">
+                  Go to Settings → Integrations
+                </Link>
+              </Button>
+            ) : null}
           </div>
         </div>
       </div>
