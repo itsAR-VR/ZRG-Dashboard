@@ -339,7 +339,10 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
   if (shouldGenerateDraft(sentimentTag)) {
     const webhookDraftTimeoutMs =
       Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
-    await generateResponseDraft(lead.id, transcript, sentimentTag, "linkedin", { timeoutMs: webhookDraftTimeoutMs });
+    await generateResponseDraft(lead.id, transcript, sentimentTag, "linkedin", {
+      timeoutMs: webhookDraftTimeoutMs,
+      triggerMessageId: newMessage.id,
+    });
     console.log(`[LinkedIn Webhook] Generated AI draft for lead ${lead.id}`);
   }
 }

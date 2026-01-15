@@ -1575,7 +1575,7 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
         clientId,
         sessionId: opts.sessionId,
         role: "ASSISTANT",
-        content: `${isUpgradeFromFast ? "**Full answer (pack complete)**\\n\\n" : ""}${answer.answer}`.trim(),
+        content: `${isUpgradeFromFast ? "**Full answer (pack complete)**\n\n" : ""}${answer.answer}`.trim(),
         authorUserId: null,
         authorEmail: null,
         contextPackId: pack.id,

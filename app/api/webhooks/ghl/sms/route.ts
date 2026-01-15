@@ -673,6 +673,7 @@ export async function POST(request: NextRequest) {
     let importedMessagesCount = 0;
     let healedMessagesCount = 0;
     const isFirstInbound = isNewLead || hasNoSmsMessages;
+    let triggerMessageIdForDraft: string | null = null;
 
     if (isFirstInbound && historicalMessages.length > 0) {
       console.log(`[History Import] Importing ${historicalMessages.length} messages...`);
@@ -694,6 +695,11 @@ export async function POST(request: NextRequest) {
         if (currentMsgInHistory) {
           // Already imported with ghlId from history
           console.log(`[Webhook] Current message already in history with ghlId: ${currentMsgInHistory.id}`);
+          const importedMessage = await prisma.message.findUnique({
+            where: { ghlId: currentMsgInHistory.id },
+            select: { id: true },
+          });
+          triggerMessageIdForDraft = importedMessage?.id ?? null;
         } else {
           // Not in history - save without ghlId (will be healed on next sync)
           console.log(`[Webhook] Current message not in history, saving without ghlId...`);
@@ -712,9 +718,10 @@ export async function POST(request: NextRequest) {
           });
 
           if (existing) {
+            triggerMessageIdForDraft = existing.id;
             console.log(`[Webhook] Skipping duplicate inbound message (existing id: ${existing.id})`);
           } else {
-            await prisma.message.create({
+            const message = await prisma.message.create({
               data: {
                 body: messageBody,
                 direction: "inbound",
@@ -724,6 +731,7 @@ export async function POST(request: NextRequest) {
                 // ghlId will be added on next sync
               },
             } as any);
+            triggerMessageIdForDraft = message.id;
             await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt: webhookMessageTime });
             importedMessagesCount++;
             console.log(`[Webhook] Saved current inbound message @ ${webhookMessageTime.toISOString()}`);
@@ -758,11 +766,31 @@ export async function POST(request: NextRequest) {
             // ghlId will be added on next sync
           },
         } as any);
+        triggerMessageIdForDraft = message.id;
         await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt: webhookMessageTime });
         console.log(`Created message: ${message.id} @ ${webhookMessageTime.toISOString()}`);
       } else {
+        triggerMessageIdForDraft = existingByContent.id;
         console.log(`[Webhook] Message already exists (id: ${existingByContent.id})`);
       }
+    }
+
+    if (!triggerMessageIdForDraft && messageBody) {
+      const windowStart = new Date(webhookMessageTime.getTime() - 60_000);
+      const windowEnd = new Date(webhookMessageTime.getTime() + 60_000);
+
+      const existingByContent = await prisma.message.findFirst({
+        where: {
+          leadId: lead.id,
+          channel: "sms",
+          body: messageBody,
+          direction: "inbound",
+          sentAt: { gte: windowStart, lte: windowEnd },
+        },
+        select: { id: true },
+      });
+
+      triggerMessageIdForDraft = existingByContent?.id ?? null;
     }
 
     // NOTE: Avoid invoking Server Actions from webhook context (no user session cookies).
@@ -788,7 +816,7 @@ export async function POST(request: NextRequest) {
           transcript || `Lead: ${messageBody}`,
           sentimentTag,
           "sms",
-          { timeoutMs: webhookDraftTimeoutMs }
+          { timeoutMs: webhookDraftTimeoutMs, triggerMessageId: triggerMessageIdForDraft }
         );
         if (draftResult.success) {
           draftId = draftResult.draftId;

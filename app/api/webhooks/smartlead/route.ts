@@ -323,7 +323,7 @@ export async function POST(request: NextRequest) {
 
       const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
 
-      await prisma.message.create({
+      const inboundMessage = await prisma.message.create({
         data: {
           emailBisonReplyId: replyHandle,
           channel: "email",
@@ -339,6 +339,7 @@ export async function POST(request: NextRequest) {
           leadId: lead.id,
           sentAt,
         },
+        select: { id: true },
       });
 
       await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
@@ -404,7 +405,7 @@ export async function POST(request: NextRequest) {
           `Subject: ${subject ?? ""}\n\n${cleanedBody}`,
           sentimentTag,
           "email",
-          { timeoutMs: WEBHOOK_DRAFT_TIMEOUT_MS }
+          { timeoutMs: WEBHOOK_DRAFT_TIMEOUT_MS, triggerMessageId: inboundMessage.id }
         );
 
         if (draftResult.success) {
