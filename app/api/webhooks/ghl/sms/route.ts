@@ -414,42 +414,59 @@ export async function POST(request: NextRequest) {
     const messageBody =
       payload.message?.body || payload.customData?.Message || "";
 
-    // Try to extract message timestamp from webhook payload
-    // GHL may include date/time in customData or date_created field
-    let webhookMessageTime: Date | null = null;
+    // Try to extract message timestamp from webhook payload.
+    //
+    // IMPORTANT: GHL workflow webhooks provide Date/Time as workspace-local strings (no timezone).
+    // On Vercel (UTC), parsing those strings produces a consistent offset (e.g. -5h), which
+    // breaks message ordering and deduplication vs. the GHL export/conversation APIs.
+    //
+    // Prefer receipt time, and only trust webhook-provided timestamps when they're very close
+    // to receipt time (i.e. already in UTC / explicitly offset).
+    const receivedAt = new Date();
+    let webhookMessageTime: Date = receivedAt;
 
-    // Try customData Date+Time fields
+    type TimestampCandidate = { label: string; value: Date };
+    const candidates: TimestampCandidate[] = [];
+
     if (payload.customData?.Date && payload.customData?.Time) {
-      try {
-        // Format: "Dec 5th, 2024" + "7:33 PM"
-        const dateStr = `${payload.customData.Date} ${payload.customData.Time}`;
-        const parsed = new Date(dateStr);
-        if (!isNaN(parsed.getTime())) {
-          webhookMessageTime = parsed;
-          console.log(`[Webhook] Parsed message time from customData: ${webhookMessageTime.toISOString()}`);
-        }
-      } catch (e) {
-        console.log(`[Webhook] Could not parse customData date: ${e}`);
+      const dateStr = `${payload.customData.Date} ${payload.customData.Time}`;
+      const parsed = new Date(dateStr);
+      if (!Number.isNaN(parsed.getTime())) {
+        candidates.push({ label: "customData", value: parsed });
+      } else {
+        console.log(`[Webhook] Could not parse customData Date/Time: "${dateStr}"`);
       }
     }
 
-    // Fallback to date_created if available
-    if (!webhookMessageTime && payload.date_created) {
-      try {
-        const parsed = new Date(payload.date_created);
-        if (!isNaN(parsed.getTime())) {
-          webhookMessageTime = parsed;
-          console.log(`[Webhook] Using date_created: ${webhookMessageTime.toISOString()}`);
-        }
-      } catch (e) {
-        console.log(`[Webhook] Could not parse date_created: ${e}`);
+    if (payload.date_created) {
+      const parsed = new Date(payload.date_created);
+      if (!Number.isNaN(parsed.getTime())) {
+        candidates.push({ label: "date_created", value: parsed });
+      } else {
+        console.log(`[Webhook] Could not parse date_created: "${payload.date_created}"`);
       }
     }
 
-    // Final fallback to now
-    if (!webhookMessageTime) {
-      webhookMessageTime = new Date();
-      console.log(`[Webhook] Using current time as fallback: ${webhookMessageTime.toISOString()}`);
+    const maxDriftMs = 20 * 60_000; // 20 minutes
+    let best: { label: string; value: Date; driftMs: number } | null = null;
+
+    for (const candidate of candidates) {
+      const driftMs = Math.abs(candidate.value.getTime() - receivedAt.getTime());
+      if (driftMs > maxDriftMs) continue;
+
+      if (!best || driftMs < best.driftMs) {
+        best = { ...candidate, driftMs };
+      }
+    }
+
+    if (best) {
+      webhookMessageTime = best.value;
+      console.log(
+        `[Webhook] Using ${best.label} timestamp (drift ${Math.round(best.driftMs / 1000)}s): ${webhookMessageTime.toISOString()}`
+      );
+    } else {
+      webhookMessageTime = receivedAt;
+      console.log(`[Webhook] Using receipt time: ${webhookMessageTime.toISOString()}`);
     }
 
     console.log(
@@ -669,8 +686,9 @@ export async function POST(request: NextRequest) {
       // We save without ghlId here - it will be "healed" on next sync
       if (messageBody) {
         // Check by ghlId first (from history), then by content
+        const normalizedWebhookBody = messageBody.trim();
         const currentMsgInHistory = historicalMessages.find(
-          (m) => m.body === messageBody && m.direction === "inbound"
+          (m) => m.direction === "inbound" && m.body.trim() === normalizedWebhookBody
         );
 
         if (currentMsgInHistory) {

@@ -383,6 +383,11 @@ export async function syncSmsConversationHistorySystem(
         const msgTimestamp = new Date(msg.dateAdded);
         const ghlId = msg.id;
 
+        const sentWindowStart = new Date(msgTimestamp.getTime() - 60_000);
+        const sentWindowEnd = new Date(msgTimestamp.getTime() + 60_000);
+        const createdWindowStart = new Date(msgTimestamp.getTime() - 10 * 60_000);
+        const createdWindowEnd = new Date(msgTimestamp.getTime() + 10 * 60_000);
+
         const existingByGhlId = await prisma.message.findUnique({
           where: { ghlId },
         });
@@ -398,11 +403,37 @@ export async function syncSmsConversationHistorySystem(
           } else {
             skippedDuplicates++;
           }
+
+          const removed = await prisma.message.deleteMany({
+            where: {
+              leadId,
+              channel: "sms",
+              body: msg.body,
+              direction: msg.direction,
+              ghlId: null,
+              OR: [
+                {
+                  createdAt: {
+                    gte: createdWindowStart,
+                    lte: createdWindowEnd,
+                  },
+                },
+                {
+                  sentAt: {
+                    gte: sentWindowStart,
+                    lte: sentWindowEnd,
+                  },
+                },
+              ],
+            },
+          });
+
+          if (removed.count > 0) {
+            console.log(`[Sync] Removed ${removed.count} duplicate legacy message(s) for ghlId ${ghlId}`);
+          }
           continue;
         }
 
-        const windowStart = new Date(msgTimestamp.getTime() - 60_000);
-        const windowEnd = new Date(msgTimestamp.getTime() + 60_000);
         const existingByContent = await prisma.message.findFirst({
           where: {
             leadId,
@@ -410,11 +441,22 @@ export async function syncSmsConversationHistorySystem(
             body: msg.body,
             direction: msg.direction,
             ghlId: null,
-            sentAt: {
-              gte: windowStart,
-              lte: windowEnd,
-            },
+            OR: [
+              {
+                sentAt: {
+                  gte: sentWindowStart,
+                  lte: sentWindowEnd,
+                },
+              },
+              {
+                createdAt: {
+                  gte: createdWindowStart,
+                  lte: createdWindowEnd,
+                },
+              },
+            ],
           },
+          orderBy: { createdAt: "desc" },
         });
 
         if (existingByContent) {
@@ -429,6 +471,36 @@ export async function syncSmsConversationHistorySystem(
           console.log(
             `[Sync] Healed: "${msg.body.substring(0, 30)}..." -> ghlId: ${ghlId}, sentAt: ${msgTimestamp.toISOString()}`
           );
+
+          const removed = await prisma.message.deleteMany({
+            where: {
+              leadId,
+              channel: "sms",
+              body: msg.body,
+              direction: msg.direction,
+              ghlId: null,
+              OR: [
+                {
+                  createdAt: {
+                    gte: createdWindowStart,
+                    lte: createdWindowEnd,
+                  },
+                },
+                {
+                  sentAt: {
+                    gte: sentWindowStart,
+                    lte: sentWindowEnd,
+                  },
+                },
+              ],
+            },
+          });
+
+          if (removed.count > 0) {
+            console.log(
+              `[Sync] Removed ${removed.count} duplicate legacy message(s) after healing ghlId ${ghlId}`
+            );
+          }
           continue;
         }
 
