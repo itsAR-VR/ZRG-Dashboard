@@ -27,10 +27,11 @@ import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
 
-export const maxDuration = 900;
+// Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
+export const maxDuration = 800;
 
 const WEBHOOK_DRAFT_TIMEOUT_MS =
-  Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "20000", 10) || 20_000;
+  Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
 
 // =============================================================================
 // Type Definitions
@@ -356,11 +357,19 @@ async function triggerSlackNotification(message: string) {
   if (!webhookUrl) return;
 
   try {
-    await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: message }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+
+    try {
+      await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: message }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
   } catch (error) {
     console.error("[Slack] Failed to send notification:", error);
   }
@@ -955,11 +964,13 @@ async function upsertLead(
   const emailBisonLeadId = leadData?.id ? String(leadData.id) : undefined;
   const normalizedEmail = email.trim().toLowerCase();
   const normalizedLeadEmail = (leadData?.email || "").trim().toLowerCase();
-  const canUseEmailBisonLeadIdForMatching =
-    Boolean(emailBisonLeadId) && (!normalizedLeadEmail || normalizedEmail === normalizedLeadEmail);
+  // IMPORTANT:
+  // EmailBison lead IDs are stable identifiers for the campaign lead. Even if a reply comes from a
+  // different address (e.g. personal Gmail), we still want to attach the reply to the same lead thread.
+  const canUseEmailBisonLeadIdForMatching = Boolean(emailBisonLeadId);
 
   if (emailBisonLeadId && normalizedLeadEmail && normalizedEmail !== normalizedLeadEmail) {
-    console.log("[Email Webhook] Reply sender differs from campaign lead email; skipping emailBisonLeadId matching");
+    console.warn("[Email Webhook] Reply sender differs from campaign lead email; matching by emailBisonLeadId anyway");
   }
 
   const isSenderDifferentFromCampaignLead = Boolean(normalizedLeadEmail && normalizedEmail !== normalizedLeadEmail);

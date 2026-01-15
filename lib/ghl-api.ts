@@ -15,6 +15,7 @@ const DEFAULT_GHL_REQUESTS_PER_10S = 90; // buffer under the documented 100/10s 
 const DEFAULT_GHL_MAX_429_RETRIES = 3;
 const DEFAULT_GHL_FETCH_TIMEOUT_MS = 15_000;
 const DEFAULT_GHL_MAX_NETWORK_RETRIES = 1;
+const DEFAULT_GHL_MAX_5XX_RETRIES = 1;
 
 interface GHLApiResponse<T> {
   success: boolean;
@@ -27,6 +28,10 @@ interface GHLApiResponse<T> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isLikelyGhlContactId(value: string): boolean {
+  return /^[A-Za-z0-9]{15,64}$/.test((value || "").trim());
 }
 
 function tryParseJson<T>(value: string): T | null {
@@ -195,8 +200,14 @@ async function ghlRequest<T>(
         ? Math.floor(configuredNetworkRetries)
         : DEFAULT_GHL_MAX_NETWORK_RETRIES;
 
+    const configured5xxRetries = Number(process.env.GHL_MAX_5XX_RETRIES || "");
+    const max5xxRetries =
+      Number.isFinite(configured5xxRetries) && configured5xxRetries >= 0
+        ? Math.floor(configured5xxRetries)
+        : DEFAULT_GHL_MAX_5XX_RETRIES;
+
     const method = (options.method || "GET").toUpperCase();
-    const maxAttempts = Math.max(max429Retries, maxNetworkRetries);
+    const maxAttempts = Math.max(max429Retries, maxNetworkRetries, max5xxRetries);
 
     for (let attempt = 0; attempt <= maxAttempts; attempt++) {
       await throttleGhlRequest(requestKey);
@@ -241,6 +252,16 @@ async function ghlRequest<T>(
           const errorText = await response.text();
           const parsed = parseGhlErrorPayload(errorText);
           const safeMessage = redactPotentialPii(parsed.message || "").trim();
+
+          const canRetry5xx = method === "GET" && response.status >= 500 && attempt < max5xxRetries;
+          if (canRetry5xx) {
+            const backoffMs = 700 + attempt * 700;
+            console.warn(
+              `[GHL] Server error (${response.status}) on ${method} ${endpoint}${safeMessage ? `: ${safeMessage}` : ""}. Retrying after ${backoffMs}ms.`
+            );
+            await sleep(backoffMs);
+            continue;
+          }
 
           console.error(
             `[GHL] API error ${response.status} ${method} ${endpoint}${safeMessage ? `: ${safeMessage}` : ""}`
@@ -447,6 +468,9 @@ export async function exportMessages(
   channel: string = "SMS",
   opts?: { cursor?: string | null }
 ): Promise<GHLApiResponse<GHLExportResponse>> {
+  if (!isLikelyGhlContactId(contactId)) {
+    return { success: false, error: "Invalid GHL contact ID", statusCode: 400 };
+  }
   const params = new URLSearchParams();
   params.set("locationId", locationId);
   params.set("contactId", contactId);
@@ -680,6 +704,9 @@ export async function getGHLContact(
   privateKey: string,
   opts?: { locationId?: string }
 ): Promise<GHLApiResponse<{ contact: GHLContact }>> {
+  if (!isLikelyGhlContactId(contactId)) {
+    return { success: false, error: "Invalid GHL contact ID", statusCode: 400 };
+  }
   return ghlRequest<{ contact: GHLContact }>(
     `/contacts/${encodeURIComponent(contactId)}`,
     privateKey,

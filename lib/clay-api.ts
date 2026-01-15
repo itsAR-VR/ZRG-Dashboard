@@ -31,6 +31,12 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 let requestCount = 0;
 let windowStart = Date.now();
 
+function getClayTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.CLAY_TIMEOUT_MS || "10000", 10);
+  if (!Number.isFinite(parsed)) return 10_000;
+  return Math.max(1_000, Math.min(60_000, parsed));
+}
+
 /**
  * Check and update rate limit
  * Returns true if request is allowed, false if rate limited
@@ -145,13 +151,22 @@ async function sendToClayTable(
   try {
     const payload = buildClayPayload(request, tableType);
 
-    const response = await fetch(webhookUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), getClayTimeoutMs());
+
+    let response: Response;
+    try {
+      response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!response.ok) {
       const errorText = await response.text();

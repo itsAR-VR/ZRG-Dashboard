@@ -27,10 +27,11 @@ import { EmailIntegrationProvider } from "@prisma/client";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 import { encodeSmartLeadReplyHandle } from "@/lib/email-reply-handle";
 
-export const maxDuration = 900;
+// Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
+export const maxDuration = 800;
 
 const WEBHOOK_DRAFT_TIMEOUT_MS =
-  Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "20000", 10) || 20_000;
+  Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
 
 type SmartLeadWebhookPayload = {
   event_type?: string;
@@ -610,4 +611,3 @@ export async function GET() {
     timestamp: new Date().toISOString(),
   });
 }
-

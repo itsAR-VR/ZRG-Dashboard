@@ -11,6 +11,12 @@ const userIdCache = new Map<string, string>();
 const dmChannelCache = new Map<string, string>();
 const dedupeCache = new Map<string, number>();
 
+function getSlackTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.SLACK_TIMEOUT_MS || "8000", 10);
+  if (!Number.isFinite(parsed)) return 8_000;
+  return Math.max(1_000, Math.min(60_000, parsed));
+}
+
 function getSlackBotToken(): string | null {
   const token = (process.env.SLACK_BOT_TOKEN || "").trim();
   return token ? token : null;
@@ -23,32 +29,54 @@ async function slackGet<T>(path: string, query: Record<string, string>): Promise
   const url = new URL(`https://slack.com/api/${path}`);
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
 
-  const response = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getSlackTimeoutMs());
 
-  const json = (await response.json()) as SlackApiResponse<T>;
-  return json;
+  try {
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      signal: controller.signal,
+    });
+
+    const json = (await response.json()) as SlackApiResponse<T>;
+    return json;
+  } catch (error) {
+    const isAbort = error instanceof Error && error.name === "AbortError";
+    return { ok: false, error: isAbort ? "Slack request timed out" : (error instanceof Error ? error.message : "Slack request failed") } as SlackApiResponse<T>;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function slackPost<T>(path: string, body: unknown): Promise<SlackApiResponse<T>> {
   const token = getSlackBotToken();
   if (!token) return { ok: false, error: "SLACK_BOT_TOKEN not configured" } as SlackApiResponse<T>;
 
-  const response = await fetch(`https://slack.com/api/${path}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getSlackTimeoutMs());
 
-  const json = (await response.json()) as SlackApiResponse<T>;
-  return json;
+  try {
+    const response = await fetch(`https://slack.com/api/${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    const json = (await response.json()) as SlackApiResponse<T>;
+    return json;
+  } catch (error) {
+    const isAbort = error instanceof Error && error.name === "AbortError";
+    return { ok: false, error: isAbort ? "Slack request timed out" : (error instanceof Error ? error.message : "Slack request failed") } as SlackApiResponse<T>;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function lookupSlackUserIdByEmail(email: string): Promise<string | null> {
@@ -119,4 +147,3 @@ export async function sendSlackDmByEmail(opts: {
 
   return { success: true };
 }
-

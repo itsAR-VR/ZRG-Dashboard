@@ -537,10 +537,12 @@ Generate an appropriate ${channel} response following the guidelines above.
         : (process.env.OPENAI_DRAFT_PREFER_API_TOKEN_COUNT ?? "false").toLowerCase() === "true";
 
     const primaryModel = channel === "email" ? "gpt-5.1" : "gpt-5-mini";
-    const reasoningEffort = (channel === "email" ? "medium" : "high") as const;
+    // Prefer spending more tokens (and cost) over reducing reasoning depth.
+    // We still request an explicit text output to avoid cases where the response only contains reasoning.
+    const reasoningEffort = "medium" as const;
 
-    const primaryBudgetMin = (channel === "email" ? 500 : 160) * tokenBudgetMultiplier;
-    const primaryBudgetMax = (channel === "email" ? 1100 : 360) * tokenBudgetMultiplier;
+    const primaryBudgetMin = (channel === "email" ? 700 : 240) * tokenBudgetMultiplier;
+    const primaryBudgetMax = (channel === "email" ? 2400 : 1200) * tokenBudgetMultiplier;
 
     const budget = await computeAdaptiveMaxOutputTokens({
       model: primaryModel,
@@ -564,6 +566,7 @@ Generate an appropriate ${channel} response following the guidelines above.
           model: primaryModel,
           instructions: systemPrompt,
           input: inputMessages,
+          text: { verbosity: "low" },
           reasoning: { effort: reasoningEffort },
           max_output_tokens: budget.maxOutputTokens,
         },
@@ -581,21 +584,24 @@ Generate an appropriate ${channel} response following the guidelines above.
 
     // Retry once with more headroom if we hit the output token ceiling (reasoning tokens count here).
     if (!draftContent && response?.incomplete_details?.reason === "max_output_tokens") {
-      const cap = Math.max(800, Number.parseInt(process.env.OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP || "8000", 10) || 8000);
-      const retryMaxOutputTokens = Math.min(Math.max(budget.maxOutputTokens + 400, budget.maxOutputTokens * 2), cap);
+      const cap = Math.max(800, Number.parseInt(process.env.OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP || "12000", 10) || 12_000);
+      const retryMaxOutputTokens = Math.min(
+        Math.max(budget.maxOutputTokens + 1000, Math.floor(budget.maxOutputTokens * 3)),
+        cap
+      );
 
       try {
         const retry = await runResponse({
           clientId: lead.clientId,
           leadId,
           featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-          promptKey: `${promptTemplate?.key || promptKey}.retry_max_tokens`,
+          promptKey: `${promptTemplate?.key || promptKey}.retry_more_tokens`,
           params: {
             model: primaryModel,
             instructions: systemPrompt,
             input: inputMessages,
-            // Lower effort to keep the budget for actual output.
-            reasoning: { effort: "low" },
+            text: { verbosity: "low" },
+            reasoning: { effort: reasoningEffort },
             max_output_tokens: retryMaxOutputTokens,
           },
           requestOptions: {
@@ -611,11 +617,11 @@ Generate an appropriate ${channel} response following the guidelines above.
       }
     }
 
-    // Fallback: same model with lower reasoning effort if the primary call failed or returned no output.
+    // Fallback: same model, spend more tokens rather than reducing reasoning effort.
     if (!draftContent) {
       const fallbackModel = primaryModel;
-      const fallbackBudgetMin = (channel === "email" ? 300 : 120) * tokenBudgetMultiplier;
-      const fallbackBudgetMax = (channel === "email" ? 800 : 280) * tokenBudgetMultiplier;
+      const fallbackBudgetMin = (channel === "email" ? 900 : 320) * tokenBudgetMultiplier;
+      const fallbackBudgetMax = (channel === "email" ? 3200 : 1600) * tokenBudgetMultiplier;
 
       const fallbackBudget = await computeAdaptiveMaxOutputTokens({
         model: fallbackModel,
@@ -637,7 +643,8 @@ Generate an appropriate ${channel} response following the guidelines above.
           model: fallbackModel,
           instructions: systemPrompt,
           input: inputMessages,
-          reasoning: { effort: "low" },
+          text: { verbosity: "low" },
+          reasoning: { effort: reasoningEffort },
           max_output_tokens: fallbackBudget.maxOutputTokens,
         },
         requestOptions: {

@@ -18,7 +18,8 @@ import { toStoredPhone } from "@/lib/phone-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 
-export const maxDuration = 900;
+// Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
+export const maxDuration = 800;
 
 // Unipile webhook event types
 type UnipileEventType =
@@ -334,7 +335,7 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
   // Generate AI draft if appropriate
   if (shouldGenerateDraft(sentimentTag)) {
     const webhookDraftTimeoutMs =
-      Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "20000", 10) || 20_000;
+      Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
     await generateResponseDraft(lead.id, transcript, sentimentTag, "linkedin", { timeoutMs: webhookDraftTimeoutMs });
     console.log(`[LinkedIn Webhook] Generated AI draft for lead ${lead.id}`);
   }

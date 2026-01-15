@@ -16,7 +16,8 @@ import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
 
-export const maxDuration = 900;
+// Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
+export const maxDuration = 800;
 
 function normalizeLooseKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -760,7 +761,7 @@ export async function POST(request: NextRequest) {
     if (!autoBook.booked && shouldGenerateDraft(sentimentTag)) {
       try {
         const webhookDraftTimeoutMs =
-          Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "20000", 10) || 20_000;
+          Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
 
         const draftResult = await generateResponseDraft(
           lead.id,

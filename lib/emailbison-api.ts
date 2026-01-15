@@ -115,13 +115,36 @@ async function parseJsonSafe(response: Response) {
   }
 }
 
+function getEmailBisonTimeoutMs(): number {
+  const parsed = Number.parseInt(process.env.EMAILBISON_TIMEOUT_MS || "15000", 10);
+  if (!Number.isFinite(parsed)) return 15_000;
+  return Math.max(1_000, Math.min(60_000, parsed));
+}
+
+async function emailBisonFetch(url: string, init: RequestInit): Promise<Response> {
+  const timeoutMs = getEmailBisonTimeoutMs();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  if (init.signal) {
+    if (init.signal.aborted) controller.abort();
+    else init.signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function fetchEmailBisonCampaigns(
   apiKey: string
 ): Promise<{ success: boolean; data?: EmailBisonCampaign[]; error?: string }> {
   const url = `${INBOXXIA_BASE_URL}/api/campaigns`;
 
   try {
-    const response = await fetch(url, {
+    const response = await emailBisonFetch(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -173,7 +196,7 @@ export async function sendEmailBisonReply(
   });
 
   try {
-    const response = await fetch(url, {
+    const response = await emailBisonFetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -217,7 +240,7 @@ export async function fetchEmailBisonReplies(
   console.log(`[EmailBison] Fetching replies for lead ${bisonLeadId}`);
 
   try {
-    const response = await fetch(url, {
+    const response = await emailBisonFetch(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -278,7 +301,7 @@ export async function fetchEmailBisonSentEmails(
   console.log(`[EmailBison] Fetching sent emails for lead ${bisonLeadId}`);
 
   try {
-    const response = await fetch(url, {
+    const response = await emailBisonFetch(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -344,7 +367,7 @@ export async function fetchEmailBisonLeadReplies(
   const url = `${INBOXXIA_BASE_URL}/api/leads/${encoded}/replies${qs.toString() ? `?${qs.toString()}` : ""}`;
 
   try {
-    const response = await fetch(url, {
+    const response = await emailBisonFetch(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -487,7 +510,7 @@ export async function fetchEmailBisonSenderEmails(
   const url = `${INBOXXIA_BASE_URL}/api/sender-emails`;
 
   try {
-    const response = await fetch(url, {
+    const response = await emailBisonFetch(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -532,7 +555,7 @@ export async function createEmailBisonLead(
   console.log(`[EmailBison] Creating lead for email: ${leadData.email}`);
 
   try {
-    const response = await fetch(url, {
+    const response = await emailBisonFetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -592,7 +615,7 @@ export async function fetchEmailBisonLead(
   console.log(`[EmailBison] Fetching lead details for ID: ${bisonLeadId}`);
 
   try {
-    const response = await fetch(url, {
+    const response = await emailBisonFetch(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
