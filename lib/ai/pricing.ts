@@ -8,13 +8,22 @@ export type ModelPricing = {
 // Defaults can be overridden via AI_MODEL_PRICING_JSON.
 // Format:
 // {
-//   "gpt-5.1": { "inputUsdPer1MTokens": 5, "outputUsdPer1MTokens": 15 },
-//   "gpt-5-mini": { "inputUsdPer1MTokens": 0.3, "outputUsdPer1MTokens": 1.2 }
+//   "gpt-5.2": { "inputUsdPer1MTokens": 1.75, "outputUsdPer1MTokens": 14 },
+//   "gpt-5-mini": { "inputUsdPer1MTokens": 0.25, "outputUsdPer1MTokens": 2 }
 // }
 const DEFAULT_MODEL_PRICING: Record<string, ModelPricing> = {
-  "gpt-5.1": { inputUsdPer1MTokens: 5, outputUsdPer1MTokens: 15 },
-  "gpt-5-mini": { inputUsdPer1MTokens: 0.3, outputUsdPer1MTokens: 1.2 },
-  "gpt-5-nano": { inputUsdPer1MTokens: 0.05, outputUsdPer1MTokens: 0.2 },
+  // GPT-5 family (USD per 1M tokens; standard processing)
+  "gpt-5": { inputUsdPer1MTokens: 1.25, outputUsdPer1MTokens: 10 },
+  "gpt-5-chat-latest": { inputUsdPer1MTokens: 1.25, outputUsdPer1MTokens: 10 },
+
+  "gpt-5.1": { inputUsdPer1MTokens: 1.25, outputUsdPer1MTokens: 10 },
+  "gpt-5.1-chat-latest": { inputUsdPer1MTokens: 1.25, outputUsdPer1MTokens: 10 },
+
+  "gpt-5.2": { inputUsdPer1MTokens: 1.75, outputUsdPer1MTokens: 14 },
+  "gpt-5.2-chat-latest": { inputUsdPer1MTokens: 1.75, outputUsdPer1MTokens: 14 },
+
+  "gpt-5-mini": { inputUsdPer1MTokens: 0.25, outputUsdPer1MTokens: 2 },
+  "gpt-5-nano": { inputUsdPer1MTokens: 0.05, outputUsdPer1MTokens: 0.4 },
 };
 
 function safeParsePricingJson(raw: string | undefined): Record<string, ModelPricing> | null {
@@ -39,9 +48,25 @@ function safeParsePricingJson(raw: string | undefined): Record<string, ModelPric
   }
 }
 
+function normalizeModelForPricing(model: string): string {
+  const cleaned = (model || "").trim();
+  if (!cleaned) return "";
+
+  // Common snapshot format: <base>-YYYY-MM-DD
+  const withoutDateSuffix = cleaned.replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  return withoutDateSuffix;
+}
+
 export function getModelPricing(model: string): ModelPricing | null {
   const overrides = safeParsePricingJson(process.env.AI_MODEL_PRICING_JSON);
-  return overrides?.[model] || DEFAULT_MODEL_PRICING[model] || null;
+  const normalized = normalizeModelForPricing(model);
+
+  return (
+    overrides?.[model] ||
+    DEFAULT_MODEL_PRICING[model] ||
+    (normalized && (overrides?.[normalized] || DEFAULT_MODEL_PRICING[normalized])) ||
+    null
+  );
 }
 
 export function estimateCostUsd(opts: {
@@ -60,4 +85,3 @@ export function estimateCostUsd(opts: {
   const outputCost = (outputTokens / 1_000_000) * pricing.outputUsdPer1MTokens;
   return inputCost + outputCost;
 }
-

@@ -294,7 +294,8 @@ Example shape:
 
 ```json
 {
-  "gpt-5-mini": { "inputUsdPer1MTokens": 0.3, "outputUsdPer1MTokens": 1.2 }
+  "gpt-5.2": { "inputUsdPer1MTokens": 1.75, "outputUsdPer1MTokens": 14 },
+  "gpt-5-mini": { "inputUsdPer1MTokens": 0.25, "outputUsdPer1MTokens": 2 }
 }
 ```
 
