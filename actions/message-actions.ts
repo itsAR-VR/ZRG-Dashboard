@@ -15,6 +15,7 @@ import { toGhlPhoneBestEffort } from "@/lib/phone-utils";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { syncEmailConversationHistorySystem, syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { getAccessibleClientIdsForUser, requireAuthUser, requireClientAdminAccess } from "@/lib/workspace-access";
+import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
 import {
   sendLinkedInMessageWithWaterfall,
   checkLinkedInConnection,
@@ -168,21 +169,23 @@ export async function reanalyzeLeadSentiment(leadId: string): Promise<{
   status?: string;
   error?: string;
 }> {
-  try {
-    await requireLeadAccess(leadId);
+  return withAiTelemetrySourceIfUnset("action:message.reanalyze_lead_sentiment", async () => {
+    try {
+      await requireLeadAccess(leadId);
 
-    const { sentimentTag, status } = await refreshLeadSentimentTag(leadId);
+      const { sentimentTag, status } = await refreshLeadSentimentTag(leadId);
 
-    revalidatePath("/");
+      revalidatePath("/");
 
-    return { success: true, sentimentTag, status };
-  } catch (error) {
-    console.error("[reanalyzeLeadSentiment] Failed:", error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
-  }
+      return { success: true, sentimentTag, status };
+    } catch (error) {
+      console.error("[reanalyzeLeadSentiment] Failed:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
 }
 
 interface SendMessageResult {
@@ -297,114 +300,116 @@ export async function getLeadSyncInfo(leadId: string): Promise<{
  * @param options - Sync options including forceReclassify to re-analyze sentiment
  */
 export async function smartSyncConversation(leadId: string, options: SyncOptions = {}): Promise<SmartSyncResult> {
-  // First get the lead's sync capabilities
-  const syncInfo = await getLeadSyncInfo(leadId);
+  return withAiTelemetrySourceIfUnset("action:message.smart_sync_conversation", async () => {
+    // First get the lead's sync capabilities
+    const syncInfo = await getLeadSyncInfo(leadId);
 
-  if (!syncInfo.success || !syncInfo.data) {
-    return { success: false, error: syncInfo.error || "Failed to get lead sync info", reclassifiedSentiment: false };
-  }
-
-  let { canSyncSms, canSyncEmail, hasEmailMessages, hasSmsMessages, emailBisonLeadId, ghlContactId } = syncInfo.data;
-
-  // Always-on: try to resolve missing GHL contact IDs for email-first leads (search/link only; no create).
-  if (!canSyncSms && !ghlContactId) {
-    const resolveResult = await resolveGhlContactIdForLead(leadId);
-    if (resolveResult.success && resolveResult.ghlContactId) {
-      ghlContactId = resolveResult.ghlContactId;
-      canSyncSms = true;
+    if (!syncInfo.success || !syncInfo.data) {
+      return { success: false, error: syncInfo.error || "Failed to get lead sync info", reclassifiedSentiment: false };
     }
-  }
 
-  // If neither sync is available, return appropriate error
-  if (!canSyncSms && !canSyncEmail) {
-    if (hasEmailMessages && !emailBisonLeadId) {
+    let { canSyncSms, canSyncEmail, hasEmailMessages, hasSmsMessages, emailBisonLeadId, ghlContactId } = syncInfo.data;
+
+    // Always-on: try to resolve missing GHL contact IDs for email-first leads (search/link only; no create).
+    if (!canSyncSms && !ghlContactId) {
+      const resolveResult = await resolveGhlContactIdForLead(leadId);
+      if (resolveResult.success && resolveResult.ghlContactId) {
+        ghlContactId = resolveResult.ghlContactId;
+        canSyncSms = true;
+      }
+    }
+
+    // If neither sync is available, return appropriate error
+    if (!canSyncSms && !canSyncEmail) {
+      if (hasEmailMessages && !emailBisonLeadId) {
+        return {
+          success: false,
+          error: "This lead's emails cannot be synced (no EmailBison lead ID - may be from a bounce notification)",
+          reclassifiedSentiment: false,
+        };
+      }
+      if (hasSmsMessages && !ghlContactId) {
+        return {
+          success: false,
+          error: "This lead's SMS messages cannot be synced (no GHL contact ID)",
+          reclassifiedSentiment: false,
+        };
+      }
       return {
         success: false,
-        error: "This lead's emails cannot be synced (no EmailBison lead ID - may be from a bounce notification)",
+        error: "No sync method available for this lead (missing external IDs or credentials)",
         reclassifiedSentiment: false,
       };
     }
-    if (hasSmsMessages && !ghlContactId) {
-      return {
-        success: false,
-        error: "This lead's SMS messages cannot be synced (no GHL contact ID)",
-        reclassifiedSentiment: false,
-      };
+
+    let totalImported = 0;
+    let totalHealed = 0;
+    let totalMessages = 0;
+    let totalSkipped = 0;
+    let reclassifiedSentiment = false;
+    let leadUpdated = false;
+    const errors: string[] = [];
+
+    let syncedSms = false;
+    let syncedEmail = false;
+    // Sync SMS if available
+    if (canSyncSms) {
+      const smsResult = await syncConversationHistory(leadId, options);
+      if (smsResult.success) {
+        totalImported += smsResult.importedCount || 0;
+        totalHealed += smsResult.healedCount || 0;
+        totalMessages += smsResult.totalMessages || 0;
+        totalSkipped += smsResult.skippedDuplicates || 0;
+        reclassifiedSentiment = reclassifiedSentiment || smsResult.reclassifiedSentiment || false;
+        leadUpdated = leadUpdated || smsResult.leadUpdated || false;
+        syncedSms = true;
+      } else if (smsResult.error) {
+        errors.push(`SMS: ${smsResult.error}`);
+      }
     }
+
+    // Sync Email if available
+    if (canSyncEmail) {
+      const emailResult = await syncEmailConversationHistory(leadId, options);
+      if (emailResult.success) {
+        totalImported += emailResult.importedCount || 0;
+        totalHealed += emailResult.healedCount || 0;
+        totalMessages += emailResult.totalMessages || 0;
+        totalSkipped += emailResult.skippedDuplicates || 0;
+        reclassifiedSentiment = reclassifiedSentiment || emailResult.reclassifiedSentiment || false;
+        leadUpdated = leadUpdated || emailResult.leadUpdated || false;
+        syncedEmail = true;
+      } else if (emailResult.error) {
+        errors.push(`Email: ${emailResult.error}`);
+      }
+    }
+
+    // If all attempted syncs failed and no messages were processed at all, return error
+    // Include totalSkipped check - if we skipped duplicates, that means sync worked but messages already existed
+    // Also check reclassifiedSentiment - if we reclassified, the sync was at least partially successful
+    if (
+      errors.length > 0 &&
+      totalImported === 0 &&
+      totalHealed === 0 &&
+      totalSkipped === 0 &&
+      !reclassifiedSentiment &&
+      !leadUpdated
+    ) {
+      return { success: false, error: errors.join("; "), reclassifiedSentiment: false };
+    }
+
     return {
-      success: false,
-      error: "No sync method available for this lead (missing external IDs or credentials)",
-      reclassifiedSentiment: false,
+      success: true,
+      importedCount: totalImported,
+      healedCount: totalHealed,
+      totalMessages,
+      skippedDuplicates: totalSkipped,
+      reclassifiedSentiment,
+      leadUpdated,
+      syncedSms,
+      syncedEmail,
     };
-  }
-
-  let totalImported = 0;
-  let totalHealed = 0;
-  let totalMessages = 0;
-  let totalSkipped = 0;
-  let reclassifiedSentiment = false;
-  let leadUpdated = false;
-  const errors: string[] = [];
-
-  let syncedSms = false;
-  let syncedEmail = false;
-  // Sync SMS if available
-  if (canSyncSms) {
-    const smsResult = await syncConversationHistory(leadId, options);
-    if (smsResult.success) {
-      totalImported += smsResult.importedCount || 0;
-      totalHealed += smsResult.healedCount || 0;
-      totalMessages += smsResult.totalMessages || 0;
-      totalSkipped += smsResult.skippedDuplicates || 0;
-      reclassifiedSentiment = reclassifiedSentiment || smsResult.reclassifiedSentiment || false;
-      leadUpdated = leadUpdated || smsResult.leadUpdated || false;
-      syncedSms = true;
-    } else if (smsResult.error) {
-      errors.push(`SMS: ${smsResult.error}`);
-    }
-  }
-
-  // Sync Email if available
-  if (canSyncEmail) {
-    const emailResult = await syncEmailConversationHistory(leadId, options);
-    if (emailResult.success) {
-      totalImported += emailResult.importedCount || 0;
-      totalHealed += emailResult.healedCount || 0;
-      totalMessages += emailResult.totalMessages || 0;
-      totalSkipped += emailResult.skippedDuplicates || 0;
-      reclassifiedSentiment = reclassifiedSentiment || emailResult.reclassifiedSentiment || false;
-      leadUpdated = leadUpdated || emailResult.leadUpdated || false;
-      syncedEmail = true;
-    } else if (emailResult.error) {
-      errors.push(`Email: ${emailResult.error}`);
-    }
-  }
-
-  // If all attempted syncs failed and no messages were processed at all, return error
-  // Include totalSkipped check - if we skipped duplicates, that means sync worked but messages already existed
-  // Also check reclassifiedSentiment - if we reclassified, the sync was at least partially successful
-  if (
-    errors.length > 0 &&
-    totalImported === 0 &&
-    totalHealed === 0 &&
-    totalSkipped === 0 &&
-    !reclassifiedSentiment &&
-    !leadUpdated
-  ) {
-    return { success: false, error: errors.join("; "), reclassifiedSentiment: false };
-  }
-
-  return {
-    success: true,
-    importedCount: totalImported,
-    healedCount: totalHealed,
-    totalMessages,
-    skippedDuplicates: totalSkipped,
-    reclassifiedSentiment,
-    leadUpdated,
-    syncedSms,
-    syncedEmail,
-  };
+  });
 }
 
 /**
@@ -458,16 +463,18 @@ async function messageExists(
  * @param options - Sync options including forceReclassify to re-analyze sentiment
  */
 export async function syncConversationHistory(leadId: string, options: SyncOptions = {}): Promise<SyncHistoryResult> {
-  try {
-    await requireLeadAccess(leadId);
-    return await syncSmsConversationHistorySystem(leadId, options);
-  } catch (error) {
-    console.error("[Sync] Failed to sync conversation history:", error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
-  }
+  return withAiTelemetrySourceIfUnset("action:message.sync_sms_conversation_history", async () => {
+    try {
+      await requireLeadAccess(leadId);
+      return await syncSmsConversationHistorySystem(leadId, options);
+    } catch (error) {
+      console.error("[Sync] Failed to sync conversation history:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
 }
 
 interface SyncAllResult {
@@ -501,8 +508,9 @@ type SyncAllOptions = SyncOptions & {
  * @param options - Sync options including forceReclassify to re-analyze sentiment for all leads
  */
 export async function syncAllConversations(clientId: string, options: SyncAllOptions = {}): Promise<SyncAllResult> {
-  try {
-    await requireClientAdminAccess(clientId);
+  return withAiTelemetrySourceIfUnset("action:message.sync_all_conversations", async () => {
+    try {
+      await requireClientAdminAccess(clientId);
     // Get ALL leads for this client (both SMS and Email capable)
     const leads = await prisma.lead.findMany({
       where: {
@@ -609,37 +617,38 @@ export async function syncAllConversations(clientId: string, options: SyncAllOpt
       }
     }
 
-    return {
-      success: true,
-      totalLeads: leads.length,
-      processedLeads,
-      nextCursor: hasMore ? nextIndex : null,
-      hasMore,
-      durationMs,
-      totalImported,
-      totalHealed,
-      totalDraftsGenerated,
-      totalReclassified,
-      totalLeadUpdated,
-      errors,
-    };
-  } catch (error) {
-    console.error("[SyncAll] Failed to sync all conversations:", error);
-    return {
-      success: false,
-      totalLeads: 0,
-      processedLeads: 0,
-      nextCursor: null,
-      hasMore: false,
-      totalImported: 0,
-      totalHealed: 0,
-      totalDraftsGenerated: 0,
-      totalReclassified: 0,
-      totalLeadUpdated: 0,
-      errors: 1,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
-  }
+      return {
+        success: true,
+        totalLeads: leads.length,
+        processedLeads,
+        nextCursor: hasMore ? nextIndex : null,
+        hasMore,
+        durationMs,
+        totalImported,
+        totalHealed,
+        totalDraftsGenerated,
+        totalReclassified,
+        totalLeadUpdated,
+        errors,
+      };
+    } catch (error) {
+      console.error("[SyncAll] Failed to sync all conversations:", error);
+      return {
+        success: false,
+        totalLeads: 0,
+        processedLeads: 0,
+        nextCursor: null,
+        hasMore: false,
+        totalImported: 0,
+        totalHealed: 0,
+        totalDraftsGenerated: 0,
+        totalReclassified: 0,
+        totalLeadUpdated: 0,
+        errors: 1,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
 }
 
 // =============================================================================
@@ -670,16 +679,18 @@ function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): str
  * @param options - Sync options including forceReclassify to re-analyze sentiment
  */
 export async function syncEmailConversationHistory(leadId: string, options: SyncOptions = {}): Promise<SyncHistoryResult> {
-  try {
-    await requireLeadAccess(leadId);
-    return await syncEmailConversationHistorySystem(leadId, options);
-  } catch (error) {
-    console.error("[EmailSync] Failed to sync email conversation history:", error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
-  }
+  return withAiTelemetrySourceIfUnset("action:message.sync_email_conversation_history", async () => {
+    try {
+      await requireLeadAccess(leadId);
+      return await syncEmailConversationHistorySystem(leadId, options);
+    } catch (error) {
+      console.error("[EmailSync] Failed to sync email conversation history:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
 }
 
 /**
@@ -690,8 +701,9 @@ export async function syncEmailConversationHistory(leadId: string, options: Sync
  * @param clientId - The workspace/client ID to sync
  */
 export async function syncAllEmailConversations(clientId: string): Promise<SyncAllResult> {
-  try {
-    await requireClientAdminAccess(clientId);
+  return withAiTelemetrySourceIfUnset("action:message.sync_all_email_conversations", async () => {
+    try {
+      await requireClientAdminAccess(clientId);
     // Get all leads for this client that have EmailBison lead IDs
     const leads = await prisma.lead.findMany({
       where: {
@@ -761,28 +773,29 @@ export async function syncAllEmailConversations(clientId: string): Promise<SyncA
 
     console.log(`[EmailSyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalDraftsGenerated} drafts, ${errors} errors`);
 
-    return {
-      success: true,
-      totalLeads: leads.length,
-      totalImported,
-      totalHealed,
-      totalDraftsGenerated,
-      totalReclassified: 0,
-      errors,
-    };
-  } catch (error) {
-    console.error("[EmailSyncAll] Failed to sync all email conversations:", error);
-    return {
-      success: false,
-      totalLeads: 0,
-      totalImported: 0,
-      totalHealed: 0,
-      totalDraftsGenerated: 0,
-      totalReclassified: 0,
-      errors: 1,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
-  }
+      return {
+        success: true,
+        totalLeads: leads.length,
+        totalImported,
+        totalHealed,
+        totalDraftsGenerated,
+        totalReclassified: 0,
+        errors,
+      };
+    } catch (error) {
+      console.error("[EmailSyncAll] Failed to sync all email conversations:", error);
+      return {
+        success: false,
+        totalLeads: 0,
+        totalImported: 0,
+        totalHealed: 0,
+        totalDraftsGenerated: 0,
+        totalReclassified: 0,
+        errors: 1,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
 }
 
 /**
@@ -795,18 +808,20 @@ export async function sendMessage(
   leadId: string,
   message: string
 ): Promise<SendMessageResult> {
-  try {
-    await requireLeadAccess(leadId);
-    const result = await sendSmsSystem(leadId, message, { sentBy: "setter" });
-    if (result.success) revalidatePath("/");
-    return result;
-  } catch (error) {
-    console.error("Failed to send message:", error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
-  }
+  return withAiTelemetrySourceIfUnset("action:message.send_sms", async () => {
+    try {
+      await requireLeadAccess(leadId);
+      const result = await sendSmsSystem(leadId, message, { sentBy: "setter" });
+      if (result.success) revalidatePath("/");
+      return result;
+    } catch (error) {
+      console.error("Failed to send message:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
 }
 
 /**
@@ -817,17 +832,19 @@ export async function sendEmailMessage(
   leadId: string,
   message: string
 ): Promise<SendMessageResult> {
-  try {
-    await requireLeadAccess(leadId);
-    const result = await sendEmailReplyForLead(leadId, message, { sentBy: "setter" });
-    if (!result.success) {
-      return { success: false, error: result.error || "Failed to send email reply" };
+  return withAiTelemetrySourceIfUnset("action:message.send_email", async () => {
+    try {
+      await requireLeadAccess(leadId);
+      const result = await sendEmailReplyForLead(leadId, message, { sentBy: "setter" });
+      if (!result.success) {
+        return { success: false, error: result.error || "Failed to send email reply" };
+      }
+      return { success: true, messageId: result.messageId };
+    } catch (error) {
+      console.error("[Email] Failed to send email message:", error);
+      return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
     }
-    return { success: true, messageId: result.messageId };
-  } catch (error) {
-    console.error("[Email] Failed to send email message:", error);
-    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
-  }
+  });
 }
 
 /**
@@ -846,8 +863,9 @@ export async function sendLinkedInMessage(
   inMailSubject?: string,
   meta?: { sentBy?: "ai" | "setter" | null; aiDraftId?: string | null }
 ): Promise<SendMessageResult & { messageType?: "dm" | "inmail" | "connection_request"; attemptedMethods?: string[] }> {
-  try {
-    await requireLeadAccess(leadId);
+  return withAiTelemetrySourceIfUnset("action:message.send_linkedin", async () => {
+    try {
+      await requireLeadAccess(leadId);
 
     if (meta?.aiDraftId) {
       const existing = await prisma.message.findUnique({
@@ -949,13 +967,14 @@ export async function sendLinkedInMessage(
       messageType: result.messageType,
       attemptedMethods: result.attemptedMethods,
     };
-  } catch (error) {
-    console.error("Failed to send LinkedIn message:", error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
-  }
+    } catch (error) {
+      console.error("Failed to send LinkedIn message:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
 }
 
 /**
@@ -1191,18 +1210,19 @@ export async function regenerateDraft(
   data?: { id: string; content: string };
   error?: string
 }> {
-  try {
-    await requireLeadAccess(leadId);
-    // Get the lead with messages for context
-    const lead = await prisma.lead.findUnique({
-      where: { id: leadId },
-      include: {
-        messages: {
-          orderBy: { sentAt: "asc" }, // Order by actual message time
-          take: 10, // Last 10 messages for context
+  return withAiTelemetrySourceIfUnset("action:message.regenerate_draft", async () => {
+    try {
+      await requireLeadAccess(leadId);
+      // Get the lead with messages for context
+      const lead = await prisma.lead.findUnique({
+        where: { id: leadId },
+        include: {
+          messages: {
+            orderBy: { sentAt: "asc" }, // Order by actual message time
+            take: 10, // Last 10 messages for context
+          },
         },
-      },
-    });
+      });
 
     if (!lead) {
       return { success: false, error: "Lead not found" };
@@ -1240,20 +1260,21 @@ export async function regenerateDraft(
 
     revalidatePath("/");
 
-    return {
-      success: true,
-      data: {
-        id: draftResult.draftId,
-        content: draftResult.content
-      }
-    };
-  } catch (error) {
-    console.error("Failed to regenerate draft:", error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : "Unknown error",
-    };
-  }
+      return {
+        success: true,
+        data: {
+          id: draftResult.draftId,
+          content: draftResult.content
+        }
+      };
+    } catch (error) {
+      console.error("Failed to regenerate draft:", error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
 }
 
 // =============================================================================

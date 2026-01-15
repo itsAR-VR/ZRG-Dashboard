@@ -26,6 +26,7 @@ import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
+import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
@@ -2373,60 +2374,66 @@ async function handleLeadUnsubscribed(request: NextRequest, payload: InboxxiaWeb
 // =============================================================================
 
 export async function POST(request: NextRequest) {
-  try {
-    const payload: InboxxiaWebhook = await request.json();
-    const eventType = payload.event?.type;
-    const workspaceId = payload.event?.workspace_id;
-    const workspaceName = payload.event?.workspace_name;
-    const leadEmail = payload.data?.lead?.email || payload.data?.reply?.from_email_address;
+  return withAiTelemetrySource(request.nextUrl.pathname, async () => {
+    try {
+      const payload: InboxxiaWebhook = await request.json();
+      const eventType = payload.event?.type;
+      const workspaceId = payload.event?.workspace_id;
+      const workspaceName = payload.event?.workspace_name;
+      const leadEmail = payload.data?.lead?.email || payload.data?.reply?.from_email_address;
 
-    console.log(`[Inboxxia Webhook] Received event: ${eventType} | workspace: ${workspaceName || workspaceId || "unknown"} | lead: ${leadEmail || "unknown"}`);
+      console.log(
+        `[Inboxxia Webhook] Received event: ${eventType} | workspace: ${workspaceName || workspaceId || "unknown"} | lead: ${
+          leadEmail || "unknown"
+        }`
+      );
 
-    if (!payload.data) {
-      console.error(`[Inboxxia Webhook] Missing data field in payload for event: ${eventType}`);
-      return NextResponse.json({ error: "Missing data" }, { status: 400 });
+      if (!payload.data) {
+        console.error(`[Inboxxia Webhook] Missing data field in payload for event: ${eventType}`);
+        return NextResponse.json({ error: "Missing data" }, { status: 400 });
+      }
+
+      switch (eventType) {
+        case "LEAD_REPLIED":
+          return handleLeadReplied(request, payload);
+
+        case "LEAD_INTERESTED":
+          return handleLeadInterested(request, payload);
+
+        case "UNTRACKED_REPLY_RECEIVED":
+          return handleUntrackedReply(request, payload);
+
+        case "EMAIL_SENT":
+          return handleEmailSent(request, payload);
+
+        case "EMAIL_OPENED":
+          return handleEmailOpened(request, payload);
+
+        case "EMAIL_BOUNCED":
+          return handleEmailBounced(request, payload);
+
+        case "LEAD_UNSUBSCRIBED":
+          return handleLeadUnsubscribed(request, payload);
+
+        default:
+          console.log(`[Inboxxia Webhook] Ignoring unknown event type: ${eventType}`);
+          return NextResponse.json({
+            success: true,
+            ignored: true,
+            eventType: eventType || "unknown",
+          });
+      }
+    } catch (error) {
+      console.error("[Inboxxia Webhook] Error processing payload:", error);
+      return NextResponse.json(
+        {
+          error: "Internal server error",
+          details: error instanceof Error ? error.message : "Unknown error",
+        },
+        { status: 500 }
+      );
     }
-
-    switch (eventType) {
-      case "LEAD_REPLIED":
-        return handleLeadReplied(request, payload);
-
-      case "LEAD_INTERESTED":
-        return handleLeadInterested(request, payload);
-
-      case "UNTRACKED_REPLY_RECEIVED":
-        return handleUntrackedReply(request, payload);
-
-      case "EMAIL_SENT":
-        return handleEmailSent(request, payload);
-
-      case "EMAIL_OPENED":
-        return handleEmailOpened(request, payload);
-
-      case "EMAIL_BOUNCED":
-        return handleEmailBounced(request, payload);
-
-      case "LEAD_UNSUBSCRIBED":
-        return handleLeadUnsubscribed(request, payload);
-
-      default:
-        console.log(`[Inboxxia Webhook] Ignoring unknown event type: ${eventType}`);
-        return NextResponse.json({
-          success: true,
-          ignored: true,
-          eventType: eventType || "unknown",
-        });
-    }
-  } catch (error) {
-    console.error("[Inboxxia Webhook] Error processing payload:", error);
-    return NextResponse.json(
-      {
-        error: "Internal server error",
-        details: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 }
-    );
-  }
+  });
 }
 
 export async function GET() {

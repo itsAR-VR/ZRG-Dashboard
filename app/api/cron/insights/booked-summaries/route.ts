@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { isMeetingBooked } from "@/lib/meeting-booking-provider";
 import { coerceInsightsChatModel, coerceInsightsChatReasoningEffort } from "@/lib/insights-chat/config";
 import { extractConversationInsightForLead } from "@/lib/insights-chat/thread-extractor";
+import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 
 function isAuthorized(request: NextRequest): boolean {
   const expectedSecret = process.env.CRON_SECRET;
@@ -13,20 +14,21 @@ function isAuthorized(request: NextRequest): boolean {
 }
 
 export async function GET(request: NextRequest) {
-  const expectedSecret = process.env.CRON_SECRET;
-  if (!expectedSecret) {
-    console.warn("[Insights Cron] CRON_SECRET not configured - endpoint disabled");
-    return NextResponse.json({ error: "Cron endpoint not configured" }, { status: 503 });
-  }
-  if (!isAuthorized(request)) {
-    console.warn("[Insights Cron] Invalid authorization attempt");
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  return withAiTelemetrySource(request.nextUrl.pathname, async () => {
+    const expectedSecret = process.env.CRON_SECRET;
+    if (!expectedSecret) {
+      console.warn("[Insights Cron] CRON_SECRET not configured - endpoint disabled");
+      return NextResponse.json({ error: "Cron endpoint not configured" }, { status: 503 });
+    }
+    if (!isAuthorized(request)) {
+      console.warn("[Insights Cron] Invalid authorization attempt");
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
-  const limit = Math.max(1, Number.parseInt(process.env.INSIGHTS_BOOKED_SUMMARIES_CRON_LIMIT || "10", 10) || 10);
+    const limit = Math.max(1, Number.parseInt(process.env.INSIGHTS_BOOKED_SUMMARIES_CRON_LIMIT || "10", 10) || 10);
 
-  try {
-    const candidates = await prisma.lead.findMany({
+    try {
+      const candidates = await prisma.lead.findMany({
       where: {
         appointmentBookedAt: { not: null },
         conversationInsight: { is: null },
@@ -126,23 +128,24 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      candidates: candidates.length,
-      booked: booked.length,
-      processed,
-      skipped,
-      failed,
-      limit,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("[Insights Cron] Error:", error);
-    return NextResponse.json(
-      { error: "Failed to process booked summaries", message: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
-    );
-  }
+      return NextResponse.json({
+        success: true,
+        candidates: candidates.length,
+        booked: booked.length,
+        processed,
+        skipped,
+        failed,
+        limit,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("[Insights Cron] Error:", error);
+      return NextResponse.json(
+        { error: "Failed to process booked summaries", message: error instanceof Error ? error.message : "Unknown error" },
+        { status: 500 }
+      );
+    }
+  });
 }
 
 export async function POST(request: NextRequest) {

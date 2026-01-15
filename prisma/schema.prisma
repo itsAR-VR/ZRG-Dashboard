@@ -560,6 +560,8 @@ model AIInteraction {
   client       Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   leadId       String?
   lead         Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  // Attribution key for spend (e.g. "/api/webhooks/email", "/api/cron/followups", "action:insights_chat.send_message")
+  source       String?
   featureId    String   // Stable feature key (e.g. "sentiment.classify")
   promptKey    String?  // Optional prompt registry key/version
   model        String
@@ -581,6 +583,7 @@ model AIInteraction {
   @@index([createdAt(sort: Desc)])
   @@index([clientId, createdAt(sort: Desc)])
   @@index([clientId, featureId, createdAt(sort: Desc)])
+  @@index([clientId, source, createdAt(sort: Desc)])
 }
 
 // EmailBison campaigns synced per client

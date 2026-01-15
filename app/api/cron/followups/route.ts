@@ -7,6 +7,7 @@ import {
 } from "@/lib/followup-engine";
 import { refreshAvailabilityCachesDue } from "@/lib/availability-cache";
 import { backfillNoResponseFollowUpsDueOnCron } from "@/lib/followup-backfill";
+import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 
 /**
  * GET /api/cron/followups
@@ -18,7 +19,8 @@ import { backfillNoResponseFollowUpsDueOnCron } from "@/lib/followup-backfill";
  * Vercel automatically adds this header when invoking cron jobs
  */
 export async function GET(request: NextRequest) {
-  try {
+  return withAiTelemetrySource(request.nextUrl.pathname, async () => {
+    try {
     // Verify cron secret using Vercel's Bearer token pattern
     const authHeader = request.headers.get("Authorization");
     const expectedSecret = process.env.CRON_SECRET;
@@ -68,26 +70,27 @@ export async function GET(request: NextRequest) {
     const results = await processFollowUpsDue();
     console.log("[Cron] Follow-up processing complete:", results);
 
-    return NextResponse.json({
-      success: true,
-      availability,
-      snoozed,
-      resumed,
-      enrichmentResumed,
-      backfill,
-      results,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("[Cron] Follow-up processing error:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to process follow-ups",
-        message: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 }
-    );
-  }
+      return NextResponse.json({
+        success: true,
+        availability,
+        snoozed,
+        resumed,
+        enrichmentResumed,
+        backfill,
+        results,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("[Cron] Follow-up processing error:", error);
+      return NextResponse.json(
+        {
+          error: "Failed to process follow-ups",
+          message: error instanceof Error ? error.message : "Unknown error",
+        },
+        { status: 500 }
+      );
+    }
+  });
 }
 
 /**
@@ -97,7 +100,8 @@ export async function GET(request: NextRequest) {
  * Uses x-cron-secret header for backwards compatibility
  */
 export async function POST(request: NextRequest) {
-  try {
+  return withAiTelemetrySource(request.nextUrl.pathname, async () => {
+    try {
     // Check both Authorization header (Vercel pattern) and x-cron-secret (legacy)
     const authHeader = request.headers.get("Authorization");
     const legacySecret = request.headers.get("x-cron-secret");
@@ -152,24 +156,25 @@ export async function POST(request: NextRequest) {
     const results = await processFollowUpsDue();
     console.log("[Cron] Follow-up processing complete:", results);
 
-    return NextResponse.json({
-      success: true,
-      availability,
-      snoozed,
-      resumed,
-      enrichmentResumed,
-      backfill,
-      results,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    console.error("[Cron] Follow-up processing error:", error);
-    return NextResponse.json(
-      {
-        error: "Failed to process follow-ups",
-        message: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 }
-    );
-  }
+      return NextResponse.json({
+        success: true,
+        availability,
+        snoozed,
+        resumed,
+        enrichmentResumed,
+        backfill,
+        results,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("[Cron] Follow-up processing error:", error);
+      return NextResponse.json(
+        {
+          error: "Failed to process follow-ups",
+          message: error instanceof Error ? error.message : "Unknown error",
+        },
+        { status: 500 }
+      );
+    }
+  });
 }

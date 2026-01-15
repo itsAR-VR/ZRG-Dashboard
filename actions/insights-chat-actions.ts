@@ -9,6 +9,7 @@ import { extractConversationInsightForLead, type ConversationInsight } from "@/l
 import { synthesizeInsightContextPack } from "@/lib/insights-chat/pack-synthesis";
 import { answerInsightsChatQuestion } from "@/lib/insights-chat/chat-answer";
 import { getAnalytics, getEmailCampaignAnalytics } from "@/actions/analytics-actions";
+import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
 import type {
   ConversationInsightOutcome,
   InsightChatAuditAction,
@@ -763,10 +764,11 @@ export async function recomputeInsightContextPack(opts: {
   model?: string | null;
   reasoningEffort?: string | null;
 }): Promise<{ success: boolean; data?: { contextPackId: string }; error?: string }> {
-  try {
-    const clientId = opts.clientId;
-    if (!clientId) return { success: false, error: "No workspace selected" };
-    const { userId, userEmail } = await requireClientAccess(clientId);
+  return withAiTelemetrySourceIfUnset("action:insights_chat.recompute_context_pack", async () => {
+    try {
+      const clientId = opts.clientId;
+      if (!clientId) return { success: false, error: "No workspace selected" };
+      const { userId, userEmail } = await requireClientAccess(clientId);
 
     const session = await prisma.insightChatSession.findUnique({
       where: { id: opts.sessionId },
@@ -808,11 +810,12 @@ export async function recomputeInsightContextPack(opts: {
     });
 
     revalidatePath("/");
-    return { success: true, data: { contextPackId: packId } };
-  } catch (error) {
-    console.error("[InsightsChat] Failed to recompute pack:", error);
-    return { success: false, error: error instanceof Error ? error.message : "Failed to recompute pack" };
-  }
+      return { success: true, data: { contextPackId: packId } };
+    } catch (error) {
+      console.error("[InsightsChat] Failed to recompute pack:", error);
+      return { success: false, error: error instanceof Error ? error.message : "Failed to recompute pack" };
+    }
+  });
 }
 
 export async function deleteInsightContextPack(
@@ -890,10 +893,11 @@ export async function runInsightContextPackStep(opts: {
   contextPackId: string;
   maxThreadsToProcess?: number;
 }): Promise<{ success: boolean; data?: { pack: InsightContextPackPublic }; error?: string }> {
-  try {
-    const clientId = opts.clientId;
-    if (!clientId) return { success: false, error: "No workspace selected" };
-    await requireClientAccess(clientId);
+  return withAiTelemetrySourceIfUnset("action:insights_chat.run_context_pack_step", async () => {
+    try {
+      const clientId = opts.clientId;
+      if (!clientId) return { success: false, error: "No workspace selected" };
+      await requireClientAccess(clientId);
 
     const pack = await prisma.insightContextPack.findUnique({
       where: { id: opts.contextPackId },
@@ -1339,10 +1343,11 @@ export async function runInsightContextPackStep(opts: {
       });
       return { success: true, data: { pack: toPublicPack(updated) } };
     }
-  } catch (error) {
-    console.error("[InsightsChat] Failed to run context pack step:", error);
-    return { success: false, error: error instanceof Error ? error.message : "Failed to run context pack step" };
-  }
+    } catch (error) {
+      console.error("[InsightsChat] Failed to run context pack step:", error);
+      return { success: false, error: error instanceof Error ? error.message : "Failed to run context pack step" };
+    }
+  });
 }
 
 export async function finalizeInsightsChatSeedAnswer(opts: {
@@ -1351,10 +1356,11 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
   contextPackId: string;
   userMessageId: string;
 }): Promise<{ success: boolean; data?: { assistantMessageId: string; answer: string }; error?: string }> {
-  try {
-    const clientId = opts.clientId;
-    if (!clientId) return { success: false, error: "No workspace selected" };
-    const { userId, userEmail } = await requireClientAccess(clientId);
+  return withAiTelemetrySourceIfUnset("action:insights_chat.finalize_seed_answer", async () => {
+    try {
+      const clientId = opts.clientId;
+      if (!clientId) return { success: false, error: "No workspace selected" };
+      const { userId, userEmail } = await requireClientAccess(clientId);
 
     const [pack, userMsg] = await Promise.all([
       prisma.insightContextPack.findUnique({
@@ -1445,11 +1451,12 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
     });
 
     revalidatePath("/");
-    return { success: true, data: { assistantMessageId: assistantMessage.id, answer: answer.answer } };
-  } catch (error) {
-    console.error("[InsightsChat] Failed to finalize seed answer:", error);
-    return { success: false, error: error instanceof Error ? error.message : "Failed to finalize answer" };
-  }
+      return { success: true, data: { assistantMessageId: assistantMessage.id, answer: answer.answer } };
+    } catch (error) {
+      console.error("[InsightsChat] Failed to finalize seed answer:", error);
+      return { success: false, error: error instanceof Error ? error.message : "Failed to finalize answer" };
+    }
+  });
 }
 
 export async function sendInsightsChatMessage(opts: {
@@ -1457,10 +1464,11 @@ export async function sendInsightsChatMessage(opts: {
   sessionId: string;
   content: string;
 }): Promise<{ success: boolean; data?: { userMessageId: string; assistantMessageId: string; answer: string }; error?: string }> {
-  try {
-    const clientId = opts.clientId;
-    if (!clientId) return { success: false, error: "No workspace selected" };
-    const { userId, userEmail } = await requireClientAccess(clientId);
+  return withAiTelemetrySourceIfUnset("action:insights_chat.send_message", async () => {
+    try {
+      const clientId = opts.clientId;
+      if (!clientId) return { success: false, error: "No workspace selected" };
+      const { userId, userEmail } = await requireClientAccess(clientId);
 
     const content = (opts.content || "").trim();
     if (!content) return { success: false, error: "Message is empty" };
@@ -1566,9 +1574,10 @@ export async function sendInsightsChatMessage(opts: {
     });
 
     revalidatePath("/");
-    return { success: true, data: { userMessageId: userMessage.id, assistantMessageId: assistantMessage.id, answer: answer.answer } };
-  } catch (error) {
-    console.error("[InsightsChat] Failed to send message:", error);
-    return { success: false, error: error instanceof Error ? error.message : "Failed to send message" };
-  }
+      return { success: true, data: { userMessageId: userMessage.id, assistantMessageId: assistantMessage.id, answer: answer.answer } };
+    } catch (error) {
+      console.error("[InsightsChat] Failed to send message:", error);
+      return { success: false, error: error instanceof Error ? error.message : "Failed to send message" };
+    }
+  });
 }

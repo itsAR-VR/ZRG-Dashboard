@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { estimateCostUsd } from "@/lib/ai/pricing";
 import { pruneOldAIInteractionsMaybe } from "@/lib/ai/retention";
 import { openai } from "@/lib/ai/openai-client";
+import { getAiTelemetrySource } from "@/lib/ai/telemetry-context";
 
 function getDefaultMaxRetries(): number {
   const parsed = Number.parseInt(process.env.OPENAI_MAX_RETRIES || "5", 10);
@@ -63,6 +64,7 @@ function extractUsageFromResponseApi(resp: any): UsageSnapshot {
 async function recordInteraction(opts: {
   clientId: string;
   leadId?: string | null;
+  source?: string | null;
   featureId: string;
   promptKey?: string | null;
   model: string;
@@ -82,6 +84,7 @@ async function recordInteraction(opts: {
     data: {
       clientId: opts.clientId,
       leadId: opts.leadId || null,
+      source: (opts.source ?? getAiTelemetrySource()) || null,
       featureId: opts.featureId,
       promptKey: opts.promptKey || null,
       model: opts.model,
@@ -119,6 +122,7 @@ export async function markAiInteractionError(interactionId: string, errorMessage
 export async function runResponseWithInteraction(opts: {
   clientId: string;
   leadId?: string | null;
+  source?: string | null;
   featureId: string;
   promptKey?: string | null;
   params: OpenAI.Responses.ResponseCreateParamsNonStreaming;
@@ -152,6 +156,7 @@ export async function runResponseWithInteraction(opts: {
       interactionId = await recordInteraction({
         clientId: opts.clientId,
         leadId: opts.leadId,
+        source: opts.source,
         featureId: opts.featureId,
         promptKey: opts.promptKey,
         model: String(opts.params.model),
@@ -173,6 +178,7 @@ export async function runResponseWithInteraction(opts: {
       await recordInteraction({
         clientId: opts.clientId,
         leadId: opts.leadId,
+        source: opts.source,
         featureId: opts.featureId,
         promptKey: opts.promptKey,
         model: String(opts.params.model),
@@ -193,6 +199,7 @@ export async function runResponseWithInteraction(opts: {
 export async function runResponse(opts: {
   clientId: string;
   leadId?: string | null;
+  source?: string | null;
   featureId: string;
   promptKey?: string | null;
   params: OpenAI.Responses.ResponseCreateParamsNonStreaming;

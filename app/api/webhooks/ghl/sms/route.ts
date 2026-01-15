@@ -15,6 +15,7 @@ import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
+import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
@@ -321,8 +322,9 @@ async function importHistoricalMessages(
  * Handles the workflow webhook payload from GoHighLevel
  */
 export async function POST(request: NextRequest) {
-  try {
-    const payload: GHLWebhookPayload = await request.json();
+  return withAiTelemetrySource(request.nextUrl.pathname, async () => {
+    try {
+      const payload: GHLWebhookPayload = await request.json();
 
     console.log("=== GHL SMS Webhook Received ===");
     console.log(
@@ -899,16 +901,17 @@ export async function POST(request: NextRequest) {
       draftId,
       message: "Webhook processed successfully",
     });
-  } catch (error) {
-    console.error("Webhook processing error:", error);
-    return NextResponse.json(
-      {
-        error: "Internal server error",
-        details: error instanceof Error ? error.message : "Unknown error",
-      },
-      { status: 500 }
-    );
-  }
+    } catch (error) {
+      console.error("Webhook processing error:", error);
+      return NextResponse.json(
+        {
+          error: "Internal server error",
+          details: error instanceof Error ? error.message : "Unknown error",
+        },
+        { status: 500 }
+      );
+    }
+  });
 }
 
 /**

@@ -17,6 +17,7 @@ import { resumeAwaitingEnrichmentFollowUpsForLead } from "@/lib/followup-engine"
 import { toStoredPhone } from "@/lib/phone-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
+import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
@@ -58,58 +59,60 @@ interface UnipileWebhookPayload {
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    // Verify webhook using custom header authentication
-    if (!verifyUnipileWebhookSecret(request)) {
-      console.error("[LinkedIn Webhook] Invalid or missing secret");
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  return withAiTelemetrySource(request.nextUrl.pathname, async () => {
+    try {
+      // Verify webhook using custom header authentication
+      if (!verifyUnipileWebhookSecret(request)) {
+        console.error("[LinkedIn Webhook] Invalid or missing secret");
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
+
+      const rawBody = await request.text();
+      const payload: UnipileWebhookPayload = JSON.parse(rawBody);
+
+      const accountId = (payload.account_id || "").trim();
+
+      console.log(`[LinkedIn Webhook] Received event: ${payload.event} for account ${accountId}`);
+
+      // Find the client (workspace) by Unipile account ID
+      const client = await prisma.client.findFirst({
+        where: { unipileAccountId: accountId },
+      });
+
+      if (!client) {
+        // Treat as a non-fatal configuration issue (prevents webhook retry storms).
+        console.warn(`[LinkedIn Webhook] Ignoring event for unknown Unipile account: ${accountId}`);
+        return NextResponse.json({ success: true, ignored: true });
+      }
+
+      // Handle different event types
+      switch (payload.event) {
+        case "message.received":
+          await handleInboundMessage(client.id, payload);
+          break;
+
+        case "connection.accepted":
+          await handleConnectionAccepted(client.id, payload);
+          break;
+
+        case "connection.received":
+          // Log connection requests but don't auto-accept
+          console.log(`[LinkedIn Webhook] Connection request received from ${payload.connection?.name}`);
+          break;
+
+        default:
+          console.log(`[LinkedIn Webhook] Unhandled event type: ${payload.event}`);
+      }
+
+      return NextResponse.json({ success: true });
+    } catch (error) {
+      console.error("[LinkedIn Webhook] Error processing event:", error);
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : "Unknown error" },
+        { status: 500 }
+      );
     }
-
-    const rawBody = await request.text();
-    const payload: UnipileWebhookPayload = JSON.parse(rawBody);
-
-    const accountId = (payload.account_id || "").trim();
-
-    console.log(`[LinkedIn Webhook] Received event: ${payload.event} for account ${accountId}`);
-
-    // Find the client (workspace) by Unipile account ID
-    const client = await prisma.client.findFirst({
-      where: { unipileAccountId: accountId },
-    });
-
-    if (!client) {
-      // Treat as a non-fatal configuration issue (prevents webhook retry storms).
-      console.warn(`[LinkedIn Webhook] Ignoring event for unknown Unipile account: ${accountId}`);
-      return NextResponse.json({ success: true, ignored: true });
-    }
-
-    // Handle different event types
-    switch (payload.event) {
-      case "message.received":
-        await handleInboundMessage(client.id, payload);
-        break;
-
-      case "connection.accepted":
-        await handleConnectionAccepted(client.id, payload);
-        break;
-
-      case "connection.received":
-        // Log connection requests but don't auto-accept
-        console.log(`[LinkedIn Webhook] Connection request received from ${payload.connection?.name}`);
-        break;
-
-      default:
-        console.log(`[LinkedIn Webhook] Unhandled event type: ${payload.event}`);
-    }
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error("[LinkedIn Webhook] Error processing event:", error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
-    );
-  }
+  });
 }
 
 /**

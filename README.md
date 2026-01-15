@@ -278,6 +278,26 @@ model Message {
 | `GHL_EXPORT_MAX_MESSAGES` | (Optional) Cap messages fetched via export per lead during sync (default `2000`) |
 | `SYNC_ALL_CONCURRENCY` | (Optional) Concurrency for “Sync All” batches (default `3`) |
 
+### AI Telemetry (Tokens + Cost)
+
+- The Settings → **AI Dashboard** is powered by the `AIInteraction` table (30-day retention).
+- Each interaction records tokens, latency, errors, `featureId`/`promptKey`, and a `source` attribution key (route/job/action), e.g.:
+  - `/api/webhooks/email`
+  - `/api/cron/followups`
+  - `action:insights_chat.send_message`
+
+### AI Pricing Overrides (`AI_MODEL_PRICING_JSON`)
+
+Cost in the AI Dashboard is an estimate derived from token usage and the model pricing map. If a model isn’t configured, cost will show as partial.
+
+Example shape:
+
+```json
+{
+  "gpt-5-mini": { "inputUsdPer1MTokens": 0.3, "outputUsdPer1MTokens": 1.2 }
+}
+```
+
 ### Prisma Schema Changes
 
 - After pulling changes that modify `prisma/schema.prisma`, run `npm run db:push` to sync the database schema (creates tables like `WorkspaceOfferedSlot`).

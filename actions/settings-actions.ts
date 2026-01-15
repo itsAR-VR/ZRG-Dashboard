@@ -8,6 +8,7 @@ import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById } 
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { extractKnowledgeNotesFromFile, extractKnowledgeNotesFromText } from "@/lib/knowledge-asset-extraction";
 import { crawl4aiExtractMarkdown } from "@/lib/crawl4ai";
+import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
 import { isIP } from "node:net";
 import { MeetingBookingProvider } from "@prisma/client";
 
@@ -784,10 +785,11 @@ function isPrivateNetworkHostname(hostname: string): boolean {
 export async function uploadKnowledgeAssetFile(
   formData: FormData
 ): Promise<{ success: boolean; asset?: KnowledgeAssetData; error?: string }> {
-  try {
-    const clientIdRaw = formData.get("clientId");
-    const nameRaw = formData.get("name");
-    const fileRaw = formData.get("file");
+  return withAiTelemetrySourceIfUnset("action:settings.upload_knowledge_asset_file", async () => {
+    try {
+      const clientIdRaw = formData.get("clientId");
+      const nameRaw = formData.get("name");
+      const fileRaw = formData.get("file");
 
     const clientId = typeof clientIdRaw === "string" ? clientIdRaw : "";
     const name = typeof nameRaw === "string" ? nameRaw.trim() : "";
@@ -889,23 +891,24 @@ export async function uploadKnowledgeAssetFile(
     });
 
     revalidatePath("/");
-    return {
-      success: true,
-      asset: {
-        id: created.id,
-        name: created.name,
-        type: created.type as KnowledgeAssetData["type"],
-        fileUrl: created.fileUrl,
-        textContent: created.textContent,
-        originalFileName: created.originalFileName,
-        mimeType: created.mimeType,
-        createdAt: created.createdAt,
-      },
-    };
-  } catch (error) {
-    console.error("Failed to upload knowledge asset file:", error);
-    return { success: false, error: "Failed to upload file asset" };
-  }
+      return {
+        success: true,
+        asset: {
+          id: created.id,
+          name: created.name,
+          type: created.type as KnowledgeAssetData["type"],
+          fileUrl: created.fileUrl,
+          textContent: created.textContent,
+          originalFileName: created.originalFileName,
+          mimeType: created.mimeType,
+          createdAt: created.createdAt,
+        },
+      };
+    } catch (error) {
+      console.error("Failed to upload knowledge asset file:", error);
+      return { success: false, error: "Failed to upload file asset" };
+    }
+  });
 }
 
 /**
@@ -914,10 +917,11 @@ export async function uploadKnowledgeAssetFile(
 export async function addWebsiteKnowledgeAsset(
   formData: FormData
 ): Promise<{ success: boolean; asset?: KnowledgeAssetData; warning?: string; error?: string }> {
-  try {
-    const clientIdRaw = formData.get("clientId");
-    const nameRaw = formData.get("name");
-    const urlRaw = formData.get("url");
+  return withAiTelemetrySourceIfUnset("action:settings.add_website_knowledge_asset", async () => {
+    try {
+      const clientIdRaw = formData.get("clientId");
+      const nameRaw = formData.get("name");
+      const urlRaw = formData.get("url");
 
     const clientId = typeof clientIdRaw === "string" ? clientIdRaw : "";
     const name = typeof nameRaw === "string" ? nameRaw.trim() : "";
@@ -984,46 +988,48 @@ export async function addWebsiteKnowledgeAsset(
     }
 
     revalidatePath("/");
-    return {
-      success: true,
-      warning,
-      asset: {
-        id: updated.id,
-        name: updated.name,
-        type: updated.type as KnowledgeAssetData["type"],
-        fileUrl: updated.fileUrl,
-        textContent: updated.textContent,
-        originalFileName: updated.originalFileName,
-        mimeType: updated.mimeType,
-        createdAt: updated.createdAt,
-      },
-    };
-  } catch (error) {
-    console.error("Failed to add website knowledge asset:", error);
-    return { success: false, error: error instanceof Error ? error.message : "Failed to add website asset" };
-  }
+      return {
+        success: true,
+        warning,
+        asset: {
+          id: updated.id,
+          name: updated.name,
+          type: updated.type as KnowledgeAssetData["type"],
+          fileUrl: updated.fileUrl,
+          textContent: updated.textContent,
+          originalFileName: updated.originalFileName,
+          mimeType: updated.mimeType,
+          createdAt: updated.createdAt,
+        },
+      };
+    } catch (error) {
+      console.error("Failed to add website knowledge asset:", error);
+      return { success: false, error: error instanceof Error ? error.message : "Failed to add website asset" };
+    }
+  });
 }
 
 export async function retryWebsiteKnowledgeAssetIngestion(
   assetId: string
 ): Promise<{ success: boolean; asset?: KnowledgeAssetData; error?: string }> {
-  try {
-    const asset = await prisma.knowledgeAsset.findUnique({
-      where: { id: assetId },
-      select: {
-        id: true,
-        name: true,
-        type: true,
-        fileUrl: true,
-        textContent: true,
-        originalFileName: true,
-        mimeType: true,
-        createdAt: true,
-        workspaceSettings: { select: { clientId: true } },
-      },
-    });
-    if (!asset) return { success: false, error: "Asset not found" };
-    if (asset.type !== "url") return { success: false, error: "Not a website asset" };
+  return withAiTelemetrySourceIfUnset("action:settings.retry_website_knowledge_asset_ingestion", async () => {
+    try {
+      const asset = await prisma.knowledgeAsset.findUnique({
+        where: { id: assetId },
+        select: {
+          id: true,
+          name: true,
+          type: true,
+          fileUrl: true,
+          textContent: true,
+          originalFileName: true,
+          mimeType: true,
+          createdAt: true,
+          workspaceSettings: { select: { clientId: true } },
+        },
+      });
+      if (!asset) return { success: false, error: "Asset not found" };
+      if (asset.type !== "url") return { success: false, error: "Not a website asset" };
 
     await requireClientAccess(asset.workspaceSettings.clientId);
 
@@ -1058,23 +1064,24 @@ export async function retryWebsiteKnowledgeAssetIngestion(
     });
 
     revalidatePath("/");
-    return {
-      success: true,
-      asset: {
-        id: updated.id,
-        name: updated.name,
-        type: updated.type as KnowledgeAssetData["type"],
-        fileUrl: updated.fileUrl,
-        textContent: updated.textContent,
-        originalFileName: updated.originalFileName,
-        mimeType: updated.mimeType,
-        createdAt: updated.createdAt,
-      },
-    };
-  } catch (error) {
-    console.error("Failed to retry website knowledge asset ingestion:", error);
-    return { success: false, error: error instanceof Error ? error.message : "Failed to retry website asset" };
-  }
+      return {
+        success: true,
+        asset: {
+          id: updated.id,
+          name: updated.name,
+          type: updated.type as KnowledgeAssetData["type"],
+          fileUrl: updated.fileUrl,
+          textContent: updated.textContent,
+          originalFileName: updated.originalFileName,
+          mimeType: updated.mimeType,
+          createdAt: updated.createdAt,
+        },
+      };
+    } catch (error) {
+      console.error("Failed to retry website knowledge asset ingestion:", error);
+      return { success: false, error: error instanceof Error ? error.message : "Failed to retry website asset" };
+    }
+  });
 }
 
 /**

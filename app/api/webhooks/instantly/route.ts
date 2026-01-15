@@ -26,6 +26,7 @@ import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl
 import { EmailIntegrationProvider } from "@prisma/client";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 import { encodeInstantlyReplyHandle } from "@/lib/email-reply-handle";
+import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
@@ -161,12 +162,13 @@ async function findClientById(clientId: string) {
 }
 
 export async function POST(request: NextRequest) {
-  try {
-    const url = new URL(request.url);
-    const clientId = url.searchParams.get("clientId")?.trim() || "";
-    if (!clientId) {
-      return NextResponse.json({ error: "Missing clientId" }, { status: 400 });
-    }
+  return withAiTelemetrySource(request.nextUrl.pathname, async () => {
+    try {
+      const url = new URL(request.url);
+      const clientId = url.searchParams.get("clientId")?.trim() || "";
+      if (!clientId) {
+        return NextResponse.json({ error: "Missing clientId" }, { status: 400 });
+      }
 
     const client = await findClientById(clientId);
     if (!client) {
@@ -566,13 +568,14 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({ success: true, ignored: true, eventType });
-  } catch (error) {
-    console.error("[Instantly Webhook] Error:", error);
-    return NextResponse.json(
-      { error: "Internal server error", details: error instanceof Error ? error.message : "Unknown error" },
-      { status: 500 }
-    );
-  }
+    } catch (error) {
+      console.error("[Instantly Webhook] Error:", error);
+      return NextResponse.json(
+        { error: "Internal server error", details: error instanceof Error ? error.message : "Unknown error" },
+        { status: 500 }
+      );
+    }
+  });
 }
 
 export async function GET() {

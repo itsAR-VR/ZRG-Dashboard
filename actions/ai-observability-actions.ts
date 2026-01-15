@@ -33,6 +33,21 @@ export type FeatureSummary = {
   costComplete: boolean;
 };
 
+export type SourceSummary = {
+  source: string | null;
+  name: string;
+  model: string;
+  calls: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  avgLatencyMs: number | null;
+  lastUsedAt: string | null;
+  estimatedCostUsd: number | null;
+  costComplete: boolean;
+};
+
 export type TotalsSummary = {
   calls: number;
   errors: number;
@@ -62,6 +77,7 @@ export type ObservabilitySummary = {
   rangeStart: string;
   rangeEnd: string;
   totals: TotalsSummary;
+  sources: SourceSummary[];
   features: FeatureSummary[];
   errorSamples: ErrorSampleGroup[];
 };
@@ -85,19 +101,38 @@ function roundCurrencyUsd(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+const FEATURE_NAME_BY_ID = (() => {
+  const map = new Map<string, string>();
+  for (const t of listAIPromptTemplates()) {
+    const featureId = typeof (t as any)?.featureId === "string" ? String((t as any).featureId) : null;
+    const name = typeof (t as any)?.name === "string" ? String((t as any).name) : null;
+    if (!featureId || !name) continue;
+    if (!map.has(featureId)) map.set(featureId, name);
+  }
+  return map;
+})();
+
 function buildFeatureName(featureId: string): string {
-  const map: Record<string, string> = {
-    "sentiment.classify": "Sentiment Classification",
-    "draft.generate.email": "Draft: Email",
-    "draft.generate.sms": "Draft: SMS",
-    "draft.generate.linkedin": "Draft: LinkedIn",
-    "auto_reply_gate.decide": "Auto-Reply Gate",
-    "signature.extract": "Signature Extraction",
-    "timezone.infer": "Timezone Inference",
-    "followup.parse_accepted_time": "Follow-up: Parse Accepted Time",
-    "followup.detect_meeting_accept_intent": "Follow-up: Detect Meeting Acceptance Intent",
+  const fromRegistry = FEATURE_NAME_BY_ID.get(featureId);
+  if (fromRegistry) return fromRegistry;
+
+  const fallback: Record<string, string> = {
+    "knowledge_assets.summarize_text": "Knowledge Assets: Summarize Text",
+    "knowledge_assets.ocr_pdf": "Knowledge Assets: OCR PDF",
+    "knowledge_assets.ocr_image": "Knowledge Assets: OCR Image",
+    "insights.answer_judge": "Insights: Answer Judge",
   };
-  return map[featureId] || featureId;
+
+  return fallback[featureId] || featureId;
+}
+
+function buildSourceName(source: string | null): string {
+  if (!source) return "Unattributed";
+  if (source.startsWith("action:")) {
+    const rest = source.slice("action:".length).trim();
+    return rest ? `Action: ${rest}` : "Action";
+  }
+  return source;
 }
 
 export async function getAiPromptTemplates(clientId: string): Promise<{
@@ -128,6 +163,22 @@ export async function getAiObservabilitySummary(
 
     const groups = await prisma.aIInteraction.groupBy({
       by: ["featureId", "model", "status"],
+      where: {
+        clientId,
+        createdAt: { gte: rangeStart, lte: rangeEnd },
+      },
+      _count: { _all: true },
+      _sum: {
+        inputTokens: true,
+        outputTokens: true,
+        totalTokens: true,
+        latencyMs: true,
+      },
+      _max: { createdAt: true },
+    });
+
+    const sourceGroups = await prisma.aIInteraction.groupBy({
+      by: ["source", "model", "status"],
       where: {
         clientId,
         createdAt: { gte: rangeStart, lte: rangeEnd },
@@ -190,7 +241,56 @@ export async function getAiObservabilitySummary(
       perFeatureModel.set(key, current);
     }
 
+    const perSourceModel = new Map<Key, {
+      source: string | null;
+      model: string;
+      calls: number;
+      errors: number;
+      inputTokens: number;
+      outputTokens: number;
+      totalTokens: number;
+      latencySum: number;
+      lastUsedAt: Date | null;
+    }>();
+
+    for (const g of sourceGroups) {
+      const sourceKey = (g as any).source ?? null;
+      const key = `${sourceKey ?? "\u0000"}::${g.model}` as Key;
+      const current = perSourceModel.get(key) || {
+        source: sourceKey,
+        model: g.model,
+        calls: 0,
+        errors: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        latencySum: 0,
+        lastUsedAt: null as Date | null,
+      };
+
+      const count = g._count._all || 0;
+      const inputTokens = g._sum.inputTokens || 0;
+      const outputTokens = g._sum.outputTokens || 0;
+      const totalTokens = g._sum.totalTokens || 0;
+      const latencySum = g._sum.latencyMs || 0;
+
+      current.calls += count;
+      current.inputTokens += inputTokens;
+      current.outputTokens += outputTokens;
+      current.totalTokens += totalTokens;
+      current.latencySum += latencySum;
+      if (g.status === "error") current.errors += count;
+
+      const last = g._max.createdAt || null;
+      if (last && (!current.lastUsedAt || last > current.lastUsedAt)) {
+        current.lastUsedAt = last;
+      }
+
+      perSourceModel.set(key, current);
+    }
+
     const features: FeatureSummary[] = [];
+    const sources: SourceSummary[] = [];
     let totalCalls = 0;
     let totalErrors = 0;
     let totalInput = 0;
@@ -237,7 +337,36 @@ export async function getAiObservabilitySummary(
       if (cost !== null) totalCost += cost;
     }
 
+    for (const row of perSourceModel.values()) {
+      const avgLatencyMs =
+        row.calls > 0 ? Math.round(row.latencySum / row.calls) : null;
+
+      const cost = estimateCostUsd({
+        model: row.model,
+        inputTokens: row.inputTokens,
+        outputTokens: row.outputTokens,
+      });
+
+      const costUsd = cost === null ? null : roundCurrencyUsd(cost);
+
+      sources.push({
+        source: row.source,
+        name: buildSourceName(row.source),
+        model: row.model,
+        calls: row.calls,
+        errors: row.errors,
+        inputTokens: row.inputTokens,
+        outputTokens: row.outputTokens,
+        totalTokens: row.totalTokens,
+        avgLatencyMs,
+        lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
+        estimatedCostUsd: costUsd,
+        costComplete: cost !== null,
+      });
+    }
+
     features.sort((a, b) => b.calls - a.calls);
+    sources.sort((a, b) => b.calls - a.calls);
 
     const totalsAvgLatencyMs =
       totalCalls > 0 ? Math.round(totalLatencySum / totalCalls) : null;
@@ -305,6 +434,7 @@ export async function getAiObservabilitySummary(
         estimatedCostUsd: roundCurrencyUsd(totalCost),
         costComplete,
       },
+      sources,
       features,
       errorSamples,
     };

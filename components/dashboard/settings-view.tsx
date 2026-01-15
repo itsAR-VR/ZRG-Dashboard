@@ -2638,7 +2638,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                           AI Dashboard
                         </CardTitle>
                         <CardDescription>
-                          Token usage + cost estimates across all AI calls (30-day retention)
+                          Token usage + cost estimates across all AI calls (by route/job + feature; 30-day retention)
                         </CardDescription>
                       </div>
                       <div className="flex items-center gap-2">
@@ -2734,11 +2734,59 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
-                            <p className="text-sm font-medium">By Feature</p>
+                            <p className="text-sm font-medium">By Route/Job</p>
                             <p className="text-xs text-muted-foreground">
                               Window: {aiObs.window} · Updated:{" "}
                               {new Date(aiObs.rangeEnd).toLocaleString()}
                             </p>
+                          </div>
+
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Route/Job</TableHead>
+                                <TableHead>Model</TableHead>
+                                <TableHead>Calls</TableHead>
+                                <TableHead>Tokens</TableHead>
+                                <TableHead>Cost</TableHead>
+                                <TableHead>Errors</TableHead>
+                                <TableHead>Latency</TableHead>
+                                <TableHead>Last Used</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {aiObs.sources.map((s) => (
+                                <TableRow key={`${s.source || "unattributed"}:${s.model}`}>
+                                  <TableCell className="font-medium">{s.name}</TableCell>
+                                  <TableCell className="text-muted-foreground">{s.model}</TableCell>
+                                  <TableCell>{new Intl.NumberFormat().format(s.calls)}</TableCell>
+                                  <TableCell>
+                                    {new Intl.NumberFormat(undefined, { notation: "compact" }).format(s.totalTokens)}
+                                  </TableCell>
+                                  <TableCell>
+                                    {s.estimatedCostUsd === null
+                                      ? "—"
+                                      : s.estimatedCostUsd.toLocaleString("en-US", {
+                                          style: "currency",
+                                          currency: "USD",
+                                        })}
+                                  </TableCell>
+                                  <TableCell>{new Intl.NumberFormat().format(s.errors)}</TableCell>
+                                  <TableCell>{s.avgLatencyMs ? `${s.avgLatencyMs}ms` : "—"}</TableCell>
+                                  <TableCell>
+                                    {s.lastUsedAt ? new Date(s.lastUsedAt).toLocaleString() : "—"}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+
+                        <Separator />
+
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm font-medium">By Feature</p>
                           </div>
 
                           <Table>
