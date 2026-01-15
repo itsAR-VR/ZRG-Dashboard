@@ -151,6 +151,7 @@ export async function POST(request: NextRequest) {
         where: { userId, name: workspaceName },
         select: { id: true },
       });
+      const existedWorkspace = Boolean(existingWorkspace);
 
       if (existingWorkspace && !upsert) {
         return { existed: true as const, workspaceId: existingWorkspace.id };
@@ -203,7 +204,7 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      return { existed: false as const, workspaceId: workspace.id };
+      return { existed: existedWorkspace, workspaceId: workspace.id };
     });
 
     return NextResponse.json(
@@ -231,4 +232,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-
