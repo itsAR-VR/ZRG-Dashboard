@@ -387,6 +387,8 @@ export async function syncSmsConversationHistorySystem(
         const sentWindowEnd = new Date(msgTimestamp.getTime() + 60_000);
         const createdWindowStart = new Date(msgTimestamp.getTime() - 10 * 60_000);
         const createdWindowEnd = new Date(msgTimestamp.getTime() + 10 * 60_000);
+        const farSentWindowStart = new Date(msgTimestamp.getTime() - 30 * 60_000);
+        const farSentWindowEnd = new Date(msgTimestamp.getTime() + 30 * 60_000);
 
         const existingByGhlId = await prisma.message.findUnique({
           where: { ghlId },
@@ -413,16 +415,20 @@ export async function syncSmsConversationHistorySystem(
               ghlId: null,
               OR: [
                 {
-                  createdAt: {
-                    gte: createdWindowStart,
-                    lte: createdWindowEnd,
-                  },
-                },
-                {
                   sentAt: {
                     gte: sentWindowStart,
                     lte: sentWindowEnd,
                   },
+                },
+                {
+                  createdAt: {
+                    gte: createdWindowStart,
+                    lte: createdWindowEnd,
+                  },
+                  OR: [
+                    { sentAt: { lt: farSentWindowStart } },
+                    { sentAt: { gt: farSentWindowEnd } },
+                  ],
                 },
               ],
             },
@@ -481,16 +487,20 @@ export async function syncSmsConversationHistorySystem(
               ghlId: null,
               OR: [
                 {
-                  createdAt: {
-                    gte: createdWindowStart,
-                    lte: createdWindowEnd,
-                  },
-                },
-                {
                   sentAt: {
                     gte: sentWindowStart,
                     lte: sentWindowEnd,
                   },
+                },
+                {
+                  createdAt: {
+                    gte: createdWindowStart,
+                    lte: createdWindowEnd,
+                  },
+                  OR: [
+                    { sentAt: { lt: farSentWindowStart } },
+                    { sentAt: { gt: farSentWindowEnd } },
+                  ],
                 },
               ],
             },
