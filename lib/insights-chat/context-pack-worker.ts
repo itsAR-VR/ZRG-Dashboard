@@ -8,11 +8,45 @@ import { synthesizeInsightContextPack } from "@/lib/insights-chat/pack-synthesis
 import { answerInsightsChatQuestion } from "@/lib/insights-chat/chat-answer";
 import { coerceInsightsChatModel, coerceInsightsChatReasoningEffort } from "@/lib/insights-chat/config";
 import { formatInsightsWindowLabel } from "@/lib/insights-chat/window";
+import { buildFastContextPackMarkdown, getFastSeedMaxThreads, getFastSeedMinThreads, selectFastSeedThreads } from "@/lib/insights-chat/fast-seed";
+import { formatOpenAiErrorSummary, isRetryableOpenAiError } from "@/lib/ai/openai-error-utils";
 import type { ConversationInsightOutcome, InsightContextPackStatus } from "@prisma/client";
 
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
+async function mapWithConcurrencySettled<TItem, TResult>(
+  items: TItem[],
+  concurrency: number,
+  fn: (item: TItem, index: number) => Promise<TResult>
+): Promise<Array<PromiseSettledResult<TResult>>> {
+  if (items.length === 0) return [];
+  const results = new Array<PromiseSettledResult<TResult>>(items.length);
+  let nextIndex = 0;
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const currentIndex = nextIndex++;
+      if (currentIndex >= items.length) break;
+      try {
+        const value = await fn(items[currentIndex]!, currentIndex);
+        results[currentIndex] = { status: "fulfilled", value };
+      } catch (reason) {
+        results[currentIndex] = { status: "rejected", reason };
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
+function getLeadExtractionConcurrency(batchSize: number): number {
+  const parsed = Number.parseInt(process.env.INSIGHTS_CONTEXT_PACK_LEAD_CONCURRENCY || "", 10);
+  if (Number.isFinite(parsed) && parsed > 0) return clampInt(parsed, 1, 25);
+  return clampInt(Math.min(8, batchSize), 1, 25);
 }
 
 export type ContextPackWorkerStepResult = {
@@ -156,11 +190,11 @@ export async function runInsightContextPackStepSystem(opts: {
 
     const processed = new Set(pack.processedLeadIds);
     const remaining = pack.selectedLeadIds.filter((id) => !processed.has(id));
-    const batchSize = clampInt(Number(opts.maxThreadsToProcess ?? 1) || 1, 1, 10);
+    const batchSize = clampInt(Number(opts.maxThreadsToProcess ?? 1) || 1, 1, 25);
     const batch = remaining.slice(0, batchSize);
+    const concurrency = getLeadExtractionConcurrency(batch.length);
 
-    const results = await Promise.allSettled(
-      batch.map(async (leadId) => {
+    const results = await mapWithConcurrencySettled(batch, concurrency, async (leadId) => {
         const outcome = outcomeByLeadId.get(leadId) ?? "UNKNOWN";
 
         const existing = await prisma.leadConversationInsight.findUnique({
@@ -203,8 +237,7 @@ export async function runInsightContextPackStepSystem(opts: {
         });
 
         return { leadId, ok: true } as const;
-      })
-    );
+      });
 
     const nextProcessedLeadIds = Array.from(new Set([...pack.processedLeadIds, ...batch]));
     const nextMeta = selectedMeta.map((row) => {
@@ -228,6 +261,87 @@ export async function runInsightContextPackStepSystem(opts: {
       },
       select: { status: true, processedThreads: true, targetThreadsTotal: true },
     });
+
+    // Fast seed answer: once enough threads are processed, create an early answer
+    // so the user gets value quickly while the pack continues building.
+    try {
+      if (!pack.seedAssistantMessageId) {
+        const minThreads = getFastSeedMinThreads(pack.targetThreadsTotal);
+        if (nextProcessedLeadIds.length >= minThreads) {
+          const seedQuestion = (pack.session.seedQuestion || "").trim();
+          if (seedQuestion) {
+            const insights = await prisma.leadConversationInsight.findMany({
+              where: { leadId: { in: nextProcessedLeadIds } },
+              select: { leadId: true, insight: true },
+            });
+            const insightByLeadId = new Map<string, ConversationInsight>();
+            for (const row of insights) insightByLeadId.set(row.leadId, row.insight as any as ConversationInsight);
+
+            const threads = selectFastSeedThreads({
+              processedLeadIds: nextProcessedLeadIds,
+              selectedLeadsMeta: nextMeta,
+              insightByLeadId,
+              maxThreads: Math.min(getFastSeedMaxThreads(), nextProcessedLeadIds.length),
+            });
+
+            if (threads.length >= 5) {
+              const windowLabel = formatInsightsWindowLabel({
+                preset: pack.windowPreset,
+                from: pack.windowFrom,
+                to: pack.windowTo,
+              });
+              const campaignLabel = pack.allCampaigns
+                ? `All campaigns (cap ${pack.campaignCap ?? 10})`
+                : pack.effectiveCampaignIds.length
+                  ? `Selected campaigns (${pack.effectiveCampaignIds.length})`
+                  : "Workspace (no campaign filter)";
+
+              const fastPackMarkdown = buildFastContextPackMarkdown({
+                windowLabel,
+                campaignContextLabel: campaignLabel,
+                processedThreads: nextProcessedLeadIds.length,
+                targetThreadsTotal: pack.targetThreadsTotal,
+                threads,
+              });
+
+              const answer = await answerInsightsChatQuestion({
+                clientId: pack.clientId,
+                sessionId: pack.sessionId,
+                question: seedQuestion,
+                windowLabel,
+                campaignContextLabel: campaignLabel,
+                analyticsSnapshot: pack.metricsSnapshot,
+                contextPackMarkdown: fastPackMarkdown,
+                recentMessages: [],
+                model,
+                reasoningEffort: effort.api,
+              });
+
+              const assistantMessage = await prisma.insightChatMessage.create({
+                data: {
+                  clientId: pack.clientId,
+                  sessionId: pack.sessionId,
+                  role: "ASSISTANT",
+                  content: `**Fast answer (partial pack)**\n\n${answer.answer}`.trim(),
+                  authorUserId: null,
+                  authorEmail: null,
+                  contextPackId: pack.id,
+                },
+                select: { id: true },
+              });
+
+              await prisma.insightContextPack.update({
+                where: { id: pack.id },
+                data: { seedAssistantMessageId: assistantMessage.id },
+              });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      // Best-effort; do not fail the worker step if fast-answer generation fails.
+      console.warn("[Insights Worker] Fast seed answer generation failed:", error);
+    }
 
     return {
       clientId: pack.clientId,
@@ -335,10 +449,11 @@ export async function runInsightContextPackStepSystem(opts: {
       targetThreadsTotal: updated.targetThreadsTotal,
     };
   } catch (error) {
-    const msg = error instanceof Error ? error.message : "Failed to synthesize context pack";
+    const msg = formatOpenAiErrorSummary(error);
+    const status: InsightContextPackStatus = isRetryableOpenAiError(error) ? "RUNNING" : "FAILED";
     const updated = await prisma.insightContextPack.update({
       where: { id: pack.id },
-      data: { status: "FAILED", lastError: msg },
+      data: { status, lastError: msg },
       select: { status: true, processedThreads: true, targetThreadsTotal: true },
     });
     return {
@@ -365,16 +480,41 @@ export async function ensureSeedAnswerSystem(opts: {
   const packMarkdown = typeof synthesisObj?.pack_markdown === "string" ? synthesisObj.pack_markdown : null;
   if (pack.status !== "COMPLETE" || !packMarkdown) return { created: false };
 
-  if (!force && pack.seedAssistantMessageId) return { created: false };
+  const latestCompute = await prisma.insightChatAuditEvent.findFirst({
+    where: { clientId: pack.clientId, contextPackId: pack.id, action: { in: ["CONTEXT_PACK_CREATED", "CONTEXT_PACK_RECOMPUTED"] } },
+    select: { action: true },
+    orderBy: { createdAt: "desc" },
+  });
 
-  if (!force) {
-    const existingAssistant = await prisma.insightChatMessage.findFirst({
-      where: { clientId: pack.clientId, sessionId: pack.sessionId, role: "ASSISTANT" },
-      select: { id: true },
-      orderBy: { createdAt: "asc" },
-    });
-    if (existingAssistant) return { created: false };
+  const hasAssistant = await prisma.insightChatMessage.findFirst({
+    where: { clientId: pack.clientId, sessionId: pack.sessionId, role: "ASSISTANT" },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  // For recomputes, do not auto-generate a new answer if the session already has an assistant response.
+  if (!force && latestCompute?.action === "CONTEXT_PACK_RECOMPUTED" && hasAssistant) return { created: false };
+
+  const currentSeedMessage = pack.seedAssistantMessageId
+    ? await prisma.insightChatMessage.findUnique({
+        where: { id: pack.seedAssistantMessageId },
+        select: { id: true, createdAt: true, sessionId: true },
+      })
+    : null;
+
+  // If we already have a seed answer created after the final pack computedAt, nothing to do.
+  if (
+    !force &&
+    currentSeedMessage &&
+    currentSeedMessage.sessionId === pack.sessionId &&
+    pack.computedAt &&
+    currentSeedMessage.createdAt >= pack.computedAt
+  ) {
+    return { created: false };
   }
+
+  // If there is any assistant message and no seed pointer, avoid creating duplicates (unless forced).
+  if (!force && !pack.seedAssistantMessageId && hasAssistant) return { created: false };
 
   const seedQuestion =
     (pack.session.seedQuestion || "").trim() ||
@@ -402,37 +542,53 @@ export async function ensureSeedAnswerSystem(opts: {
       ? `Selected campaigns (${pack.effectiveCampaignIds.length})`
       : "Workspace (no campaign filter)";
 
-  const answer = await answerInsightsChatQuestion({
-    clientId: pack.clientId,
-    sessionId: pack.sessionId,
-    question: seedQuestion,
-    windowLabel,
-    campaignContextLabel: campaignLabel,
-    analyticsSnapshot: pack.metricsSnapshot,
-    contextPackMarkdown: packMarkdown,
-    recentMessages: [],
-    model,
-    reasoningEffort: effort.api,
-  });
-
-  const assistantMessage = await prisma.insightChatMessage.create({
-    data: {
+  try {
+    const answer = await answerInsightsChatQuestion({
       clientId: pack.clientId,
       sessionId: pack.sessionId,
-      role: "ASSISTANT",
-      content: answer.answer,
-      authorUserId: null,
-      authorEmail: null,
-      contextPackId: pack.id,
-    },
-    select: { id: true },
-  });
+      question: seedQuestion,
+      windowLabel,
+      campaignContextLabel: campaignLabel,
+      analyticsSnapshot: pack.metricsSnapshot,
+      contextPackMarkdown: packMarkdown,
+      recentMessages: [],
+      model,
+      reasoningEffort: effort.api,
+    });
 
-  await prisma.insightContextPack.update({
-    where: { id: pack.id },
-    data: { seedAssistantMessageId: assistantMessage.id },
-  });
+    const assistantMessage = await prisma.insightChatMessage.create({
+      data: {
+        clientId: pack.clientId,
+        sessionId: pack.sessionId,
+        role: "ASSISTANT",
+        content: `${currentSeedMessage ? "**Full answer (pack complete)**\n\n" : ""}${answer.answer}`.trim(),
+        authorUserId: null,
+        authorEmail: null,
+        contextPackId: pack.id,
+      },
+      select: { id: true },
+    });
 
-  return { created: true, assistantMessageId: assistantMessage.id };
+    await prisma.insightContextPack.update({
+      where: { id: pack.id },
+      data: { seedAssistantMessageId: assistantMessage.id, lastError: null },
+    });
+
+    return { created: true, assistantMessageId: assistantMessage.id };
+  } catch (error) {
+    const msg = formatOpenAiErrorSummary(error);
+    console.warn("[Insights Worker] Seed answer generation failed:", msg);
+
+    try {
+      await prisma.insightContextPack.update({
+        where: { id: pack.id },
+        data: { lastError: msg.slice(0, 10_000) },
+      });
+    } catch (dbError) {
+      console.warn("[Insights Worker] Failed to store seed-answer error:", dbError);
+    }
+
+    // Best-effort: cron will retry on the next run.
+    return { created: false };
+  }
 }
-

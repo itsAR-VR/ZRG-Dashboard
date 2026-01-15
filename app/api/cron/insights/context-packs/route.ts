@@ -3,6 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { runInsightContextPackStepSystem, ensureSeedAnswerSystem } from "@/lib/insights-chat/context-pack-worker";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 
+// Vercel Serverless Functions (Pro) support maxDuration in [1, 800].
+export const maxDuration = 800;
+
 function isAuthorized(request: NextRequest): boolean {
   const expectedSecret = process.env.CRON_SECRET;
   if (!expectedSecret) return false;
@@ -26,7 +29,7 @@ export async function GET(request: NextRequest) {
     const packLimit = Math.max(1, Number.parseInt(process.env.INSIGHTS_CONTEXT_PACK_CRON_LIMIT || "3", 10) || 3);
     const maxThreadsToProcess = Math.max(
       1,
-      Math.min(10, Number.parseInt(process.env.INSIGHTS_CONTEXT_PACK_CRON_BATCH || "1", 10) || 1)
+      Math.min(25, Number.parseInt(process.env.INSIGHTS_CONTEXT_PACK_CRON_BATCH || "25", 10) || 25)
     );
 
     try {
@@ -105,4 +108,3 @@ export async function POST(request: NextRequest) {
   // Alias for manual triggers/external cron services.
   return GET(request);
 }
-

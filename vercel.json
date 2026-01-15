@@ -14,7 +14,7 @@
     },
     {
       "path": "/api/cron/insights/context-packs",
-      "schedule": "*/2 * * * *"
+      "schedule": "* * * * *"
     }
   ]
 }

@@ -12,8 +12,8 @@ function safeString(value: string | null | undefined): string {
 }
 
 function getInsightsMaxRetries(): number {
-  const parsed = Number.parseInt(process.env.OPENAI_INSIGHTS_MAX_RETRIES || "2", 10);
-  if (!Number.isFinite(parsed) || parsed < 0) return 2;
+  const parsed = Number.parseInt(process.env.OPENAI_INSIGHTS_MAX_RETRIES || "5", 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 5;
   return Math.min(10, Math.trunc(parsed));
 }
 

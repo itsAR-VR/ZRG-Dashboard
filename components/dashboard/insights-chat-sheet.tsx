@@ -544,12 +544,23 @@ function InsightsConsoleBody({
           current = step.data.pack;
           setPack(current);
 
+          // Fast seed answer: once the server creates an initial assistant answer,
+          // stop waiting and let background cron finish the full pack.
+          if (seedMessageId && current.seedAssistantMessageId) {
+            toast.success("Fast answer ready — continuing to build full pack in the background.");
+            await loadSession(sessionId);
+            await loadSessions();
+            return;
+          }
+
           if (current.status === "COMPLETE" || current.status === "FAILED") {
             break;
           }
 
-          // Lightweight polling delay
-          await new Promise((r) => setTimeout(r, 450));
+          // Lightweight polling delay (use a bigger backoff when we're in synthesis/error states).
+          const inSynthesisStage = current.targetThreadsTotal > 0 && current.processedThreads >= current.targetThreadsTotal;
+          const delayMs = current.lastError || inSynthesisStage ? 2500 : 450;
+          await new Promise((r) => setTimeout(r, delayMs));
         }
 
         if (!pollCancelRef.current.cancelled && current?.status === "COMPLETE" && seedMessageId) {
@@ -849,7 +860,7 @@ function InsightsConsoleBody({
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
-                              <div className="line-clamp-2 text-sm font-medium leading-snug" title={s.title}>
+                              <div className="text-sm font-medium leading-snug break-words" title={s.title}>
                                 {s.title}
                               </div>
                             </div>
@@ -861,7 +872,10 @@ function InsightsConsoleBody({
                             <div className="mt-0.5 text-[11px] text-muted-foreground">by {s.createdByEmail}</div>
                           ) : null}
                           {s.lastMessagePreview ? (
-                            <div className="mt-1 line-clamp-3 text-xs leading-snug text-muted-foreground" title={s.lastMessagePreview}>
+                            <div
+                              className="mt-1 text-xs leading-snug text-muted-foreground whitespace-pre-wrap break-words"
+                              title={s.lastMessagePreview}
+                            >
                               {s.lastMessagePreview}
                             </div>
                           ) : (
