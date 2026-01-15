@@ -26,6 +26,12 @@ export type DraftGenerationOptions = {
    */
   timeoutMs?: number;
   /**
+   * Inbound Message.id that triggered this draft (idempotency key).
+   * When provided, generateResponseDraft will return an existing draft for
+   * (triggerMessageId, channel) instead of creating a duplicate.
+   */
+  triggerMessageId?: string | null;
+  /**
    * Multiplier applied to the adaptive output token budget (min/max/overhead/outputScale).
    * Defaults to `OPENAI_DRAFT_TOKEN_BUDGET_MULTIPLIER` or 3.
    */
@@ -36,6 +42,11 @@ export type DraftGenerationOptions = {
    */
   preferApiCount?: boolean;
 };
+
+function isPrismaUniqueConstraintError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  return "code" in error && (error as { code?: unknown }).code === "P2002";
+}
 
 const EMAIL_FORBIDDEN_TERMS = [
   "Tailored",
@@ -282,6 +293,25 @@ export async function generateResponseDraft(
   opts: DraftGenerationOptions = {}
 ): Promise<DraftGenerationResult> {
   try {
+    const triggerMessageId = typeof opts.triggerMessageId === "string" ? opts.triggerMessageId.trim() : null;
+
+    if (triggerMessageId) {
+      const existing = await prisma.aIDraft.findFirst({
+        where: { triggerMessageId, channel },
+        select: { id: true, content: true, leadId: true },
+      });
+
+      if (existing) {
+        if (existing.leadId !== leadId) {
+          console.warn(
+            `[AI Drafts] triggerMessageId ${triggerMessageId} belongs to lead ${existing.leadId}, not ${leadId}`
+          );
+        }
+
+        return { success: true, draftId: existing.id, content: existing.content };
+      }
+    }
+
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       select: {
@@ -668,20 +698,36 @@ Generate an appropriate ${channel} response following the guidelines above.
       };
     }
 
-    const draft = await prisma.aIDraft.create({
-      data: {
-        leadId,
-        content: draftContent,
-        status: "pending",
-        channel,
-      },
-    });
+    try {
+      const draft = await prisma.aIDraft.create({
+        data: {
+          leadId,
+          triggerMessageId: triggerMessageId || undefined,
+          content: draftContent,
+          status: "pending",
+          channel,
+        },
+      });
 
-    return {
-      success: true,
-      draftId: draft.id,
-      content: draftContent,
-    };
+      return {
+        success: true,
+        draftId: draft.id,
+        content: draftContent,
+      };
+    } catch (error) {
+      // If multiple workers raced, return the already-created draft instead of failing.
+      if (triggerMessageId && isPrismaUniqueConstraintError(error)) {
+        const existing = await prisma.aIDraft.findFirst({
+          where: { triggerMessageId, channel },
+          select: { id: true, content: true },
+        });
+        if (existing) {
+          return { success: true, draftId: existing.id, content: existing.content };
+        }
+      }
+
+      throw error;
+    }
   } catch (error) {
     console.error("Failed to generate AI draft:", error);
     return {

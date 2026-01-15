@@ -1,0 +1,857 @@
+import "server-only";
+
+import { prisma } from "@/lib/prisma";
+import {
+  createEmailBisonLead,
+  fetchEmailBisonLead,
+  fetchEmailBisonSentEmails,
+  getCustomVariable,
+} from "@/lib/emailbison-api";
+import {
+  extractContactFromMessageContent,
+  extractContactFromSignature,
+  extractLinkedInFromText,
+  extractPhoneFromText,
+} from "@/lib/signature-extractor";
+import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { normalizePhone } from "@/lib/lead-matching";
+import { toStoredPhone } from "@/lib/phone-utils";
+import { isPositiveSentiment } from "@/lib/sentiment";
+import { triggerEnrichmentForLead } from "@/lib/clay-api";
+import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
+import {
+  pauseFollowUpsUntil,
+  processMessageForAutoBooking,
+  resumeAwaitingEnrichmentFollowUpsForLead,
+} from "@/lib/followup-engine";
+import { ensureLeadTimezone } from "@/lib/timezone-inference";
+import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
+import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
+import { cleanEmailBody } from "@/lib/email-cleaning";
+import { buildSentimentTranscriptFromMessages, detectBounce, isOptOutText } from "@/lib/sentiment";
+import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
+import { evaluateAutoSend } from "@/lib/auto-send-evaluator";
+import { approveAndSendDraftSystem } from "@/actions/message-actions";
+import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
+import { sendSlackDmByEmail } from "@/lib/slack-dm";
+import { getPublicAppUrl } from "@/lib/app-url";
+
+function parseDate(...dateStrs: (string | null | undefined)[]): Date {
+  for (const dateStr of dateStrs) {
+    if (dateStr) {
+      const parsed = new Date(dateStr);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed;
+      }
+    }
+  }
+  return new Date();
+}
+
+/**
+ * Fetches recent sent emails from EmailBison and backfills missing outbound Message rows.
+ * This improves transcript quality for AI decisions + the UI thread view.
+ */
+async function backfillOutboundEmailMessagesIfMissing(opts: {
+  leadId: string;
+  emailBisonLeadId: string;
+  apiKey: string;
+  limit?: number;
+}) {
+  const limit = opts.limit ?? 12;
+
+  const sentEmailsResult = await fetchEmailBisonSentEmails(opts.apiKey, opts.emailBisonLeadId);
+  if (!sentEmailsResult.success || !sentEmailsResult.data || sentEmailsResult.data.length === 0) return;
+
+  const sorted = [...sentEmailsResult.data].sort((a, b) => {
+    const aTime = parseDate(a.sent_at, a.scheduled_date_local).getTime();
+    const bTime = parseDate(b.sent_at, b.scheduled_date_local).getTime();
+    return aTime - bTime;
+  });
+
+  const tail = sorted.slice(Math.max(0, sorted.length - limit));
+
+  for (const sentEmail of tail) {
+    const inboxxiaScheduledEmailId = String(sentEmail.id);
+    const sentAt = parseDate(sentEmail.sent_at, sentEmail.scheduled_date_local);
+    const cleaned = cleanEmailBody(sentEmail.email_body, null);
+    const body = cleaned.cleaned || sentEmail.email_subject || "";
+    const subject = sentEmail.email_subject ?? null;
+
+    if (!body.trim()) continue;
+
+    const existingById = await prisma.message.findUnique({
+      where: { inboxxiaScheduledEmailId },
+    });
+    if (existingById) continue;
+
+    const windowStart = new Date(sentAt.getTime() - 12 * 60 * 60 * 1000);
+    const windowEnd = new Date(sentAt.getTime() + 12 * 60 * 60 * 1000);
+
+    const existingLegacy = await prisma.message.findFirst({
+      where: {
+        leadId: opts.leadId,
+        channel: "email",
+        direction: "outbound",
+        inboxxiaScheduledEmailId: null,
+        sentAt: { gte: windowStart, lte: windowEnd },
+        body: { contains: body.substring(0, Math.min(100, body.length)) },
+      },
+      select: { id: true },
+    });
+
+    if (existingLegacy) {
+      await prisma.message.update({
+        where: { id: existingLegacy.id },
+        data: {
+          inboxxiaScheduledEmailId,
+          sentAt,
+          subject,
+          rawHtml: cleaned.rawHtml ?? null,
+        },
+      });
+      await bumpLeadMessageRollup({ leadId: opts.leadId, direction: "outbound", sentAt });
+      continue;
+    }
+
+    await prisma.message.create({
+      data: {
+        inboxxiaScheduledEmailId,
+        channel: "email",
+        source: "inboxxia_campaign",
+        body,
+        rawHtml: cleaned.rawHtml ?? null,
+        subject,
+        isRead: true,
+        direction: "outbound",
+        leadId: opts.leadId,
+        sentAt,
+      },
+    });
+
+    await bumpLeadMessageRollup({ leadId: opts.leadId, direction: "outbound", sentAt });
+  }
+}
+
+/**
+ * Data extracted from EmailBison for Clay enrichment.
+ */
+interface EmailBisonEnrichmentData {
+  companyName?: string;
+  companyDomain?: string; // From 'website' custom var
+  state?: string; // From 'company state' custom var
+  industry?: string; // From 'industry' custom var
+  employeeHeadcount?: string; // From 'employee_headcount' custom var
+  linkedInProfile?: string; // From 'linkedin url' custom var or Lead.linkedinUrl
+  existingPhone?: string; // From 'phone' custom var (to skip enrichment if exists)
+}
+
+/**
+ * Result from EmailBison enrichment including data for Clay.
+ */
+interface EmailBisonEnrichmentResult {
+  linkedinUrl?: string;
+  phone?: string;
+  companyName?: string;
+  companyWebsite?: string;
+  companyState?: string;
+  industry?: string;
+  employeeHeadcount?: string;
+  timezoneRaw?: string;
+  clayData: EmailBisonEnrichmentData;
+}
+
+async function enrichLeadFromEmailBison(
+  leadId: string,
+  emailBisonLeadId: string,
+  apiKey: string
+): Promise<EmailBisonEnrichmentResult> {
+  const result: EmailBisonEnrichmentResult = {
+    clayData: {},
+  };
+
+  try {
+    const leadDetails = await fetchEmailBisonLead(apiKey, emailBisonLeadId);
+
+    if (!leadDetails.success || !leadDetails.data) {
+      console.log(`[EmailBison Enrichment] Failed to fetch lead ${emailBisonLeadId}: ${leadDetails.error}`);
+      return result;
+    }
+
+    const leadData = leadDetails.data;
+    const customVars = leadData.custom_variables;
+
+    // Extract LinkedIn URL from custom variables
+    const linkedinUrlRaw =
+      getCustomVariable(customVars, "linkedin url") ||
+      getCustomVariable(customVars, "linkedin_url") ||
+      getCustomVariable(customVars, "linkedinurl");
+
+    if (linkedinUrlRaw) {
+      const normalized = normalizeLinkedInUrl(linkedinUrlRaw);
+      if (normalized) {
+        result.linkedinUrl = normalized;
+        result.clayData.linkedInProfile = normalized;
+        console.log(`[EmailBison Enrichment] Found LinkedIn URL for lead ${leadId}: ${normalized}`);
+      }
+    }
+
+    // Extract phone from custom variables
+    const phoneRaw =
+      getCustomVariable(customVars, "phone") ||
+      getCustomVariable(customVars, "mobile") ||
+      getCustomVariable(customVars, "phone number");
+
+    if (phoneRaw && phoneRaw !== "-") {
+      const normalized = normalizePhone(phoneRaw);
+      if (normalized) {
+        const stored = toStoredPhone(phoneRaw);
+        if (stored) {
+          result.phone = stored;
+          result.clayData.existingPhone = stored;
+          console.log(`[EmailBison Enrichment] Found phone for lead ${leadId}: ${stored}`);
+        }
+      }
+    }
+
+    // Company name from main lead data
+    if (leadData.company) {
+      result.clayData.companyName = leadData.company;
+      result.companyName = leadData.company;
+    }
+
+    // Company domain from 'website' custom variable (full URL)
+    const website = getCustomVariable(customVars, "website");
+    if (website && website !== "-") {
+      result.clayData.companyDomain = website;
+      result.companyWebsite = website;
+    }
+
+    // State from 'company state' custom variable
+    const companyState = getCustomVariable(customVars, "company state");
+    if (companyState && companyState !== "-") {
+      result.clayData.state = companyState;
+      result.companyState = companyState;
+    }
+
+    // Industry from custom variables
+    const industry = getCustomVariable(customVars, "industry");
+    if (industry && industry !== "-") {
+      result.clayData.industry = industry;
+      result.industry = industry;
+    }
+
+    // Employee headcount from custom variables
+    const employeeHeadcount =
+      getCustomVariable(customVars, "employee_headcount") ||
+      getCustomVariable(customVars, "employee headcount") ||
+      getCustomVariable(customVars, "headcount");
+    if (employeeHeadcount && employeeHeadcount !== "-") {
+      result.clayData.employeeHeadcount = employeeHeadcount;
+      result.employeeHeadcount = employeeHeadcount;
+    }
+
+    // Timezone raw from custom variables
+    const timezoneRaw =
+      getCustomVariable(customVars, "timezone") ||
+      getCustomVariable(customVars, "time zone") ||
+      getCustomVariable(customVars, "tz") ||
+      getCustomVariable(customVars, "lead timezone") ||
+      getCustomVariable(customVars, "lead time zone");
+    if (timezoneRaw && timezoneRaw !== "-") {
+      result.timezoneRaw = timezoneRaw;
+    }
+
+    // Update lead with enriched data if missing
+    const currentLead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: {
+        linkedinUrl: true,
+        phone: true,
+        companyName: true,
+        companyWebsite: true,
+        companyState: true,
+        industry: true,
+        employeeHeadcount: true,
+        timezone: true,
+      },
+    });
+
+    const updates: Record<string, unknown> = {};
+    if (result.linkedinUrl && !currentLead?.linkedinUrl) updates.linkedinUrl = result.linkedinUrl;
+    if (result.phone && !currentLead?.phone) updates.phone = result.phone;
+    if (result.companyName && !currentLead?.companyName) updates.companyName = result.companyName;
+    if (result.companyWebsite && !currentLead?.companyWebsite) updates.companyWebsite = result.companyWebsite;
+    if (result.companyState && !currentLead?.companyState) updates.companyState = result.companyState;
+    if (result.industry && !currentLead?.industry) updates.industry = result.industry;
+    if (result.employeeHeadcount && !currentLead?.employeeHeadcount) updates.employeeHeadcount = result.employeeHeadcount;
+
+    if (result.timezoneRaw && (!currentLead?.timezone || currentLead.timezone.trim() === "")) {
+      const raw = result.timezoneRaw.trim();
+      const upper = raw.toUpperCase();
+      const mapped: Record<string, string> = {
+        UTC: "UTC",
+        GMT: "Europe/London",
+        BST: "Europe/London",
+        EST: "America/New_York",
+        EDT: "America/New_York",
+        CST: "America/Chicago",
+        CDT: "America/Chicago",
+        MST: "America/Denver",
+        MDT: "America/Denver",
+        PST: "America/Los_Angeles",
+        PDT: "America/Los_Angeles",
+      };
+
+      const candidate = mapped[upper] || raw;
+      try {
+        new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date());
+        updates.timezone = candidate;
+      } catch {
+        // ignore unrecognized values; ensureLeadTimezone() can infer later
+      }
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updates.enrichmentSource = "emailbison";
+      updates.enrichedAt = new Date();
+      await prisma.lead.update({ where: { id: leadId }, data: updates });
+      console.log(`[EmailBison Enrichment] Updated lead ${leadId} with EmailBison data`);
+    }
+  } catch (error) {
+    console.error(`[EmailBison Enrichment] Error enriching lead ${leadId}:`, error);
+  }
+
+  return result;
+}
+
+async function enrichLeadFromSignature(opts: {
+  clientId: string;
+  leadId: string;
+  leadName: string;
+  leadEmail: string;
+  emailBody: string;
+}): Promise<{ phone?: string; linkedinUrl?: string }> {
+  const result: { phone?: string; linkedinUrl?: string } = {};
+
+  try {
+    const getSignatureTail = (text: string) => {
+      const normalized = (text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+      const lines = normalized.split("\n");
+      const tailLines = lines.slice(Math.max(0, lines.length - 40));
+      return tailLines.join("\n").trim();
+    };
+
+    const looksLikeMatchesSender = (tail: string, email: string, name: string) => {
+      const lower = (tail || "").toLowerCase();
+      const emailNeedle = (email || "").trim().toLowerCase();
+      if (emailNeedle && lower.includes(emailNeedle)) return true;
+      const nameNeedle = (name || "").trim().toLowerCase();
+      if (nameNeedle && nameNeedle.length >= 3 && lower.includes(nameNeedle)) return true;
+      const first = nameNeedle.split(/\s+/).filter(Boolean)[0] || "";
+      if (first.length >= 3 && lower.includes(first)) return true;
+      return false;
+    };
+
+    const currentLead = await prisma.lead.findUnique({
+      where: { id: opts.leadId },
+      select: { phone: true, linkedinUrl: true },
+    });
+
+    if (currentLead?.phone && currentLead?.linkedinUrl) {
+      return result;
+    }
+
+    const extraction = await extractContactFromSignature(opts.emailBody, opts.leadName, opts.leadEmail, {
+      clientId: opts.clientId,
+      leadId: opts.leadId,
+    });
+
+    if (extraction.isFromLead === "no") return result;
+
+    if (extraction.isFromLead === "unknown") {
+      const tail = getSignatureTail(opts.emailBody);
+      if (!tail) return result;
+      if (!looksLikeMatchesSender(tail, opts.leadEmail, opts.leadName)) return result;
+
+      const fallbackPhone = !currentLead?.phone ? extractPhoneFromText(tail) : null;
+      const fallbackLinkedIn = !currentLead?.linkedinUrl ? extractLinkedInFromText(tail) : null;
+      if (!fallbackPhone && !fallbackLinkedIn) return result;
+
+      const updates: Record<string, unknown> = {};
+      if (!currentLead?.phone && fallbackPhone) {
+        updates.phone = fallbackPhone;
+        result.phone = fallbackPhone;
+      }
+      if (!currentLead?.linkedinUrl && fallbackLinkedIn) {
+        updates.linkedinUrl = fallbackLinkedIn;
+        result.linkedinUrl = fallbackLinkedIn;
+      }
+
+      if (Object.keys(updates).length > 0) {
+        updates.enrichmentSource = "signature";
+        updates.enrichedAt = new Date();
+        await prisma.lead.update({ where: { id: opts.leadId }, data: updates });
+      }
+
+      return result;
+    }
+
+    if (extraction.confidence === "low") return result;
+
+    const updates: Record<string, unknown> = {};
+    if (!currentLead?.phone && extraction.phone) {
+      updates.phone = extraction.phone;
+      result.phone = extraction.phone;
+    }
+    if (!currentLead?.linkedinUrl && extraction.linkedinUrl) {
+      updates.linkedinUrl = extraction.linkedinUrl;
+      result.linkedinUrl = extraction.linkedinUrl;
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updates.enrichmentSource = "signature";
+      updates.enrichedAt = new Date();
+      await prisma.lead.update({ where: { id: opts.leadId }, data: updates });
+    }
+  } catch (error) {
+    console.error(`[Signature Extraction] Error extracting from signature for lead ${opts.leadId}:`, error);
+  }
+
+  return result;
+}
+
+async function triggerClayEnrichmentIfNeeded(opts: {
+  leadId: string;
+  sentimentTag: string | null;
+  emailBisonData?: EmailBisonEnrichmentData;
+}): Promise<void> {
+  try {
+    if (!isPositiveSentiment(opts.sentimentTag)) {
+      return;
+    }
+
+    const lead = await prisma.lead.findUnique({
+      where: { id: opts.leadId },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        companyName: true,
+        linkedinUrl: true,
+        phone: true,
+        enrichmentStatus: true,
+      },
+    });
+    if (!lead?.email) return;
+
+    // One-time policy: only attempt Clay enrichment once per lead.
+    if (lead.enrichmentStatus) return;
+
+    const missingLinkedIn = !lead.linkedinUrl && !opts.emailBisonData?.linkedInProfile;
+    const existingPhone = lead.phone || opts.emailBisonData?.existingPhone;
+    const hasValidPhone = existingPhone && normalizePhone(existingPhone);
+    const missingPhone = !hasValidPhone;
+
+    if (!missingLinkedIn && !missingPhone) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { enrichmentStatus: "not_needed" },
+      });
+      return;
+    }
+
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        enrichmentStatus: "pending",
+        enrichmentLastRetry: new Date(),
+        enrichmentRetryCount: 1,
+      },
+    });
+
+    const fullName = `${lead.firstName || ""} ${lead.lastName || ""}`.trim();
+    const triggerResult = await triggerEnrichmentForLead(
+      {
+        leadId: lead.id,
+        emailAddress: lead.email,
+        firstName: lead.firstName || undefined,
+        lastName: lead.lastName || undefined,
+        fullName: fullName || undefined,
+        companyName: opts.emailBisonData?.companyName || lead.companyName || undefined,
+        companyDomain: opts.emailBisonData?.companyDomain,
+        state: opts.emailBisonData?.state,
+        linkedInProfile: opts.emailBisonData?.linkedInProfile || lead.linkedinUrl || undefined,
+      },
+      missingLinkedIn,
+      missingPhone && !opts.emailBisonData?.existingPhone
+    );
+
+    if (!triggerResult.linkedInSent && !triggerResult.phoneSent) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { enrichmentStatus: "failed" },
+      });
+    }
+  } catch (error) {
+    console.error(`[Clay Enrichment] Error triggering enrichment for lead ${opts.leadId}:`, error);
+  }
+}
+
+export async function runEmailInboundPostProcessJob(opts: {
+  clientId: string;
+  leadId: string;
+  messageId: string;
+}): Promise<void> {
+  const [client, message] = await Promise.all([
+    prisma.client.findUnique({
+      where: { id: opts.clientId },
+      select: {
+        id: true,
+        name: true,
+        emailBisonApiKey: true,
+      },
+    }),
+    prisma.message.findUnique({
+      where: { id: opts.messageId },
+      select: {
+        id: true,
+        leadId: true,
+        channel: true,
+        direction: true,
+        body: true,
+        rawText: true,
+        rawHtml: true,
+        subject: true,
+        sentAt: true,
+      },
+    }),
+  ]);
+
+  if (!client) throw new Error("Client not found");
+  if (!message) throw new Error("Message not found");
+  if (message.leadId !== opts.leadId) throw new Error("Message leadId mismatch");
+  if (message.channel !== "email" || message.direction !== "inbound") return;
+
+  // Load lead after we validate message relation.
+  let lead = await prisma.lead.findUnique({
+    where: { id: opts.leadId },
+    select: {
+      id: true,
+      clientId: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      linkedinUrl: true,
+      emailBisonLeadId: true,
+      sentimentTag: true,
+      autoReplyEnabled: true,
+      emailCampaign: {
+        select: {
+          id: true,
+          name: true,
+          bisonCampaignId: true,
+          responseMode: true,
+          autoSendConfidenceThreshold: true,
+        },
+      },
+    },
+  });
+
+  if (!lead) throw new Error("Lead not found");
+
+  // If this is an untracked reply and we don't have an EmailBison lead ID yet, try to create one.
+  if (!lead.emailBisonLeadId && client.emailBisonApiKey && lead.email) {
+    const createResult = await createEmailBisonLead(client.emailBisonApiKey, {
+      email: lead.email,
+      first_name: lead.firstName ?? null,
+      last_name: lead.lastName ?? null,
+    });
+
+    if (createResult.success && createResult.leadId) {
+      lead = await prisma.lead.update({
+        where: { id: lead.id },
+        data: { emailBisonLeadId: createResult.leadId },
+        select: {
+          id: true,
+          clientId: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          linkedinUrl: true,
+          emailBisonLeadId: true,
+          sentimentTag: true,
+          autoReplyEnabled: true,
+          emailCampaign: {
+            select: {
+              id: true,
+              name: true,
+              bisonCampaignId: true,
+              responseMode: true,
+              autoSendConfidenceThreshold: true,
+            },
+          },
+        },
+      });
+      console.log(`[EmailBison] Created lead ${createResult.leadId} for local lead ${lead.id}`);
+    } else if (!createResult.success) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { status: "needs_repair" },
+      });
+      console.error(`[EmailBison] Failed to create lead for ${lead.id}: ${createResult.error}`);
+    }
+  }
+
+  if (client.emailBisonApiKey && lead.emailBisonLeadId) {
+    await backfillOutboundEmailMessagesIfMissing({
+      leadId: lead.id,
+      emailBisonLeadId: lead.emailBisonLeadId,
+      apiKey: client.emailBisonApiKey,
+    });
+  }
+
+  const inboundText = (message.body || "").trim();
+
+  // Snooze detection: if the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
+  const snoozeKeywordHit =
+    /\b(after|until|from)\b/i.test(inboundText) &&
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
+
+  if (snoozeKeywordHit) {
+    const tzResult = await ensureLeadTimezone(lead.id);
+    const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
+      messageText: inboundText,
+      timeZone: tzResult.timezone || "UTC",
+    });
+
+    if (snoozedUntilUtc && confidence >= 0.95) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { snoozedUntil: snoozedUntilUtc },
+      });
+      await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
+    }
+  }
+
+  // Auto-booking: only books when the lead clearly accepts one of the offered slots.
+  const autoBook = inboundText ? await processMessageForAutoBooking(lead.id, inboundText) : { booked: false as const };
+
+  // Enrichment sequence.
+  const fullEmailBody = message.rawText || message.rawHtml || inboundText || "";
+
+  // STEP 1: Extract contact info from message content FIRST.
+  const messageExtraction = extractContactFromMessageContent(fullEmailBody);
+  if (messageExtraction.foundInMessage) {
+    const currentLead = await prisma.lead.findUnique({ where: { id: lead.id } });
+    const messageUpdates: Record<string, unknown> = {};
+
+    if (messageExtraction.phone && !currentLead?.phone) {
+      messageUpdates.phone = toStoredPhone(messageExtraction.phone) || messageExtraction.phone;
+      console.log(`[Enrichment] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
+    }
+    if (messageExtraction.linkedinUrl && !currentLead?.linkedinUrl) {
+      messageUpdates.linkedinUrl = messageExtraction.linkedinUrl;
+      console.log(`[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${messageExtraction.linkedinUrl}`);
+    }
+
+    if (Object.keys(messageUpdates).length > 0) {
+      messageUpdates.enrichmentSource = "message_content";
+      messageUpdates.enrichedAt = new Date();
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: messageUpdates,
+      });
+      console.log(`[Enrichment] Updated lead ${lead.id} from message content`);
+    }
+  }
+
+  // STEP 2: EmailBison custom variables.
+  let emailBisonData: EmailBisonEnrichmentData | undefined;
+  if (lead.emailBisonLeadId && client.emailBisonApiKey) {
+    const enrichResult = await enrichLeadFromEmailBison(lead.id, lead.emailBisonLeadId, client.emailBisonApiKey);
+    emailBisonData = enrichResult.clayData;
+  }
+
+  // STEP 3: Signature extraction.
+  const leadFullName = `${lead.firstName || ""} ${lead.lastName || ""}`.trim() || "Lead";
+  await enrichLeadFromSignature({
+    clientId: client.id,
+    leadId: lead.id,
+    leadName: leadFullName,
+    leadEmail: lead.email || "",
+    emailBody: fullEmailBody,
+  });
+
+  // If the lead is a positive reply, ensure they exist in GHL for SMS syncing.
+  if (isPositiveSentiment(lead.sentimentTag)) {
+    try {
+      const ensureResult = await ensureGhlContactIdForLead(lead.id, { allowCreateWithoutPhone: true });
+      if (!ensureResult.success && ensureResult.error) {
+        console.log(`[GHL Contact] Lead ${lead.id}: ${ensureResult.error}`);
+      }
+
+      const sync = await syncGhlContactPhoneForLead(lead.id).catch((err) => ({
+        success: false,
+        updated: false,
+        error: err instanceof Error ? err.message : "Failed to sync phone to GHL",
+      }));
+      if (!sync.success) {
+        console.log(`[GHL Contact] Phone sync for lead ${lead.id}: ${sync.error || "unknown error"}`);
+      }
+    } catch (error) {
+      console.error(`[GHL Contact] Failed to ensure contact for lead ${lead.id}:`, error);
+    }
+  }
+
+  // Resume any follow-ups that were paused waiting for enrichment.
+  await resumeAwaitingEnrichmentFollowUpsForLead(lead.id).catch(() => undefined);
+
+  // STEP 4: Clay enrichment if still missing.
+  await triggerClayEnrichmentIfNeeded({
+    leadId: lead.id,
+    sentimentTag: lead.sentimentTag,
+    emailBisonData,
+  });
+
+  // Draft generation (skip bounce emails and auto-booked appointments).
+  if (!autoBook.booked && lead.sentimentTag && shouldGenerateDraft(lead.sentimentTag, lead.email)) {
+    const messages = await prisma.message.findMany({
+      where: { leadId: lead.id },
+      orderBy: { sentAt: "asc" },
+      take: 80,
+      select: {
+        sentAt: true,
+        channel: true,
+        direction: true,
+        body: true,
+        subject: true,
+      },
+    });
+
+    const transcript = buildSentimentTranscriptFromMessages(messages);
+    const subject = message.subject ?? null;
+    const latestInbound = `Subject: ${subject ?? ""}\n\n${inboundText}`;
+
+    // Hard safety: don’t draft for opt-outs/bounces even if sentiment is stale.
+    const combined = `Subject: ${subject ?? ""} | ${inboundText}`;
+    const mustBlacklist = isOptOutText(combined) || detectBounce([{ body: combined, direction: "inbound", channel: "email" }]);
+    if (!mustBlacklist) {
+      const draftResult = await generateResponseDraft(lead.id, transcript || latestInbound, lead.sentimentTag, "email", {
+        triggerMessageId: message.id,
+      });
+
+      if (draftResult.success && draftResult.draftId && draftResult.content) {
+        const draftId = draftResult.draftId;
+        const draftContent = draftResult.content;
+
+        const responseMode = lead.emailCampaign?.responseMode ?? null;
+        const autoSendThreshold = lead.emailCampaign?.autoSendConfidenceThreshold ?? 0.9;
+
+        let autoReplySent = false;
+
+        if (responseMode === "AI_AUTO_SEND") {
+          const evaluation = await evaluateAutoSend({
+            clientId: client.id,
+            leadId: lead.id,
+            channel: "email",
+            latestInbound: inboundText,
+            subject,
+            conversationHistory: transcript,
+            categorization: lead.sentimentTag,
+            automatedReply: null,
+            replyReceivedAt: message.sentAt,
+            draft: draftContent,
+          });
+
+          if (evaluation.safeToSend && evaluation.confidence >= autoSendThreshold) {
+            const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
+            if (sendResult.success) {
+              autoReplySent = true;
+            } else {
+              console.error(`[Auto-Send] Failed to send draft ${draftId}: ${sendResult.error}`);
+            }
+          } else {
+            const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
+            const campaignLabel = lead.emailCampaign
+              ? `${lead.emailCampaign.name} (${lead.emailCampaign.bisonCampaignId})`
+              : "Unknown campaign";
+            const url = `${getPublicAppUrl()}/?view=inbox&leadId=${lead.id}`;
+            const confidenceText = `${evaluation.confidence.toFixed(2)} < ${autoSendThreshold.toFixed(2)}`;
+
+            const dmResult = await sendSlackDmByEmail({
+              email: "jon@zeroriskgrowth.com",
+              dedupeKey: `auto_send_review:${draftId}`,
+              text: `AI auto-send review needed (${confidenceText})`,
+              blocks: [
+                {
+                  type: "header",
+                  text: { type: "plain_text", text: "AI Auto-Send: Review Needed", emoji: true },
+                },
+                {
+                  type: "section",
+                  fields: [
+                    { type: "mrkdwn", text: `*Lead:*\n${leadName}${lead.email ? `\n${lead.email}` : ""}` },
+                    { type: "mrkdwn", text: `*Campaign:*\n${campaignLabel}` },
+                    { type: "mrkdwn", text: `*Sentiment:*\n${lead.sentimentTag || "Unknown"}` },
+                    {
+                      type: "mrkdwn",
+                      text: `*Confidence:*\n${evaluation.confidence.toFixed(2)} (thresh ${autoSendThreshold.toFixed(2)})`,
+                    },
+                  ],
+                },
+                {
+                  type: "section",
+                  text: { type: "mrkdwn", text: `*Reason:*\n${evaluation.reason}` },
+                },
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: `*Draft Preview:*\n\`\`\`\n${draftContent.slice(0, 1400)}\n\`\`\``,
+                  },
+                },
+                {
+                  type: "section",
+                  text: { type: "mrkdwn", text: `<${url}|Open lead in dashboard>` },
+                },
+              ],
+            });
+            if (!dmResult.success) {
+              console.error(`[Slack DM] Failed to notify Jon for draft ${draftId}: ${dmResult.error || "unknown error"}`);
+            }
+          }
+        } else if (!lead.emailCampaign && lead.autoReplyEnabled) {
+          const decision = await decideShouldAutoReply({
+            clientId: client.id,
+            leadId: lead.id,
+            channel: "email",
+            latestInbound: inboundText,
+            subject,
+            conversationHistory: transcript,
+            categorization: lead.sentimentTag,
+            automatedReply: null,
+            replyReceivedAt: message.sentAt,
+          });
+
+          if (decision.shouldReply) {
+            const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
+            if (sendResult.success) {
+              autoReplySent = true;
+            } else {
+              console.error(`[Auto-Reply] Failed to send draft ${draftId}: ${sendResult.error}`);
+            }
+          }
+        }
+
+        if (autoReplySent) {
+          console.log(`[Email PostProcess] Auto-replied for lead ${lead.id} (draft ${draftId})`);
+        }
+      }
+    }
+  }
+}
+

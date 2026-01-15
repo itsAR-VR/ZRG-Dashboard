@@ -69,6 +69,17 @@ enum InsightChatAuditAction {
   CONTEXT_PACK_DELETED
 }
 
+enum BackgroundJobType {
+  EMAIL_INBOUND_POST_PROCESS
+}
+
+enum BackgroundJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
 // Stores GHL API Keys per sub-account for multi-tenancy
 // Each workspace is tied to a user (from Supabase Auth)
 model Client {
@@ -109,6 +120,7 @@ model Client {
   availabilityCache WorkspaceAvailabilityCache?
   offeredSlots   WorkspaceOfferedSlot[]
   aiInteractions AIInteraction[]
+  backgroundJobs BackgroundJob[]
   insightChatSessions InsightChatSession[]
   insightContextPacks InsightContextPack[]
   insightChatUserPreferences InsightChatUserPreference[]
@@ -289,6 +301,7 @@ model Lead {
   preferredCalendarLink   CalendarLink?  @relation(fields: [preferredCalendarLinkId], references: [id])
   // Relations
   messages          Message[]
+  backgroundJobs    BackgroundJob[]
   followUps         FollowUpTask[]
   followUpInstances FollowUpInstance[]  // Active follow-up sequences for this lead
   reactivationEnrollments ReactivationEnrollment[]
@@ -503,6 +516,7 @@ model Message {
   leadId    String
   lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
   aiDraft   AIDraft? @relation(fields: [aiDraftId], references: [id], onDelete: SetNull)
+  backgroundJobs BackgroundJob[]
   // Timestamps
   sentAt    DateTime @default(now()) // Actual timestamp when message was sent/received
   createdAt DateTime @default(now()) // When record was created in our database
@@ -544,6 +558,7 @@ model AIDraft {
   id        String   @id @default(uuid())
   leadId    String
   lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  triggerMessageId String? // Inbound Message.id that triggered this draft (idempotency key)
   content   String   @db.Text
   channel   String   @default("sms") // sms | email
   status    String   @default("pending") // pending, approved, rejected
@@ -552,8 +567,41 @@ model AIDraft {
   updatedAt DateTime @updatedAt
 
   @@index([leadId])
+  @@index([triggerMessageId])
+  @@unique([triggerMessageId, channel])
   @@index([channel])
   @@index([status])
+}
+
+model BackgroundJob {
+  id          String            @id @default(uuid())
+  type        BackgroundJobType
+  status      BackgroundJobStatus @default(PENDING)
+  dedupeKey   String            @unique
+
+  clientId    String
+  client      Client            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leadId      String
+  lead        Lead              @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  messageId   String
+  message     Message           @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  runAt       DateTime          @default(now())
+  attempts    Int               @default(0)
+  maxAttempts Int               @default(5)
+  lockedAt    DateTime?
+  lockedBy    String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  lastError   String?           @db.Text
+
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@index([status, runAt])
+  @@index([clientId])
+  @@index([leadId])
+  @@index([messageId])
 }
 
 // AI usage telemetry (admin-only observability)

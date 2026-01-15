@@ -1,0 +1,181 @@
+import "server-only";
+
+import crypto from "crypto";
+import { BackgroundJobStatus, BackgroundJobType } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+import { runEmailInboundPostProcessJob } from "@/lib/background-jobs/email-inbound-post-process";
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function getCronJobLimit(): number {
+  return Math.min(200, parsePositiveInt(process.env.BACKGROUND_JOB_CRON_LIMIT, 10));
+}
+
+function getStaleLockMs(): number {
+  return Math.max(60_000, parsePositiveInt(process.env.BACKGROUND_JOB_STALE_LOCK_MS, 10 * 60_000));
+}
+
+function getCronTimeBudgetMs(): number {
+  return Math.max(10_000, parsePositiveInt(process.env.BACKGROUND_JOB_CRON_TIME_BUDGET_MS, 240_000));
+}
+
+function computeRetryBackoffMs(attempt: number): number {
+  const cappedAttempt = Math.max(1, Math.min(10, Math.floor(attempt)));
+  const jitter = Math.floor(Math.random() * 1000);
+  const base = Math.pow(2, cappedAttempt) * 1000; // 2s, 4s, 8s, ...
+  return Math.min(15 * 60_000, base + jitter);
+}
+
+export async function processBackgroundJobs(): Promise<{
+  releasedStale: number;
+  processed: number;
+  succeeded: number;
+  failed: number;
+  retried: number;
+  skipped: number;
+  remaining: number;
+}> {
+  const startedAtMs = Date.now();
+  const deadlineMs = startedAtMs + getCronTimeBudgetMs();
+  const invocationId = crypto.randomUUID();
+
+  const staleCutoff = new Date(Date.now() - getStaleLockMs());
+  const released = await prisma.backgroundJob.updateMany({
+    where: {
+      status: BackgroundJobStatus.RUNNING,
+      lockedAt: { lt: staleCutoff },
+    },
+    data: {
+      status: BackgroundJobStatus.PENDING,
+      lockedAt: null,
+      lockedBy: null,
+      startedAt: null,
+      // keep attempts as-is
+      runAt: new Date(),
+      lastError: "Released stale RUNNING lock",
+    },
+  });
+
+  const limit = getCronJobLimit();
+  const now = new Date();
+  const due = await prisma.backgroundJob.findMany({
+    where: {
+      status: BackgroundJobStatus.PENDING,
+      runAt: { lte: now },
+    },
+    orderBy: { runAt: "asc" },
+    take: limit,
+    select: {
+      id: true,
+      type: true,
+    },
+  });
+
+  let processed = 0;
+  let succeeded = 0;
+  let failed = 0;
+  let retried = 0;
+  let skipped = 0;
+
+  for (const job of due) {
+    // Keep a safety buffer so the cron can respond cleanly.
+    if (Date.now() > deadlineMs - 7_500) break;
+
+    const lockAt = new Date();
+    const locked = await prisma.backgroundJob.updateMany({
+      where: { id: job.id, status: BackgroundJobStatus.PENDING },
+      data: {
+        status: BackgroundJobStatus.RUNNING,
+        lockedAt: lockAt,
+        lockedBy: invocationId,
+        startedAt: lockAt,
+        attempts: { increment: 1 },
+      },
+    });
+    if (locked.count === 0) continue;
+
+    const lockedJob = await prisma.backgroundJob.findUnique({
+      where: { id: job.id },
+      select: {
+        id: true,
+        type: true,
+        clientId: true,
+        leadId: true,
+        messageId: true,
+        attempts: true,
+        maxAttempts: true,
+      },
+    });
+    if (!lockedJob) continue;
+
+    processed++;
+
+    try {
+      switch (lockedJob.type) {
+        case BackgroundJobType.EMAIL_INBOUND_POST_PROCESS: {
+          await runEmailInboundPostProcessJob({
+            clientId: lockedJob.clientId,
+            leadId: lockedJob.leadId,
+            messageId: lockedJob.messageId,
+          });
+          break;
+        }
+        default: {
+          console.warn(`[Background Jobs] Unsupported type: ${String(lockedJob.type)}`);
+          skipped++;
+          break;
+        }
+      }
+
+      await prisma.backgroundJob.update({
+        where: { id: lockedJob.id },
+        data: {
+          status: BackgroundJobStatus.SUCCEEDED,
+          finishedAt: new Date(),
+          lockedAt: null,
+          lockedBy: null,
+          lastError: null,
+        },
+      });
+      succeeded++;
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 10_000);
+      const attempts = lockedJob.attempts;
+      const shouldRetry = attempts < lockedJob.maxAttempts;
+
+      await prisma.backgroundJob.update({
+        where: { id: lockedJob.id },
+        data: {
+          status: shouldRetry ? BackgroundJobStatus.PENDING : BackgroundJobStatus.FAILED,
+          runAt: shouldRetry ? new Date(Date.now() + computeRetryBackoffMs(attempts)) : new Date(),
+          finishedAt: new Date(),
+          lockedAt: null,
+          lockedBy: null,
+          lastError: message,
+        },
+      });
+
+      if (shouldRetry) retried++;
+      else failed++;
+    }
+  }
+
+  const remaining = await prisma.backgroundJob.count({
+    where: { status: BackgroundJobStatus.PENDING, runAt: { lte: new Date() } },
+  });
+
+  return {
+    releasedStale: released.count,
+    processed,
+    succeeded,
+    failed,
+    retried,
+    skipped,
+    remaining,
+  };
+}
+
