@@ -716,6 +716,34 @@ function sanitizeStorageFilename(input: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120) || "file";
 }
 
+function isSupabaseBucketNotFound(error: unknown): boolean {
+  const anyErr = error as any;
+  const status = anyErr?.statusCode ?? anyErr?.status ?? anyErr?.code;
+  const msg = String(anyErr?.message ?? "");
+  return status === 404 || /bucket not found/i.test(msg);
+}
+
+async function ensureSupabaseStorageBucketExists(bucket: string): Promise<void> {
+  const supabase = createSupabaseAdminClient();
+  const storageAny: any = supabase.storage as any;
+
+  // If the SDK supports listing, use it to short-circuit.
+  if (typeof storageAny.listBuckets === "function") {
+    const { data, error } = await storageAny.listBuckets();
+    if (!error && Array.isArray(data) && data.some((b: any) => b?.name === bucket)) return;
+  }
+
+  if (typeof storageAny.createBucket !== "function") return;
+
+  // Default private bucket (safer for uploaded documents). We store an internal reference, not a public URL.
+  const { error } = await storageAny.createBucket(bucket, { public: false });
+  if (!error) return;
+  const msg = String((error as any)?.message ?? "");
+  // Ignore "already exists" / conflict-style responses.
+  if (/already exists/i.test(msg) || (error as any)?.statusCode === 409) return;
+  throw error;
+}
+
 function detectDocxMimeType(file: File): boolean {
   const type = (file.type || "").toLowerCase();
   if (type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return true;
@@ -795,17 +823,37 @@ export async function uploadKnowledgeAssetFile(
       const safeName = sanitizeStorageFilename(file.name);
       uploadPath = `${clientId}/${crypto.randomUUID()}-${safeName}`;
 
-      const { error: uploadError } = await supabase.storage.from(bucket).upload(uploadPath, bytes, {
-        contentType: mimeType,
-        upsert: false,
-        cacheControl: "3600",
-      });
-      if (uploadError) throw uploadError;
+      // Ensure bucket exists (best-effort) and retry once on a bucket-missing response.
+      try {
+        await ensureSupabaseStorageBucketExists(bucket);
+      } catch (ensureError) {
+        console.warn("[KnowledgeAssets] Storage bucket ensure failed (continuing):", ensureError);
+      }
 
-      const { data } = supabase.storage.from(bucket).getPublicUrl(uploadPath);
-      fileUrl = data?.publicUrl ?? null;
+      const attemptUpload = async (): Promise<void> => {
+        const { error: uploadError } = await supabase.storage.from(bucket).upload(uploadPath!, bytes, {
+          contentType: mimeType,
+          upsert: false,
+          cacheControl: "3600",
+        });
+        if (uploadError) throw uploadError;
+      };
+
+      try {
+        await attemptUpload();
+      } catch (uploadError) {
+        if (isSupabaseBucketNotFound(uploadError)) {
+          await ensureSupabaseStorageBucketExists(bucket);
+          await attemptUpload();
+        } else {
+          throw uploadError;
+        }
+      }
+
+      // Store an internal reference (bucket/path) rather than a public URL.
+      fileUrl = `supabase-storage://${bucket}/${uploadPath}`;
     } catch (storageError) {
-      console.error("[KnowledgeAssets] Storage upload failed (continuing):", storageError);
+      console.warn("[KnowledgeAssets] Storage upload failed (continuing):", storageError);
     }
 
     // DOCX: extract locally, then summarize to notes via gpt-5-mini (low).
@@ -865,7 +913,7 @@ export async function uploadKnowledgeAssetFile(
  */
 export async function addWebsiteKnowledgeAsset(
   formData: FormData
-): Promise<{ success: boolean; asset?: KnowledgeAssetData; error?: string }> {
+): Promise<{ success: boolean; asset?: KnowledgeAssetData; warning?: string; error?: string }> {
   try {
     const clientIdRaw = formData.get("clientId");
     const nameRaw = formData.get("name");
@@ -912,18 +960,100 @@ export async function addWebsiteKnowledgeAsset(
       },
     });
 
+    let updated = created;
+    let warning: string | undefined;
+
+    try {
+      const crawl = await crawl4aiExtractMarkdown(url);
+      const markdown =
+        crawl.markdown.length > 180_000 ? `${crawl.markdown.slice(0, 180_000)}\n\n[TRUNCATED]` : crawl.markdown;
+
+      const notes = await extractKnowledgeNotesFromText({
+        clientId,
+        sourceLabel: url,
+        text: markdown,
+      });
+
+      updated = await prisma.knowledgeAsset.update({
+        where: { id: created.id },
+        data: { textContent: notes || null },
+      });
+    } catch (ingestError) {
+      console.warn("[KnowledgeAssets] Website ingestion failed (asset created; retry available):", ingestError);
+      warning = "Website saved, but extraction failed. You can retry scraping later.";
+    }
+
+    revalidatePath("/");
+    return {
+      success: true,
+      warning,
+      asset: {
+        id: updated.id,
+        name: updated.name,
+        type: updated.type as KnowledgeAssetData["type"],
+        fileUrl: updated.fileUrl,
+        textContent: updated.textContent,
+        originalFileName: updated.originalFileName,
+        mimeType: updated.mimeType,
+        createdAt: updated.createdAt,
+      },
+    };
+  } catch (error) {
+    console.error("Failed to add website knowledge asset:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to add website asset" };
+  }
+}
+
+export async function retryWebsiteKnowledgeAssetIngestion(
+  assetId: string
+): Promise<{ success: boolean; asset?: KnowledgeAssetData; error?: string }> {
+  try {
+    const asset = await prisma.knowledgeAsset.findUnique({
+      where: { id: assetId },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        fileUrl: true,
+        textContent: true,
+        originalFileName: true,
+        mimeType: true,
+        createdAt: true,
+        workspaceSettings: { select: { clientId: true } },
+      },
+    });
+    if (!asset) return { success: false, error: "Asset not found" };
+    if (asset.type !== "url") return { success: false, error: "Not a website asset" };
+
+    await requireClientAccess(asset.workspaceSettings.clientId);
+
+    const url = (asset.fileUrl || "").trim();
+    if (!url) return { success: false, error: "Missing URL" };
+
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { success: false, error: "Invalid URL" };
+    }
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      return { success: false, error: "Only http(s) URLs are supported" };
+    }
+    if (isPrivateNetworkHostname(parsed.hostname)) {
+      return { success: false, error: "URL hostname is not allowed" };
+    }
+
     const crawl = await crawl4aiExtractMarkdown(url);
-    const markdown =
-      crawl.markdown.length > 180_000 ? `${crawl.markdown.slice(0, 180_000)}\n\n[TRUNCATED]` : crawl.markdown;
+    const markdown = crawl.markdown.length > 180_000 ? `${crawl.markdown.slice(0, 180_000)}\n\n[TRUNCATED]` : crawl.markdown;
 
     const notes = await extractKnowledgeNotesFromText({
-      clientId,
+      clientId: asset.workspaceSettings.clientId,
       sourceLabel: url,
       text: markdown,
     });
 
     const updated = await prisma.knowledgeAsset.update({
-      where: { id: created.id },
+      where: { id: asset.id },
       data: { textContent: notes || null },
     });
 
@@ -942,8 +1072,8 @@ export async function addWebsiteKnowledgeAsset(
       },
     };
   } catch (error) {
-    console.error("Failed to add website knowledge asset:", error);
-    return { success: false, error: error instanceof Error ? error.message : "Failed to add website asset" };
+    console.error("Failed to retry website knowledge asset ingestion:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to retry website asset" };
   }
 }
 

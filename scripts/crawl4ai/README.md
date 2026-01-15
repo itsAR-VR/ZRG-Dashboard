@@ -2,6 +2,8 @@
 
 This repo can ingest websites into **Knowledge Assets** using the open-source `unclecode/crawl4ai` crawler.
 
+If Crawl4AI is not configured, the app falls back to a simple `fetch()` + best-effort HTML-to-text extraction (lower quality for complex sites, but avoids hard failures).
+
 ## Option A — Run as a local runner (dev)
 
 1. Install + setup Crawl4AI:
@@ -22,3 +24,8 @@ This repo can ingest websites into **Knowledge Assets** using the open-source `u
    - `CRAWL4AI_SERVICE_URL=http://localhost:4891`
    - Optional: `CRAWL4AI_SERVICE_SECRET=...` (and the service will require `Authorization: Bearer ...`)
 
+## Troubleshooting
+
+- If websites show “Pending extraction”, use the “Retry website scrape” button in Settings after Crawl4AI (or your network access) is working.
+- If you want to reduce bandwidth/timeouts in the fallback fetch mode, set:
+  - `KNOWLEDGE_WEBSITE_FETCH_MAX_BYTES` (default `2000000`)

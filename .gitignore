@@ -32,3 +32,4 @@ next-env.d.ts
 # local log exports / debugging artifacts
 ZRG Dashboard Logs*.json
 .env*.local
+.rerun-sentiment-neutral-or-new.state.json

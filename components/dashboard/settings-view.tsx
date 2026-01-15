@@ -61,6 +61,7 @@ import { getWorkspaceAdminStatus } from "@/actions/access-actions"
 	  addKnowledgeAsset,
 	  uploadKnowledgeAssetFile,
 	  addWebsiteKnowledgeAsset,
+	  retryWebsiteKnowledgeAssetIngestion,
 	  deleteKnowledgeAsset,
 	  getCalendarLinks,
 	  addCalendarLink,
@@ -782,7 +783,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         setKnowledgeAssets(prev => [result.asset!, ...prev])
         setNewAssetName("")
         setNewAssetContent("")
-        toast.success("Website ingested")
+        if (result.warning) {
+          toast.message("Website saved", { description: result.warning })
+        } else {
+          toast.success("Website ingested")
+        }
       } else {
         toast.error(result.error || "Failed to ingest website")
       }
@@ -821,6 +826,17 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       toast.success("Asset deleted")
     } else {
       toast.error(result.error || "Failed to delete asset")
+    }
+  }, [])
+
+  const handleRetryWebsiteAsset = useCallback(async (assetId: string) => {
+    toast.message("Retrying website scrape…", { description: "This can take up to a couple minutes." })
+    const result = await retryWebsiteKnowledgeAssetIngestion(assetId)
+    if (result.success && result.asset) {
+      setKnowledgeAssets(prev => prev.map(a => a.id === assetId ? result.asset! : a))
+      toast.success("Website refreshed")
+    } else {
+      toast.error(result.error || "Failed to refresh website")
     }
   }, [])
 
@@ -2173,6 +2189,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                       asset.fileUrl ||
                                       ((asset.textContent || "").trim().startsWith("http") ? asset.textContent : "")
                                     const summary = asset.fileUrl ? asset.textContent : null
+                                    if (source && !summary) {
+                                      return `${source} — Pending extraction`
+                                    }
                                     if (source && summary) {
                                       const s = summary.trim()
                                       return `${source} — ${s.slice(0, 80)}${s.length > 80 ? "..." : ""}`
@@ -2187,6 +2206,17 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                           <Badge variant="outline" className="text-xs">
                             {asset.type}
                           </Badge>
+                          {asset.type === "url" && !asset.textContent && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                              onClick={() => handleRetryWebsiteAsset(asset.id)}
+                              title="Retry website scrape"
+                            >
+                              <RefreshCcw className="h-4 w-4" />
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="icon"

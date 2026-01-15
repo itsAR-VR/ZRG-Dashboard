@@ -250,6 +250,14 @@ model Message {
 | `OPENAI_DRAFT_TOKEN_BUDGET_MULTIPLIER` | (Optional) Output token budget multiplier for drafts (default `3`) |
 | `OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP` | (Optional) Hard cap for `max_output_tokens` on draft retries (default `8000`) |
 | `OPENAI_DRAFT_PREFER_API_TOKEN_COUNT` | (Optional) Use OpenAI input-tokens count API for sizing draft budgets (default `false`) |
+| `SUPABASE_KNOWLEDGE_ASSETS_BUCKET` | (Optional) Supabase Storage bucket name for Knowledge Asset uploads (default `knowledge-assets`) |
+| `KNOWLEDGE_ASSET_MAX_BYTES` | (Optional) Max upload size for Knowledge Asset files (default `12582912` = 12MB) |
+| `CRAWL4AI_SERVICE_URL` | (Optional) Crawl4AI HTTP service URL for best website extraction (recommended for prod) |
+| `CRAWL4AI_SERVICE_SECRET` | (Optional) Bearer token for the Crawl4AI service |
+| `CRAWL4AI_LOCAL_RUNNER` | (Optional) Enable local Crawl4AI python runner (`true` for dev) |
+| `CRAWL4AI_PYTHON_BIN` | (Optional) Python binary for local runner (default `python3`) |
+| `CRAWL4AI_SCRIPT_PATH` | (Optional) Path to crawl script (default `scripts/crawl4ai/extract_markdown.py`) |
+| `KNOWLEDGE_WEBSITE_FETCH_MAX_BYTES` | (Optional) Max bytes fetched when Crawl4AI is not configured (default `2000000`) |
 | `AI_MODEL_PRICING_JSON` | (Optional) Override per-model token pricing for cost estimates |
 | `DATABASE_URL` | Transaction pooler connection (port 6543, `?pgbouncer=true`) |
 | `DIRECT_URL` | Direct DB connection (port 5432) used for Prisma CLI (`db push`, migrations) |
