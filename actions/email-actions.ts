@@ -2,6 +2,8 @@
 
 import { prisma } from "@/lib/prisma";
 import { sendEmailBisonReply } from "@/lib/emailbison-api";
+import { sendSmartLeadReplyToThread } from "@/lib/smartlead-api";
+import { sendInstantlyReply } from "@/lib/instantly-api";
 import { revalidatePath } from "next/cache";
 import { syncEmailConversationHistorySystem } from "@/lib/conversation-sync";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
@@ -10,6 +12,9 @@ import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { emailBisonHtmlFromPlainText } from "@/lib/email-format";
 import type { OutboundSentBy } from "@/lib/system-sender";
 import { refreshSenderEmailSnapshotsDue } from "@/lib/reactivation-engine";
+import { EmailIntegrationProvider } from "@prisma/client";
+import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
+import { decodeInstantlyReplyHandle, decodeSmartLeadReplyHandle } from "@/lib/email-reply-handle";
 
 interface SendEmailResult {
   success: boolean;
@@ -145,45 +150,42 @@ export async function sendEmailReply(
       return { success: false, error: "Lead is blacklisted (opted out)" };
     }
 
-    if (!lead.senderAccountId) {
-      return { success: false, error: "Lead is missing sender account for EmailBison" };
-    }
-
     const client = lead.client;
-    if (!client.emailBisonApiKey) {
-      return { success: false, error: "Client missing EmailBison API key" };
+    let provider: EmailIntegrationProvider | null;
+    try {
+      provider = resolveEmailIntegrationProvider(client);
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Invalid email integration configuration" };
     }
 
-    // Validate recipient via EmailGuard
-    const guardResult = await validateWithEmailGuard(lead.email);
-    if (!guardResult.valid) {
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: {
-          status: "blacklisted",
-          sentimentTag: "Blacklist",
-        },
-      });
-      await prisma.lead.updateMany({
-        where: { id: lead.id, enrichmentStatus: "pending" },
-        data: { enrichmentStatus: "not_needed" },
-      });
-
-      return { success: false, error: `Email validation failed: ${guardResult.reason}` };
+    if (!provider) {
+      return { success: false, error: "No email provider is configured for this workspace" };
     }
+
+    const messageContent = editedContent || draft.content;
 
     // Find the latest inbound email to reply to (thread)
     const latestInboundEmail = await prisma.message.findFirst({
       where: {
         leadId: lead.id,
         direction: "inbound",
-        emailBisonReplyId: { not: null },
+        ...(provider === EmailIntegrationProvider.SMARTLEAD
+          ? { emailBisonReplyId: { startsWith: "smartlead:" } }
+          : provider === EmailIntegrationProvider.INSTANTLY
+            ? { emailBisonReplyId: { startsWith: "instantly:" } }
+            : {
+                emailBisonReplyId: { not: null },
+                NOT: [
+                  { emailBisonReplyId: { startsWith: "smartlead:" } },
+                  { emailBisonReplyId: { startsWith: "instantly:" } },
+                ],
+              }),
       },
       orderBy: { sentAt: "desc" },
     });
 
-    const replyId = latestInboundEmail?.emailBisonReplyId;
-    if (!replyId) {
+    const replyKey = latestInboundEmail?.emailBisonReplyId;
+    if (!replyKey) {
       return { success: false, error: "No inbound email thread to reply to" };
     }
 
@@ -213,93 +215,182 @@ export async function sendEmailReply(
       return { success: false, error: "Lead requested unsubscribe (opt-out)" };
     }
 
-    const messageContent = editedContent || draft.content;
+    let emailGuardTarget = lead.email;
+    let smartLeadHandle: ReturnType<typeof decodeSmartLeadReplyHandle> = null;
+    if (provider === EmailIntegrationProvider.SMARTLEAD) {
+      smartLeadHandle = decodeSmartLeadReplyHandle(replyKey);
+      if (!smartLeadHandle) {
+        return { success: false, error: "SmartLead thread handle is invalid or missing" };
+      }
+      emailGuardTarget = smartLeadHandle.toEmail || lead.email;
+    }
+
+    let instantlyHandle: ReturnType<typeof decodeInstantlyReplyHandle> = null;
+    if (provider === EmailIntegrationProvider.INSTANTLY) {
+      instantlyHandle = decodeInstantlyReplyHandle(replyKey);
+      if (!instantlyHandle) {
+        return { success: false, error: "Instantly thread handle is invalid or missing" };
+      }
+    }
+
+    // Validate recipient via EmailGuard
+    const guardResult = await validateWithEmailGuard(emailGuardTarget);
+    if (!guardResult.valid) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          status: "blacklisted",
+          sentimentTag: "Blacklist",
+        },
+      });
+      await prisma.lead.updateMany({
+        where: { id: lead.id, enrichmentStatus: "pending" },
+        data: { enrichmentStatus: "not_needed" },
+      });
+
+      return { success: false, error: `Email validation failed: ${guardResult.reason}` };
+    }
+
     const subject = latestInboundEmail?.subject || null;
 
-    const htmlMessage = emailBisonHtmlFromPlainText(messageContent);
-
-    // Construct to_emails array (required by EmailBison API)
-    const toEmails = lead.email
-      ? [{ name: lead.firstName || null, email_address: lead.email }]
-      : [];
-
-    // Convert CC/BCC string arrays to EmailBisonRecipient format
-    const ccEmails = latestInboundEmail?.cc?.map(address => ({ name: null, email_address: address })) || [];
-    const bccEmails = latestInboundEmail?.bcc?.map(address => ({ name: null, email_address: address })) || [];
-
-    let senderEmailId = lead.senderAccountId;
-
-    // Ensure sender id is numeric and sendable; pick a fallback when possible.
-    const senderEmailIdNum = parseSenderEmailId(senderEmailId);
-    if (!senderEmailIdNum) {
-      const picked = await pickSendableSenderEmailId({
-        clientId: client.id,
-        preferredSenderEmailId: senderEmailId,
-        refreshIfStale: true,
-      });
-      senderEmailId = picked.senderEmailId;
-      if (!senderEmailId) {
-        return { success: false, error: "No sendable EmailBison sender account is configured for this workspace" };
+    if (provider === EmailIntegrationProvider.EMAILBISON) {
+      if (!lead.senderAccountId) {
+        return { success: false, error: "Lead is missing sender account for EmailBison" };
       }
-      await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
-    } else {
-      const preferred = await prisma.emailBisonSenderEmailSnapshot
-        .findUnique({
-          where: { clientId_senderEmailId: { clientId: client.id, senderEmailId } },
-          select: { isSendable: true },
-        })
-        .catch(() => null);
+      if (!client.emailBisonApiKey) {
+        return { success: false, error: "Client missing EmailBison API key" };
+      }
 
-      if (preferred && preferred.isSendable === false) {
+      const htmlMessage = emailBisonHtmlFromPlainText(messageContent);
+
+      // Construct to_emails array (required by EmailBison API)
+      const toEmails = lead.email
+        ? [{ name: lead.firstName || null, email_address: lead.email }]
+        : [];
+
+      // Convert CC/BCC string arrays to EmailBisonRecipient format
+      const ccEmails = latestInboundEmail?.cc?.map((address) => ({ name: null, email_address: address })) || [];
+      const bccEmails = latestInboundEmail?.bcc?.map((address) => ({ name: null, email_address: address })) || [];
+
+      let senderEmailId = lead.senderAccountId;
+
+      // Ensure sender id is numeric and sendable; pick a fallback when possible.
+      const senderEmailIdNum = parseSenderEmailId(senderEmailId);
+      if (!senderEmailIdNum) {
+        const picked = await pickSendableSenderEmailId({
+          clientId: client.id,
+          preferredSenderEmailId: senderEmailId,
+          refreshIfStale: true,
+        });
+        senderEmailId = picked.senderEmailId;
+        if (!senderEmailId) {
+          return { success: false, error: "No sendable EmailBison sender account is configured for this workspace" };
+        }
+        await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+      } else {
+        const preferred = await prisma.emailBisonSenderEmailSnapshot
+          .findUnique({
+            where: { clientId_senderEmailId: { clientId: client.id, senderEmailId } },
+            select: { isSendable: true },
+          })
+          .catch(() => null);
+
+        if (preferred && preferred.isSendable === false) {
+          const picked = await pickSendableSenderEmailId({
+            clientId: client.id,
+            preferredSenderEmailId: null,
+            refreshIfStale: false,
+          });
+          if (picked.senderEmailId) {
+            senderEmailId = picked.senderEmailId;
+            await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+          }
+        }
+      }
+
+      const buildPayload = (sender: string) => ({
+        message: htmlMessage,
+        sender_email_id: parseSenderEmailId(sender)!, // validated above
+        to_emails: toEmails, // Required field
+        subject: subject || undefined,
+        cc_emails: ccEmails, // Correct field name
+        bcc_emails: bccEmails, // Correct field name
+        inject_previous_email_body: true,
+        content_type: "html" as const, // Send as HTML to preserve formatting
+      });
+
+      // Call sendEmailBisonReply with correct 3 parameters: (apiKey, replyId, payload)
+      let sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyKey, buildPayload(senderEmailId));
+
+      // Retry once with a fallback sender if the configured sender was invalid in EmailBison.
+      if (!sendResult.success && isInvalidSenderEmailIdErrorText(sendResult.error || "")) {
+        await prisma.emailBisonSenderEmailSnapshot
+          .updateMany({
+            where: { clientId: client.id, senderEmailId },
+            data: { isSendable: false, status: "invalid_sender_email_id", fetchedAt: new Date() },
+          })
+          .catch(() => undefined);
+
         const picked = await pickSendableSenderEmailId({
           clientId: client.id,
           preferredSenderEmailId: null,
-          refreshIfStale: false,
+          refreshIfStale: true,
         });
-        if (picked.senderEmailId) {
+        if (picked.senderEmailId && picked.senderEmailId !== senderEmailId) {
           senderEmailId = picked.senderEmailId;
           await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+          sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyKey, buildPayload(senderEmailId));
         }
       }
-    }
 
-    const buildPayload = (sender: string) => ({
-      message: htmlMessage,
-      sender_email_id: parseSenderEmailId(sender)!, // validated above
-      to_emails: toEmails, // Required field
-      subject: subject || undefined,
-      cc_emails: ccEmails, // Correct field name
-      bcc_emails: bccEmails, // Correct field name
-      inject_previous_email_body: true,
-      content_type: "html" as const, // Send as HTML to preserve formatting
-    });
-
-    // Call sendEmailBisonReply with correct 3 parameters: (apiKey, replyId, payload)
-    let sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, buildPayload(senderEmailId));
-
-    // Retry once with a fallback sender if the configured sender was invalid in EmailBison.
-    if (!sendResult.success && isInvalidSenderEmailIdErrorText(sendResult.error || "")) {
-      await prisma.emailBisonSenderEmailSnapshot
-        .updateMany({
-          where: { clientId: client.id, senderEmailId },
-          data: { isSendable: false, status: "invalid_sender_email_id", fetchedAt: new Date() },
-        })
-        .catch(() => undefined);
-
-      const picked = await pickSendableSenderEmailId({
-        clientId: client.id,
-        preferredSenderEmailId: null,
-        refreshIfStale: true,
-      });
-      if (picked.senderEmailId && picked.senderEmailId !== senderEmailId) {
-        senderEmailId = picked.senderEmailId;
-        await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
-        sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, buildPayload(senderEmailId));
+      if (!sendResult.success) {
+        return { success: false, error: sendResult.error || "Failed to send email reply" };
       }
-    }
+    } else if (provider === EmailIntegrationProvider.SMARTLEAD) {
+      if (!client.smartLeadApiKey) {
+        return { success: false, error: "Client missing SmartLead API key" };
+      }
+      if (!smartLeadHandle) {
+        return { success: false, error: "SmartLead thread handle is invalid or missing" };
+      }
 
-    if (!sendResult.success) {
-      return { success: false, error: sendResult.error || "Failed to send email reply" };
+      const cc = (latestInboundEmail?.cc || []).filter(Boolean);
+      const bcc = (latestInboundEmail?.bcc || []).filter(Boolean);
+
+      const sendResult = await sendSmartLeadReplyToThread(client.smartLeadApiKey, {
+        campaignId: smartLeadHandle.campaignId,
+        statsId: smartLeadHandle.statsId,
+        messageId: smartLeadHandle.messageId,
+        subject,
+        body: messageContent,
+        cc,
+        bcc,
+        toEmail: smartLeadHandle.toEmail || lead.email,
+      });
+
+      if (!sendResult.success) {
+        return { success: false, error: sendResult.error || "Failed to send SmartLead email reply" };
+      }
+    } else if (provider === EmailIntegrationProvider.INSTANTLY) {
+      if (!client.instantlyApiKey) {
+        return { success: false, error: "Client missing Instantly API key" };
+      }
+      if (!instantlyHandle) {
+        return { success: false, error: "Instantly thread handle is invalid or missing" };
+      }
+
+      const sendResult = await sendInstantlyReply(client.instantlyApiKey, {
+        replyToUuid: instantlyHandle.replyToUuid,
+        eaccount: instantlyHandle.eaccount,
+        subject,
+        body: messageContent,
+      });
+
+      if (!sendResult.success) {
+        return { success: false, error: sendResult.error || "Failed to send Instantly email reply" };
+      }
+    } else {
+      return { success: false, error: "No supported email provider is configured for this workspace" };
     }
 
     const message = await prisma.message.create({
@@ -334,11 +425,12 @@ export async function sendEmailReply(
       console.error("[Email] Failed to auto-start no-response sequence:", err);
     });
 
-    // Trigger background sync to ensure thread consistency
-    // This runs async and doesn't block the response
-    syncEmailConversationHistorySystem(lead.id).catch((err) => {
-      console.error("[Email] Background sync failed:", err);
-    });
+    if (provider === EmailIntegrationProvider.EMAILBISON) {
+      // Trigger background sync to ensure thread consistency (EmailBison only).
+      syncEmailConversationHistorySystem(lead.id).catch((err) => {
+        console.error("[Email] Background sync failed:", err);
+      });
+    }
 
     return { success: true, messageId: message.id };
   } catch (error) {
@@ -379,17 +471,63 @@ export async function sendEmailReplyForLead(
       return { success: false, error: "Lead is blacklisted (opted out)" };
     }
 
-    if (!lead.senderAccountId) {
-      return { success: false, error: "Lead is missing sender account for EmailBison" };
+    const client = lead.client;
+    let provider: EmailIntegrationProvider | null;
+    try {
+      provider = resolveEmailIntegrationProvider(client);
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Invalid email integration configuration" };
     }
 
-    const client = lead.client;
-    if (!client?.emailBisonApiKey) {
-      return { success: false, error: "Client missing EmailBison API key" };
+    if (!provider) {
+      return { success: false, error: "No email provider is configured for this workspace" };
+    }
+
+    // Find the latest inbound email to reply to (thread)
+    const latestInboundEmail = await prisma.message.findFirst({
+      where: {
+        leadId: lead.id,
+        direction: "inbound",
+        ...(provider === EmailIntegrationProvider.SMARTLEAD
+          ? { emailBisonReplyId: { startsWith: "smartlead:" } }
+          : provider === EmailIntegrationProvider.INSTANTLY
+            ? { emailBisonReplyId: { startsWith: "instantly:" } }
+            : {
+                emailBisonReplyId: { not: null },
+                NOT: [
+                  { emailBisonReplyId: { startsWith: "smartlead:" } },
+                  { emailBisonReplyId: { startsWith: "instantly:" } },
+                ],
+              }),
+      },
+      orderBy: { sentAt: "desc" },
+    });
+
+    const replyKey = latestInboundEmail?.emailBisonReplyId;
+    if (!replyKey) {
+      return { success: false, error: "No inbound email thread to reply to" };
+    }
+
+    let emailGuardTarget = lead.email;
+    let smartLeadHandle: ReturnType<typeof decodeSmartLeadReplyHandle> = null;
+    if (provider === EmailIntegrationProvider.SMARTLEAD) {
+      smartLeadHandle = decodeSmartLeadReplyHandle(replyKey);
+      if (!smartLeadHandle) {
+        return { success: false, error: "SmartLead thread handle is invalid or missing" };
+      }
+      emailGuardTarget = smartLeadHandle.toEmail || lead.email;
+    }
+
+    let instantlyHandle: ReturnType<typeof decodeInstantlyReplyHandle> = null;
+    if (provider === EmailIntegrationProvider.INSTANTLY) {
+      instantlyHandle = decodeInstantlyReplyHandle(replyKey);
+      if (!instantlyHandle) {
+        return { success: false, error: "Instantly thread handle is invalid or missing" };
+      }
     }
 
     // Validate recipient via EmailGuard
-    const guardResult = await validateWithEmailGuard(lead.email);
+    const guardResult = await validateWithEmailGuard(emailGuardTarget);
     if (!guardResult.valid) {
       await prisma.lead.update({
         where: { id: lead.id },
@@ -404,21 +542,6 @@ export async function sendEmailReplyForLead(
       });
 
       return { success: false, error: `Email validation failed: ${guardResult.reason}` };
-    }
-
-    // Find the latest inbound email to reply to (thread)
-    const latestInboundEmail = await prisma.message.findFirst({
-      where: {
-        leadId: lead.id,
-        direction: "inbound",
-        emailBisonReplyId: { not: null },
-      },
-      orderBy: { sentAt: "desc" },
-    });
-
-    const replyId = latestInboundEmail?.emailBisonReplyId;
-    if (!replyId) {
-      return { success: false, error: "No inbound email thread to reply to" };
     }
 
     // Compliance/backstop: refuse to reply if the latest inbound email contains an opt-out request.
@@ -448,86 +571,138 @@ export async function sendEmailReplyForLead(
     }
 
     const subject = latestInboundEmail?.subject || null;
-    const htmlMessage = emailBisonHtmlFromPlainText(messageContent);
-
-    // Construct to_emails array (required by EmailBison API)
-    const toEmails = lead.email
-      ? [{ name: lead.firstName || null, email_address: lead.email }]
-      : [];
-
-    // Convert CC/BCC string arrays to EmailBisonRecipient format
-    const ccEmails = latestInboundEmail?.cc?.map((address) => ({ name: null, email_address: address })) || [];
-    const bccEmails = latestInboundEmail?.bcc?.map((address) => ({ name: null, email_address: address })) || [];
-
-    let senderEmailId = lead.senderAccountId;
-    const senderEmailIdNum = parseSenderEmailId(senderEmailId);
-    if (!senderEmailIdNum) {
-      const picked = await pickSendableSenderEmailId({
-        clientId: client.id,
-        preferredSenderEmailId: senderEmailId,
-        refreshIfStale: true,
-      });
-      senderEmailId = picked.senderEmailId;
-      if (!senderEmailId) {
-        return { success: false, error: "No sendable EmailBison sender account is configured for this workspace" };
+    if (provider === EmailIntegrationProvider.EMAILBISON) {
+      if (!lead.senderAccountId) {
+        return { success: false, error: "Lead is missing sender account for EmailBison" };
       }
-      await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
-    } else {
-      const preferred = await prisma.emailBisonSenderEmailSnapshot
-        .findUnique({
-          where: { clientId_senderEmailId: { clientId: client.id, senderEmailId } },
-          select: { isSendable: true },
-        })
-        .catch(() => null);
+      if (!client?.emailBisonApiKey) {
+        return { success: false, error: "Client missing EmailBison API key" };
+      }
 
-      if (preferred && preferred.isSendable === false) {
+      const htmlMessage = emailBisonHtmlFromPlainText(messageContent);
+
+      // Construct to_emails array (required by EmailBison API)
+      const toEmails = lead.email
+        ? [{ name: lead.firstName || null, email_address: lead.email }]
+        : [];
+
+      // Convert CC/BCC string arrays to EmailBisonRecipient format
+      const ccEmails = latestInboundEmail?.cc?.map((address) => ({ name: null, email_address: address })) || [];
+      const bccEmails = latestInboundEmail?.bcc?.map((address) => ({ name: null, email_address: address })) || [];
+
+      let senderEmailId = lead.senderAccountId;
+      const senderEmailIdNum = parseSenderEmailId(senderEmailId);
+      if (!senderEmailIdNum) {
+        const picked = await pickSendableSenderEmailId({
+          clientId: client.id,
+          preferredSenderEmailId: senderEmailId,
+          refreshIfStale: true,
+        });
+        senderEmailId = picked.senderEmailId;
+        if (!senderEmailId) {
+          return { success: false, error: "No sendable EmailBison sender account is configured for this workspace" };
+        }
+        await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+      } else {
+        const preferred = await prisma.emailBisonSenderEmailSnapshot
+          .findUnique({
+            where: { clientId_senderEmailId: { clientId: client.id, senderEmailId } },
+            select: { isSendable: true },
+          })
+          .catch(() => null);
+
+        if (preferred && preferred.isSendable === false) {
+          const picked = await pickSendableSenderEmailId({
+            clientId: client.id,
+            preferredSenderEmailId: null,
+            refreshIfStale: false,
+          });
+          if (picked.senderEmailId) {
+            senderEmailId = picked.senderEmailId;
+            await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+          }
+        }
+      }
+
+      const buildPayload = (sender: string) => ({
+        message: htmlMessage,
+        sender_email_id: parseSenderEmailId(sender)!, // validated above
+        to_emails: toEmails,
+        subject: subject || undefined,
+        cc_emails: ccEmails,
+        bcc_emails: bccEmails,
+        inject_previous_email_body: true,
+        content_type: "html" as const,
+      });
+
+      let sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyKey, buildPayload(senderEmailId));
+
+      if (!sendResult.success && isInvalidSenderEmailIdErrorText(sendResult.error || "")) {
+        await prisma.emailBisonSenderEmailSnapshot
+          .updateMany({
+            where: { clientId: client.id, senderEmailId },
+            data: { isSendable: false, status: "invalid_sender_email_id", fetchedAt: new Date() },
+          })
+          .catch(() => undefined);
+
         const picked = await pickSendableSenderEmailId({
           clientId: client.id,
           preferredSenderEmailId: null,
-          refreshIfStale: false,
+          refreshIfStale: true,
         });
-        if (picked.senderEmailId) {
+        if (picked.senderEmailId && picked.senderEmailId !== senderEmailId) {
           senderEmailId = picked.senderEmailId;
           await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
+          sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyKey, buildPayload(senderEmailId));
         }
       }
-    }
 
-    const buildPayload = (sender: string) => ({
-      message: htmlMessage,
-      sender_email_id: parseSenderEmailId(sender)!, // validated above
-      to_emails: toEmails,
-      subject: subject || undefined,
-      cc_emails: ccEmails,
-      bcc_emails: bccEmails,
-      inject_previous_email_body: true,
-      content_type: "html" as const,
-    });
-
-    let sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, buildPayload(senderEmailId));
-
-    if (!sendResult.success && isInvalidSenderEmailIdErrorText(sendResult.error || "")) {
-      await prisma.emailBisonSenderEmailSnapshot
-        .updateMany({
-          where: { clientId: client.id, senderEmailId },
-          data: { isSendable: false, status: "invalid_sender_email_id", fetchedAt: new Date() },
-        })
-        .catch(() => undefined);
-
-      const picked = await pickSendableSenderEmailId({
-        clientId: client.id,
-        preferredSenderEmailId: null,
-        refreshIfStale: true,
-      });
-      if (picked.senderEmailId && picked.senderEmailId !== senderEmailId) {
-        senderEmailId = picked.senderEmailId;
-        await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
-        sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyId, buildPayload(senderEmailId));
+      if (!sendResult.success) {
+        return { success: false, error: sendResult.error || "Failed to send email reply" };
       }
-    }
+    } else if (provider === EmailIntegrationProvider.SMARTLEAD) {
+      if (!client?.smartLeadApiKey) {
+        return { success: false, error: "Client missing SmartLead API key" };
+      }
+      const handle = smartLeadHandle ?? decodeSmartLeadReplyHandle(replyKey);
+      if (!handle) return { success: false, error: "SmartLead thread handle is invalid or missing" };
 
-    if (!sendResult.success) {
-      return { success: false, error: sendResult.error || "Failed to send email reply" };
+      const cc = (latestInboundEmail?.cc || []).filter(Boolean);
+      const bcc = (latestInboundEmail?.bcc || []).filter(Boolean);
+
+      const sendResult = await sendSmartLeadReplyToThread(client.smartLeadApiKey, {
+        campaignId: handle.campaignId,
+        statsId: handle.statsId,
+        messageId: handle.messageId,
+        subject,
+        body: messageContent,
+        cc,
+        bcc,
+        toEmail: handle.toEmail || lead.email,
+      });
+
+      if (!sendResult.success) {
+        return { success: false, error: sendResult.error || "Failed to send SmartLead email reply" };
+      }
+    } else if (provider === EmailIntegrationProvider.INSTANTLY) {
+      if (!client?.instantlyApiKey) {
+        return { success: false, error: "Client missing Instantly API key" };
+      }
+      const handle = instantlyHandle ?? decodeInstantlyReplyHandle(replyKey);
+      if (!handle) return { success: false, error: "Instantly thread handle is invalid or missing" };
+
+      const sendResult = await sendInstantlyReply(client.instantlyApiKey, {
+        replyToUuid: handle.replyToUuid,
+        eaccount: handle.eaccount,
+        subject,
+        body: messageContent,
+      });
+
+      if (!sendResult.success) {
+        return { success: false, error: sendResult.error || "Failed to send Instantly email reply" };
+      }
+    } else {
+      return { success: false, error: "No supported email provider is configured for this workspace" };
     }
 
     const message = await prisma.message.create({
@@ -552,9 +727,11 @@ export async function sendEmailReplyForLead(
       console.error("[Email] Failed to auto-start no-response sequence:", err);
     });
 
-    syncEmailConversationHistorySystem(lead.id).catch((err) => {
-      console.error("[Email] Background sync failed:", err);
-    });
+    if (provider === EmailIntegrationProvider.EMAILBISON) {
+      syncEmailConversationHistorySystem(lead.id).catch((err) => {
+        console.error("[Email] Background sync failed:", err);
+      });
+    }
 
     return { success: true, messageId: message.id };
   } catch (error) {

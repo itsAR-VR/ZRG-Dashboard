@@ -2,9 +2,12 @@
 
 import { prisma } from "@/lib/prisma";
 import { fetchEmailBisonCampaigns } from "@/lib/emailbison-api";
+import { fetchSmartLeadCampaigns } from "@/lib/smartlead-api";
+import { fetchInstantlyCampaigns } from "@/lib/instantly-api";
 import { revalidatePath } from "next/cache";
 import { requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
-import { CampaignResponseMode } from "@prisma/client";
+import { CampaignResponseMode, EmailIntegrationProvider } from "@prisma/client";
+import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 
 interface EmailCampaignData {
   id: string;
@@ -127,15 +130,32 @@ export async function syncEmailCampaignsFromEmailBison(clientId: string): Promis
     await requireClientAdminAccess(clientId);
     const client = await prisma.client.findUnique({
       where: { id: clientId },
+      select: {
+        id: true,
+        emailProvider: true,
+        emailBisonApiKey: true,
+        emailBisonWorkspaceId: true,
+        smartLeadApiKey: true,
+        smartLeadWebhookSecret: true,
+        instantlyApiKey: true,
+        instantlyWebhookSecret: true,
+      },
     });
 
-    if (!client) {
-      return { success: false, error: "Client not found" };
+    if (!client) return { success: false, error: "Client not found" };
+
+    let provider: EmailIntegrationProvider | null;
+    try {
+      provider = resolveEmailIntegrationProvider(client);
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Invalid email integration configuration" };
     }
 
-    if (!client.emailBisonApiKey) {
-      return { success: false, error: "Client missing EmailBison credentials" };
+    if (provider !== EmailIntegrationProvider.EMAILBISON) {
+      return { success: false, error: "Client is not configured for EmailBison" };
     }
+
+    if (!client.emailBisonApiKey) return { success: false, error: "Client missing EmailBison credentials" };
 
     const campaignsResult = await fetchEmailBisonCampaigns(client.emailBisonApiKey);
 
@@ -173,6 +193,146 @@ export async function syncEmailCampaignsFromEmailBison(clientId: string): Promis
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
     };
+  }
+}
+
+export async function syncEmailCampaignsFromSmartLead(clientId: string): Promise<{
+  success: boolean;
+  synced?: number;
+  error?: string;
+}> {
+  try {
+    await requireClientAdminAccess(clientId);
+    const client = await prisma.client.findUnique({
+      where: { id: clientId },
+      select: {
+        id: true,
+        emailProvider: true,
+        smartLeadApiKey: true,
+        smartLeadWebhookSecret: true,
+        emailBisonApiKey: true,
+        emailBisonWorkspaceId: true,
+        instantlyApiKey: true,
+        instantlyWebhookSecret: true,
+      },
+    });
+
+    if (!client) return { success: false, error: "Client not found" };
+
+    let provider: EmailIntegrationProvider | null;
+    try {
+      provider = resolveEmailIntegrationProvider(client);
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Invalid email integration configuration" };
+    }
+
+    if (provider !== EmailIntegrationProvider.SMARTLEAD) {
+      return { success: false, error: "Client is not configured for SmartLead" };
+    }
+
+    if (!client.smartLeadApiKey) return { success: false, error: "Client missing SmartLead credentials" };
+
+    const campaignsResult = await fetchSmartLeadCampaigns(client.smartLeadApiKey);
+    if (!campaignsResult.success || !campaignsResult.data) {
+      return { success: false, error: campaignsResult.error || "Failed to fetch SmartLead campaigns" };
+    }
+
+    let synced = 0;
+    for (const campaign of campaignsResult.data) {
+      await prisma.emailCampaign.upsert({
+        where: {
+          clientId_bisonCampaignId: {
+            clientId: client.id,
+            bisonCampaignId: campaign.id,
+          },
+        },
+        create: {
+          clientId: client.id,
+          bisonCampaignId: campaign.id,
+          name: campaign.name,
+        },
+        update: {
+          name: campaign.name,
+        },
+      });
+      synced++;
+    }
+
+    revalidatePath("/");
+    return { success: true, synced };
+  } catch (error) {
+    console.error("[EmailCampaign] Failed to sync SmartLead campaigns:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+export async function syncEmailCampaignsFromInstantly(clientId: string): Promise<{
+  success: boolean;
+  synced?: number;
+  error?: string;
+}> {
+  try {
+    await requireClientAdminAccess(clientId);
+    const client = await prisma.client.findUnique({
+      where: { id: clientId },
+      select: {
+        id: true,
+        emailProvider: true,
+        instantlyApiKey: true,
+        instantlyWebhookSecret: true,
+        emailBisonApiKey: true,
+        emailBisonWorkspaceId: true,
+        smartLeadApiKey: true,
+        smartLeadWebhookSecret: true,
+      },
+    });
+
+    if (!client) return { success: false, error: "Client not found" };
+
+    let provider: EmailIntegrationProvider | null;
+    try {
+      provider = resolveEmailIntegrationProvider(client);
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Invalid email integration configuration" };
+    }
+
+    if (provider !== EmailIntegrationProvider.INSTANTLY) {
+      return { success: false, error: "Client is not configured for Instantly" };
+    }
+
+    if (!client.instantlyApiKey) return { success: false, error: "Client missing Instantly credentials" };
+
+    const campaignsResult = await fetchInstantlyCampaigns(client.instantlyApiKey, { limit: 100 });
+    if (!campaignsResult.success || !campaignsResult.data) {
+      return { success: false, error: campaignsResult.error || "Failed to fetch Instantly campaigns" };
+    }
+
+    let synced = 0;
+    for (const campaign of campaignsResult.data) {
+      await prisma.emailCampaign.upsert({
+        where: {
+          clientId_bisonCampaignId: {
+            clientId: client.id,
+            bisonCampaignId: campaign.id,
+          },
+        },
+        create: {
+          clientId: client.id,
+          bisonCampaignId: campaign.id,
+          name: campaign.name,
+        },
+        update: {
+          name: campaign.name,
+        },
+      });
+      synced++;
+    }
+
+    revalidatePath("/");
+    return { success: true, synced };
+  } catch (error) {
+    console.error("[EmailCampaign] Failed to sync Instantly campaigns:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
   }
 }
 

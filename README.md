@@ -17,7 +17,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 | **Database** | Supabase (PostgreSQL) with Prisma ORM |
 | **AI Engine** | OpenAI (GPT-5.1 / GPT-5-mini / GPT 5-nano) |
 | **Hosting** | Vercel (Serverless) |
-| **Email Platform** | Inboxxia (EmailBison) - Cold email campaigns & replies |
+| **Email Platform** | EmailBison (Inboxxia) / SmartLead / Instantly - Cold email campaigns & replies |
 | **SMS Platform** | GoHighLevel (GHL) - SMS messaging & CRM sync |
 | **LinkedIn Platform** | Unipile - LinkedIn connection requests + DMs |
 
@@ -114,11 +114,20 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   - Requires `DATABASE_URL`; uses each workspace’s `Client.ghlPrivateKey` to fetch contact tags.
   - Uses `gpt-5-nano` by default (requires `OPENAI_API_KEY`); pass `--no-llm` for deterministic-only mode (supports tags like `<name> sms <date>`).
 
-### Inboxxia / EmailBison (Email)
-- **Webhook:** `/api/webhooks/email?clientId={ZRG_CLIENT_ID}`
-- **Base URL:** `https://send.meetinboxxia.com`
-- **Features:** Campaign management, reply tracking, send via API
-- **Auth:** Bearer token (API Key per workspace)
+### Email Providers (EmailBison / SmartLead / Instantly)
+- **Single-select per workspace:** configure exactly one provider via `Client.emailProvider` (the server rejects multiple configured providers).
+- **EmailBison (Inboxxia)**
+  - **Webhook:** `/api/webhooks/email` (optionally `?clientId={ZRG_CLIENT_ID}`)
+  - **Base URL:** `https://send.meetinboxxia.com`
+  - **Auth (API):** Bearer token (API key per workspace)
+- **SmartLead**
+  - **Webhook:** `/api/webhooks/smartlead?clientId={ZRG_CLIENT_ID}`
+  - **Auth (webhook):** per-workspace secret (`Client.smartLeadWebhookSecret`) via payload `secret_key` (or `Authorization: Bearer ...`)
+  - **Auth (API):** API key per workspace (`Client.smartLeadApiKey`)
+- **Instantly**
+  - **Webhook:** `/api/webhooks/instantly?clientId={ZRG_CLIENT_ID}`
+  - **Auth (webhook):** `Authorization: Bearer {Client.instantlyWebhookSecret}` (or `x-instantly-secret`)
+  - **Auth (API):** API key per workspace (`Client.instantlyApiKey`)
 
 ### Unipile (LinkedIn)
 - **Features:** Connection requests + DMs (used by follow-up sequences)
@@ -126,6 +135,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 
 ### OpenAI
 - **Sentiment Classification (`gpt-5-mini`):** Deterministic guardrails + AI fallback classify the most recent lead reply (includes `Blacklist` opt-outs and `Automated Reply` auto-acknowledgements).
+- **One-time sentiment re-run (all workspaces, resumable):** `npx tsx scripts/rerun-sentiment-neutral-or-new.ts --apply --resume` (targets leads currently tagged `Neutral` or `New` by default).
 - **Auto-Reply Safety Gate (`gpt-5-mini`):** Decides if an auto-reply should be sent (blocks opt-outs, automated replies, and acknowledgement-only messages).
 - **Draft Generation (`gpt-5.1`):** Generates contextual drafts with availability-aware scheduling rules and banned-words enforcement.
 - **Timezone Inference (`gpt-5-nano`):** Infers lead IANA timezone when missing (persisted only when confidence ≥ 0.95).
@@ -140,6 +150,8 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   /api
     /webhooks
       /email/route.ts       # Inboxxia multi-event webhook handler
+      /smartlead/route.ts   # SmartLead webhook handler
+      /instantly/route.ts   # Instantly webhook handler
       /ghl/sms/route.ts     # GoHighLevel SMS webhook
       /ghl/test/route.ts    # Webhook testing endpoint
   /auth                     # Authentication pages (login, signup, callback)
@@ -156,7 +168,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   client-actions.ts         # Workspace CRUD operations
   lead-actions.ts           # Lead management
   message-actions.ts        # Message operations, draft approval
-  email-actions.ts          # Email sending via Inboxxia
+  email-actions.ts          # Email replies via selected provider
   email-campaign-actions.ts # Campaign sync logic
   ai-observability-actions.ts # Admin-only AI prompts + usage dashboard data
 
@@ -174,6 +186,10 @@ A scalable, full-stack application designed to manage high-volume sales outreach
   snooze-detection.ts       # Deterministic deferral date detection ("after Jan 13")
   timezone-inference.ts     # Lead timezone inference (deterministic + AI)
   emailbison-api.ts         # Inboxxia API client
+  smartlead-api.ts          # SmartLead API client
+  instantly-api.ts          # Instantly API client
+  email-integration.ts      # Provider resolution + single-select enforcement helpers
+  email-reply-handle.ts     # Cross-provider thread handle encoding/decoding
 
 /prisma
   schema.prisma             # Database schema
@@ -446,7 +462,7 @@ npm run dev
 
 ## 🔧 Webhook Configuration
 
-### Inboxxia Webhook Setup
+### EmailBison (Inboxxia) Webhook Setup
 
 1. Go to Inboxxia Settings → Webhooks
 2. Add webhook URL: `https://zrg-dashboard.vercel.app/api/webhooks/email?clientId={YOUR_CLIENT_ID}`
@@ -458,6 +474,25 @@ npm run dev
    - ✅ Email Opened (EMAIL_OPENED)
    - ✅ Email Bounced (EMAIL_BOUNCED)
    - ✅ Lead Unsubscribed (LEAD_UNSUBSCRIBED)
+
+### SmartLead Webhook Setup
+
+1. Configure a webhook URL: `https://zrg-dashboard.vercel.app/api/webhooks/smartlead?clientId={YOUR_CLIENT_ID}`
+2. Set the webhook `secret_key` to match the workspace’s `Client.smartLeadWebhookSecret`
+3. Enable events (recommended minimum):
+   - ✅ Email Reply (EMAIL_REPLY)
+   - ✅ Email Sent (EMAIL_SENT)
+   - ✅ Lead Unsubscribed (LEAD_UNSUBSCRIBED)
+
+### Instantly Webhook Setup
+
+1. Configure a webhook URL: `https://zrg-dashboard.vercel.app/api/webhooks/instantly?clientId={YOUR_CLIENT_ID}`
+2. Add a custom header:
+   - `Authorization: Bearer {Client.instantlyWebhookSecret}` (or `x-instantly-secret`)
+3. Enable events (recommended minimum):
+   - ✅ Reply Received (reply_received)
+   - ✅ Email Sent (email_sent)
+   - ✅ Unsubscribed (unsubscribed)
 
 ### GoHighLevel Webhook Setup
 

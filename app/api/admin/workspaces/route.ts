@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
-import { ClientMemberRole, Prisma } from "@prisma/client";
+import { ClientMemberRole, EmailIntegrationProvider, Prisma } from "@prisma/client";
 import { ensureDefaultSequencesIncludeLinkedInStepsForClient } from "@/lib/followup-sequence-linkedin";
+import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 
 type ProvisionWorkspaceRequest = {
   // Required
@@ -15,8 +16,13 @@ type ProvisionWorkspaceRequest = {
   userEmail?: string;
 
   // Optional integrations
+  emailProvider?: string | null;
   emailBisonApiKey?: string;
   emailBisonWorkspaceId?: string; // numeric string
+  smartLeadApiKey?: string;
+  smartLeadWebhookSecret?: string;
+  instantlyApiKey?: string;
+  instantlyWebhookSecret?: string;
   unipileAccountId?: string;
 
   // Optional assignments (email inputs resolved server-side)
@@ -63,11 +69,36 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+type OptionalStringField =
+  | { touched: false }
+  | { touched: true; value: string | null }
+  | { touched: true; error: string };
+
+function readOptionalStringField(bodyRaw: unknown, key: string): OptionalStringField {
+  if (!bodyRaw || typeof bodyRaw !== "object" || Array.isArray(bodyRaw)) return { touched: false };
+  const obj = bodyRaw as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(obj, key)) return { touched: false };
+
+  const raw = obj[key];
+  if (raw === null) return { touched: true, value: null };
+  if (typeof raw !== "string") return { touched: true, error: `${key} must be a string` };
+
+  const trimmed = raw.trim();
+  return { touched: true, value: trimmed ? trimmed : null };
+}
+
 function normalizeEmailBisonWorkspaceId(value: unknown): string | undefined {
   const trimmed = normalizeOptionalString(value);
   if (!trimmed) return undefined;
   // People sometimes paste "# 123" from Inboxxia/EmailBison UI.
   return trimmed.replace(/^#\s*/, "");
+}
+
+function readEmailBisonWorkspaceIdField(bodyRaw: unknown, key: string): OptionalStringField {
+  const base = readOptionalStringField(bodyRaw, key);
+  if (!base.touched || "error" in base) return base;
+  if (!base.value) return base;
+  return { touched: true, value: base.value.replace(/^#\s*/, "") || null };
 }
 
 function normalizeEmailList(value: unknown): string[] {
@@ -90,6 +121,48 @@ function validateEmailBisonWorkspaceId(value: string | undefined): string | null
   if (value === undefined) return null;
   if (!/^\d+$/.test(value)) return "emailBisonWorkspaceId must be a numeric string";
   return null;
+}
+
+function parseEmailProvider(value: unknown): EmailIntegrationProvider | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  if (value === EmailIntegrationProvider.EMAILBISON) return EmailIntegrationProvider.EMAILBISON;
+  if (value === EmailIntegrationProvider.SMARTLEAD) return EmailIntegrationProvider.SMARTLEAD;
+  if (value === EmailIntegrationProvider.INSTANTLY) return EmailIntegrationProvider.INSTANTLY;
+  return undefined;
+}
+
+function hasValue(value: string | null | undefined): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function assertProviderRequirements(
+  provider: EmailIntegrationProvider,
+  snapshot: {
+    smartLeadApiKey: string | null;
+    smartLeadWebhookSecret: string | null;
+    instantlyApiKey: string | null;
+    instantlyWebhookSecret: string | null;
+  }
+) {
+  if (provider === EmailIntegrationProvider.SMARTLEAD) {
+    if (!hasValue(snapshot.smartLeadApiKey)) {
+      throw new Error("smartLeadApiKey is required when emailProvider is SMARTLEAD");
+    }
+    if (!hasValue(snapshot.smartLeadWebhookSecret)) {
+      throw new Error("smartLeadWebhookSecret is required when emailProvider is SMARTLEAD");
+    }
+  }
+
+  if (provider === EmailIntegrationProvider.INSTANTLY) {
+    if (!hasValue(snapshot.instantlyApiKey)) {
+      throw new Error("instantlyApiKey is required when emailProvider is INSTANTLY");
+    }
+    if (!hasValue(snapshot.instantlyWebhookSecret)) {
+      throw new Error("instantlyWebhookSecret is required when emailProvider is INSTANTLY");
+    }
+  }
 }
 
 function pickWorkspaceSettings(input: Record<string, unknown>): Record<string, unknown> {
@@ -262,7 +335,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = (await request.json().catch(() => null)) as ProvisionWorkspaceRequest | null;
+  const bodyRaw = (await request.json().catch(() => null)) as unknown;
+  const body = bodyRaw as ProvisionWorkspaceRequest | null;
 
   const name = normalizeOptionalString(body?.name) ?? "";
   const ghlLocationId = normalizeOptionalString(body?.ghlLocationId) ?? "";
@@ -282,9 +356,59 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: resolvedUser.error }, { status: resolvedUser.status });
   }
 
-  const emailBisonApiKey = normalizeOptionalString(body?.emailBisonApiKey) ?? null;
-  const emailBisonWorkspaceId = normalizeEmailBisonWorkspaceId(body?.emailBisonWorkspaceId) ?? null;
-  const unipileAccountId = normalizeOptionalString(body?.unipileAccountId) ?? null;
+  const emailProviderField = readOptionalStringField(bodyRaw, "emailProvider");
+  if (emailProviderField.touched && "error" in emailProviderField) {
+    return NextResponse.json({ error: emailProviderField.error }, { status: 400 });
+  }
+  const emailProviderTouched = emailProviderField.touched ? emailProviderField.value : undefined;
+  const emailProvider = parseEmailProvider(emailProviderTouched);
+  if (emailProviderTouched !== undefined && emailProvider === undefined) {
+    return NextResponse.json({ error: "emailProvider must be one of EMAILBISON | SMARTLEAD | INSTANTLY | null" }, { status: 400 });
+  }
+
+  const emailBisonApiKeyField = readOptionalStringField(bodyRaw, "emailBisonApiKey");
+  if (emailBisonApiKeyField.touched && "error" in emailBisonApiKeyField) {
+    return NextResponse.json({ error: emailBisonApiKeyField.error }, { status: 400 });
+  }
+  const emailBisonApiKeyTouched = emailBisonApiKeyField.touched ? emailBisonApiKeyField.value : undefined;
+
+  const emailBisonWorkspaceIdField = readEmailBisonWorkspaceIdField(bodyRaw, "emailBisonWorkspaceId");
+  if (emailBisonWorkspaceIdField.touched && "error" in emailBisonWorkspaceIdField) {
+    return NextResponse.json({ error: emailBisonWorkspaceIdField.error }, { status: 400 });
+  }
+  const emailBisonWorkspaceIdTouched = emailBisonWorkspaceIdField.touched ? emailBisonWorkspaceIdField.value : undefined;
+
+  const smartLeadApiKeyField = readOptionalStringField(bodyRaw, "smartLeadApiKey");
+  if (smartLeadApiKeyField.touched && "error" in smartLeadApiKeyField) {
+    return NextResponse.json({ error: smartLeadApiKeyField.error }, { status: 400 });
+  }
+  const smartLeadApiKeyTouched = smartLeadApiKeyField.touched ? smartLeadApiKeyField.value : undefined;
+
+  const smartLeadWebhookSecretField = readOptionalStringField(bodyRaw, "smartLeadWebhookSecret");
+  if (smartLeadWebhookSecretField.touched && "error" in smartLeadWebhookSecretField) {
+    return NextResponse.json({ error: smartLeadWebhookSecretField.error }, { status: 400 });
+  }
+  const smartLeadWebhookSecretTouched = smartLeadWebhookSecretField.touched ? smartLeadWebhookSecretField.value : undefined;
+
+  const instantlyApiKeyField = readOptionalStringField(bodyRaw, "instantlyApiKey");
+  if (instantlyApiKeyField.touched && "error" in instantlyApiKeyField) {
+    return NextResponse.json({ error: instantlyApiKeyField.error }, { status: 400 });
+  }
+  const instantlyApiKeyTouched = instantlyApiKeyField.touched ? instantlyApiKeyField.value : undefined;
+
+  const instantlyWebhookSecretField = readOptionalStringField(bodyRaw, "instantlyWebhookSecret");
+  if (instantlyWebhookSecretField.touched && "error" in instantlyWebhookSecretField) {
+    return NextResponse.json({ error: instantlyWebhookSecretField.error }, { status: 400 });
+  }
+  const instantlyWebhookSecretTouched = instantlyWebhookSecretField.touched ? instantlyWebhookSecretField.value : undefined;
+
+  const unipileAccountIdField = readOptionalStringField(bodyRaw, "unipileAccountId");
+  if (unipileAccountIdField.touched && "error" in unipileAccountIdField) {
+    return NextResponse.json({ error: unipileAccountIdField.error }, { status: 400 });
+  }
+  const unipileAccountIdTouched = unipileAccountIdField.touched ? unipileAccountIdField.value : undefined;
+
+  const unipileAccountId = unipileAccountIdTouched ?? null;
   const inboxManagerEmail = normalizeOptionalString(body?.inboxManagerEmail) ?? null;
   const setterEmails = normalizeEmailList(body?.setterEmails);
   const inboxManagerEmails = [
@@ -299,9 +423,11 @@ export async function POST(request: NextRequest) {
     ("setterEmails" in body || "inboxManagerEmails" in body || "inboxManagerEmail" in body);
   const upsert = body?.upsert === true;
 
-  const workspaceIdError = validateEmailBisonWorkspaceId(emailBisonWorkspaceId ?? undefined);
-  if (workspaceIdError) {
-    return NextResponse.json({ error: workspaceIdError }, { status: 400 });
+  if (emailBisonWorkspaceIdTouched !== undefined && emailBisonWorkspaceIdTouched !== null) {
+    const workspaceIdError = validateEmailBisonWorkspaceId(emailBisonWorkspaceIdTouched);
+    if (workspaceIdError) {
+      return NextResponse.json({ error: workspaceIdError }, { status: 400 });
+    }
   }
 
   const rawSettings = body?.settings && typeof body.settings === "object" && !Array.isArray(body.settings)
@@ -364,10 +490,10 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      if (emailBisonWorkspaceId) {
+      if (emailBisonWorkspaceIdTouched) {
         const conflict = await prisma.client.findFirst({
           where: {
-            emailBisonWorkspaceId,
+            emailBisonWorkspaceId: emailBisonWorkspaceIdTouched,
             id: { not: existing.id },
           },
           select: { id: true },
@@ -380,22 +506,147 @@ export async function POST(request: NextRequest) {
         }
       }
 
-	      if (upsert) {
-	        const updated = await prisma.$transaction(async (tx) => {
-	          const workspace = await tx.client.update({
-            where: { id: existing.id },
-            data: {
-              name,
-              ghlPrivateKey,
-              emailBisonApiKey,
-              emailBisonWorkspaceId,
-              unipileAccountId,
-            },
-            select: {
-              id: true,
-              name: true,
-              userId: true,
+      const emailIntegrationTouched =
+        emailProviderTouched !== undefined ||
+        emailBisonApiKeyTouched !== undefined ||
+        emailBisonWorkspaceIdTouched !== undefined ||
+        smartLeadApiKeyTouched !== undefined ||
+        smartLeadWebhookSecretTouched !== undefined ||
+        instantlyApiKeyTouched !== undefined ||
+        instantlyWebhookSecretTouched !== undefined;
+
+      let emailUpdate: Prisma.ClientUpdateInput = {};
+      if (emailIntegrationTouched) {
+        if (emailProviderTouched === null) {
+          emailUpdate = {
+            emailProvider: null,
+            emailBisonApiKey: null,
+            emailBisonWorkspaceId: null,
+            smartLeadApiKey: null,
+            smartLeadWebhookSecret: null,
+            instantlyApiKey: null,
+            instantlyWebhookSecret: null,
+          };
+        } else {
+          const nextSnapshot = {
+            emailProvider: emailProvider ?? existing.emailProvider ?? null,
+            emailBisonApiKey:
+              emailBisonApiKeyTouched !== undefined ? emailBisonApiKeyTouched : existing.emailBisonApiKey,
+            emailBisonWorkspaceId:
+              emailBisonWorkspaceIdTouched !== undefined ? emailBisonWorkspaceIdTouched : existing.emailBisonWorkspaceId,
+            smartLeadApiKey: smartLeadApiKeyTouched !== undefined ? smartLeadApiKeyTouched : existing.smartLeadApiKey,
+            smartLeadWebhookSecret:
+              smartLeadWebhookSecretTouched !== undefined ? smartLeadWebhookSecretTouched : existing.smartLeadWebhookSecret,
+            instantlyApiKey: instantlyApiKeyTouched !== undefined ? instantlyApiKeyTouched : existing.instantlyApiKey,
+            instantlyWebhookSecret:
+              instantlyWebhookSecretTouched !== undefined ? instantlyWebhookSecretTouched : existing.instantlyWebhookSecret,
+          };
+
+          let resolvedProvider: EmailIntegrationProvider | null;
+          try {
+            resolvedProvider = resolveEmailIntegrationProvider(nextSnapshot);
+          } catch (error) {
+            return NextResponse.json(
+              { error: error instanceof Error ? error.message : "Invalid email integration configuration" },
+              { status: 409 }
+            );
+          }
+
+          if (resolvedProvider === EmailIntegrationProvider.SMARTLEAD || resolvedProvider === EmailIntegrationProvider.INSTANTLY) {
+            try {
+              assertProviderRequirements(resolvedProvider, {
+                smartLeadApiKey: nextSnapshot.smartLeadApiKey || null,
+                smartLeadWebhookSecret: nextSnapshot.smartLeadWebhookSecret || null,
+                instantlyApiKey: nextSnapshot.instantlyApiKey || null,
+                instantlyWebhookSecret: nextSnapshot.instantlyWebhookSecret || null,
+              });
+            } catch (error) {
+              return NextResponse.json(
+                { error: error instanceof Error ? error.message : "Invalid email integration configuration" },
+                { status: 400 }
+              );
+            }
+          }
+
+          if (resolvedProvider === EmailIntegrationProvider.EMAILBISON) {
+            if (
+              nextSnapshot.emailBisonWorkspaceId &&
+              nextSnapshot.emailBisonWorkspaceId !== existing.emailBisonWorkspaceId
+            ) {
+              const conflict = await prisma.client.findFirst({
+                where: {
+                  emailBisonWorkspaceId: nextSnapshot.emailBisonWorkspaceId,
+                  id: { not: existing.id },
+                },
+                select: { id: true },
+              });
+              if (conflict) {
+                return NextResponse.json(
+                  { error: "emailBisonWorkspaceId is already in use by another workspace" },
+                  { status: 409 }
+                );
+              }
+            }
+
+            emailUpdate = {
+              emailProvider: resolvedProvider,
+              ...(emailBisonApiKeyTouched !== undefined ? { emailBisonApiKey: emailBisonApiKeyTouched } : {}),
+              ...(emailBisonWorkspaceIdTouched !== undefined ? { emailBisonWorkspaceId: emailBisonWorkspaceIdTouched } : {}),
+              smartLeadApiKey: null,
+              smartLeadWebhookSecret: null,
+              instantlyApiKey: null,
+              instantlyWebhookSecret: null,
+            };
+          } else if (resolvedProvider === EmailIntegrationProvider.SMARTLEAD) {
+            emailUpdate = {
+              emailProvider: resolvedProvider,
+              emailBisonApiKey: null,
+              emailBisonWorkspaceId: null,
+              ...(smartLeadApiKeyTouched !== undefined ? { smartLeadApiKey: smartLeadApiKeyTouched } : {}),
+              ...(smartLeadWebhookSecretTouched !== undefined ? { smartLeadWebhookSecret: smartLeadWebhookSecretTouched } : {}),
+              instantlyApiKey: null,
+              instantlyWebhookSecret: null,
+            };
+          } else if (resolvedProvider === EmailIntegrationProvider.INSTANTLY) {
+            emailUpdate = {
+              emailProvider: resolvedProvider,
+              emailBisonApiKey: null,
+              emailBisonWorkspaceId: null,
+              smartLeadApiKey: null,
+              smartLeadWebhookSecret: null,
+              ...(instantlyApiKeyTouched !== undefined ? { instantlyApiKey: instantlyApiKeyTouched } : {}),
+              ...(instantlyWebhookSecretTouched !== undefined ? { instantlyWebhookSecret: instantlyWebhookSecretTouched } : {}),
+            };
+          } else {
+            emailUpdate = {
+              emailProvider: null,
+              emailBisonApiKey: null,
+              emailBisonWorkspaceId: null,
+              smartLeadApiKey: null,
+              smartLeadWebhookSecret: null,
+              instantlyApiKey: null,
+              instantlyWebhookSecret: null,
+            };
+          }
+        }
+      }
+
+		      if (upsert) {
+		        const updated = await prisma.$transaction(async (tx) => {
+		          const workspace = await tx.client.update({
+	            where: { id: existing.id },
+	            data: {
+	              name,
+	              ghlPrivateKey,
+	              ...emailUpdate,
+	              ...(unipileAccountIdTouched !== undefined ? { unipileAccountId: unipileAccountIdTouched } : {}),
+	            },
+	            select: {
+	              id: true,
+	              name: true,
+	              userId: true,
               ghlLocationId: true,
+              emailProvider: true,
               emailBisonWorkspaceId: true,
               unipileAccountId: true,
               createdAt: true,
@@ -463,6 +714,7 @@ export async function POST(request: NextRequest) {
             name: existing.name,
             userId: existing.userId,
             ghlLocationId: existing.ghlLocationId,
+            emailProvider: existing.emailProvider,
             emailBisonWorkspaceId: existing.emailBisonWorkspaceId,
             unipileAccountId: existing.unipileAccountId,
             createdAt: existing.createdAt,
@@ -473,9 +725,48 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (emailBisonWorkspaceId) {
+    const createEmailBisonWorkspaceId =
+      emailBisonWorkspaceIdTouched !== undefined ? emailBisonWorkspaceIdTouched : normalizeEmailBisonWorkspaceId(body?.emailBisonWorkspaceId) ?? null;
+
+    const createSnapshot = {
+      emailProvider: emailProvider ?? undefined,
+      emailBisonApiKey: emailBisonApiKeyTouched ?? normalizeOptionalString(body?.emailBisonApiKey) ?? null,
+      emailBisonWorkspaceId: createEmailBisonWorkspaceId,
+      smartLeadApiKey: smartLeadApiKeyTouched ?? normalizeOptionalString(body?.smartLeadApiKey) ?? null,
+      smartLeadWebhookSecret: smartLeadWebhookSecretTouched ?? normalizeOptionalString(body?.smartLeadWebhookSecret) ?? null,
+      instantlyApiKey: instantlyApiKeyTouched ?? normalizeOptionalString(body?.instantlyApiKey) ?? null,
+      instantlyWebhookSecret: instantlyWebhookSecretTouched ?? normalizeOptionalString(body?.instantlyWebhookSecret) ?? null,
+    };
+
+    let createProvider: EmailIntegrationProvider | null;
+    try {
+      createProvider = resolveEmailIntegrationProvider(createSnapshot);
+    } catch (error) {
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : "Invalid email integration configuration" },
+        { status: 409 }
+      );
+    }
+
+    if (createProvider === EmailIntegrationProvider.SMARTLEAD || createProvider === EmailIntegrationProvider.INSTANTLY) {
+      try {
+        assertProviderRequirements(createProvider, {
+          smartLeadApiKey: createSnapshot.smartLeadApiKey || null,
+          smartLeadWebhookSecret: createSnapshot.smartLeadWebhookSecret || null,
+          instantlyApiKey: createSnapshot.instantlyApiKey || null,
+          instantlyWebhookSecret: createSnapshot.instantlyWebhookSecret || null,
+        });
+      } catch (error) {
+        return NextResponse.json(
+          { error: error instanceof Error ? error.message : "Invalid email integration configuration" },
+          { status: 400 }
+        );
+      }
+    }
+
+    if (createProvider === EmailIntegrationProvider.EMAILBISON && createEmailBisonWorkspaceId) {
       const existingByWorkspaceId = await prisma.client.findUnique({
-        where: { emailBisonWorkspaceId },
+        where: { emailBisonWorkspaceId: createEmailBisonWorkspaceId },
         select: { id: true },
       });
       if (existingByWorkspaceId) {
@@ -492,8 +783,13 @@ export async function POST(request: NextRequest) {
           name,
           ghlLocationId,
           ghlPrivateKey,
-          emailBisonApiKey,
-          emailBisonWorkspaceId,
+          emailProvider: createProvider,
+          emailBisonApiKey: createProvider === EmailIntegrationProvider.EMAILBISON ? (createSnapshot.emailBisonApiKey as string | null) : null,
+          emailBisonWorkspaceId: createProvider === EmailIntegrationProvider.EMAILBISON ? (createSnapshot.emailBisonWorkspaceId as string | null) : null,
+          smartLeadApiKey: createProvider === EmailIntegrationProvider.SMARTLEAD ? (createSnapshot.smartLeadApiKey as string | null) : null,
+          smartLeadWebhookSecret: createProvider === EmailIntegrationProvider.SMARTLEAD ? (createSnapshot.smartLeadWebhookSecret as string | null) : null,
+          instantlyApiKey: createProvider === EmailIntegrationProvider.INSTANTLY ? (createSnapshot.instantlyApiKey as string | null) : null,
+          instantlyWebhookSecret: createProvider === EmailIntegrationProvider.INSTANTLY ? (createSnapshot.instantlyWebhookSecret as string | null) : null,
           unipileAccountId,
           userId: resolvedUser.userId,
         },
@@ -502,6 +798,7 @@ export async function POST(request: NextRequest) {
           name: true,
           userId: true,
           ghlLocationId: true,
+          emailProvider: true,
           emailBisonWorkspaceId: true,
           unipileAccountId: true,
           createdAt: true,

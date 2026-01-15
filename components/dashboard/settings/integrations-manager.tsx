@@ -16,21 +16,28 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Separator } from "@/components/ui/separator";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getClients, createClient, deleteClient, updateClient } from "@/actions/client-actions";
 import { getGlobalAdminStatus } from "@/actions/access-actions";
 import { syncCampaignsFromGHL } from "@/actions/campaign-actions";
-import { syncEmailCampaignsFromEmailBison } from "@/actions/email-campaign-actions";
+import { syncEmailCampaignsFromEmailBison, syncEmailCampaignsFromInstantly, syncEmailCampaignsFromSmartLead } from "@/actions/email-campaign-actions";
 import { cleanupBounceLeads } from "@/actions/message-actions";
 import { getClientAssignments, setClientAssignments } from "@/actions/client-membership-actions";
 import { toast } from "sonner";
+import type { EmailIntegrationProvider } from "@prisma/client";
 
 interface Client {
   id: string;
   name: string;
   ghlLocationId: string;
   hasDefaultCalendarLink?: boolean;
-  emailBisonApiKey: string | null;
+  emailProvider: EmailIntegrationProvider | null;
   emailBisonWorkspaceId: string | null;
+  hasEmailBisonApiKey: boolean;
+  hasSmartLeadApiKey: boolean;
+  hasSmartLeadWebhookSecret: boolean;
+  hasInstantlyApiKey: boolean;
+  hasInstantlyWebhookSecret: boolean;
   unipileAccountId: string | null;
   hasCalendlyAccessToken?: boolean;
   hasCalendlyWebhookSubscription?: boolean;
@@ -61,12 +68,40 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
   const [isLoadingAssignments, setIsLoadingAssignments] = useState(false);
   const [showAllWorkspaces, setShowAllWorkspaces] = useState(false);
 
+  function inferEmailProvider(client: Client): EmailIntegrationProvider | null {
+    if (client.emailProvider) return client.emailProvider;
+    if (client.hasEmailBisonApiKey || !!client.emailBisonWorkspaceId) return "EMAILBISON";
+    if (client.hasSmartLeadApiKey || client.hasSmartLeadWebhookSecret) return "SMARTLEAD";
+    if (client.hasInstantlyApiKey || client.hasInstantlyWebhookSecret) return "INSTANTLY";
+    return null;
+  }
+
+  function providerLabel(provider: EmailIntegrationProvider | null): string {
+    if (provider === "EMAILBISON") return "EmailBison";
+    if (provider === "SMARTLEAD") return "SmartLead";
+    if (provider === "INSTANTLY") return "Instantly";
+    return "None";
+  }
+
+  function isEmailProviderConfigured(client: Client, provider: EmailIntegrationProvider | null): boolean {
+    if (!provider) return false;
+    if (provider === "EMAILBISON") return client.hasEmailBisonApiKey || !!client.emailBisonWorkspaceId;
+    if (provider === "SMARTLEAD") return client.hasSmartLeadApiKey && client.hasSmartLeadWebhookSecret;
+    if (provider === "INSTANTLY") return client.hasInstantlyApiKey && client.hasInstantlyWebhookSecret;
+    return false;
+  }
+
   const emptyNewClientForm = {
     name: "",
     ghlLocationId: "",
     ghlPrivateKey: "",
+    emailProvider: "NONE" as EmailIntegrationProvider | "NONE",
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
+    smartLeadApiKey: "",
+    smartLeadWebhookSecret: "",
+    instantlyApiKey: "",
+    instantlyWebhookSecret: "",
     unipileAccountId: "",
     calendlyAccessToken: "",
     setterEmailsRaw: "",
@@ -75,8 +110,13 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
 
   const emptyIntegrationsForm = {
     name: "",
+    emailProvider: "NONE" as EmailIntegrationProvider | "NONE",
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
+    smartLeadApiKey: "",
+    smartLeadWebhookSecret: "",
+    instantlyApiKey: "",
+    instantlyWebhookSecret: "",
     unipileAccountId: "",
     calendlyAccessToken: "",
   };
@@ -167,8 +207,13 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
         name: newClientForm.name,
         ghlLocationId: newClientForm.ghlLocationId,
         ghlPrivateKey: newClientForm.ghlPrivateKey,
+        emailProvider: newClientForm.emailProvider === "NONE" ? null : (newClientForm.emailProvider as EmailIntegrationProvider),
         emailBisonApiKey: newClientForm.emailBisonApiKey,
         emailBisonWorkspaceId: newClientForm.emailBisonWorkspaceId,
+        smartLeadApiKey: newClientForm.smartLeadApiKey,
+        smartLeadWebhookSecret: newClientForm.smartLeadWebhookSecret,
+        instantlyApiKey: newClientForm.instantlyApiKey,
+        instantlyWebhookSecret: newClientForm.instantlyWebhookSecret,
         unipileAccountId: newClientForm.unipileAccountId,
         calendlyAccessToken: newClientForm.calendlyAccessToken,
       });
@@ -203,14 +248,19 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     setError(null);
 
     // Find the current client to check existing values
-    const currentClient = clients.find(c => c.id === clientId);
+    const currentClient = clients.find((c) => c.id === clientId);
 
     startTransition(async () => {
       // Build update payload - only include fields that have values or are being explicitly changed
       const updatePayload: {
         name?: string;
+        emailProvider?: EmailIntegrationProvider | null;
         emailBisonApiKey?: string;
         emailBisonWorkspaceId?: string;
+        smartLeadApiKey?: string;
+        smartLeadWebhookSecret?: string;
+        instantlyApiKey?: string;
+        instantlyWebhookSecret?: string;
         unipileAccountId?: string;
         calendlyAccessToken?: string;
       } = {};
@@ -223,15 +273,39 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
       if (nextName !== (currentClient?.name || "")) {
         updatePayload.name = nextName;
       }
-      
-      // Update workspace ID (allow empty to clear)
-      if (integrationsForm.emailBisonWorkspaceId !== (currentClient?.emailBisonWorkspaceId || "")) {
-        updatePayload.emailBisonWorkspaceId = integrationsForm.emailBisonWorkspaceId;
+
+      const currentProvider = currentClient ? inferEmailProvider(currentClient) : null;
+      const nextProvider = integrationsForm.emailProvider === "NONE" ? null : (integrationsForm.emailProvider as EmailIntegrationProvider);
+
+      if (nextProvider !== currentProvider) {
+        updatePayload.emailProvider = nextProvider;
       }
-      
-      // Only update API key if user entered a new one (not blank placeholder)
-      if (integrationsForm.emailBisonApiKey) {
-        updatePayload.emailBisonApiKey = integrationsForm.emailBisonApiKey;
+
+      // Only send provider-specific fields for the selected provider.
+      if (nextProvider === "EMAILBISON") {
+        // Update workspace ID (allow empty to clear)
+        if (integrationsForm.emailBisonWorkspaceId !== (currentClient?.emailBisonWorkspaceId || "")) {
+          updatePayload.emailBisonWorkspaceId = integrationsForm.emailBisonWorkspaceId;
+        }
+
+        // Only update API key if user entered a new one (not blank placeholder)
+        if (integrationsForm.emailBisonApiKey) {
+          updatePayload.emailBisonApiKey = integrationsForm.emailBisonApiKey;
+        }
+      } else if (nextProvider === "SMARTLEAD") {
+        if (integrationsForm.smartLeadApiKey) {
+          updatePayload.smartLeadApiKey = integrationsForm.smartLeadApiKey;
+        }
+        if (integrationsForm.smartLeadWebhookSecret) {
+          updatePayload.smartLeadWebhookSecret = integrationsForm.smartLeadWebhookSecret;
+        }
+      } else if (nextProvider === "INSTANTLY") {
+        if (integrationsForm.instantlyApiKey) {
+          updatePayload.instantlyApiKey = integrationsForm.instantlyApiKey;
+        }
+        if (integrationsForm.instantlyWebhookSecret) {
+          updatePayload.instantlyWebhookSecret = integrationsForm.instantlyWebhookSecret;
+        }
       }
       
       // Update Unipile Account ID if changed
@@ -261,18 +335,30 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     });
   }
 
-  async function handleSyncEmailCampaigns(clientId: string) {
-    setSyncingEmailClientId(clientId);
-    
-    const result = await syncEmailCampaignsFromEmailBison(clientId);
-    
+  async function handleSyncEmailCampaigns(client: Client) {
+    setSyncingEmailClientId(client.id);
+
+    const provider = inferEmailProvider(client);
+    if (!provider) {
+      toast.error("No email provider is configured for this workspace");
+      setSyncingEmailClientId(null);
+      return;
+    }
+
+    const result =
+      provider === "SMARTLEAD"
+        ? await syncEmailCampaignsFromSmartLead(client.id)
+        : provider === "INSTANTLY"
+          ? await syncEmailCampaignsFromInstantly(client.id)
+          : await syncEmailCampaignsFromEmailBison(client.id);
+
     if (result.success) {
-      toast.success(`Synced ${result.synced} email campaigns from EmailBison`);
+      toast.success(`Synced ${result.synced} email campaigns from ${providerLabel(provider)}`);
       await fetchClients();
     } else {
       toast.error(result.error || "Failed to sync email campaigns");
     }
-    
+
     setSyncingEmailClientId(null);
   }
 
@@ -464,7 +550,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 </div>
               </div>
 
-              {/* EmailBison Integration Section */}
+              {/* Email Integration Section */}
               <div className="border-t pt-4 mt-4">
                 <button
                   type="button"
@@ -483,37 +569,144 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 {showEmailFields && (
                   <div className="mt-4 space-y-4">
                     <div className="space-y-2">
-                      <Label htmlFor="emailBisonWorkspaceId" className="flex items-center gap-2">
-                        <MapPin className="h-4 w-4" />
-                        EmailBison Workspace ID
+                      <Label className="flex items-center gap-2">
+                        <Mail className="h-4 w-4" />
+                        Email Provider (choose one)
                       </Label>
-                      <Input
-                        id="emailBisonWorkspaceId"
-                        placeholder="e.g., 12345"
-                        value={newClientForm.emailBisonWorkspaceId}
-                        onChange={(e) => setNewClientForm({ ...newClientForm, emailBisonWorkspaceId: e.target.value })}
-                      />
+                      <Select
+                        value={newClientForm.emailProvider}
+                        onValueChange={(value) =>
+                          setNewClientForm({
+                            ...newClientForm,
+                            emailProvider: value as EmailIntegrationProvider | "NONE",
+                            emailBisonApiKey: "",
+                            smartLeadApiKey: "",
+                            smartLeadWebhookSecret: "",
+                            instantlyApiKey: "",
+                            instantlyWebhookSecret: "",
+                          })
+                        }
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select provider" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="NONE">None</SelectItem>
+                          <SelectItem value="EMAILBISON">EmailBison</SelectItem>
+                          <SelectItem value="SMARTLEAD">SmartLead</SelectItem>
+                          <SelectItem value="INSTANTLY">Instantly</SelectItem>
+                        </SelectContent>
+                      </Select>
                       <p className="text-xs text-muted-foreground">
-                        Found in EmailBison webhook payloads as workspace_id. Required for automatic webhook routing.
+                        Only one email provider can be active per workspace.
                       </p>
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="emailBisonApiKey" className="flex items-center gap-2">
-                        <Key className="h-4 w-4" />
-                        EmailBison API Key
-                      </Label>
-                      <Input
-                        id="emailBisonApiKey"
-                        type="password"
-                        autoComplete="off"
-                        placeholder="eb_xxxxxxxxxxxxxxxx"
-                        value={newClientForm.emailBisonApiKey}
-                        onChange={(e) => setNewClientForm({ ...newClientForm, emailBisonApiKey: e.target.value })}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        Found in your EmailBison instance → Settings → API Keys
-                      </p>
-                    </div>
+
+                    {newClientForm.emailProvider === "EMAILBISON" && (
+                      <>
+                        <div className="space-y-2">
+                          <Label htmlFor="emailBisonWorkspaceId" className="flex items-center gap-2">
+                            <MapPin className="h-4 w-4" />
+                            EmailBison Workspace ID (optional)
+                          </Label>
+                          <Input
+                            id="emailBisonWorkspaceId"
+                            placeholder="e.g., 12345"
+                            value={newClientForm.emailBisonWorkspaceId}
+                            onChange={(e) => setNewClientForm({ ...newClientForm, emailBisonWorkspaceId: e.target.value })}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Used for payload-based routing (<code className="bg-background px-1 py-0.5 rounded">workspace_id</code>). Webhooks can also route via <code className="bg-background px-1 py-0.5 rounded">clientId</code>.
+                          </p>
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="emailBisonApiKey" className="flex items-center gap-2">
+                            <Key className="h-4 w-4" />
+                            EmailBison API Key
+                          </Label>
+                          <Input
+                            id="emailBisonApiKey"
+                            type="password"
+                            autoComplete="off"
+                            placeholder="eb_xxxxxxxxxxxxxxxx"
+                            value={newClientForm.emailBisonApiKey}
+                            onChange={(e) => setNewClientForm({ ...newClientForm, emailBisonApiKey: e.target.value })}
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {newClientForm.emailProvider === "SMARTLEAD" && (
+                      <>
+                        <div className="space-y-2">
+                          <Label htmlFor="smartLeadApiKey" className="flex items-center gap-2">
+                            <Key className="h-4 w-4" />
+                            SmartLead API Key
+                          </Label>
+                          <Input
+                            id="smartLeadApiKey"
+                            type="password"
+                            autoComplete="off"
+                            placeholder="sl_..."
+                            value={newClientForm.smartLeadApiKey}
+                            onChange={(e) => setNewClientForm({ ...newClientForm, smartLeadApiKey: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="smartLeadWebhookSecret" className="flex items-center gap-2">
+                            <Key className="h-4 w-4" />
+                            SmartLead Webhook Secret
+                          </Label>
+                          <Input
+                            id="smartLeadWebhookSecret"
+                            type="password"
+                            autoComplete="off"
+                            placeholder="whsec_..."
+                            value={newClientForm.smartLeadWebhookSecret}
+                            onChange={(e) => setNewClientForm({ ...newClientForm, smartLeadWebhookSecret: e.target.value })}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            After creating the workspace, configure SmartLead to send webhooks to <code className="bg-background px-1 py-0.5 rounded">/api/webhooks/smartlead?clientId=&lt;workspaceId&gt;</code>.
+                          </p>
+                        </div>
+                      </>
+                    )}
+
+                    {newClientForm.emailProvider === "INSTANTLY" && (
+                      <>
+                        <div className="space-y-2">
+                          <Label htmlFor="instantlyApiKey" className="flex items-center gap-2">
+                            <Key className="h-4 w-4" />
+                            Instantly API Key
+                          </Label>
+                          <Input
+                            id="instantlyApiKey"
+                            type="password"
+                            autoComplete="off"
+                            placeholder="ins_..."
+                            value={newClientForm.instantlyApiKey}
+                            onChange={(e) => setNewClientForm({ ...newClientForm, instantlyApiKey: e.target.value })}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="instantlyWebhookSecret" className="flex items-center gap-2">
+                            <Key className="h-4 w-4" />
+                            Instantly Webhook Secret
+                          </Label>
+                          <Input
+                            id="instantlyWebhookSecret"
+                            type="password"
+                            autoComplete="off"
+                            placeholder="whsec_..."
+                            value={newClientForm.instantlyWebhookSecret}
+                            onChange={(e) => setNewClientForm({ ...newClientForm, instantlyWebhookSecret: e.target.value })}
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            After creating the workspace, configure Instantly to send webhooks to <code className="bg-background px-1 py-0.5 rounded">/api/webhooks/instantly?clientId=&lt;workspaceId&gt;</code> with <code className="bg-background px-1 py-0.5 rounded">Authorization: Bearer &lt;secret&gt;</code>.
+                          </p>
+                        </div>
+                      </>
+                    )}
                     
                     {/* LinkedIn/Unipile Integration */}
                     <div className="border-t pt-4 mt-4">
@@ -603,7 +796,16 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
               </TableHeader>
               <TableBody>
                 {visibleClients.map((client) => {
-                  const hasEmailBison = !!client.emailBisonApiKey;
+                  const emailProvider = inferEmailProvider(client);
+                  const emailConfigured = isEmailProviderConfigured(client, emailProvider);
+                  const canSyncEmailCampaigns =
+                    emailProvider === "EMAILBISON"
+                      ? client.hasEmailBisonApiKey
+                      : emailProvider === "SMARTLEAD"
+                        ? client.hasSmartLeadApiKey
+                        : emailProvider === "INSTANTLY"
+                          ? client.hasInstantlyApiKey
+                          : false;
                   const hasLinkedIn = !!client.unipileAccountId;
                   const hasCalendly = !!client.hasCalendlyAccessToken;
                   const isEditingThis = editingClientId === client.id;
@@ -617,15 +819,26 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                           <Badge variant="outline" className="text-green-500 border-green-500/30 bg-green-500/10 text-[10px]">
                             SMS
                           </Badge>
-                          {hasEmailBison ? (
-                            <Badge variant="outline" className="text-blue-500 border-blue-500/30 bg-blue-500/10 text-[10px]">
+                          {emailProvider ? (
+                            <Badge
+                              variant="outline"
+                              className={
+                                !emailConfigured
+                                  ? "text-amber-500 border-amber-500/30 bg-amber-500/10 text-[10px]"
+                                  : emailProvider === "SMARTLEAD"
+                                    ? "text-violet-600 border-violet-600/30 bg-violet-600/10 text-[10px]"
+                                    : emailProvider === "INSTANTLY"
+                                      ? "text-cyan-600 border-cyan-600/30 bg-cyan-600/10 text-[10px]"
+                                      : "text-blue-500 border-blue-500/30 bg-blue-500/10 text-[10px]"
+                              }
+                            >
                               <Mail className="h-3 w-3 mr-1" />
-                              Email {client.emailBisonWorkspaceId && `(#${client.emailBisonWorkspaceId})`}
-                            </Badge>
-                          ) : client.emailBisonWorkspaceId ? (
-                            <Badge variant="outline" className="text-amber-500 border-amber-500/30 bg-amber-500/10 text-[10px]">
-                              <Mail className="h-3 w-3 mr-1" />
-                              Email #{client.emailBisonWorkspaceId} (no API key)
+                              Email ({providerLabel(emailProvider)})
+                              {emailProvider === "EMAILBISON" && client.emailBisonWorkspaceId ? ` #${client.emailBisonWorkspaceId}` : ""}
+                              {emailProvider === "EMAILBISON" && !client.hasEmailBisonApiKey && client.emailBisonWorkspaceId
+                                ? " (no API key)"
+                                : ""}
+                              {!emailConfigured ? " (incomplete)" : ""}
                             </Badge>
                           ) : (
                             <Badge variant="outline" className="text-muted-foreground text-[10px]">
@@ -690,12 +903,12 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                               </>
                             )}
                           </Button>
-                          {hasEmailBison && (
+                          {canSyncEmailCampaigns && (
                             <>
                               <Button
                                 variant="outline"
                                 size="sm"
-                                onClick={() => handleSyncEmailCampaigns(client.id)}
+                                onClick={() => handleSyncEmailCampaigns(client)}
                                 disabled={syncingEmailClientId === client.id}
                               >
                                 {syncingEmailClientId === client.id ? (
@@ -713,7 +926,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                 onClick={() => handleCleanupBounceLeads(client.id)}
                                 disabled={cleaningUpClientId === client.id}
                                 title="Clean up bounce email leads (Mail Delivery Subsystem, etc.)"
-                                className={!isAdmin ? "hidden" : undefined}
+                                className={!isAdmin || emailProvider !== "EMAILBISON" ? "hidden" : undefined}
                               >
                                 {cleaningUpClientId === client.id ? (
                                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -739,7 +952,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                           )}
                         </div>
                         
-                        {/* Configure/Edit EmailBison button - always available */}
+                        {/* Configure/Edit Integrations button */}
                         {isAdmin && (
                           <Button
                             variant="ghost"
@@ -754,8 +967,13 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                 setEditingClientId(client.id);
                                 setIntegrationsForm({
                                   name: client.name,
+                                  emailProvider: emailProvider ?? "NONE",
                                   emailBisonApiKey: "",
                                   emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
+                                  smartLeadApiKey: "",
+                                  smartLeadWebhookSecret: "",
+                                  instantlyApiKey: "",
+                                  instantlyWebhookSecret: "",
                                   unipileAccountId: client.unipileAccountId || "",
                                   calendlyAccessToken: "",
                                 });
@@ -765,7 +983,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                           >
                             {isEditingThis ? (
                               <>Cancel</>
-                            ) : (hasEmailBison || hasLinkedIn) ? (
+                            ) : (emailProvider || hasLinkedIn || hasCalendly) ? (
                               <>
                                 <Pencil className="h-3 w-3 mr-1" />
                                 Edit Integrations
@@ -779,17 +997,61 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                           </Button>
                         )}
                         
-                        {/* Inline edit form for EmailBison credentials */}
+                        {/* Inline edit form */}
                         {isEditingThis && (
                           <div className="w-full mt-2 p-3 border rounded-lg bg-muted/30 space-y-3">
-                            {/* Show current config if exists */}
-                            {(client.emailBisonWorkspaceId || client.emailBisonApiKey) && (
-                              <div className="text-xs text-muted-foreground pb-2 border-b">
-                                <p>Current config:</p>
-                                <p>Workspace ID: <code className="bg-background px-1 rounded">{client.emailBisonWorkspaceId || "Not set"}</code></p>
-                                <p>API Key: <code className="bg-background px-1 rounded">{client.emailBisonApiKey ? "••••••••" : "Not set"}</code></p>
-                              </div>
-                            )}
+                            <div className="text-xs text-muted-foreground pb-2 border-b space-y-1">
+                              <p>
+                                Current email provider:{" "}
+                                <code className="bg-background px-1 rounded">{providerLabel(emailProvider)}</code>
+                              </p>
+                              {emailProvider === "EMAILBISON" && (
+                                <>
+                                  <p>
+                                    Workspace ID:{" "}
+                                    <code className="bg-background px-1 rounded">{client.emailBisonWorkspaceId || "Not set"}</code>
+                                  </p>
+                                  <p>
+                                    API Key:{" "}
+                                    <code className="bg-background px-1 rounded">
+                                      {client.hasEmailBisonApiKey ? "••••••••" : "Not set"}
+                                    </code>
+                                  </p>
+                                </>
+                              )}
+                              {emailProvider === "SMARTLEAD" && (
+                                <>
+                                  <p>
+                                    API Key:{" "}
+                                    <code className="bg-background px-1 rounded">
+                                      {client.hasSmartLeadApiKey ? "••••••••" : "Not set"}
+                                    </code>
+                                  </p>
+                                  <p>
+                                    Webhook Secret:{" "}
+                                    <code className="bg-background px-1 rounded">
+                                      {client.hasSmartLeadWebhookSecret ? "••••••••" : "Not set"}
+                                    </code>
+                                  </p>
+                                </>
+                              )}
+                              {emailProvider === "INSTANTLY" && (
+                                <>
+                                  <p>
+                                    API Key:{" "}
+                                    <code className="bg-background px-1 rounded">
+                                      {client.hasInstantlyApiKey ? "••••••••" : "Not set"}
+                                    </code>
+                                  </p>
+                                  <p>
+                                    Webhook Secret:{" "}
+                                    <code className="bg-background px-1 rounded">
+                                      {client.hasInstantlyWebhookSecret ? "••••••••" : "Not set"}
+                                    </code>
+                                  </p>
+                                </>
+                              )}
+                            </div>
                             <div className="space-y-2">
                               <Label htmlFor={`workspaceName-${client.id}`} className="text-xs">Workspace Name</Label>
                               <Input
@@ -800,31 +1062,148 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                 className="h-8 text-sm"
                               />
                             </div>
+
+                            {/* Email provider (single-select) */}
                             <div className="space-y-2">
-                              <Label htmlFor={`workspaceId-${client.id}`} className="text-xs">Workspace ID (required for webhook routing)</Label>
-                              <Input
-                                id={`workspaceId-${client.id}`}
-                                placeholder="e.g., 78"
-                                value={integrationsForm.emailBisonWorkspaceId}
-                                onChange={(e) => setIntegrationsForm({ ...integrationsForm, emailBisonWorkspaceId: e.target.value })}
-                                className="h-8 text-sm"
-                              />
+                              <Label className="text-xs">Email Provider (choose one)</Label>
+                              <Select
+                                value={integrationsForm.emailProvider}
+                                onValueChange={(value) =>
+                                  setIntegrationsForm({
+                                    ...integrationsForm,
+                                    emailProvider: value as EmailIntegrationProvider | "NONE",
+                                    emailBisonApiKey: "",
+                                    smartLeadApiKey: "",
+                                    smartLeadWebhookSecret: "",
+                                    instantlyApiKey: "",
+                                    instantlyWebhookSecret: "",
+                                  })
+                                }
+                              >
+                                <SelectTrigger size="sm" className="w-full">
+                                  <SelectValue placeholder="Select provider" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="NONE">None</SelectItem>
+                                  <SelectItem value="EMAILBISON">EmailBison</SelectItem>
+                                  <SelectItem value="SMARTLEAD">SmartLead</SelectItem>
+                                  <SelectItem value="INSTANTLY">Instantly</SelectItem>
+                                </SelectContent>
+                              </Select>
                               <p className="text-[10px] text-muted-foreground">
-                                Found in Vercel logs as workspace_id when EmailBison sends a webhook
+                                Only one email provider can be active per workspace.
                               </p>
                             </div>
-                            <div className="space-y-2">
-                              <Label htmlFor={`emailKey-${client.id}`} className="text-xs">API Key {client.emailBisonApiKey && "(leave blank to keep current)"}</Label>
-                              <Input
-                                id={`emailKey-${client.id}`}
-                                type="password"
-                                autoComplete="off"
-                                placeholder={client.emailBisonApiKey ? "••••••••" : "eb_xxxxxxxxxxxxxxxx"}
-                                value={integrationsForm.emailBisonApiKey}
-                                onChange={(e) => setIntegrationsForm({ ...integrationsForm, emailBisonApiKey: e.target.value })}
-                                className="h-8 text-sm"
-                              />
-                            </div>
+
+                            {integrationsForm.emailProvider === "EMAILBISON" && (
+                              <>
+                                <div className="space-y-2">
+                                  <Label htmlFor={`workspaceId-${client.id}`} className="text-xs">EmailBison Workspace ID (optional)</Label>
+                                  <Input
+                                    id={`workspaceId-${client.id}`}
+                                    placeholder="e.g., 78"
+                                    value={integrationsForm.emailBisonWorkspaceId}
+                                    onChange={(e) => setIntegrationsForm({ ...integrationsForm, emailBisonWorkspaceId: e.target.value })}
+                                    className="h-8 text-sm"
+                                  />
+                                  <p className="text-[10px] text-muted-foreground">
+                                    Used for EmailBison payload-based routing (<code className="bg-background px-1 rounded">workspace_id</code>).
+                                  </p>
+                                </div>
+                                <div className="space-y-2">
+                                  <Label htmlFor={`emailKey-${client.id}`} className="text-xs">
+                                    EmailBison API Key {client.hasEmailBisonApiKey && "(leave blank to keep current)"}
+                                  </Label>
+                                  <Input
+                                    id={`emailKey-${client.id}`}
+                                    type="password"
+                                    autoComplete="off"
+                                    placeholder={client.hasEmailBisonApiKey ? "••••••••" : "eb_xxxxxxxxxxxxxxxx"}
+                                    value={integrationsForm.emailBisonApiKey}
+                                    onChange={(e) => setIntegrationsForm({ ...integrationsForm, emailBisonApiKey: e.target.value })}
+                                    className="h-8 text-sm"
+                                  />
+                                </div>
+                              </>
+                            )}
+
+                            {integrationsForm.emailProvider === "SMARTLEAD" && (
+                              <>
+                                <div className="space-y-2">
+                                  <Label htmlFor={`smartLeadApiKey-${client.id}`} className="text-xs">
+                                    SmartLead API Key {client.hasSmartLeadApiKey && "(leave blank to keep current)"}
+                                  </Label>
+                                  <Input
+                                    id={`smartLeadApiKey-${client.id}`}
+                                    type="password"
+                                    autoComplete="off"
+                                    placeholder={client.hasSmartLeadApiKey ? "••••••••" : "sl_..."}
+                                    value={integrationsForm.smartLeadApiKey}
+                                    onChange={(e) => setIntegrationsForm({ ...integrationsForm, smartLeadApiKey: e.target.value })}
+                                    className="h-8 text-sm"
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <Label htmlFor={`smartLeadWebhookSecret-${client.id}`} className="text-xs">
+                                    SmartLead Webhook Secret {client.hasSmartLeadWebhookSecret && "(leave blank to keep current)"}
+                                  </Label>
+                                  <Input
+                                    id={`smartLeadWebhookSecret-${client.id}`}
+                                    type="password"
+                                    autoComplete="off"
+                                    placeholder={client.hasSmartLeadWebhookSecret ? "••••••••" : "whsec_..."}
+                                    value={integrationsForm.smartLeadWebhookSecret}
+                                    onChange={(e) => setIntegrationsForm({ ...integrationsForm, smartLeadWebhookSecret: e.target.value })}
+                                    className="h-8 text-sm"
+                                  />
+                                  <p className="text-[10px] text-muted-foreground">
+                                    Webhook URL:{" "}
+                                    <code className="bg-background px-1 rounded break-all">
+                                      {(process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app") + `/api/webhooks/smartlead?clientId=${client.id}`}
+                                    </code>
+                                  </p>
+                                </div>
+                              </>
+                            )}
+
+                            {integrationsForm.emailProvider === "INSTANTLY" && (
+                              <>
+                                <div className="space-y-2">
+                                  <Label htmlFor={`instantlyApiKey-${client.id}`} className="text-xs">
+                                    Instantly API Key {client.hasInstantlyApiKey && "(leave blank to keep current)"}
+                                  </Label>
+                                  <Input
+                                    id={`instantlyApiKey-${client.id}`}
+                                    type="password"
+                                    autoComplete="off"
+                                    placeholder={client.hasInstantlyApiKey ? "••••••••" : "ins_..."}
+                                    value={integrationsForm.instantlyApiKey}
+                                    onChange={(e) => setIntegrationsForm({ ...integrationsForm, instantlyApiKey: e.target.value })}
+                                    className="h-8 text-sm"
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <Label htmlFor={`instantlyWebhookSecret-${client.id}`} className="text-xs">
+                                    Instantly Webhook Secret {client.hasInstantlyWebhookSecret && "(leave blank to keep current)"}
+                                  </Label>
+                                  <Input
+                                    id={`instantlyWebhookSecret-${client.id}`}
+                                    type="password"
+                                    autoComplete="off"
+                                    placeholder={client.hasInstantlyWebhookSecret ? "••••••••" : "whsec_..."}
+                                    value={integrationsForm.instantlyWebhookSecret}
+                                    onChange={(e) => setIntegrationsForm({ ...integrationsForm, instantlyWebhookSecret: e.target.value })}
+                                    className="h-8 text-sm"
+                                  />
+                                  <p className="text-[10px] text-muted-foreground">
+                                    Webhook URL:{" "}
+                                    <code className="bg-background px-1 rounded break-all">
+                                      {(process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app") + `/api/webhooks/instantly?clientId=${client.id}`}
+                                    </code>
+                                  </p>
+                                </div>
+                              </>
+                            )}
                             
                             {/* LinkedIn/Unipile Account ID */}
                             <div className="space-y-2 border-t pt-3 mt-3">
@@ -976,20 +1355,34 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 </p>
               </div>
 
-              {/* EmailBison Webhook */}
+              {/* Email Webhooks */}
               <div className="p-4 rounded-lg bg-muted/50 space-y-2">
                 <p className="text-sm font-medium flex items-center gap-2">
                   <Mail className="h-4 w-4" />
-                  Webhook URL for EmailBison
+                  Webhook URLs for Email
                 </p>
-                <code className="block text-xs bg-background p-2 rounded border break-all">
-                  {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/email
-                </code>
+                <div className="space-y-2">
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">EmailBison</p>
+                    <code className="block text-xs bg-background p-2 rounded border break-all">
+                      {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/email
+                    </code>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">SmartLead (requires clientId)</p>
+                    <code className="block text-xs bg-background p-2 rounded border break-all">
+                      {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/smartlead?clientId=&lt;workspaceId&gt;
+                    </code>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs text-muted-foreground">Instantly (requires clientId)</p>
+                    <code className="block text-xs bg-background p-2 rounded border break-all">
+                      {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/instantly?clientId=&lt;workspaceId&gt;
+                    </code>
+                  </div>
+                </div>
                 <p className="text-xs text-muted-foreground">
-                  Configure this URL in EmailBison → Settings → Webhooks to receive inbound email notifications.
-                </p>
-                <p className="text-xs text-muted-foreground mt-2">
-                  <strong>Important:</strong> Set your EmailBison Workspace ID above to enable automatic webhook routing. The system matches incoming webhooks by the <code className="bg-background px-1 py-0.5 rounded">workspace_id</code> in the payload.
+                  Only one email provider can be active per workspace. SmartLead/Instantly webhooks require the per-workspace webhook secret configured above.
                 </p>
               </div>
 
