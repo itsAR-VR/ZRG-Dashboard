@@ -108,7 +108,7 @@ export function InboxView({
   onLeadSelect,
   onClearFilters,
 }: InboxViewProps) {
-  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(() => initialConversationId ?? null);
   const queryClient = useQueryClient();
   const leadLastMessageAtRef = useRef<Map<string, number>>(new Map());
   const workspaceLastMessageAtRef = useRef<number>(0);
@@ -340,8 +340,10 @@ export function InboxView({
       return;
     }
 
+    const conversationId = activeConversationId;
+
     // Optimistic UI: Immediately show conversation with data from list
-    const baseConv = conversations.find((c) => c.id === activeConversationId);
+    const baseConv = conversations.find((c) => c.id === conversationId);
     if (baseConv) {
       // Only show loading state and clear messages for initial/explicit loads
       // For background polling, keep existing messages visible
@@ -352,32 +354,86 @@ export function InboxView({
         });
         setIsLoadingMessages(true);
       }
+    } else if (showLoading) {
+      // When the lead isn't present in the current list (filters/pagination), avoid showing a stale conversation.
+      setActiveConversation(null);
+      setIsLoadingMessages(true);
     }
 
     const shouldAutoSync =
       !!baseConv && (baseConv.channels.includes("email") || baseConv.channels.includes("sms"));
-    const lastSyncAt = lastAutoSyncRef.current.get(activeConversationId) || 0;
+    const lastSyncAt = lastAutoSyncRef.current.get(conversationId) || 0;
     const shouldSyncNow = shouldAutoSync && Date.now() - lastSyncAt > 5 * 60 * 1000; // 5 minutes
 
     const syncPromise = shouldSyncNow
-      ? smartSyncConversation(activeConversationId).catch((err) => {
+      ? smartSyncConversation(conversationId).catch((err) => {
           console.error("[InboxView] Auto-sync failed:", err);
           return null;
         })
       : Promise.resolve(null);
 
     if (shouldSyncNow) {
-      lastAutoSyncRef.current.set(activeConversationId, Date.now());
+      lastAutoSyncRef.current.set(conversationId, Date.now());
     }
 
     // Fetch full messages in background
-    const result = await getConversation(activeConversationId);
+    const result = await getConversation(conversationId);
     if (result.success && result.data) {
-      // Update with full message data
+      const { messages } = result.data;
+
       if (baseConv) {
+        setActiveConversation({ ...baseConv, messages });
+      } else {
+        const lastMessage = messages[messages.length - 1];
+        const sentimentTag = result.data.lead.sentimentTag ?? null;
+
         setActiveConversation({
-          ...baseConv,
-          messages: result.data.messages,
+          id: result.data.id,
+          lead: {
+            id: result.data.lead.id,
+            name: result.data.lead.name,
+            email: result.data.lead.email || "",
+            phone: result.data.lead.phone || "",
+            company: result.data.lead.company,
+            title: result.data.lead.title || "",
+            website: result.data.lead.companyWebsite || "",
+            timezone: "",
+            leadScore: 50,
+            autoReplyEnabled: result.data.lead.autoReplyEnabled,
+            autoFollowUpEnabled: result.data.lead.autoFollowUpEnabled,
+            autoBookMeetingsEnabled: result.data.lead.autoBookMeetingsEnabled,
+            smsDndActive: result.data.lead.smsDndActive,
+            clientId: result.data.lead.clientId,
+            smsCampaignId: result.data.lead.smsCampaignId,
+            smsCampaignName: result.data.lead.smsCampaignName,
+            status: result.data.lead.status as Lead["status"],
+            qualification: {
+              budget: false,
+              authority: false,
+              need: false,
+              timing: false,
+            },
+            linkedinUrl: result.data.lead.linkedinUrl,
+            companyName: result.data.lead.companyName,
+            companyWebsite: result.data.lead.companyWebsite,
+            companyState: result.data.lead.companyState,
+            emailBisonLeadId: result.data.lead.emailBisonLeadId,
+            enrichmentStatus: result.data.lead.enrichmentStatus,
+            ghlContactId: result.data.lead.ghlContactId,
+            ghlLocationId: result.data.lead.ghlLocationId,
+            sentimentTag: result.data.lead.sentimentTag,
+          },
+          channels: result.data.channels,
+          availableChannels: result.data.availableChannels,
+          primaryChannel: result.data.primaryChannel,
+          platform: result.data.primaryChannel,
+          classification: (sentimentTag?.toLowerCase().replace(/\s+/g, "-") || "new") as Conversation["classification"],
+          lastMessage: lastMessage?.content ?? "",
+          lastSubject: lastMessage?.subject ?? null,
+          lastMessageTime: lastMessage?.timestamp ? new Date(lastMessage.timestamp) : new Date(),
+          messages,
+          hasAiDraft: false,
+          requiresAttention: false,
         });
       }
     }
@@ -389,7 +445,7 @@ export function InboxView({
       const hasChanges = imported > 0 || healed > 0;
 
       if (hasChanges) {
-        const refreshed = await getConversation(activeConversationId);
+        const refreshed = await getConversation(conversationId);
         if (refreshed.success && refreshed.data && baseConv) {
           setActiveConversation({
             ...baseConv,
