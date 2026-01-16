@@ -377,6 +377,7 @@ export async function syncSmsConversationHistorySystem(
     let importedCount = 0;
     let healedCount = 0;
     let skippedDuplicates = 0;
+    let touchedInbound = false;
 
     for (const msg of ghlMessages) {
       try {
@@ -525,6 +526,7 @@ export async function syncSmsConversationHistorySystem(
           },
         });
         importedCount++;
+        if (msg.direction === "inbound") touchedInbound = true;
         console.log(
           `[Sync] Imported: "${msg.body.substring(0, 30)}..." (${msg.direction}) @ ${msgTimestamp.toISOString()}`
         );
@@ -538,7 +540,7 @@ export async function syncSmsConversationHistorySystem(
     await recomputeLeadMessageRollups(leadId);
 
     let reclassifiedSentiment = false;
-    const shouldReclassify = importedCount > 0 || healedCount > 0 || options.forceReclassify;
+    const shouldReclassify = Boolean(options.forceReclassify) || touchedInbound;
 
     if (shouldReclassify) {
       try {
@@ -551,7 +553,7 @@ export async function syncSmsConversationHistorySystem(
         console.error("[Sync] Failed to refresh sentiment after sync:", reclassError);
       }
     } else {
-      console.log("[Sync] Skipping sentiment reclassification - no new or healed messages");
+      console.log("[Sync] Skipping sentiment reclassification - no inbound changes detected");
     }
 
     return {
@@ -648,6 +650,7 @@ export async function syncEmailConversationHistorySystem(
     let importedCount = 0;
     let healedCount = 0;
     let skippedDuplicates = 0;
+    let touchedInbound = false;
 
     for (const reply of replies) {
       try {
@@ -693,6 +696,7 @@ export async function syncEmailConversationHistorySystem(
             });
             console.log(`[EmailSync] Healed replyId ${emailBisonReplyId} (${Object.keys(updateData).join(", ")})`);
             healedCount++;
+            if (updateData.direction === "inbound") touchedInbound = true;
           } else {
             skippedDuplicates++;
           }
@@ -724,6 +728,7 @@ export async function syncEmailConversationHistorySystem(
             },
           });
           healedCount++;
+          if (direction === "inbound") touchedInbound = true;
           console.log(`[EmailSync] Healed reply: "${body.substring(0, 30)}..." -> replyId: ${emailBisonReplyId}`);
           continue;
         }
@@ -744,6 +749,7 @@ export async function syncEmailConversationHistorySystem(
           },
         });
         importedCount++;
+        if (direction === "inbound") touchedInbound = true;
         console.log(`[EmailSync] Imported reply: "${body.substring(0, 30)}..." @ ${msgTimestamp.toISOString()}`);
       } catch (error) {
         console.error(`[EmailSync] Error processing reply ${reply.id}:`, error);
@@ -818,7 +824,7 @@ export async function syncEmailConversationHistorySystem(
     await recomputeLeadMessageRollups(leadId);
 
     let reclassifiedSentiment = false;
-    const shouldReclassify = importedCount > 0 || healedCount > 0 || options.forceReclassify;
+    const shouldReclassify = Boolean(options.forceReclassify) || touchedInbound;
 
     if (shouldReclassify) {
       try {
@@ -829,7 +835,7 @@ export async function syncEmailConversationHistorySystem(
         console.error("[EmailSync] Failed to refresh sentiment after sync:", reclassError);
       }
     } else {
-      console.log("[EmailSync] Skipping sentiment reclassification - no new or healed messages");
+      console.log("[EmailSync] Skipping sentiment reclassification - no inbound changes detected");
     }
 
     return {
