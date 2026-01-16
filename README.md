@@ -427,6 +427,72 @@ curl -sS -X POST "https://your-app-domain.com/api/admin/workspaces/bootstrap" \
 - `201` on create: `{ "success": true, "userId": "...", "workspaceId": "...", "existedUser": false, "existedWorkspace": false }`
 - `200` if workspace already exists: `{ "success": true, "existedWorkspace": true, ... }`
 
+### Workspace Member Bootstrap (Setters / Inbox Managers)
+
+- **Endpoint:** `/api/admin/workspaces/members`
+- **Method:** `POST`
+- **Auth:** `Authorization: Bearer ${WORKSPACE_PROVISIONING_SECRET}` (or `x-workspace-provisioning-secret: ${WORKSPACE_PROVISIONING_SECRET}`; fallback to `ADMIN_ACTIONS_SECRET` or `CRON_SECRET` if provisioning secret is unset)
+- **Purpose:** Creates (or updates) a Supabase Auth user and grants them access to an existing workspace via `ClientMember` (e.g., create a **Setter** login for the same workspace).
+
+**Behavior**
+- Workspace selector:
+  - Prefer `workspaceId`
+  - Or provide `workspaceName` + `workspaceOwnerEmail` (to disambiguate)
+- If `memberEmail` does not exist in Supabase Auth:
+  - `memberPassword` is required and a new user is created (email is confirmed immediately).
+- If `memberEmail` already exists:
+  - Omitting `memberPassword` will **not** change the password.
+  - Providing `memberPassword` requires `upsert=true` (prevents accidental password resets).
+- `role` defaults to `SETTER` (allowed: `SETTER`, `INBOX_MANAGER`, `ADMIN`).
+
+**Request body (JSON)**
+
+```json
+{
+  "workspaceId": "<WORKSPACE_ID>",
+  "memberEmail": "<SETTER_EMAIL>",
+  "memberPassword": "<SETTER_PASSWORD>",
+  "role": "SETTER",
+  "upsert": true
+}
+```
+
+**cURL (local dev)**
+
+```bash
+curl -sS -X POST "http://localhost:3000/api/admin/workspaces/members" \
+  -H "Authorization: Bearer $WORKSPACE_PROVISIONING_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workspaceId": "<WORKSPACE_ID>",
+    "memberEmail": "<SETTER_EMAIL>",
+    "memberPassword": "<SETTER_PASSWORD>",
+    "role": "SETTER",
+    "upsert": true
+  }'
+```
+
+**cURL (live / production)**
+
+Replace `http://localhost:3000` with your deployed dashboard URL (e.g. `https://your-app-domain.com`).
+
+```bash
+curl -sS -X POST "https://your-app-domain.com/api/admin/workspaces/members" \
+  -H "Authorization: Bearer $WORKSPACE_PROVISIONING_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workspaceId": "<WORKSPACE_ID>",
+    "memberEmail": "<SETTER_EMAIL>",
+    "memberPassword": "<SETTER_PASSWORD>",
+    "role": "SETTER",
+    "upsert": true
+  }'
+```
+
+**Response**
+- `201` if a new membership was created
+- `200` if the user already had that workspace role
+
 ### Vercel Cron Setup
 
 Follow-up sequences are processed automatically via Vercel Cron. The cron job is configured in `vercel.json`:
