@@ -80,6 +80,17 @@ const ATTENTION_SENTIMENT_TAGS = [
   "Follow Up",
 ] as const;
 
+// "Previously Required Attention" intentionally excludes "Follow Up":
+// "Follow Up" is a deferral / not-now sentiment and is handled via snoozing + follow-up automation,
+// not the classic "positive reply → we responded → awaiting their next reply" bucket.
+const PREVIOUS_ATTENTION_SENTIMENT_TAGS = [
+  "Meeting Requested",
+  "Call Requested",
+  "Information Requested",
+  "Positive", // Legacy - treat as Interested
+  "Interested",
+] as const;
+
 function isAttentionSentimentTag(sentimentTag: string | null): boolean {
   return ATTENTION_SENTIMENT_TAGS.includes((sentimentTag || "") as (typeof ATTENTION_SENTIMENT_TAGS)[number]);
 }
@@ -358,7 +369,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
         where: {
           ...clientFilter,
           ...snoozeFilter,
-          sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
+          sentimentTag: { in: PREVIOUS_ATTENTION_SENTIMENT_TAGS as unknown as string[] },
           lastInboundAt: { not: null },
           lastMessageDirection: "outbound",
           status: { notIn: ["blacklisted", "unqualified"] },
@@ -738,7 +749,7 @@ export async function getConversationsCursor(
       });
     } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
-        sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
+        sentimentTag: { in: PREVIOUS_ATTENTION_SENTIMENT_TAGS as unknown as string[] },
         lastInboundAt: { not: null },
         lastMessageDirection: "outbound",
         status: { notIn: ["blacklisted", "unqualified"] },
@@ -917,7 +928,7 @@ export async function getConversationsFromEnd(
       });
     } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
-        sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
+        sentimentTag: { in: PREVIOUS_ATTENTION_SENTIMENT_TAGS as unknown as string[] },
         lastInboundAt: { not: null },
         lastMessageDirection: "outbound",
         status: { notIn: ["blacklisted", "unqualified"] },
