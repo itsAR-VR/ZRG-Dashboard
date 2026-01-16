@@ -9,9 +9,12 @@ import { extractConversationInsightForLead, type ConversationInsight } from "@/l
 import { synthesizeInsightContextPack } from "@/lib/insights-chat/pack-synthesis";
 import { answerInsightsChatQuestion } from "@/lib/insights-chat/chat-answer";
 import { buildFastContextPackMarkdown, getFastSeedMaxThreads, getFastSeedMinThreads, selectFastSeedThreads } from "@/lib/insights-chat/fast-seed";
+import { buildInsightThreadIndex } from "@/lib/insights-chat/thread-index";
 import { getAnalytics, getEmailCampaignAnalytics } from "@/actions/analytics-actions";
 import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
 import { formatOpenAiErrorSummary, isRetryableOpenAiError } from "@/lib/ai/openai-error-utils";
+import type { InsightThreadCitation, InsightThreadIndexItem } from "@/lib/insights-chat/citations";
+import type { SelectedInsightThread } from "@/lib/insights-chat/thread-selection";
 import type {
   ConversationInsightOutcome,
   InsightChatAuditAction,
@@ -36,6 +39,7 @@ type InsightChatMessagePublic = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  citations: InsightThreadCitation[] | null;
   authorUserId: string | null;
   authorEmail: string | null;
   createdAt: Date;
@@ -86,6 +90,26 @@ function parseOptionalDate(value: unknown): Date | null {
     if (!Number.isNaN(d.getTime())) return d;
   }
   return null;
+}
+
+function coerceSelectedInsightThreadsMeta(value: unknown): SelectedInsightThread[] {
+  const meta = Array.isArray(value) ? (value as any[]) : [];
+  return meta
+    .map((row) => {
+      const leadId = typeof row?.leadId === "string" ? row.leadId : null;
+      if (!leadId) return null;
+      const outcome = typeof row?.outcome === "string" ? row.outcome : null;
+      const exampleType = row?.exampleType === "positive" || row?.exampleType === "negative" ? row.exampleType : null;
+      const selectionBucket = typeof row?.selectionBucket === "string" ? row.selectionBucket : null;
+      return {
+        leadId,
+        emailCampaignId: typeof row?.emailCampaignId === "string" ? row.emailCampaignId : null,
+        outcome: (outcome || "UNKNOWN") as any,
+        exampleType: (exampleType || "positive") as any,
+        selectionBucket: (selectionBucket || "unknown") as any,
+      };
+    })
+    .filter(Boolean) as SelectedInsightThread[];
 }
 
 async function getInsightsRuntimeConfig(clientId: string): Promise<{
@@ -294,7 +318,16 @@ export async function getInsightChatMessages(
 
     const messages = await prisma.insightChatMessage.findMany({
       where: { clientId, sessionId },
-      select: { id: true, role: true, content: true, authorUserId: true, authorEmail: true, createdAt: true, contextPackId: true },
+      select: {
+        id: true,
+        role: true,
+        content: true,
+        citations: true,
+        authorUserId: true,
+        authorEmail: true,
+        createdAt: true,
+        contextPackId: true,
+      },
       orderBy: { createdAt: "asc" },
       take: 500,
     });
@@ -306,6 +339,7 @@ export async function getInsightChatMessages(
           id: m.id,
           role: roleToPublic(m.role),
           content: m.content,
+          citations: (m.citations as any) ?? null,
           authorUserId: m.authorUserId,
           authorEmail: m.authorEmail,
           createdAt: m.createdAt,
@@ -1224,6 +1258,18 @@ export async function runInsightContextPackStep(opts: {
                   threads,
                 });
 
+                const fastThreadIndex: InsightThreadIndexItem[] = threads.map((t, idx) => ({
+                  ref: `T${String(idx + 1).padStart(3, "0")}`,
+                  leadId: t.leadId,
+                  outcome: t.outcome,
+                  exampleType: "positive",
+                  selectionBucket: "fast_seed",
+                  emailCampaignId: null,
+                  campaignName: null,
+                  leadLabel: `lead ${t.leadId}`,
+                  summary: String(t.insight.summary || "").trim().slice(0, 380) || "No extracted summary available.",
+                }));
+
                 const answer = await answerInsightsChatQuestion({
                   clientId,
                   sessionId: pack.sessionId,
@@ -1232,6 +1278,7 @@ export async function runInsightContextPackStep(opts: {
                   campaignContextLabel: campaignLabel,
                   analyticsSnapshot: pack.metricsSnapshot,
                   contextPackMarkdown: fastPackMarkdown,
+                  threadIndex: fastThreadIndex,
                   recentMessages: [],
                   model,
                   reasoningEffort: effort.api,
@@ -1243,6 +1290,7 @@ export async function runInsightContextPackStep(opts: {
                     sessionId: pack.sessionId,
                     role: "ASSISTANT",
                     content: `**Fast answer (partial pack)**\n\n${answer.answer}`.trim(),
+                    citations: answer.citations as any,
                     authorUserId: null,
                     authorEmail: null,
                     contextPackId: pack.id,
@@ -1493,6 +1541,7 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
           windowTo: true,
           selectedCampaignIds: true,
           effectiveCampaignIds: true,
+          selectedLeadsMeta: true,
           metricsSnapshot: true,
           synthesis: true,
           seedAssistantMessageId: true,
@@ -1549,6 +1598,9 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
         ? `Selected campaigns (${pack.effectiveCampaignIds.length})`
         : "Workspace (no campaign filter)";
 
+    const cleanedMeta = coerceSelectedInsightThreadsMeta(pack.selectedLeadsMeta);
+    const threadIndex = await buildInsightThreadIndex({ clientId, selectedMeta: cleanedMeta });
+
     const answer = await answerInsightsChatQuestion({
       clientId,
       sessionId: opts.sessionId,
@@ -1557,6 +1609,7 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
       campaignContextLabel: campaignLabel,
       analyticsSnapshot: pack.metricsSnapshot,
       contextPackMarkdown: packMarkdown,
+      threadIndex,
       recentMessages: [],
       model,
       reasoningEffort: effort.api,
@@ -1576,6 +1629,7 @@ export async function finalizeInsightsChatSeedAnswer(opts: {
         sessionId: opts.sessionId,
         role: "ASSISTANT",
         content: `${isUpgradeFromFast ? "**Full answer (pack complete)**\n\n" : ""}${answer.answer}`.trim(),
+        citations: answer.citations as any,
         authorUserId: null,
         authorEmail: null,
         contextPackId: pack.id,
@@ -1642,6 +1696,7 @@ export async function regenerateInsightsChatSeedAnswer(opts: {
           windowFrom: true,
           windowTo: true,
           effectiveCampaignIds: true,
+          selectedLeadsMeta: true,
           metricsSnapshot: true,
           synthesis: true,
         },
@@ -1676,6 +1731,9 @@ export async function regenerateInsightsChatSeedAnswer(opts: {
           ? `Selected campaigns (${pack.effectiveCampaignIds.length})`
           : "Workspace (no campaign filter)";
 
+      const cleanedMeta = coerceSelectedInsightThreadsMeta(pack.selectedLeadsMeta);
+      const threadIndex = await buildInsightThreadIndex({ clientId, selectedMeta: cleanedMeta });
+
       const answer = await answerInsightsChatQuestion({
         clientId,
         sessionId: session.id,
@@ -1684,6 +1742,7 @@ export async function regenerateInsightsChatSeedAnswer(opts: {
         campaignContextLabel: campaignLabel,
         analyticsSnapshot: pack.metricsSnapshot,
         contextPackMarkdown: packMarkdown,
+        threadIndex,
         recentMessages: [],
         model,
         reasoningEffort: effort.api,
@@ -1695,6 +1754,7 @@ export async function regenerateInsightsChatSeedAnswer(opts: {
           sessionId: session.id,
           role: "ASSISTANT",
           content: answer.answer,
+          citations: answer.citations as any,
           authorUserId: null,
           authorEmail: null,
           contextPackId: pack.id,
@@ -1732,7 +1792,14 @@ export async function sendInsightsChatMessage(opts: {
   content: string;
   model?: string | null;
   reasoningEffort?: string | null;
-}): Promise<{ success: boolean; data?: { userMessageId: string; assistantMessageId: string; answer: string }; error?: string }> {
+}): Promise<{
+  success: boolean;
+  data?: {
+    userMessage: { id: string; createdAt: Date };
+    assistantMessage: { id: string; createdAt: Date; content: string; citations: InsightThreadCitation[] | null };
+  };
+  error?: string;
+}> {
   return withAiTelemetrySourceIfUnset("action:insights_chat.send_message", async () => {
     try {
       const clientId = opts.clientId;
@@ -1762,6 +1829,7 @@ export async function sendInsightsChatMessage(opts: {
         windowFrom: true,
         windowTo: true,
         effectiveCampaignIds: true,
+        selectedLeadsMeta: true,
         metricsSnapshot: true,
         synthesis: true,
       },
@@ -1803,6 +1871,9 @@ export async function sendInsightsChatMessage(opts: {
         ? `Selected campaigns (${pack.effectiveCampaignIds.length})`
         : "Workspace (no campaign filter)";
 
+    const cleanedMeta = coerceSelectedInsightThreadsMeta(pack.selectedLeadsMeta);
+    const threadIndex = await buildInsightThreadIndex({ clientId, selectedMeta: cleanedMeta });
+
     const answer = await answerInsightsChatQuestion({
       clientId,
       sessionId: session.id,
@@ -1811,6 +1882,7 @@ export async function sendInsightsChatMessage(opts: {
       campaignContextLabel: campaignLabel,
       analyticsSnapshot: pack.metricsSnapshot,
       contextPackMarkdown: packMarkdown,
+      threadIndex,
       recentMessages: recent
         .reverse()
         .map((m) => ({ role: roleToPublic(m.role), content: m.content }))
@@ -1825,11 +1897,12 @@ export async function sendInsightsChatMessage(opts: {
         sessionId: session.id,
         role: "ASSISTANT",
         content: answer.answer,
+        citations: answer.citations as any,
         authorUserId: null,
         authorEmail: null,
         contextPackId: pack.id,
       },
-      select: { id: true },
+      select: { id: true, createdAt: true },
     });
 
     await recordAuditEvent({
@@ -1843,10 +1916,154 @@ export async function sendInsightsChatMessage(opts: {
     });
 
     revalidatePath("/");
-      return { success: true, data: { userMessageId: userMessage.id, assistantMessageId: assistantMessage.id, answer: answer.answer } };
+      return {
+        success: true,
+        data: {
+          userMessage: { id: userMessage.id, createdAt: userMessage.createdAt },
+          assistantMessage: {
+            id: assistantMessage.id,
+            createdAt: assistantMessage.createdAt,
+            content: answer.answer,
+            citations: answer.citations,
+          },
+        },
+      };
     } catch (error) {
       console.error("[InsightsChat] Failed to send message:", error);
       return { success: false, error: error instanceof Error ? error.message : "Failed to send message" };
+    }
+  });
+}
+
+export async function regenerateInsightsChatFollowupAnswer(opts: {
+  clientId: string | null | undefined;
+  sessionId: string;
+  userMessageId: string;
+  model?: string | null;
+  reasoningEffort?: string | null;
+}): Promise<{
+  success: boolean;
+  data?: { assistantMessage: { id: string; createdAt: Date; content: string; citations: InsightThreadCitation[] | null } };
+  error?: string;
+}> {
+  return withAiTelemetrySourceIfUnset("action:insights_chat.regenerate_followup_answer", async () => {
+    try {
+      const clientId = opts.clientId;
+      if (!clientId) return { success: false, error: "No workspace selected" };
+      const { userId, userEmail } = await requireClientAccess(clientId);
+
+      const session = await prisma.insightChatSession.findUnique({
+        where: { id: opts.sessionId },
+        select: { id: true, clientId: true, deletedAt: true },
+      });
+      if (!session || session.clientId !== clientId) return { success: false, error: "Session not found" };
+      if (session.deletedAt) return { success: false, error: "Session is deleted" };
+
+      const [pack, userMsg] = await Promise.all([
+        prisma.insightContextPack.findFirst({
+          where: { clientId, sessionId: session.id, status: "COMPLETE", deletedAt: null },
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            model: true,
+            reasoningEffort: true,
+            windowPreset: true,
+            allCampaigns: true,
+            campaignCap: true,
+            windowFrom: true,
+            windowTo: true,
+            effectiveCampaignIds: true,
+            selectedLeadsMeta: true,
+            metricsSnapshot: true,
+            synthesis: true,
+          },
+        }),
+        prisma.insightChatMessage.findUnique({
+          where: { id: opts.userMessageId },
+          select: { id: true, sessionId: true, role: true, content: true },
+        }),
+      ]);
+
+      const synthesisObj = pack?.synthesis as any;
+      const packMarkdown = typeof synthesisObj?.pack_markdown === "string" ? synthesisObj.pack_markdown : null;
+      if (!pack || !packMarkdown) return { success: false, error: "Context pack is not ready" };
+      if (!userMsg || userMsg.sessionId !== session.id || userMsg.role !== "USER") return { success: false, error: "Message not found" };
+
+      const recent = await prisma.insightChatMessage.findMany({
+        where: { clientId, sessionId: session.id },
+        select: { role: true, content: true },
+        orderBy: { createdAt: "desc" },
+        take: 16,
+      });
+
+      const model = coerceInsightsChatModel(opts.model ?? pack.model);
+      const effort = coerceInsightsChatReasoningEffort({
+        model,
+        storedValue: opts.reasoningEffort ?? pack.reasoningEffort,
+      });
+      const windowLabel = formatInsightsWindowLabel({
+        preset: pack.windowPreset,
+        from: pack.windowFrom,
+        to: pack.windowTo,
+      });
+      const campaignLabel = pack.allCampaigns
+        ? `All campaigns (cap ${pack.campaignCap ?? 10})`
+        : pack.effectiveCampaignIds.length
+          ? `Selected campaigns (${pack.effectiveCampaignIds.length})`
+          : "Workspace (no campaign filter)";
+
+      const cleanedMeta = coerceSelectedInsightThreadsMeta(pack.selectedLeadsMeta);
+      const threadIndex = await buildInsightThreadIndex({ clientId, selectedMeta: cleanedMeta });
+
+      const answer = await answerInsightsChatQuestion({
+        clientId,
+        sessionId: session.id,
+        question: userMsg.content,
+        windowLabel,
+        campaignContextLabel: campaignLabel,
+        analyticsSnapshot: pack.metricsSnapshot,
+        contextPackMarkdown: packMarkdown,
+        threadIndex,
+        recentMessages: recent
+          .reverse()
+          .map((m) => ({ role: roleToPublic(m.role), content: m.content }))
+          .filter((m) => m.role === "user" || m.role === "assistant") as Array<{ role: "user" | "assistant"; content: string }>,
+        model,
+        reasoningEffort: effort.api,
+      });
+
+      const assistantMessage = await prisma.insightChatMessage.create({
+        data: {
+          clientId,
+          sessionId: session.id,
+          role: "ASSISTANT",
+          content: answer.answer,
+          citations: answer.citations as any,
+          authorUserId: null,
+          authorEmail: null,
+          contextPackId: pack.id,
+        },
+        select: { id: true, createdAt: true },
+      });
+
+      await recordAuditEvent({
+        clientId,
+        userId,
+        userEmail,
+        action: "MESSAGE_CREATED",
+        sessionId: session.id,
+        contextPackId: pack.id,
+        details: { role: "ASSISTANT", regenerate: true, basedOnUserMessageId: userMsg.id },
+      });
+
+      revalidatePath("/");
+      return {
+        success: true,
+        data: { assistantMessage: { id: assistantMessage.id, createdAt: assistantMessage.createdAt, content: answer.answer, citations: answer.citations } },
+      };
+    } catch (error) {
+      console.error("[InsightsChat] Failed to regenerate follow-up answer:", error);
+      return { success: false, error: error instanceof Error ? error.message : "Failed to regenerate answer" };
     }
   });
 }

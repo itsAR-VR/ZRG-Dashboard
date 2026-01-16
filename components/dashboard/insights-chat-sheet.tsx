@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Bot, CheckCircle2, Clock, Loader2, MessageSquareText, Plus, RefreshCcw, Settings2, Shield, Trash2 } from "lucide-react";
+import { ArrowUp, Bot, CheckCircle2, Clock, Copy, ExternalLink, Loader2, MessageSquareText, Plus, RefreshCcw, Settings2, Shield, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -28,6 +28,7 @@ import {
   getInsightsChatUserPreference,
   getLatestInsightContextPack,
   listInsightChatSessions,
+  regenerateInsightsChatFollowupAnswer,
   regenerateInsightsChatSeedAnswer,
   recomputeInsightContextPack,
   restoreInsightChatSession,
@@ -45,6 +46,7 @@ import {
   type InsightsChatModel,
   type InsightsChatReasoningEffort,
 } from "@/lib/insights-chat/config";
+import type { InsightThreadCitation } from "@/lib/insights-chat/citations";
 
 type CampaignOption = { id: string; name: string };
 
@@ -62,9 +64,116 @@ type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  citations: InsightThreadCitation[] | null;
   createdAt: Date;
   contextPackId: string | null;
 };
+
+type PendingAssistantState =
+  | null
+  | {
+      mode: "answering" | "regenerating" | "building_pack";
+      model: InsightsChatModel;
+      reasoningEffort: InsightsChatReasoningEffort;
+      label: string;
+    };
+
+const INSIGHTS_CACHE_PREFIX = "zrg:insights_chat:v1";
+
+function safeLocalStorageGet(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeLocalStorageSet(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // ignore quota / privacy mode failures
+  }
+}
+
+function cacheKeySessions(clientId: string, includeDeleted: boolean): string {
+  return `${INSIGHTS_CACHE_PREFIX}:client:${clientId}:sessions:${includeDeleted ? "with_deleted" : "active"}`;
+}
+
+function cacheKeyMessages(clientId: string, sessionId: string): string {
+  return `${INSIGHTS_CACHE_PREFIX}:client:${clientId}:session:${sessionId}:messages`;
+}
+
+function cacheKeyPack(clientId: string, sessionId: string): string {
+  return `${INSIGHTS_CACHE_PREFIX}:client:${clientId}:session:${sessionId}:pack`;
+}
+
+function serializeSessionRow(row: SessionRow) {
+  return {
+    ...row,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    deletedAt: row.deletedAt ? row.deletedAt.toISOString() : null,
+  };
+}
+
+function deserializeSessionRow(raw: any): SessionRow | null {
+  if (!raw || typeof raw !== "object") return null;
+  if (typeof raw.id !== "string") return null;
+  return {
+    id: raw.id,
+    title: typeof raw.title === "string" ? raw.title : "Insights Session",
+    createdAt: new Date(raw.createdAt),
+    updatedAt: new Date(raw.updatedAt),
+    createdByEmail: typeof raw.createdByEmail === "string" ? raw.createdByEmail : null,
+    deletedAt: raw.deletedAt ? new Date(raw.deletedAt) : null,
+    lastMessagePreview: typeof raw.lastMessagePreview === "string" ? raw.lastMessagePreview : null,
+  };
+}
+
+function serializeChatMessage(m: ChatMessage) {
+  return { ...m, createdAt: m.createdAt.toISOString() };
+}
+
+function deserializeChatMessage(raw: any): ChatMessage | null {
+  if (!raw || typeof raw !== "object") return null;
+  if (typeof raw.id !== "string") return null;
+  if (raw.role !== "user" && raw.role !== "assistant" && raw.role !== "system") return null;
+  return {
+    id: raw.id,
+    role: raw.role,
+    content: typeof raw.content === "string" ? raw.content : "",
+    citations: Array.isArray(raw.citations) ? (raw.citations as InsightThreadCitation[]) : null,
+    createdAt: new Date(raw.createdAt),
+    contextPackId: typeof raw.contextPackId === "string" ? raw.contextPackId : null,
+  };
+}
+
+function serializePack(pack: InsightContextPackPublic) {
+  return {
+    ...pack,
+    windowFrom: new Date(pack.windowFrom).toISOString(),
+    windowTo: new Date(pack.windowTo).toISOString(),
+    computedAt: pack.computedAt ? new Date(pack.computedAt).toISOString() : null,
+    createdAt: new Date(pack.createdAt).toISOString(),
+    updatedAt: new Date(pack.updatedAt).toISOString(),
+    deletedAt: pack.deletedAt ? new Date(pack.deletedAt).toISOString() : null,
+  };
+}
+
+function deserializePack(raw: any): InsightContextPackPublic | null {
+  if (!raw || typeof raw !== "object") return null;
+  if (typeof raw.id !== "string" || typeof raw.sessionId !== "string") return null;
+  return {
+    ...(raw as InsightContextPackPublic),
+    windowFrom: new Date(raw.windowFrom),
+    windowTo: new Date(raw.windowTo),
+    computedAt: raw.computedAt ? new Date(raw.computedAt) : null,
+    createdAt: new Date(raw.createdAt),
+    updatedAt: new Date(raw.updatedAt),
+    deletedAt: raw.deletedAt ? new Date(raw.deletedAt) : null,
+  };
+}
 
 function formatRelativeTime(ts: Date): string {
   const seconds = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
@@ -117,6 +226,40 @@ function parseDateInputValue(value: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function PreWithCopy({ children }: { children: React.ReactNode }) {
+  const preRef = useRef<HTMLPreElement | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    const text = preRef.current?.innerText || "";
+    if (!text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {
+      toast.error("Failed to copy");
+    }
+  }, []);
+
+  return (
+    <div className="relative mt-3">
+      <button
+        type="button"
+        onClick={handleCopy}
+        className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md border bg-background/70 px-2 py-1 text-[11px] text-muted-foreground hover:bg-background"
+        title="Copy"
+      >
+        {copied ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+        {copied ? "Copied" : "Copy"}
+      </button>
+      <pre ref={preRef} className="overflow-x-auto rounded-xl border bg-muted/40 p-3 text-xs leading-relaxed">
+        {children}
+      </pre>
+    </div>
+  );
+}
+
 const assistantMarkdownComponents: Components = {
   h1: ({ children }) => <h1 className="text-base font-semibold tracking-tight">{children}</h1>,
   h2: ({ children }) => <h2 className="text-sm font-semibold tracking-tight">{children}</h2>,
@@ -139,9 +282,7 @@ const assistantMarkdownComponents: Components = {
     <blockquote className="mt-3 border-l-2 border-border pl-4 text-muted-foreground">{children}</blockquote>
   ),
   hr: () => <hr className="my-4 border-border" />,
-  pre: ({ children }) => (
-    <pre className="mt-3 overflow-x-auto rounded-xl border bg-muted/40 p-3 text-xs leading-relaxed">{children}</pre>
-  ),
+  pre: ({ children }) => <PreWithCopy>{children}</PreWithCopy>,
   code: ({ className, children, node: _node }) => {
     const inline = !(className || "").includes("language-");
     if (inline) {
@@ -166,9 +307,106 @@ function AssistantMarkdown({ content }: { content: string }) {
   );
 }
 
-function ChatBubble({ role, content }: { role: "user" | "assistant" | "system"; content: string }) {
+function buildInboxThreadHref(leadId: string): string {
+  const cleaned = (leadId || "").trim();
+  if (!cleaned) return "/?view=inbox";
+  return `/?view=inbox&leadId=${encodeURIComponent(cleaned)}`;
+}
+
+function CitationsBar({ citations }: { citations: InsightThreadCitation[] }) {
+  const top = citations.slice(0, 6);
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2">
+      {top.map((c) => (
+        <a
+          key={`${c.kind}:${c.leadId}:${c.ref}`}
+          href={buildInboxThreadHref(c.leadId)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground hover:bg-muted/60"
+          title={c.leadLabel || undefined}
+        >
+          <span className="font-medium text-foreground">{c.ref}</span>
+          {c.outcome ? <span className="text-muted-foreground">· {c.outcome}</span> : null}
+          <ExternalLink className="h-3 w-3 opacity-70" />
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function SourcesDialog({ citations }: { citations: InsightThreadCitation[] }) {
+  const [open, setOpen] = useState(false);
+  const items = citations;
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+        onClick={() => setOpen(true)}
+      >
+        Sources ({items.length})
+      </Button>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="text-sm">Sources</DialogTitle>
+          <DialogDescription className="text-xs">Threads referenced by the assistant for this answer.</DialogDescription>
+        </DialogHeader>
+
+        <div className="max-h-[65vh] space-y-2 overflow-auto pr-1">
+          {items.map((c) => (
+            <div key={`${c.kind}:${c.leadId}:${c.ref}`} className="rounded-xl border bg-background/40 p-3">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border bg-muted/40 px-2 py-0.5 text-[11px] font-medium text-foreground">
+                      {c.ref}
+                    </span>
+                    {c.outcome ? (
+                      <span className="text-[11px] text-muted-foreground">{c.outcome}</span>
+                    ) : (
+                      <span className="text-[11px] text-muted-foreground">Thread</span>
+                    )}
+                    {c.campaignName ? (
+                      <span className="truncate text-[11px] text-muted-foreground">· {c.campaignName}</span>
+                    ) : null}
+                  </div>
+                  {c.leadLabel ? <div className="mt-1 truncate text-xs text-foreground">{c.leadLabel}</div> : null}
+                  {c.note ? <div className="mt-2 text-xs text-muted-foreground">{c.note}</div> : null}
+                </div>
+
+                <a
+                  href={buildInboxThreadHref(c.leadId)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-xs hover:bg-muted/40"
+                >
+                  Open in Inbox <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ChatBubble({
+  role,
+  content,
+  citations,
+}: {
+  role: "user" | "assistant" | "system";
+  content: string;
+  citations: InsightThreadCitation[] | null;
+}) {
   const isUser = role === "user";
   const isSystem = role === "system";
+  const hasCitations = role === "assistant" && Array.isArray(citations) && citations.length > 0;
   return (
     <div className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}>
       <div
@@ -181,7 +419,36 @@ function ChatBubble({ role, content }: { role: "user" | "assistant" | "system"; 
               : "bg-card/60 text-foreground border",
         ].join(" ")}
       >
-        {role === "assistant" ? <AssistantMarkdown content={content} /> : <div className="whitespace-pre-wrap">{content}</div>}
+        {role === "assistant" ? (
+          <>
+            <AssistantMarkdown content={content} />
+            {hasCitations ? (
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                <CitationsBar citations={citations!} />
+                <SourcesDialog citations={citations!} />
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <div className="whitespace-pre-wrap">{content}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ThinkingBubble(props: { label: string; model: InsightsChatModel; effort: InsightsChatReasoningEffort }) {
+  return (
+    <div className="flex w-full justify-start">
+      <div className="max-w-[46rem] rounded-2xl border bg-card/60 px-4 py-3 text-sm leading-relaxed shadow-sm">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span className="font-medium text-foreground">{props.label}</span>
+          <span className="text-muted-foreground">·</span>
+          <span>{props.model}</span>
+          <span className="text-muted-foreground">·</span>
+          <span>{props.effort}</span>
+        </div>
       </div>
     </div>
   );
@@ -343,6 +610,7 @@ function InsightsConsoleBody({
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [pendingAssistant, setPendingAssistant] = useState<PendingAssistantState>(null);
 
   const pollCancelRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const activePackBuildRef = useRef<string | null>(null);
@@ -404,6 +672,24 @@ function InsightsConsoleBody({
   const loadSessions = useCallback(
     async (opts?: { includeDeleted?: boolean }) => {
       if (!activeWorkspace) return;
+      const includeDeleted = Boolean(opts?.includeDeleted);
+
+      const cachedSessionsRaw = safeLocalStorageGet(cacheKeySessions(activeWorkspace, includeDeleted));
+      if (cachedSessionsRaw) {
+        try {
+          const parsed = JSON.parse(cachedSessionsRaw) as { sessions?: any[] };
+          const cached = Array.isArray(parsed?.sessions) ? parsed.sessions.map(deserializeSessionRow).filter(Boolean) : [];
+          if (cached.length > 0) {
+            setSessions(cached as SessionRow[]);
+            if (!selectedSessionId) {
+              setSelectedSessionId((cached as SessionRow[])[0]!.id);
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       setSessionsLoading(true);
       try {
         const res = await listInsightChatSessions(activeWorkspace, opts);
@@ -413,6 +699,10 @@ function InsightsConsoleBody({
           return;
         }
         setSessions(res.data.sessions);
+        safeLocalStorageSet(
+          cacheKeySessions(activeWorkspace, includeDeleted),
+          JSON.stringify({ sessions: res.data.sessions.map(serializeSessionRow) })
+        );
         if (!selectedSessionId && res.data.sessions.length > 0) {
           setSelectedSessionId(res.data.sessions[0]!.id);
         }
@@ -429,8 +719,32 @@ function InsightsConsoleBody({
   const loadSession = useCallback(
     async (sessionId: string) => {
       if (!activeWorkspace) return;
-      setMessagesLoading(true);
-      setPackLoading(true);
+      const cachedMsgsRaw = safeLocalStorageGet(cacheKeyMessages(activeWorkspace, sessionId));
+      if (cachedMsgsRaw) {
+        try {
+          const parsed = JSON.parse(cachedMsgsRaw) as { messages?: any[] };
+          const cached = Array.isArray(parsed?.messages) ? parsed.messages.map(deserializeChatMessage).filter(Boolean) : [];
+          if (cached.length > 0) {
+            setMessages(cached as ChatMessage[]);
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      const cachedPackRaw = safeLocalStorageGet(cacheKeyPack(activeWorkspace, sessionId));
+      if (cachedPackRaw) {
+        try {
+          const parsed = JSON.parse(cachedPackRaw) as { pack?: any };
+          const cached = parsed?.pack ? deserializePack(parsed.pack) : null;
+          if (cached) setPack(cached);
+        } catch {
+          // ignore
+        }
+      }
+
+      setMessagesLoading(!cachedMsgsRaw);
+      setPackLoading(!cachedPackRaw);
       try {
         const [msgs, packRes] = await Promise.all([
           getInsightChatMessages(activeWorkspace, sessionId),
@@ -438,21 +752,26 @@ function InsightsConsoleBody({
         ]);
 
         if (msgs.success && msgs.data) {
-          setMessages(
-            msgs.data.messages.map((m) => ({
-              id: m.id,
-              role: m.role,
-              content: m.content,
-              createdAt: m.createdAt,
-              contextPackId: m.contextPackId ?? null,
-            }))
-          );
+          const next = msgs.data.messages.map((m) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            citations: m.citations ?? null,
+            createdAt: m.createdAt,
+            contextPackId: m.contextPackId ?? null,
+          }));
+          setMessages(next);
+          safeLocalStorageSet(cacheKeyMessages(activeWorkspace, sessionId), JSON.stringify({ messages: next.map(serializeChatMessage) }));
         } else {
           setMessages([]);
         }
+        setPendingAssistant(null);
 
         if (packRes.success && packRes.data) {
           setPack(packRes.data.pack);
+          if (packRes.data.pack) {
+            safeLocalStorageSet(cacheKeyPack(activeWorkspace, sessionId), JSON.stringify({ pack: serializePack(packRes.data.pack) }));
+          }
           if (packRes.data.pack) {
             const nextModel = coerceInsightsChatModel(packRes.data.pack.model);
             setModel(nextModel);
@@ -692,6 +1011,20 @@ function InsightsConsoleBody({
     if (!activeWorkspace || !selectedSessionId) return;
     const content = draft.trim();
     if (!content) return;
+    const optimisticId = `local-user-${Date.now()}`;
+    setDraft("");
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: optimisticId,
+        role: "user",
+        content,
+        citations: null,
+        createdAt: new Date(),
+        contextPackId: pack?.id ?? null,
+      },
+    ]);
+    setPendingAssistant({ mode: "answering", model, reasoningEffort, label: "Thinking" });
     setSending(true);
     try {
       const res = await sendInsightsChatMessage({
@@ -703,19 +1036,52 @@ function InsightsConsoleBody({
       });
       if (!res.success || !res.data) {
         toast.error(res.error || "Failed to send message");
+        setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
+        setPendingAssistant(null);
         return;
       }
-      setDraft("");
-      await loadSession(selectedSessionId);
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          m.id === optimisticId
+            ? {
+                ...m,
+                id: res.data!.userMessage.id,
+                createdAt: new Date(res.data!.userMessage.createdAt),
+              }
+            : m
+        );
+
+        next.push({
+          id: res.data!.assistantMessage.id,
+          role: "assistant",
+          content: res.data!.assistantMessage.content,
+          citations: res.data!.assistantMessage.citations ?? null,
+          createdAt: new Date(res.data!.assistantMessage.createdAt),
+          contextPackId: pack?.id ?? null,
+        });
+        return next;
+      });
+      setPendingAssistant(null);
       await loadSessions();
     } finally {
       setSending(false);
     }
-  }, [activeWorkspace, draft, loadSession, loadSessions, model, reasoningEffort, selectedSessionId]);
+  }, [activeWorkspace, draft, loadSessions, model, pack?.id, reasoningEffort, selectedSessionId]);
 
   const canSendFollowups = Boolean(pack && pack.status === "COMPLETE" && pack.deletedAt == null);
   const isBuildingPack = Boolean(pack && ["PENDING", "RUNNING"].includes(pack.status));
   const canRegenerate = Boolean(selectedSessionId && pack && pack.status === "COMPLETE" && pack.deletedAt == null);
+
+  const packStageLabel = useMemo(() => {
+    if (!pack) return "Building";
+    if (pack.status === "PENDING") return "Selecting threads";
+    if (pack.status === "FAILED") return "Error";
+    if (pack.targetThreadsTotal > 0 && pack.processedThreads < pack.targetThreadsTotal) {
+      return `Extracting threads (${pack.processedThreads}/${pack.targetThreadsTotal})`;
+    }
+    if (pack.status === "RUNNING") return "Synthesizing pack";
+    return "Building";
+  }, [pack]);
 
   const handleRecomputePack = useCallback(async () => {
     if (!activeWorkspace || !selectedSessionId) return;
@@ -776,6 +1142,43 @@ function InsightsConsoleBody({
       setSending(false);
     }
   }, [activeWorkspace, loadSession, loadSessions, model, reasoningEffort, selectedSessionId]);
+
+  const handleRegenerateFollowup = useCallback(async () => {
+    if (!activeWorkspace || !selectedSessionId) return;
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    if (!lastUser) return;
+
+    setPendingAssistant({ mode: "regenerating", model, reasoningEffort, label: "Regenerating" });
+    setSending(true);
+    try {
+      const res = await regenerateInsightsChatFollowupAnswer({
+        clientId: activeWorkspace,
+        sessionId: selectedSessionId,
+        userMessageId: lastUser.id,
+        model,
+        reasoningEffort,
+      });
+      if (!res.success || !res.data) {
+        toast.error(res.error || "Failed to regenerate answer");
+        return;
+      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: res.data!.assistantMessage.id,
+          role: "assistant",
+          content: res.data!.assistantMessage.content,
+          citations: res.data!.assistantMessage.citations ?? null,
+          createdAt: new Date(res.data!.assistantMessage.createdAt),
+          contextPackId: pack?.id ?? null,
+        },
+      ]);
+      await loadSessions();
+    } finally {
+      setPendingAssistant(null);
+      setSending(false);
+    }
+  }, [activeWorkspace, loadSessions, messages, model, pack?.id, reasoningEffort, selectedSessionId]);
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
@@ -1155,8 +1558,13 @@ function InsightsConsoleBody({
                   ) : (
                     <div className="space-y-5">
                       {messages.map((m) => (
-                        <ChatBubble key={m.id} role={m.role} content={m.content} />
+                        <ChatBubble key={m.id} role={m.role} content={m.content} citations={m.citations} />
                       ))}
+                      {pendingAssistant ? (
+                        <ThinkingBubble label={pendingAssistant.label} model={pendingAssistant.model} effort={pendingAssistant.reasoningEffort} />
+                      ) : isBuildingPack && messages.length > 0 && !messages.some((m) => m.role === "assistant") ? (
+                        <ThinkingBubble label={packStageLabel} model={model} effort={reasoningEffort} />
+                      ) : null}
                       <div ref={messagesEndRef} />
                     </div>
                   )}
@@ -1225,6 +1633,16 @@ function InsightsConsoleBody({
                         disabled={sending}
                       >
                         Stop waiting
+                      </Button>
+                    ) : canSendFollowups && messages.filter((m) => m.role === "user").length > 1 ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2"
+                        onClick={handleRegenerateFollowup}
+                        disabled={sending || Boolean(pendingAssistant)}
+                      >
+                        Regenerate
                       </Button>
                     ) : null}
                   </div>

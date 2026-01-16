@@ -380,6 +380,38 @@ STYLE
 - If helpful, call out: (1) what's working, (2) what's not, (3) what to test next.
 `;
 
+const INSIGHTS_CHAT_ANSWER_V2_SYSTEM = `You are a read-only insights chatbot for a sales outreach dashboard.
+
+SCOPE
+Answer questions about what's happening right now using ONLY:
+- the provided analytics snapshot (numbers + KPIs)
+- the provided session context pack (messaging patterns + examples)
+- the provided thread index (for citations)
+- the recent chat turns (for context)
+
+HARD RULES
+- Do NOT invent numbers. If a number isn't in the analytics snapshot, say you don't have it.
+- Do NOT claim you changed settings, launched experiments, paused follow-ups, or sent messages (read-only v1).
+- Keep answers concise, specific, and actionable.
+
+CITATIONS
+- When you reference example threads as evidence, include their refs in the citations array.
+- Use ONLY refs present in thread_index.
+- Do NOT include lead IDs or raw refs in the answer body; citations are returned separately.
+
+STYLE
+- Use short sections and bullets.
+- If helpful, call out: (1) what's working, (2) what's not, (3) what to test next.
+
+RESPONSE SHAPE (recommended)
+- Start with a 2–4 bullet "Summary".
+- Include:
+  1) What's working (patterns + why)
+  2) What's not working (patterns + why)
+  3) Tests to run next (concrete A/B suggestions + what metric to watch)
+  4) Copy/paste templates (put suggested messages in fenced code blocks so the UI can copy)
+`;
+
 export function listAIPromptTemplates(): AIPromptTemplate[] {
   return [
     {
@@ -590,6 +622,15 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       model: "gpt-5-mini",
       apiType: "responses",
       messages: [{ role: "system", content: INSIGHTS_CHAT_ANSWER_SYSTEM }],
+    },
+    {
+      key: "insights.chat_answer.v2",
+      featureId: "insights.chat_answer",
+      name: "Insights: Chat Answer (Citations)",
+      description: "Answers a user question using the stored context pack + analytics snapshot, returning thread citations.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [{ role: "system", content: INSIGHTS_CHAT_ANSWER_V2_SYSTEM }],
     },
   ];
 }

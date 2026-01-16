@@ -372,6 +372,7 @@ model InsightChatMessage {
   session       InsightChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   role          InsightChatRole
   content       String   @db.Text
+  citations     Json?
   authorUserId  String?
   authorEmail   String?
   contextPackId String?

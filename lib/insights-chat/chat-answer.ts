@@ -3,12 +3,32 @@ import "server-only";
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
+import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
+import { z } from "zod";
 import type { InsightsChatModel, OpenAIReasoningEffort } from "@/lib/insights-chat/config";
+import type { InsightThreadCitation, InsightThreadIndexItem } from "@/lib/insights-chat/citations";
+
+const AnswerSchema = z.object({
+  answer_markdown: z.string().max(20_000),
+  citations: z
+    .array(
+      z.object({
+        ref: z.string().min(2).max(12),
+        note: z.string().max(180).nullable().optional(),
+      })
+    )
+    .max(60),
+});
+
+type StructuredAnswer = z.infer<typeof AnswerSchema>;
 
 function safeString(value: string | null | undefined): string {
   return (value || "").trim();
+}
+
+function safeJsonParse<T>(text: string): T {
+  return JSON.parse(extractJsonObjectFromText(text)) as T;
 }
 
 function getInsightsMaxRetries(): number {
@@ -25,15 +45,16 @@ export async function answerInsightsChatQuestion(opts: {
   campaignContextLabel: string;
   analyticsSnapshot: unknown;
   contextPackMarkdown: string;
+  threadIndex?: InsightThreadIndexItem[] | null;
   recentMessages: Array<{ role: "user" | "assistant"; content: string }>;
   model: InsightsChatModel;
   reasoningEffort: OpenAIReasoningEffort;
-}): Promise<{ answer: string; interactionId: string | null }> {
+}): Promise<{ answer: string; citations: InsightThreadCitation[]; interactionId: string | null }> {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY not configured");
   }
 
-  const prompt = getAIPromptTemplate("insights.chat_answer.v1");
+  const prompt = getAIPromptTemplate("insights.chat_answer.v2");
   const system =
     prompt?.messages.find((m) => m.role === "system")?.content ||
     `You are an analytics insights assistant for a sales outreach dashboard.
@@ -42,6 +63,11 @@ RULES:
 - Use ONLY the provided analytics snapshot and context pack. Do not invent numbers.
 - If data is missing, say what you need.
 - Keep it concise and specific.
+
+OUTPUT:
+- Output ONLY valid JSON with keys: answer_markdown (string) and citations (array).
+- citations must be an array of objects: { ref: string, note?: string|null }.
+- Use ONLY refs that appear in thread_index.
 `;
 
   const question = safeString(opts.question);
@@ -59,6 +85,17 @@ RULES:
     campaign_scope: opts.campaignContextLabel,
     analytics_snapshot: opts.analyticsSnapshot ?? null,
     context_pack: opts.contextPackMarkdown,
+    thread_index: Array.isArray(opts.threadIndex)
+      ? opts.threadIndex.map((t) => ({
+          ref: t.ref,
+          outcome: t.outcome,
+          example_type: t.exampleType,
+          selection_bucket: t.selectionBucket,
+          campaign_name: t.campaignName,
+          lead_label: t.leadLabel,
+          summary: t.summary,
+        }))
+      : null,
     recent_chat: history || null,
   };
 
@@ -78,13 +115,40 @@ RULES:
   const { response, interactionId } = await runResponseWithInteraction({
     clientId: opts.clientId,
     featureId: prompt?.featureId || "insights.chat_answer",
-    promptKey: prompt?.key || "insights.chat_answer.v1",
+    promptKey: prompt?.key || "insights.chat_answer.v2",
     params: {
       model: opts.model,
       reasoning: { effort: opts.reasoningEffort },
       max_output_tokens: budget.maxOutputTokens,
       instructions: system,
-      text: { verbosity: "medium" },
+      text: {
+        verbosity: "medium",
+        format: {
+          type: "json_schema",
+          name: "insights_chat_answer",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              answer_markdown: { type: "string" },
+              citations: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    ref: { type: "string" },
+                    note: { anyOf: [{ type: "string" }, { type: "null" }] },
+                  },
+                  required: ["ref"],
+                },
+              },
+            },
+            required: ["answer_markdown", "citations"],
+          },
+        },
+      },
       input,
     },
     requestOptions: {
@@ -101,5 +165,43 @@ RULES:
     throw new Error(msg);
   }
 
-  return { answer: text, interactionId };
+  let parsed: StructuredAnswer;
+  try {
+    parsed = safeJsonParse<StructuredAnswer>(text);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Failed to parse JSON";
+    if (interactionId) await markAiInteractionError(interactionId, msg);
+    throw new Error(msg);
+  }
+
+  const validated = AnswerSchema.safeParse(parsed);
+  if (!validated.success) {
+    const msg = `Answer schema mismatch: ${validated.error.message}`;
+    if (interactionId) await markAiInteractionError(interactionId, msg);
+    throw new Error(msg);
+  }
+
+  const indexByRef = new Map((opts.threadIndex || []).map((t) => [t.ref.trim().toUpperCase(), t]));
+  const citations: InsightThreadCitation[] = [];
+  const used = new Set<string>();
+
+  for (const raw of validated.data.citations || []) {
+    const ref = (raw.ref || "").trim().toUpperCase();
+    if (!ref || used.has(ref)) continue;
+    const idx = indexByRef.get(ref);
+    if (!idx) continue;
+    used.add(ref);
+    citations.push({
+      kind: "thread",
+      ref,
+      leadId: idx.leadId,
+      outcome: idx.outcome ?? null,
+      emailCampaignId: idx.emailCampaignId ?? null,
+      campaignName: idx.campaignName ?? null,
+      leadLabel: idx.leadLabel ?? null,
+      note: raw.note ? String(raw.note) : null,
+    });
+  }
+
+  return { answer: validated.data.answer_markdown.trim(), citations, interactionId };
 }

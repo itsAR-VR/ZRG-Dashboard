@@ -6,15 +6,38 @@ import { selectThreadsForInsightPack, type InsightCampaignScope } from "@/lib/in
 import { extractConversationInsightForLead, type ConversationInsight } from "@/lib/insights-chat/thread-extractor";
 import { synthesizeInsightContextPack } from "@/lib/insights-chat/pack-synthesis";
 import { answerInsightsChatQuestion } from "@/lib/insights-chat/chat-answer";
+import { buildInsightThreadIndex } from "@/lib/insights-chat/thread-index";
 import { coerceInsightsChatModel, coerceInsightsChatReasoningEffort } from "@/lib/insights-chat/config";
 import { formatInsightsWindowLabel } from "@/lib/insights-chat/window";
 import { buildFastContextPackMarkdown, getFastSeedMaxThreads, getFastSeedMinThreads, selectFastSeedThreads } from "@/lib/insights-chat/fast-seed";
 import { formatOpenAiErrorSummary, isRetryableOpenAiError } from "@/lib/ai/openai-error-utils";
 import type { ConversationInsightOutcome, InsightContextPackStatus } from "@prisma/client";
+import type { InsightThreadIndexItem } from "@/lib/insights-chat/citations";
+import type { SelectedInsightThread } from "@/lib/insights-chat/thread-selection";
 
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
+function coerceSelectedInsightThreadsMeta(value: unknown): SelectedInsightThread[] {
+  const meta = Array.isArray(value) ? (value as any[]) : [];
+  return meta
+    .map((row) => {
+      const leadId = typeof row?.leadId === "string" ? row.leadId : null;
+      if (!leadId) return null;
+      const outcome = typeof row?.outcome === "string" ? row.outcome : null;
+      const exampleType = row?.exampleType === "positive" || row?.exampleType === "negative" ? row.exampleType : null;
+      const selectionBucket = typeof row?.selectionBucket === "string" ? row.selectionBucket : null;
+      return {
+        leadId,
+        emailCampaignId: typeof row?.emailCampaignId === "string" ? row.emailCampaignId : null,
+        outcome: (outcome || "UNKNOWN") as any,
+        exampleType: (exampleType || "positive") as any,
+        selectionBucket: (selectionBucket || "unknown") as any,
+      };
+    })
+    .filter(Boolean) as SelectedInsightThread[];
 }
 
 async function mapWithConcurrencySettled<TItem, TResult>(
@@ -304,6 +327,18 @@ export async function runInsightContextPackStepSystem(opts: {
                 threads,
               });
 
+              const fastThreadIndex: InsightThreadIndexItem[] = threads.map((t, idx) => ({
+                ref: `T${String(idx + 1).padStart(3, "0")}`,
+                leadId: t.leadId,
+                outcome: t.outcome,
+                exampleType: "positive",
+                selectionBucket: "fast_seed",
+                emailCampaignId: null,
+                campaignName: null,
+                leadLabel: `lead ${t.leadId}`,
+                summary: String(t.insight.summary || "").trim().slice(0, 380) || "No extracted summary available.",
+              }));
+
               const answer = await answerInsightsChatQuestion({
                 clientId: pack.clientId,
                 sessionId: pack.sessionId,
@@ -312,6 +347,7 @@ export async function runInsightContextPackStepSystem(opts: {
                 campaignContextLabel: campaignLabel,
                 analyticsSnapshot: pack.metricsSnapshot,
                 contextPackMarkdown: fastPackMarkdown,
+                threadIndex: fastThreadIndex,
                 recentMessages: [],
                 model,
                 reasoningEffort: effort.api,
@@ -323,6 +359,7 @@ export async function runInsightContextPackStepSystem(opts: {
                   sessionId: pack.sessionId,
                   role: "ASSISTANT",
                   content: `**Fast answer (partial pack)**\n\n${answer.answer}`.trim(),
+                  citations: answer.citations as any,
                   authorUserId: null,
                   authorEmail: null,
                   contextPackId: pack.id,
@@ -543,6 +580,9 @@ export async function ensureSeedAnswerSystem(opts: {
       : "Workspace (no campaign filter)";
 
   try {
+    const cleanedMeta = coerceSelectedInsightThreadsMeta(pack.selectedLeadsMeta);
+    const threadIndex = await buildInsightThreadIndex({ clientId: pack.clientId, selectedMeta: cleanedMeta });
+
     const answer = await answerInsightsChatQuestion({
       clientId: pack.clientId,
       sessionId: pack.sessionId,
@@ -551,6 +591,7 @@ export async function ensureSeedAnswerSystem(opts: {
       campaignContextLabel: campaignLabel,
       analyticsSnapshot: pack.metricsSnapshot,
       contextPackMarkdown: packMarkdown,
+      threadIndex,
       recentMessages: [],
       model,
       reasoningEffort: effort.api,
@@ -562,6 +603,7 @@ export async function ensureSeedAnswerSystem(opts: {
         sessionId: pack.sessionId,
         role: "ASSISTANT",
         content: `${currentSeedMessage ? "**Full answer (pack complete)**\n\n" : ""}${answer.answer}`.trim(),
+        citations: answer.citations as any,
         authorUserId: null,
         authorEmail: null,
         contextPackId: pack.id,
