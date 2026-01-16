@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { getAvailableChannels } from "@/lib/lead-matching";
 import { getAccessibleClientIdsForUser, requireAuthUser, resolveClientScope } from "@/lib/workspace-access";
+import { Prisma } from "@prisma/client";
 
 export type Channel = "sms" | "email" | "linkedin";
 
@@ -69,7 +70,7 @@ function mapSentimentToClassification(sentimentTag: string | null): string {
 }
 
 /**
- * Tags that can require action when the latest message is inbound.
+ * Tags that can require action when a lead has an unreplied inbound message.
  */
 const ATTENTION_SENTIMENT_TAGS = [
   "Meeting Requested",
@@ -78,17 +79,6 @@ const ATTENTION_SENTIMENT_TAGS = [
   "Positive", // Legacy - treat as Interested
   "Interested",
   "Follow Up",
-] as const;
-
-// "Previously Required Attention" intentionally excludes "Follow Up":
-// "Follow Up" is a deferral / not-now sentiment and is handled via snoozing + follow-up automation,
-// not the classic "positive reply → we responded → awaiting their next reply" bucket.
-const PREVIOUS_ATTENTION_SENTIMENT_TAGS = [
-  "Meeting Requested",
-  "Call Requested",
-  "Information Requested",
-  "Positive", // Legacy - treat as Interested
-  "Interested",
 ] as const;
 
 function isAttentionSentimentTag(sentimentTag: string | null): boolean {
@@ -344,37 +334,54 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     const snoozeFilter = { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] };
     const clientFilter = { clientId: { in: scope.clientIds } };
 
-    const [allResponses, attention, previousAttention, total, blacklisted, needsRepair] = await Promise.all([
-      // All inbound replies (latest message is inbound)
-      prisma.lead.count({
-        where: {
-          ...clientFilter,
-          ...snoozeFilter,
-          lastInboundAt: { not: null },
-          lastMessageDirection: "inbound",
-        },
-      }),
-      // Count leads requiring attention (excluding blacklisted)
-      prisma.lead.count({
-        where: {
-          ...clientFilter,
-          ...snoozeFilter,
-          sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
-          lastMessageDirection: "inbound",
-          status: { notIn: ["blacklisted", "unqualified"] },
-        },
-      }),
-      // Leads that previously required attention (attention tag + had inbound history + latest message is outbound)
-      prisma.lead.count({
-        where: {
-          ...clientFilter,
-          ...snoozeFilter,
-          sentimentTag: { in: PREVIOUS_ATTENTION_SENTIMENT_TAGS as unknown as string[] },
-          lastInboundAt: { not: null },
-          lastMessageDirection: "outbound",
-          status: { notIn: ["blacklisted", "unqualified"] },
-        },
-      }),
+    const attentionTags = ATTENTION_SENTIMENT_TAGS as unknown as string[];
+
+    const [replyCounts, total, blacklisted, needsRepair] = await Promise.all([
+      prisma.$queryRaw<
+        Array<{
+          allResponses: number;
+          requiresAttention: number;
+          previouslyRequiredAttention: number;
+        }>
+      >(Prisma.sql`
+        with reply_leads as (
+          select
+            l.id,
+            l."status",
+            l."sentimentTag",
+            l."lastInboundAt"
+          from "Lead" l
+          where l."clientId" in (${Prisma.join(scope.clientIds)})
+            and (l."snoozedUntil" is null or l."snoozedUntil" <= ${now})
+            and l."lastInboundAt" is not null
+        ),
+        zrg_outbound as (
+          select
+            m."leadId",
+            max(m."sentAt") as last_zrg_outbound
+          from "Message" m
+          where m.direction = 'outbound'
+            and m.source = 'zrg'
+            and m."leadId" in (select id from reply_leads)
+          group by m."leadId"
+        )
+        select
+          count(*) filter (
+            where rl."lastInboundAt" > coalesce(z.last_zrg_outbound, to_timestamp(0))
+          )::int as "allResponses",
+          count(*) filter (
+            where rl."sentimentTag" in (${Prisma.join(attentionTags)})
+              and rl."status" not in ('blacklisted', 'unqualified')
+              and rl."lastInboundAt" > coalesce(z.last_zrg_outbound, to_timestamp(0))
+          )::int as "requiresAttention",
+          count(*) filter (
+            where rl."sentimentTag" in (${Prisma.join(attentionTags)})
+              and rl."status" not in ('blacklisted', 'unqualified')
+              and coalesce(z.last_zrg_outbound, to_timestamp(0)) >= rl."lastInboundAt"
+          )::int as "previouslyRequiredAttention"
+        from reply_leads rl
+        left join zrg_outbound z on z."leadId" = rl.id
+      `),
       // Total leads (excluding blacklisted)
       prisma.lead.count({
         where: {
@@ -401,11 +408,13 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       }),
     ]);
 
+    const openCounts = replyCounts[0] ?? { allResponses: 0, requiresAttention: 0, previouslyRequiredAttention: 0 };
+
     return {
-      allResponses,
-      requiresAttention: attention,
-      previouslyRequiredAttention: previousAttention,
-      awaitingReply: Math.max(0, total - attention),
+      allResponses: openCounts.allResponses,
+      requiresAttention: openCounts.requiresAttention,
+      previouslyRequiredAttention: openCounts.previouslyRequiredAttention,
+      awaitingReply: Math.max(0, total - openCounts.requiresAttention),
       needsRepair,
       total: total + blacklisted, // Include blacklisted in total for reference
     };
@@ -586,7 +595,7 @@ export interface ConversationsCursorResult {
 /**
  * Transform a lead to ConversationData format
  */
-function transformLeadToConversation(lead: any): ConversationData {
+function transformLeadToConversation(lead: any, opts?: { hasOpenReply?: boolean }): ConversationData {
   const latestMessage = lead.messages[0];
   const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
   const primaryChannel = detectPrimaryChannel(latestMessage, lead);
@@ -641,7 +650,10 @@ function transformLeadToConversation(lead: any): ConversationData {
       lead.status !== "unqualified" &&
       lead.sentimentTag !== "Blacklist" &&
       channelDrafts.length > 0,
-    requiresAttention: leadRequiresAttention(lead),
+    requiresAttention:
+      typeof opts?.hasOpenReply === "boolean"
+        ? opts.hasOpenReply && lead.status !== "blacklisted" && lead.status !== "unqualified" && isAttentionSentimentTag(lead.sentimentTag)
+        : leadRequiresAttention(lead),
     sentimentTag: lead.sentimentTag,
     campaignId,
     emailCampaignId: lead.emailCampaignId,
@@ -735,23 +747,29 @@ export async function getConversationsCursor(
       whereConditions.push({ smsCampaignId });
     }
 
+    const replyStateFilter: "open" | "handled" | null =
+      filter === "responses" || filter === "attention"
+        ? "open"
+        : filter === "previous_attention" || filter === "drafts"
+          ? "handled"
+          : null;
+
     // Special filter presets
     if (filter === "responses") {
-      whereConditions.push({
-        lastInboundAt: { not: null },
-        lastMessageDirection: "inbound",
-      });
+      // "Open replies": lead has an inbound reply more recent than any outbound sent by our system.
+      // This intentionally does not rely on Lead.lastMessageDirection because outbound campaign steps
+      // (EmailBison/Inboxxia) can land after a reply and would otherwise hide the thread.
+      whereConditions.push({ lastInboundAt: { not: null } });
     } else if (filter === "attention") {
       whereConditions.push({
         sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
-        lastMessageDirection: "inbound",
+        lastInboundAt: { not: null },
         status: { notIn: ["blacklisted", "unqualified"] },
       });
     } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
-        sentimentTag: { in: PREVIOUS_ATTENTION_SENTIMENT_TAGS as unknown as string[] },
+        sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
         lastInboundAt: { not: null },
-        lastMessageDirection: "outbound",
         status: { notIn: ["blacklisted", "unqualified"] },
       });
     } else if (filter === "needs_repair") {
@@ -762,10 +780,8 @@ export async function getConversationsCursor(
       ? { AND: whereConditions }
       : undefined;
 
-    // Build query with cursor pagination
-    const queryOptions: any = {
+    const baseQueryOptions: any = {
       where,
-      take: limit + 1,
       orderBy: { updatedAt: "desc" },
       include: {
         client: {
@@ -806,23 +822,78 @@ export async function getConversationsCursor(
       },
     };
 
-    // Add cursor if provided
-    if (cursor) {
-      queryOptions.cursor = { id: cursor };
-      queryOptions.skip = 1;
-    }
+    const collectLeads = async (): Promise<any[]> => {
+      const needsReplyStateFilter = replyStateFilter !== null;
+      if (!needsReplyStateFilter) {
+        const queryOptions: any = { ...baseQueryOptions, take: limit + 1 };
+        if (cursor) {
+          queryOptions.cursor = { id: cursor };
+          queryOptions.skip = 1;
+        }
+        return prisma.lead.findMany(queryOptions);
+      }
 
-    const leads = await prisma.lead.findMany(queryOptions);
+      const batchSize = Math.max(limit * 4, 200);
+      const maxBatches = 10;
+      const matched: any[] = [];
+      let nextCursorId: string | null = cursor ?? null;
+      let exhausted = false;
+
+      for (let batch = 0; batch < maxBatches && matched.length < limit + 1 && !exhausted; batch += 1) {
+        const queryOptions: any = { ...baseQueryOptions, take: batchSize };
+        if (nextCursorId) {
+          queryOptions.cursor = { id: nextCursorId };
+          queryOptions.skip = 1;
+        }
+
+        const batchLeads = await prisma.lead.findMany(queryOptions);
+        if (batchLeads.length === 0) break;
+
+        nextCursorId = batchLeads[batchLeads.length - 1]!.id;
+        if (batchLeads.length < batchSize) exhausted = true;
+
+        const leadIds = batchLeads.map((lead: any) => lead.id);
+        const zrgOutboundRows = await prisma.message.groupBy({
+          by: ["leadId"],
+          where: {
+            leadId: { in: leadIds },
+            direction: "outbound",
+            source: "zrg",
+          },
+          _max: { sentAt: true },
+        });
+
+        const lastZrgOutboundAtByLeadId = new Map<string, Date>();
+        for (const row of zrgOutboundRows) {
+          const sentAt = row._max.sentAt;
+          if (sentAt instanceof Date) lastZrgOutboundAtByLeadId.set(row.leadId, sentAt);
+        }
+
+        const filtered = batchLeads.filter((lead: any) => {
+          const lastInboundAt: Date | null = lead.lastInboundAt ?? null;
+          if (!lastInboundAt) return false;
+
+          const lastZrgOutboundAt = lastZrgOutboundAtByLeadId.get(lead.id) ?? null;
+          const hasOpenReply = !lastZrgOutboundAt || lastZrgOutboundAt.getTime() < lastInboundAt.getTime();
+          return replyStateFilter === "open" ? hasOpenReply : !hasOpenReply;
+        });
+
+        matched.push(...filtered);
+      }
+
+      return matched;
+    };
+
+    const leads = await collectLeads();
 
     // Check if there are more records
     const hasMore = leads.length > limit;
-    const resultLeads = hasMore ? leads.slice(0, -1) : leads;
-    const nextCursor = hasMore && resultLeads.length > 0
-      ? resultLeads[resultLeads.length - 1].id
-      : null;
+    const resultLeads = hasMore ? leads.slice(0, limit) : leads;
+    const nextCursor = hasMore && resultLeads.length > 0 ? resultLeads[resultLeads.length - 1].id : null;
 
     // Transform to conversation format
-    const conversations = resultLeads.map(transformLeadToConversation);
+    const hasOpenReplyOverride = replyStateFilter === "open" ? true : replyStateFilter === "handled" ? false : undefined;
+    const conversations = resultLeads.map((lead: any) => transformLeadToConversation(lead, { hasOpenReply: hasOpenReplyOverride }));
 
     return {
       success: true,
@@ -915,22 +986,25 @@ export async function getConversationsFromEnd(
       whereConditions.push({ smsCampaignId });
     }
 
+    const replyStateFilter: "open" | "handled" | null =
+      filter === "responses" || filter === "attention"
+        ? "open"
+        : filter === "previous_attention" || filter === "drafts"
+          ? "handled"
+          : null;
+
     if (filter === "responses") {
-      whereConditions.push({
-        lastInboundAt: { not: null },
-        lastMessageDirection: "inbound",
-      });
+      whereConditions.push({ lastInboundAt: { not: null } });
     } else if (filter === "attention") {
       whereConditions.push({
         sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
-        lastMessageDirection: "inbound",
+        lastInboundAt: { not: null },
         status: { notIn: ["blacklisted", "unqualified"] },
       });
     } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
-        sentimentTag: { in: PREVIOUS_ATTENTION_SENTIMENT_TAGS as unknown as string[] },
+        sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
         lastInboundAt: { not: null },
-        lastMessageDirection: "outbound",
         status: { notIn: ["blacklisted", "unqualified"] },
       });
     } else if (filter === "needs_repair") {
@@ -942,7 +1016,7 @@ export async function getConversationsFromEnd(
       : undefined;
 
     // Fetch from the "end" by reversing sort order
-    const leads = await prisma.lead.findMany({
+    let leads = await prisma.lead.findMany({
       where,
       take: limit,
       orderBy: { updatedAt: "asc" }, // Reverse order
@@ -985,11 +1059,40 @@ export async function getConversationsFromEnd(
       },
     });
 
+    if (replyStateFilter) {
+      const leadIds = leads.map((lead: any) => lead.id);
+      const zrgOutboundRows = await prisma.message.groupBy({
+        by: ["leadId"],
+        where: {
+          leadId: { in: leadIds },
+          direction: "outbound",
+          source: "zrg",
+        },
+        _max: { sentAt: true },
+      });
+
+      const lastZrgOutboundAtByLeadId = new Map<string, Date>();
+      for (const row of zrgOutboundRows) {
+        const sentAt = row._max.sentAt;
+        if (sentAt instanceof Date) lastZrgOutboundAtByLeadId.set(row.leadId, sentAt);
+      }
+
+      leads = leads.filter((lead: any) => {
+        const lastInboundAt: Date | null = lead.lastInboundAt ?? null;
+        if (!lastInboundAt) return false;
+
+        const lastZrgOutboundAt = lastZrgOutboundAtByLeadId.get(lead.id) ?? null;
+        const hasOpenReply = !lastZrgOutboundAt || lastZrgOutboundAt.getTime() < lastInboundAt.getTime();
+        return replyStateFilter === "open" ? hasOpenReply : !hasOpenReply;
+      });
+    }
+
     // Reverse to get correct display order
     const reversedLeads = leads.reverse();
 
     // Transform to conversation format
-    const conversations = reversedLeads.map(transformLeadToConversation);
+    const hasOpenReplyOverride = replyStateFilter === "open" ? true : replyStateFilter === "handled" ? false : undefined;
+    const conversations = reversedLeads.map((lead: any) => transformLeadToConversation(lead, { hasOpenReply: hasOpenReplyOverride }));
 
     const nextCursor = reversedLeads.length > 0 ? reversedLeads[0].id : null;
 
