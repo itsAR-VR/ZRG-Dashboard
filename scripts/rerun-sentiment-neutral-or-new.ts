@@ -57,6 +57,7 @@ type Args = {
 };
 
 type ClientState = { lastLeadId?: string };
+type JobArgs = { dryRun: boolean; tags: SentimentTag[]; includeNull: boolean };
 type ScriptJobState = {
   version: 2;
   job: {
@@ -64,14 +65,12 @@ type ScriptJobState = {
     startedAt: string;
     resumedAt?: string;
     completedAt?: string;
-    args?: {
-      dryRun: boolean;
-      tags: SentimentTag[];
-      includeNull: boolean;
-    };
+    args?: JobArgs;
   };
   clients: Record<string, ClientState>;
 };
+
+type ReadJobStateResult = { state: ScriptJobState; source: "v2" | "v1" };
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
@@ -155,13 +154,52 @@ async function rotateExistingStateFile(path: string): Promise<string | null> {
   }
 }
 
-function toJobState(raw: unknown, fallbackArgs: Pick<Args, "dryRun" | "tags" | "includeNull">): ScriptJobState | null {
+function isJobArgs(value: unknown): value is JobArgs {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as any;
+  if (typeof obj.dryRun !== "boolean") return false;
+  if (typeof obj.includeNull !== "boolean") return false;
+  if (!Array.isArray(obj.tags)) return false;
+  if (!obj.tags.every((t: unknown) => typeof t === "string" && SENTIMENT_TAGS.includes(t as SentimentTag))) return false;
+  return true;
+}
+
+function toJobState(raw: unknown, fallbackArgs: JobArgs): ReadJobStateResult | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as any;
 
   // v2 format
   if (obj.version === 2 && obj.job && typeof obj.job === "object" && obj.clients && typeof obj.clients === "object") {
-    return obj as ScriptJobState;
+    return { state: obj as ScriptJobState, source: "v2" };
+  }
+
+  // v1 job format: { version: 1, job, clients } (or missing version)
+  if (obj.job && typeof obj.job === "object" && obj.clients && typeof obj.clients === "object") {
+    const clients: Record<string, ClientState> = {};
+    for (const [key, value] of Object.entries(obj.clients)) {
+      if (!value || typeof value !== "object") continue;
+      const lastLeadId = typeof (value as any).lastLeadId === "string" ? (value as any).lastLeadId : undefined;
+      clients[key] = lastLeadId ? { lastLeadId } : {};
+    }
+
+    const hasAnyClient = Object.keys(clients).length > 0;
+    if (!hasAnyClient) return null;
+
+    const job = obj.job as any;
+    const id = typeof job.id === "string" ? job.id : `migrated-${new Date().toISOString()}`;
+    const startedAt = typeof job.startedAt === "string" ? job.startedAt : new Date().toISOString();
+    const resumedAt = typeof job.resumedAt === "string" ? job.resumedAt : undefined;
+    const completedAt = typeof job.completedAt === "string" ? job.completedAt : undefined;
+    const args = isJobArgs(job.args) ? (job.args as JobArgs) : fallbackArgs;
+
+    return {
+      state: {
+        version: 2,
+        job: { id, startedAt, resumedAt, completedAt, args },
+        clients,
+      },
+      source: "v1",
+    };
   }
 
   // v1 legacy format: { [clientId]: { lastLeadId } }
@@ -176,17 +214,20 @@ function toJobState(raw: unknown, fallbackArgs: Pick<Args, "dryRun" | "tags" | "
   if (!hasAnyClient) return null;
 
   return {
-    version: 2,
-    job: {
-      id: `migrated-${new Date().toISOString()}`,
-      startedAt: new Date().toISOString(),
-      args: { dryRun: fallbackArgs.dryRun, tags: fallbackArgs.tags, includeNull: fallbackArgs.includeNull },
+    state: {
+      version: 2,
+      job: {
+        id: `migrated-${new Date().toISOString()}`,
+        startedAt: new Date().toISOString(),
+        args: { dryRun: fallbackArgs.dryRun, tags: fallbackArgs.tags, includeNull: fallbackArgs.includeNull },
+      },
+      clients,
     },
-    clients,
+    source: "v1",
   };
 }
 
-async function readJobStateFile(path: string, fallbackArgs: Pick<Args, "dryRun" | "tags" | "includeNull">): Promise<ScriptJobState | null> {
+async function readJobStateFile(path: string, fallbackArgs: JobArgs): Promise<ReadJobStateResult | null> {
   try {
     const fs = await import("node:fs/promises");
     const raw = await fs.readFile(path, "utf8");
@@ -603,13 +644,16 @@ async function main() {
       throw new Error(`--resume specified but no prior job state found at ${args.stateFile}`);
     }
 
-    const mismatch = jobArgsMismatch(fallbackJobArgs, loaded.job.args);
+    const mismatch = jobArgsMismatch(fallbackJobArgs, loaded.state.job.args);
     if (mismatch) {
       throw new Error(`Cannot resume job due to ${mismatch}. Start a new job (omit --resume) or use a different --state-file.`);
     }
 
-    loaded.job.resumedAt = new Date().toISOString();
-    stateFile = loaded;
+    loaded.state.job.resumedAt = new Date().toISOString();
+    stateFile = loaded.state;
+    if (loaded.source === "v1") {
+      await writeState(args.stateFile, stateFile);
+    }
   } else {
     const rotated = await rotateExistingStateFile(args.stateFile);
     const jobId = randomUUID();
