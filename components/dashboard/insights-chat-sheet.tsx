@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Bot, CheckCircle2, Clock, Copy, ExternalLink, Loader2, MessageSquareText, Plus, RefreshCcw, Settings2, Shield, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -623,6 +623,7 @@ function InsightsConsoleBody({
   const activePackBuildsRef = useRef(new Map<string, { cancelled: boolean; sessionId: string }>());
   const stoppedPackIdsRef = useRef(new Set<string>());
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const previousWorkspaceRef = useRef<string | null | undefined>(activeWorkspace);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
@@ -696,19 +697,24 @@ function InsightsConsoleBody({
       if (!activeWorkspace) return;
       const includeDeleted = Boolean(opts?.includeDeleted);
 
+      const ensureValidSelection = (nextSessions: SessionRow[]) => {
+        setSelectedSessionId((currentSelected) => {
+          if (currentSelected && nextSessions.some((s) => s.id === currentSelected)) return currentSelected;
+          if (nextSessions.length === 0) return null;
+
+          const cachedSelected = safeLocalStorageGet(cacheKeySelectedSession(activeWorkspace));
+          const preferred = cachedSelected && nextSessions.some((s) => s.id === cachedSelected) ? cachedSelected : null;
+          return preferred ?? nextSessions[0]!.id;
+        });
+      };
+
       const cachedSessionsRaw = safeLocalStorageGet(cacheKeySessions(activeWorkspace, includeDeleted));
       if (cachedSessionsRaw) {
         try {
           const parsed = JSON.parse(cachedSessionsRaw) as { sessions?: any[] };
           const cached = Array.isArray(parsed?.sessions) ? parsed.sessions.map(deserializeSessionRow).filter(Boolean) : [];
-          if (cached.length > 0) {
-            setSessions(cached as SessionRow[]);
-            if (!selectedSessionId) {
-              const cachedSelected = safeLocalStorageGet(cacheKeySelectedSession(activeWorkspace));
-              const preferred = cachedSelected && (cached as SessionRow[]).some((s) => s.id === cachedSelected) ? cachedSelected : null;
-              setSelectedSessionId(preferred ?? (cached as SessionRow[])[0]!.id);
-            }
-          }
+          setSessions(cached as SessionRow[]);
+          ensureValidSelection(cached as SessionRow[]);
         } catch {
           // ignore
         }
@@ -720,6 +726,7 @@ function InsightsConsoleBody({
         if (!res.success || !res.data) {
           toast.error(res.error || "Failed to load sessions");
           setSessions([]);
+          setSelectedSessionId(null);
           return;
         }
         setSessions(res.data.sessions);
@@ -727,11 +734,7 @@ function InsightsConsoleBody({
           cacheKeySessions(activeWorkspace, includeDeleted),
           JSON.stringify({ sessions: res.data.sessions.map(serializeSessionRow) })
         );
-        if (!selectedSessionId && res.data.sessions.length > 0) {
-          const cachedSelected = safeLocalStorageGet(cacheKeySelectedSession(activeWorkspace));
-          const preferred = cachedSelected && res.data.sessions.some((s) => s.id === cachedSelected) ? cachedSelected : null;
-          setSelectedSessionId(preferred ?? res.data.sessions[0]!.id);
-        }
+        ensureValidSelection(res.data.sessions);
       } catch (error) {
         console.error(error);
         toast.error("Failed to load sessions");
@@ -739,14 +742,15 @@ function InsightsConsoleBody({
         setSessionsLoading(false);
       }
     },
-    [activeWorkspace, selectedSessionId]
+    [activeWorkspace]
   );
 
   useEffect(() => {
     if (!activeWorkspace) return;
     if (!selectedSessionId) return;
+    if (!sessions.some((s) => s.id === selectedSessionId)) return;
     safeLocalStorageSet(cacheKeySelectedSession(activeWorkspace), selectedSessionId);
-  }, [activeWorkspace, selectedSessionId]);
+  }, [activeWorkspace, selectedSessionId, sessions]);
 
   const loadSession = useCallback(
     async (sessionId: string) => {
@@ -843,8 +847,9 @@ function InsightsConsoleBody({
     if (!isVisible) return;
     if (!activeWorkspace) return;
     if (!selectedSessionId) return;
+    if (!sessions.some((s) => s.id === selectedSessionId)) return;
     loadSession(selectedSessionId);
-  }, [activeWorkspace, isVisible, loadSession, selectedSessionId]);
+  }, [activeWorkspace, isVisible, loadSession, selectedSessionId, sessions]);
 
   useEffect(() => {
     const activeBuilds = activePackBuildsRef.current;
@@ -856,12 +861,19 @@ function InsightsConsoleBody({
     };
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (previousWorkspaceRef.current === activeWorkspace) return;
+    previousWorkspaceRef.current = activeWorkspace;
+
     for (const state of activePackBuildsRef.current.values()) {
       state.cancelled = true;
     }
     activePackBuildsRef.current.clear();
     stoppedPackIdsRef.current.clear();
+
+    selectedSessionIdRef.current = null;
+    setSelectedSessionId(null);
+    setSessions([]);
 
     setMessagesBySession({});
     setMessagesLoadingBySession({});

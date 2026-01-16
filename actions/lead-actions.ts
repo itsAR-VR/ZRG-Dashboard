@@ -331,13 +331,6 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     }
     const now = new Date();
     const snoozeFilter = { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] };
-    const positiveSentimentTags = [
-      "Meeting Requested",
-      "Call Requested",
-      "Information Requested",
-      "Interested",
-      "Positive", // Legacy - treat as Interested
-    ];
     const clientFilter = { clientId: { in: scope.clientIds } };
 
     const [allResponses, attention, previousAttention, total, blacklisted, needsRepair] = await Promise.all([
@@ -360,12 +353,12 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
           status: { notIn: ["blacklisted", "unqualified"] },
         },
       }),
-      // Leads that previously required attention (positive + had inbound history + latest message is outbound)
+      // Leads that previously required attention (attention tag + had inbound history + latest message is outbound)
       prisma.lead.count({
         where: {
           ...clientFilter,
           ...snoozeFilter,
-          sentimentTag: { in: positiveSentimentTags },
+          sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
           lastInboundAt: { not: null },
           lastMessageDirection: "outbound",
           status: { notIn: ["blacklisted", "unqualified"] },
@@ -745,7 +738,7 @@ export async function getConversationsCursor(
       });
     } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
-        sentimentTag: { in: ["Meeting Requested", "Call Requested", "Information Requested", "Interested", "Positive"] },
+        sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
         lastInboundAt: { not: null },
         lastMessageDirection: "outbound",
         status: { notIn: ["blacklisted", "unqualified"] },
@@ -924,7 +917,7 @@ export async function getConversationsFromEnd(
       });
     } else if (filter === "previous_attention" || filter === "drafts") {
       whereConditions.push({
-        sentimentTag: { in: ["Meeting Requested", "Call Requested", "Information Requested", "Interested", "Positive"] },
+        sentimentTag: { in: ATTENTION_SENTIMENT_TAGS as unknown as string[] },
         lastInboundAt: { not: null },
         lastMessageDirection: "outbound",
         status: { notIn: ["blacklisted", "unqualified"] },
