@@ -403,6 +403,7 @@ export async function syncSmsConversationHistorySystem(
             });
             console.log(`[Sync] Fixed timestamp for ghlId ${ghlId}`);
             healedCount++;
+            if (msg.direction === "inbound") touchedInbound = true;
           } else {
             skippedDuplicates++;
           }
@@ -475,6 +476,7 @@ export async function syncSmsConversationHistorySystem(
             },
           });
           healedCount++;
+          if (msg.direction === "inbound") touchedInbound = true;
           console.log(
             `[Sync] Healed: "${msg.body.substring(0, 30)}..." -> ghlId: ${ghlId}, sentAt: ${msgTimestamp.toISOString()}`
           );
@@ -696,7 +698,7 @@ export async function syncEmailConversationHistorySystem(
             });
             console.log(`[EmailSync] Healed replyId ${emailBisonReplyId} (${Object.keys(updateData).join(", ")})`);
             healedCount++;
-            if (updateData.direction === "inbound") touchedInbound = true;
+            if (direction === "inbound") touchedInbound = true;
           } else {
             skippedDuplicates++;
           }
@@ -728,7 +730,7 @@ export async function syncEmailConversationHistorySystem(
             },
           });
           healedCount++;
-          if (direction === "inbound") touchedInbound = true;
+          if (existingByContent.direction !== direction && direction === "inbound") touchedInbound = true;
           console.log(`[EmailSync] Healed reply: "${body.substring(0, 30)}..." -> replyId: ${emailBisonReplyId}`);
           continue;
         }
