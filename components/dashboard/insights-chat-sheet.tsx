@@ -69,6 +69,8 @@ type ChatMessage = {
   contextPackId: string | null;
 };
 
+const EMPTY_CHAT_MESSAGES: ChatMessage[] = [];
+
 type PendingAssistantState =
   | null
   | {
@@ -106,6 +108,10 @@ function cacheKeyMessages(clientId: string, sessionId: string): string {
 
 function cacheKeyPack(clientId: string, sessionId: string): string {
   return `${INSIGHTS_CACHE_PREFIX}:client:${clientId}:session:${sessionId}:pack`;
+}
+
+function cacheKeySelectedSession(clientId: string): string {
+  return `${INSIGHTS_CACHE_PREFIX}:client:${clientId}:selected_session`;
 }
 
 function serializeSessionRow(row: SessionRow) {
@@ -586,11 +592,11 @@ function InsightsConsoleBody({
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messagesBySession, setMessagesBySession] = useState<Record<string, ChatMessage[]>>({});
+  const [messagesLoadingBySession, setMessagesLoadingBySession] = useState<Record<string, boolean>>({});
 
-  const [pack, setPack] = useState<InsightContextPackPublic | null>(null);
-  const [packLoading, setPackLoading] = useState(false);
+  const [packBySession, setPackBySession] = useState<Record<string, InsightContextPackPublic | null>>({});
+  const [packLoadingBySession, setPackLoadingBySession] = useState<Record<string, boolean>>({});
 
   const [prefLoading, setPrefLoading] = useState(false);
   const [windowPreset, setWindowPreset] = useState<InsightsWindowPreset>("D7");
@@ -609,12 +615,28 @@ function InsightsConsoleBody({
   const [selectedCampaignIds, setSelectedCampaignIds] = useState<string[]>([]);
 
   const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const [pendingAssistant, setPendingAssistant] = useState<PendingAssistantState>(null);
+  const [creatingSession, setCreatingSession] = useState(false);
+  const [sendingBySession, setSendingBySession] = useState<Record<string, boolean>>({});
+  const [pendingAssistantBySession, setPendingAssistantBySession] = useState<Record<string, PendingAssistantState>>({});
 
-  const pollCancelRef = useRef<{ cancelled: boolean }>({ cancelled: false });
-  const activePackBuildRef = useRef<string | null>(null);
+  const selectedSessionIdRef = useRef<string | null>(null);
+  const activePackBuildsRef = useRef(new Map<string, { cancelled: boolean; sessionId: string }>());
+  const stoppedPackIdsRef = useRef(new Set<string>());
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    selectedSessionIdRef.current = selectedSessionId;
+  }, [selectedSessionId]);
+
+  const messages = useMemo(() => {
+    if (!selectedSessionId) return EMPTY_CHAT_MESSAGES;
+    return messagesBySession[selectedSessionId] ?? EMPTY_CHAT_MESSAGES;
+  }, [messagesBySession, selectedSessionId]);
+  const messagesLoading = selectedSessionId ? Boolean(messagesLoadingBySession[selectedSessionId]) : false;
+  const pack = selectedSessionId ? packBySession[selectedSessionId] ?? null : null;
+  const packLoading = selectedSessionId ? Boolean(packLoadingBySession[selectedSessionId]) : false;
+  const sending = selectedSessionId ? Boolean(sendingBySession[selectedSessionId]) : false;
+  const pendingAssistant = selectedSessionId ? pendingAssistantBySession[selectedSessionId] ?? null : null;
 
   const hasEmailCampaigns = campaigns.length > 0;
 
@@ -682,7 +704,9 @@ function InsightsConsoleBody({
           if (cached.length > 0) {
             setSessions(cached as SessionRow[]);
             if (!selectedSessionId) {
-              setSelectedSessionId((cached as SessionRow[])[0]!.id);
+              const cachedSelected = safeLocalStorageGet(cacheKeySelectedSession(activeWorkspace));
+              const preferred = cachedSelected && (cached as SessionRow[]).some((s) => s.id === cachedSelected) ? cachedSelected : null;
+              setSelectedSessionId(preferred ?? (cached as SessionRow[])[0]!.id);
             }
           }
         } catch {
@@ -704,7 +728,9 @@ function InsightsConsoleBody({
           JSON.stringify({ sessions: res.data.sessions.map(serializeSessionRow) })
         );
         if (!selectedSessionId && res.data.sessions.length > 0) {
-          setSelectedSessionId(res.data.sessions[0]!.id);
+          const cachedSelected = safeLocalStorageGet(cacheKeySelectedSession(activeWorkspace));
+          const preferred = cachedSelected && res.data.sessions.some((s) => s.id === cachedSelected) ? cachedSelected : null;
+          setSelectedSessionId(preferred ?? res.data.sessions[0]!.id);
         }
       } catch (error) {
         console.error(error);
@@ -716,6 +742,12 @@ function InsightsConsoleBody({
     [activeWorkspace, selectedSessionId]
   );
 
+  useEffect(() => {
+    if (!activeWorkspace) return;
+    if (!selectedSessionId) return;
+    safeLocalStorageSet(cacheKeySelectedSession(activeWorkspace), selectedSessionId);
+  }, [activeWorkspace, selectedSessionId]);
+
   const loadSession = useCallback(
     async (sessionId: string) => {
       if (!activeWorkspace) return;
@@ -725,7 +757,7 @@ function InsightsConsoleBody({
           const parsed = JSON.parse(cachedMsgsRaw) as { messages?: any[] };
           const cached = Array.isArray(parsed?.messages) ? parsed.messages.map(deserializeChatMessage).filter(Boolean) : [];
           if (cached.length > 0) {
-            setMessages(cached as ChatMessage[]);
+            setMessagesBySession((prev) => ({ ...prev, [sessionId]: cached as ChatMessage[] }));
           }
         } catch {
           // ignore
@@ -737,14 +769,14 @@ function InsightsConsoleBody({
         try {
           const parsed = JSON.parse(cachedPackRaw) as { pack?: any };
           const cached = parsed?.pack ? deserializePack(parsed.pack) : null;
-          if (cached) setPack(cached);
+          if (cached) setPackBySession((prev) => ({ ...prev, [sessionId]: cached }));
         } catch {
           // ignore
         }
       }
 
-      setMessagesLoading(!cachedMsgsRaw);
-      setPackLoading(!cachedPackRaw);
+      setMessagesLoadingBySession((prev) => ({ ...prev, [sessionId]: !cachedMsgsRaw }));
+      setPackLoadingBySession((prev) => ({ ...prev, [sessionId]: !cachedPackRaw }));
       try {
         const [msgs, packRes] = await Promise.all([
           getInsightChatMessages(activeWorkspace, sessionId),
@@ -760,19 +792,19 @@ function InsightsConsoleBody({
             createdAt: m.createdAt,
             contextPackId: m.contextPackId ?? null,
           }));
-          setMessages(next);
+          setMessagesBySession((prev) => ({ ...prev, [sessionId]: next }));
           safeLocalStorageSet(cacheKeyMessages(activeWorkspace, sessionId), JSON.stringify({ messages: next.map(serializeChatMessage) }));
         } else {
-          setMessages([]);
+          setMessagesBySession((prev) => ({ ...prev, [sessionId]: [] }));
         }
-        setPendingAssistant(null);
+        setPendingAssistantBySession((prev) => ({ ...prev, [sessionId]: null }));
 
         if (packRes.success && packRes.data) {
-          setPack(packRes.data.pack);
+          setPackBySession((prev) => ({ ...prev, [sessionId]: packRes.data!.pack }));
           if (packRes.data.pack) {
             safeLocalStorageSet(cacheKeyPack(activeWorkspace, sessionId), JSON.stringify({ pack: serializePack(packRes.data.pack) }));
           }
-          if (packRes.data.pack) {
+          if (packRes.data.pack && selectedSessionIdRef.current === sessionId) {
             const nextModel = coerceInsightsChatModel(packRes.data.pack.model);
             setModel(nextModel);
             setReasoningEffort(
@@ -780,14 +812,14 @@ function InsightsConsoleBody({
             );
           }
         } else {
-          setPack(null);
+          setPackBySession((prev) => ({ ...prev, [sessionId]: null }));
         }
       } catch (error) {
         console.error(error);
         toast.error("Failed to load session");
       } finally {
-        setMessagesLoading(false);
-        setPackLoading(false);
+        setMessagesLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
+        setPackLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
       }
     },
     [activeWorkspace]
@@ -815,15 +847,28 @@ function InsightsConsoleBody({
   }, [activeWorkspace, isVisible, loadSession, selectedSessionId]);
 
   useEffect(() => {
-    const cancelToken = pollCancelRef.current;
+    const activeBuilds = activePackBuildsRef.current;
     return () => {
-      cancelToken.cancelled = true;
+      for (const state of activeBuilds.values()) {
+        state.cancelled = true;
+      }
+      activeBuilds.clear();
     };
   }, []);
 
   useEffect(() => {
-    pollCancelRef.current.cancelled = true;
-    activePackBuildRef.current = null;
+    for (const state of activePackBuildsRef.current.values()) {
+      state.cancelled = true;
+    }
+    activePackBuildsRef.current.clear();
+    stoppedPackIdsRef.current.clear();
+
+    setMessagesBySession({});
+    setMessagesLoadingBySession({});
+    setPackBySession({});
+    setPackLoadingBySession({});
+    setSendingBySession({});
+    setPendingAssistantBySession({});
   }, [activeWorkspace]);
 
   const savePreferences = useCallback(
@@ -849,13 +894,13 @@ function InsightsConsoleBody({
   const buildContextPackLoop = useCallback(
     async (contextPackId: string, sessionId: string, seedMessageId?: string) => {
       if (!activeWorkspace) return;
-      activePackBuildRef.current = contextPackId;
-      pollCancelRef.current.cancelled = false;
-      setSending(true);
-      setPackLoading(true);
+      if (activePackBuildsRef.current.has(contextPackId)) return;
+      stoppedPackIdsRef.current.delete(contextPackId);
+      const cancelState = { cancelled: false, sessionId };
+      activePackBuildsRef.current.set(contextPackId, cancelState);
       try {
         let current: InsightContextPackPublic | null = null;
-        while (!pollCancelRef.current.cancelled) {
+        while (!cancelState.cancelled) {
           const step = await runInsightContextPackStep({
             clientId: activeWorkspace,
             contextPackId,
@@ -863,17 +908,22 @@ function InsightsConsoleBody({
           });
 
           if (!step.success || !step.data) {
-            toast.error(step.error || "Failed to build context pack");
+            if (selectedSessionIdRef.current === sessionId) {
+              toast.error(step.error || "Failed to build context pack");
+            }
             break;
           }
 
           current = step.data.pack;
-          setPack(current);
+          setPackBySession((prev) => ({ ...prev, [sessionId]: current }));
+          safeLocalStorageSet(cacheKeyPack(activeWorkspace, sessionId), JSON.stringify({ pack: serializePack(current) }));
 
           // Fast seed answer: once the server creates an initial assistant answer,
           // stop waiting and let background cron finish the full pack.
           if (seedMessageId && current.seedAssistantMessageId) {
-            toast.success("Fast answer ready — continuing to build full pack in the background.");
+            if (selectedSessionIdRef.current === sessionId) {
+              toast.success("Fast answer ready — continuing to build full pack in the background.");
+            }
             await loadSession(sessionId);
             await loadSessions();
             return;
@@ -889,17 +939,17 @@ function InsightsConsoleBody({
           await new Promise((r) => setTimeout(r, delayMs));
         }
 
-        if (!pollCancelRef.current.cancelled && current?.status === "COMPLETE" && seedMessageId) {
+        if (!cancelState.cancelled && current?.status === "COMPLETE" && seedMessageId) {
           const done = await finalizeInsightsChatSeedAnswer({
             clientId: activeWorkspace,
             sessionId,
             contextPackId,
             userMessageId: seedMessageId,
-            model,
-            reasoningEffort,
           });
           if (!done.success) {
-            toast.error(done.error || "Failed to generate answer");
+            if (selectedSessionIdRef.current === sessionId) {
+              toast.error(done.error || "Failed to generate answer");
+            }
           }
           await loadSession(sessionId);
           await loadSessions();
@@ -908,14 +958,12 @@ function InsightsConsoleBody({
           await loadSessions();
         }
       } finally {
-        setSending(false);
-        setPackLoading(false);
-        if (activePackBuildRef.current === contextPackId) {
-          activePackBuildRef.current = null;
-        }
+        const state = activePackBuildsRef.current.get(contextPackId);
+        if (state) state.cancelled = true;
+        activePackBuildsRef.current.delete(contextPackId);
       }
     },
-    [activeWorkspace, loadSession, loadSessions, model, reasoningEffort]
+    [activeWorkspace, loadSession, loadSessions]
   );
 
   useEffect(() => {
@@ -924,7 +972,8 @@ function InsightsConsoleBody({
     if (!selectedSessionId) return;
     if (!pack) return;
     if (!["PENDING", "RUNNING"].includes(pack.status)) return;
-    if (activePackBuildRef.current === pack.id) return;
+    if (stoppedPackIdsRef.current.has(pack.id)) return;
+    if (activePackBuildsRef.current.has(pack.id)) return;
 
     const hasAssistantMessage = messages.some((m) => m.role === "assistant");
     const seedUserMessageId = hasAssistantMessage
@@ -938,7 +987,7 @@ function InsightsConsoleBody({
 
   const handleNewSession = useCallback(async () => {
     if (!activeWorkspace) return;
-    setSending(true);
+    setCreatingSession(true);
     try {
       const created = await createInsightChatSession(activeWorkspace, "Insights Session");
       if (!created.success || !created.data) {
@@ -946,11 +995,13 @@ function InsightsConsoleBody({
         return;
       }
       setSelectedSessionId(created.data.sessionId);
-      setMessages([]);
-      setPack(null);
+      selectedSessionIdRef.current = created.data.sessionId;
+      setMessagesBySession((prev) => ({ ...prev, [created.data!.sessionId]: [] }));
+      setPackBySession((prev) => ({ ...prev, [created.data!.sessionId]: null }));
+      setPendingAssistantBySession((prev) => ({ ...prev, [created.data!.sessionId]: null }));
       await loadSessions();
     } finally {
-      setSending(false);
+      setCreatingSession(false);
     }
   }, [activeWorkspace, loadSessions]);
 
@@ -958,8 +1009,22 @@ function InsightsConsoleBody({
     if (!activeWorkspace) return;
     const question = draft.trim();
     if (!question) return;
+    if (windowPreset === "CUSTOM") {
+      if (!customStart || !customEnd) {
+        toast.error("Select both a custom start and end date.");
+        return;
+      }
+      if (customStart >= customEnd) {
+        toast.error("Custom end date must be after the start date.");
+        return;
+      }
+    }
 
-    setSending(true);
+    if (selectedSessionId) {
+      setSendingBySession((prev) => ({ ...prev, [selectedSessionId]: true }));
+    } else {
+      setCreatingSession(true);
+    }
     try {
       const res = await startInsightsChatSeedQuestion({
         clientId: activeWorkspace,
@@ -982,12 +1047,17 @@ function InsightsConsoleBody({
       setDraft("");
       if (res.data.sessionId !== selectedSessionId) {
         setSelectedSessionId(res.data.sessionId);
+        selectedSessionIdRef.current = res.data.sessionId;
       }
       await loadSessions();
       await loadSession(res.data.sessionId);
       await buildContextPackLoop(res.data.contextPackId, res.data.sessionId, res.data.userMessageId);
     } finally {
-      setSending(false);
+      if (selectedSessionId) {
+        setSendingBySession((prev) => ({ ...prev, [selectedSessionId]: false }));
+      } else {
+        setCreatingSession(false);
+      }
     }
   }, [
     activeWorkspace,
@@ -1012,36 +1082,47 @@ function InsightsConsoleBody({
     const content = draft.trim();
     if (!content) return;
     const optimisticId = `local-user-${Date.now()}`;
+    const sessionId = selectedSessionId;
     setDraft("");
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: optimisticId,
-        role: "user",
-        content,
-        citations: null,
-        createdAt: new Date(),
-        contextPackId: pack?.id ?? null,
-      },
-    ]);
-    setPendingAssistant({ mode: "answering", model, reasoningEffort, label: "Thinking" });
-    setSending(true);
+    setMessagesBySession((prev) => {
+      const existing = prev[sessionId] ?? [];
+      return {
+        ...prev,
+        [sessionId]: [
+          ...existing,
+          {
+            id: optimisticId,
+            role: "user",
+            content,
+            citations: null,
+            createdAt: new Date(),
+            contextPackId: pack?.id ?? null,
+          },
+        ],
+      };
+    });
+    setPendingAssistantBySession((prev) => ({ ...prev, [sessionId]: { mode: "answering", model, reasoningEffort, label: "Thinking" } }));
+    setSendingBySession((prev) => ({ ...prev, [sessionId]: true }));
     try {
       const res = await sendInsightsChatMessage({
         clientId: activeWorkspace,
-        sessionId: selectedSessionId,
+        sessionId,
         content,
         model,
         reasoningEffort,
       });
       if (!res.success || !res.data) {
         toast.error(res.error || "Failed to send message");
-        setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
-        setPendingAssistant(null);
+        setMessagesBySession((prev) => {
+          const existing = prev[sessionId] ?? [];
+          return { ...prev, [sessionId]: existing.filter((m) => m.id !== optimisticId) };
+        });
+        setPendingAssistantBySession((prev) => ({ ...prev, [sessionId]: null }));
         return;
       }
-      setMessages((prev) => {
-        const next = prev.map((m) =>
+      setMessagesBySession((prev) => {
+        const existing = prev[sessionId] ?? [];
+        const next = existing.map((m) =>
           m.id === optimisticId
             ? {
                 ...m,
@@ -1059,12 +1140,12 @@ function InsightsConsoleBody({
           createdAt: new Date(res.data!.assistantMessage.createdAt),
           contextPackId: pack?.id ?? null,
         });
-        return next;
+        return { ...prev, [sessionId]: next };
       });
-      setPendingAssistant(null);
+      setPendingAssistantBySession((prev) => ({ ...prev, [sessionId]: null }));
       await loadSessions();
     } finally {
-      setSending(false);
+      setSendingBySession((prev) => ({ ...prev, [sessionId]: false }));
     }
   }, [activeWorkspace, draft, loadSessions, model, pack?.id, reasoningEffort, selectedSessionId]);
 
@@ -1085,7 +1166,17 @@ function InsightsConsoleBody({
 
   const handleRecomputePack = useCallback(async () => {
     if (!activeWorkspace || !selectedSessionId) return;
-    setPackLoading(true);
+    if (windowPreset === "CUSTOM") {
+      if (!customStart || !customEnd) {
+        toast.error("Select both a custom start and end date.");
+        return;
+      }
+      if (customStart >= customEnd) {
+        toast.error("Custom end date must be after the start date.");
+        return;
+      }
+    }
+    setPackLoadingBySession((prev) => ({ ...prev, [selectedSessionId]: true }));
     try {
       const res = await recomputeInsightContextPack({
         clientId: activeWorkspace,
@@ -1105,7 +1196,7 @@ function InsightsConsoleBody({
       }
       await buildContextPackLoop(res.data.contextPackId, selectedSessionId);
     } finally {
-      setPackLoading(false);
+      setPackLoadingBySession((prev) => ({ ...prev, [selectedSessionId]: false }));
     }
   }, [
     activeWorkspace,
@@ -1124,7 +1215,7 @@ function InsightsConsoleBody({
 
   const handleRegenerateSeed = useCallback(async () => {
     if (!activeWorkspace || !selectedSessionId) return;
-    setSending(true);
+    setSendingBySession((prev) => ({ ...prev, [selectedSessionId]: true }));
     try {
       const res = await regenerateInsightsChatSeedAnswer({
         clientId: activeWorkspace,
@@ -1139,7 +1230,7 @@ function InsightsConsoleBody({
       await loadSession(selectedSessionId);
       await loadSessions();
     } finally {
-      setSending(false);
+      setSendingBySession((prev) => ({ ...prev, [selectedSessionId]: false }));
     }
   }, [activeWorkspace, loadSession, loadSessions, model, reasoningEffort, selectedSessionId]);
 
@@ -1148,8 +1239,11 @@ function InsightsConsoleBody({
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     if (!lastUser) return;
 
-    setPendingAssistant({ mode: "regenerating", model, reasoningEffort, label: "Regenerating" });
-    setSending(true);
+    setPendingAssistantBySession((prev) => ({
+      ...prev,
+      [selectedSessionId]: { mode: "regenerating", model, reasoningEffort, label: "Regenerating" },
+    }));
+    setSendingBySession((prev) => ({ ...prev, [selectedSessionId]: true }));
     try {
       const res = await regenerateInsightsChatFollowupAnswer({
         clientId: activeWorkspace,
@@ -1162,21 +1256,27 @@ function InsightsConsoleBody({
         toast.error(res.error || "Failed to regenerate answer");
         return;
       }
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: res.data!.assistantMessage.id,
-          role: "assistant",
-          content: res.data!.assistantMessage.content,
-          citations: res.data!.assistantMessage.citations ?? null,
-          createdAt: new Date(res.data!.assistantMessage.createdAt),
-          contextPackId: pack?.id ?? null,
-        },
-      ]);
+      setMessagesBySession((prev) => {
+        const existing = prev[selectedSessionId] ?? [];
+        return {
+          ...prev,
+          [selectedSessionId]: [
+            ...existing,
+            {
+              id: res.data!.assistantMessage.id,
+              role: "assistant",
+              content: res.data!.assistantMessage.content,
+              citations: res.data!.assistantMessage.citations ?? null,
+              createdAt: new Date(res.data!.assistantMessage.createdAt),
+              contextPackId: pack?.id ?? null,
+            },
+          ],
+        };
+      });
       await loadSessions();
     } finally {
-      setPendingAssistant(null);
-      setSending(false);
+      setPendingAssistantBySession((prev) => ({ ...prev, [selectedSessionId]: null }));
+      setSendingBySession((prev) => ({ ...prev, [selectedSessionId]: false }));
     }
   }, [activeWorkspace, loadSessions, messages, model, pack?.id, reasoningEffort, selectedSessionId]);
 
@@ -1190,8 +1290,10 @@ function InsightsConsoleBody({
       await loadSessions({ includeDeleted: isWorkspaceAdmin });
       if (selectedSessionId === sessionId) {
         setSelectedSessionId(null);
-        setMessages([]);
-        setPack(null);
+        setPendingAssistantBySession((prev) => ({ ...prev, [sessionId]: null }));
+        setSendingBySession((prev) => ({ ...prev, [sessionId]: false }));
+        setMessagesBySession((prev) => ({ ...prev, [sessionId]: [] }));
+        setPackBySession((prev) => ({ ...prev, [sessionId]: null }));
       }
     },
     [activeWorkspace, isWorkspaceAdmin, loadSessions, selectedSessionId]
@@ -1240,8 +1342,11 @@ function InsightsConsoleBody({
           {/* Sessions sidebar */}
           <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card/30">
             <div className="flex items-center justify-between gap-2 border-b p-3">
-              <div className="text-sm font-medium">Sessions</div>
-              <Button size="sm" variant="outline" onClick={handleNewSession} disabled={sending}>
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-medium">Sessions</div>
+                {sessionsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> : null}
+              </div>
+              <Button size="sm" variant="outline" onClick={handleNewSession} disabled={creatingSession}>
                 <Plus className="h-4 w-4 mr-2" />
                 New
               </Button>
@@ -1249,17 +1354,22 @@ function InsightsConsoleBody({
 
             <ScrollArea className="flex-1 min-h-0">
               <div className="p-2 space-y-2">
-                {sessionsLoading ? (
-                  <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin" /> Loading sessions…
-                  </div>
-                ) : sessions.length === 0 ? (
+                {sessions.length === 0 ? (
+                  sessionsLoading ? (
+                    <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Loading sessions…
+                    </div>
+                  ) : (
                   <div className="p-3 text-sm text-muted-foreground">No sessions yet. Create one and ask a question.</div>
+                  )
                 ) : (
-                  sessions.map((s) => {
-                    const selected = s.id === selectedSessionId;
-                    return (
-                      <button
+	                  sessions.map((s) => {
+	                    const selected = s.id === selectedSessionId;
+	                    const sessionPack = packBySession[s.id] ?? null;
+	                    const sessionBusy = Boolean(sendingBySession[s.id] || pendingAssistantBySession[s.id]);
+	                    const sessionBuilding = Boolean(sessionPack && ["PENDING", "RUNNING"].includes(sessionPack.status));
+	                    return (
+	                      <button
                         key={s.id}
                         className={[
                           "w-full rounded-xl border px-3 py-2.5 text-left transition",
@@ -1288,13 +1398,22 @@ function InsightsConsoleBody({
                           >
                             {s.lastMessagePreview}
                           </div>
-                        ) : (
-                          <div className="mt-1 text-xs text-muted-foreground">No messages yet</div>
-                        )}
-                        {s.deletedAt ? <div className="mt-1 text-[11px] text-muted-foreground">Deleted</div> : null}
-                      </button>
-                    );
-                  })
+	                        ) : (
+	                          <div className="mt-1 text-xs text-muted-foreground">No messages yet</div>
+	                        )}
+	                        {sessionBusy ? (
+	                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+	                            <Loader2 className="h-3 w-3 animate-spin" /> Answering…
+	                          </div>
+	                        ) : sessionBuilding ? (
+	                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+	                            <Loader2 className="h-3 w-3 animate-spin" /> Building…
+	                          </div>
+	                        ) : null}
+	                        {s.deletedAt ? <div className="mt-1 text-[11px] text-muted-foreground">Deleted</div> : null}
+	                      </button>
+	                    );
+	                  })
                 )}
               </div>
             </ScrollArea>
@@ -1331,13 +1450,13 @@ function InsightsConsoleBody({
 	                      <Label className="text-xs text-muted-foreground">Window</Label>
 	                      <Select
 	                        value={windowPreset}
-                        onValueChange={(v) => {
-                          const preset = v as InsightsWindowPreset;
-                          setWindowPreset(preset);
-                          savePreferences({ windowPreset: preset });
-                        }}
-                        disabled={prefLoading}
-                      >
+	                        onValueChange={(v) => {
+	                          const preset = v as InsightsWindowPreset;
+	                          setWindowPreset(preset);
+	                          setPrefsSaved(false);
+	                        }}
+	                        disabled={prefLoading}
+	                      >
                         <SelectTrigger className="h-9">
                           <SelectValue />
                         </SelectTrigger>
@@ -1397,15 +1516,15 @@ function InsightsConsoleBody({
                     <div className="space-y-1">
 	                      <Label className="text-xs text-muted-foreground">Campaign scope</Label>
 	                      <Button
-                        variant="outline"
-                        className="h-9 w-full min-w-0 justify-between overflow-hidden"
-                        onClick={() => setCampaignPickerOpen(true)}
-                        disabled={!hasEmailCampaigns || campaignsLoading}
-                        title={!hasEmailCampaigns ? "No EmailBison campaigns found for this workspace" : undefined}
-                      >
-                        <span className="min-w-0 truncate">{campaignScopeLabel}</span>
-                        <Settings2 className="h-4 w-4 opacity-70" />
-                      </Button>
+	                        variant="outline"
+	                        className="h-9 w-full min-w-0 justify-between overflow-hidden"
+	                        onClick={() => setCampaignPickerOpen(true)}
+	                        disabled={false}
+	                        title={hasEmailCampaigns ? "Select email campaigns to include in this pack" : "No email campaigns found for this workspace"}
+	                      >
+	                        <span className="min-w-0 truncate">{campaignScopeLabel}</span>
+	                        <Settings2 className="h-4 w-4 opacity-70" />
+	                      </Button>
                     </div>
 
                     <div className="space-y-1 min-w-0">
@@ -1454,25 +1573,25 @@ function InsightsConsoleBody({
                         <Input
                           type="date"
                           value={formatDateInputValue(customStart)}
-                          onChange={(e) => {
-                            const d = parseDateInputValue(e.target.value);
-                            setCustomStart(d);
-                            savePreferences({ customStart: d });
-                          }}
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs text-muted-foreground">Custom end</Label>
+	                          onChange={(e) => {
+	                            const d = parseDateInputValue(e.target.value);
+	                            setCustomStart(d);
+	                            setPrefsSaved(false);
+	                          }}
+	                        />
+	                      </div>
+	                      <div className="space-y-1">
+	                        <Label className="text-xs text-muted-foreground">Custom end</Label>
                         <Input
                           type="date"
                           value={formatDateInputValue(customEnd)}
-                          onChange={(e) => {
-                            const d = parseDateInputValue(e.target.value);
-                            setCustomEnd(d);
-                            savePreferences({ customEnd: d });
-                          }}
-                        />
-                      </div>
+	                          onChange={(e) => {
+	                            const d = parseDateInputValue(e.target.value);
+	                            setCustomEnd(d);
+	                            setPrefsSaved(false);
+	                          }}
+	                        />
+	                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -1485,13 +1604,13 @@ function InsightsConsoleBody({
                   allCampaigns={allCampaigns}
                   onAllCampaignsChange={(v) => setAllCampaigns(v)}
                   cap={campaignCap}
-                  onCapChange={(v) => {
-                    setCampaignCap(v);
-                    savePreferences({ campaignCap: v });
-                  }}
-                  selectedIds={selectedCampaignIds}
-                  onSelectedIdsChange={setSelectedCampaignIds}
-                />
+	                  onCapChange={(v) => {
+	                    setCampaignCap(v);
+	                    setPrefsSaved(false);
+	                  }}
+	                  selectedIds={selectedCampaignIds}
+	                  onSelectedIdsChange={setSelectedCampaignIds}
+	                />
               </div>
 
               {/* Pack status */}
@@ -1622,16 +1741,19 @@ function InsightsConsoleBody({
                           : "Send a seed question to build the pack."}
                     </div>
                     {isBuildingPack ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2"
-                        onClick={() => {
-                          pollCancelRef.current.cancelled = true;
-                          toast.message("Stopped waiting. You can resume by clicking Recompute or sending later.");
-                        }}
-                        disabled={sending}
-                      >
+	                      <Button
+	                        variant="ghost"
+	                        size="sm"
+	                        className="h-7 px-2"
+	                        onClick={() => {
+	                          if (!pack) return;
+	                          const state = activePackBuildsRef.current.get(pack.id);
+	                          if (state) state.cancelled = true;
+	                          stoppedPackIdsRef.current.add(pack.id);
+	                          toast.message("Stopped waiting. You can resume by clicking Recompute or sending later.");
+	                        }}
+	                        disabled={sending}
+	                      >
                         Stop waiting
                       </Button>
                     ) : canSendFollowups && messages.filter((m) => m.role === "user").length > 1 ? (

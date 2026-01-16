@@ -15,7 +15,7 @@ const AnswerSchema = z.object({
     .array(
       z.object({
         ref: z.string().min(2).max(12),
-        note: z.string().max(180).nullable().optional(),
+        note: z.string().max(180).nullable(),
       })
     )
     .max(60),
@@ -66,7 +66,7 @@ RULES:
 
 OUTPUT:
 - Output ONLY valid JSON with keys: answer_markdown (string) and citations (array).
-- citations must be an array of objects: { ref: string, note?: string|null }.
+- citations must be an array of objects: { ref: string, note: string|null }.
 - Use ONLY refs that appear in thread_index.
 `;
 
@@ -141,7 +141,7 @@ OUTPUT:
                     ref: { type: "string" },
                     note: { anyOf: [{ type: "string" }, { type: "null" }] },
                   },
-                  required: ["ref"],
+                  required: ["ref", "note"],
                 },
               },
             },
