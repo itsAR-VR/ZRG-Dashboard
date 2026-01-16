@@ -346,6 +346,7 @@ function InsightsConsoleBody({
 
   const pollCancelRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const activePackBuildRef = useRef<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const hasEmailCampaigns = campaigns.length > 0;
 
@@ -472,6 +473,12 @@ function InsightsConsoleBody({
     },
     [activeWorkspace]
   );
+
+  useEffect(() => {
+    if (!isVisible) return;
+    if (messagesLoading) return;
+    messagesEndRef.current?.scrollIntoView({ block: "end" });
+  }, [isVisible, messagesLoading, selectedSessionId, messages.length]);
 
   useEffect(() => {
     if (!isVisible) return;
@@ -800,7 +807,7 @@ function InsightsConsoleBody({
   const showIncludeDeleted = isWorkspaceAdmin;
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <div className="border-b px-6 py-4">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
@@ -823,101 +830,101 @@ function InsightsConsoleBody({
         </div>
       </div>
 
-        {!activeWorkspace ? (
-          <div className="p-4 text-sm text-muted-foreground">Select a workspace to use the Insights Console.</div>
-        ) : (
-          <div className="grid flex-1 min-h-0 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[320px_1fr] lg:grid-cols-[360px_1fr]">
-            {/* Sessions sidebar */}
-            <div className="flex flex-col overflow-hidden rounded-xl border bg-card/30">
-              <div className="flex items-center justify-between gap-2 border-b p-3">
-                <div className="text-sm font-medium">Sessions</div>
-                <Button size="sm" variant="outline" onClick={handleNewSession} disabled={sending}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  New
-                </Button>
-              </div>
-
-              <ScrollArea className="flex-1">
-                <div className="p-2 space-y-2">
-                  {sessionsLoading ? (
-                    <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Loading sessions…
-                    </div>
-                  ) : sessions.length === 0 ? (
-                    <div className="p-3 text-sm text-muted-foreground">No sessions yet. Create one and ask a question.</div>
-                  ) : (
-                    sessions.map((s) => {
-                      const selected = s.id === selectedSessionId;
-                      return (
-                        <button
-                          key={s.id}
-                          className={[
-                            "w-full rounded-xl border px-3 py-2.5 text-left transition",
-                            selected ? "border-primary bg-primary/5" : "hover:bg-muted/30",
-                            s.deletedAt ? "opacity-60" : "",
-                          ].join(" ")}
-                          onClick={() => setSelectedSessionId(s.id)}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium leading-snug break-words" title={s.title}>
-                                {s.title}
-                              </div>
-                            </div>
-                            <div className="shrink-0 pt-0.5 text-[11px] text-muted-foreground">
-                              {formatRelativeTime(s.updatedAt)}
-                            </div>
-                          </div>
-                          {s.createdByEmail ? (
-                            <div className="mt-0.5 text-[11px] text-muted-foreground">by {s.createdByEmail}</div>
-                          ) : null}
-                          {s.lastMessagePreview ? (
-                            <div
-                              className="mt-1 text-xs leading-snug text-muted-foreground whitespace-pre-wrap break-words"
-                              title={s.lastMessagePreview}
-                            >
-                              {s.lastMessagePreview}
-                            </div>
-                          ) : (
-                            <div className="mt-1 text-xs text-muted-foreground">No messages yet</div>
-                          )}
-                          {s.deletedAt ? <div className="mt-1 text-[11px] text-muted-foreground">Deleted</div> : null}
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              </ScrollArea>
-
-              {showIncludeDeleted ? (
-                <div className="border-t p-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="w-full justify-start"
-                    onClick={() => loadSessions({ includeDeleted: true })}
-                  >
-                    <RefreshCcw className="h-4 w-4 mr-2" />
-                    Refresh (incl. deleted)
-                  </Button>
-                </div>
-              ) : (
-                <div className="border-t p-2">
-                  <Button variant="ghost" size="sm" className="w-full justify-start" onClick={() => loadSessions()}>
-                    <RefreshCcw className="h-4 w-4 mr-2" />
-                    Refresh
-                  </Button>
-                </div>
-              )}
+      {!activeWorkspace ? (
+        <div className="p-4 text-sm text-muted-foreground">Select a workspace to use the Insights Console.</div>
+      ) : (
+        <div className="grid flex-1 min-h-0 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[320px_1fr] lg:grid-cols-[360px_1fr]">
+          {/* Sessions sidebar */}
+          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card/30">
+            <div className="flex items-center justify-between gap-2 border-b p-3">
+              <div className="text-sm font-medium">Sessions</div>
+              <Button size="sm" variant="outline" onClick={handleNewSession} disabled={sending}>
+                <Plus className="h-4 w-4 mr-2" />
+                New
+              </Button>
             </div>
 
-            {/* Main pane */}
-            <div className="flex flex-col overflow-hidden rounded-xl border bg-card/20">
-	              {/* Controls */}
-	              <div className="border-b p-3">
-	                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-	                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-	                    <div className="space-y-1">
+            <ScrollArea className="flex-1 min-h-0">
+              <div className="p-2 space-y-2">
+                {sessionsLoading ? (
+                  <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Loading sessions…
+                  </div>
+                ) : sessions.length === 0 ? (
+                  <div className="p-3 text-sm text-muted-foreground">No sessions yet. Create one and ask a question.</div>
+                ) : (
+                  sessions.map((s) => {
+                    const selected = s.id === selectedSessionId;
+                    return (
+                      <button
+                        key={s.id}
+                        className={[
+                          "w-full rounded-xl border px-3 py-2.5 text-left transition",
+                          selected ? "border-primary bg-primary/5" : "hover:bg-muted/30",
+                          s.deletedAt ? "opacity-60" : "",
+                        ].join(" ")}
+                        onClick={() => setSelectedSessionId(s.id)}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium leading-snug break-words" title={s.title}>
+                              {s.title}
+                            </div>
+                          </div>
+                          <div className="shrink-0 pt-0.5 text-[11px] text-muted-foreground">
+                            {formatRelativeTime(s.updatedAt)}
+                          </div>
+                        </div>
+                        {s.createdByEmail ? (
+                          <div className="mt-0.5 text-[11px] text-muted-foreground">by {s.createdByEmail}</div>
+                        ) : null}
+                        {s.lastMessagePreview ? (
+                          <div
+                            className="mt-1 text-xs leading-snug text-muted-foreground whitespace-pre-wrap break-words"
+                            title={s.lastMessagePreview}
+                          >
+                            {s.lastMessagePreview}
+                          </div>
+                        ) : (
+                          <div className="mt-1 text-xs text-muted-foreground">No messages yet</div>
+                        )}
+                        {s.deletedAt ? <div className="mt-1 text-[11px] text-muted-foreground">Deleted</div> : null}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </ScrollArea>
+
+            {showIncludeDeleted ? (
+              <div className="border-t p-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full justify-start"
+                  onClick={() => loadSessions({ includeDeleted: true })}
+                >
+                  <RefreshCcw className="h-4 w-4 mr-2" />
+                  Refresh (incl. deleted)
+                </Button>
+              </div>
+            ) : (
+              <div className="border-t p-2">
+                <Button variant="ghost" size="sm" className="w-full justify-start" onClick={() => loadSessions()}>
+                  <RefreshCcw className="h-4 w-4 mr-2" />
+                  Refresh
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {/* Main pane */}
+          <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border bg-card/20">
+            {/* Controls */}
+            <div className="border-b p-3">
+              <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div className="grid min-w-0 grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+                  <div className="space-y-1">
 	                      <Label className="text-xs text-muted-foreground">Window</Label>
 	                      <Select
 	                        value={windowPreset}
@@ -982,28 +989,28 @@ function InsightsConsoleBody({
                             ))}
                           </SelectContent>
                         </Select>
-                      </div>
+	                    </div>
 	
-	                    <div className="space-y-1">
+                    <div className="space-y-1">
 	                      <Label className="text-xs text-muted-foreground">Campaign scope</Label>
 	                      <Button
                         variant="outline"
-                        className="h-9 w-full justify-between"
+                        className="h-9 w-full min-w-0 justify-between overflow-hidden"
                         onClick={() => setCampaignPickerOpen(true)}
                         disabled={!hasEmailCampaigns || campaignsLoading}
                         title={!hasEmailCampaigns ? "No EmailBison campaigns found for this workspace" : undefined}
                       >
-                        <span className="truncate">{campaignScopeLabel}</span>
+                        <span className="min-w-0 truncate">{campaignScopeLabel}</span>
                         <Settings2 className="h-4 w-4 opacity-70" />
                       </Button>
                     </div>
 
-                    <div className="space-y-1">
+                    <div className="space-y-1 min-w-0">
                       <Label className="text-xs text-muted-foreground">Defaults</Label>
                       <div className="flex flex-col gap-2">
                         <Button
                           variant="outline"
-                          className="h-9 justify-start"
+                          className="h-9 justify-start min-w-0"
                           onClick={() => savePreferences()}
                           disabled={prefLoading}
                           title="Save window + cap as defaults"
@@ -1011,26 +1018,26 @@ function InsightsConsoleBody({
                           {prefsSaved ? <CheckCircle2 className="h-4 w-4 mr-2" /> : <Clock className="h-4 w-4 mr-2" />}
                           {prefsSaved ? "Saved" : "Save"}
                         </Button>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                           <Button
                             variant="outline"
-                            className="h-9 flex-1 justify-start"
+                            className="h-9 w-full min-w-0 justify-start overflow-hidden sm:flex-1 shrink"
                             onClick={handleRecomputePack}
                             disabled={!selectedSessionId || packLoading || sending}
                             title="Recompute context pack for this session (keeps existing answers)"
                           >
                             <RefreshCcw className="h-4 w-4 mr-2" />
-                            Recompute
+                            <span className="truncate">Recompute</span>
                           </Button>
                           <Button
                             variant="outline"
-                            className="h-9 flex-1 justify-start"
+                            className="h-9 w-full min-w-0 justify-start overflow-hidden sm:flex-1 shrink"
                             onClick={handleRegenerateSeed}
                             disabled={!canRegenerate || sending || packLoading}
                             title="Regenerate the seed answer using the latest context pack"
                           >
                             <MessageSquareText className="h-4 w-4 mr-2" />
-                            Regenerate
+                            <span className="truncate">Regenerate</span>
                           </Button>
                         </div>
                       </div>
@@ -1107,7 +1114,7 @@ function InsightsConsoleBody({
               </div>
 
               {/* Messages */}
-              <ScrollArea className="flex-1">
+              <ScrollArea className="flex-1 min-h-0">
                 <div className="mx-auto w-full max-w-3xl px-4 py-6">
                   {messagesLoading ? (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1150,6 +1157,7 @@ function InsightsConsoleBody({
                       {messages.map((m) => (
                         <ChatBubble key={m.id} role={m.role} content={m.content} />
                       ))}
+                      <div ref={messagesEndRef} />
                     </div>
                   )}
                 </div>
@@ -1243,10 +1251,10 @@ function InsightsConsoleBody({
                     </div>
                   </div>
                 ) : null}
-              </div>
             </div>
           </div>
-        )}
+        </div>
+      )}
     </div>
   );
 }
