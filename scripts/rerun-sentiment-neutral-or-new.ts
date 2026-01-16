@@ -8,7 +8,10 @@
  *   (`sentiment.classify.v1`) + `lib/sentiment-shared` mappings.
  *
  * Run:
- *   npx tsx scripts/rerun-sentiment-neutral-or-new.ts --dry-run --resume
+ *   # Start a NEW batch job (writes a fresh state file)
+ *   npx tsx scripts/rerun-sentiment-neutral-or-new.ts --apply
+ *
+ *   # Resume the MOST RECENT batch job (uses --state-file)
  *   npx tsx scripts/rerun-sentiment-neutral-or-new.ts --apply --resume
  *   npx tsx scripts/rerun-sentiment-neutral-or-new.ts --apply --client-id <workspaceId> --resume
  *
@@ -19,7 +22,8 @@
  *   --lead-concurrency 5     Concurrent lead processing (per workspace)
  *   --client-concurrency 1   Concurrent workspace processing
  *   --max-leads 5000         Global cap (across all workspaces)
- *   --state-file <path>      Resume state file path
+ *   --state-file <path>      Job state file path
+ *   --resume                 Continue the previous batch job (from --state-file)
  *
  * Env:
  *   DATABASE_URL                required
@@ -34,6 +38,7 @@ import { PrismaClient, type Lead } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 
 import OpenAI from "openai";
+import { randomUUID } from "node:crypto";
 
 import { SENTIMENT_CLASSIFY_V1_SYSTEM, SENTIMENT_CLASSIFY_V1_USER_TEMPLATE } from "../lib/ai/prompts/sentiment-classify-v1";
 import { isPositiveSentiment, SENTIMENT_TAGS, SENTIMENT_TO_STATUS, type SentimentTag } from "../lib/sentiment-shared";
@@ -51,7 +56,22 @@ type Args = {
   includeNull: boolean;
 };
 
-type ScriptState = Record<string, { lastLeadId?: string }>;
+type ClientState = { lastLeadId?: string };
+type ScriptJobState = {
+  version: 2;
+  job: {
+    id: string;
+    startedAt: string;
+    resumedAt?: string;
+    completedAt?: string;
+    args?: {
+      dryRun: boolean;
+      tags: SentimentTag[];
+      includeNull: boolean;
+    };
+  };
+  clients: Record<string, ClientState>;
+};
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
@@ -111,21 +131,81 @@ function parseTags(raw: string, fallback: SentimentTag[]): SentimentTag[] {
   return Array.from(new Set(parsed));
 }
 
-async function readState(path: string): Promise<ScriptState> {
+async function writeState(path: string, state: ScriptJobState): Promise<void> {
+  const fs = await import("node:fs/promises");
+  await fs.writeFile(path, JSON.stringify(state, null, 2));
+}
+
+async function rotateExistingStateFile(path: string): Promise<string | null> {
+  const fs = await import("node:fs/promises");
+  try {
+    await fs.stat(path);
+  } catch {
+    return null;
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const rotatedPath = `${path}.bak.${stamp}`;
+
+  try {
+    await fs.rename(path, rotatedPath);
+    return rotatedPath;
+  } catch {
+    return null;
+  }
+}
+
+function toJobState(raw: unknown, fallbackArgs: Pick<Args, "dryRun" | "tags" | "includeNull">): ScriptJobState | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as any;
+
+  // v2 format
+  if (obj.version === 2 && obj.job && typeof obj.job === "object" && obj.clients && typeof obj.clients === "object") {
+    return obj as ScriptJobState;
+  }
+
+  // v1 legacy format: { [clientId]: { lastLeadId } }
+  const clients: Record<string, ClientState> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (!value || typeof value !== "object") continue;
+    const lastLeadId = typeof (value as any).lastLeadId === "string" ? (value as any).lastLeadId : undefined;
+    clients[key] = lastLeadId ? { lastLeadId } : {};
+  }
+
+  const hasAnyClient = Object.keys(clients).length > 0;
+  if (!hasAnyClient) return null;
+
+  return {
+    version: 2,
+    job: {
+      id: `migrated-${new Date().toISOString()}`,
+      startedAt: new Date().toISOString(),
+      args: { dryRun: fallbackArgs.dryRun, tags: fallbackArgs.tags, includeNull: fallbackArgs.includeNull },
+    },
+    clients,
+  };
+}
+
+async function readJobStateFile(path: string, fallbackArgs: Pick<Args, "dryRun" | "tags" | "includeNull">): Promise<ScriptJobState | null> {
   try {
     const fs = await import("node:fs/promises");
     const raw = await fs.readFile(path, "utf8");
     const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object") return {};
-    return parsed as ScriptState;
+    return toJobState(parsed, fallbackArgs);
   } catch {
-    return {};
+    return null;
   }
 }
 
-async function writeState(path: string, state: ScriptState): Promise<void> {
-  const fs = await import("node:fs/promises");
-  await fs.writeFile(path, JSON.stringify(state, null, 2));
+function jobArgsMismatch(a: Pick<Args, "dryRun" | "tags" | "includeNull">, b: ScriptJobState["job"]["args"]): string | null {
+  if (!b) return null;
+  if (a.dryRun !== b.dryRun) return `dryRun mismatch (state=${b.dryRun} args=${a.dryRun})`;
+  if (a.includeNull !== b.includeNull) return `includeNull mismatch (state=${b.includeNull} args=${a.includeNull})`;
+
+  const normalizeTags = (tags: SentimentTag[]) => [...tags].slice().sort().join(",");
+  if (normalizeTags(a.tags) !== normalizeTags(b.tags)) return `tags mismatch (state=${normalizeTags(b.tags)} args=${normalizeTags(a.tags)})`;
+
+  return null;
 }
 
 async function mapWithConcurrency<T, R>(
@@ -514,13 +594,45 @@ async function main() {
   const adapter = new PrismaPg({ connectionString });
   const prisma = new PrismaClient({ adapter });
 
-  const state = args.resume ? await readState(args.stateFile) : {};
+  const fallbackJobArgs = { dryRun: args.dryRun, tags: args.tags, includeNull: args.includeNull };
+
+  let stateFile: ScriptJobState;
+  if (args.resume) {
+    const loaded = await readJobStateFile(args.stateFile, fallbackJobArgs);
+    if (!loaded) {
+      throw new Error(`--resume specified but no prior job state found at ${args.stateFile}`);
+    }
+
+    const mismatch = jobArgsMismatch(fallbackJobArgs, loaded.job.args);
+    if (mismatch) {
+      throw new Error(`Cannot resume job due to ${mismatch}. Start a new job (omit --resume) or use a different --state-file.`);
+    }
+
+    loaded.job.resumedAt = new Date().toISOString();
+    stateFile = loaded;
+  } else {
+    const rotated = await rotateExistingStateFile(args.stateFile);
+    const jobId = randomUUID();
+    stateFile = {
+      version: 2,
+      job: {
+        id: jobId,
+        startedAt: new Date().toISOString(),
+        args: fallbackJobArgs,
+      },
+      clients: {},
+    };
+    await writeState(args.stateFile, stateFile);
+    if (rotated) {
+      console.log(`[Sentiment] Rotated previous state file to ${rotated}`);
+    }
+  }
+
   let stateWriteChain = Promise.resolve();
   const queueWriteState = async () => {
-    if (!args.resume) return;
     stateWriteChain = stateWriteChain
       .catch(() => undefined)
-      .then(() => writeState(args.stateFile, state))
+      .then(() => writeState(args.stateFile, stateFile))
       .catch(() => undefined);
     await stateWriteChain;
   };
@@ -532,9 +644,11 @@ async function main() {
   });
 
   console.log(
-    `[Sentiment] Starting (dryRun=${args.dryRun}) for ${clients.length} workspace(s) (tags=${args.tags.join(
+    `[Sentiment] ${args.resume ? "Resuming" : "Starting new"} job ${stateFile.job.id} (dryRun=${args.dryRun}) for ${
+      clients.length
+    } workspace(s) (tags=${args.tags.join(
       ","
-    )}${args.includeNull ? ",(null)" : ""}; pageSize=${args.pageSize}; leadConcurrency=${args.leadConcurrency}; clientConcurrency=${args.clientConcurrency})`
+    )}${args.includeNull ? ",(null)" : ""}; pageSize=${args.pageSize}; leadConcurrency=${args.leadConcurrency}; clientConcurrency=${args.clientConcurrency}; stateFile=${args.stateFile})`
   );
 
   let remaining = args.maxLeads;
@@ -572,7 +686,7 @@ async function main() {
   const totals: LeadResult = { scanned: 0, updated: 0, sentimentChanged: 0, draftsRejected: 0, errors: 0 };
 
   await mapWithConcurrency(clients as ClientRow[], args.clientConcurrency, async (client) => {
-    const clientState = state[client.id] || {};
+    const clientState = stateFile.clients[client.id] || {};
     let lastId = args.resume ? clientState.lastLeadId : undefined;
 
     const clientTotals: LeadResult = { scanned: 0, updated: 0, sentimentChanged: 0, draftsRejected: 0, errors: 0 };
@@ -649,7 +763,7 @@ async function main() {
         }
       }
 
-      state[client.id] = { lastLeadId: lastId };
+      stateFile.clients[client.id] = { lastLeadId: lastId };
       await queueWriteState();
 
       console.log(
@@ -665,6 +779,9 @@ async function main() {
   console.log(
     `[Sentiment] Done: scanned=${totals.scanned} updated=${totals.updated} sentimentChanged=${totals.sentimentChanged} draftsRejected=${totals.draftsRejected} errors=${totals.errors}`
   );
+
+  stateFile.job.completedAt = new Date().toISOString();
+  await queueWriteState();
 
   await prisma.$disconnect();
 }
