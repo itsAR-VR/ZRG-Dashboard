@@ -38,7 +38,7 @@ export function AiDraftZone({ initialDraft, onApprove, onReject, isLoading = fal
 
   return (
     <div className="border-t border-border bg-card p-4">
-      <div className="rounded-lg border border-primary/30 bg-primary/5 p-4">
+      <div className="rounded-lg border border-primary/30 bg-primary/5 p-4 transition-shadow focus-within:ring-2 focus-within:ring-primary/20">
         <div className="mb-3 flex items-center gap-2">
           <div className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10">
             <Sparkles className="h-3.5 w-3.5 text-primary" />

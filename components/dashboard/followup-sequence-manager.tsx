@@ -401,7 +401,12 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <CollapsibleTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="min-h-11 min-w-11"
+                          aria-label={expandedSequenceId === sequence.id ? "Collapse sequence details" : "Expand sequence details"}
+                        >
                           {expandedSequenceId === sequence.id ? (
                             <ChevronUp className="h-4 w-4" />
                           ) : (
@@ -425,12 +430,13 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1">
                       <Button
                         variant="ghost"
                         size="icon"
+                        className="min-h-11 min-w-11"
                         onClick={() => handleToggleActive(sequence.id)}
-                        title={sequence.isActive ? "Pause sequence" : "Activate sequence"}
+                        aria-label={sequence.isActive ? "Pause sequence" : "Resume sequence"}
                       >
                         {sequence.isActive ? (
                           <Pause className="h-4 w-4" />
@@ -441,15 +447,18 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                       <Button
                         variant="ghost"
                         size="icon"
+                        className="min-h-11 min-w-11"
                         onClick={() => handleEditSequence(sequence)}
+                        aria-label="Edit sequence"
                       >
                         <Edit2 className="h-4 w-4" />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="text-destructive hover:text-destructive"
+                        className="min-h-11 min-w-11 text-destructive hover:text-destructive"
                         onClick={() => handleDeleteSequence(sequence.id)}
+                        aria-label="Delete sequence"
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -611,9 +620,10 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive"
+                          className="min-h-11 min-w-11 text-destructive hover:text-destructive"
                           onClick={() => handleRemoveStep(index)}
                           disabled={formData.steps.length === 1}
+                          aria-label="Delete step"
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>

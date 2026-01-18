@@ -990,6 +990,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                               onClick={() => handleDelete(client.id)}
                               disabled={isPending}
                               className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                              aria-label="Delete client"
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>

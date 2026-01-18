@@ -589,10 +589,10 @@ function CampaignPickerDialog(props: {
         <div className="space-y-4">
           <div className="flex items-center justify-between rounded-lg border p-3">
             <div className="space-y-0.5">
-              <Label className="text-sm font-medium">All campaigns</Label>
+              <Label htmlFor="all-campaigns-switch" className="text-sm font-medium">All campaigns</Label>
               <p className="text-xs text-muted-foreground">Uses a cap to avoid overly large packs.</p>
             </div>
-            <Switch checked={props.allCampaigns} onCheckedChange={props.onAllCampaignsChange} />
+            <Switch id="all-campaigns-switch" checked={props.allCampaigns} onCheckedChange={props.onAllCampaignsChange} />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -1833,7 +1833,7 @@ function InsightsConsoleBody({
                         !draft.trim() ||
                         (messages.length > 0 && !canSendFollowups)
                       }
-                      title={messages.length === 0 ? "Send seed question" : "Send message"}
+                      aria-label={messages.length === 0 ? "Send seed question" : "Send message"}
                     >
                       {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
                     </Button>

@@ -1334,6 +1334,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                             size="icon"
                             className="h-8 w-8 text-muted-foreground hover:text-destructive"
                             onClick={() => handleDeleteCalendarLink(link.id)}
+                            aria-label="Delete calendar link"
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -1401,10 +1402,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="font-medium">Email Digest</p>
+                    <p id="email-digest-label" className="font-medium">Email Digest</p>
                     <p className="text-sm text-muted-foreground">Daily summary of activity</p>
                   </div>
                   <Switch
+                    id="email-digest-switch"
+                    aria-labelledby="email-digest-label"
                     checked={notifications.emailDigest}
                     onCheckedChange={(v) => {
                       setNotifications({ ...notifications, emailDigest: v })
@@ -1415,10 +1418,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 <Separator />
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="font-medium">Slack Alerts</p>
+                    <p id="slack-alerts-label" className="font-medium">Slack Alerts</p>
                     <p className="text-sm text-muted-foreground">Real-time notifications in Slack</p>
                   </div>
                   <Switch
+                    id="slack-alerts-switch"
+                    aria-labelledby="slack-alerts-label"
                     checked={notifications.slackAlerts}
                     onCheckedChange={(v) => {
                       setNotifications({ ...notifications, slackAlerts: v })
@@ -1961,13 +1966,14 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 {/* Auto-Book Toggle */}
                 <div className="flex items-center justify-between p-4 rounded-lg border bg-muted/30">
                   <div className="space-y-1">
-                    <Label className="text-base font-medium">Auto-Book Meetings</Label>
+                    <Label htmlFor="auto-book-meetings-switch" className="text-base font-medium">Auto-Book Meetings</Label>
                     <p className="text-sm text-muted-foreground">
                       Automatically book meetings when leads accept a time slot.
                       When enabled, all leads will have auto-booking on by default.
                     </p>
                   </div>
                   <Switch
+                    id="auto-book-meetings-switch"
                     checked={meetingBooking.autoBookMeetings}
                     onCheckedChange={handleAutoBookToggle}
                   />
@@ -2173,6 +2179,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                             size="icon"
                             className="h-8 w-8 text-muted-foreground hover:text-destructive"
                             onClick={() => handleRemoveQuestion(q.id)}
+                            aria-label="Delete qualification question"
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -2180,7 +2187,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       </div>
                     ))}
                   </div>
-                  
+
                   {/* Add new question */}
                   <div className="flex gap-2">
                     <Input
@@ -2262,7 +2269,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                               size="icon"
                               className="h-8 w-8 text-muted-foreground hover:text-foreground"
                               onClick={() => handleRetryWebsiteAsset(asset.id)}
-                              title="Retry website scrape"
+                              aria-label="Retry website scrape"
                             >
                               <RefreshCcw className="h-4 w-4" />
                             </Button>
@@ -2272,6 +2279,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                             size="icon"
                             className="h-8 w-8 text-muted-foreground hover:text-destructive"
                             onClick={() => handleDeleteAsset(asset.id)}
+                            aria-label="Delete asset"
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -2369,8 +2377,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </div>
                   <div className="grid gap-3">
                     <div className="flex items-center justify-between p-3 rounded-lg border">
-                      <span className="text-sm">Auto-approve meeting confirmations</span>
-                      <Switch 
+                      <span id="auto-approve-meetings-label" className="text-sm">Auto-approve meeting confirmations</span>
+                      <Switch
+                        id="auto-approve-meetings-switch"
+                        aria-labelledby="auto-approve-meetings-label"
                         checked={automationRules.autoApproveMeetings}
                         onCheckedChange={(v) => {
                           setAutomationRules({ ...automationRules, autoApproveMeetings: v })
@@ -2379,8 +2389,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       />
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
-                      <span className="text-sm">Flag uncertain responses for review</span>
-                      <Switch 
+                      <span id="flag-uncertain-replies-label" className="text-sm">Flag uncertain responses for review</span>
+                      <Switch
+                        id="flag-uncertain-replies-switch"
+                        aria-labelledby="flag-uncertain-replies-label"
                         checked={automationRules.flagUncertainReplies}
                         onCheckedChange={(v) => {
                           setAutomationRules({ ...automationRules, flagUncertainReplies: v })
@@ -2389,8 +2401,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       />
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
-                      <span className="text-sm">Pause sequences for Out-of-Office replies</span>
-                      <Switch 
+                      <span id="pause-for-ooo-label" className="text-sm">Pause sequences for Out-of-Office replies</span>
+                      <Switch
+                        id="pause-for-ooo-switch"
+                        aria-labelledby="pause-for-ooo-label"
                         checked={automationRules.pauseForOOO}
                         onCheckedChange={(v) => {
                           setAutomationRules({ ...automationRules, pauseForOOO: v })
@@ -2465,25 +2479,29 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       </div>
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
-                      <span className="text-sm">Auto-blacklist explicit opt-outs</span>
-	                      <Switch 
-	                        checked={automationRules.autoBlacklist}
-	                        onCheckedChange={(v) => {
-	                          setAutomationRules({ ...automationRules, autoBlacklist: v })
-	                          handleChange()
-	                        }}
-	                      />
-	                    </div>
-	                    <div className="flex items-center justify-between p-3 rounded-lg border">
-	                      <div className="space-y-0.5">
-	                        <span className="text-sm">Airtable Mode</span>
-	                        <p className="text-xs text-muted-foreground">
-	                          Email is handled externally; default sequences become SMS/LinkedIn-only
-	                        </p>
-	                      </div>
-	                      <Switch 
-	                        checked={airtableModeEnabled}
-	                        disabled={!activeWorkspace || isApplyingAirtableMode}
+                      <span id="auto-blacklist-label" className="text-sm">Auto-blacklist explicit opt-outs</span>
+                      <Switch
+                        id="auto-blacklist-switch"
+                        aria-labelledby="auto-blacklist-label"
+                        checked={automationRules.autoBlacklist}
+                        onCheckedChange={(v) => {
+                          setAutomationRules({ ...automationRules, autoBlacklist: v })
+                          handleChange()
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between p-3 rounded-lg border">
+                      <div className="space-y-0.5">
+                        <span id="airtable-mode-label" className="text-sm">Airtable Mode</span>
+                        <p className="text-xs text-muted-foreground">
+                          Email is handled externally; default sequences become SMS/LinkedIn-only
+                        </p>
+                      </div>
+                      <Switch
+                        id="airtable-mode-switch"
+                        aria-labelledby="airtable-mode-label"
+                        checked={airtableModeEnabled}
+                        disabled={!activeWorkspace || isApplyingAirtableMode}
 	                        onCheckedChange={async (v) => {
 	                          if (!activeWorkspace) return
 
@@ -2620,10 +2638,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 <div className="space-y-3">
                   <div className="flex items-center justify-between p-3 rounded-lg border">
                     <div className="space-y-0.5">
-                      <span className="text-sm">Enable campaign changes (future)</span>
+                      <span id="enable-campaign-changes-label" className="text-sm">Enable campaign changes (future)</span>
                       <p className="text-xs text-muted-foreground">Allow the chatbot to change campaign response mode (disabled in v1).</p>
                     </div>
                     <Switch
+                      id="enable-campaign-changes-switch"
+                      aria-labelledby="enable-campaign-changes-label"
                       checked={insightsChatSettings.enableCampaignChanges}
                       disabled={!isWorkspaceAdmin}
                       onCheckedChange={(v) => {
@@ -2634,10 +2654,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </div>
                   <div className="flex items-center justify-between p-3 rounded-lg border">
                     <div className="space-y-0.5">
-                      <span className="text-sm">Enable experiment writes (future)</span>
+                      <span id="enable-experiment-writes-label" className="text-sm">Enable experiment writes (future)</span>
                       <p className="text-xs text-muted-foreground">Allow the chatbot to create experiments with human approval (disabled in v1).</p>
                     </div>
                     <Switch
+                      id="enable-experiment-writes-switch"
+                      aria-labelledby="enable-experiment-writes-label"
                       checked={insightsChatSettings.enableExperimentWrites}
                       disabled={!isWorkspaceAdmin}
                       onCheckedChange={(v) => {
@@ -2648,10 +2670,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </div>
                   <div className="flex items-center justify-between p-3 rounded-lg border">
                     <div className="space-y-0.5">
-                      <span className="text-sm">Enable follow-up pauses (future)</span>
+                      <span id="enable-followup-pauses-label" className="text-sm">Enable follow-up pauses (future)</span>
                       <p className="text-xs text-muted-foreground">Allow the chatbot to pause follow-ups with human approval (disabled in v1).</p>
                     </div>
                     <Switch
+                      id="enable-followup-pauses-switch"
+                      aria-labelledby="enable-followup-pauses-label"
                       checked={insightsChatSettings.enableFollowupPauses}
                       disabled={!isWorkspaceAdmin}
                       onCheckedChange={(v) => {
@@ -3147,11 +3171,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="font-medium">Two-Factor Authentication</p>
+                    <p id="2fa-label" className="font-medium">Two-Factor Authentication</p>
                     <p className="text-sm text-muted-foreground">Require 2FA for all team members</p>
                   </div>
-                  <Switch 
-                    disabled 
+                  <Switch
+                    id="2fa-switch"
+                    aria-labelledby="2fa-label"
+                    disabled
                     onCheckedChange={() => toast.info("Coming soon", { description: "2FA will be available in a future update." })}
                   />
                 </div>

@@ -727,7 +727,7 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
         {/* Header */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <h3 className="font-semibold text-foreground">Lead Details</h3>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose}>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose} aria-label="Close lead details">
             <X className="h-4 w-4" />
           </Button>
         </div>
@@ -931,26 +931,28 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
-                  <Label className="text-sm font-medium">Auto Replies</Label>
+                  <Label htmlFor="auto-reply-enabled-switch" className="text-sm font-medium">Auto Replies</Label>
                   <p className="text-xs text-muted-foreground">
                     Automatically send AI drafts
                   </p>
                 </div>
-                <Switch 
+                <Switch
+                  id="auto-reply-enabled-switch"
                   checked={autoReplyEnabled}
                   onCheckedChange={(val) => handleAutomationChange("autoReplyEnabled", val)}
                   disabled={isPending}
                 />
               </div>
-              
+
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
-                  <Label className="text-sm font-medium">Auto Follow-ups</Label>
+                  <Label htmlFor="auto-followup-enabled-switch" className="text-sm font-medium">Auto Follow-ups</Label>
                   <p className="text-xs text-muted-foreground">
                     Enable automated follow-ups
                   </p>
                 </div>
-                <Switch 
+                <Switch
+                  id="auto-followup-enabled-switch"
                   checked={autoFollowUpEnabled}
                   onCheckedChange={(val) => handleAutomationChange("autoFollowUpEnabled", val)}
                   disabled={isPending}
@@ -959,14 +961,15 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
 
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
-                  <Label className="text-sm font-medium">Auto-Book Meetings</Label>
+                  <Label htmlFor="auto-book-meetings-enabled-switch" className="text-sm font-medium">Auto-Book Meetings</Label>
                   <p className="text-xs text-muted-foreground">
-                    {isGHLConfigured 
+                    {isGHLConfigured
                       ? "Auto-book when time is accepted"
                       : "Configure GHL in Settings first"}
                   </p>
                 </div>
-                <Switch 
+                <Switch
+                  id="auto-book-meetings-enabled-switch"
                   checked={autoBookMeetingsEnabled}
                   onCheckedChange={handleAutoBookToggle}
                   disabled={isPending || !isGHLConfigured}

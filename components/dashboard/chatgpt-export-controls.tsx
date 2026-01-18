@@ -150,7 +150,7 @@ export function ChatgptExportControls({ activeWorkspace }: { activeWorkspace?: s
         size="icon"
         disabled={!activeWorkspace}
         onClick={() => setOpen(true)}
-        title="ChatGPT export settings"
+        aria-label="ChatGPT export settings"
       >
         <SlidersHorizontal className="h-4 w-4" />
       </Button>
@@ -188,8 +188,9 @@ export function ChatgptExportControls({ activeWorkspace }: { activeWorkspace?: s
                   </p>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <Label className="text-sm">Positive replies only</Label>
+                  <Label htmlFor="positive-only-switch" className="text-sm">Positive replies only</Label>
                   <Switch
+                    id="positive-only-switch"
                     checked={working.positiveOnly}
                     onCheckedChange={(v) => setWorking((prev) => normalizeChatgptExportOptions({ ...prev, positiveOnly: v }))}
                   />
@@ -248,8 +249,9 @@ export function ChatgptExportControls({ activeWorkspace }: { activeWorkspace?: s
                   ) : null}
 
                   <div className="flex items-center justify-between gap-3">
-                    <Label className="text-sm">Messages within range only</Label>
+                    <Label htmlFor="messages-range-switch" className="text-sm">Messages within range only</Label>
                     <Switch
+                      id="messages-range-switch"
                       disabled={working.timePreset === "all_time"}
                       checked={working.messagesWithinRangeOnly}
                       onCheckedChange={(v) =>
@@ -271,15 +273,17 @@ export function ChatgptExportControls({ activeWorkspace }: { activeWorkspace?: s
                 </div>
 
                 <div className="flex items-center justify-between gap-3">
-                  <Label className="text-sm">Include leads.csv</Label>
+                  <Label htmlFor="include-leads-csv-switch" className="text-sm">Include leads.csv</Label>
                   <Switch
+                    id="include-leads-csv-switch"
                     checked={working.includeLeadsCsv}
                     onCheckedChange={(v) => setWorking((prev) => normalizeChatgptExportOptions({ ...prev, includeLeadsCsv: v }))}
                   />
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <Label className="text-sm">Include messages.jsonl</Label>
+                  <Label htmlFor="include-messages-jsonl-switch" className="text-sm">Include messages.jsonl</Label>
                   <Switch
+                    id="include-messages-jsonl-switch"
                     checked={working.includeMessagesJsonl}
                     onCheckedChange={(v) =>
                       setWorking((prev) => normalizeChatgptExportOptions({ ...prev, includeMessagesJsonl: v }))

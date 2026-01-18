@@ -351,7 +351,7 @@
   transition: border-color 200ms var(--ease-out-quart),
               box-shadow 200ms var(--ease-out-quart);
 }
-.insights-input-focus:focus {
+.insights-input-focus:focus-within {
   box-shadow: 0 0 0 3px oklch(0.696 0.17 162.48 / 0.15);
 }
 

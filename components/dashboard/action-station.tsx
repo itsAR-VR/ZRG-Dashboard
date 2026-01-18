@@ -746,31 +746,31 @@ export function ActionStation({
                   onClick={handleInsertCalendarLink}
                   disabled={isSending || isRegenerating}
                   className="h-8 w-8"
-                  title="Insert calendar link"
+                  aria-label="Insert calendar link"
                 >
                   <Calendar className="h-4 w-4" />
                 </Button>
 
                 {/* Reject button */}
-                <Button 
+                <Button
                   variant="outline"
                   size="icon"
                   onClick={handleRejectDraft}
                   disabled={isSending || isRegenerating}
                   className="h-8 w-8"
-                  title="Reject draft"
+                  aria-label="Reject draft"
                 >
                   <X className="h-4 w-4" />
                 </Button>
-                
+
                 {/* Regenerate button */}
-                <Button 
+                <Button
                   variant="outline"
                   size="icon"
                   onClick={handleRegenerateDraft}
                   disabled={isSending || isRegenerating}
                   className="h-8 w-8"
-                  title="Regenerate draft"
+                  aria-label="Regenerate draft"
                 >
                   {isRegenerating ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -806,7 +806,7 @@ export function ActionStation({
                   onClick={handleInsertCalendarLink}
                   disabled={isSending || isRegenerating}
                   className="h-8 w-8"
-                  title="Insert calendar link"
+                  aria-label="Insert calendar link"
                 >
                   <Calendar className="h-4 w-4" />
                 </Button>

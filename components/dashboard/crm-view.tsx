@@ -640,10 +640,10 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
           
           {/* Quick jump buttons */}
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={jumpToTop} title="Jump to top">
+            <Button variant="ghost" size="icon" className="min-h-11 min-w-11" onClick={jumpToTop} aria-label="Jump to top">
               <ChevronsUp className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="icon" onClick={jumpToBottom} title="Jump to bottom">
+            <Button variant="ghost" size="icon" className="min-h-11 min-w-11" onClick={jumpToBottom} aria-label="Jump to bottom">
               <ChevronsDown className="h-4 w-4" />
             </Button>
           </div>
@@ -654,20 +654,24 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
             {/* Table header */}
             <div className="border-b bg-muted/30">
               <div className="flex items-center h-12 px-4">
-              <div 
-                className="flex-[3] min-w-[200px] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
+              <button
+                type="button"
+                className="flex-[3] min-w-[200px] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 onClick={() => handleSort("firstName")}
+                aria-sort={sortField === "firstName" ? (sortDirection === "asc" ? "ascending" : "descending") : undefined}
               >
                 Name <SortIcon field="firstName" />
-              </div>
+              </button>
               <div className="flex-[2] min-w-[150px]">Workspace / Client</div>
               <div className="w-[150px]">Sentiment</div>
-              <div 
-                className="w-[80px] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
+              <button
+                type="button"
+                className="w-[80px] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 onClick={() => handleSort("overallScore")}
+                aria-sort={sortField === "overallScore" ? (sortDirection === "asc" ? "ascending" : "descending") : undefined}
               >
                 Score <SortIcon field="overallScore" />
-              </div>
+              </button>
               <div className="w-[160px]">Status</div>
               <div className="w-[50px] text-right">Actions</div>
             </div>
@@ -721,12 +725,21 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                 return (
                   <div
                     key={lead.id}
-                    className="absolute top-0 left-0 w-full flex items-center px-4 border-b hover:bg-muted/50 cursor-pointer"
+                    role="button"
+                    tabIndex={0}
+                    className="absolute top-0 left-0 w-full flex items-center px-4 border-b hover:bg-muted/50 cursor-pointer focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                     style={{
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
                     onClick={() => openLeadDetail(lead)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        openLeadDetail(lead);
+                      }
+                    }}
+                    aria-label={`View details for ${lead.name}`}
                   >
                     {/* Name */}
                     <div className="flex-[3] min-w-[200px] pr-2">
@@ -805,7 +818,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                     <div className="w-[50px] text-right" onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon">
+                          <Button variant="ghost" size="icon" aria-label="Lead actions menu">
                             <MoreHorizontal className="h-4 w-4" />
                           </Button>
                         </DropdownMenuTrigger>

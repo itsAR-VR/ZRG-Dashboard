@@ -304,21 +304,21 @@ export function ConversationFeed({
         {/* Quick jump buttons */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1">
-            <Button 
-              variant="ghost" 
-              size="icon" 
-              className="h-7 w-7"
-              onClick={jumpToTop} 
-              title="Jump to top"
+            <Button
+              variant="ghost"
+              size="icon"
+              className="min-h-11 min-w-11"
+              onClick={jumpToTop}
+              aria-label="Jump to top"
             >
               <ChevronsUp className="h-4 w-4" />
             </Button>
-            <Button 
-              variant="ghost" 
+            <Button
+              variant="ghost"
               size="icon"
-              className="h-7 w-7" 
-              onClick={jumpToBottom} 
-              title="Jump to bottom"
+              className="min-h-11 min-w-11"
+              onClick={jumpToBottom}
+              aria-label="Jump to bottom"
             >
               <ChevronsDown className="h-4 w-4" />
             </Button>
@@ -379,12 +379,14 @@ export function ConversationFeed({
         {onToggleAutoFollowUpsOnReply && (
           <div className="flex items-center justify-between p-3 rounded-lg border">
             <div className="space-y-0.5">
-              <span className="text-sm">Auto Follow-ups (Positive Replies)</span>
+              <span id="auto-followups-reply-label" className="text-sm">Auto Follow-ups (Positive Replies)</span>
               <p className="text-xs text-muted-foreground">
                 Auto-enroll leads after a positive inbound email reply
               </p>
             </div>
             <Switch
+              id="auto-followups-reply-switch"
+              aria-labelledby="auto-followups-reply-label"
               checked={autoFollowUpsOnReplyEnabled}
               disabled={isTogglingAutoFollowUpsOnReply}
               onCheckedChange={(v) => onToggleAutoFollowUpsOnReply(v)}

@@ -378,22 +378,28 @@ export function BookingProcessManager({
                   <Button
                     variant="ghost"
                     size="icon"
+                    className="min-h-11 min-w-11"
                     onClick={() => handleEdit(process)}
+                    aria-label="Edit booking process"
                   >
                     <Edit2 className="h-4 w-4" />
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon"
+                    className="min-h-11 min-w-11"
                     onClick={() => handleDuplicate(process)}
+                    aria-label="Duplicate booking process"
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
                   <Button
                     variant="ghost"
                     size="icon"
+                    className="min-h-11 min-w-11"
                     onClick={() => setDeleteTarget(process)}
                     disabled={process.campaignCount > 0}
+                    aria-label="Delete booking process"
                   >
                     <Trash2 className="h-4 w-4" />
                   </Button>
@@ -624,24 +630,30 @@ function StageEditor({
           <Button
             variant="ghost"
             size="icon"
+            className="min-h-11 min-w-11"
             onClick={(e) => { e.stopPropagation(); onMoveUp(); }}
             disabled={stageNumber === 1}
+            aria-label="Move stage up"
           >
             <ChevronUp className="h-4 w-4" />
           </Button>
           <Button
             variant="ghost"
             size="icon"
+            className="min-h-11 min-w-11"
             onClick={(e) => { e.stopPropagation(); onMoveDown(); }}
             disabled={stageNumber === totalStages}
+            aria-label="Move stage down"
           >
             <ChevronDown className="h-4 w-4" />
           </Button>
           <Button
             variant="ghost"
             size="icon"
+            className="min-h-11 min-w-11"
             onClick={(e) => { e.stopPropagation(); onRemove(); }}
             disabled={totalStages <= 1}
+            aria-label="Remove stage"
           >
             <X className="h-4 w-4" />
           </Button>
@@ -705,9 +717,10 @@ function StageEditor({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Link2 className="h-4 w-4 text-muted-foreground" />
-                <Label>Include Booking Link</Label>
+                <Label htmlFor={`include-booking-link-switch-${stageNumber}`}>Include Booking Link</Label>
               </div>
               <Switch
+                id={`include-booking-link-switch-${stageNumber}`}
                 checked={stage.includeBookingLink}
                 onCheckedChange={(checked) => onUpdate({ includeBookingLink: checked })}
               />
@@ -736,9 +749,10 @@ function StageEditor({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Clock className="h-4 w-4 text-muted-foreground" />
-                <Label>Include Suggested Times</Label>
+                <Label htmlFor={`include-suggested-times-switch-${stageNumber}`}>Include Suggested Times</Label>
               </div>
               <Switch
+                id={`include-suggested-times-switch-${stageNumber}`}
                 checked={stage.includeSuggestedTimes}
                 onCheckedChange={(checked) => onUpdate({ includeSuggestedTimes: checked })}
               />
@@ -768,9 +782,10 @@ function StageEditor({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <HelpCircle className="h-4 w-4 text-muted-foreground" />
-                <Label>Include Qualifying Questions</Label>
+                <Label htmlFor={`include-qualifying-questions-switch-${stageNumber}`}>Include Qualifying Questions</Label>
               </div>
               <Switch
+                id={`include-qualifying-questions-switch-${stageNumber}`}
                 checked={stage.includeQualifyingQuestions}
                 onCheckedChange={(checked) => onUpdate({ includeQualifyingQuestions: checked })}
               />
@@ -816,9 +831,10 @@ function StageEditor({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Globe className="h-4 w-4 text-muted-foreground" />
-              <Label>Ask for Timezone</Label>
+              <Label htmlFor={`include-timezone-ask-switch-${stageNumber}`}>Ask for Timezone</Label>
             </div>
             <Switch
+              id={`include-timezone-ask-switch-${stageNumber}`}
               checked={stage.includeTimezoneAsk}
               onCheckedChange={(checked) => onUpdate({ includeTimezoneAsk: checked })}
             />
