@@ -2777,9 +2777,6 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               </CardContent>
             </Card>
 
-            {/* Campaign assignment (AI auto-send vs setter-managed) */}
-            <AiCampaignAssignmentPanel activeWorkspace={activeWorkspace} />
-
             {canViewAiObs ? (
               <>
                 <Card>
