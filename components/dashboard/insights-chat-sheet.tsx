@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Bot, CheckCircle2, Clock, Copy, ExternalLink, Loader2, MessageSquareText, Plus, RefreshCcw, Settings2, Shield, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -302,7 +302,7 @@ const assistantMarkdownComponents: Components = {
   },
 };
 
-function AssistantMarkdown({ content }: { content: string }) {
+const AssistantMarkdown = memo(function AssistantMarkdown({ content }: { content: string }) {
   const cleaned = (content || "").trim();
   if (!cleaned) return null;
 
@@ -311,7 +311,7 @@ function AssistantMarkdown({ content }: { content: string }) {
       {cleaned}
     </ReactMarkdown>
   );
-}
+});
 
 function buildInboxThreadHref(leadId: string): string {
   const cleaned = (leadId || "").trim();
@@ -323,19 +323,23 @@ function CitationsBar({ citations }: { citations: InsightThreadCitation[] }) {
   const top = citations.slice(0, 6);
 
   return (
-    <div className="mt-3 flex flex-wrap items-center gap-2">
-      {top.map((c) => (
+    <div className="flex flex-wrap items-center gap-2">
+      {top.map((c, idx) => (
         <a
           key={`${c.kind}:${c.leadId}:${c.ref}`}
           href={buildInboxThreadHref(c.leadId)}
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground hover:bg-muted/60"
+          className={[
+            "inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-muted/30 px-3 py-1.5 text-[11px] text-muted-foreground",
+            "insights-citation-hover insights-scale-in hover:bg-primary/10 hover:border-primary/30 hover:text-foreground",
+            `insights-stagger-${Math.min(idx + 1, 6)}`,
+          ].join(" ")}
           title={c.leadLabel || undefined}
         >
-          <span className="font-medium text-foreground">{c.ref}</span>
-          {c.outcome ? <span className="text-muted-foreground">· {c.outcome}</span> : null}
-          <ExternalLink className="h-3 w-3 opacity-70" />
+          <span className="font-semibold text-foreground">{c.ref}</span>
+          {c.outcome ? <span className="text-muted-foreground/80">· {c.outcome}</span> : null}
+          <ExternalLink className="h-3 w-3 opacity-60" />
         </a>
       ))}
     </div>
@@ -401,7 +405,7 @@ function SourcesDialog({ citations }: { citations: InsightThreadCitation[] }) {
   );
 }
 
-function ChatBubble({
+const ChatBubble = memo(function ChatBubble({
   role,
   content,
   citations,
@@ -413,23 +417,28 @@ function ChatBubble({
   const isUser = role === "user";
   const isSystem = role === "system";
   const hasCitations = role === "assistant" && Array.isArray(citations) && citations.length > 0;
+
+  // Animation class based on message type
+  const animationClass = isUser ? "insights-user-message-enter" : "insights-message-enter";
+
   return (
     <div className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}>
       <div
         className={[
-          "max-w-[46rem] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm",
+          "max-w-[46rem] rounded-2xl px-5 py-4 text-sm leading-relaxed",
+          animationClass,
           isSystem
             ? "bg-muted/40 text-muted-foreground border"
             : isUser
-              ? "bg-primary text-primary-foreground"
-              : "bg-card/60 text-foreground border",
+              ? "bg-primary text-primary-foreground shadow-lg shadow-primary/20"
+              : "bg-card/80 text-foreground border border-border/50 shadow-md",
         ].join(" ")}
       >
         {role === "assistant" ? (
           <>
             <AssistantMarkdown content={content} />
             {hasCitations ? (
-              <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/30">
                 <CitationsBar citations={citations!} />
                 <SourcesDialog citations={citations!} />
               </div>
@@ -441,24 +450,117 @@ function ChatBubble({
       </div>
     </div>
   );
-}
+});
 
-function ThinkingBubble(props: { label: string; model: InsightsChatModel; effort: InsightsChatReasoningEffort }) {
+const ThinkingBubble = memo(function ThinkingBubble(props: { label: string; model: InsightsChatModel; effort: InsightsChatReasoningEffort }) {
   return (
-    <div className="flex w-full justify-start">
-      <div className="max-w-[46rem] rounded-2xl border bg-card/60 px-4 py-3 text-sm leading-relaxed shadow-sm">
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          <span className="font-medium text-foreground">{props.label}</span>
-          <span className="text-muted-foreground">·</span>
-          <span>{props.model}</span>
-          <span className="text-muted-foreground">·</span>
-          <span>{props.effort}</span>
+    <div className="flex w-full justify-start insights-message-enter">
+      <div className="max-w-[46rem] rounded-2xl border border-primary/30 bg-card/80 px-5 py-4 text-sm leading-relaxed shadow-md insights-thinking-pulse">
+        {/* Animated thinking indicator bar */}
+        <div className="mb-3 h-1 w-24 rounded-full overflow-hidden bg-primary/10">
+          <div className="h-full insights-shimmer rounded-full" />
+        </div>
+
+        <div className="flex items-center gap-3">
+          {/* Animated dots */}
+          <div className="insights-thinking-dots flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-primary" />
+            <span className="h-2 w-2 rounded-full bg-primary" />
+            <span className="h-2 w-2 rounded-full bg-primary" />
+          </div>
+
+          <div className="flex items-center gap-2 text-xs">
+            <span className="font-semibold text-foreground">{props.label}</span>
+            <span className="text-muted-foreground">·</span>
+            <span className="text-muted-foreground">{props.model}</span>
+            <span className="text-muted-foreground">·</span>
+            <span className="text-muted-foreground">{props.effort}</span>
+          </div>
         </div>
       </div>
     </div>
   );
-}
+});
+
+const SessionItem = memo(function SessionItem({
+  session,
+  isSelected,
+  isBusy,
+  isBuilding,
+  onSelect,
+  index = 0,
+}: {
+  session: SessionRow;
+  isSelected: boolean;
+  isBusy: boolean;
+  isBuilding: boolean;
+  onSelect: (id: string) => void;
+  index?: number;
+}) {
+  // Stagger class for entrance animation (cap at 8)
+  const staggerClass = `insights-stagger-${Math.min(index + 1, 8)}`;
+
+  return (
+    <button
+      className={[
+        "w-full rounded-xl border px-4 py-3 text-left insights-session-enter insights-session-hover",
+        staggerClass,
+        isSelected
+          ? "border-primary bg-primary/8 shadow-sm"
+          : "border-border/50 hover:border-border hover:bg-muted/40",
+        session.deletedAt ? "opacity-50" : "",
+        isBusy || isBuilding ? "insights-glow-pulse" : "",
+      ].join(" ")}
+      onClick={() => onSelect(session.id)}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold leading-snug break-words tracking-tight" title={session.title}>
+            {session.title}
+          </div>
+        </div>
+        <div className="shrink-0 pt-0.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+          {formatRelativeTime(session.updatedAt)}
+        </div>
+      </div>
+      {session.createdByEmail ? (
+        <div className="mt-1 text-[11px] text-muted-foreground/80">by {session.createdByEmail}</div>
+      ) : null}
+      {session.lastMessagePreview ? (
+        <div
+          className="mt-2 text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap break-words line-clamp-2"
+          title={session.lastMessagePreview}
+        >
+          {session.lastMessagePreview}
+        </div>
+      ) : (
+        <div className="mt-2 text-xs text-muted-foreground/60 italic">No messages yet</div>
+      )}
+      {isBusy ? (
+        <div className="mt-2 flex items-center gap-2 text-[11px] font-medium text-primary">
+          <div className="insights-thinking-dots flex items-center gap-0.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+            <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+            <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+          </div>
+          Answering…
+        </div>
+      ) : isBuilding ? (
+        <div className="mt-2 flex items-center gap-2 text-[11px] font-medium text-primary">
+          <div className="h-1 w-12 rounded-full overflow-hidden bg-primary/20">
+            <div className="h-full insights-shimmer rounded-full" />
+          </div>
+          Building…
+        </div>
+      ) : null}
+      {session.deletedAt ? (
+        <div className="mt-2 inline-flex items-center rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive">
+          Deleted
+        </div>
+      ) : null}
+    </button>
+  );
+});
 
 function CampaignPickerDialog(props: {
   open: boolean;
@@ -530,30 +632,33 @@ function CampaignPickerDialog(props: {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-[40px]" />
+                      <TableHead className="w-[40px]">
+                        <span className="sr-only">Select</span>
+                      </TableHead>
                       <TableHead>Name</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {campaigns.map((c) => {
                       const checked = props.selectedIds.includes(c.id);
+                      const toggleSelection = () => {
+                        if (props.allCampaigns) return;
+                        props.onSelectedIdsChange(
+                          checked ? props.selectedIds.filter((id) => id !== c.id) : [...props.selectedIds, c.id]
+                        );
+                      };
                       return (
                         <TableRow
                           key={c.id}
                           className={props.allCampaigns ? "opacity-50" : "cursor-pointer"}
-                          onClick={() => {
-                            if (props.allCampaigns) return;
-                            props.onSelectedIdsChange(
-                              checked ? props.selectedIds.filter((id) => id !== c.id) : [...props.selectedIds, c.id]
-                            );
-                          }}
+                          onClick={toggleSelection}
                         >
                           <TableCell>
                             <input
                               type="checkbox"
                               checked={checked}
                               disabled={props.allCampaigns}
-                              readOnly
+                              onChange={toggleSelection}
                               aria-label={`Select ${c.name}`}
                             />
                           </TableCell>
@@ -1325,14 +1430,18 @@ function InsightsConsoleBody({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="border-b px-6 py-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="flex items-center gap-2 text-xl font-bold">
-              <Bot className="h-5 w-5" />
-              Insights Console
+      <div className="border-b px-6 py-5 bg-gradient-to-r from-background to-muted/20">
+        <div className="flex items-start justify-between gap-4 insights-fade-in-up">
+          <div className="space-y-2">
+            <h1 className="flex items-center gap-3 text-2xl font-bold tracking-tight">
+              <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                <Bot className="h-5 w-5" />
+              </div>
+              <span className="bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text">
+                Insights Console
+              </span>
             </h1>
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-muted-foreground max-w-md">
               Read-only insights grounded in your analytics and representative threads.
             </p>
           </div>
@@ -1350,16 +1459,28 @@ function InsightsConsoleBody({
       {!activeWorkspace ? (
         <div className="p-4 text-sm text-muted-foreground">Select a workspace to use the Insights Console.</div>
       ) : (
-        <div className="grid flex-1 min-h-0 grid-cols-1 gap-4 overflow-hidden md:grid-cols-[320px_1fr] lg:grid-cols-[360px_1fr]">
+        <div className="grid flex-1 min-h-0 grid-cols-1 gap-4 overflow-hidden p-4 md:grid-cols-[320px_1fr] lg:grid-cols-[360px_1fr]">
           {/* Sessions sidebar */}
-          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card/30">
-            <div className="flex items-center justify-between gap-2 border-b p-3">
+          <div className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-border/50 bg-card/40 shadow-sm insights-fade-in-up">
+            <div className="flex items-center justify-between gap-2 border-b border-border/50 p-4">
               <div className="flex items-center gap-2">
-                <div className="text-sm font-medium">Sessions</div>
-                {sessionsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> : null}
+                <div className="text-sm font-semibold tracking-tight">Sessions</div>
+                {sessionsLoading ? (
+                  <div className="insights-thinking-dots flex items-center gap-0.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+                  </div>
+                ) : null}
               </div>
-              <Button size="sm" variant="outline" onClick={handleNewSession} disabled={creatingSession}>
-                <Plus className="h-4 w-4 mr-2" />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleNewSession}
+                disabled={creatingSession}
+                className="insights-btn-hover font-medium"
+              >
+                <Plus className="h-4 w-4 mr-1.5" />
                 New
               </Button>
             </div>
@@ -1375,57 +1496,20 @@ function InsightsConsoleBody({
                   <div className="p-3 text-sm text-muted-foreground">No sessions yet. Create one and ask a question.</div>
                   )
                 ) : (
-	                  sessions.map((s) => {
-	                    const selected = s.id === selectedSessionId;
-	                    const sessionPack = packBySession[s.id] ?? null;
-	                    const sessionBusy = Boolean(sendingBySession[s.id] || pendingAssistantBySession[s.id]);
-	                    const sessionBuilding = Boolean(sessionPack && ["PENDING", "RUNNING"].includes(sessionPack.status));
-	                    return (
-	                      <button
+                  sessions.map((s, idx) => {
+                    const sessionPack = packBySession[s.id] ?? null;
+                    return (
+                      <SessionItem
                         key={s.id}
-                        className={[
-                          "w-full rounded-xl border px-3 py-2.5 text-left transition",
-                          selected ? "border-primary bg-primary/5" : "hover:bg-muted/30",
-                          s.deletedAt ? "opacity-60" : "",
-                        ].join(" ")}
-                        onClick={() => setSelectedSessionId(s.id)}
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium leading-snug break-words" title={s.title}>
-                              {s.title}
-                            </div>
-                          </div>
-                          <div className="shrink-0 pt-0.5 text-[11px] text-muted-foreground">
-                            {formatRelativeTime(s.updatedAt)}
-                          </div>
-                        </div>
-                        {s.createdByEmail ? (
-                          <div className="mt-0.5 text-[11px] text-muted-foreground">by {s.createdByEmail}</div>
-                        ) : null}
-                        {s.lastMessagePreview ? (
-                          <div
-                            className="mt-1 text-xs leading-snug text-muted-foreground whitespace-pre-wrap break-words"
-                            title={s.lastMessagePreview}
-                          >
-                            {s.lastMessagePreview}
-                          </div>
-	                        ) : (
-	                          <div className="mt-1 text-xs text-muted-foreground">No messages yet</div>
-	                        )}
-	                        {sessionBusy ? (
-	                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-	                            <Loader2 className="h-3 w-3 animate-spin" /> Answering…
-	                          </div>
-	                        ) : sessionBuilding ? (
-	                          <div className="mt-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-	                            <Loader2 className="h-3 w-3 animate-spin" /> Building…
-	                          </div>
-	                        ) : null}
-	                        {s.deletedAt ? <div className="mt-1 text-[11px] text-muted-foreground">Deleted</div> : null}
-	                      </button>
-	                    );
-	                  })
+                        session={s}
+                        isSelected={s.id === selectedSessionId}
+                        isBusy={Boolean(sendingBySession[s.id] || pendingAssistantBySession[s.id])}
+                        isBuilding={Boolean(sessionPack && ["PENDING", "RUNNING"].includes(sessionPack.status))}
+                        onSelect={setSelectedSessionId}
+                        index={idx}
+                      />
+                    );
+                  })
                 )}
               </div>
             </ScrollArea>
@@ -1649,40 +1733,47 @@ function InsightsConsoleBody({
 
               {/* Messages */}
               <ScrollArea className="flex-1 min-h-0">
-                <div className="mx-auto w-full max-w-3xl px-4 py-6">
+                <div className="mx-auto w-full max-w-3xl px-6 py-8">
                   {messagesLoading ? (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Loading messages…
+                    <div className="flex items-center gap-3 text-sm text-muted-foreground insights-fade-in-up">
+                      <div className="insights-thinking-dots flex items-center gap-1">
+                        <span className="h-2 w-2 rounded-full bg-primary" />
+                        <span className="h-2 w-2 rounded-full bg-primary" />
+                        <span className="h-2 w-2 rounded-full bg-primary" />
+                      </div>
+                      Loading messages…
                     </div>
                   ) : messages.length === 0 ? (
-                    <div className="flex min-h-[55vh] flex-col items-center justify-center gap-7 text-center">
-                      <div className="space-y-2">
-                        <div className="text-2xl font-semibold tracking-tight">What are you working on?</div>
-                        <p className="text-sm text-muted-foreground">
+                    <div className="flex min-h-[55vh] flex-col items-center justify-center gap-8 text-center">
+                      <div className="space-y-3 insights-fade-in-up">
+                        <h2 className="text-3xl font-bold tracking-tight bg-gradient-to-br from-foreground via-foreground to-muted-foreground bg-clip-text">
+                          What are you working on?
+                        </h2>
+                        <p className="text-sm text-muted-foreground max-w-md mx-auto leading-relaxed">
                           Ask a seed question to build a reusable context pack from representative threads.
                         </p>
                       </div>
 
-                      <div className="grid w-full max-w-2xl grid-cols-1 gap-3 sm:grid-cols-3">
-                        <div className="rounded-xl border bg-background/40 p-3 text-left">
-                          <div className="text-xs text-muted-foreground">Window</div>
-                          <div className="mt-1 text-sm font-medium">{windowSummary}</div>
+                      <div className="grid w-full max-w-2xl grid-cols-1 gap-4 sm:grid-cols-3">
+                        <div className="rounded-2xl border border-border/50 bg-card/50 p-4 text-left shadow-sm insights-scale-in insights-stagger-1">
+                          <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">Window</div>
+                          <div className="mt-2 text-sm font-semibold">{windowSummary}</div>
                         </div>
-                        <div className="rounded-xl border bg-background/40 p-3 text-left">
-                          <div className="text-xs text-muted-foreground">Scope</div>
-                          <div className="mt-1 text-sm font-medium line-clamp-2" title={campaignScopeLabel}>
+                        <div className="rounded-2xl border border-border/50 bg-card/50 p-4 text-left shadow-sm insights-scale-in insights-stagger-2">
+                          <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">Scope</div>
+                          <div className="mt-2 text-sm font-semibold line-clamp-2" title={campaignScopeLabel}>
                             {campaignScopeLabel}
                           </div>
                         </div>
-                        <div className="rounded-xl border bg-background/40 p-3 text-left">
-                          <div className="text-xs text-muted-foreground">Model</div>
-                          <div className="mt-1 text-sm font-medium">
+                        <div className="rounded-2xl border border-border/50 bg-card/50 p-4 text-left shadow-sm insights-scale-in insights-stagger-3">
+                          <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">Model</div>
+                          <div className="mt-2 text-sm font-semibold">
                             {model} · {reasoningEffort}
                           </div>
                         </div>
                       </div>
 
-                      <div className="text-xs text-muted-foreground">
+                      <div className="text-[11px] text-muted-foreground/60 insights-fade-in-up insights-stagger-4">
                         v1 is read-only. Action tools are disabled even if configured in AI Personality settings.
                       </div>
                     </div>
@@ -1703,15 +1794,15 @@ function InsightsConsoleBody({
               </ScrollArea>
 
               {/* Composer */}
-              <div className="border-t bg-background/50 p-4">
+              <div className="border-t bg-gradient-to-t from-background via-background to-transparent p-4">
                 <div className="mx-auto w-full max-w-3xl">
-                  <div className="relative rounded-2xl border bg-background/40 p-2 shadow-sm">
+                  <div className="relative rounded-2xl border border-border/50 bg-card/60 p-2 shadow-md backdrop-blur-sm insights-input-focus">
                     <Textarea
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
                       placeholder={messages.length === 0 ? "Ask your seed question…" : "Ask a follow-up question…"}
                       disabled={sending || isBuildingPack || (pack?.status === "FAILED")}
-                      className="min-h-[48px] max-h-[180px] resize-none border-0 bg-transparent px-3 py-2 pr-12 text-sm leading-relaxed focus-visible:ring-0 focus-visible:ring-offset-0"
+                      className="min-h-[52px] max-h-[180px] resize-none border-0 bg-transparent px-4 py-3 pr-14 text-sm leading-relaxed focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/60"
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
@@ -1726,7 +1817,11 @@ function InsightsConsoleBody({
 
                     <Button
                       size="icon"
-                      className="absolute bottom-2 right-2 h-9 w-9 rounded-full"
+                      className={[
+                        "absolute bottom-3 right-3 h-10 w-10 rounded-xl shadow-lg",
+                        "insights-btn-hover insights-btn-primary-glow",
+                        draft.trim() && !sending ? "bg-primary text-primary-foreground" : "",
+                      ].join(" ")}
                       onClick={() => {
                         if (messages.length === 0) handleSeedSend();
                         else handleFollowupSend();
