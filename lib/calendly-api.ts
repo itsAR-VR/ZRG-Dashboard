@@ -207,3 +207,141 @@ export async function createCalendlyInvitee(
 
   return { success: true, data: { inviteeUri, scheduledEventUri } };
 }
+
+// =============================================================================
+// Reconciliation Helpers (Phase 28c)
+// =============================================================================
+
+/**
+ * Calendly scheduled event structure (from GET /scheduled_events)
+ */
+export interface CalendlyScheduledEvent {
+  uri: string;
+  name?: string;
+  status: "active" | "canceled";
+  start_time: string;
+  end_time: string;
+  event_type?: string;
+  location?: {
+    type?: string;
+    location?: string;
+    join_url?: string;
+  };
+  created_at?: string;
+  updated_at?: string;
+  cancellation?: {
+    canceled_by?: string;
+    reason?: string;
+  };
+}
+
+/**
+ * Calendly invitee structure (from GET /scheduled_events/{uuid}/invitees)
+ */
+export interface CalendlyInvitee {
+  uri: string;
+  email: string;
+  name?: string;
+  status: "active" | "canceled";
+  timezone?: string;
+  reschedule_url?: string;
+  cancel_url?: string;
+  created_at?: string;
+  updated_at?: string;
+  no_show?: {
+    uri?: string;
+    created_at?: string;
+  } | null;
+}
+
+export interface ListScheduledEventsParams {
+  organizationUri?: string;
+  userUri?: string;
+  inviteeEmail?: string;
+  minStartTime?: string; // ISO datetime
+  maxStartTime?: string; // ISO datetime
+  status?: "active" | "canceled";
+  pageToken?: string;
+  count?: number; // Max 100
+}
+
+export interface ListScheduledEventsResponse {
+  collection: CalendlyScheduledEvent[];
+  pagination: {
+    count: number;
+    next_page?: string;
+    next_page_token?: string;
+    previous_page?: string;
+    previous_page_token?: string;
+  };
+}
+
+/**
+ * List scheduled events with optional filters.
+ * Supports filtering by invitee email, time range, and status.
+ *
+ * @param accessToken - Calendly access token
+ * @param params - Query parameters
+ */
+export async function listCalendlyScheduledEvents(
+  accessToken: string,
+  params: ListScheduledEventsParams
+): Promise<CalendlyApiResult<ListScheduledEventsResponse>> {
+  const queryParams = new URLSearchParams();
+
+  if (params.organizationUri) queryParams.set("organization", params.organizationUri);
+  if (params.userUri) queryParams.set("user", params.userUri);
+  if (params.inviteeEmail) queryParams.set("invitee_email", params.inviteeEmail.toLowerCase());
+  if (params.minStartTime) queryParams.set("min_start_time", params.minStartTime);
+  if (params.maxStartTime) queryParams.set("max_start_time", params.maxStartTime);
+  if (params.status) queryParams.set("status", params.status);
+  if (params.pageToken) queryParams.set("page_token", params.pageToken);
+  if (params.count) queryParams.set("count", String(Math.min(100, params.count)));
+
+  const url = `/scheduled_events?${queryParams.toString()}`;
+  return calendlyRequest<ListScheduledEventsResponse>(accessToken, url);
+}
+
+export interface ListEventInviteesResponse {
+  collection: CalendlyInvitee[];
+  pagination: {
+    count: number;
+    next_page?: string;
+    next_page_token?: string;
+  };
+}
+
+/**
+ * Get invitees for a scheduled event.
+ *
+ * @param accessToken - Calendly access token
+ * @param scheduledEventUri - Full URI of the scheduled event
+ */
+export async function listCalendlyEventInvitees(
+  accessToken: string,
+  scheduledEventUri: string
+): Promise<CalendlyApiResult<ListEventInviteesResponse>> {
+  // Append /invitees to the event URI
+  const url = `${scheduledEventUri}/invitees`;
+  return calendlyRequest<ListEventInviteesResponse>(accessToken, url);
+}
+
+/**
+ * Get a single scheduled event by URI.
+ *
+ * @param accessToken - Calendly access token
+ * @param scheduledEventUri - Full URI of the scheduled event
+ */
+export async function getCalendlyScheduledEvent(
+  accessToken: string,
+  scheduledEventUri: string
+): Promise<CalendlyApiResult<CalendlyScheduledEvent>> {
+  const res = await calendlyRequest<{ resource?: CalendlyScheduledEvent }>(accessToken, scheduledEventUri);
+  if (!res.success) return res;
+
+  const resource = res.data?.resource;
+  if (!resource?.uri) {
+    return { success: false, error: "Calendly scheduled event response missing resource" };
+  }
+  return { success: true, data: resource };
+}

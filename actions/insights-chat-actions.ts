@@ -5,10 +5,16 @@ import { requireClientAccess, requireClientAdminAccess } from "@/lib/workspace-a
 import { coerceInsightsChatModel, coerceInsightsChatReasoningEffort } from "@/lib/insights-chat/config";
 import { resolveInsightsWindow, buildInsightScopeKey, formatInsightsWindowLabel } from "@/lib/insights-chat/window";
 import { selectThreadsForInsightPack, type InsightCampaignScope } from "@/lib/insights-chat/thread-selection";
-import { extractConversationInsightForLead, type ConversationInsight } from "@/lib/insights-chat/thread-extractor";
+import { extractConversationInsightForLead, CONVERSATION_INSIGHT_SCHEMA_VERSION, type ConversationInsight } from "@/lib/insights-chat/thread-extractor";
 import { synthesizeInsightContextPack } from "@/lib/insights-chat/pack-synthesis";
 import { answerInsightsChatQuestion } from "@/lib/insights-chat/chat-answer";
-import { buildFastContextPackMarkdown, getFastSeedMaxThreads, getFastSeedMinThreads, selectFastSeedThreads } from "@/lib/insights-chat/fast-seed";
+import {
+  buildFastContextPackMarkdown,
+  computeFollowUpPriorityScore,
+  getFastSeedMaxThreads,
+  getFastSeedMinThreads,
+  selectFastSeedThreads,
+} from "@/lib/insights-chat/fast-seed";
 import { buildInsightThreadIndex } from "@/lib/insights-chat/thread-index";
 import { getAnalytics, getEmailCampaignAnalytics } from "@/actions/analytics-actions";
 import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
@@ -22,7 +28,16 @@ import type {
   InsightContextPackStatus,
   InsightsWindowPreset,
 } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
+
+const OUTCOME_PRIORITY: Record<ConversationInsightOutcome, number> = {
+  BOOKED: 0,
+  REQUESTED: 1,
+  STALLED: 2,
+  NO_RESPONSE: 3,
+  UNKNOWN: 4,
+};
 
 type InsightChatSessionListItem = {
   id: string;
@@ -504,9 +519,9 @@ async function createOrResetContextPack(opts: {
       processedThreads: 0,
       selectedLeadIds: [],
       processedLeadIds: [],
-      selectedLeadsMeta: null,
-      metricsSnapshot: null,
-      synthesis: null,
+      selectedLeadsMeta: Prisma.DbNull,
+      metricsSnapshot: Prisma.DbNull,
+      synthesis: Prisma.DbNull,
       seedAssistantMessageId: null,
       model: effectiveModel,
       reasoningEffort: effectiveEffort,
@@ -528,9 +543,9 @@ async function createOrResetContextPack(opts: {
       processedThreads: 0,
       selectedLeadIds: [],
       processedLeadIds: [],
-      selectedLeadsMeta: null,
-      metricsSnapshot: null,
-      synthesis: null,
+      selectedLeadsMeta: Prisma.DbNull,
+      metricsSnapshot: Prisma.DbNull,
+      synthesis: Prisma.DbNull,
       ...(shouldResetSeedAnswer ? { seedAssistantMessageId: null } : {}),
       model: effectiveModel,
       reasoningEffort: effectiveEffort,
@@ -1080,7 +1095,7 @@ export async function runInsightContextPackStep(opts: {
           processedLeadIds: [],
           selectedLeadsMeta: threads as any,
           metricsSnapshot: analyticsSnapshot as any,
-          synthesis: null,
+          synthesis: Prisma.DbNull,
           lastError: null,
           computedAt: null,
         },
@@ -1130,11 +1145,25 @@ export async function runInsightContextPackStep(opts: {
         batch.map(async (leadId) => {
           const outcome = outcomeByLeadId.get(leadId) ?? "UNKNOWN";
 
+          // Check for existing insight and schema version (Phase 29e)
           const existing = await prisma.leadConversationInsight.findUnique({
             where: { leadId },
-            select: { id: true },
+            select: { id: true, insight: true },
           });
-          if (existing) return { leadId, ok: true } as const;
+
+          if (existing) {
+            // Schema upgrade check: if existing insight has old schema, consider re-extraction
+            const insightJson = existing.insight as { schema_version?: string } | null;
+            const currentVersion = insightJson?.schema_version;
+            const needsUpgrade = currentVersion !== CONVERSATION_INSIGHT_SCHEMA_VERSION;
+            const allowUpgrade = process.env.INSIGHTS_ALLOW_SCHEMA_UPGRADE_REEXTRACT === "true";
+
+            // Skip if already up-to-date OR upgrades not allowed
+            if (!needsUpgrade || !allowUpgrade) {
+              return { leadId, ok: true } as const;
+            }
+            // Fall through to re-extract with new schema
+          }
 
           const extracted = await extractConversationInsightForLead({
             clientId,
@@ -1412,6 +1441,14 @@ export async function runInsightContextPackStep(opts: {
         return { leadId, outcome: outcomeByLeadId.get(leadId) ?? "UNKNOWN", insight };
       })
       .filter(Boolean) as Array<{ leadId: string; outcome: ConversationInsightOutcome; insight: ConversationInsight }>;
+
+    // Phase 29c: ensure highest-signal follow-up threads are seen first by the synthesizer.
+    threadsForSynthesis.sort((a, b) => {
+      const followUpA = computeFollowUpPriorityScore(a.insight.follow_up_effectiveness);
+      const followUpB = computeFollowUpPriorityScore(b.insight.follow_up_effectiveness);
+      if (followUpA !== followUpB) return followUpB - followUpA;
+      return (OUTCOME_PRIORITY[a.outcome] ?? 99) - (OUTCOME_PRIORITY[b.outcome] ?? 99);
+    });
 
     const windowLabel = formatInsightsWindowLabel({
       preset: pack.windowPreset,

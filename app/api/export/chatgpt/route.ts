@@ -166,7 +166,8 @@ export async function GET(request: NextRequest) {
   });
 
   const date = new Date().toISOString().split("T")[0];
-  return new NextResponse(buffer, {
+  const arrayBuffer = Uint8Array.from(buffer).buffer;
+  return new NextResponse(arrayBuffer, {
     status: 200,
     headers: {
       "Content-Type": "application/zip",

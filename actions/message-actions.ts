@@ -24,6 +24,8 @@ import {
   type LinkedInConnectionStatus,
   type InMailBalanceResult,
 } from "@/lib/unipile-api";
+import { recordOutboundForBookingProgress } from "@/lib/booking-progress";
+import { coerceSmsDraftPartsOrThrow } from "@/lib/sms-multipart";
 
 /**
  * Pre-classification check for sentiment analysis.
@@ -773,29 +775,31 @@ export async function syncAllEmailConversations(clientId: string): Promise<SyncA
 
     console.log(`[EmailSyncAll] Complete: ${totalImported} imported, ${totalHealed} healed, ${totalDraftsGenerated} drafts, ${errors} errors`);
 
-      return {
-        success: true,
-        totalLeads: leads.length,
-        totalImported,
-        totalHealed,
-        totalDraftsGenerated,
-        totalReclassified: 0,
-        errors,
-      };
-    } catch (error) {
-      console.error("[EmailSyncAll] Failed to sync all email conversations:", error);
-      return {
-        success: false,
-        totalLeads: 0,
-        totalImported: 0,
-        totalHealed: 0,
-        totalDraftsGenerated: 0,
-        totalReclassified: 0,
-        errors: 1,
-        error: error instanceof Error ? error.message : "Unknown error",
-      };
-    }
-  });
+	      return {
+	        success: true,
+	        totalLeads: leads.length,
+	        totalImported,
+	        totalHealed,
+	        totalDraftsGenerated,
+	        totalReclassified: 0,
+	        totalLeadUpdated: 0,
+	        errors,
+	      };
+	    } catch (error) {
+	      console.error("[EmailSyncAll] Failed to sync all email conversations:", error);
+	      return {
+	        success: false,
+	        totalLeads: 0,
+	        totalImported: 0,
+	        totalHealed: 0,
+	        totalDraftsGenerated: 0,
+	        totalReclassified: 0,
+	        totalLeadUpdated: 0,
+	        errors: 1,
+	        error: error instanceof Error ? error.message : "Unknown error",
+	      };
+	    }
+	  });
 }
 
 /**
@@ -810,8 +814,9 @@ export async function sendMessage(
 ): Promise<SendMessageResult> {
   return withAiTelemetrySourceIfUnset("action:message.send_sms", async () => {
     try {
+      const user = await requireAuthUser();
       await requireLeadAccess(leadId);
-      const result = await sendSmsSystem(leadId, message, { sentBy: "setter" });
+      const result = await sendSmsSystem(leadId, message, { sentBy: "setter", sentByUserId: user.id });
       if (result.success) revalidatePath("/");
       return result;
     } catch (error) {
@@ -834,8 +839,9 @@ export async function sendEmailMessage(
 ): Promise<SendMessageResult> {
   return withAiTelemetrySourceIfUnset("action:message.send_email", async () => {
     try {
+      const user = await requireAuthUser();
       await requireLeadAccess(leadId);
-      const result = await sendEmailReplyForLead(leadId, message, { sentBy: "setter" });
+      const result = await sendEmailReplyForLead(leadId, message, { sentBy: "setter", sentByUserId: user.id });
       if (!result.success) {
         return { success: false, error: result.error || "Failed to send email reply" };
       }
@@ -861,14 +867,14 @@ export async function sendLinkedInMessage(
   message: string,
   connectionNote?: string,
   inMailSubject?: string,
-  meta?: { sentBy?: "ai" | "setter" | null; aiDraftId?: string | null }
+  meta?: { sentBy?: "ai" | "setter" | null; sentByUserId?: string | null; aiDraftId?: string | null }
 ): Promise<SendMessageResult & { messageType?: "dm" | "inmail" | "connection_request"; attemptedMethods?: string[] }> {
   return withAiTelemetrySourceIfUnset("action:message.send_linkedin", async () => {
     try {
       await requireLeadAccess(leadId);
 
     if (meta?.aiDraftId) {
-      const existing = await prisma.message.findUnique({
+      const existing = await prisma.message.findFirst({
         where: { aiDraftId: meta.aiDraftId },
         select: { id: true },
       });
@@ -940,6 +946,7 @@ export async function sendLinkedInMessage(
         leadId: lead.id,
         sentAt: new Date(),
         sentBy: meta?.sentBy ?? "setter",
+        sentByUserId: meta?.sentByUserId || undefined,
         aiDraftId: meta?.aiDraftId || undefined,
       },
     });
@@ -955,6 +962,11 @@ export async function sendLinkedInMessage(
     // Kick off no-response follow-ups starting from this outbound touch (if enabled)
     autoStartNoResponseSequenceOnOutbound({ leadId, outboundAt: savedMessage.sentAt }).catch((err) => {
       console.error("[sendLinkedInMessage] Failed to auto-start no-response sequence:", err);
+    });
+
+    // Record booking progress for wave tracking (Phase 36)
+    recordOutboundForBookingProgress({ leadId, channel: "linkedin" }).catch((err) => {
+      console.error("[sendLinkedInMessage] Failed to record booking progress:", err);
     });
 
     revalidatePath("/");
@@ -1015,32 +1027,19 @@ export async function getPendingDrafts(leadId: string, channel?: "sms" | "email"
  */
 export async function approveAndSendDraftSystem(
   draftId: string,
-  opts: { sentBy: "ai" | "setter"; editedContent?: string } = { sentBy: "setter" }
+  opts: { sentBy: "ai" | "setter"; sentByUserId?: string | null; editedContent?: string } = { sentBy: "setter" }
 ): Promise<SendMessageResult> {
   try {
-    const [draft, existingMessage] = await Promise.all([
-      prisma.aIDraft.findUnique({
-        where: { id: draftId },
-        select: {
-          id: true,
-          leadId: true,
-          content: true,
-          channel: true,
-          status: true,
-        },
-      }),
-      prisma.message.findUnique({
-        where: { aiDraftId: draftId },
-        select: { id: true },
-      }),
-    ]);
-
-    if (existingMessage) {
-      await prisma.aIDraft
-        .updateMany({ where: { id: draftId, status: "pending" }, data: { status: "approved" } })
-        .catch(() => undefined);
-      return { success: true, messageId: existingMessage.id };
-    }
+    const draft = await prisma.aIDraft.findUnique({
+      where: { id: draftId },
+      select: {
+        id: true,
+        leadId: true,
+        content: true,
+        channel: true,
+        status: true,
+      },
+    });
 
     if (!draft) {
       return { success: false, error: "Draft not found" };
@@ -1050,24 +1049,63 @@ export async function approveAndSendDraftSystem(
       return { success: false, error: "Draft is not pending" };
     }
 
+    // Email drafts: use dedicated sender (keeps existing behavior)
     if (draft.channel === "email") {
-      const result = await sendEmailReply(draftId, opts.editedContent, { sentBy: opts.sentBy });
+      const result = await sendEmailReply(draftId, opts.editedContent, {
+        sentBy: opts.sentBy,
+        sentByUserId: opts.sentByUserId,
+      });
       if (!result.success) return { success: false, error: result.error || "Failed to send email reply" };
       return { success: true, messageId: result.messageId };
     }
 
+    // LinkedIn drafts: system-send isn't supported today (manual send via approveAndSendDraft)
     if (draft.channel === "linkedin") {
       return { success: false, error: "System send for LinkedIn drafts is not supported" };
     }
 
+    // SMS drafts: support multipart (<=3 parts, <=160 chars each)
     const messageContent = opts.editedContent || draft.content;
-    const sendResult = await sendSmsSystem(draft.leadId, messageContent, {
-      sentBy: opts.sentBy,
-      aiDraftId: draftId,
+    const { parts } = coerceSmsDraftPartsOrThrow(messageContent, { allowFallbackSplit: true });
+
+    // Determine which parts have already been sent (idempotent retries).
+    const existing = await prisma.message.findMany({
+      where: { aiDraftId: draftId },
+      select: { id: true, aiDraftPartIndex: true },
     });
 
-    if (!sendResult.success) {
-      return sendResult;
+    const sentPartIndexes = new Set<number>();
+    for (const m of existing) {
+      sentPartIndexes.add(m.aiDraftPartIndex ?? 0);
+    }
+
+    const pendingPartIndexes: number[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      if (!sentPartIndexes.has(i)) pendingPartIndexes.push(i);
+    }
+
+    // Send missing parts sequentially.
+    let firstMessageId: string | undefined = existing[0]?.id;
+    for (const partIndex of pendingPartIndexes) {
+      const sendResult = await sendSmsSystem(draft.leadId, parts[partIndex]!, {
+        sentBy: opts.sentBy,
+        sentByUserId: opts.sentByUserId || undefined,
+        aiDraftId: draftId,
+        aiDraftPartIndex: partIndex,
+        skipBookingProgress: true,
+      });
+
+      if (!sendResult.success) {
+        return sendResult;
+      }
+
+      if (!firstMessageId) firstMessageId = sendResult.messageId;
+    }
+
+    // Only mark wave progress once the full SMS "send" completes (all parts present).
+    // If no parts were pending, avoid double-counting.
+    if (pendingPartIndexes.length > 0) {
+      await recordOutboundForBookingProgress({ leadId: draft.leadId, channel: "sms", smsPartCount: parts.length });
     }
 
     await prisma.aIDraft.update({
@@ -1075,7 +1113,7 @@ export async function approveAndSendDraftSystem(
       data: { status: "approved" },
     });
 
-    return { success: true, messageId: sendResult.messageId };
+    return { success: true, messageId: firstMessageId };
   } catch (error) {
     console.error("[approveAndSendDraftSystem] Failed:", error);
     return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
@@ -1118,7 +1156,7 @@ export async function approveAndSendDraft(
     }
 
     if (draft.channel === "email") {
-      return await approveAndSendDraftSystem(draftId, { sentBy: "setter", editedContent });
+      return await approveAndSendDraftSystem(draftId, { sentBy: "setter", sentByUserId: user.id, editedContent });
     }
 
     if (draft.channel === "linkedin") {
@@ -1126,6 +1164,7 @@ export async function approveAndSendDraft(
       const messageContent = editedContent || draft.content;
       const linkedInResult = await sendLinkedInMessage(draft.leadId, messageContent, undefined, undefined, {
         sentBy: "setter",
+        sentByUserId: user.id,
         aiDraftId: draftId,
       });
 
@@ -1145,7 +1184,7 @@ export async function approveAndSendDraft(
     }
 
     // Send the message (SMS)
-    const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "setter", editedContent });
+    const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "setter", sentByUserId: user.id, editedContent });
 
     if (!sendResult.success) {
       return sendResult;

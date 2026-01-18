@@ -4,6 +4,7 @@ import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { runResponse } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
+import { updateUnipileConnectionHealth } from "@/lib/workspace-integration-health";
 import { sendSmsSystem } from "@/lib/system-sender";
 import { sendEmailReply } from "@/actions/email-actions";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
@@ -469,6 +470,14 @@ export async function executeFollowUpStep(
   lead: LeadContext
 ): Promise<ExecutionResult> {
   try {
+    if (process.env.FOLLOWUPS_DRY_RUN === "true") {
+      return {
+        success: true,
+        action: "skipped",
+        message: "FOLLOWUPS_DRY_RUN enabled - skipping follow-up execution",
+      };
+    }
+
     // Get workspace settings for business hours check
     const client = await prisma.client.findUnique({
       where: { id: lead.clientId },
@@ -741,8 +750,22 @@ export async function executeFollowUpStep(
         );
 
         if (!dmResult.success) {
+          // Track disconnected account health for workspace notifications
+          if (dmResult.isDisconnectedAccount) {
+            await updateUnipileConnectionHealth({
+              clientId: lead.clientId,
+              isDisconnected: true,
+              errorDetail: dmResult.error,
+            }).catch((err) => console.error("[FollowUp] Failed to update Unipile health:", err));
+          }
           return { success: false, action: "error", error: dmResult.error || "Failed to send LinkedIn DM" };
         }
+
+        // Success: mark as connected if we had a previous disconnect
+        await updateUnipileConnectionHealth({
+          clientId: lead.clientId,
+          isDisconnected: false,
+        }).catch(() => {});
 
         const sentAt = new Date();
         await prisma.message.create({
@@ -797,12 +820,26 @@ export async function executeFollowUpStep(
       );
 
       if (!inviteResult.success) {
+        // Track disconnected account health for workspace notifications
+        if (inviteResult.isDisconnectedAccount) {
+          await updateUnipileConnectionHealth({
+            clientId: lead.clientId,
+            isDisconnected: true,
+            errorDetail: inviteResult.error,
+          }).catch((err) => console.error("[FollowUp] Failed to update Unipile health:", err));
+        }
         return {
           success: false,
           action: "error",
           error: inviteResult.error || "Failed to send LinkedIn connection request",
         };
       }
+
+      // Success: mark as connected if we had a previous disconnect
+      await updateUnipileConnectionHealth({
+        clientId: lead.clientId,
+        isDisconnected: false,
+      }).catch(() => {});
 
       const sentAt = new Date();
       await prisma.message.create({

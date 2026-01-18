@@ -18,6 +18,8 @@ interface EmailCampaignData {
   leadCount: number;
   responseMode: CampaignResponseMode;
   autoSendConfidenceThreshold: number;
+  bookingProcessId: string | null;
+  bookingProcessName: string | null;
   createdAt: Date;
 }
 
@@ -35,6 +37,9 @@ export async function getEmailCampaigns(clientId?: string): Promise<{
         client: {
           select: { name: true },
         },
+        bookingProcess: {
+          select: { id: true, name: true },
+        },
         _count: {
           select: { leads: true },
         },
@@ -51,6 +56,8 @@ export async function getEmailCampaigns(clientId?: string): Promise<{
       leadCount: c._count.leads,
       responseMode: c.responseMode,
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold,
+      bookingProcessId: c.bookingProcess?.id ?? null,
+      bookingProcessName: c.bookingProcess?.name ?? null,
       createdAt: c.createdAt,
     }));
 
@@ -361,5 +368,84 @@ export async function linkLeadToEmailCampaign(
   } catch (error) {
     console.error("[EmailCampaign] Failed to link lead:", error);
     return { success: false, error: "Failed to link lead to email campaign" };
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Booking Process Assignment (Phase 36)
+// ----------------------------------------------------------------------------
+
+export async function assignBookingProcessToCampaign(
+  emailCampaignId: string,
+  bookingProcessId: string | null
+): Promise<{
+  success: boolean;
+  data?: { bookingProcessId: string | null; bookingProcessName: string | null };
+  error?: string;
+}> {
+  try {
+    const campaign = await prisma.emailCampaign.findUnique({
+      where: { id: emailCampaignId },
+      select: { clientId: true },
+    });
+
+    if (!campaign) {
+      return { success: false, error: "Email campaign not found" };
+    }
+
+    await requireClientAdminAccess(campaign.clientId);
+
+    // Validate booking process belongs to same client
+    if (bookingProcessId) {
+      const bookingProcess = await prisma.bookingProcess.findUnique({
+        where: { id: bookingProcessId },
+        select: { id: true, name: true, clientId: true },
+      });
+
+      if (!bookingProcess) {
+        return { success: false, error: "Booking process not found" };
+      }
+
+      if (bookingProcess.clientId !== campaign.clientId) {
+        return { success: false, error: "Booking process does not belong to this workspace" };
+      }
+
+      await prisma.emailCampaign.update({
+        where: { id: emailCampaignId },
+        data: { bookingProcessId },
+      });
+
+      revalidatePath("/");
+
+      return {
+        success: true,
+        data: {
+          bookingProcessId: bookingProcess.id,
+          bookingProcessName: bookingProcess.name,
+        },
+      };
+    }
+
+    // Unassign booking process
+    await prisma.emailCampaign.update({
+      where: { id: emailCampaignId },
+      data: { bookingProcessId: null },
+    });
+
+    revalidatePath("/");
+
+    return {
+      success: true,
+      data: {
+        bookingProcessId: null,
+        bookingProcessName: null,
+      },
+    };
+  } catch (error) {
+    console.error("[EmailCampaign] Failed to assign booking process:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to assign booking process",
+    };
   }
 }

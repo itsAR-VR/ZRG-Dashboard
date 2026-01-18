@@ -213,10 +213,9 @@ export function Sidebar({
                     {selectedWorkspace ? selectedWorkspace.name : "All Workspaces"}
                   </span>
                   {selectedWorkspace && selectedWorkspace.hasDefaultCalendarLink === false ? (
-                    <AlertCircle
-                      className="h-4 w-4 shrink-0 text-amber-500"
-                      title="No default calendar link configured"
-                    />
+                    <span title="No default calendar link configured">
+                      <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
+                    </span>
                   ) : null}
                 </span>
                 <ChevronDown className="h-4 w-4 shrink-0 opacity-50" />
@@ -247,10 +246,9 @@ export function Sidebar({
                       {workspace.name}
                     </span>
                     {workspace.hasDefaultCalendarLink === false ? (
-                      <AlertCircle
-                        className="h-4 w-4 shrink-0 text-amber-500"
-                        title="No default calendar link configured"
-                      />
+                      <span title="No default calendar link configured">
+                        <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
+                      </span>
                     ) : null}
                   </div>
                 </DropdownMenuItem>

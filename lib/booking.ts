@@ -5,6 +5,8 @@ import { getWorkspaceAvailabilityCache } from "@/lib/availability-cache";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { createCalendlyInvitee } from "@/lib/calendly-api";
 import { resolveCalendlyEventTypeUuidFromLink, toCalendlyEventTypeUri } from "@/lib/calendly-link";
+import { upsertAppointmentWithRollup } from "@/lib/appointment-upsert";
+import { AppointmentStatus, AppointmentSource } from "@prisma/client";
 
 export interface BookingResult {
   success: boolean;
@@ -257,15 +259,21 @@ export async function bookMeetingOnGHL(
       return { success: false, error: appointmentResult.error || "Failed to create appointment in GHL" };
     }
 
+    // Dual-write: create Appointment + update Lead rollups atomically (Phase 34c)
+    await upsertAppointmentWithRollup({
+      leadId,
+      provider: "GHL",
+      source: AppointmentSource.AUTO_BOOK,
+      ghlAppointmentId: appointmentResult.data.id,
+      startAt: startTime,
+      endAt: endTime,
+      status: AppointmentStatus.CONFIRMED,
+    });
+
+    // Clear offered slots after successful booking
     await prisma.lead.update({
       where: { id: leadId },
-      data: {
-        ghlAppointmentId: appointmentResult.data.id,
-        appointmentBookedAt: new Date(),
-        bookedSlot: selectedSlot,
-        status: "meeting-booked",
-        offeredSlots: null,
-      },
+      data: { offeredSlots: null },
     });
 
     await autoStartPostBookingSequenceIfEligible({ leadId });
@@ -358,14 +366,14 @@ export async function bookMeetingOnCalendly(leadId: string, selectedSlot: string
       });
     }
 
-    let inviteeEmail = lead.email?.trim() || "";
-    if (!inviteeEmail && lead.ghlContactId && client.ghlPrivateKey) {
-      const contact = await getGHLContact(lead.ghlContactId, client.ghlPrivateKey, { locationId: client.ghlLocationId });
-      const email = contact.success ? contact.data?.contact?.email?.trim() : "";
-      if (email) {
-        inviteeEmail = email;
-        await prisma.lead.update({ where: { id: leadId }, data: { email } });
-      }
+	    let inviteeEmail = lead.email?.trim() || "";
+	    if (!inviteeEmail && lead.ghlContactId && client.ghlPrivateKey) {
+	      const contact = await getGHLContact(lead.ghlContactId, client.ghlPrivateKey, { locationId: client.ghlLocationId || undefined });
+	      const email = contact.success ? contact.data?.contact?.email?.trim() : "";
+	      if (email) {
+	        inviteeEmail = email;
+	        await prisma.lead.update({ where: { id: leadId }, data: { email } });
+	      }
     }
 
     if (!inviteeEmail) {
@@ -389,16 +397,25 @@ export async function bookMeetingOnCalendly(leadId: string, selectedSlot: string
       return { success: false, error: invitee.error || "Failed to create Calendly invitee" };
     }
 
+    const meetingStartTime = new Date(selectedSlot);
+    const meetingEndTime = new Date(meetingStartTime.getTime() + (settings?.meetingDurationMinutes || 30) * 60 * 1000);
+
+    // Dual-write: create Appointment + update Lead rollups atomically (Phase 34c)
+    await upsertAppointmentWithRollup({
+      leadId,
+      provider: "CALENDLY",
+      source: AppointmentSource.AUTO_BOOK,
+      calendlyInviteeUri: invitee.data.inviteeUri,
+      calendlyScheduledEventUri: invitee.data.scheduledEventUri,
+      startAt: meetingStartTime,
+      endAt: meetingEndTime,
+      status: AppointmentStatus.CONFIRMED,
+    });
+
+    // Clear offered slots after successful booking
     await prisma.lead.update({
       where: { id: leadId },
-      data: {
-        calendlyInviteeUri: invitee.data.inviteeUri,
-        calendlyScheduledEventUri: invitee.data.scheduledEventUri,
-        appointmentBookedAt: new Date(),
-        bookedSlot: selectedSlot,
-        status: "meeting-booked",
-        offeredSlots: null,
-      },
+      data: { offeredSlots: null },
     });
 
     await autoStartPostBookingSequenceIfEligible({ leadId });

@@ -52,6 +52,9 @@ export interface Lead {
   sentimentTag?: string | null
   // SMS deliverability flags
   smsDndActive?: boolean
+  // Lead scoring (Phase 33)
+  overallScore?: number | null
+  scoredAt?: Date | null
 }
 
 export type Channel = "sms" | "email" | "linkedin";

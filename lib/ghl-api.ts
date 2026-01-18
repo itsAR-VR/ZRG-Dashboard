@@ -831,7 +831,7 @@ export async function updateGHLAppointment(
 
 /**
  * Delete/cancel an appointment in GHL
- * 
+ *
  * @param eventId - The appointment/event ID
  * @param privateKey - The GHL private integration key
  */
@@ -845,6 +845,50 @@ export async function deleteGHLAppointment(
     {
       method: "DELETE",
     }
+  );
+}
+
+/**
+ * Get appointments for a contact (for reconciliation)
+ * Uses GET /contacts/{contactId}/appointments
+ *
+ * @param contactId - The GHL contact ID
+ * @param privateKey - The GHL private integration key
+ * @param opts - Optional location ID for rate limiting
+ */
+export async function getGHLContactAppointments(
+  contactId: string,
+  privateKey: string,
+  opts?: { locationId?: string }
+): Promise<GHLApiResponse<{ events: GHLAppointment[] }>> {
+  if (!isLikelyGhlContactId(contactId)) {
+    return { success: false, error: "Invalid GHL contact ID", statusCode: 400 };
+  }
+  return ghlRequest<{ events: GHLAppointment[] }>(
+    `/contacts/${encodeURIComponent(contactId)}/appointments`,
+    privateKey,
+    { headers: { Version: GHL_CONTACTS_API_VERSION } },
+    opts?.locationId
+  );
+}
+
+/**
+ * Get a single appointment by ID
+ * Uses GET /calendars/events/appointments/{eventId}
+ *
+ * @param eventId - The appointment/event ID
+ * @param privateKey - The GHL private integration key
+ */
+export async function getGHLAppointment(
+  eventId: string,
+  privateKey: string,
+  opts?: { locationId?: string }
+): Promise<GHLApiResponse<GHLAppointment>> {
+  return ghlRequest<GHLAppointment>(
+    `/calendars/events/appointments/${encodeURIComponent(eventId)}`,
+    privateKey,
+    {},
+    opts?.locationId
   );
 }
 

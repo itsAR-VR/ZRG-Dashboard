@@ -53,6 +53,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { IntegrationsManager } from "./settings/integrations-manager"
 import { AiCampaignAssignmentPanel } from "./settings/ai-campaign-assignment"
+import { BookingProcessManager } from "./settings/booking-process-manager"
+import { BookingProcessAnalytics } from "./settings/booking-process-analytics"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { getWorkspaceAdminStatus } from "@/actions/access-actions"
 	import { 
@@ -154,6 +156,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     signature: "",
     goals: "",
     serviceDescription: "",
+    idealCustomerProfile: "",  // ICP for lead scoring (Phase 33)
   })
 
   const [insightsChatSettings, setInsightsChatSettings] = useState({
@@ -162,6 +165,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     enableCampaignChanges: false,
     enableExperimentWrites: false,
     enableFollowupPauses: false,
+  })
+
+  // Draft generation model settings (Phase 30)
+  const [draftGenerationSettings, setDraftGenerationSettings] = useState({
+    model: "gpt-5.1",
+    reasoningEffort: "medium",
   })
 
   // Qualification questions state
@@ -282,6 +291,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           signature: result.data.aiSignature || "",
           goals: result.data.aiGoals || "",
           serviceDescription: result.data.serviceDescription || "",
+          idealCustomerProfile: result.data.idealCustomerProfile || "",
         })
         setInsightsChatSettings({
           model: result.data.insightsChatModel || "gpt-5-mini",
@@ -289,6 +299,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           enableCampaignChanges: result.data.insightsChatEnableCampaignChanges ?? false,
           enableExperimentWrites: result.data.insightsChatEnableExperimentWrites ?? false,
           enableFollowupPauses: result.data.insightsChatEnableFollowupPauses ?? false,
+        })
+        setDraftGenerationSettings({
+          model: result.data.draftGenerationModel || "gpt-5.1",
+          reasoningEffort: result.data.draftGenerationReasoningEffort || "medium",
         })
         setCompanyContext({
           companyName: result.data.companyName || "",
@@ -562,6 +576,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       aiSignature: toNullableText(aiPersona.signature),
       aiGoals: toNullableText(aiPersona.goals),
       serviceDescription: toNullableText(aiPersona.serviceDescription),
+      idealCustomerProfile: toNullableText(aiPersona.idealCustomerProfile),
       companyName: toNullableText(companyContext.companyName),
       targetResult: toNullableText(companyContext.targetResult),
       qualificationQuestions: qualificationQuestions.length > 0 
@@ -593,6 +608,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       payload.insightsChatEnableCampaignChanges = insightsChatSettings.enableCampaignChanges
       payload.insightsChatEnableExperimentWrites = insightsChatSettings.enableExperimentWrites
       payload.insightsChatEnableFollowupPauses = insightsChatSettings.enableFollowupPauses
+      // Draft generation settings (Phase 30)
+      payload.draftGenerationModel = draftGenerationSettings.model
+      payload.draftGenerationReasoningEffort = draftGenerationSettings.reasoningEffort
     }
 
     const result = await updateUserSettings(activeWorkspace, payload)
@@ -1077,10 +1095,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
       <div className="p-6">
         <Tabs value={activeTab} onValueChange={onTabChange} className="space-y-6">
-          <TabsList className="grid w-full max-w-3xl grid-cols-4">
+          <TabsList className="grid w-full max-w-4xl grid-cols-5">
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="integrations">Integrations</TabsTrigger>
             <TabsTrigger value="ai">AI Personality</TabsTrigger>
+            <TabsTrigger value="booking">Booking</TabsTrigger>
             <TabsTrigger value="team">Team</TabsTrigger>
           </TabsList>
 
@@ -2102,6 +2121,27 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </p>
                 </div>
 
+                {/* Ideal Customer Profile (ICP) - Phase 33 */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Target className="h-5 w-5 text-primary" />
+                    <h4 className="font-semibold">Ideal Customer Profile (ICP)</h4>
+                  </div>
+                  <Textarea
+                    id="idealCustomerProfile"
+                    value={aiPersona.idealCustomerProfile}
+                    onChange={(e) => {
+                      setAiPersona({ ...aiPersona, idealCustomerProfile: e.target.value })
+                      handleChange()
+                    }}
+                    rows={4}
+                    placeholder="Describe your ideal customer profile for lead scoring. Include job titles, company size, industry, pain points, and buying signals.&#10;&#10;Example: VP/Director of Sales at B2B SaaS companies with 50-500 employees. They struggle with slow response times and inconsistent follow-ups. High-intent signals: mentions specific pain points, asks about pricing, or requests a demo."
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Used by the AI to score leads (1-4) based on fit and intent. Leave blank to use general scoring criteria.
+                  </p>
+                </div>
+
                 <Separator />
 
                 {/* Qualification Questions */}
@@ -2634,6 +2674,109 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               </CardContent>
             </Card>
 
+            {/* Email Draft Generation Model (Phase 30) */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Mail className="h-5 w-5" />
+                  Email Draft Generation
+                </CardTitle>
+                <CardDescription>
+                  Configure the AI model used for generating email draft responses.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-3">
+                  <div className="space-y-0.5">
+                    <span className="text-sm font-medium">Workspace-wide</span>
+                    <p className="text-xs text-muted-foreground">Only admins can change these settings.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {!isWorkspaceAdmin ? (
+                      <>
+                        <Lock className="h-4 w-4 text-muted-foreground" />
+                        <Badge variant="outline">Locked</Badge>
+                      </>
+                    ) : (
+                      <Badge variant="secondary">Admin</Badge>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Model</Label>
+                    <Select
+                      value={draftGenerationSettings.model}
+                      onValueChange={(v) => {
+                        const nextModel = v
+                        setDraftGenerationSettings((prev) => ({
+                          ...prev,
+                          model: nextModel,
+                          reasoningEffort:
+                            nextModel === "gpt-5.2"
+                              ? prev.reasoningEffort
+                              : prev.reasoningEffort === "extra_high"
+                                ? "high"
+                                : prev.reasoningEffort,
+                        }))
+                        handleChange()
+                      }}
+                      disabled={!isWorkspaceAdmin}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="gpt-5.1">GPT-5.1 (default)</SelectItem>
+                        <SelectItem value="gpt-5.2">GPT-5.2</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      GPT-5.2 offers enhanced reasoning for complex leads.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Reasoning Effort</Label>
+                    <Select
+                      value={draftGenerationSettings.reasoningEffort}
+                      onValueChange={(v) => {
+                        setDraftGenerationSettings((prev) => ({ ...prev, reasoningEffort: v }))
+                        handleChange()
+                      }}
+                      disabled={!isWorkspaceAdmin}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="low">Low</SelectItem>
+                        <SelectItem value="medium">Medium (Recommended)</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
+                        {draftGenerationSettings.model === "gpt-5.2" ? (
+                          <SelectItem value="extra_high">Extra High (GPT-5.2 only)</SelectItem>
+                        ) : null}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Higher reasoning = better personalization, more tokens.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2 rounded-lg border bg-blue-500/10 p-3 text-sm">
+                  <Sparkles className="h-4 w-4 mt-0.5 text-blue-600" />
+                  <div className="space-y-1">
+                    <div className="font-medium text-blue-700">Two-Step Drafting</div>
+                    <p className="text-xs text-muted-foreground">
+                      Email drafts use a two-step pipeline: first analyzing the lead for personalization, then generating a structurally unique response.
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Campaign assignment (AI auto-send vs setter-managed) */}
             <AiCampaignAssignmentPanel activeWorkspace={activeWorkspace} />
 
@@ -2956,6 +3099,20 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </Dialog>
               </>
             ) : null}
+          </TabsContent>
+
+          {/* Booking Processes (Phase 36) */}
+          <TabsContent value="booking" className="space-y-6">
+            <BookingProcessManager
+              activeWorkspace={activeWorkspace}
+              qualificationQuestions={qualificationQuestions}
+            />
+
+            {/* Campaign Assignment Panel - moved here for booking context */}
+            <AiCampaignAssignmentPanel activeWorkspace={activeWorkspace} />
+
+            {/* Booking Process Analytics (Phase 36f) */}
+            <BookingProcessAnalytics activeWorkspace={activeWorkspace} />
           </TabsContent>
 
           {/* Team Management */}

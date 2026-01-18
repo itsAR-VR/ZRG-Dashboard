@@ -2,8 +2,9 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import type { InsightThreadIndexItem } from "@/lib/insights-chat/citations";
-import type { ConversationInsight } from "@/lib/insights-chat/thread-extractor";
+import type { ConversationInsight, FollowUpEffectiveness } from "@/lib/insights-chat/thread-extractor";
 import type { SelectedInsightThread } from "@/lib/insights-chat/thread-selection";
+import { computeFollowUpPriorityScore } from "@/lib/insights-chat/fast-seed";
 
 function formatLeadLabel(lead: { firstName: string | null; lastName: string | null; email: string | null }): string {
   const name = `${lead.firstName || ""} ${lead.lastName || ""}`.trim();
@@ -50,9 +51,15 @@ export async function buildInsightThreadIndex(opts: {
 
   const leadById = new Map(leads.map((l) => [l.id, l]));
   const summaryByLeadId = new Map<string, string>();
+  const followUpByLeadId = new Map<string, FollowUpEffectiveness | null>();
+
   for (const row of insights) {
     const insight = row.insight as any as ConversationInsight;
     if (insight?.summary) summaryByLeadId.set(row.leadId, String(insight.summary));
+    // Extract follow-up effectiveness for Phase 29c
+    if (insight?.follow_up_effectiveness !== undefined) {
+      followUpByLeadId.set(row.leadId, insight.follow_up_effectiveness);
+    }
   }
 
   return meta.map((row, i) => {
@@ -62,6 +69,11 @@ export async function buildInsightThreadIndex(opts: {
     const campaignId = lead?.emailCampaign?.id ?? row.emailCampaignId ?? null;
     const ref = `T${String(i + 1).padStart(3, "0")}`;
     const summary = clampText(summaryByLeadId.get(row.leadId) || "", 380) || "No extracted summary available.";
+
+    // Extract follow-up metadata (Phase 29c)
+    const followUpEffectiveness = followUpByLeadId.get(row.leadId);
+    const followUpScore = followUpEffectiveness ? computeFollowUpPriorityScore(followUpEffectiveness) : undefined;
+    const convertedAfterObjection = followUpEffectiveness?.converted_after_objection === true ? true : undefined;
 
     return {
       ref,
@@ -73,6 +85,9 @@ export async function buildInsightThreadIndex(opts: {
       campaignName,
       leadLabel,
       summary,
+      // Phase 29c: Follow-up metadata
+      ...(followUpScore !== undefined && followUpScore > 0 ? { followUpScore } : {}),
+      ...(convertedAfterObjection ? { convertedAfterObjection } : {}),
     };
   });
 }

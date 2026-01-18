@@ -13,18 +13,23 @@ async function requireFollowUpTaskAccess(taskId: string): Promise<void> {
   if (!task) throw new Error("Unauthorized");
 }
 
+// Task types for follow-ups and appointment events
+export type FollowUpTaskType = "email" | "call" | "sms" | "linkedin" | "meeting-canceled" | "meeting-rescheduled";
+
 export interface FollowUpTaskData {
   id: string;
   leadId: string;
   leadName: string;
   leadCompany: string;
-  type: "email" | "call" | "sms" | "linkedin";
+  type: FollowUpTaskType;
   dueDate: Date;
   status: "pending" | "completed" | "skipped";
   suggestedMessage: string | null;
   sequenceStep: number | null;
   totalSteps: number | null;
   campaignName: string | null;
+  // Flag for urgent/red indicator tasks (cancellations, reschedules)
+  isUrgent?: boolean;
 }
 
 /**
@@ -99,19 +104,24 @@ export async function getFollowUpTasks(
       orderBy: { dueDate: "asc" },
     });
 
-    const formattedTasks: FollowUpTaskData[] = tasks.map((task) => ({
-      id: task.id,
-      leadId: task.leadId,
-      leadName: [task.lead.firstName, task.lead.lastName].filter(Boolean).join(" ") || "Unknown",
-      leadCompany: task.lead.client.name,
-      type: task.type as FollowUpTaskData["type"],
-      dueDate: task.dueDate,
-      status: task.status as FollowUpTaskData["status"],
-      suggestedMessage: task.suggestedMessage,
-      sequenceStep: task.sequenceStep,
-      totalSteps: task.totalSteps,
-      campaignName: task.campaignName,
-    }));
+    const formattedTasks: FollowUpTaskData[] = tasks.map((task) => {
+      const taskType = task.type as FollowUpTaskType;
+      const isUrgent = taskType === "meeting-canceled" || taskType === "meeting-rescheduled";
+      return {
+        id: task.id,
+        leadId: task.leadId,
+        leadName: [task.lead.firstName, task.lead.lastName].filter(Boolean).join(" ") || "Unknown",
+        leadCompany: task.lead.client.name,
+        type: taskType,
+        dueDate: task.dueDate,
+        status: task.status as FollowUpTaskData["status"],
+        suggestedMessage: task.suggestedMessage,
+        sequenceStep: task.sequenceStep,
+        totalSteps: task.totalSteps,
+        campaignName: task.campaignName,
+        isUrgent,
+      };
+    });
 
     return { success: true, data: formattedTasks };
   } catch (error) {

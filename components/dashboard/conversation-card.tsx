@@ -5,6 +5,7 @@ import type { Conversation } from "@/lib/mock-data"
 import { Mail, MessageSquare, Linkedin, AlertCircle, Loader2, Moon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { formatDistanceToNow } from "date-fns"
+import { LeadScoreBadge } from "./lead-score-badge"
 
 interface ConversationCardProps {
   conversation: Conversation
@@ -131,6 +132,12 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="font-medium text-foreground truncate">{conversation.lead.name}</h3>
+            <LeadScoreBadge
+              score={conversation.lead.overallScore}
+              size="sm"
+              showTooltip
+              scoredAt={conversation.lead.scoredAt}
+            />
             {conversation.requiresAttention && <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />}
           </div>
           <p className="text-sm text-muted-foreground truncate">{workspaceLine}</p>

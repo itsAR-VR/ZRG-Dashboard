@@ -19,6 +19,7 @@ import { getWorkspaceSlotOfferCountsForRange } from "@/lib/slot-offer-ledger";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById } from "@/lib/workspace-access";
 import { resolveCalendlyEventTypeUuidFromLink } from "@/lib/calendly-link";
+import { AppointmentStatus, type MeetingBookingProvider, type AppointmentSource } from "@prisma/client";
 
 // Re-export types for use in components
 export type { GHLCalendar, GHLUser, GHLAppointment };
@@ -816,4 +817,140 @@ export async function getCalendlyCalendarMismatchInfo(clientId: string): Promise
         mismatch,
         lastError: cacheError ?? cache?.lastError ?? null,
     };
+}
+
+// =============================================================================
+// Appointment History (Phase 34e)
+// =============================================================================
+
+/**
+ * DTO for appointment history timeline item
+ */
+export interface AppointmentHistoryItem {
+    id: string;
+    provider: MeetingBookingProvider;
+    source: AppointmentSource;
+    status: AppointmentStatus;
+    startAt: string | null; // ISO string
+    endAt: string | null; // ISO string
+    canceledAt: string | null; // ISO string
+    cancelReason: string | null;
+    createdAt: string; // ISO string
+    // Provider external IDs for linking out
+    ghlAppointmentId: string | null;
+    calendlyInviteeUri: string | null;
+    calendlyScheduledEventUri: string | null;
+    // Reschedule chain
+    rescheduledFromId: string | null;
+}
+
+/**
+ * Get appointment history for a lead
+ * Returns a bounded list of appointments ordered by creation date (most recent first)
+ */
+export async function getLeadAppointmentHistory(
+    leadId: string,
+    opts?: { limit?: number }
+): Promise<{ success: boolean; appointments: AppointmentHistoryItem[]; error?: string }> {
+    try {
+        await requireLeadAccessById(leadId);
+
+        const limit = opts?.limit ?? 20;
+
+        const appointments = await prisma.appointment.findMany({
+            where: { leadId },
+            orderBy: { createdAt: "desc" },
+            take: limit,
+            select: {
+                id: true,
+                provider: true,
+                source: true,
+                status: true,
+                startAt: true,
+                endAt: true,
+                canceledAt: true,
+                cancelReason: true,
+                createdAt: true,
+                ghlAppointmentId: true,
+                calendlyInviteeUri: true,
+                calendlyScheduledEventUri: true,
+                rescheduledFromId: true,
+            },
+        });
+
+        // Convert dates to ISO strings for safe serialization
+        const items: AppointmentHistoryItem[] = appointments.map((apt) => ({
+            id: apt.id,
+            provider: apt.provider,
+            source: apt.source,
+            status: apt.status,
+            startAt: apt.startAt?.toISOString() ?? null,
+            endAt: apt.endAt?.toISOString() ?? null,
+            canceledAt: apt.canceledAt?.toISOString() ?? null,
+            cancelReason: apt.cancelReason,
+            createdAt: apt.createdAt.toISOString(),
+            ghlAppointmentId: apt.ghlAppointmentId,
+            calendlyInviteeUri: apt.calendlyInviteeUri,
+            calendlyScheduledEventUri: apt.calendlyScheduledEventUri,
+            rescheduledFromId: apt.rescheduledFromId,
+        }));
+
+        return { success: true, appointments: items };
+    } catch (error) {
+        console.error("Failed to get appointment history:", error);
+        return { success: false, appointments: [], error: "Failed to load appointment history" };
+    }
+}
+
+/**
+ * Get enhanced booking status that includes appointment history count
+ * Used to determine if we should show the history timeline
+ */
+export async function getLeadBookingStatusEnhanced(leadId: string): Promise<{
+    hasAppointment: boolean;
+    appointmentId?: string;
+    bookedAt?: Date;
+    bookedSlot?: string;
+    appointmentCount: number;
+    hasHistory: boolean;
+}> {
+    try {
+        await requireLeadAccessById(leadId);
+
+        const [lead, appointmentCount] = await Promise.all([
+            prisma.lead.findUnique({
+                where: { id: leadId },
+                select: {
+                    ghlAppointmentId: true,
+                    calendlyInviteeUri: true,
+                    calendlyScheduledEventUri: true,
+                    appointmentBookedAt: true,
+                    bookedSlot: true,
+                },
+            }),
+            prisma.appointment.count({
+                where: { leadId },
+            }),
+        ]);
+
+        return {
+            hasAppointment:
+                !!lead?.appointmentBookedAt ||
+                !!lead?.ghlAppointmentId ||
+                !!lead?.calendlyInviteeUri ||
+                !!lead?.calendlyScheduledEventUri,
+            appointmentId:
+                lead?.ghlAppointmentId ||
+                lead?.calendlyScheduledEventUri ||
+                lead?.calendlyInviteeUri ||
+                undefined,
+            bookedAt: lead?.appointmentBookedAt || undefined,
+            bookedSlot: lead?.bookedSlot || undefined,
+            appointmentCount,
+            hasHistory: appointmentCount > 0,
+        };
+    } catch (error) {
+        console.error("Failed to get enhanced booking status:", error);
+        return { hasAppointment: false, appointmentCount: 0, hasHistory: false };
+    }
 }

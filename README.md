@@ -77,6 +77,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - [x] **Snooze-by-Reply** — Messages like “call after Jan 13” set `Lead.snoozedUntil`, pause sequences until that date, and filter booking availability to start after the snooze cutoff.
 - [x] **Hardened Auto-Booking** — Only books when the lead clearly accepts one of the offered slots; ambiguous “yes/sounds good” routes to Follow-ups instead.
 - [x] **Warn-Only Calendar Mismatch** — If the calendar inferred from the Calendar Link differs from `ghlDefaultCalendarId`, UI warns but does not block booking.
+- [ ] **Meeting Completion Tracking (Deferred)** — Attendance/no-show signals are not tracked yet; for now we treat a provider-verified booking as “meeting completed” until completion tracking is implemented.
 
 ### Phase IV: Follow-Up Automation (No-Response Sequences)
 - [x] **Auto-Start on Outbound Touch** — Starts `triggerOn="no_response"` sequences when SMS/Email/LinkedIn is sent.
@@ -276,7 +277,11 @@ model Message {
 | `GHL_MAX_NETWORK_RETRIES` | (Optional) Extra retries for GET requests on network errors/timeouts (default `1`) |
 | `GHL_EXPORT_MAX_PAGES` | (Optional) Max pages to fetch from `/conversations/messages/export` per lead during sync (default `5`) |
 | `GHL_EXPORT_MAX_MESSAGES` | (Optional) Cap messages fetched via export per lead during sync (default `2000`) |
-| `SYNC_ALL_CONCURRENCY` | (Optional) Concurrency for “Sync All” batches (default `3`) |
+| `SYNC_ALL_CONCURRENCY` | (Optional) Concurrency for "Sync All" batches (default `3`) |
+| `EMAILBISON_TIMEOUT_MS` | (Optional) Fetch timeout for EmailBison API calls (default `30000`) |
+| `EMAILBISON_MAX_RETRIES` | (Optional) Max retries for EmailBison GET requests on network/timeout errors (default `2`) |
+| `INSIGHTS_CONTEXT_PACK_CRON_LIMIT` | (Optional) Max context packs to process per cron tick (default `3`) |
+| `INSIGHTS_CONTEXT_PACK_CRON_BATCH` | (Optional) Session batch size per context pack (default `15`) |
 
 ### AI Telemetry (Tokens + Cost)
 

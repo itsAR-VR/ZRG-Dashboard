@@ -20,6 +20,23 @@ enum MeetingBookingProvider {
   CALENDLY
 }
 
+enum AppointmentStatus {
+  CONFIRMED
+  CANCELED
+  RESCHEDULED
+  SHOWED
+  NO_SHOW
+}
+
+enum AppointmentSource {
+  WEBHOOK
+  RECONCILE_CRON
+  BACKFILL
+  AUTO_BOOK
+  MANUAL
+  MIGRATION
+}
+
 enum CampaignResponseMode {
   SETTER_MANAGED
   AI_AUTO_SEND
@@ -71,6 +88,11 @@ enum InsightChatAuditAction {
 
 enum BackgroundJobType {
   EMAIL_INBOUND_POST_PROCESS
+  SMS_INBOUND_POST_PROCESS
+  LINKEDIN_INBOUND_POST_PROCESS
+  SMARTLEAD_INBOUND_POST_PROCESS
+  INSTANTLY_INBOUND_POST_PROCESS
+  LEAD_SCORING_POST_PROCESS
 }
 
 enum BackgroundJobStatus {
@@ -78,6 +100,11 @@ enum BackgroundJobStatus {
   RUNNING
   SUCCEEDED
   FAILED
+}
+
+enum BookingProcessLinkType {
+  PLAIN_URL
+  HYPERLINKED_TEXT
 }
 
 // Stores GHL API Keys per sub-account for multi-tenancy
@@ -97,7 +124,13 @@ model Client {
   instantlyWebhookSecret String?
   userId        String              // Supabase Auth user ID - ties workspace to user
   // LinkedIn/Unipile integration (per-workspace account)
-  unipileAccountId     String?      // Unipile account ID for LinkedIn messaging
+  unipileAccountId        String?      // Unipile account ID for LinkedIn messaging
+  // Unipile connection health tracking (for admin notifications)
+  unipileConnectionStatus String?      // CONNECTED | DISCONNECTED | UNKNOWN
+  unipileDisconnectedAt   DateTime?    // When disconnect was first detected
+  unipileLastErrorAt      DateTime?    // Last time a Unipile error occurred
+  unipileLastErrorMessage String?  @db.Text // Last error message/detail
+  unipileLastNotifiedAt   DateTime?    // Last Slack notification sent (for 1/day dedupe)
   // Calendly integration (per-workspace)
   calendlyAccessToken          String?
   calendlyUserUri              String?
@@ -125,6 +158,7 @@ model Client {
   insightContextPacks InsightContextPack[]
   insightChatUserPreferences InsightChatUserPreference[]
   insightChatAuditEvents InsightChatAuditEvent[]
+  bookingProcesses BookingProcess[]
 
   @@index([userId])
 }
@@ -166,9 +200,13 @@ model WorkspaceSettings {
   insightsChatEnableCampaignChanges Boolean @default(false)
   insightsChatEnableExperimentWrites Boolean @default(false)
   insightsChatEnableFollowupPauses Boolean @default(false)
+  // Draft Generation Model Settings (email two-step pipeline)
+  draftGenerationModel           String? @default("gpt-5.1") // gpt-5.1 | gpt-5.2
+  draftGenerationReasoningEffort String? @default("medium")  // low | medium | high | extra_high (gpt-5.2 only)
   // AI Context Fields (for better AI responses)
   serviceDescription      String?  @db.Text  // Business/service description for AI context
   qualificationQuestions  String?  @db.Text  // JSON array of qualification questions
+  idealCustomerProfile    String?  @db.Text  // Ideal Customer Profile for lead scoring (Phase 33)
   // Company/Outreach Context
   companyName             String?             // Company name for {company} variable in templates
   targetResult            String?  @db.Text   // Outcome/result for {result} variable (e.g., "growing your client base")
@@ -260,6 +298,12 @@ model Lead {
   // Status and sentiment
   status       String        @default("new")
   sentimentTag String?       // e.g., 'Meeting Requested', 'Not Interested', etc.
+  // Lead scoring (Phase 33): null=unscored, 0=Blacklist/opt-out, 1-4=scored
+  fitScore       Int?
+  intentScore    Int?
+  overallScore   Int?
+  scoreReasoning String?  @db.Text
+  scoredAt       DateTime?
   // Message rollups (for inbox "fresh attention" vs "previously required attention")
   lastInboundAt  DateTime?   // Most recent inbound message timestamp
   lastOutboundAt DateTime?   // Most recent outbound message timestamp
@@ -286,6 +330,14 @@ model Lead {
   calendlyInviteeUri          String? @unique        // Calendly invitee resource URI after booking
   calendlyScheduledEventUri   String? @unique        // Calendly scheduled event resource URI after booking
   appointmentBookedAt     DateTime?                  // When the appointment was booked
+  // Reconciliation-focused appointment tracking (Phase 28)
+  appointmentStartAt        DateTime?                // Provider-reported appointment start time
+  appointmentEndAt          DateTime?                // Provider-reported appointment end time
+  appointmentStatus         String?                  // Normalized: confirmed | canceled | rescheduled | showed | no_show
+  appointmentCanceledAt     DateTime?                // When cancellation was detected
+  appointmentProvider       MeetingBookingProvider?  // Which provider the appointment came from (GHL | CALENDLY)
+  appointmentSource         String?                  // How we learned about it: webhook | reconcile_cron | backfill | auto_book | manual
+  appointmentLastCheckedAt  DateTime?                // Reconciliation watermark for cron/backfills
   // Workspace and campaign associations
   clientId     String
   client       Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
@@ -308,6 +360,8 @@ model Lead {
   aiDrafts          AIDraft[]
   aiInteractions    AIInteraction[]
   conversationInsight LeadConversationInsight?
+  appointments      Appointment[]   // Appointment history (Phase 34)
+  bookingProgress   LeadCampaignBookingProgress[]  // Booking process wave tracking (Phase 36)
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -336,6 +390,62 @@ model Lead {
   @@index([clientId, sentimentTag, updatedAt(sort: Desc)]) // Sentiment filter + sort
   @@index([clientId, firstName])                 // Name search
   @@index([clientId, lastName])                  // Name search
+  // Reconciliation indexes (Phase 28)
+  @@index([appointmentLastCheckedAt])            // Cron reconciliation cursor
+  @@index([clientId, appointmentLastCheckedAt])  // Workspace-scoped reconciliation
+  @@index([appointmentStatus])                   // Filter by appointment state
+  // Lead scoring indexes (Phase 33)
+  @@index([overallScore])                                      // Filter by score
+  @@index([clientId, overallScore])                            // Workspace-scoped score filter
+  @@index([clientId, overallScore, updatedAt(sort: Desc)])     // Score filter + sort
+}
+
+// =============================================================================
+// Appointment History (Phase 34)
+// =============================================================================
+
+// Per-lead appointment history tracking (supports multiple appointments, reschedules, cancellations)
+model Appointment {
+  id                    String    @id @default(uuid())
+  leadId                String
+  lead                  Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  // Provider identification (unique constraints for idempotency)
+  provider                  MeetingBookingProvider
+  ghlAppointmentId          String?   @unique  // GHL appointment ID (idempotency key)
+  calendlyInviteeUri        String?   @unique  // Calendly invitee URI (idempotency key)
+  calendlyScheduledEventUri String?            // Calendly event URI (may be shared across invitees)
+
+  // Timing (nullable to support migrating Phase 28 partial rollups safely)
+  startAt               DateTime?
+  endAt                 DateTime?
+  timezone              String?   // Original timezone if available
+
+  // Status tracking
+  status                AppointmentStatus
+  statusChangedAt       DateTime  @default(now())
+
+  // Cancellation/reschedule tracking
+  canceledAt            DateTime?
+  cancelReason          String?
+  rescheduledFromId     String?   // Best-effort link to previous appointment
+
+  // Source tracking
+  source                AppointmentSource
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  // Self-referential relations for reschedule chain
+  rescheduledFrom       Appointment? @relation("AppointmentReschedule", fields: [rescheduledFromId], references: [id])
+  rescheduledTo         Appointment[] @relation("AppointmentReschedule")
+
+  @@index([leadId])
+  @@index([leadId, status])
+  @@index([startAt])
+  @@index([status])
+  @@index([provider])
+  @@index([createdAt(sort: Desc)])
 }
 
 // =============================================================================
@@ -497,6 +607,8 @@ model Message {
   ghlId     String?  @unique // GoHighLevel Message ID (SMS)
   emailBisonReplyId String?  @unique // EmailBison reply ID (Email)
   inboxxiaScheduledEmailId String? @unique // Inboxxia scheduled email ID for EMAIL_SENT dedup
+  unipileMessageId String?  @unique // Unipile message ID (LinkedIn)
+  webhookDedupeKey String?  @unique // Webhook-computed dedupe key (GHL SMS when no ghlId available)
   // Channel and source
   channel   String   @default("sms") // 'sms' | 'email' | 'linkedin'
   source    String   @default("zrg") // 'zrg' | 'inboxxia_campaign' - origin of the message
@@ -511,8 +623,11 @@ model Message {
   isRead    Boolean  @default(false)
   direction String   // 'inbound' or 'outbound'
   // Tracking
-  sentBy    String?  // 'ai' | 'setter' (outbound only)
-  aiDraftId String?  @unique // When an outbound message was sent from an AI draft
+  sentBy       String?  // 'ai' | 'setter' (outbound only)
+  sentByUserId String?  // Supabase Auth user ID of setter who sent this message (outbound only)
+  // AI draft association (Phase 36: now one-to-many for multipart SMS)
+  aiDraftId         String?       // When an outbound message was sent from an AI draft
+  aiDraftPartIndex  Int?          // Part index for multipart SMS (0, 1, 2); null for single-part
   // Lead association
   leadId    String
   lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
@@ -522,10 +637,13 @@ model Message {
   sentAt    DateTime @default(now()) // Actual timestamp when message was sent/received
   createdAt DateTime @default(now()) // When record was created in our database
 
+  @@unique([aiDraftId, aiDraftPartIndex]) // Idempotency for multipart SMS
   @@index([leadId])
   @@index([sentAt(sort: Desc)])
   @@index([source])
   @@index([channel])         // For filtering messages by channel
+  @@index([sentByUserId])    // For per-setter response time aggregation
+  @@index([aiDraftId])       // For finding all messages from a draft
 }
 
 // Follow-up tasks for leads (individual scheduled tasks)
@@ -563,7 +681,8 @@ model AIDraft {
   content   String   @db.Text
   channel   String   @default("sms") // sms | email
   status    String   @default("pending") // pending, approved, rejected
-  sentMessage Message?
+  // Phase 36: one-to-many for multipart SMS (single draft can produce 1-3 outbound messages)
+  sentMessages Message[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -649,11 +768,16 @@ model EmailCampaign {
   reactivationCampaigns ReactivationCampaign[]
   responseMode   CampaignResponseMode @default(SETTER_MANAGED)
   autoSendConfidenceThreshold Float @default(0.9)
+  // Booking process assignment (Phase 36)
+  bookingProcessId String?
+  bookingProcess   BookingProcess? @relation(fields: [bookingProcessId], references: [id], onDelete: SetNull)
+  bookingProgress  LeadCampaignBookingProgress[]  // Booking wave tracking for leads in this campaign
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@unique([clientId, bisonCampaignId])
   @@index([clientId])
+  @@index([bookingProcessId])
 }
 
 // Knowledge assets for AI context (uploaded files, text snippets)
@@ -927,4 +1051,114 @@ model WorkspaceOfferedSlot {
   @@index([clientId])
   @@index([slotUtc])
   @@index([clientId, slotUtc])
+}
+
+// =============================================================================
+// Booking Process System (Phase 36)
+// =============================================================================
+
+// Reusable booking process definition per workspace
+// Defines when/how the AI offers booking links, times, and qualifying questions
+model BookingProcess {
+  id          String   @id @default(uuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+
+  // Global settings
+  maxWavesBeforeEscalation Int @default(5)  // Flag for human review after N waves without booking
+
+  stages      BookingProcessStage[]
+  campaigns   EmailCampaign[]
+  leadProgress LeadCampaignBookingProgress[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?  // Supabase Auth user ID who created
+
+  @@unique([clientId, name])
+  @@index([clientId])
+}
+
+// Individual stage/wave in a booking process
+// Stage numbers are global wave indices shared across channels
+model BookingProcessStage {
+  id                String   @id @default(uuid())
+  bookingProcessId  String
+  bookingProcess    BookingProcess @relation(fields: [bookingProcessId], references: [id], onDelete: Cascade)
+
+  stageNumber       Int      // 1, 2, 3... (global wave index)
+
+  // What to include in this stage
+  includeBookingLink        Boolean @default(false)
+  linkType                  BookingProcessLinkType @default(PLAIN_URL)  // SMS must use PLAIN_URL
+  includeSuggestedTimes     Boolean @default(false)
+  numberOfTimesToSuggest    Int     @default(3)
+  includeQualifyingQuestions Boolean @default(false)
+  qualificationQuestionIds  String[] @default([])  // IDs from WorkspaceSettings.qualificationQuestions
+  includeTimezoneAsk        Boolean @default(false)
+
+  // Channel applicability (which channels this stage applies to)
+  applyToEmail    Boolean @default(true)
+  applyToSms      Boolean @default(true)
+  applyToLinkedin Boolean @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([bookingProcessId, stageNumber])
+  @@index([bookingProcessId])
+}
+
+// Per-lead, per-campaign booking wave progress tracking
+// Tracks which wave we're on and per-channel sent status within the wave
+model LeadCampaignBookingProgress {
+  id                String   @id @default(uuid())
+
+  // Scope: per lead + per EmailCampaign
+  leadId            String
+  lead              Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  emailCampaignId   String
+  emailCampaign     EmailCampaign @relation(fields: [emailCampaignId], references: [id], onDelete: Cascade)
+
+  // Freeze booking process at conversation start (do not change mid-stream)
+  activeBookingProcessId String?
+  activeBookingProcess   BookingProcess? @relation(fields: [activeBookingProcessId], references: [id], onDelete: SetNull)
+
+  // Global wave number (1-indexed). Stage selection uses this.
+  currentWave Int @default(1)
+
+  // "This wave already sent a message on channel X"
+  waveEmailSent    Boolean @default(false)
+  waveSmsSent      Boolean @default(false)
+  waveLinkedinSent Boolean @default(false)
+
+  // SMS DND hold tracking (Phase 36i: hold wave until DND clears or 72h timeout)
+  smsDndHeldSince   DateTime?  // When DND hold started (null = not held)
+  smsDndLastRetryAt DateTime?  // Last DND retry attempt
+
+  // Lifetime outbound counters (used for analytics)
+  emailOutboundCount    Int @default(0)
+  smsOutboundCount      Int @default(0)
+  linkedinOutboundCount Int @default(0)
+
+  lastEmailOutboundAt    DateTime?
+  lastSmsOutboundAt      DateTime?
+  lastLinkedinOutboundAt DateTime?
+
+  // Required question rotation tracking (Phase 36i: store which required questions were selected)
+  selectedRequiredQuestionIds String[] @default([])
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([leadId, emailCampaignId])
+  @@index([leadId])
+  @@index([emailCampaignId])
+  @@index([activeBookingProcessId])
+  @@index([currentWave])
+  @@index([smsDndHeldSince])  // For cron retry queries
 }

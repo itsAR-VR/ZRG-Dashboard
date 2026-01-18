@@ -3,14 +3,21 @@ import "server-only";
 import "@/lib/server-dns";
 import { prisma } from "@/lib/prisma";
 import { selectThreadsForInsightPack, type InsightCampaignScope } from "@/lib/insights-chat/thread-selection";
-import { extractConversationInsightForLead, type ConversationInsight } from "@/lib/insights-chat/thread-extractor";
+import { extractConversationInsightForLead, CONVERSATION_INSIGHT_SCHEMA_VERSION, type ConversationInsight } from "@/lib/insights-chat/thread-extractor";
 import { synthesizeInsightContextPack } from "@/lib/insights-chat/pack-synthesis";
 import { answerInsightsChatQuestion } from "@/lib/insights-chat/chat-answer";
 import { buildInsightThreadIndex } from "@/lib/insights-chat/thread-index";
 import { coerceInsightsChatModel, coerceInsightsChatReasoningEffort } from "@/lib/insights-chat/config";
 import { formatInsightsWindowLabel } from "@/lib/insights-chat/window";
-import { buildFastContextPackMarkdown, getFastSeedMaxThreads, getFastSeedMinThreads, selectFastSeedThreads } from "@/lib/insights-chat/fast-seed";
+import {
+  buildFastContextPackMarkdown,
+  computeFollowUpPriorityScore,
+  getFastSeedMaxThreads,
+  getFastSeedMinThreads,
+  selectFastSeedThreads,
+} from "@/lib/insights-chat/fast-seed";
 import { formatOpenAiErrorSummary, isRetryableOpenAiError } from "@/lib/ai/openai-error-utils";
+import { Prisma } from "@prisma/client";
 import type { ConversationInsightOutcome, InsightContextPackStatus } from "@prisma/client";
 import type { InsightThreadIndexItem } from "@/lib/insights-chat/citations";
 import type { SelectedInsightThread } from "@/lib/insights-chat/thread-selection";
@@ -79,6 +86,14 @@ export type ContextPackWorkerStepResult = {
   status: InsightContextPackStatus;
   processedThreads: number;
   targetThreadsTotal: number;
+};
+
+const OUTCOME_PRIORITY: Record<ConversationInsightOutcome, number> = {
+  BOOKED: 0,
+  REQUESTED: 1,
+  STALLED: 2,
+  NO_RESPONSE: 3,
+  UNKNOWN: 4,
 };
 
 async function loadPackForWork(contextPackId: string) {
@@ -185,7 +200,7 @@ export async function runInsightContextPackStepSystem(opts: {
         // If the pack was created from a cron worker, we may not have an auth context
         // to compute full analytics snapshots. Keep whatever is already stored.
         metricsSnapshot: pack.metricsSnapshot as any,
-        synthesis: null,
+        synthesis: Prisma.DbNull,
         lastError: null,
         computedAt: null,
       },
@@ -220,11 +235,25 @@ export async function runInsightContextPackStepSystem(opts: {
     const results = await mapWithConcurrencySettled(batch, concurrency, async (leadId) => {
         const outcome = outcomeByLeadId.get(leadId) ?? "UNKNOWN";
 
+        // Check for existing insight and schema version (Phase 29e)
         const existing = await prisma.leadConversationInsight.findUnique({
           where: { leadId },
-          select: { id: true },
+          select: { id: true, insight: true },
         });
-        if (existing) return { leadId, ok: true } as const;
+
+        if (existing) {
+          // Schema upgrade check: if existing insight has old schema, consider re-extraction
+          const insightJson = existing.insight as { schema_version?: string } | null;
+          const currentVersion = insightJson?.schema_version;
+          const needsUpgrade = currentVersion !== CONVERSATION_INSIGHT_SCHEMA_VERSION;
+          const allowUpgrade = process.env.INSIGHTS_ALLOW_SCHEMA_UPGRADE_REEXTRACT === "true";
+
+          // Skip if already up-to-date OR upgrades not allowed
+          if (!needsUpgrade || !allowUpgrade) {
+            return { leadId, ok: true } as const;
+          }
+          // Fall through to re-extract with new schema
+        }
 
         const extracted = await extractConversationInsightForLead({
           clientId: pack.clientId,
@@ -447,6 +476,14 @@ export async function runInsightContextPackStepSystem(opts: {
       return { leadId, outcome: outcomeByLeadId.get(leadId) ?? "UNKNOWN", insight };
     })
     .filter(Boolean) as Array<{ leadId: string; outcome: ConversationInsightOutcome; insight: ConversationInsight }>;
+
+  // Phase 29c: ensure highest-signal follow-up threads are seen first by the synthesizer.
+  threadsForSynthesis.sort((a, b) => {
+    const followUpA = computeFollowUpPriorityScore(a.insight.follow_up_effectiveness);
+    const followUpB = computeFollowUpPriorityScore(b.insight.follow_up_effectiveness);
+    if (followUpA !== followUpB) return followUpB - followUpA;
+    return (OUTCOME_PRIORITY[a.outcome] ?? 99) - (OUTCOME_PRIORITY[b.outcome] ?? 99);
+  });
 
   const windowLabel = formatInsightsWindowLabel({
     preset: pack.windowPreset,

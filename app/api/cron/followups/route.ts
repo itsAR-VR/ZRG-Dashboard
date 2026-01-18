@@ -8,6 +8,7 @@ import {
 import { refreshAvailabilityCachesDue } from "@/lib/availability-cache";
 import { backfillNoResponseFollowUpsDueOnCron } from "@/lib/followup-backfill";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
+import { retrySmsDndHeldLeads } from "@/lib/booking-sms-dnd-retry";
 
 /**
  * GET /api/cron/followups
@@ -62,6 +63,10 @@ export async function GET(request: NextRequest) {
     const enrichmentResumed = await resumeAwaitingEnrichmentFollowUps({ limit: 200 });
     console.log("[Cron] Enrichment-paused follow-up resume complete:", enrichmentResumed);
 
+    console.log("[Cron] Retrying SMS DND held leads...");
+    const smsDndRetry = await retrySmsDndHeldLeads({ limit: 50 });
+    console.log("[Cron] SMS DND retry complete:", smsDndRetry);
+
     console.log("[Cron] Backfilling awaiting-reply follow-ups...");
     const backfill = await backfillNoResponseFollowUpsDueOnCron();
     console.log("[Cron] Follow-up backfill complete:", backfill);
@@ -76,6 +81,7 @@ export async function GET(request: NextRequest) {
         snoozed,
         resumed,
         enrichmentResumed,
+        smsDndRetry,
         backfill,
         results,
         timestamp: new Date().toISOString(),
@@ -148,6 +154,10 @@ export async function POST(request: NextRequest) {
     const enrichmentResumed = await resumeAwaitingEnrichmentFollowUps({ limit: 200 });
     console.log("[Cron] Enrichment-paused follow-up resume complete:", enrichmentResumed);
 
+    console.log("[Cron] Retrying SMS DND held leads (POST)...");
+    const smsDndRetry = await retrySmsDndHeldLeads({ limit: 50 });
+    console.log("[Cron] SMS DND retry complete:", smsDndRetry);
+
     console.log("[Cron] Backfilling awaiting-reply follow-ups (POST)...");
     const backfill = await backfillNoResponseFollowUpsDueOnCron();
     console.log("[Cron] Follow-up backfill complete:", backfill);
@@ -162,6 +172,7 @@ export async function POST(request: NextRequest) {
         snoozed,
         resumed,
         enrichmentResumed,
+        smsDndRetry,
         backfill,
         results,
         timestamp: new Date().toISOString(),

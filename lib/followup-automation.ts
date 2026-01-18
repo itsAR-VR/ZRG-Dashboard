@@ -62,6 +62,7 @@ export async function autoStartMeetingRequestedSequenceIfEligible(opts: {
       ghlAppointmentId: true,
       calendlyInviteeUri: true,
       calendlyScheduledEventUri: true,
+      appointmentStatus: true,
       client: {
         select: {
           settings: { select: { autoBookMeetings: true, followUpsPausedUntil: true, meetingBookingProvider: true } },
@@ -108,6 +109,7 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
       ghlAppointmentId: true,
       calendlyInviteeUri: true,
       calendlyScheduledEventUri: true,
+      appointmentStatus: true,
       client: { select: { settings: { select: { followUpsPausedUntil: true, meetingBookingProvider: true } } } },
     },
   });
@@ -149,6 +151,7 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
       ghlAppointmentId: true,
       calendlyInviteeUri: true,
       calendlyScheduledEventUri: true,
+      appointmentStatus: true,
       client: { select: { settings: { select: { followUpsPausedUntil: true, meetingBookingProvider: true } } } },
       followUpInstances: {
         where: { status: { in: ["active", "paused"] } },

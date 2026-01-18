@@ -1,16 +1,20 @@
-import { prisma } from "@/lib/prisma";
+import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
 import { sendSMS, updateGHLContact } from "@/lib/ghl-api";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { toGhlPhoneBestEffort } from "@/lib/phone-utils";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
+import { recordOutboundForBookingProgress, handleSmsDndForBookingProgress } from "@/lib/booking-progress";
 
 export type OutboundSentBy = "ai" | "setter";
 
 export type SystemSendMeta = {
   sentBy?: OutboundSentBy | null;
+  sentByUserId?: string | null;
   aiDraftId?: string | null;
+  aiDraftPartIndex?: number | null;
+  skipBookingProgress?: boolean;
 };
 
 export type SystemSendResult = {
@@ -34,9 +38,18 @@ export async function sendSmsSystem(
   meta: SystemSendMeta = {}
 ): Promise<SystemSendResult> {
   try {
+    const aiDraftPartIndex = meta.aiDraftId
+      ? (typeof meta.aiDraftPartIndex === "number" ? meta.aiDraftPartIndex : 0)
+      : null;
+
     if (meta.aiDraftId) {
-      const existing = await prisma.message.findUnique({
-        where: { aiDraftId: meta.aiDraftId },
+      const existing = await prisma.message.findFirst({
+        where: {
+          aiDraftId: meta.aiDraftId,
+          ...(aiDraftPartIndex === 0
+            ? { OR: [{ aiDraftPartIndex: null }, { aiDraftPartIndex: 0 }] }
+            : { aiDraftPartIndex }),
+        },
         select: { id: true },
       });
       if (existing) return { success: true, messageId: existing.id };
@@ -57,11 +70,12 @@ export async function sendSmsSystem(
     if (!lead) return { success: false, error: "Lead not found" };
     if (lead.status === "blacklisted") return { success: false, error: "Lead is blacklisted" };
 
-    if (!lead.client.ghlPrivateKey) {
-      return { success: false, error: "Workspace has no GHL API key configured" };
-    }
+	    if (!lead.client.ghlPrivateKey) {
+	      return { success: false, error: "Workspace has no GHL API key configured" };
+	    }
+	    const ghlPrivateKey = lead.client.ghlPrivateKey;
 
-    let ghlContactId = lead.ghlContactId;
+	    let ghlContactId = lead.ghlContactId;
     if (!ghlContactId) {
       const ensureResult = await ensureGhlContactIdForLead(leadId, { requirePhone: true });
       if (!ensureResult.success || !ensureResult.ghlContactId) {
@@ -70,9 +84,9 @@ export async function sendSmsSystem(
       ghlContactId = ensureResult.ghlContactId;
     }
 
-    let result = await sendSMS(ghlContactId, body, lead.client.ghlPrivateKey, {
-      locationId: lead.client.ghlLocationId || undefined,
-    });
+	    let result = await sendSMS(ghlContactId, body, ghlPrivateKey, {
+	      locationId: lead.client.ghlLocationId || undefined,
+	    });
 
     if (
       !result.success &&
@@ -90,6 +104,9 @@ export async function sendSmsSystem(
         })
         .catch(() => undefined);
 
+      // Hold booking progress wave for SMS DND (Phase 36)
+      handleSmsDndForBookingProgress({ leadId }).catch(() => undefined);
+
       return {
         success: false,
         errorCode: "sms_dnd",
@@ -103,8 +120,8 @@ export async function sendSmsSystem(
       const defaultCountryCallingCode = (process.env.GHL_DEFAULT_COUNTRY_CALLING_CODE || "1").trim();
       const phoneForGhl = toGhlPhoneBestEffort(lead.phone, { defaultCountryCallingCode });
 
-      const patchAttempt = async (phone: string) =>
-        updateGHLContact(
+	      const patchAttempt = async (phone: string) =>
+	        updateGHLContact(
           ghlContactId,
           {
             firstName: lead.firstName || undefined,
@@ -114,19 +131,19 @@ export async function sendSmsSystem(
             companyName: lead.companyName || undefined,
             website: lead.companyWebsite || undefined,
             timezone: lead.timezone || undefined,
-            source: "zrg-dashboard",
-          },
-          lead.client.ghlPrivateKey,
-          { locationId: lead.client.ghlLocationId || undefined }
-        );
+	            source: "zrg-dashboard",
+	          },
+	          ghlPrivateKey,
+	          { locationId: lead.client.ghlLocationId || undefined }
+	        );
 
       if (phoneForGhl) {
-        const patch = await patchAttempt(phoneForGhl);
-        if (patch.success) {
-          result = await sendSMS(ghlContactId, body, lead.client.ghlPrivateKey, {
-            locationId: lead.client.ghlLocationId || undefined,
-          });
-        }
+	        const patch = await patchAttempt(phoneForGhl);
+	        if (patch.success) {
+	          result = await sendSMS(ghlContactId, body, ghlPrivateKey, {
+	            locationId: lead.client.ghlLocationId || undefined,
+	          });
+	        }
       }
 
       // If still failing, attempt the enrichment pipeline (message content → EmailBison → optional signature AI → Clay).
@@ -134,11 +151,11 @@ export async function sendSmsSystem(
         const includeSignatureAi = process.env.PHONE_ENRICHMENT_SIGNATURE_AI_ENABLED === "true";
         const enriched = await enrichPhoneThenSyncToGhl(leadId, { includeSignatureAi });
 
-        if (enriched.phoneFound) {
-          result = await sendSMS(ghlContactId, body, lead.client.ghlPrivateKey, {
-            locationId: lead.client.ghlLocationId || undefined,
-          });
-        } else {
+	        if (enriched.phoneFound) {
+	          result = await sendSMS(ghlContactId, body, ghlPrivateKey, {
+	            locationId: lead.client.ghlLocationId || undefined,
+	          });
+	        } else {
           return {
             success: false,
             error:
@@ -157,18 +174,43 @@ export async function sendSmsSystem(
     const ghlMessageId = result.data?.messageId || null;
     const ghlDateAdded = result.data?.dateAdded ? new Date(result.data.dateAdded) : new Date();
 
-    const savedMessage = await prisma.message.create({
-      data: {
-        ghlId: ghlMessageId,
-        body,
-        direction: "outbound",
-        channel: "sms",
-        leadId: lead.id,
-        sentAt: ghlDateAdded,
-        sentBy: meta.sentBy || undefined,
-        aiDraftId: meta.aiDraftId || undefined,
-      },
-    });
+    let savedMessage: { id: string };
+
+    try {
+      savedMessage = await prisma.message.create({
+        data: {
+          ghlId: ghlMessageId,
+          body,
+          direction: "outbound",
+          channel: "sms",
+          leadId: lead.id,
+          sentAt: ghlDateAdded,
+          sentBy: meta.sentBy || undefined,
+          sentByUserId: meta.sentByUserId || undefined,
+          aiDraftId: meta.aiDraftId || undefined,
+          aiDraftPartIndex: meta.aiDraftId ? aiDraftPartIndex ?? 0 : undefined,
+        },
+        select: { id: true },
+      });
+    } catch (error) {
+      if (meta.aiDraftId && isPrismaUniqueConstraintError(error)) {
+        const existing = await prisma.message.findFirst({
+          where: {
+            aiDraftId: meta.aiDraftId,
+            ...(aiDraftPartIndex === 0
+              ? { OR: [{ aiDraftPartIndex: null }, { aiDraftPartIndex: 0 }] }
+              : { aiDraftPartIndex }),
+          },
+          select: { id: true },
+        });
+
+        if (existing) {
+          return { success: true, messageId: existing.id };
+        }
+      }
+
+      throw error;
+    }
 
     await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt: ghlDateAdded });
 
@@ -184,10 +226,16 @@ export async function sendSmsSystem(
       console.error("[sendSmsSystem] Failed to auto-start no-response sequence:", err);
     });
 
+    if (!meta.skipBookingProgress) {
+      // Record booking progress for wave tracking (Phase 36)
+      recordOutboundForBookingProgress({ leadId, channel: "sms" }).catch((err) => {
+        console.error("[sendSmsSystem] Failed to record booking progress:", err);
+      });
+    }
+
     return { success: true, messageId: savedMessage.id };
   } catch (error) {
     console.error("[sendSmsSystem] Failed:", error);
     return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
   }
 }
-

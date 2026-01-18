@@ -3,7 +3,13 @@ import "server-only";
 import crypto from "crypto";
 import { BackgroundJobStatus, BackgroundJobType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { runEmailInboundPostProcessJob } from "@/lib/background-jobs/email-inbound-post-process";
+import { runLeadScoringPostProcessJob } from "@/lib/background-jobs/lead-scoring-post-process";
+import { runSmsInboundPostProcessJob } from "@/lib/background-jobs/sms-inbound-post-process";
+import { runLinkedInInboundPostProcessJob } from "@/lib/background-jobs/linkedin-inbound-post-process";
+import { runSmartLeadInboundPostProcessJob } from "@/lib/background-jobs/smartlead-inbound-post-process";
+import { runInstantlyInboundPostProcessJob } from "@/lib/background-jobs/instantly-inbound-post-process";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value || "", 10);
@@ -115,13 +121,68 @@ export async function processBackgroundJobs(): Promise<{
     processed++;
 
     try {
+      // Wrap each job execution with telemetry source for AI attribution
+      const telemetrySource = `background-job/${lockedJob.type.toLowerCase().replace(/_/g, "-")}`;
+
       switch (lockedJob.type) {
         case BackgroundJobType.EMAIL_INBOUND_POST_PROCESS: {
-          await runEmailInboundPostProcessJob({
-            clientId: lockedJob.clientId,
-            leadId: lockedJob.leadId,
-            messageId: lockedJob.messageId,
-          });
+          await withAiTelemetrySource(telemetrySource, () =>
+            runEmailInboundPostProcessJob({
+              clientId: lockedJob.clientId,
+              leadId: lockedJob.leadId,
+              messageId: lockedJob.messageId,
+            })
+          );
+          break;
+        }
+        case BackgroundJobType.SMS_INBOUND_POST_PROCESS: {
+          await withAiTelemetrySource(telemetrySource, () =>
+            runSmsInboundPostProcessJob({
+              clientId: lockedJob.clientId,
+              leadId: lockedJob.leadId,
+              messageId: lockedJob.messageId,
+            })
+          );
+          break;
+        }
+        case BackgroundJobType.LINKEDIN_INBOUND_POST_PROCESS: {
+          await withAiTelemetrySource(telemetrySource, () =>
+            runLinkedInInboundPostProcessJob({
+              clientId: lockedJob.clientId,
+              leadId: lockedJob.leadId,
+              messageId: lockedJob.messageId,
+            })
+          );
+          break;
+        }
+        case BackgroundJobType.SMARTLEAD_INBOUND_POST_PROCESS: {
+          await withAiTelemetrySource(telemetrySource, () =>
+            runSmartLeadInboundPostProcessJob({
+              clientId: lockedJob.clientId,
+              leadId: lockedJob.leadId,
+              messageId: lockedJob.messageId,
+            })
+          );
+          break;
+        }
+        case BackgroundJobType.INSTANTLY_INBOUND_POST_PROCESS: {
+          await withAiTelemetrySource(telemetrySource, () =>
+            runInstantlyInboundPostProcessJob({
+              clientId: lockedJob.clientId,
+              leadId: lockedJob.leadId,
+              messageId: lockedJob.messageId,
+            })
+          );
+          break;
+        }
+        case BackgroundJobType.LEAD_SCORING_POST_PROCESS: {
+          await withAiTelemetrySource(telemetrySource, () =>
+            runLeadScoringPostProcessJob({
+              clientId: lockedJob.clientId,
+              leadId: lockedJob.leadId,
+              messageId: lockedJob.messageId,
+            })
+          );
           break;
         }
         default: {

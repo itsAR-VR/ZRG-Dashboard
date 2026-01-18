@@ -19,5 +19,9 @@ export type InsightThreadIndexItem = {
   campaignName: string | null;
   leadLabel: string;
   summary: string;
+  /** Follow-up effectiveness score (0-105, includes objection boost), undefined if not available (Phase 29c) */
+  followUpScore?: number;
+  /** Whether the lead converted after handling an objection (Phase 29c) */
+  convertedAfterObjection?: boolean;
 };
 

@@ -1,5 +1,5 @@
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
-import { runResponse } from "@/lib/ai/openai-telemetry";
+import { runResponse, runResponseWithInteraction, markAiInteractionError } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { getFirstRefusal, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { prisma } from "@/lib/prisma";
@@ -9,6 +9,14 @@ import { formatAvailabilitySlots } from "@/lib/availability-format";
 import { selectDistributedAvailabilitySlots } from "@/lib/availability-distribution";
 import { getWorkspaceSlotOfferCountsForRange, incrementWorkspaceSlotOffersBatch } from "@/lib/slot-offer-ledger";
 import { isPositiveSentiment } from "@/lib/sentiment";
+import {
+  coerceDraftGenerationModel,
+  coerceDraftGenerationReasoningEffort,
+  buildArchetypeSeed,
+  selectArchetypeFromSeed,
+  type EmailDraftArchetype,
+} from "@/lib/ai-drafts/config";
+import { getBookingProcessInstructions } from "@/lib/booking-process-instructions";
 
 type DraftChannel = "sms" | "email" | "linkedin";
 
@@ -168,14 +176,20 @@ function buildSmsPrompt(opts: {
       ? `\nAvailable times (use verbatim if proposing times):\n${opts.availability.map((s) => `- ${s}`).join("\n")}\n`
       : "";
 
-  return `You are ${opts.aiName}, a professional sales representative${opts.companyName ? ` from ${opts.companyName}` : ""}. Generate a brief SMS response (under 160 characters) based on the conversation context and sentiment.
+  return `You are ${opts.aiName}, a professional sales representative${opts.companyName ? ` from ${opts.companyName}` : ""}. Generate an SMS response based on the conversation context and sentiment.
+
+OUTPUT FORMAT (strict):
+- Prefer a single SMS part (<= 160 characters).
+- If you cannot fit the required content in one part, output up to 3 SMS parts, each <= 160 characters.
+- Separate parts with a line containing ONLY: ---
+- Do NOT number the parts. Do NOT add any other labels or commentary.
 
 ${companyContext}${valueProposition}Tone: ${opts.aiTone}
 Strategy: ${opts.responseStrategy}
 Primary Goal/Strategy: ${opts.aiGoals || "Use good judgment to advance the conversation while respecting user intent."}
 ${serviceContext}${qualificationGuidance}${knowledgeSection}${availabilitySection}
 Guidelines:
-- Keep responses concise and SMS-friendly (under 160 characters)
+- Keep each SMS part <= 160 characters (hard limit). Total parts max 3.
 - Be professional but personable
 - Don't use emojis unless the lead used them first
 - If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works; otherwise ask for their availability
@@ -183,6 +197,58 @@ Guidelines:
 - Never be pushy or aggressive
 - If appropriate, naturally incorporate a qualification question
 - When contextually appropriate, you may mention your company name naturally (don't force it into every message)
+- Start with: ${greeting}`;
+}
+
+function buildLinkedInPrompt(opts: {
+  aiName: string;
+  aiTone: string;
+  aiGreeting: string;
+  firstName: string;
+  responseStrategy: string;
+  sentimentTag: string;
+  aiGoals?: string | null;
+  serviceDescription?: string | null;
+  qualificationQuestions?: string[];
+  knowledgeContext?: string;
+  companyName?: string | null;
+  targetResult?: string | null;
+  availability?: string[];
+}) {
+  const greeting = opts.aiGreeting.replace("{firstName}", opts.firstName);
+
+  const companyContext = opts.companyName ? `Company: ${opts.companyName}\n` : "";
+  const valueProposition = opts.targetResult ? `Value Proposition: We help clients with ${opts.targetResult}\n` : "";
+  const serviceContext = opts.serviceDescription ? `\nAbout Our Business:\n${opts.serviceDescription}\n` : "";
+
+  const qualificationGuidance =
+    opts.qualificationQuestions && opts.qualificationQuestions.length > 0
+      ? `\nQualification Questions to naturally weave into the conversation when appropriate:\n${opts.qualificationQuestions
+          .map((q) => `- ${q}`)
+          .join("\n")}\n`
+      : "";
+
+  const knowledgeSection = opts.knowledgeContext ? `\nReference Information:\n${opts.knowledgeContext}\n` : "";
+
+  const availabilitySection =
+    opts.availability && opts.availability.length > 0
+      ? `\nAvailable times (use verbatim if proposing times):\n${opts.availability.map((s) => `- ${s}`).join("\n")}\n`
+      : "";
+
+  return `You are ${opts.aiName}, a professional sales representative${opts.companyName ? ` from ${opts.companyName}` : ""}. Generate a concise LinkedIn message reply based on the conversation context and sentiment.
+
+${companyContext}${valueProposition}Tone: ${opts.aiTone}
+Strategy: ${opts.responseStrategy}
+Primary Goal/Strategy: ${opts.aiGoals || "Use good judgment to advance the conversation while respecting user intent."}
+${serviceContext}${qualificationGuidance}${knowledgeSection}${availabilitySection}
+
+Guidelines:
+- Output plain text only (no markdown).
+- Keep it concise and natural (1-3 short paragraphs).
+- Don't use emojis unless the lead used them first.
+- If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works; otherwise ask for their availability.
+- For objections, acknowledge and redirect professionally.
+- Never be pushy or aggressive.
 - Start with: ${greeting}`;
 }
 
@@ -282,6 +348,231 @@ ${qualificationGuidance}${knowledgeSection}
 ${signature ? "- Use the provided signature block below the closing.\n" + signature : ""}`;
 }
 
+// ---------------------------------------------------------------------------
+// Two-Step Email Draft Generation (Phase 30)
+// ---------------------------------------------------------------------------
+
+/**
+ * JSON schema for Step 1 strategy output (OpenAI Structured Outputs).
+ * All keys are required per OpenAI spec - use null for "not present".
+ */
+const EMAIL_DRAFT_STRATEGY_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    personalization_points: {
+      type: "array",
+      items: { type: "string" },
+      description: "2-4 short personalization points specific to this lead (company, industry, previous conversation context)",
+    },
+    intent_summary: {
+      type: "string",
+      description: "One sentence summarizing the lead's intent and what the response should accomplish",
+    },
+    should_offer_times: {
+      type: "boolean",
+      description: "Whether to offer specific availability times in the response",
+    },
+    times_to_offer: {
+      type: ["array", "null"],
+      items: { type: "string" },
+      description: "If should_offer_times is true, which specific times to offer (verbatim from availability list); null otherwise",
+    },
+    outline: {
+      type: "array",
+      items: { type: "string" },
+      description: "3-5 bullet points describing the structure/flow of the email (what each section should accomplish)",
+    },
+    must_avoid: {
+      type: "array",
+      items: { type: "string" },
+      description: "Any specific topics, tones, or approaches to avoid based on conversation context",
+    },
+  },
+  required: ["personalization_points", "intent_summary", "should_offer_times", "times_to_offer", "outline", "must_avoid"],
+  additionalProperties: false,
+};
+
+interface EmailDraftStrategy {
+  personalization_points: string[];
+  intent_summary: string;
+  should_offer_times: boolean;
+  times_to_offer: string[] | null;
+  outline: string[];
+  must_avoid: string[];
+}
+
+/**
+ * Build the Step 1 (Strategy) system instructions.
+ * Analyzes lead context and outputs a structured strategy JSON.
+ */
+function buildEmailDraftStrategyInstructions(opts: {
+  aiName: string;
+  aiTone: string;
+  firstName: string;
+  lastName: string | null;
+  leadEmail: string | null;
+  leadCompanyName: string | null;
+  leadCompanyWebsite: string | null;
+  leadCompanyState: string | null;
+  leadIndustry: string | null;
+  leadEmployeeHeadcount: string | null;
+  leadLinkedinUrl: string | null;
+  ourCompanyName: string | null;
+  sentimentTag: string;
+  responseStrategy: string;
+  aiGoals: string | null;
+  serviceDescription: string | null;
+  qualificationQuestions: string[];
+  knowledgeContext: string;
+  availability: string[];
+  archetype: EmailDraftArchetype;
+}): string {
+  const leadContext = [
+    opts.firstName && `First Name: ${opts.firstName}`,
+    opts.lastName && `Last Name: ${opts.lastName}`,
+    opts.leadEmail && `Email: ${opts.leadEmail}`,
+    opts.leadCompanyName && `Lead's Company: ${opts.leadCompanyName}`,
+    opts.leadCompanyWebsite && `Website: ${opts.leadCompanyWebsite}`,
+    opts.leadCompanyState && `State: ${opts.leadCompanyState}`,
+    opts.leadIndustry && `Industry: ${opts.leadIndustry}`,
+    opts.leadEmployeeHeadcount && `Company Size: ${opts.leadEmployeeHeadcount}`,
+    opts.leadLinkedinUrl && `LinkedIn: ${opts.leadLinkedinUrl}`,
+  ].filter(Boolean).join("\n");
+
+  const availabilitySection = opts.availability.length > 0
+    ? `\nAVAILABLE TIMES (use verbatim if scheduling):\n${opts.availability.map(s => `- ${s}`).join("\n")}`
+    : "\nNo specific availability times provided.";
+
+  const qualificationSection = opts.qualificationQuestions.length > 0
+    ? `\nQUALIFICATION QUESTIONS to consider weaving in:\n${opts.qualificationQuestions.map(q => `- ${q}`).join("\n")}`
+    : "";
+
+  const knowledgeSection = opts.knowledgeContext
+    ? `\nREFERENCE INFORMATION:\n${opts.knowledgeContext}`
+    : "";
+
+  return `You are analyzing a sales conversation to create a personalized response strategy.
+
+CONTEXT:
+- Responding as: ${opts.aiName}${opts.ourCompanyName ? ` (${opts.ourCompanyName})` : ""}
+- Tone: ${opts.aiTone}
+- Lead sentiment: ${opts.sentimentTag}
+- Response approach: ${opts.responseStrategy}
+
+LEAD INFORMATION:
+${leadContext || "No additional lead information available."}
+
+${opts.serviceDescription ? `OUR OFFER:\n${opts.serviceDescription}\n` : ""}
+${opts.aiGoals ? `GOALS/STRATEGY:\n${opts.aiGoals}\n` : ""}
+${qualificationSection}${knowledgeSection}${availabilitySection}
+
+TARGET STRUCTURE ARCHETYPE: "${opts.archetype.name}"
+${opts.archetype.instructions}
+
+TASK:
+Analyze this lead and conversation to produce a strategy for writing a personalized email response.
+Output a JSON object with your analysis. Focus on:
+1. What makes this lead unique (personalization_points)
+2. What the response should achieve (intent_summary)
+3. Whether to offer scheduling times (should_offer_times, times_to_offer)
+4. The email structure (outline) - aligned with the archetype above
+5. What to avoid (must_avoid)
+
+Be specific and actionable. The strategy will be used to generate the actual email.`;
+}
+
+/**
+ * Build the Step 2 (Generation) system instructions.
+ * Uses strategy + archetype to generate varied email text.
+ */
+function buildEmailDraftGenerationInstructions(opts: {
+  aiName: string;
+  aiTone: string;
+  aiGreeting: string;
+  firstName: string;
+  signature: string | null;
+  ourCompanyName: string | null;
+  sentimentTag: string;
+  strategy: EmailDraftStrategy;
+  archetype: EmailDraftArchetype;
+}): string {
+  const greeting = opts.aiGreeting.replace("{firstName}", opts.firstName);
+
+  const strategySection = `
+PERSONALIZATION POINTS (use at least 2):
+${opts.strategy.personalization_points.map(p => `- ${p}`).join("\n")}
+
+INTENT: ${opts.strategy.intent_summary}
+
+EMAIL STRUCTURE (follow this outline):
+${opts.strategy.outline.map((o, i) => `${i + 1}. ${o}`).join("\n")}
+
+${opts.strategy.should_offer_times && opts.strategy.times_to_offer?.length
+    ? `OFFER THESE TIMES (verbatim):\n${opts.strategy.times_to_offer.map(t => `- ${t}`).join("\n")}`
+    : opts.strategy.should_offer_times
+      ? "SCHEDULING: Ask for their availability or propose to send times."
+      : "SCHEDULING: Do not push for scheduling unless they specifically asked."}
+
+MUST AVOID:
+${opts.strategy.must_avoid.length > 0 ? opts.strategy.must_avoid.map(a => `- ${a}`).join("\n") : "- No specific avoidances identified."}`;
+
+  const forbiddenTerms = EMAIL_FORBIDDEN_TERMS.slice(0, 30).join(", ");
+
+  return `You are an inbox manager writing a reply for ${opts.aiName}${opts.ourCompanyName ? ` (${opts.ourCompanyName})` : ""}.
+
+ROLE: inbox_manager
+TASK: Write an email response following the provided strategy and structure.
+
+STYLE:
+- Tone: ${opts.aiTone}
+- Start with: ${greeting}
+- Keep it concise and business-appropriate.
+
+STRUCTURE ARCHETYPE: "${opts.archetype.name}"
+${opts.archetype.instructions}
+
+${strategySection}
+
+OUTPUT RULES:
+- Do not include a subject line.
+- Output the email reply in Markdown-friendly plain text (paragraphs and "-" bullets allowed).
+- Do not use bold, italics, underline, strikethrough, code, or headings.
+- Do not invent facts. Use only provided context.
+- If the lead opted out/unsubscribed/asked to stop, output an empty reply ("") and nothing else.
+- NEVER imply a meeting is booked unless the lead explicitly confirmed.
+
+FORBIDDEN TERMS (never use):
+${forbiddenTerms}
+
+${opts.signature ? `SIGNATURE (include at end):\n${opts.signature}` : ""}
+
+Write the email now, following the strategy and archetype structure exactly.`;
+}
+
+/**
+ * Attempt to parse strategy JSON from response text.
+ * Returns null on parse failure.
+ */
+function parseStrategyJson(text: string | null | undefined): EmailDraftStrategy | null {
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    // Validate required fields exist
+    if (
+      Array.isArray(parsed.personalization_points) &&
+      typeof parsed.intent_summary === "string" &&
+      typeof parsed.should_offer_times === "boolean" &&
+      Array.isArray(parsed.outline) &&
+      Array.isArray(parsed.must_avoid)
+    ) {
+      return parsed as EmailDraftStrategy;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Generate an AI response draft based on conversation context and sentiment
  */
@@ -312,11 +603,22 @@ export async function generateResponseDraft(
       }
     }
 
+    // Capture timestamp at start for archetype seed (stable within this request)
+    const draftRequestStartedAtMs = Date.now();
+
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       select: {
         id: true,
         firstName: true,
+        lastName: true,
+        email: true,
+        companyName: true,
+        companyWebsite: true,
+        companyState: true,
+        industry: true,
+        employeeHeadcount: true,
+        linkedinUrl: true,
         clientId: true,
         offeredSlots: true,
         snoozedUntil: true,
@@ -473,84 +775,45 @@ export async function generateResponseDraft(
       }
     }
 
-    const systemPrompt =
-      channel === "email"
-        ? buildEmailPrompt({
-          aiName,
-          aiTone,
-          aiGreeting,
-          firstName,
-          responseStrategy,
-          aiGoals,
-          availability,
-          sentimentTag,
-          signature: aiSignature,
-          serviceDescription,
-          qualificationQuestions,
-          knowledgeContext,
-          companyName,
-          targetResult,
-        })
-        : buildSmsPrompt({
-          aiName,
-          aiTone,
-          aiGreeting,
-          firstName,
-          responseStrategy,
-          sentimentTag,
-          aiGoals,
-          serviceDescription,
-          qualificationQuestions,
-          knowledgeContext,
-          companyName,
-          targetResult,
-          availability,
-        });
+    // ---------------------------------------------------------------------------
+    // Booking Process Instructions (Phase 36)
+    // ---------------------------------------------------------------------------
+    let bookingProcessInstructions: string | null = null;
 
-    // gpt-5-mini with high reasoning effort for draft generation using Responses API
-    const inputMessages =
-      channel === "email"
-        ? [
-          {
-            role: "assistant" as const,
-            content: `Completely avoid the usage of these words/phrases/tones:\n\n${EMAIL_FORBIDDEN_TERMS.join("\n")}`,
-          },
-          {
-            role: "user" as const,
-            content: `<conversation_transcript>
-${conversationTranscript}
-</conversation_transcript>
+    try {
+      const bookingResult = await getBookingProcessInstructions({
+        leadId,
+        channel,
+        workspaceSettings: settings,
+        clientId: lead.clientId,
+        availableSlots: availability, // Pass the already-loaded availability
+      });
 
-<lead_sentiment>${sentimentTag}</lead_sentiment>
+      if (bookingResult.requiresHumanReview) {
+        console.log(
+          `[AI Drafts] Lead ${leadId} requires human review: ${bookingResult.escalationReason}`
+        );
+        return {
+          success: false,
+          error: `Human review required: ${bookingResult.escalationReason}`,
+        };
+      }
 
-<task>
-Generate an appropriate email response following the guidelines above.
-</task>`,
-          },
-        ]
-        : [
-          {
-            role: "user" as const,
-            content: `<conversation_transcript>
-${conversationTranscript}
-</conversation_transcript>
+      bookingProcessInstructions = bookingResult.instructions;
 
-<lead_sentiment>${sentimentTag}</lead_sentiment>
+      if (bookingProcessInstructions) {
+        console.log(
+          `[AI Drafts] Using booking process stage ${bookingResult.stageNumber} (wave ${bookingResult.waveNumber}) for ${channel}`
+        );
+      }
+    } catch (error) {
+      console.error("[AI Drafts] Failed to get booking process instructions:", error);
+      // Continue without booking instructions on error
+    }
 
-<task>
-Generate an appropriate ${channel} response following the guidelines above.
-</task>`,
-          },
-        ];
-
-    const promptKey =
-      channel === "email"
-        ? "draft.generate.email.v1"
-        : channel === "linkedin"
-          ? "draft.generate.linkedin.v1"
-          : "draft.generate.sms.v1";
-    const promptTemplate = getAIPromptTemplate(promptKey);
-
+    // ---------------------------------------------------------------------------
+    // Shared config
+    // ---------------------------------------------------------------------------
     const envTimeoutMs = Number.parseInt(process.env.OPENAI_DRAFT_TIMEOUT_MS || "120000", 10) || 120_000;
     const timeoutMs = Math.max(5_000, opts.timeoutMs ?? envTimeoutMs);
 
@@ -566,125 +829,434 @@ Generate an appropriate ${channel} response following the guidelines above.
         ? opts.preferApiCount
         : (process.env.OPENAI_DRAFT_PREFER_API_TOKEN_COUNT ?? "false").toLowerCase() === "true";
 
-    const primaryModel = channel === "email" ? "gpt-5.1" : "gpt-5-mini";
-    // Prefer spending more tokens (and cost) over reducing reasoning depth.
-    // We still request an explicit text output to avoid cases where the response only contains reasoning.
-    const reasoningEffort = "medium" as const;
+    let draftContent: string | null = null;
+    let response: any = null;
 
-    const primaryBudgetMin = (channel === "email" ? 700 : 240) * tokenBudgetMultiplier;
-    const primaryBudgetMax = (channel === "email" ? 2400 : 1200) * tokenBudgetMultiplier;
-
-    const budget = await computeAdaptiveMaxOutputTokens({
-      model: primaryModel,
-      instructions: systemPrompt,
-      input: inputMessages,
-      min: Math.max(1, Math.floor(primaryBudgetMin)),
-      max: Math.max(1, Math.floor(primaryBudgetMax)),
-      overheadTokens: 256 * tokenBudgetMultiplier,
-      outputScale: 0.2 * tokenBudgetMultiplier,
-      preferApiCount,
-    });
-
-    let response: any;
-    try {
-      response = await runResponse({
-        clientId: lead.clientId,
-        leadId,
-        featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-        promptKey: promptTemplate?.key || promptKey,
-        params: {
-          model: primaryModel,
-          instructions: systemPrompt,
-          input: inputMessages,
-          text: { verbosity: "low" },
-          reasoning: { effort: reasoningEffort },
-          max_output_tokens: budget.maxOutputTokens,
-        },
-        requestOptions: {
-          timeout: timeoutMs,
-          // Draft generation has its own fallback below.
-          maxRetries: 0,
-        },
+    // ---------------------------------------------------------------------------
+    // Email: Two-Step Pipeline (Phase 30)
+    // ---------------------------------------------------------------------------
+    if (channel === "email") {
+      // Coerce model/reasoning from workspace settings
+      const draftModel = coerceDraftGenerationModel(settings?.draftGenerationModel);
+      const { api: strategyReasoningApi } = coerceDraftGenerationReasoningEffort({
+        model: draftModel,
+        storedValue: settings?.draftGenerationReasoningEffort,
       });
-    } catch (error) {
-      console.error("[AI Drafts] Primary draft generation failed:", error);
-    }
 
-    let draftContent = response ? getTrimmedOutputText(response)?.trim() : null;
+      // Select archetype deterministically
+      const archetypeSeed = buildArchetypeSeed({
+        leadId,
+        triggerMessageId,
+        draftRequestStartedAtMs,
+      });
+      const archetype = selectArchetypeFromSeed(archetypeSeed);
 
-    // Retry once with more headroom if we hit the output token ceiling (reasoning tokens count here).
-    if (!draftContent && response?.incomplete_details?.reason === "max_output_tokens") {
-      const cap = Math.max(800, Number.parseInt(process.env.OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP || "12000", 10) || 12_000);
-      const retryMaxOutputTokens = Math.min(
-        Math.max(budget.maxOutputTokens + 1000, Math.floor(budget.maxOutputTokens * 3)),
-        cap
-      );
+      // Split timeout: ~40% for strategy, ~60% for generation
+      const strategyTimeoutMs = Math.max(3000, Math.floor(timeoutMs * 0.4));
+      const generationTimeoutMs = Math.max(3000, timeoutMs - strategyTimeoutMs);
+
+      // Step 1: Strategy
+      let strategy: EmailDraftStrategy | null = null;
+      let strategyInteractionId: string | null = null;
+
+      let strategyInstructions = buildEmailDraftStrategyInstructions({
+        aiName,
+        aiTone,
+        firstName,
+        lastName: lead.lastName,
+        leadEmail: lead.email,
+        leadCompanyName: lead.companyName,
+        leadCompanyWebsite: lead.companyWebsite,
+        leadCompanyState: lead.companyState,
+        leadIndustry: lead.industry,
+        leadEmployeeHeadcount: lead.employeeHeadcount,
+        leadLinkedinUrl: lead.linkedinUrl,
+        ourCompanyName: companyName,
+        sentimentTag,
+        responseStrategy,
+        aiGoals: aiGoals || null,
+        serviceDescription: serviceDescription || null,
+        qualificationQuestions,
+        knowledgeContext,
+        availability,
+        archetype,
+      });
+
+      // Append booking process instructions if available (Phase 36)
+      if (bookingProcessInstructions) {
+        strategyInstructions += bookingProcessInstructions;
+      }
+
+      const strategyInput = `<conversation_transcript>
+${conversationTranscript}
+</conversation_transcript>
+
+<lead_sentiment>${sentimentTag}</lead_sentiment>
+
+<task>
+Analyze this conversation and produce a JSON strategy for writing a personalized email response.
+</task>`;
 
       try {
-        const retry = await runResponse({
+        const { response: strategyResponse, interactionId } = await runResponseWithInteraction({
+          clientId: lead.clientId,
+          leadId,
+          featureId: "draft.generate.email.strategy",
+          promptKey: `draft.generate.email.strategy.v1.arch_${archetype.id}`,
+          params: {
+            model: draftModel,
+            instructions: strategyInstructions,
+            input: [{ role: "user" as const, content: strategyInput }],
+            reasoning: { effort: strategyReasoningApi },
+            text: {
+              format: {
+                type: "json_schema",
+                name: "email_draft_strategy",
+                strict: true,
+                schema: EMAIL_DRAFT_STRATEGY_JSON_SCHEMA,
+              },
+            },
+            max_output_tokens: 1500, // Strategy should be compact
+          },
+          requestOptions: {
+            timeout: strategyTimeoutMs,
+            maxRetries: 0,
+          },
+        });
+
+        strategyInteractionId = interactionId;
+        const strategyText = getTrimmedOutputText(strategyResponse)?.trim();
+        strategy = parseStrategyJson(strategyText);
+
+        if (!strategy && strategyInteractionId) {
+          await markAiInteractionError(strategyInteractionId, "strategy_parse_failed: Could not parse strategy JSON");
+        }
+      } catch (error) {
+        console.error("[AI Drafts] Step 1 (Strategy) failed:", error);
+      }
+
+      // Step 2: Generation (if strategy succeeded)
+      if (strategy) {
+        const generationInstructions = buildEmailDraftGenerationInstructions({
+          aiName,
+          aiTone,
+          aiGreeting,
+          firstName,
+          signature: aiSignature || null,
+          ourCompanyName: companyName,
+          sentimentTag,
+          strategy,
+          archetype,
+        });
+
+        const generationInput = `<conversation_transcript>
+${conversationTranscript}
+</conversation_transcript>
+
+<task>
+Write the email response now, following the strategy and structure archetype.
+</task>`;
+
+        const generationBudget = await computeAdaptiveMaxOutputTokens({
+          model: draftModel,
+          instructions: generationInstructions,
+          input: [{ role: "user" as const, content: generationInput }],
+          min: Math.max(1, Math.floor(700 * tokenBudgetMultiplier)),
+          max: Math.max(1, Math.floor(2400 * tokenBudgetMultiplier)),
+          overheadTokens: 256 * tokenBudgetMultiplier,
+          outputScale: 0.2 * tokenBudgetMultiplier,
+          preferApiCount,
+        });
+
+        try {
+          const generationResponse = await runResponse({
+            clientId: lead.clientId,
+            leadId,
+            featureId: "draft.generate.email.generation",
+            promptKey: `draft.generate.email.generation.v1.arch_${archetype.id}`,
+            params: {
+              model: draftModel,
+              instructions: generationInstructions,
+              input: [{ role: "user" as const, content: generationInput }],
+              temperature: 0.95, // High temperature for variation
+              // No reasoning for generation step - just output text
+              max_output_tokens: generationBudget.maxOutputTokens,
+            },
+            requestOptions: {
+              timeout: generationTimeoutMs,
+              maxRetries: 0,
+            },
+          });
+
+          draftContent = getTrimmedOutputText(generationResponse)?.trim() || null;
+          response = generationResponse;
+        } catch (error) {
+          console.error("[AI Drafts] Step 2 (Generation) failed:", error);
+        }
+      }
+
+      // Fallback: Single-step with archetype + high temperature (if two-step failed)
+      if (!draftContent) {
+        console.log("[AI Drafts] Two-step failed, falling back to single-step with archetype");
+
+        let fallbackSystemPrompt = buildEmailPrompt({
+          aiName,
+          aiTone,
+          aiGreeting,
+          firstName,
+          responseStrategy,
+          aiGoals,
+          availability,
+          sentimentTag,
+          signature: aiSignature,
+          serviceDescription,
+          qualificationQuestions,
+          knowledgeContext,
+          companyName,
+          targetResult,
+        }) + `\n\nSTRUCTURE REQUIREMENT: "${archetype.name}"\n${archetype.instructions}`;
+
+        // Append booking process instructions if available (Phase 36)
+        if (bookingProcessInstructions) {
+          fallbackSystemPrompt += bookingProcessInstructions;
+        }
+
+        const fallbackInputMessages = [
+          {
+            role: "assistant" as const,
+            content: `Completely avoid the usage of these words/phrases/tones:\n\n${EMAIL_FORBIDDEN_TERMS.join("\n")}`,
+          },
+          {
+            role: "user" as const,
+            content: `<conversation_transcript>
+${conversationTranscript}
+</conversation_transcript>
+
+<lead_sentiment>${sentimentTag}</lead_sentiment>
+
+<task>
+Generate an appropriate email response following the guidelines and structure archetype above.
+</task>`,
+          },
+        ];
+
+        const fallbackBudget = await computeAdaptiveMaxOutputTokens({
+          model: draftModel,
+          instructions: fallbackSystemPrompt,
+          input: fallbackInputMessages,
+          min: Math.max(1, Math.floor(900 * tokenBudgetMultiplier)),
+          max: Math.max(1, Math.floor(3200 * tokenBudgetMultiplier)),
+          overheadTokens: 256 * tokenBudgetMultiplier,
+          outputScale: 0.18 * tokenBudgetMultiplier,
+          preferApiCount,
+        });
+
+        try {
+          const fallbackResponse = await runResponse({
+            clientId: lead.clientId,
+            leadId,
+            featureId: "draft.generate.email",
+            promptKey: `draft.generate.email.v1.fallback.arch_${archetype.id}`,
+            params: {
+              model: draftModel,
+              instructions: fallbackSystemPrompt,
+              input: fallbackInputMessages,
+              temperature: 0.95,
+              reasoning: { effort: strategyReasoningApi },
+              max_output_tokens: fallbackBudget.maxOutputTokens,
+            },
+            requestOptions: {
+              timeout: timeoutMs,
+              maxRetries: 0,
+            },
+          });
+
+          draftContent = getTrimmedOutputText(fallbackResponse)?.trim() || null;
+          response = fallbackResponse;
+        } catch (error) {
+          console.error("[AI Drafts] Single-step fallback failed:", error);
+        }
+      }
+    }
+    // ---------------------------------------------------------------------------
+    // SMS / LinkedIn: Single-step
+    // ---------------------------------------------------------------------------
+    else {
+      let systemPrompt =
+        channel === "linkedin"
+          ? buildLinkedInPrompt({
+              aiName,
+              aiTone,
+              aiGreeting,
+              firstName,
+              responseStrategy,
+              sentimentTag,
+              aiGoals,
+              serviceDescription,
+              qualificationQuestions,
+              knowledgeContext,
+              companyName,
+              targetResult,
+              availability,
+            })
+          : buildSmsPrompt({
+              aiName,
+              aiTone,
+              aiGreeting,
+              firstName,
+              responseStrategy,
+              sentimentTag,
+              aiGoals,
+              serviceDescription,
+              qualificationQuestions,
+              knowledgeContext,
+              companyName,
+              targetResult,
+              availability,
+            });
+
+      // Append booking process instructions if available (Phase 36)
+      if (bookingProcessInstructions) {
+        systemPrompt += bookingProcessInstructions;
+      }
+
+      const inputMessages = [
+        {
+          role: "user" as const,
+          content: `<conversation_transcript>
+${conversationTranscript}
+</conversation_transcript>
+
+<lead_sentiment>${sentimentTag}</lead_sentiment>
+
+<task>
+Generate an appropriate ${channel} response following the guidelines above.
+</task>`,
+        },
+      ];
+
+      const promptKey = channel === "linkedin" ? "draft.generate.linkedin.v1" : "draft.generate.sms.v1";
+      const promptTemplate = getAIPromptTemplate(promptKey);
+
+      const primaryModel = "gpt-5-mini";
+      const reasoningEffort = "medium" as const;
+
+      const primaryBudgetMin = 240 * tokenBudgetMultiplier;
+      const primaryBudgetMax = 1200 * tokenBudgetMultiplier;
+
+      const budget = await computeAdaptiveMaxOutputTokens({
+        model: primaryModel,
+        instructions: systemPrompt,
+        input: inputMessages,
+        min: Math.max(1, Math.floor(primaryBudgetMin)),
+        max: Math.max(1, Math.floor(primaryBudgetMax)),
+        overheadTokens: 256 * tokenBudgetMultiplier,
+        outputScale: 0.2 * tokenBudgetMultiplier,
+        preferApiCount,
+      });
+
+      try {
+        response = await runResponse({
           clientId: lead.clientId,
           leadId,
           featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-          promptKey: `${promptTemplate?.key || promptKey}.retry_more_tokens`,
+          promptKey: promptTemplate?.key || promptKey,
           params: {
             model: primaryModel,
             instructions: systemPrompt,
             input: inputMessages,
             text: { verbosity: "low" },
             reasoning: { effort: reasoningEffort },
-            max_output_tokens: retryMaxOutputTokens,
+            max_output_tokens: budget.maxOutputTokens,
           },
           requestOptions: {
             timeout: timeoutMs,
             maxRetries: 0,
           },
         });
-
-        draftContent = getTrimmedOutputText(retry)?.trim() || null;
-        response = retry;
       } catch (error) {
-        console.error("[AI Drafts] Retry after max_output_tokens failed:", error);
+        console.error("[AI Drafts] Primary SMS/LinkedIn generation failed:", error);
       }
-    }
 
-    // Fallback: same model, spend more tokens rather than reducing reasoning effort.
-    if (!draftContent) {
-      const fallbackModel = primaryModel;
-      const fallbackBudgetMin = (channel === "email" ? 900 : 320) * tokenBudgetMultiplier;
-      const fallbackBudgetMax = (channel === "email" ? 3200 : 1600) * tokenBudgetMultiplier;
+      draftContent = response ? (getTrimmedOutputText(response)?.trim() || null) : null;
 
-      const fallbackBudget = await computeAdaptiveMaxOutputTokens({
-        model: fallbackModel,
-        instructions: systemPrompt,
-        input: inputMessages,
-        min: Math.max(1, Math.floor(fallbackBudgetMin)),
-        max: Math.max(1, Math.floor(fallbackBudgetMax)),
-        overheadTokens: 256 * tokenBudgetMultiplier,
-        outputScale: 0.18 * tokenBudgetMultiplier,
-        preferApiCount,
-      });
+      // Retry once with more headroom if we hit the output token ceiling
+      if (!draftContent && response?.incomplete_details?.reason === "max_output_tokens") {
+        const cap = Math.max(800, Number.parseInt(process.env.OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP || "12000", 10) || 12_000);
+        const retryMaxOutputTokens = Math.min(
+          Math.max(budget.maxOutputTokens + 1000, Math.floor(budget.maxOutputTokens * 3)),
+          cap
+        );
 
-      const fallback = await runResponse({
-        clientId: lead.clientId,
-        leadId,
-        featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-        promptKey: `${promptTemplate?.key || promptKey}.fallback`,
-        params: {
-          model: fallbackModel,
+        try {
+          const retry = await runResponse({
+            clientId: lead.clientId,
+            leadId,
+            featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
+            promptKey: `${promptTemplate?.key || promptKey}.retry_more_tokens`,
+            params: {
+              model: primaryModel,
+              instructions: systemPrompt,
+              input: inputMessages,
+              text: { verbosity: "low" },
+              reasoning: { effort: reasoningEffort },
+              max_output_tokens: retryMaxOutputTokens,
+            },
+            requestOptions: {
+              timeout: timeoutMs,
+              maxRetries: 0,
+            },
+          });
+
+          draftContent = getTrimmedOutputText(retry)?.trim() || null;
+          response = retry;
+        } catch (error) {
+          console.error("[AI Drafts] Retry after max_output_tokens failed:", error);
+        }
+      }
+
+      // Fallback: same model, spend more tokens
+      if (!draftContent) {
+        const fallbackBudgetMin = 320 * tokenBudgetMultiplier;
+        const fallbackBudgetMax = 1600 * tokenBudgetMultiplier;
+
+        const fallbackBudget = await computeAdaptiveMaxOutputTokens({
+          model: primaryModel,
           instructions: systemPrompt,
           input: inputMessages,
-          text: { verbosity: "low" },
-          reasoning: { effort: reasoningEffort },
-          max_output_tokens: fallbackBudget.maxOutputTokens,
-        },
-        requestOptions: {
-          timeout: timeoutMs,
-          maxRetries: 0,
-        },
-      });
+          min: Math.max(1, Math.floor(fallbackBudgetMin)),
+          max: Math.max(1, Math.floor(fallbackBudgetMax)),
+          overheadTokens: 256 * tokenBudgetMultiplier,
+          outputScale: 0.18 * tokenBudgetMultiplier,
+          preferApiCount,
+        });
 
-      draftContent = getTrimmedOutputText(fallback)?.trim() || null;
-      response = fallback;
+        try {
+          const fallback = await runResponse({
+            clientId: lead.clientId,
+            leadId,
+            featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
+            promptKey: `${promptTemplate?.key || promptKey}.fallback`,
+            params: {
+              model: primaryModel,
+              instructions: systemPrompt,
+              input: inputMessages,
+              text: { verbosity: "low" },
+              reasoning: { effort: reasoningEffort },
+              max_output_tokens: fallbackBudget.maxOutputTokens,
+            },
+            requestOptions: {
+              timeout: timeoutMs,
+              maxRetries: 0,
+            },
+          });
+
+          draftContent = getTrimmedOutputText(fallback)?.trim() || null;
+          response = fallback;
+        } catch (error) {
+          console.error("[AI Drafts] SMS/LinkedIn fallback failed:", error);
+        }
+      }
     }
 
     if (!draftContent) {

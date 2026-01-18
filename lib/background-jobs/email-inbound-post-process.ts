@@ -16,7 +16,13 @@ import {
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { normalizePhone } from "@/lib/lead-matching";
 import { toStoredPhone } from "@/lib/phone-utils";
-import { isPositiveSentiment } from "@/lib/sentiment";
+import {
+  analyzeInboundEmailReply,
+  classifySentiment,
+  isPositiveSentiment,
+  SENTIMENT_TO_STATUS,
+  type SentimentTag,
+} from "@/lib/sentiment";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 import {
@@ -35,6 +41,7 @@ import { approveAndSendDraftSystem } from "@/actions/message-actions";
 import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
+import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   for (const dateStr of dateStrs) {
@@ -46,6 +53,35 @@ function parseDate(...dateStrs: (string | null | undefined)[]): Date {
     }
   }
   return new Date();
+}
+
+/**
+ * Maps AI classification result to SentimentTag.
+ * Duplicated from email webhook for background job usage.
+ */
+function mapEmailInboxClassificationToSentimentTag(classification: string): SentimentTag {
+  switch (classification) {
+    case "Meeting Booked":
+      return "Meeting Booked";
+    case "Meeting Requested":
+      return "Meeting Requested";
+    case "Call Requested":
+      return "Call Requested";
+    case "Information Requested":
+      return "Information Requested";
+    case "Follow Up":
+      return "Follow Up";
+    case "Not Interested":
+      return "Not Interested";
+    case "Automated Reply":
+      return "Automated Reply";
+    case "Out Of Office":
+      return "Out of Office";
+    case "Blacklist":
+      return "Blacklist";
+    default:
+      return "Neutral";
+  }
 }
 
 /**
@@ -616,6 +652,124 @@ export async function runEmailInboundPostProcessJob(opts: {
 
   const inboundText = (message.body || "").trim();
 
+  // AI SENTIMENT CLASSIFICATION (moved from webhook for faster response times)
+  // Run full AI classification if the webhook used a placeholder ("Neutral").
+  // This ensures accurate sentiment before enrichment and draft generation.
+  if (lead.sentimentTag === "Neutral" || lead.sentimentTag === "New") {
+    try {
+      const classificationMessages = await prisma.message.findMany({
+        where: { leadId: lead.id },
+        orderBy: { sentAt: "asc" },
+        take: 40,
+        select: { sentAt: true, channel: true, direction: true, body: true, subject: true },
+      });
+
+      const transcript = buildSentimentTranscriptFromMessages(classificationMessages);
+      const subject = message.subject ?? null;
+
+      // Double-check safety before AI call
+      const combined = `Subject: ${subject ?? ""} | ${inboundText}`;
+      const mustBlacklist = isOptOutText(combined) || detectBounce([{ body: combined, direction: "inbound", channel: "email" }]);
+
+      if (mustBlacklist) {
+        // Safety override
+        lead = await prisma.lead.update({
+          where: { id: lead.id },
+          data: { sentimentTag: "Blacklist", status: "blacklisted" },
+          select: {
+            id: true,
+            clientId: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            linkedinUrl: true,
+            emailBisonLeadId: true,
+            sentimentTag: true,
+            autoReplyEnabled: true,
+            emailCampaign: {
+              select: {
+                id: true,
+                name: true,
+                bisonCampaignId: true,
+                responseMode: true,
+                autoSendConfidenceThreshold: true,
+              },
+            },
+          },
+        });
+        console.log(`[Email PostProcess] Lead ${lead.id} classified as Blacklist (safety check)`);
+      } else {
+        // Run AI classification
+        const analysis = await analyzeInboundEmailReply({
+          clientId: client.id,
+          leadId: lead.id,
+          clientName: client.name,
+          lead: {
+            first_name: lead.firstName ?? null,
+            last_name: lead.lastName ?? null,
+            email: lead.email ?? null,
+            time_received: message.sentAt?.toISOString() ?? null,
+          },
+          subject,
+          body_text: message.rawText ?? null,
+          provider_cleaned_text: inboundText,
+          entire_conversation_thread_html: message.rawHtml ?? null,
+          automated_reply: null,
+          conversation_transcript: transcript,
+        });
+
+        let newSentimentTag: SentimentTag;
+        if (analysis) {
+          newSentimentTag = mapEmailInboxClassificationToSentimentTag(analysis.classification);
+        } else {
+          // Fallback to simpler classifier
+          newSentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
+        }
+
+        const newStatus = SENTIMENT_TO_STATUS[newSentimentTag] || "new";
+
+        lead = await prisma.lead.update({
+          where: { id: lead.id },
+          data: { sentimentTag: newSentimentTag, status: newStatus },
+          select: {
+            id: true,
+            clientId: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            linkedinUrl: true,
+            emailBisonLeadId: true,
+            sentimentTag: true,
+            autoReplyEnabled: true,
+            emailCampaign: {
+              select: {
+                id: true,
+                name: true,
+                bisonCampaignId: true,
+                responseMode: true,
+                autoSendConfidenceThreshold: true,
+              },
+            },
+          },
+        });
+        console.log(`[Email PostProcess] Lead ${lead.id} AI classified as ${newSentimentTag}`);
+
+        // Compliance: if AI classified as Automated Reply, reject any pending drafts
+        if (newSentimentTag === "Automated Reply" || newSentimentTag === "Blacklist") {
+          await prisma.aIDraft.updateMany({
+            where: { leadId: lead.id, status: "pending" },
+            data: { status: "rejected" },
+          });
+        }
+      }
+    } catch (error) {
+      console.error(`[Email PostProcess] AI classification failed for lead ${lead.id}:`, error);
+      // Continue with existing sentiment - don't block enrichment/draft on classification failure
+    }
+  }
+
   // Snooze detection: if the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
   const snoozeKeywordHit =
     /\b(after|until|from)\b/i.test(inboundText) &&
@@ -852,6 +1006,19 @@ export async function runEmailInboundPostProcessJob(opts: {
         }
       }
     }
+  }
+
+  // Enqueue lead scoring job (non-blocking, fire-and-forget)
+  // Score the lead based on conversation after all other processing is done
+  try {
+    await enqueueLeadScoringJob({
+      clientId: client.id,
+      leadId: lead.id,
+      messageId: message.id,
+    });
+  } catch (error) {
+    // Don't fail the job if scoring enqueue fails
+    console.error(`[Email PostProcess] Failed to enqueue lead scoring job for lead ${lead.id}:`, error);
   }
 }
 

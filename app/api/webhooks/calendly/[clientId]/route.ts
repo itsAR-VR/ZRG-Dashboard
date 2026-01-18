@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { autoStartPostBookingSequenceIfEligible } from "@/lib/followup-automation";
 import { verifyCalendlyWebhookSignature } from "@/lib/calendly-webhook";
+import { upsertAppointmentWithRollup } from "@/lib/appointment-upsert";
+import { AppointmentStatus, AppointmentSource } from "@prisma/client";
+import { createCancellationTask } from "@/lib/appointment-cancellation-task";
 
 type CalendlyWebhookEnvelope = {
   event?: string;
@@ -93,13 +96,14 @@ export async function POST(request: NextRequest, context: { params: Promise<{ cl
   const rawBody = await request.text();
 
   const signingKey = client.calendlyWebhookSigningKey || process.env.CALENDLY_WEBHOOK_SIGNING_KEY || null;
-  if (signingKey) {
-    const verified = verifyCalendlyWebhookSignature({ signingKey, headers: request.headers, rawBody });
-    if (!verified.ok) {
-      return NextResponse.json({ error: "Unauthorized", reason: verified.reason }, { status: 401 });
-    }
-  } else {
-    console.warn("[Calendly Webhook] No signing key configured; accepting unverified webhook for client", clientId);
+  if (!signingKey) {
+    console.error("[Calendly Webhook] No signing key configured; rejecting webhook for client", clientId);
+    return NextResponse.json({ error: "Webhook signing key not configured" }, { status: 503 });
+  }
+
+  const verified = verifyCalendlyWebhookSignature({ signingKey, headers: request.headers, rawBody });
+  if (!verified.ok) {
+    return NextResponse.json({ error: "Unauthorized", reason: verified.reason }, { status: 401 });
   }
 
   let parsed: CalendlyWebhookEnvelope | null = null;
@@ -114,7 +118,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ cl
     return NextResponse.json({ ok: true, ignored: true, reason: "missing_event" }, { status: 200 });
   }
 
-  const { inviteeUri, inviteeEmail, scheduledEventUri, eventTypeUri, startTime } = parseInviteePayload(parsed?.payload);
+  const { inviteeUri, inviteeEmail, scheduledEventUri, eventTypeUri, startTime, endTime } = parseInviteePayload(parsed?.payload);
 
   // Try to map to a lead deterministically (IDs first, then email fallback).
   let lead =
@@ -150,26 +154,44 @@ export async function POST(request: NextRequest, context: { params: Promise<{ cl
   }
 
   if (!lead) {
-    return NextResponse.json(
-      { ok: true, ignored: true, reason: "lead_not_found", inviteeEmail, inviteeUri, scheduledEventUri },
-      { status: 200 }
-    );
+    return NextResponse.json({ ok: true, ignored: true, reason: "lead_not_found" }, { status: 200 });
   }
 
   if (event === "invitee.created") {
-    const bookedSlot = startTime ? new Date(startTime).toISOString() : null;
+    const appointmentStartAt = startTime ? new Date(startTime) : null;
+    const appointmentEndAt = endTime ? new Date(endTime) : null;
 
-    await prisma.lead.update({
-      where: { id: lead.id },
-      data: {
+    // Dual-write: create Appointment + update Lead rollups atomically (Phase 34d)
+    if (inviteeUri) {
+      await upsertAppointmentWithRollup({
+        leadId: lead.id,
+        provider: "CALENDLY",
+        source: AppointmentSource.WEBHOOK,
         calendlyInviteeUri: inviteeUri,
         calendlyScheduledEventUri: scheduledEventUri,
-        appointmentBookedAt: new Date(),
-        bookedSlot: bookedSlot || startTime,
-        status: "meeting-booked",
-        offeredSlots: null,
-      },
-    });
+        startAt: appointmentStartAt,
+        endAt: appointmentEndAt,
+        status: AppointmentStatus.CONFIRMED,
+      });
+    } else {
+      // Fallback: update lead directly if no invitee URI (legacy support)
+      const bookedSlot = startTime ? new Date(startTime).toISOString() : null;
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          calendlyScheduledEventUri: scheduledEventUri,
+          appointmentBookedAt: new Date(),
+          appointmentStartAt,
+          appointmentEndAt,
+          appointmentStatus: "confirmed",
+          appointmentProvider: "CALENDLY",
+          appointmentSource: "webhook",
+          bookedSlot: bookedSlot || startTime,
+          status: "meeting-booked",
+          offeredSlots: null,
+        },
+      });
+    }
 
     await applyPostBookingSideEffects(lead.id);
 
@@ -180,19 +202,51 @@ export async function POST(request: NextRequest, context: { params: Promise<{ cl
   }
 
   if (event === "invitee.canceled") {
-    const nextStatus = lead.status === "meeting-booked" ? "qualified" : lead.status;
-
-    await prisma.lead.update({
+    // Look up existing appointment start time for cancellation task
+    let appointmentStartTime: Date | null = null;
+    const existingLead = await prisma.lead.findUnique({
       where: { id: lead.id },
-      data: {
-        calendlyInviteeUri: null,
-        calendlyScheduledEventUri: null,
-        appointmentBookedAt: null,
-        bookedSlot: null,
-        status: nextStatus,
-        offeredSlots: null,
-      },
+      select: { appointmentStartAt: true, calendlyInviteeUri: true },
     });
+    appointmentStartTime = existingLead?.appointmentStartAt ?? (startTime ? new Date(startTime) : null);
+
+    // Dual-write: update Appointment + Lead rollups atomically (Phase 34d)
+    const targetInviteeUri = inviteeUri || existingLead?.calendlyInviteeUri;
+    if (targetInviteeUri) {
+      await upsertAppointmentWithRollup({
+        leadId: lead.id,
+        provider: "CALENDLY",
+        source: AppointmentSource.WEBHOOK,
+        calendlyInviteeUri: targetInviteeUri,
+        calendlyScheduledEventUri: scheduledEventUri,
+        startAt: appointmentStartTime,
+        endAt: endTime ? new Date(endTime) : null,
+        status: AppointmentStatus.CANCELED,
+        canceledAt: new Date(),
+      });
+
+      // Create cancellation task for follow-up
+      if (appointmentStartTime) {
+        await createCancellationTask({
+          leadId: lead.id,
+          taskType: "meeting-canceled",
+          appointmentStartTime,
+          provider: "CALENDLY",
+        });
+      }
+    } else {
+      // Fallback: update lead directly if no invitee URI (legacy support)
+      const nextStatus = lead.status === "meeting-booked" ? "qualified" : lead.status;
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          appointmentStatus: "canceled",
+          appointmentCanceledAt: new Date(),
+          status: nextStatus,
+          offeredSlots: null,
+        },
+      });
+    }
 
     return NextResponse.json({ ok: true, handled: true, event, leadId: lead.id }, { status: 200 });
   }

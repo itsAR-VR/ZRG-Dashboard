@@ -255,7 +255,9 @@ export async function findOrCreateLead(
       },
     });
 
-    console.log(`[Lead Matching] Created new lead ${newLead.id} (email: ${normalizedEmail}, phone: ${normalizedPhone}, linkedin: ${normalizedLinkedInUrl})`);
+    console.log(
+      `[Lead Matching] Created new lead ${newLead.id} (hasEmail: ${!!normalizedEmail}, hasPhone: ${!!normalizedPhone}, hasLinkedIn: ${!!normalizedLinkedInUrl})`
+    );
 
     return {
       lead: newLead,

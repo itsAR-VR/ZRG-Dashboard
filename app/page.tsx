@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
+import { AlertTriangle, X } from "lucide-react"
 import { Sidebar, type ViewType } from "@/components/dashboard/sidebar"
 import { InboxView } from "@/components/dashboard/inbox-view"
 import { FollowUpsView } from "@/components/dashboard/follow-ups-view"
@@ -9,6 +10,7 @@ import { CRMView } from "@/components/dashboard/crm-view"
 import { AnalyticsView } from "@/components/dashboard/analytics-view"
 import { InsightsView } from "@/components/dashboard/insights-view"
 import { SettingsView } from "@/components/dashboard/settings-view"
+import { Button } from "@/components/ui/button"
 import { getClients } from "@/actions/client-actions"
 import { getLeadWorkspaceId } from "@/actions/lead-actions"
 import type { Channel } from "@/actions/lead-actions"
@@ -21,6 +23,7 @@ interface Client {
   brandName?: string | null
   brandLogoUrl?: string | null
   hasConnectedAccounts?: boolean
+  unipileConnectionStatus?: string | null
 }
 
 function DashboardPageInner() {
@@ -33,6 +36,7 @@ function DashboardPageInner() {
   const [workspaces, setWorkspaces] = useState<Client[]>([])
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const [settingsTab, setSettingsTab] = useState("general")
+  const [dismissedUnipileBanner, setDismissedUnipileBanner] = useState<string | null>(null)
 
   const syncWorkspaces = (nextWorkspaces: Client[]) => {
     setWorkspaces(nextWorkspaces)
@@ -151,6 +155,16 @@ function DashboardPageInner() {
     }
   }
 
+  // Check if selected workspace has a disconnected Unipile account
+  const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)
+  const isUnipileDisconnected = selectedWorkspace?.unipileConnectionStatus === "DISCONNECTED"
+  const showUnipileBanner = isUnipileDisconnected && dismissedUnipileBanner !== activeWorkspace
+
+  const handleNavigateToIntegrations = () => {
+    setActiveView("settings")
+    setSettingsTab("integrations")
+  }
+
   return (
     <div className="flex h-screen bg-background">
       <Sidebar
@@ -164,7 +178,32 @@ function DashboardPageInner() {
         onWorkspaceChange={setActiveWorkspace}
         workspaces={workspaces}
       />
-      <main className="flex flex-1 overflow-hidden">{renderContent()}</main>
+      <div className="flex flex-1 flex-col overflow-hidden">
+        {showUnipileBanner && (
+          <div className="flex items-center gap-3 bg-amber-500/10 border-b border-amber-500/20 px-4 py-2.5 text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span className="flex-1 text-sm">
+              LinkedIn integration disconnected. Follow-ups via LinkedIn are paused until reconnected.
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-amber-500/50 text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
+              onClick={handleNavigateToIntegrations}
+            >
+              Reconnect
+            </Button>
+            <button
+              onClick={() => setDismissedUnipileBanner(activeWorkspace)}
+              className="p-1 hover:bg-amber-500/20 rounded"
+              aria-label="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+        <main className="flex flex-1 overflow-hidden">{renderContent()}</main>
+      </div>
     </div>
   )
 }

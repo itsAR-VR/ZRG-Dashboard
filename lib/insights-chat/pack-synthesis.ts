@@ -49,11 +49,35 @@ function formatLeadLabel(lead: { firstName: string | null; lastName: string | nu
   return "Unknown lead";
 }
 
-function compactInsight(insight: ConversationInsight): Pick<
-  ConversationInsight,
-  "summary" | "key_events" | "what_worked" | "what_failed" | "key_phrases" | "evidence_quotes"
-> {
-  return {
+/**
+ * Compact an insight for synthesis input, preserving follow-up fields (Phase 29d).
+ */
+function compactInsight(insight: ConversationInsight): {
+  summary: string;
+  key_events: string[];
+  what_worked: string[];
+  what_failed: string[];
+  key_phrases: string[];
+  evidence_quotes: string[];
+  // Follow-up fields (Phase 29d)
+  follow_up?: {
+    what_worked: string[];
+    what_failed: string[];
+    key_phrases: string[];
+    tone_observations: string[];
+    objection_responses: Array<{
+      objection_type: string;
+      agent_response: string;
+      outcome: string;
+    }>;
+  };
+  follow_up_effectiveness?: {
+    score: number;
+    converted_after_objection: boolean;
+    notes: string[];
+  } | null;
+} {
+  const base = {
     summary: insight.summary,
     key_events: insight.key_events.slice(0, 10),
     what_worked: insight.what_worked.slice(0, 10),
@@ -61,6 +85,25 @@ function compactInsight(insight: ConversationInsight): Pick<
     key_phrases: insight.key_phrases.slice(0, 12),
     evidence_quotes: insight.evidence_quotes.slice(0, 6),
   };
+
+  // Include follow-up data if present (Phase 29d)
+  if (insight.follow_up) {
+    const followUp = {
+      what_worked: insight.follow_up.what_worked?.slice(0, 8) ?? [],
+      what_failed: insight.follow_up.what_failed?.slice(0, 6) ?? [],
+      key_phrases: insight.follow_up.key_phrases?.slice(0, 8) ?? [],
+      tone_observations: insight.follow_up.tone_observations?.slice(0, 4) ?? [],
+      objection_responses: insight.follow_up.objection_responses?.slice(0, 5) ?? [],
+    };
+
+    return {
+      ...base,
+      follow_up: followUp,
+      follow_up_effectiveness: insight.follow_up_effectiveness ?? null,
+    };
+  }
+
+  return base;
 }
 
 async function runStructuredJson<T>(opts: {
@@ -161,8 +204,9 @@ export async function synthesizeInsightContextPack(opts: {
   const campaignsCount = grouped.size;
   const shouldMapReduce = campaignsCount > 1 || opts.threads.length > 120;
 
-  const packPrompt = getAIPromptTemplate("insights.pack_synthesize.v1");
-  const campaignPrompt = getAIPromptTemplate("insights.pack_campaign_summarize.v1");
+  // Use v2 prompts with follow-up weighting (Phase 29d)
+  const packPrompt = getAIPromptTemplate("insights.pack_synthesize.v2");
+  const campaignPrompt = getAIPromptTemplate("insights.pack_campaign_summarize.v2");
   const packSystem =
     packPrompt?.messages.find((m) => m.role === "system")?.content ||
     "Return ONLY valid JSON with keys: pack_markdown, key_takeaways, recommended_experiments, data_gaps.";

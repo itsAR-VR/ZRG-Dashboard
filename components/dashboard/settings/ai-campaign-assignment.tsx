@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Bot, RefreshCw, Save, Undo2 } from "lucide-react"
+import { Bot, Clock, RefreshCw, Save, Undo2 } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -10,7 +10,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getEmailCampaigns, updateEmailCampaignConfig } from "@/actions/email-campaign-actions"
+import { getEmailCampaigns, updateEmailCampaignConfig, assignBookingProcessToCampaign } from "@/actions/email-campaign-actions"
+import { listBookingProcesses, type BookingProcessSummary } from "@/actions/booking-process-actions"
 import type { CampaignResponseMode } from "@prisma/client"
 
 type CampaignRow = {
@@ -20,6 +21,8 @@ type CampaignRow = {
   leadCount: number
   responseMode: CampaignResponseMode
   autoSendConfidenceThreshold: number
+  bookingProcessId: string | null
+  bookingProcessName: string | null
 }
 
 function clamp01(value: number): number {
@@ -32,13 +35,15 @@ function clamp01(value: number): number {
 function areEqual(a: CampaignRow, b: CampaignRow): boolean {
   return (
     a.responseMode === b.responseMode &&
-    Math.abs((a.autoSendConfidenceThreshold ?? 0) - (b.autoSendConfidenceThreshold ?? 0)) < 0.00001
+    Math.abs((a.autoSendConfidenceThreshold ?? 0) - (b.autoSendConfidenceThreshold ?? 0)) < 0.00001 &&
+    a.bookingProcessId === b.bookingProcessId
   )
 }
 
 export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace?: string | null }) {
   const [rows, setRows] = useState<CampaignRow[]>([])
   const [baselineById, setBaselineById] = useState<Record<string, CampaignRow>>({})
+  const [bookingProcesses, setBookingProcesses] = useState<BookingProcessSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [savingIds, setSavingIds] = useState<Record<string, boolean>>({})
 
@@ -46,24 +51,37 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
     if (!activeWorkspace) {
       setRows([])
       setBaselineById({})
+      setBookingProcesses([])
       return
     }
 
     setLoading(true)
-    const res = await getEmailCampaigns(activeWorkspace)
-    if (!res.success || !res.data) {
-      toast.error(res.error || "Failed to load email campaigns")
+
+    // Load campaigns and booking processes in parallel
+    const [campaignsRes, bookingRes] = await Promise.all([
+      getEmailCampaigns(activeWorkspace),
+      listBookingProcesses(activeWorkspace),
+    ])
+
+    if (!campaignsRes.success || !campaignsRes.data) {
+      toast.error(campaignsRes.error || "Failed to load email campaigns")
       setLoading(false)
       return
     }
 
-    const nextRows: CampaignRow[] = res.data.map((c) => ({
+    if (bookingRes.success && bookingRes.data) {
+      setBookingProcesses(bookingRes.data)
+    }
+
+    const nextRows: CampaignRow[] = campaignsRes.data.map((c) => ({
       id: c.id,
       name: c.name,
       bisonCampaignId: c.bisonCampaignId,
       leadCount: c.leadCount,
       responseMode: c.responseMode,
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold ?? 0.9,
+      bookingProcessId: c.bookingProcessId,
+      bookingProcessName: c.bookingProcessName,
     }))
 
     const nextBaseline: Record<string, CampaignRow> = {}
@@ -110,30 +128,54 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
 
   const saveRow = async (id: string) => {
     const row = rows.find((r) => r.id === id)
-    if (!row) return
+    const baseline = baselineById[id]
+    if (!row || !baseline) return
 
     setSavingIds((prev) => ({ ...prev, [id]: true }))
-    const res = await updateEmailCampaignConfig(row.id, {
-      responseMode: row.responseMode,
-      autoSendConfidenceThreshold: clamp01(row.autoSendConfidenceThreshold),
-    })
 
-    if (!res.success || !res.data) {
-      toast.error(res.error || "Failed to save campaign settings")
-      setSavingIds((prev) => ({ ...prev, [id]: false }))
-      return
+    // Check what changed
+    const responseModeChanged =
+      row.responseMode !== baseline.responseMode ||
+      Math.abs((row.autoSendConfidenceThreshold ?? 0) - (baseline.autoSendConfidenceThreshold ?? 0)) >= 0.00001
+    const bookingProcessChanged = row.bookingProcessId !== baseline.bookingProcessId
+
+    let nextRow = { ...row }
+
+    // Save response mode if changed
+    if (responseModeChanged) {
+      const res = await updateEmailCampaignConfig(row.id, {
+        responseMode: row.responseMode,
+        autoSendConfidenceThreshold: clamp01(row.autoSendConfidenceThreshold),
+      })
+
+      if (!res.success || !res.data) {
+        toast.error(res.error || "Failed to save campaign settings")
+        setSavingIds((prev) => ({ ...prev, [id]: false }))
+        return
+      }
+
+      nextRow.responseMode = res.data.responseMode
+      nextRow.autoSendConfidenceThreshold = res.data.autoSendConfidenceThreshold
     }
 
-    const nextRow: CampaignRow = {
-      ...row,
-      responseMode: res.data.responseMode,
-      autoSendConfidenceThreshold: res.data.autoSendConfidenceThreshold,
+    // Save booking process if changed
+    if (bookingProcessChanged) {
+      const res = await assignBookingProcessToCampaign(row.id, row.bookingProcessId)
+
+      if (!res.success || !res.data) {
+        toast.error(res.error || "Failed to assign booking process")
+        setSavingIds((prev) => ({ ...prev, [id]: false }))
+        return
+      }
+
+      nextRow.bookingProcessId = res.data.bookingProcessId
+      nextRow.bookingProcessName = res.data.bookingProcessName
     }
 
     setRows((prev) => prev.map((r) => (r.id === id ? nextRow : r)))
     setBaselineById((prev) => ({ ...prev, [id]: nextRow }))
     setSavingIds((prev) => ({ ...prev, [id]: false }))
-    toast.success("Campaign assignment saved")
+    toast.success("Campaign settings saved")
   }
 
   return (
@@ -197,6 +239,12 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                   <div className="flex items-center justify-between">
                     <span>Threshold</span>
                     <span className="text-xs text-muted-foreground">0–1</span>
+                  </div>
+                </TableHead>
+                <TableHead>
+                  <div className="flex items-center gap-1.5">
+                    <Clock className="h-4 w-4" />
+                    <span>Booking Process</span>
                   </div>
                 </TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -269,6 +317,40 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                         <Label className="text-xs text-muted-foreground">
                           {thresholdDisabled ? "Enable AI auto‑send to edit." : "Higher = fewer auto‑sends, more reviews."}
                         </Label>
+                      </div>
+                    </TableCell>
+                    <TableCell className="min-w-[200px]">
+                      <Select
+                        value={row.bookingProcessId ?? "none"}
+                        onValueChange={(v) => {
+                          const processId = v === "none" ? null : v
+                          const process = bookingProcesses.find((p) => p.id === processId)
+                          updateRow(row.id, {
+                            bookingProcessId: processId,
+                            bookingProcessName: process?.name ?? null,
+                          })
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="None">
+                            {row.bookingProcessName ?? "None"}
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">None (Manual)</SelectItem>
+                          {bookingProcesses.map((bp) => (
+                            <SelectItem key={bp.id} value={bp.id}>
+                              {bp.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {row.bookingProcessId ? (
+                          <span>Controls how AI offers booking</span>
+                        ) : (
+                          <span>AI drafts without booking guidance</span>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell className="text-right">

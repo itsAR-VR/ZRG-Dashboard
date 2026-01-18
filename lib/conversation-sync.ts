@@ -175,9 +175,16 @@ export async function syncSmsConversationHistorySystem(
       };
     }
 
-    if (!lead.client.ghlPrivateKey || !lead.client.ghlLocationId) {
+    // TypeScript narrowing: after the null/validity checks above, we know ghlContactId is a valid string
+    const ghlContactId = lead.ghlContactId;
+
+    const ghlPrivateKey = lead.client.ghlPrivateKey;
+    const ghlLocationId = lead.client.ghlLocationId;
+    if (!ghlPrivateKey || !ghlLocationId) {
       return { success: false, error: "Workspace is missing GHL configuration" };
     }
+    const requiredGhlPrivateKey = ghlPrivateKey;
+    const requiredGhlLocationId = ghlLocationId;
 
     // Best-effort: hydrate missing lead fields from the GHL contact record.
     // This fixes cases where the SMS webhook payload omitted phone/email, which prevents the UI
@@ -185,8 +192,8 @@ export async function syncSmsConversationHistorySystem(
     let leadUpdated = false;
     if (!lead.phone || !lead.email || !lead.firstName || !lead.lastName || !lead.companyName) {
       try {
-        const contactResult = await getGHLContact(lead.ghlContactId, lead.client.ghlPrivateKey, {
-          locationId: lead.client.ghlLocationId,
+        const contactResult = await getGHLContact(ghlContactId, requiredGhlPrivateKey, {
+          locationId: requiredGhlLocationId,
         });
         const contact = contactResult.success ? contactResult.data?.contact : null;
 
@@ -254,9 +261,9 @@ export async function syncSmsConversationHistorySystem(
 
         for (let page = 0; page < maxPages; page += 1) {
           const exportResult = await exportMessages(
-            lead.client.ghlLocationId,
-            lead.ghlContactId,
-            lead.client.ghlPrivateKey,
+            requiredGhlLocationId,
+            ghlContactId,
+            requiredGhlPrivateKey,
             "SMS",
             { cursor }
           );
@@ -298,8 +305,8 @@ export async function syncSmsConversationHistorySystem(
       messages: NormalizedGhlMessage[];
     }> => {
       try {
-        const conv = await getConversationByContact(lead.ghlContactId, lead.client.ghlPrivateKey, {
-          locationId: lead.client.ghlLocationId,
+        const conv = await getConversationByContact(ghlContactId, requiredGhlPrivateKey, {
+          locationId: requiredGhlLocationId,
         });
         const conversationId = conv.success ? conv.data?.id || null : null;
         const candidateLastMs =
@@ -310,7 +317,7 @@ export async function syncSmsConversationHistorySystem(
           return { conversationId: null, conversationLastMs, messages: [] };
         }
 
-        const messagesResult = await getConversationMessages(conversationId, lead.client.ghlPrivateKey);
+        const messagesResult = await getConversationMessages(conversationId, requiredGhlPrivateKey);
         const messages = messagesResult.success ? messagesResult.data?.messages || [] : [];
 
         const mapped = messages
@@ -478,7 +485,7 @@ export async function syncSmsConversationHistorySystem(
           healedCount++;
           if (msg.direction === "inbound") touchedInbound = true;
           console.log(
-            `[Sync] Healed: "${msg.body.substring(0, 30)}..." -> ghlId: ${ghlId}, sentAt: ${msgTimestamp.toISOString()}`
+            `[Sync] Healed SMS message -> ghlId: ${ghlId}, dir: ${msg.direction}, bodyLen: ${msg.body.length}, sentAt: ${msgTimestamp.toISOString()}`
           );
 
           const removed = await prisma.message.deleteMany({
@@ -530,7 +537,7 @@ export async function syncSmsConversationHistorySystem(
         importedCount++;
         if (msg.direction === "inbound") touchedInbound = true;
         console.log(
-          `[Sync] Imported: "${msg.body.substring(0, 30)}..." (${msg.direction}) @ ${msgTimestamp.toISOString()}`
+          `[Sync] Imported SMS message -> ghlId: ${ghlId}, dir: ${msg.direction}, bodyLen: ${msg.body.length}, sentAt: ${msgTimestamp.toISOString()}`
         );
       } catch (error) {
         console.error(`[Sync] Error processing message ${msg.id}: ${error}`);
@@ -731,7 +738,7 @@ export async function syncEmailConversationHistorySystem(
           });
           healedCount++;
           if (existingByContent.direction !== direction && direction === "inbound") touchedInbound = true;
-          console.log(`[EmailSync] Healed reply: "${body.substring(0, 30)}..." -> replyId: ${emailBisonReplyId}`);
+          console.log(`[EmailSync] Healed reply -> replyId: ${emailBisonReplyId}, dir: ${direction}, bodyLen: ${body.length}`);
           continue;
         }
 
@@ -752,7 +759,9 @@ export async function syncEmailConversationHistorySystem(
         });
         importedCount++;
         if (direction === "inbound") touchedInbound = true;
-        console.log(`[EmailSync] Imported reply: "${body.substring(0, 30)}..." @ ${msgTimestamp.toISOString()}`);
+        console.log(
+          `[EmailSync] Imported reply -> replyId: ${emailBisonReplyId}, dir: ${direction}, bodyLen: ${body.length}, sentAt: ${msgTimestamp.toISOString()}`
+        );
       } catch (error) {
         console.error(`[EmailSync] Error processing reply ${reply.id}:`, error);
       }
@@ -815,7 +824,9 @@ export async function syncEmailConversationHistorySystem(
           },
         });
         importedCount++;
-        console.log(`[EmailSync] Imported sent email: "${body.substring(0, 30)}..."`);
+        console.log(
+          `[EmailSync] Imported sent email -> inboxxiaScheduledEmailId: ${inboxxiaScheduledEmailId}, subjectLen: ${(subject || "").length}, bodyLen: ${body.length}`
+        );
       } catch (error) {
         console.error(`[EmailSync] Error processing sent email ${sentEmail.id}:`, error);
       }

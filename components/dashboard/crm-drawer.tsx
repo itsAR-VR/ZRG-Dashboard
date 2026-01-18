@@ -50,11 +50,13 @@ import {
 import {
   updateLeadAutoBookSetting,
   bookMeetingOnGHL,
-  getLeadBookingStatus,
+  getLeadBookingStatusEnhanced,
+  getLeadAppointmentHistory,
   isGHLBookingConfigured,
   getBookingAvailabilityForLead,
   getGhlCalendarMismatchInfo,
 } from "@/actions/booking-actions"
+import type { AppointmentHistoryItem } from "@/actions/booking-actions"
 import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
 import { useEnrichmentPolling } from "@/hooks/use-enrichment-polling"
 import { toast } from "sonner"
@@ -70,6 +72,7 @@ import {
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared"
+import { LeadScoreBadge } from "./lead-score-badge"
 
 interface CrmDrawerProps {
   lead: Lead
@@ -139,7 +142,11 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
   const [existingAppointment, setExistingAppointment] = useState<{
     hasAppointment: boolean;
     bookedSlot?: string;
-  }>({ hasAppointment: false })
+    appointmentCount?: number;
+  }>({ hasAppointment: false, appointmentCount: 0 })
+  const [appointmentHistory, setAppointmentHistory] = useState<AppointmentHistoryItem[]>([])
+  const [appointmentHistoryError, setAppointmentHistoryError] = useState<string | null>(null)
+  const [isLoadingAppointmentHistory, setIsLoadingAppointmentHistory] = useState(false)
 
   // Enrichment state
   const [isEnriching, setIsEnriching] = useState(false)
@@ -226,30 +233,49 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
     }
   }, [lead.id, lead.clientId])
 
-  useEffect(() => {
-    if (isOpen) {
-      loadFollowUpData()
-      loadBookingData()
-    }
-  }, [isOpen, loadFollowUpData])
-
   // Load booking configuration and status
   const loadBookingData = useCallback(async () => {
     if (!lead.clientId) return
     try {
       const [configResult, statusResult] = await Promise.all([
         isGHLBookingConfigured(lead.clientId),
-        getLeadBookingStatus(lead.id),
+        getLeadBookingStatusEnhanced(lead.id),
       ])
       setIsGHLConfigured(configResult)
       setExistingAppointment({
         hasAppointment: statusResult.hasAppointment,
         bookedSlot: statusResult.bookedSlot,
+        appointmentCount: statusResult.appointmentCount,
       })
+
+      setAppointmentHistoryError(null)
+      if (statusResult.appointmentCount > 0) {
+        setIsLoadingAppointmentHistory(true)
+        const historyResult = await getLeadAppointmentHistory(lead.id, { limit: 12 })
+        if (historyResult.success) {
+          setAppointmentHistory(historyResult.appointments)
+        } else {
+          setAppointmentHistory([])
+          setAppointmentHistoryError(historyResult.error || "Failed to load appointment history")
+        }
+      } else {
+        setAppointmentHistory([])
+      }
     } catch (error) {
       console.error("Failed to load booking data:", error)
+      setAppointmentHistory([])
+      setAppointmentHistoryError("Failed to load appointment history")
+    } finally {
+      setIsLoadingAppointmentHistory(false)
     }
   }, [lead.id, lead.clientId])
+
+  useEffect(() => {
+    if (isOpen) {
+      loadFollowUpData()
+      loadBookingData()
+    }
+  }, [isOpen, loadFollowUpData, loadBookingData])
 
   // Load available time slots for booking dialog
   const loadAvailableSlots = async () => {
@@ -648,6 +674,53 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
       ? `${workspaceName} • Client: Unattributed`
       : workspaceName
 
+  const formatAppointmentDateTime = (iso: string | null): string => {
+    if (!iso) return "Unknown time"
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return "Unknown time"
+    return d.toLocaleString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    })
+  }
+
+  const getAppointmentStatusLabel = (status: string): string => {
+    switch (status) {
+      case "CONFIRMED":
+        return "Confirmed"
+      case "CANCELED":
+        return "Canceled"
+      case "RESCHEDULED":
+        return "Rescheduled"
+      case "SHOWED":
+        return "Showed"
+      case "NO_SHOW":
+        return "No-show"
+      default:
+        return status
+    }
+  }
+
+  const getAppointmentStatusBadgeClass = (status: string): string => {
+    switch (status) {
+      case "CONFIRMED":
+        return "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
+      case "CANCELED":
+        return "border-red-500/30 bg-red-500/10 text-red-600"
+      case "RESCHEDULED":
+        return "border-orange-500/30 bg-orange-500/10 text-orange-600"
+      case "SHOWED":
+        return "border-blue-500/30 bg-blue-500/10 text-blue-600"
+      case "NO_SHOW":
+        return "border-slate-500/30 bg-slate-500/10 text-slate-600"
+      default:
+        return "border-border bg-muted text-muted-foreground"
+    }
+  }
+
   return (
     <>
       <aside className="w-80 shrink-0 border-l border-border bg-card overflow-y-auto">
@@ -1043,21 +1116,81 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
 
           <Separator />
 
+          {/* Appointments */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Appointments</h4>
+              {typeof existingAppointment.appointmentCount === "number" && existingAppointment.appointmentCount > 0 ? (
+                <Badge variant="outline" className="text-[10px]">
+                  {existingAppointment.appointmentCount} total
+                </Badge>
+              ) : null}
+            </div>
+
+            {isLoadingAppointmentHistory ? (
+              <p className="text-xs text-muted-foreground flex items-center gap-2">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Loading appointment history…
+              </p>
+            ) : appointmentHistoryError ? (
+              <p className="text-xs text-destructive">{appointmentHistoryError}</p>
+            ) : appointmentHistory.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">No appointment history found.</p>
+            ) : (
+              <div className="space-y-2">
+                {appointmentHistory.map((apt) => (
+                  <div key={apt.id} className="rounded-md border border-border bg-muted/30 p-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Badge
+                          variant="outline"
+                          className={cn("text-[10px] shrink-0", getAppointmentStatusBadgeClass(apt.status))}
+                        >
+                          {getAppointmentStatusLabel(apt.status)}
+                        </Badge>
+                        <span className="text-[10px] text-muted-foreground shrink-0">{apt.provider}</span>
+                        <span className="text-[10px] text-muted-foreground truncate">{apt.source}</span>
+                      </div>
+                      <span className="text-[10px] text-muted-foreground shrink-0">
+                        {formatAppointmentDateTime(apt.createdAt)}
+                      </span>
+                    </div>
+
+                    <div className="mt-1 text-xs">
+                      <span className="text-muted-foreground">Start:</span>{" "}
+                      <span className="text-foreground">{formatAppointmentDateTime(apt.startAt)}</span>
+                    </div>
+
+                    {apt.canceledAt ? (
+                      <div className="mt-1 text-xs">
+                        <span className="text-muted-foreground">Canceled:</span>{" "}
+                        <span className="text-red-600">{formatAppointmentDateTime(apt.canceledAt)}</span>
+                      </div>
+                    ) : null}
+
+                    {apt.cancelReason ? (
+                      <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{apt.cancelReason}</p>
+                    ) : null}
+
+                    {apt.rescheduledFromId ? (
+                      <p className="mt-1 text-[10px] text-orange-600">
+                        Linked reschedule (best-effort)
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <Separator />
+
           {/* Lead Score */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Lead Score</h4>
-              <span className="text-xs font-medium text-primary">{lead.leadScore}/100</span>
+              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Overall Score</h4>
+              <LeadScoreBadge score={lead.overallScore} size="md" showTooltip scoredAt={lead.scoredAt} />
             </div>
-            <div className="w-full h-2 bg-muted rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-primary transition-all duration-300" 
-                style={{ width: `${lead.leadScore}%` }}
-              />
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Score based on engagement and sentiment
-            </p>
           </div>
 
           <Separator />

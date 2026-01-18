@@ -34,6 +34,9 @@ export interface ConversationData {
     // GHL integration data
     ghlContactId: string | null;
     ghlLocationId: string | null;
+    // Lead scoring (Phase 33)
+    overallScore: number | null;
+    scoredAt: Date | null;
   };
   channels: Channel[];           // All channels this lead has messages on
   availableChannels: Channel[];  // Channels available based on contact info
@@ -79,6 +82,17 @@ const ATTENTION_SENTIMENT_TAGS = [
   "Positive", // Legacy - treat as Interested
   "Interested",
   "Follow Up",
+] as const;
+
+// Sentiment tags that indicate the lead should be treated as disqualified (no AI scoring).
+const DISQUALIFIED_SENTIMENT_TAGS = [
+  "Blacklist",
+  "Opt Out",
+  "Opted Out",
+  "Unsubscribe",
+  "Unsubscribed",
+  "Bounced",
+  "Bounce",
 ] as const;
 
 function isAttentionSentimentTag(sentimentTag: string | null): boolean {
@@ -274,6 +288,9 @@ export async function getConversations(clientId?: string | null): Promise<{
           // GHL integration data
           ghlContactId: lead.ghlContactId,
           ghlLocationId: lead.client.ghlLocationId,
+          // Lead scoring (Phase 33)
+          overallScore: lead.overallScore,
+          scoredAt: lead.scoredAt,
         },
         channels,
         availableChannels,
@@ -510,6 +527,9 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           // GHL integration data
           ghlContactId: lead.ghlContactId,
           ghlLocationId: lead.client.ghlLocationId,
+          // Lead scoring (Phase 33)
+          overallScore: lead.overallScore,
+          scoredAt: lead.scoredAt,
         },
         channels,
         availableChannels,
@@ -582,6 +602,8 @@ export interface ConversationsCursorOptions {
   smsCampaignId?: string;
   smsCampaignUnattributed?: boolean;
   filter?: "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "all";
+  // Lead scoring filter (Phase 33)
+  scoreFilter?: "all" | "4" | "3+" | "2+" | "1+" | "unscored" | "disqualified";
 }
 
 export interface ConversationsCursorResult {
@@ -637,6 +659,9 @@ function transformLeadToConversation(lead: any, opts?: { hasOpenReply?: boolean 
       enrichmentStatus: lead.enrichmentStatus,
       ghlContactId: lead.ghlContactId,
       ghlLocationId: lead.client.ghlLocationId,
+      // Lead scoring (Phase 33)
+      overallScore: lead.overallScore,
+      scoredAt: lead.scoredAt,
     },
     channels,
     availableChannels,
@@ -680,6 +705,7 @@ export async function getConversationsCursor(
       smsCampaignId,
       smsCampaignUnattributed,
       filter,
+      scoreFilter,
     } = options;
 
     const scope = await resolveClientScope(clientId);
@@ -745,6 +771,30 @@ export async function getConversationsCursor(
       whereConditions.push({ smsCampaignId: null });
     } else if (smsCampaignId) {
       whereConditions.push({ smsCampaignId });
+    }
+
+    // Lead score filter (Phase 33)
+    if (scoreFilter && scoreFilter !== "all") {
+      switch (scoreFilter) {
+        case "4":
+          whereConditions.push({ overallScore: 4 });
+          break;
+        case "3+":
+          whereConditions.push({ overallScore: { gte: 3 } });
+          break;
+        case "2+":
+          whereConditions.push({ overallScore: { gte: 2 } });
+          break;
+        case "1+":
+          whereConditions.push({ overallScore: { gte: 1 } });
+          break;
+        case "unscored":
+          whereConditions.push({ overallScore: null });
+          break;
+        case "disqualified":
+          whereConditions.push({ sentimentTag: { in: [...DISQUALIFIED_SENTIMENT_TAGS] } });
+          break;
+      }
     }
 
     const replyStateFilter: "open" | "handled" | null =

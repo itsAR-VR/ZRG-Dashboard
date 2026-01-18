@@ -116,26 +116,138 @@ async function parseJsonSafe(response: Response) {
 }
 
 function getEmailBisonTimeoutMs(): number {
-  const parsed = Number.parseInt(process.env.EMAILBISON_TIMEOUT_MS || "15000", 10);
-  if (!Number.isFinite(parsed)) return 15_000;
-  return Math.max(1_000, Math.min(60_000, parsed));
+  // Default increased from 15s to 30s for better resilience under load
+  const parsed = Number.parseInt(process.env.EMAILBISON_TIMEOUT_MS || "30000", 10);
+  if (!Number.isFinite(parsed)) return 30_000;
+  return Math.max(1_000, Math.min(120_000, parsed));
 }
 
-async function emailBisonFetch(url: string, init: RequestInit): Promise<Response> {
+function getEmailBisonMaxRetries(): number {
+  const parsed = Number.parseInt(process.env.EMAILBISON_MAX_RETRIES || "2", 10);
+  if (!Number.isFinite(parsed)) return 2;
+  return Math.max(0, Math.min(5, parsed));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Determine if an error is retryable (timeout, network issues).
+ * Caller cancellation is NOT retryable.
+ */
+function isRetryableError(error: unknown, callerAborted: boolean): boolean {
+  // Never retry if the caller cancelled the request (navigation, request shutdown)
+  if (callerAborted) return false;
+
+  if (error instanceof Error) {
+    const name = error.name;
+    const msg = error.message;
+
+    // Timeout abort (our own deadline)
+    if (name === "AbortError") return true;
+
+    // Network errors
+    if (msg.includes("ECONNRESET")) return true;
+    if (msg.includes("ETIMEDOUT")) return true;
+    if (msg.includes("ENOTFOUND")) return true;
+    if (msg.includes("fetch failed")) return true;
+  }
+  return false;
+}
+
+/**
+ * Determine the abort "kind" for logging purposes.
+ */
+function classifyAbort(error: unknown, callerAborted: boolean): "timeout" | "caller" | "unknown" {
+  if (callerAborted) return "caller";
+  if (error instanceof Error && error.name === "AbortError") return "timeout";
+  return "unknown";
+}
+
+interface EmailBisonFetchOptions {
+  /** Max retries (default: EMAILBISON_MAX_RETRIES env or 2). Only applies to GET requests. */
+  maxRetries?: number;
+  /** Base delay for exponential backoff (default: 1000ms) */
+  retryDelayMs?: number;
+}
+
+async function emailBisonFetch(
+  url: string,
+  init: RequestInit,
+  opts?: EmailBisonFetchOptions
+): Promise<Response> {
   const timeoutMs = getEmailBisonTimeoutMs();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const method = (init.method || "GET").toUpperCase();
 
-  if (init.signal) {
-    if (init.signal.aborted) controller.abort();
-    else init.signal.addEventListener("abort", () => controller.abort(), { once: true });
+  // Only retry GET requests (safe/idempotent)
+  const maxRetries = method === "GET" ? (opts?.maxRetries ?? getEmailBisonMaxRetries()) : 0;
+  const baseDelay = opts?.retryDelayMs ?? 1000;
+
+  // Track if caller's signal is aborted
+  let callerAborted = init.signal?.aborted ?? false;
+  if (init.signal && !callerAborted) {
+    init.signal.addEventListener("abort", () => {
+      callerAborted = true;
+    }, { once: true });
   }
 
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+    // If caller has already aborted, propagate immediately
+    if (callerAborted) {
+      clearTimeout(timeout);
+      throw new Error("Request cancelled by caller");
+    }
+
+    // Link caller's signal to our controller
+    if (init.signal) {
+      init.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timeout);
+      return response;
+    } catch (error) {
+      clearTimeout(timeout);
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      const abortKind = classifyAbort(error, callerAborted);
+
+      // Don't retry non-retryable errors
+      if (!isRetryableError(error, callerAborted)) {
+        if (abortKind === "caller") {
+          console.log(`[EmailBison] Request cancelled by caller: ${url}`);
+        } else {
+          console.error(`[EmailBison] Non-retryable error (${abortKind}): ${lastError.message}`);
+        }
+        throw lastError;
+      }
+
+      // If we have retries left, wait and try again
+      if (attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        console.warn(
+          `[EmailBison] Retry ${attempt + 1}/${maxRetries} after ${delay}ms (${abortKind}): ${url}`
+        );
+        await sleep(delay);
+        continue;
+      }
+
+      // Out of retries
+      console.error(
+        `[EmailBison] All ${maxRetries + 1} attempts failed for ${url}: ${lastError.message}`
+      );
+      throw lastError;
+    }
   }
+
+  throw lastError ?? new Error("Unexpected: no error captured");
 }
 
 export async function fetchEmailBisonCampaigns(

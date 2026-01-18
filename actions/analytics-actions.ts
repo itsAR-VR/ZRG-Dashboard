@@ -3,7 +3,31 @@
 import { prisma } from "@/lib/prisma";
 import { POSITIVE_SENTIMENTS } from "@/lib/sentiment-shared";
 import { resolveClientScope } from "@/lib/workspace-access";
-import type { MeetingBookingProvider } from "@prisma/client";
+import { areBothWithinEstBusinessHours, formatDurationMs } from "@/lib/business-hours";
+import { getSupabaseUserEmailById } from "@/lib/supabase/admin";
+import type { MeetingBookingProvider, ClientMemberRole } from "@prisma/client";
+
+export interface ResponseTimeMetrics {
+  setterResponseTime: {
+    avgMs: number;
+    formatted: string;
+    sampleCount: number;
+  };
+  clientResponseTime: {
+    avgMs: number;
+    formatted: string;
+    sampleCount: number;
+  };
+}
+
+export interface SetterResponseTimeRow {
+  userId: string;
+  email: string | null;
+  role: ClientMemberRole | null; // null if former member
+  avgResponseTimeMs: number;
+  avgResponseTimeFormatted: string;
+  responseCount: number;
+}
 
 export interface AnalyticsData {
   overview: {
@@ -12,7 +36,9 @@ export interface AnalyticsData {
     responses: number;
     responseRate: number;
     meetingsBooked: number;
-    avgResponseTime: string;
+    avgResponseTime: string; // Backward compatibility - same as setterResponseTime
+    setterResponseTime: string;
+    clientResponseTime: string;
   };
   sentimentBreakdown: {
     sentiment: string;
@@ -40,34 +66,58 @@ export interface AnalyticsData {
     responses: number;
     meetingsBooked: number;
   }[];
+  perSetterResponseTimes: SetterResponseTimeRow[];
 }
 
 /**
- * Calculate average response time from inbound messages to outbound responses
+ * Calculate response time metrics with business hours filtering (9am-5pm EST, weekdays only).
+ *
+ * Separates two metrics:
+ * - Setter Response Time: Time from client inbound message to our outbound response
+ * - Client Response Time: Time from our outbound message to client inbound response
+ *
+ * Both metrics only count message pairs where BOTH timestamps are within business hours.
+ * Messages are paired within the same channel to avoid cross-channel artifacts.
+ *
  * @param clientId - Optional workspace ID to filter by
- * @returns Formatted string like "2.4h" or "15m" or "N/A"
+ * @returns ResponseTimeMetrics with setter and client response time data
  */
-async function calculateAvgResponseTime(clientId?: string | null): Promise<string> {
+async function calculateResponseTimeMetrics(clientId?: string | null): Promise<ResponseTimeMetrics> {
+  const defaultMetrics: ResponseTimeMetrics = {
+    setterResponseTime: { avgMs: 0, formatted: "N/A", sampleCount: 0 },
+    clientResponseTime: { avgMs: 0, formatted: "N/A", sampleCount: 0 },
+  };
+
   try {
     const scope = await resolveClientScope(clientId);
-    if (scope.clientIds.length === 0) return "N/A";
+    if (scope.clientIds.length === 0) return defaultMetrics;
+
+    // Get recent messages (last 30 days for performance)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
     // Get all leads with their messages ordered by actual message time
     const leads = await prisma.lead.findMany({
       where: { clientId: { in: scope.clientIds } },
       include: {
         messages: {
-          orderBy: { sentAt: "asc" }, // Use sentAt for accurate timing
+          where: { sentAt: { gte: thirtyDaysAgo } },
+          orderBy: { sentAt: "asc" },
           select: {
             direction: true,
+            channel: true,
             sentAt: true,
           },
         },
       },
     });
 
-    const responseTimes: number[] = [];
+    const setterResponseTimes: number[] = [];
+    const clientResponseTimes: number[] = [];
 
-    // For each lead, find response times (inbound -> outbound pairs)
+    const MAX_RESPONSE_TIME_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+    // For each lead, find response times within the same channel
     for (const lead of leads) {
       const messages = lead.messages;
 
@@ -75,41 +125,195 @@ async function calculateAvgResponseTime(clientId?: string | null): Promise<strin
         const current = messages[i];
         const next = messages[i + 1];
 
-        // Look for inbound message followed by outbound response
+        // Only pair messages within the same channel
+        if (current.channel !== next.channel) {
+          continue;
+        }
+
+        const currentTime = new Date(current.sentAt);
+        const nextTime = new Date(next.sentAt);
+        const responseTimeMs = nextTime.getTime() - currentTime.getTime();
+
+        // Skip if response time is negative or exceeds 7 days
+        if (responseTimeMs <= 0 || responseTimeMs > MAX_RESPONSE_TIME_MS) {
+          continue;
+        }
+
+        // Only count if BOTH timestamps are within business hours (9am-5pm EST, weekdays)
+        if (!areBothWithinEstBusinessHours(currentTime, nextTime)) {
+          continue;
+        }
+
+        // Setter response: inbound -> outbound (client sends, we reply)
         if (current.direction === "inbound" && next.direction === "outbound") {
-          const responseTimeMs = new Date(next.sentAt).getTime() - new Date(current.sentAt).getTime();
-          // Only count responses within 7 days (ignore stale data)
-          if (responseTimeMs > 0 && responseTimeMs < 7 * 24 * 60 * 60 * 1000) {
-            responseTimes.push(responseTimeMs);
-          }
+          setterResponseTimes.push(responseTimeMs);
+        }
+
+        // Client response: outbound -> inbound (we send, client replies)
+        if (current.direction === "outbound" && next.direction === "inbound") {
+          clientResponseTimes.push(responseTimeMs);
         }
       }
     }
 
-    if (responseTimes.length === 0) {
-      return "N/A";
+    // Calculate setter response time average
+    let setterResponseTime = defaultMetrics.setterResponseTime;
+    if (setterResponseTimes.length > 0) {
+      const avgMs = setterResponseTimes.reduce((sum, t) => sum + t, 0) / setterResponseTimes.length;
+      setterResponseTime = {
+        avgMs,
+        formatted: formatDurationMs(avgMs),
+        sampleCount: setterResponseTimes.length,
+      };
     }
 
-    // Calculate average in milliseconds
-    const avgMs = responseTimes.reduce((sum, time) => sum + time, 0) / responseTimes.length;
-
-    // Format the time
-    const minutes = Math.round(avgMs / (1000 * 60));
-
-    if (minutes < 60) {
-      return `${minutes}m`;
+    // Calculate client response time average
+    let clientResponseTime = defaultMetrics.clientResponseTime;
+    if (clientResponseTimes.length > 0) {
+      const avgMs = clientResponseTimes.reduce((sum, t) => sum + t, 0) / clientResponseTimes.length;
+      clientResponseTime = {
+        avgMs,
+        formatted: formatDurationMs(avgMs),
+        sampleCount: clientResponseTimes.length,
+      };
     }
 
-    const hours = avgMs / (1000 * 60 * 60);
-    if (hours < 24) {
-      return `${hours.toFixed(1)}h`;
-    }
-
-    const days = hours / 24;
-    return `${days.toFixed(1)}d`;
+    return { setterResponseTime, clientResponseTime };
   } catch (error) {
-    console.error("Error calculating avg response time:", error);
-    return "N/A";
+    console.error("Error calculating response time metrics:", error);
+    return defaultMetrics;
+  }
+}
+
+/**
+ * Calculate per-setter response times (how fast each setter responds to client messages).
+ * Only counts setter-sent messages (sentByUserId not null) with business hours filtering.
+ *
+ * @param clientId - Required workspace ID to filter by (per-setter only makes sense per workspace)
+ * @returns Array of SetterResponseTimeRow sorted by response count (most active first)
+ */
+async function calculatePerSetterResponseTimes(clientId: string): Promise<SetterResponseTimeRow[]> {
+  try {
+    // Get recent messages (last 30 days for performance)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    // Get all leads with their messages for this workspace
+    const leads = await prisma.lead.findMany({
+      where: { clientId },
+      include: {
+        messages: {
+          where: { sentAt: { gte: thirtyDaysAgo } },
+          orderBy: { sentAt: "asc" },
+          select: {
+            direction: true,
+            channel: true,
+            sentAt: true,
+            sentByUserId: true,
+          },
+        },
+      },
+    });
+
+    // Aggregate response times by userId
+    const responseTimesByUser = new Map<string, number[]>();
+    const MAX_RESPONSE_TIME_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+    for (const lead of leads) {
+      const messages = lead.messages;
+
+      for (let i = 0; i < messages.length - 1; i++) {
+        const current = messages[i];
+        const next = messages[i + 1];
+
+        // Only pair messages within the same channel
+        if (current.channel !== next.channel) {
+          continue;
+        }
+
+        // Only count setter responses (inbound -> outbound with sentByUserId)
+        if (current.direction !== "inbound" || next.direction !== "outbound") {
+          continue;
+        }
+
+        // Skip if no userId attribution (AI or system sent)
+        if (!next.sentByUserId) {
+          continue;
+        }
+
+        const currentTime = new Date(current.sentAt);
+        const nextTime = new Date(next.sentAt);
+        const responseTimeMs = nextTime.getTime() - currentTime.getTime();
+
+        // Skip if response time is negative or exceeds 7 days
+        if (responseTimeMs <= 0 || responseTimeMs > MAX_RESPONSE_TIME_MS) {
+          continue;
+        }
+
+        // Only count if BOTH timestamps are within business hours
+        if (!areBothWithinEstBusinessHours(currentTime, nextTime)) {
+          continue;
+        }
+
+        const userId = next.sentByUserId;
+        const existing = responseTimesByUser.get(userId) || [];
+        existing.push(responseTimeMs);
+        responseTimesByUser.set(userId, existing);
+      }
+    }
+
+    // No response times found
+    if (responseTimesByUser.size === 0) {
+      return [];
+    }
+
+    // Get ClientMember info for the users
+    const userIds = Array.from(responseTimesByUser.keys());
+    const members = await prisma.clientMember.findMany({
+      where: {
+        clientId,
+        userId: { in: userIds },
+      },
+      select: {
+        userId: true,
+        role: true,
+      },
+    });
+
+    const memberByUserId = new Map(members.map((m) => [m.userId, m]));
+
+    // Fetch emails for all unique userIds (batched for efficiency)
+    const emailByUserId = new Map<string, string | null>();
+    await Promise.all(
+      userIds.map(async (userId) => {
+        const email = await getSupabaseUserEmailById(userId);
+        emailByUserId.set(userId, email);
+      })
+    );
+
+    // Build result rows
+    const rows: SetterResponseTimeRow[] = [];
+    for (const [userId, times] of responseTimesByUser.entries()) {
+      const avgMs = times.reduce((sum, t) => sum + t, 0) / times.length;
+      const member = memberByUserId.get(userId);
+
+      rows.push({
+        userId,
+        email: emailByUserId.get(userId) ?? null,
+        role: member?.role ?? null,
+        avgResponseTimeMs: avgMs,
+        avgResponseTimeFormatted: formatDurationMs(avgMs),
+        responseCount: times.length,
+      });
+    }
+
+    // Sort by response count (most active first)
+    rows.sort((a, b) => b.responseCount - a.responseCount);
+
+    return rows;
+  } catch (error) {
+    console.error("Error calculating per-setter response times:", error);
+    return [];
   }
 }
 
@@ -135,12 +339,15 @@ export async function getAnalytics(clientId?: string | null): Promise<{
             responseRate: 0,
             meetingsBooked: 0,
             avgResponseTime: "N/A",
+            setterResponseTime: "N/A",
+            clientResponseTime: "N/A",
           },
           sentimentBreakdown: [],
           weeklyStats: [],
           leadsByStatus: [],
           topClients: [],
           smsSubClients: [],
+          perSetterResponseTimes: [],
         },
       };
     }
@@ -389,8 +596,13 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       smsSubClients.sort((a, b) => b.leads - a.leads);
     }
 
-    // Calculate actual average response time
-    const avgResponseTime = await calculateAvgResponseTime(clientId);
+    // Calculate response time metrics (setter and client, business hours only)
+    const responseTimeMetrics = await calculateResponseTimeMetrics(clientId);
+
+    // Calculate per-setter response times (only when a specific workspace is selected)
+    const perSetterResponseTimes = clientId
+      ? await calculatePerSetterResponseTimes(clientId)
+      : [];
 
     return {
       success: true,
@@ -401,13 +613,16 @@ export async function getAnalytics(clientId?: string | null): Promise<{
           responses,
           responseRate,
           meetingsBooked,
-          avgResponseTime,
+          avgResponseTime: responseTimeMetrics.setterResponseTime.formatted, // Backward compatibility
+          setterResponseTime: responseTimeMetrics.setterResponseTime.formatted,
+          clientResponseTime: responseTimeMetrics.clientResponseTime.formatted,
         },
         sentimentBreakdown,
         weeklyStats,
         leadsByStatus,
         topClients,
         smsSubClients,
+        perSetterResponseTimes,
       },
     };
   } catch (error) {

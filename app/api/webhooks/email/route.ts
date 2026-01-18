@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { BackgroundJobStatus, BackgroundJobType } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
 import {
-  analyzeInboundEmailReply,
   buildSentimentTranscriptFromMessages,
-  classifySentiment,
   detectBounce,
   isOptOutText,
   SENTIMENT_TO_STATUS,
@@ -19,7 +17,8 @@ import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
-export const maxDuration = 800;
+// Reduced from 800s to 60s after moving AI classification to background jobs (Phase 31g).
+export const maxDuration = 60;
 
 // =============================================================================
 // Type Definitions
@@ -94,8 +93,8 @@ type InboxxiaWebhook = {
 type Client = {
   id: string;
   name: string;
-  ghlLocationId: string;
-  ghlPrivateKey: string;
+  ghlLocationId: string | null;
+  ghlPrivateKey: string | null;
   emailBisonApiKey: string | null;
   emailBisonWorkspaceId: string | null;
   userId: string;
@@ -344,7 +343,7 @@ function parseBounceRecipient(htmlBody: string | null | undefined, textBody: str
       const email = match[1].trim().toLowerCase();
       // Validate it looks like an email and isn't a daemon address
       if (email.includes("@") && !isBounceEmail(email)) {
-        console.log(`[Bounce Parser] Found recipient: ${email}`);
+        console.log("[Bounce Parser] Found recipient email in bounce body");
         return email;
       }
     }
@@ -540,46 +539,25 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   const previousSentiment = lead.sentimentTag;
   const wasFollowUp = previousSentiment === "Follow Up" || previousSentiment === "Snoozed";
 
-  // If Inboxxia already marked as interested, use that; otherwise classify with AI
-  // Note: Any inbound reply will reclassify sentiment, clearing "Follow Up" or "Snoozed" tags
+  // FAST PATH: Use quick heuristics for immediate response, defer AI classification to background job.
+  // This prevents webhook timeouts by avoiding slow AI calls on the critical path.
+  // Note: Any inbound reply will reclassify sentiment, clearing "Follow Up" or "Snoozed" tags.
   let sentimentTag: SentimentTag;
-  let cleanedBodyForStorage: string = cleaned.cleaned || contentForClassification;
+  const cleanedBodyForStorage: string = cleaned.cleaned || contentForClassification;
   const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
   const mustBlacklist =
     isOptOutText(inboundCombinedForSafety) ||
     detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
 
   if (mustBlacklist) {
+    // Safety-critical: opt-outs and bounces must be classified immediately
     sentimentTag = "Blacklist";
   } else if (reply.interested === true) {
+    // Provider-flagged interest is reliable
     sentimentTag = "Interested";
   } else {
-    const analysis = await analyzeInboundEmailReply({
-      clientId: client.id,
-      leadId: lead.id,
-      clientName: client.name,
-      lead: {
-        first_name: lead.firstName ?? null,
-        last_name: lead.lastName ?? null,
-        email: lead.email ?? null,
-        time_received: reply.date_received ?? null,
-      },
-      subject: reply.email_subject ?? null,
-      body_text: reply.text_body ?? null,
-      provider_cleaned_text: cleaned.cleaned ?? null,
-      entire_conversation_thread_html: reply.html_body ?? null,
-      automated_reply: reply.automated_reply ?? null,
-      conversation_transcript: transcript,
-    });
-
-    if (analysis) {
-      sentimentTag = mapEmailInboxClassificationToSentimentTag(analysis.classification);
-      if (analysis.cleaned_response?.trim()) {
-        cleanedBodyForStorage = analysis.cleaned_response.trim();
-      }
-    } else {
-      sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
-    }
+    // Use "Neutral" as placeholder - background job will run full AI classification
+    sentimentTag = "Neutral";
   }
 
   // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
@@ -592,25 +570,54 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
 
-  // Create inbound message
-  const message = await prisma.message.create({
-    data: {
-      emailBisonReplyId,
-      channel: "email",
-      source: "zrg", // Inbound replies are processed by ZRG
-      body: cleanedBodyForStorage,
-      rawText: cleaned.rawText ?? null,
-      rawHtml: cleaned.rawHtml ?? null,
-      subject: reply.email_subject ?? null,
-      cc: ccAddresses,
-      bcc: bccAddresses,
-      isRead: false,
-      direction: "inbound",
-      leadId: lead.id,
-      sentAt,
-    },
-    select: { id: true },
-  });
+  // Create inbound message - use try/catch to handle P2002 race condition
+  // (two concurrent webhook deliveries can both pass the initial dedup check)
+  let message: { id: string };
+  try {
+    message = await prisma.message.create({
+      data: {
+        emailBisonReplyId,
+        channel: "email",
+        source: "zrg", // Inbound replies are processed by ZRG
+        body: cleanedBodyForStorage,
+        rawText: cleaned.rawText ?? null,
+        rawHtml: cleaned.rawHtml ?? null,
+        subject: reply.email_subject ?? null,
+        cc: ccAddresses,
+        bcc: bccAddresses,
+        isRead: false,
+        direction: "inbound",
+        leadId: lead.id,
+        sentAt,
+      },
+      select: { id: true },
+    });
+  } catch (error) {
+    // Handle P2002 unique constraint violation (race condition with duplicate webhook)
+    if (isPrismaUniqueConstraintError(error)) {
+      console.log(`[LEAD_REPLIED] Dedupe race: emailBisonReplyId=${emailBisonReplyId} already exists`);
+      const existing = await prisma.message.findUnique({
+        where: { emailBisonReplyId },
+        select: { id: true, leadId: true },
+      });
+      if (existing) {
+        await enqueueEmailInboundPostProcessJob({
+          clientId: client.id,
+          leadId: existing.leadId,
+          messageId: existing.id,
+          dedupeKey,
+        });
+        return NextResponse.json({
+          success: true,
+          deduped: true,
+          postProcessEnqueued: true,
+          eventType: "LEAD_REPLIED",
+          leadId: existing.leadId,
+        });
+      }
+    }
+    throw error;
+  }
 
   await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
@@ -637,8 +644,9 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     console.error("[Email Webhook] Failed to pause follow-ups on reply:", err)
   );
 
-  // Compliance/backstop: if the lead opted out or sent an automated reply, reject any pending drafts.
-  if (sentimentTag === "Blacklist" || sentimentTag === "Automated Reply") {
+  // Compliance/backstop: if the lead opted out (detected via quick heuristics), reject any pending drafts.
+  // Note: "Automated Reply" detection moved to background job where full AI classification runs.
+  if (sentimentTag === "Blacklist") {
     await prisma.aIDraft.updateMany({
       where: {
         leadId: lead.id,
@@ -698,8 +706,9 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     console.log(`[Auto-Book] Booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
   }
 
-  // Compliance/backstop: if the lead opted out or sent an automated reply, reject any pending drafts.
-  if (sentimentTag === "Blacklist" || sentimentTag === "Automated Reply") {
+  // Compliance/backstop: if the lead opted out (detected via quick heuristics), reject any pending drafts.
+  // Note: "Automated Reply" detection moved to background job where full AI classification runs.
+  if (sentimentTag === "Blacklist") {
     await prisma.aIDraft.updateMany({
       where: {
         leadId: lead.id,
@@ -740,7 +749,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
 
     if (messageExtraction.phone && !currentLead?.phone) {
       messageUpdates.phone = toStoredPhone(messageExtraction.phone) || messageExtraction.phone;
-      console.log(`[Enrichment] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
+      console.log(`[Enrichment] Found phone in message for lead ${lead.id}`);
     }
     if (messageExtraction.linkedinUrl && !currentLead?.linkedinUrl) {
       messageUpdates.linkedinUrl = messageExtraction.linkedinUrl;
@@ -1057,24 +1066,52 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
 
-  const message = await prisma.message.create({
-    data: {
-      emailBisonReplyId,
-      channel: "email",
-      source: "zrg",
-      body: cleanedBodyForStorage,
-      rawText: cleaned.rawText ?? null,
-      rawHtml: cleaned.rawHtml ?? null,
-      subject: reply.email_subject ?? null,
-      cc: ccAddresses,
-      bcc: bccAddresses,
-      isRead: false,
-      direction: "inbound",
-      leadId: lead.id,
-      sentAt,
-    },
-    select: { id: true },
-  });
+  // Create inbound message - use try/catch to handle P2002 race condition
+  let message: { id: string };
+  try {
+    message = await prisma.message.create({
+      data: {
+        emailBisonReplyId,
+        channel: "email",
+        source: "zrg",
+        body: cleanedBodyForStorage,
+        rawText: cleaned.rawText ?? null,
+        rawHtml: cleaned.rawHtml ?? null,
+        subject: reply.email_subject ?? null,
+        cc: ccAddresses,
+        bcc: bccAddresses,
+        isRead: false,
+        direction: "inbound",
+        leadId: lead.id,
+        sentAt,
+      },
+      select: { id: true },
+    });
+  } catch (error) {
+    if (isPrismaUniqueConstraintError(error)) {
+      console.log(`[LEAD_INTERESTED] Dedupe race: emailBisonReplyId=${emailBisonReplyId} already exists`);
+      const existing = await prisma.message.findUnique({
+        where: { emailBisonReplyId },
+        select: { id: true, leadId: true },
+      });
+      if (existing) {
+        await enqueueEmailInboundPostProcessJob({
+          clientId: client.id,
+          leadId: existing.leadId,
+          messageId: existing.id,
+          dedupeKey,
+        });
+        return NextResponse.json({
+          success: true,
+          deduped: true,
+          postProcessEnqueued: true,
+          eventType: "LEAD_INTERESTED",
+          leadId: existing.leadId,
+        });
+      }
+    }
+    throw error;
+  }
 
   await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
@@ -1399,7 +1436,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 
   // Check if this is a bounce notification
   if (isBounceEmail(fromEmail)) {
-    console.log(`[UNTRACKED_REPLY] Detected bounce email from: ${fromEmail}`);
+    console.log("[UNTRACKED_REPLY] Detected bounce email");
 
     // Try to parse the original recipient from the bounce body
     const originalRecipient = parseBounceRecipient(reply.html_body, reply.text_body);
@@ -1419,22 +1456,36 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
         const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
         const sentAt = parseDate(reply.date_received, reply.created_at);
 
-        // Create bounce message attached to the ORIGINAL lead
-        await prisma.message.create({
-          data: {
-            emailBisonReplyId,
-            channel: "email",
-            source: "bounce",
-            body: cleaned.cleaned || `Email delivery failed to ${originalRecipient}`,
-            rawText: cleaned.rawText ?? null,
-            rawHtml: cleaned.rawHtml ?? null,
-            subject: reply.email_subject ?? "Delivery Status Notification (Failure)",
-            isRead: false,
-            direction: "inbound",
-            leadId: originalLead.id,
-            sentAt,
-          },
-        });
+        // Create bounce message attached to the ORIGINAL lead - handle P2002 race
+        try {
+          await prisma.message.create({
+            data: {
+              emailBisonReplyId,
+              channel: "email",
+              source: "bounce",
+              body: cleaned.cleaned || `Email delivery failed to ${originalRecipient}`,
+              rawText: cleaned.rawText ?? null,
+              rawHtml: cleaned.rawHtml ?? null,
+              subject: reply.email_subject ?? "Delivery Status Notification (Failure)",
+              isRead: false,
+              direction: "inbound",
+              leadId: originalLead.id,
+              sentAt,
+            },
+          });
+        } catch (error) {
+          if (isPrismaUniqueConstraintError(error)) {
+            console.log(`[BOUNCE] Dedupe race: emailBisonReplyId=${emailBisonReplyId} already exists`);
+            return NextResponse.json({
+              success: true,
+              deduped: true,
+              eventType: "BOUNCE_HANDLED",
+              originalLeadId: originalLead.id,
+              bouncedEmail: originalRecipient,
+            });
+          }
+          throw error;
+        }
 
         await bumpLeadMessageRollup({ leadId: originalLead.id, direction: "inbound", sentAt });
 
@@ -1529,9 +1580,10 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   const previousSentiment = lead.sentimentTag;
   const wasFollowUp = previousSentiment === "Follow Up" || previousSentiment === "Snoozed";
 
-  // Classify sentiment - any inbound reply clears "Follow Up" or "Snoozed" tags
+  // FAST PATH: Use quick heuristics for immediate response, defer AI classification to background job.
+  // This prevents webhook timeouts by avoiding slow AI calls on the critical path.
   let sentimentTag: SentimentTag;
-  let cleanedBodyForStorage: string = cleaned.cleaned || contentForClassification;
+  const cleanedBodyForStorage: string = cleaned.cleaned || contentForClassification;
 
   const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
   const mustBlacklist =
@@ -1539,36 +1591,14 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
 
   if (mustBlacklist) {
+    // Safety-critical: opt-outs and bounces must be classified immediately
     sentimentTag = "Blacklist";
   } else if (reply.interested === true) {
+    // Provider-flagged interest is reliable
     sentimentTag = "Interested";
   } else {
-    const analysis = await analyzeInboundEmailReply({
-      clientId: client.id,
-      leadId: lead.id,
-      clientName: client.name,
-      lead: {
-        first_name: lead.firstName ?? null,
-        last_name: lead.lastName ?? null,
-        email: lead.email ?? null,
-        time_received: reply.date_received ?? null,
-      },
-      subject: reply.email_subject ?? null,
-      body_text: reply.text_body ?? null,
-      provider_cleaned_text: cleaned.cleaned ?? null,
-      entire_conversation_thread_html: reply.html_body ?? null,
-      automated_reply: reply.automated_reply ?? null,
-      conversation_transcript: transcript,
-    });
-
-    if (analysis) {
-      sentimentTag = mapEmailInboxClassificationToSentimentTag(analysis.classification);
-      if (analysis.cleaned_response?.trim()) {
-        cleanedBodyForStorage = analysis.cleaned_response.trim();
-      }
-    } else {
-      sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
-    }
+    // Use "Neutral" as placeholder - background job will run full AI classification
+    sentimentTag = "Neutral";
   }
 
   // Log when "Follow Up" or "Snoozed" tag is being cleared by a reply
@@ -1581,23 +1611,52 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
   const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
 
-  await prisma.message.create({
-    data: {
-      emailBisonReplyId,
-      channel: "email",
-      source: "zrg",
-      body: cleanedBodyForStorage,
-      rawText: cleaned.rawText ?? null,
-      rawHtml: cleaned.rawHtml ?? null,
-      subject: reply.email_subject ?? null,
-      cc: ccAddresses,
-      bcc: bccAddresses,
-      isRead: false,
-      direction: "inbound",
-      leadId: lead.id,
-      sentAt,
-    },
-  });
+  // Create inbound message - use try/catch to handle P2002 race condition
+  let message: { id: string };
+  try {
+    message = await prisma.message.create({
+      data: {
+        emailBisonReplyId,
+        channel: "email",
+        source: "zrg",
+        body: cleanedBodyForStorage,
+        rawText: cleaned.rawText ?? null,
+        rawHtml: cleaned.rawHtml ?? null,
+        subject: reply.email_subject ?? null,
+        cc: ccAddresses,
+        bcc: bccAddresses,
+        isRead: false,
+        direction: "inbound",
+        leadId: lead.id,
+        sentAt,
+      },
+      select: { id: true },
+    });
+  } catch (error) {
+    if (isPrismaUniqueConstraintError(error)) {
+      console.log(`[UNTRACKED_REPLY] Dedupe race: emailBisonReplyId=${emailBisonReplyId} already exists`);
+      const existing = await prisma.message.findUnique({
+        where: { emailBisonReplyId },
+        select: { id: true, leadId: true },
+      });
+      if (existing) {
+        await enqueueEmailInboundPostProcessJob({
+          clientId: client.id,
+          leadId: existing.leadId,
+          messageId: existing.id,
+          dedupeKey,
+        });
+        return NextResponse.json({
+          success: true,
+          deduped: true,
+          postProcessEnqueued: true,
+          eventType: "UNTRACKED_REPLY_RECEIVED",
+          leadId: existing.leadId,
+        });
+      }
+    }
+    throw error;
+  }
 
   await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
@@ -1623,8 +1682,9 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     console.error("[Email Webhook] Failed to pause follow-ups on reply:", err)
   );
 
-  // Compliance/backstop: if the lead opted out or sent an automated reply, reject any pending drafts.
-  if (sentimentTag === "Blacklist" || sentimentTag === "Automated Reply") {
+  // Compliance/backstop: if the lead opted out (detected via quick heuristics), reject any pending drafts.
+  // Note: "Automated Reply" detection moved to background job where full AI classification runs.
+  if (sentimentTag === "Blacklist") {
     await prisma.aIDraft.updateMany({
       where: {
         leadId: lead.id,
@@ -1698,7 +1758,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 
     if (messageExtraction.phone && !currentLead?.phone) {
       messageUpdates.phone = toStoredPhone(messageExtraction.phone) || messageExtraction.phone;
-      console.log(`[Enrichment] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
+      console.log(`[Enrichment] Found phone in message for lead ${lead.id}`);
     }
     if (messageExtraction.linkedinUrl && !currentLead?.linkedinUrl) {
       messageUpdates.linkedinUrl = messageExtraction.linkedinUrl;
@@ -1739,7 +1799,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     }
   }
 
-  console.log(`[UNTRACKED_REPLY] Lead: ${lead.id}, From: ${fromEmail}, Sentiment: ${sentimentTag}`);
+  console.log(`[UNTRACKED_REPLY] Lead: ${lead.id}, Sentiment: ${sentimentTag}`);
 
   return NextResponse.json({
     success: true,
@@ -1791,27 +1851,35 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
 
   const sentAt = parseDate(scheduledEmail.sent_at);
 
-  // Create outbound message from campaign
-  await prisma.message.create({
-    data: {
-      inboxxiaScheduledEmailId,
-      channel: "email",
-      source: "inboxxia_campaign",
-      body: scheduledEmail.email_body || "",
-      rawHtml: scheduledEmail.email_body ?? null,
-      subject: scheduledEmail.email_subject ?? null,
-      isRead: true, // Outbound messages are "read"
-      direction: "outbound",
-      leadId: lead.id,
-      sentAt,
-    },
-  });
+  // Create outbound message from campaign - handle P2002 race condition
+  try {
+    await prisma.message.create({
+      data: {
+        inboxxiaScheduledEmailId,
+        channel: "email",
+        source: "inboxxia_campaign",
+        body: scheduledEmail.email_body || "",
+        rawHtml: scheduledEmail.email_body ?? null,
+        subject: scheduledEmail.email_subject ?? null,
+        isRead: true, // Outbound messages are "read"
+        direction: "outbound",
+        leadId: lead.id,
+        sentAt,
+      },
+    });
+  } catch (error) {
+    if (isPrismaUniqueConstraintError(error)) {
+      console.log(`[EMAIL_SENT] Dedupe race: inboxxiaScheduledEmailId=${inboxxiaScheduledEmailId} already exists`);
+      return NextResponse.json({ success: true, deduped: true, eventType: "EMAIL_SENT" });
+    }
+    throw error;
+  }
 
   await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt });
 
   await autoStartNoResponseSequenceOnOutbound({ leadId: lead.id, outboundAt: sentAt });
 
-  console.log(`[EMAIL_SENT] Lead: ${lead.id}, Subject: ${scheduledEmail.email_subject}`);
+  console.log(`[EMAIL_SENT] Lead: ${lead.id} (subjectLen=${(scheduledEmail.email_subject || "").length})`);
 
   return NextResponse.json({
     success: true,
@@ -1833,7 +1901,7 @@ async function handleEmailOpened(request: NextRequest, payload: InboxxiaWebhook)
   const leadEmail = data?.lead?.email;
   const leadId = data?.lead?.id;
 
-  console.log(`[EMAIL_OPENED] Lead: ${leadId || "unknown"}, Email: ${leadEmail || "unknown"}, Client: ${client.name}`);
+  console.log(`[EMAIL_OPENED] Lead: ${leadId || "unknown"}, ClientId: ${client.id}`);
 
   // Future: Could increment Lead.emailOpens counter here
 
@@ -1901,7 +1969,7 @@ async function handleEmailBounced(request: NextRequest, payload: InboxxiaWebhook
 
   await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
-  console.log(`[EMAIL_BOUNCED] Lead: ${lead.id}, Email: ${lead.email} - BLACKLISTED`);
+  console.log(`[EMAIL_BOUNCED] Lead: ${lead.id} - BLACKLISTED`);
 
   return NextResponse.json({
     success: true,
@@ -1954,7 +2022,7 @@ async function handleLeadUnsubscribed(request: NextRequest, payload: InboxxiaWeb
     data: { status: "rejected" },
   });
 
-  console.log(`[LEAD_UNSUBSCRIBED] Lead: ${lead.id}, Email: ${lead.email} - BLACKLISTED (Unsubscribed)`);
+  console.log(`[LEAD_UNSUBSCRIBED] Lead: ${lead.id} - BLACKLISTED (Unsubscribed)`);
 
   return NextResponse.json({
     success: true,

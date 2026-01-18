@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Users, MessageSquare, Calendar, Clock, ArrowUpRight, ArrowDownRight, Loader2, BarChart3 } from "lucide-react"
+import { Users, MessageSquare, Calendar, Clock, ArrowUpRight, ArrowDownRight, Loader2, BarChart3, Send, Inbox, Info } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -21,7 +21,7 @@ import {
   Line,
   LabelList,
 } from "recharts"
-import { getAnalytics, getEmailCampaignAnalytics, type AnalyticsData, type EmailCampaignKpiRow } from "@/actions/analytics-actions"
+import { getAnalytics, getEmailCampaignAnalytics, type AnalyticsData, type EmailCampaignKpiRow, type SetterResponseTimeRow } from "@/actions/analytics-actions"
 
 // Sentiment colors for charts
 const SENTIMENT_COLORS: Record<string, string> = {
@@ -100,12 +100,23 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
   }, [activeWorkspace])
 
   const kpiCards = [
-    { label: "Total Leads", value: data?.overview.totalLeads.toLocaleString() || "0", icon: Users, change: 0, up: true },
-    { label: "Outbound Leads Contacted", value: data?.overview.outboundLeadsContacted.toLocaleString() || "0", icon: ArrowUpRight, change: 0, up: true },
-    { label: "Responses", value: data?.overview.responses.toLocaleString() || "0", icon: ArrowDownRight, change: 0, up: true },
-    { label: "Response Rate", value: `${data?.overview.responseRate || 0}%`, icon: MessageSquare, change: 0, up: true },
-    { label: "Meetings Booked", value: data?.overview.meetingsBooked.toString() || "0", icon: Calendar, change: 0, up: true },
-    { label: "Avg Response Time", value: data?.overview.avgResponseTime || "—", icon: Clock, change: 0, up: true },
+    { label: "Total Leads", value: data?.overview.totalLeads.toLocaleString() || "0", icon: Users },
+    { label: "Outbound Leads Contacted", value: data?.overview.outboundLeadsContacted.toLocaleString() || "0", icon: ArrowUpRight },
+    { label: "Responses", value: data?.overview.responses.toLocaleString() || "0", icon: ArrowDownRight },
+    { label: "Response Rate", value: `${data?.overview.responseRate || 0}%`, icon: MessageSquare },
+    { label: "Meetings Booked", value: data?.overview.meetingsBooked.toString() || "0", icon: Calendar },
+    {
+      label: "Setter Response",
+      value: data?.overview.setterResponseTime || "—",
+      icon: Send,
+      tooltip: "How fast setters reply to client messages (9am-5pm EST, weekdays)"
+    },
+    {
+      label: "Client Response",
+      value: data?.overview.clientResponseTime || "—",
+      icon: Inbox,
+      tooltip: "How fast clients reply to our messages (9am-5pm EST, weekdays)"
+    },
   ]
 
   // Prepare response sentiment breakdown for bar chart
@@ -202,12 +213,17 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
 
       <div className="p-6 space-y-6">
         {/* KPI Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
           {kpiCards.map((kpi) => (
             <Card key={kpi.label}>
               <CardContent className="p-4">
                 <div className="flex items-center justify-between mb-2">
                   <kpi.icon className="h-5 w-5 text-muted-foreground" />
+                  {kpi.tooltip && (
+                    <span title={kpi.tooltip}>
+                      <Info className="h-3.5 w-3.5 text-muted-foreground/50 cursor-help" />
+                    </span>
+                  )}
                 </div>
                 <p className="text-2xl font-bold">{kpi.value}</p>
                 <p className="text-xs text-muted-foreground">{kpi.label}</p>
@@ -283,7 +299,7 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                       <LabelList
                         dataKey="percentage"
                         position="right"
-                        formatter={(value: number) => formatPercent(value)}
+                        formatter={(value) => formatPercent(typeof value === "number" ? value : Number(value) || 0)}
                       />
                     </Bar>
                   </BarChart>
@@ -342,6 +358,76 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
             )}
           </CardContent>
         </Card>
+
+        {/* Per-Setter Response Times (workspace only) */}
+        {activeWorkspace && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Setter Response Times</CardTitle>
+              <CardDescription>
+                Average response time per setter (9am-5pm EST, last 30 days)
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {data.perSetterResponseTimes && data.perSetterResponseTimes.length > 0 ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Setter</TableHead>
+                      <TableHead className="text-right">Avg Response</TableHead>
+                      <TableHead className="text-right">Responses</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {data.perSetterResponseTimes.map((row, index) => {
+                      // Color code: < 30m = green, 30m-2h = yellow, > 2h = red
+                      const avgMinutes = row.avgResponseTimeMs / (1000 * 60)
+                      const badgeVariant = avgMinutes < 30 ? "default" : avgMinutes < 120 ? "secondary" : "destructive"
+
+                      return (
+                        <TableRow key={row.userId}>
+                          <TableCell className="font-medium">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                                  index === 0
+                                    ? "bg-yellow-500/20 text-yellow-500"
+                                    : index === 1
+                                      ? "bg-gray-400/20 text-gray-400"
+                                      : index === 2
+                                        ? "bg-orange-500/20 text-orange-500"
+                                        : "bg-muted text-muted-foreground"
+                                }`}
+                              >
+                                {index + 1}
+                              </span>
+                              <div className="flex flex-col">
+                                <span>{row.email || "Unknown User"}</span>
+                                {row.role && (
+                                  <span className="text-xs text-muted-foreground">{row.role}</span>
+                                )}
+                              </div>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Badge variant={badgeVariant}>
+                              {row.avgResponseTimeFormatted}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right">{row.responseCount}</TableCell>
+                        </TableRow>
+                      )
+                    })}
+                  </TableBody>
+                </Table>
+              ) : (
+                <div className="py-8 text-center text-muted-foreground">
+                  No setter response data available. Response times are tracked when setters reply to client messages during business hours (9am-5pm EST).
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* SMS Sub-clients (workspace only) */}
         {activeWorkspace ? (

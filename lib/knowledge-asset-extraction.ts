@@ -143,6 +143,7 @@ export async function extractKnowledgeNotesFromFile(opts: {
               { type: "input_text", text: buildKnowledgeNotesPrompt({ sourceLabel }) },
               {
                 type: "input_image",
+                detail: "auto",
                 image_url: `data:${mimeType};base64,${base64}`,
               },
             ],

@@ -1,38 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
 import { findOrCreateLead } from "@/lib/lead-matching";
-import {
-  analyzeInboundEmailReply,
-  buildSentimentTranscriptFromMessages,
-  classifySentiment,
-  detectBounce,
-  isOptOutText,
-  isPositiveSentiment,
-  SENTIMENT_TO_STATUS,
-  type SentimentTag,
-} from "@/lib/sentiment";
-import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { approveAndSendDraftSystem } from "@/actions/message-actions";
-import { autoStartMeetingRequestedSequenceIfEligible, autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
-import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
-import { evaluateAutoSend } from "@/lib/auto-send-evaluator";
-import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBooking, resumeAwaitingEnrichmentFollowUpsForLead } from "@/lib/followup-engine";
-import { ensureLeadTimezone } from "@/lib/timezone-inference";
-import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
+import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
-import { getPublicAppUrl } from "@/lib/app-url";
-import { sendSlackDmByEmail } from "@/lib/slack-dm";
-import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
-import { EmailIntegrationProvider } from "@prisma/client";
+import { EmailIntegrationProvider, BackgroundJobType } from "@prisma/client";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 import { encodeSmartLeadReplyHandle } from "@/lib/email-reply-handle";
-import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
+import { enqueueBackgroundJob, buildJobDedupeKey } from "@/lib/background-jobs/enqueue";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
-
-const WEBHOOK_DRAFT_TIMEOUT_MS =
-  Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
 
 type SmartLeadWebhookPayload = {
   event_type?: string;
@@ -88,52 +65,6 @@ function splitName(fullName: string | null): { firstName: string | null; lastNam
   return { firstName: parts[0], lastName: parts.slice(1).join(" ") || null };
 }
 
-function mapInboxClassificationToSentimentTag(classification: string): SentimentTag {
-  switch (classification) {
-    case "Meeting Booked":
-      return "Meeting Booked";
-    case "Meeting Requested":
-      return "Meeting Requested";
-    case "Call Requested":
-      return "Call Requested";
-    case "Information Requested":
-      return "Information Requested";
-    case "Follow Up":
-      return "Follow Up";
-    case "Not Interested":
-      return "Not Interested";
-    case "Automated Reply":
-      return "Automated Reply";
-    case "Out Of Office":
-      return "Out of Office";
-    case "Blacklist":
-      return "Blacklist";
-    default:
-      return "Neutral";
-  }
-}
-
-async function applyAutoFollowUpPolicyOnInboundEmail(opts: { clientId: string; leadId: string; sentimentTag: string | null }) {
-  if (!isPositiveSentiment(opts.sentimentTag)) {
-    await prisma.lead.updateMany({
-      where: { id: opts.leadId, enrichmentStatus: "pending" },
-      data: { enrichmentStatus: "not_needed" },
-    });
-    return;
-  }
-
-  const settings = await prisma.workspaceSettings.findUnique({
-    where: { clientId: opts.clientId },
-    select: { autoFollowUpsOnReply: true },
-  });
-  if (!settings?.autoFollowUpsOnReply) return;
-
-  await prisma.lead.updateMany({
-    where: { id: opts.leadId, autoFollowUpEnabled: false },
-    data: { autoFollowUpEnabled: true },
-  });
-}
-
 async function findClientById(clientId: string) {
   const client = await prisma.client.findUnique({
     where: { id: clientId },
@@ -169,13 +100,12 @@ function isAuthorizedSmartLeadWebhook(params: { request: NextRequest; payload: S
 }
 
 export async function POST(request: NextRequest) {
-  return withAiTelemetrySource(request.nextUrl.pathname, async () => {
-    try {
-      const url = new URL(request.url);
-      const clientId = url.searchParams.get("clientId")?.trim() || "";
-      if (!clientId) {
-        return NextResponse.json({ error: "Missing clientId" }, { status: 400 });
-      }
+  try {
+    const url = new URL(request.url);
+    const clientId = url.searchParams.get("clientId")?.trim() || "";
+    if (!clientId) {
+      return NextResponse.json({ error: "Missing clientId" }, { status: 400 });
+    }
 
     const client = await findClientById(clientId);
     if (!client) {
@@ -267,226 +197,70 @@ export async function POST(request: NextRequest) {
 
       const lead = leadResult.lead;
 
-      const cc = Array.isArray(payload.cc_emails) ? payload.cc_emails.filter((v): v is string => typeof v === "string" && v.trim()) : [];
+      const cc = Array.isArray(payload.cc_emails)
+        ? payload.cc_emails.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+        : [];
       const subject = normalizeOptionalString(payload.subject);
       const rawText = normalizeOptionalString(payload.preview_text);
       const cleanedBody = (rawText || "").trim();
       const sentAt = parseEpochToDate(payload.event_timestamp);
 
-      const contextMessages = await prisma.message.findMany({
-        where: { leadId: lead.id },
-        orderBy: { sentAt: "desc" },
-        take: 40,
-        select: { sentAt: true, channel: true, direction: true, body: true, subject: true },
-      });
-
-      const transcript = buildSentimentTranscriptFromMessages([
-        ...contextMessages.reverse(),
-        { sentAt, channel: "email", direction: "inbound", body: cleanedBody, subject: subject ?? null },
-      ]);
-
-      const previousSentiment = lead.sentimentTag;
-
-      const inboundCombinedForSafety = `Subject: ${subject ?? ""} | ${cleanedBody}`;
-      const mustBlacklist =
-        isOptOutText(inboundCombinedForSafety) ||
-        detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
-
-      let sentimentTag: SentimentTag;
-      if (mustBlacklist) {
-        sentimentTag = "Blacklist";
-      } else {
-        const analysis = await analyzeInboundEmailReply({
-          clientId: client.id,
-          leadId: lead.id,
-          clientName: client.name,
-          lead: {
-            first_name: lead.firstName ?? null,
-            last_name: lead.lastName ?? null,
-            email: lead.email ?? null,
-            time_received: sentAt.toISOString(),
+      // Create inbound message - handle P2002 race condition
+      let inboundMessage: { id: string };
+      try {
+        inboundMessage = await prisma.message.create({
+          data: {
+            emailBisonReplyId: replyHandle,
+            channel: "email",
+            source: "zrg",
+            body: cleanedBody,
+            rawText,
+            rawHtml: null,
+            subject,
+            cc,
+            bcc: [],
+            isRead: false,
+            direction: "inbound",
+            leadId: lead.id,
+            sentAt,
           },
-          subject,
-          body_text: rawText,
-          provider_cleaned_text: cleanedBody,
-          entire_conversation_thread_html: null,
-          automated_reply: null,
-          conversation_transcript: transcript,
+          select: { id: true },
         });
-
-        if (analysis) {
-          sentimentTag = mapInboxClassificationToSentimentTag(analysis.classification);
-        } else {
-          sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
+      } catch (error) {
+        if (isPrismaUniqueConstraintError(error)) {
+          console.log(`[SmartLead] Dedupe race: emailBisonReplyId=${replyHandle} already exists`);
+          return NextResponse.json({ success: true, deduped: true, eventType });
         }
+        throw error;
       }
-
-      const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
-
-      const inboundMessage = await prisma.message.create({
-        data: {
-          emailBisonReplyId: replyHandle,
-          channel: "email",
-          source: "zrg",
-          body: cleanedBody,
-          rawText,
-          rawHtml: null,
-          subject,
-          cc,
-          bcc: [],
-          isRead: false,
-          direction: "inbound",
-          leadId: lead.id,
-          sentAt,
-        },
-        select: { id: true },
-      });
 
       await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: { sentimentTag, status: leadStatus },
-      });
+      console.log(`[SmartLead Webhook] Created message ${inboundMessage.id} for lead ${lead.id}`);
 
-      await applyAutoFollowUpPolicyOnInboundEmail({ clientId: client.id, leadId: lead.id, sentimentTag });
+      // Enqueue background job for AI processing (sentiment, enrichment, drafts, auto-send)
+      const dedupeKey = buildJobDedupeKey(
+        client.id,
+        inboundMessage.id,
+        BackgroundJobType.SMARTLEAD_INBOUND_POST_PROCESS
+      );
 
-      await autoStartMeetingRequestedSequenceIfEligible({
+      await enqueueBackgroundJob({
+        type: BackgroundJobType.SMARTLEAD_INBOUND_POST_PROCESS,
+        clientId: client.id,
         leadId: lead.id,
-        previousSentiment,
-        newSentiment: sentimentTag,
+        messageId: inboundMessage.id,
+        dedupeKey,
       });
 
-      pauseFollowUpsOnReply(lead.id).catch((err) => console.error("[SmartLead Webhook] pauseFollowUpsOnReply error:", err));
-
-      const inboundText = cleanedBody.trim();
-      const snoozeKeywordHit =
-        /\b(after|until|from)\b/i.test(inboundText) &&
-        /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
-      if (snoozeKeywordHit) {
-        const tzResult = await ensureLeadTimezone(lead.id);
-        const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
-          messageText: inboundText,
-          timeZone: tzResult.timezone || "UTC",
-        });
-        if (snoozedUntilUtc && confidence >= 0.95) {
-          await prisma.lead.update({ where: { id: lead.id }, data: { snoozedUntil: snoozedUntilUtc } });
-          await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
-        }
-      }
-
-      const autoBook = await processMessageForAutoBooking(lead.id, inboundText);
-
-      if (sentimentTag === "Blacklist" || sentimentTag === "Automated Reply") {
-        await prisma.aIDraft.updateMany({
-          where: { leadId: lead.id, status: "pending" },
-          data: { status: "rejected" },
-        });
-      }
-
-      if (isPositiveSentiment(sentimentTag)) {
-        ensureGhlContactIdForLead(lead.id, { allowCreateWithoutPhone: true })
-          .then((res) => {
-            if (!res.success) console.log(`[GHL Contact] Lead ${lead.id}: ${res.error || "failed"}`);
-          })
-          .catch(() => undefined);
-        syncGhlContactPhoneForLead(lead.id).catch(() => undefined);
-      }
-
-      resumeAwaitingEnrichmentFollowUpsForLead(lead.id).catch(() => undefined);
-
-      let draftId: string | undefined;
-      let draftContent: string | undefined;
-      let autoReplySent = false;
-
-      if (!autoBook.booked && shouldGenerateDraft(sentimentTag, replyFromEmail)) {
-        const draftResult = await generateResponseDraft(
-          lead.id,
-          `Subject: ${subject ?? ""}\n\n${cleanedBody}`,
-          sentimentTag,
-          "email",
-          { timeoutMs: WEBHOOK_DRAFT_TIMEOUT_MS, triggerMessageId: inboundMessage.id }
-        );
-
-        if (draftResult.success) {
-          draftId = draftResult.draftId;
-          draftContent = draftResult.content || undefined;
-
-          const responseMode = emailCampaign?.responseMode ?? null;
-          const autoSendThreshold = emailCampaign?.autoSendConfidenceThreshold ?? 0.9;
-
-          if (responseMode === "AI_AUTO_SEND" && draftId && draftContent) {
-            const evaluation = await evaluateAutoSend({
-              clientId: client.id,
-              leadId: lead.id,
-              channel: "email",
-              latestInbound: cleanedBody,
-              subject: subject ?? null,
-              conversationHistory: transcript,
-              categorization: sentimentTag,
-              automatedReply: null,
-              replyReceivedAt: sentAt,
-              draft: draftContent,
-            });
-
-            if (evaluation.safeToSend && evaluation.confidence >= autoSendThreshold) {
-              const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
-              if (sendResult.success) autoReplySent = true;
-            } else {
-              const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
-              const campaignLabel = `${emailCampaign.name} (${emailCampaign.bisonCampaignId})`;
-              const url = `${getPublicAppUrl()}/?view=inbox&leadId=${lead.id}`;
-              const confidenceText = `${evaluation.confidence.toFixed(2)} < ${autoSendThreshold.toFixed(2)}`;
-
-              sendSlackDmByEmail({
-                email: "jon@zeroriskgrowth.com",
-                dedupeKey: `auto_send_review:${draftId}`,
-                text: `AI auto-send review needed (${confidenceText})`,
-                blocks: [
-                  { type: "header", text: { type: "plain_text", text: "AI Auto-Send: Review Needed", emoji: true } },
-                  {
-                    type: "section",
-                    fields: [
-                      { type: "mrkdwn", text: `*Lead:*\n${leadName}${lead.email ? `\n${lead.email}` : ""}` },
-                      { type: "mrkdwn", text: `*Campaign:*\n${campaignLabel}` },
-                      { type: "mrkdwn", text: `*Sentiment:*\n${sentimentTag || "Unknown"}` },
-                      { type: "mrkdwn", text: `*Confidence:*\n${evaluation.confidence.toFixed(2)} (thresh ${autoSendThreshold.toFixed(2)})` },
-                    ],
-                  },
-                  { type: "section", text: { type: "mrkdwn", text: `*Reason:*\n${evaluation.reason}` } },
-                  { type: "section", text: { type: "mrkdwn", text: `<${url}|Open lead in dashboard>` } },
-                ],
-              }).catch(() => undefined);
-            }
-          } else if (!emailCampaign && lead.autoReplyEnabled && draftId) {
-            const decision = await decideShouldAutoReply({
-              clientId: client.id,
-              leadId: lead.id,
-              channel: "email",
-              latestInbound: cleanedBody,
-              subject: subject ?? null,
-              conversationHistory: transcript,
-              categorization: sentimentTag,
-              automatedReply: null,
-              replyReceivedAt: sentAt,
-            });
-
-            if (decision.shouldReply) {
-              const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
-              if (sendResult.success) autoReplySent = true;
-            }
-          }
-        }
-      }
+      console.log(`[SmartLead Webhook] Enqueued post-process job for message ${inboundMessage.id}`);
 
       return NextResponse.json({
         success: true,
         eventType,
         leadId: lead.id,
-        sentimentTag,
-        status: leadStatus,
-        draftId,
-        autoReplySent,
+        messageId: inboundMessage.id,
+        jobEnqueued: true,
       });
     }
 
@@ -531,23 +305,32 @@ export async function POST(request: NextRequest) {
       const rawText = normalizeOptionalString(payload.preview_text);
       const body = (rawText || "").trim();
 
-      await prisma.message.create({
-        data: {
-          inboxxiaScheduledEmailId,
-          channel: "email",
-          source: "inboxxia_campaign",
-          body,
-          rawText,
-          rawHtml: null,
-          subject,
-          cc: [],
-          bcc: [],
-          isRead: true,
-          direction: "outbound",
-          leadId: leadResult.lead.id,
-          sentAt,
-        },
-      });
+      // Create outbound message - handle P2002 race condition
+      try {
+        await prisma.message.create({
+          data: {
+            inboxxiaScheduledEmailId,
+            channel: "email",
+            source: "inboxxia_campaign",
+            body,
+            rawText,
+            rawHtml: null,
+            subject,
+            cc: [],
+            bcc: [],
+            isRead: true,
+            direction: "outbound",
+            leadId: leadResult.lead.id,
+            sentAt,
+          },
+        });
+      } catch (error) {
+        if (isPrismaUniqueConstraintError(error)) {
+          console.log(`[SmartLead] Dedupe race: inboxxiaScheduledEmailId=${inboxxiaScheduledEmailId} already exists`);
+          return NextResponse.json({ success: true, deduped: true, eventType });
+        }
+        throw error;
+      }
 
       await bumpLeadMessageRollup({ leadId: leadResult.lead.id, direction: "outbound", sentAt });
       await autoStartNoResponseSequenceOnOutbound({ leadId: leadResult.lead.id, outboundAt: sentAt });
@@ -597,14 +380,13 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({ success: true, ignored: true, eventType });
-    } catch (error) {
-      console.error("[SmartLead Webhook] Error:", error);
-      return NextResponse.json(
-        { error: "Internal server error", details: error instanceof Error ? error.message : "Unknown error" },
-        { status: 500 }
-      );
-    }
-  });
+  } catch (error) {
+    console.error("[SmartLead Webhook] Error:", error);
+    return NextResponse.json(
+      { error: "Internal server error", details: error instanceof Error ? error.message : "Unknown error" },
+      { status: 500 }
+    );
+  }
 }
 
 export async function GET() {

@@ -32,6 +32,19 @@ const SENTIMENT_OPTIONS = [
   { value: "Neutral", label: "Neutral" },
 ] as const
 
+// Lead score filter options (Phase 33)
+const SCORE_FILTER_OPTIONS = [
+  { value: "all", label: "All Scores" },
+  { value: "4", label: "4 only (High priority)" },
+  { value: "3+", label: "3+ (Good fit)" },
+  { value: "2+", label: "2+ (Possible fit)" },
+  { value: "1+", label: "1+ (Scored)" },
+  { value: "unscored", label: "Unscored" },
+  { value: "disqualified", label: "Disqualified" },
+] as const
+
+export type ScoreFilter = typeof SCORE_FILTER_OPTIONS[number]["value"]
+
 interface ConversationFeedProps {
   conversations: Conversation[]
   activeConversationId: string | null
@@ -44,6 +57,9 @@ interface ConversationFeedProps {
   smsClientOptions?: Array<{ id: string; name: string; leadCount: number }>
   smsClientUnattributedCount?: number
   isLoadingSmsClients?: boolean
+  // Lead score filter (Phase 33)
+  activeScoreFilter?: ScoreFilter
+  onScoreFilterChange?: (filter: ScoreFilter) => void
   syncingLeadIds?: Set<string>
   onSyncAll?: (forceReclassify: boolean) => Promise<void>
   isSyncingAll?: boolean
@@ -57,9 +73,9 @@ interface ConversationFeedProps {
   onLoadMore?: () => void
 }
 
-export function ConversationFeed({ 
-  conversations, 
-  activeConversationId, 
+export function ConversationFeed({
+  conversations,
+  activeConversationId,
   onSelectConversation,
   onDebouncedSearchChange,
   activeSentiments = [],
@@ -69,6 +85,8 @@ export function ConversationFeed({
   smsClientOptions = [],
   smsClientUnattributedCount = 0,
   isLoadingSmsClients = false,
+  activeScoreFilter = "all",
+  onScoreFilterChange,
   syncingLeadIds = new Set(),
   onSyncAll,
   isSyncingAll = false,
@@ -263,7 +281,26 @@ export function ConversationFeed({
             </SelectContent>
           </Select>
         )}
-        
+
+        {/* Lead score filter (Phase 33) */}
+        {onScoreFilterChange && (
+          <Select
+            value={activeScoreFilter}
+            onValueChange={(v) => onScoreFilterChange(v as ScoreFilter)}
+          >
+            <SelectTrigger className="w-full text-xs">
+              <SelectValue placeholder="Lead Score" />
+            </SelectTrigger>
+            <SelectContent>
+              {SCORE_FILTER_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
         {/* Quick jump buttons */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-1">

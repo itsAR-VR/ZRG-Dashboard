@@ -1,8 +1,17 @@
 import "server-only";
 
 import type { Lead, Message } from "@prisma/client";
+import { classifyConversationMessages } from "./message-classifier";
+import { getResponseTypeLabel, type MessageResponseType } from "./message-response-type";
 
 export type LeadTranscriptMessage = Pick<Message, "id" | "sentAt" | "direction" | "channel" | "sentBy" | "subject" | "body">;
+
+/**
+ * Message with response type classification attached.
+ */
+export type ClassifiedTranscriptMessage = LeadTranscriptMessage & {
+  responseType: MessageResponseType;
+};
 
 function formatLeadName(lead: Pick<Lead, "firstName" | "lastName">): string | null {
   const first = (lead.firstName || "").trim();
@@ -34,7 +43,13 @@ export function formatLeadTranscript(opts: {
   >;
   campaign?: { id: string; name: string } | null;
   messages: LeadTranscriptMessage[];
-}): { header: string; transcript: string; lastMessages: string } {
+}): {
+  header: string;
+  transcript: string;
+  lastMessages: string;
+  /** Classified messages with response_type for downstream use */
+  classifiedMessages: ClassifiedTranscriptMessage[];
+} {
   const leadName = formatLeadName(opts.lead);
   const leadEmail = (opts.lead.email || "").trim() || null;
   const leadPhone = (opts.lead.phone || "").trim() || null;
@@ -66,26 +81,36 @@ export function formatLeadTranscript(opts: {
     2
   );
 
-  const sorted = opts.messages.slice().sort((a, b) => a.sentAt.getTime() - b.sentAt.getTime());
+  // Classify all messages with response type (deterministic, based on sequence)
+  const classified = classifyConversationMessages(opts.messages);
+
   const lines: string[] = [];
-  for (const m of sorted) {
+  for (const m of classified) {
     const ts = m.sentAt.toISOString();
     const subject = m.subject ? safeOneLine(m.subject, 120) : "";
     const sentBy = m.sentBy ? ` sentBy=${m.sentBy}` : "";
-    const meta = `${ts} ${m.direction} ${m.channel}${sentBy}${subject ? ` subject="${subject}"` : ""}`;
+    const responseTypeLabel = getResponseTypeLabel(m.responseType);
+    // Include response_type= for machine parsing and label for model visibility
+    const meta = `${ts} ${m.direction} ${m.channel} response_type=${m.responseType}${sentBy}${subject ? ` subject="${subject}"` : ""} ${responseTypeLabel}`;
     lines.push(`[${meta}]`);
     lines.push(m.body || "");
     lines.push("");
   }
 
-  const last = sorted.slice(-8);
+  const last = classified.slice(-8);
   const lastLines: string[] = [];
   for (const m of last) {
+    const responseTypeLabel = getResponseTypeLabel(m.responseType);
     lastLines.push(
-      `[${m.sentAt.toISOString()} ${m.direction} ${m.channel}${m.sentBy ? ` sentBy=${m.sentBy}` : ""}] ${safeOneLine(m.body || "", 280)}`
+      `[${m.sentAt.toISOString()} ${m.direction} ${m.channel} response_type=${m.responseType}${m.sentBy ? ` sentBy=${m.sentBy}` : ""} ${responseTypeLabel}] ${safeOneLine(m.body || "", 280)}`
     );
   }
 
-  return { header, transcript: lines.join("\n").trim(), lastMessages: lastLines.join("\n").trim() };
+  return {
+    header,
+    transcript: lines.join("\n").trim(),
+    lastMessages: lastLines.join("\n").trim(),
+    classifiedMessages: classified,
+  };
 }
 

@@ -21,12 +21,16 @@ export interface UserSettingsData {
   aiSmsGreeting: string | null;  // SMS greeting template (falls back to aiGreeting if null)
   aiSignature: string | null;
   aiGoals: string | null;
+  idealCustomerProfile: string | null;  // ICP for lead scoring (Phase 33)
   // Insights Chatbot (workspace-level, admin-gated updates)
   insightsChatModel: string | null;
   insightsChatReasoningEffort: string | null;
   insightsChatEnableCampaignChanges: boolean;
   insightsChatEnableExperimentWrites: boolean;
   insightsChatEnableFollowupPauses: boolean;
+  // Draft Generation Model Settings (workspace-level, admin-gated updates)
+  draftGenerationModel: string | null;
+  draftGenerationReasoningEffort: string | null;
   // AI Context Fields
   serviceDescription: string | null;
   qualificationQuestions: string | null; // JSON array
@@ -110,11 +114,14 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           aiSmsGreeting: "Hi {firstName},",
           aiSignature: null,
           aiGoals: null,
+          idealCustomerProfile: null,
           insightsChatModel: "gpt-5-mini",
           insightsChatReasoningEffort: "medium",
           insightsChatEnableCampaignChanges: false,
           insightsChatEnableExperimentWrites: false,
           insightsChatEnableFollowupPauses: false,
+          draftGenerationModel: "gpt-5.1",
+          draftGenerationReasoningEffort: "medium",
           serviceDescription: null,
           qualificationQuestions: null,
           companyName: null,
@@ -206,11 +213,14 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         aiSmsGreeting: settings.aiSmsGreeting,
         aiSignature: settings.aiSignature,
         aiGoals: settings.aiGoals,
+        idealCustomerProfile: settings.idealCustomerProfile,
         insightsChatModel: settings.insightsChatModel ?? "gpt-5-mini",
         insightsChatReasoningEffort: settings.insightsChatReasoningEffort ?? "medium",
         insightsChatEnableCampaignChanges: settings.insightsChatEnableCampaignChanges ?? false,
         insightsChatEnableExperimentWrites: settings.insightsChatEnableExperimentWrites ?? false,
         insightsChatEnableFollowupPauses: settings.insightsChatEnableFollowupPauses ?? false,
+        draftGenerationModel: settings.draftGenerationModel ?? "gpt-5.1",
+        draftGenerationReasoningEffort: settings.draftGenerationReasoningEffort ?? "medium",
         serviceDescription: settings.serviceDescription,
         qualificationQuestions: settings.qualificationQuestions,
         companyName: settings.companyName,
@@ -268,7 +278,10 @@ export async function updateUserSettings(
       data.insightsChatEnableCampaignChanges !== undefined ||
       data.insightsChatEnableExperimentWrites !== undefined ||
       data.insightsChatEnableFollowupPauses !== undefined;
-    if (wantsInsightsUpdate) {
+    const wantsDraftGenerationUpdate =
+      data.draftGenerationModel !== undefined ||
+      data.draftGenerationReasoningEffort !== undefined;
+    if (wantsInsightsUpdate || wantsDraftGenerationUpdate) {
       await requireClientAdminAccess(clientId);
     }
 
@@ -286,6 +299,8 @@ export async function updateUserSettings(
         insightsChatEnableCampaignChanges: data.insightsChatEnableCampaignChanges,
         insightsChatEnableExperimentWrites: data.insightsChatEnableExperimentWrites,
         insightsChatEnableFollowupPauses: data.insightsChatEnableFollowupPauses,
+        draftGenerationModel: data.draftGenerationModel,
+        draftGenerationReasoningEffort: data.draftGenerationReasoningEffort,
         serviceDescription: data.serviceDescription,
         qualificationQuestions: data.qualificationQuestions,
         companyName: data.companyName,
@@ -331,6 +346,8 @@ export async function updateUserSettings(
         insightsChatEnableCampaignChanges: data.insightsChatEnableCampaignChanges ?? false,
         insightsChatEnableExperimentWrites: data.insightsChatEnableExperimentWrites ?? false,
         insightsChatEnableFollowupPauses: data.insightsChatEnableFollowupPauses ?? false,
+        draftGenerationModel: data.draftGenerationModel,
+        draftGenerationReasoningEffort: data.draftGenerationReasoningEffort,
         serviceDescription: data.serviceDescription,
         qualificationQuestions: data.qualificationQuestions,
         companyName: data.companyName,
@@ -411,6 +428,7 @@ export async function updateAIPersonality(
     name?: string;
     tone?: string;
     greeting?: string;
+    idealCustomerProfile?: string;
   }
 ): Promise<{ success: boolean; error?: string }> {
   try {
@@ -425,12 +443,14 @@ export async function updateAIPersonality(
         aiPersonaName: data.name,
         aiTone: data.tone,
         aiGreeting: data.greeting,
+        idealCustomerProfile: data.idealCustomerProfile,
       },
       create: {
         clientId,
         aiPersonaName: data.name,
         aiTone: data.tone ?? "friendly-professional",
         aiGreeting: data.greeting,
+        idealCustomerProfile: data.idealCustomerProfile,
       },
     });
 

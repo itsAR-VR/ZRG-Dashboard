@@ -4,20 +4,12 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
+import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
 import { verifyUnipileWebhookSecret } from "@/lib/unipile-api";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
-import { buildSentimentTranscriptFromMessages, classifySentiment, isPositiveSentiment } from "@/lib/sentiment";
-import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { extractContactFromMessageContent } from "@/lib/signature-extractor";
-import { triggerEnrichmentForLead } from "@/lib/clay-api";
-import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
-import { pauseFollowUpsOnReply } from "@/lib/followup-engine";
-import { resumeAwaitingEnrichmentFollowUpsForLead } from "@/lib/followup-engine";
-import { toStoredPhone } from "@/lib/phone-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
-import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
-import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
+import { enqueueBackgroundJob, buildJobDedupeKey } from "@/lib/background-jobs/enqueue";
+import { BackgroundJobType } from "@prisma/client";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
@@ -59,65 +51,63 @@ interface UnipileWebhookPayload {
 }
 
 export async function POST(request: NextRequest) {
-  return withAiTelemetrySource(request.nextUrl.pathname, async () => {
-    try {
-      // Verify webhook using custom header authentication
-      if (!verifyUnipileWebhookSecret(request)) {
-        console.error("[LinkedIn Webhook] Invalid or missing secret");
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
-
-      const rawBody = await request.text();
-      const payload: UnipileWebhookPayload = JSON.parse(rawBody);
-
-      const accountId = (payload.account_id || "").trim();
-
-      console.log(`[LinkedIn Webhook] Received event: ${payload.event} for account ${accountId}`);
-
-      // Find the client (workspace) by Unipile account ID
-      const client = await prisma.client.findFirst({
-        where: { unipileAccountId: accountId },
-      });
-
-      if (!client) {
-        // Treat as a non-fatal configuration issue (prevents webhook retry storms).
-        console.warn(`[LinkedIn Webhook] Ignoring event for unknown Unipile account: ${accountId}`);
-        return NextResponse.json({ success: true, ignored: true });
-      }
-
-      // Handle different event types
-      switch (payload.event) {
-        case "message.received":
-          await handleInboundMessage(client.id, payload);
-          break;
-
-        case "connection.accepted":
-          await handleConnectionAccepted(client.id, payload);
-          break;
-
-        case "connection.received":
-          // Log connection requests but don't auto-accept
-          console.log(`[LinkedIn Webhook] Connection request received from ${payload.connection?.name}`);
-          break;
-
-        default:
-          console.log(`[LinkedIn Webhook] Unhandled event type: ${payload.event}`);
-      }
-
-      return NextResponse.json({ success: true });
-    } catch (error) {
-      console.error("[LinkedIn Webhook] Error processing event:", error);
-      return NextResponse.json(
-        { error: error instanceof Error ? error.message : "Unknown error" },
-        { status: 500 }
-      );
+  try {
+    // Verify webhook using custom header authentication
+    if (!verifyUnipileWebhookSecret(request)) {
+      console.error("[LinkedIn Webhook] Invalid or missing secret");
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-  });
+
+    const rawBody = await request.text();
+    const payload: UnipileWebhookPayload = JSON.parse(rawBody);
+
+    const accountId = (payload.account_id || "").trim();
+
+    console.log(`[LinkedIn Webhook] Received event: ${payload.event} for account ${accountId}`);
+
+    // Find the client (workspace) by Unipile account ID
+    const client = await prisma.client.findFirst({
+      where: { unipileAccountId: accountId },
+    });
+
+    if (!client) {
+      // Treat as a non-fatal configuration issue (prevents webhook retry storms).
+      console.warn(`[LinkedIn Webhook] Ignoring event for unknown Unipile account: ${accountId}`);
+      return NextResponse.json({ success: true, ignored: true });
+    }
+
+    // Handle different event types
+    switch (payload.event) {
+      case "message.received":
+        await handleInboundMessage(client.id, payload);
+        break;
+
+      case "connection.accepted":
+        await handleConnectionAccepted(client.id, payload);
+        break;
+
+      case "connection.received":
+        // Log connection requests but don't auto-accept
+        console.log("[LinkedIn Webhook] Connection request received");
+        break;
+
+      default:
+        console.log(`[LinkedIn Webhook] Unhandled event type: ${payload.event}`);
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("[LinkedIn Webhook] Error processing event:", error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 500 }
+    );
+  }
 }
 
 /**
  * Handle inbound LinkedIn message
- * Creates message record and generates AI draft
+ * Creates message record and enqueues background job for AI processing
  */
 async function handleInboundMessage(clientId: string, payload: UnipileWebhookPayload) {
   const message = payload.message;
@@ -129,20 +119,22 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
   const senderLinkedInUrl = normalizeLinkedInUrl(message.sender_linkedin_url);
 
   // Find or create lead by LinkedIn URL
+  const leadLookupOr = [
+    { linkedinId: message.sender_id },
+    ...(senderLinkedInUrl ? [{ linkedinUrl: senderLinkedInUrl }] : []),
+  ];
+
   let lead = await prisma.lead.findFirst({
     where: {
       clientId,
-      OR: [
-        { linkedinId: message.sender_id },
-        senderLinkedInUrl ? { linkedinUrl: senderLinkedInUrl } : {},
-      ].filter(Boolean),
+      OR: leadLookupOr,
     },
   });
 
   if (!lead && senderLinkedInUrl) {
     // Try to find by email if sender name contains "@"
     // Or create a new lead
-    console.log(`[LinkedIn Webhook] Creating new lead for LinkedIn user: ${message.sender_name || message.sender_id}`);
+    console.log(`[LinkedIn Webhook] Creating new lead for LinkedIn senderId: ${message.sender_id}`);
 
     // Parse sender name
     const nameParts = (message.sender_name || "").split(" ");
@@ -178,173 +170,62 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
     return;
   }
 
-  // Check for duplicate message
-  const existingMessage = await prisma.message.findFirst({
-    where: {
-      leadId: lead.id,
-      channel: "linkedin",
-      // Use message ID or timestamp+body hash for dedup
-      body: message.text,
-      sentAt: {
-        gte: new Date(new Date(message.timestamp).getTime() - 60000), // Within 1 minute
-        lte: new Date(new Date(message.timestamp).getTime() + 60000),
-      },
-    },
+  // Check for duplicate message using Unipile message ID
+  const existingMessage = await prisma.message.findUnique({
+    where: { unipileMessageId: message.id },
+    select: { id: true },
   });
 
   if (existingMessage) {
-    console.log(`[LinkedIn Webhook] Duplicate message detected, skipping`);
+    console.log(`[LinkedIn Webhook] Duplicate message detected (unipileMessageId=${message.id}), skipping`);
     return;
   }
 
-  // Create message record
+  // Create message record - handle P2002 race condition via unipileMessageId unique constraint
   const sentAt = new Date(message.timestamp);
-  const newMessage = await prisma.message.create({
-    data: {
-      leadId: lead.id,
-      channel: "linkedin",
-      source: "linkedin",
-      body: message.text,
-      direction: "inbound",
-      sentAt,
-      isRead: false,
-    },
-  });
+  let newMessage: { id: string };
+  try {
+    newMessage = await prisma.message.create({
+      data: {
+        unipileMessageId: message.id,
+        leadId: lead.id,
+        channel: "linkedin",
+        source: "linkedin",
+        body: message.text,
+        direction: "inbound",
+        sentAt,
+        isRead: false,
+      },
+      select: { id: true },
+    });
+  } catch (error) {
+    if (isPrismaUniqueConstraintError(error)) {
+      console.log(`[LinkedIn Webhook] Dedupe race: unipileMessageId=${message.id} already exists`);
+      return;
+    }
+    throw error;
+  }
 
   await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
   console.log(`[LinkedIn Webhook] Created message ${newMessage.id} for lead ${lead.id}`);
 
-  // ENRICHMENT: Extract contact info from message content
-  // Leads often share their phone number in LinkedIn messages
-  const messageExtraction = extractContactFromMessageContent(message.text);
-  if (messageExtraction.foundInMessage) {
-    const currentLead = await prisma.lead.findUnique({ where: { id: lead.id } });
-    const messageUpdates: Record<string, unknown> = {};
-
-    // Phone is the main thing we'd find in LinkedIn messages
-    // (LinkedIn URL would already be known)
-    if (messageExtraction.phone && !currentLead?.phone) {
-      messageUpdates.phone = toStoredPhone(messageExtraction.phone);
-      console.log(`[LinkedIn Webhook] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
-    }
-
-	    if (Object.keys(messageUpdates).length > 0) {
-	      messageUpdates.enrichmentSource = "message_content";
-	      messageUpdates.enrichedAt = new Date();
-	      await prisma.lead.update({
-	        where: { id: lead.id },
-	        data: messageUpdates,
-	      });
-	      console.log(`[LinkedIn Webhook] Updated lead ${lead.id} from message content`);
-
-	      // If we discovered a phone, ensure/sync to GHL and resume any follow-ups waiting for enrichment.
-	      if (messageUpdates.phone) {
-	        try {
-	          await ensureGhlContactIdForLead(lead.id, { allowCreateWithoutPhone: true });
-	          await syncGhlContactPhoneForLead(lead.id).catch(() => undefined);
-	        } catch (error) {
-	          console.warn("[LinkedIn Webhook] Failed to sync phone to GHL:", error);
-	        }
-
-	        await resumeAwaitingEnrichmentFollowUpsForLead(lead.id).catch(() => undefined);
-	      }
-	    }
-	  }
-
-  // Get conversation history for sentiment analysis
-  const recentMessages = await prisma.message.findMany({
-    where: { leadId: lead.id },
-    orderBy: { sentAt: "asc" },
-    take: 10,
-    select: {
-      sentAt: true,
-      channel: true,
-      direction: true,
-      body: true,
-      subject: true,
-    },
-  });
-
-  const transcript = buildSentimentTranscriptFromMessages(recentMessages);
-
-  // Classify sentiment
-  const sentimentTag = await classifySentiment(transcript, { clientId, leadId: lead.id });
-
-  // Update lead sentiment
-  await prisma.lead.update({
-    where: { id: lead.id },
-    data: { sentimentTag },
-  });
-
-  await autoStartMeetingRequestedSequenceIfEligible({
-    leadId: lead.id,
-    previousSentiment: lead.sentimentTag,
-    newSentiment: sentimentTag,
-  });
-
-  // Any inbound message pauses active no-response follow-up sequences.
-  pauseFollowUpsOnReply(lead.id).catch((err) =>
-    console.error("[LinkedIn Webhook] Failed to pause follow-ups on reply:", err)
+  // Enqueue background job for AI processing (sentiment, enrichment, drafts)
+  const dedupeKey = buildJobDedupeKey(
+    clientId,
+    newMessage.id,
+    BackgroundJobType.LINKEDIN_INBOUND_POST_PROCESS
   );
 
-  // Trigger Clay enrichment for phone if:
-  // 1. Sentiment is positive (Meeting Requested, Call Requested, Info Requested, Interested)
-  // 2. Lead is missing phone number
-  // Note: LinkedIn leads already have linkedinUrl, so we only enrich for phone
-  if (isPositiveSentiment(sentimentTag)) {
-    const currentLead = await prisma.lead.findUnique({ where: { id: lead.id } });
-    
-    if (currentLead && !currentLead.phone && currentLead.email) {
-      // Only enrich if we have an email (required for Clay) and missing phone
-      // Skip if already enriched, pending, or not_needed
-      const shouldSkipEnrichment = 
-        currentLead.enrichmentStatus === "enriched" ||
-        currentLead.enrichmentStatus === "pending" ||
-        currentLead.enrichmentStatus === "not_needed";
-      
-      if (!shouldSkipEnrichment) {
-        // Mark as pending with timestamp for timeout tracking
-        await prisma.lead.update({
-          where: { id: lead.id },
-          data: { 
-            enrichmentStatus: "pending",
-            enrichmentLastRetry: new Date(), // Initialize for follow-up engine timeout calculations
-          },
-        });
+  await enqueueBackgroundJob({
+    type: BackgroundJobType.LINKEDIN_INBOUND_POST_PROCESS,
+    clientId,
+    leadId: lead.id,
+    messageId: newMessage.id,
+    dedupeKey,
+  });
 
-        // Build enrichment request
-        const fullName = `${currentLead.firstName || ""} ${currentLead.lastName || ""}`.trim();
-        const enrichmentRequest = {
-          leadId: lead.id,
-          emailAddress: currentLead.email,
-          firstName: currentLead.firstName || undefined,
-          lastName: currentLead.lastName || undefined,
-          fullName: fullName || undefined,
-          linkedInProfile: currentLead.linkedinUrl || undefined,
-        };
-
-        // Trigger Clay enrichment for phone only (we already have LinkedIn)
-        await triggerEnrichmentForLead(enrichmentRequest, false, true);
-        console.log(`[LinkedIn Webhook] Triggered Clay phone enrichment for lead ${lead.id} (positive sentiment: ${sentimentTag})`);
-      } else {
-        console.log(`[LinkedIn Webhook] Skipping phone enrichment for lead ${lead.id} - status: ${currentLead.enrichmentStatus}`);
-      }
-    } else if (currentLead && !currentLead.phone && !currentLead.email) {
-      console.log(`[LinkedIn Webhook] Cannot enrich lead ${lead.id} for phone - no email address available`);
-    }
-  }
-
-  // Generate AI draft if appropriate
-  if (shouldGenerateDraft(sentimentTag)) {
-    const webhookDraftTimeoutMs =
-      Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
-    await generateResponseDraft(lead.id, transcript, sentimentTag, "linkedin", {
-      timeoutMs: webhookDraftTimeoutMs,
-      triggerMessageId: newMessage.id,
-    });
-    console.log(`[LinkedIn Webhook] Generated AI draft for lead ${lead.id}`);
-  }
+  console.log(`[LinkedIn Webhook] Enqueued post-process job for message ${newMessage.id}`);
 }
 
 /**

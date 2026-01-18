@@ -15,6 +15,7 @@ import { refreshSenderEmailSnapshotsDue } from "@/lib/reactivation-engine";
 import { EmailIntegrationProvider } from "@prisma/client";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 import { decodeInstantlyReplyHandle, decodeSmartLeadReplyHandle } from "@/lib/email-reply-handle";
+import { recordOutboundForBookingProgress } from "@/lib/booking-progress";
 
 interface SendEmailResult {
   success: boolean;
@@ -98,7 +99,7 @@ async function validateWithEmailGuard(email: string) {
 export async function sendEmailReply(
   draftId: string,
   editedContent?: string,
-  opts: { sentBy?: OutboundSentBy | null } = {}
+  opts: { sentBy?: OutboundSentBy | null; sentByUserId?: string | null } = {}
 ): Promise<SendEmailResult> {
   try {
     const draft = await prisma.aIDraft.findUnique({
@@ -116,7 +117,7 @@ export async function sendEmailReply(
       return { success: false, error: "Draft not found" };
     }
 
-    const existingMessage = await prisma.message.findUnique({
+    const existingMessage = await prisma.message.findFirst({
       where: { aiDraftId: draftId },
       select: { id: true },
     });
@@ -282,10 +283,11 @@ export async function sendEmailReply(
           preferredSenderEmailId: senderEmailId,
           refreshIfStale: true,
         });
-        senderEmailId = picked.senderEmailId;
-        if (!senderEmailId) {
+        const pickedSenderEmailId = picked.senderEmailId;
+        if (!pickedSenderEmailId) {
           return { success: false, error: "No sendable EmailBison sender account is configured for this workspace" };
         }
+        senderEmailId = pickedSenderEmailId;
         await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
       } else {
         const preferred = await prisma.emailBisonSenderEmailSnapshot
@@ -404,6 +406,7 @@ export async function sendEmailReply(
         leadId: lead.id,
         sentAt: new Date(),
         sentBy: opts.sentBy || undefined,
+        sentByUserId: opts.sentByUserId || undefined,
         aiDraftId: draftId,
       },
     });
@@ -423,6 +426,11 @@ export async function sendEmailReply(
     // Kick off no-response follow-ups starting from this outbound touch (if enabled)
     autoStartNoResponseSequenceOnOutbound({ leadId: lead.id, outboundAt: message.sentAt }).catch((err) => {
       console.error("[Email] Failed to auto-start no-response sequence:", err);
+    });
+
+    // Record booking progress for wave tracking (Phase 36)
+    recordOutboundForBookingProgress({ leadId: lead.id, channel: "email" }).catch((err) => {
+      console.error("[Email] Failed to record booking progress:", err);
     });
 
     if (provider === EmailIntegrationProvider.EMAILBISON) {
@@ -448,7 +456,7 @@ export async function sendEmailReply(
 export async function sendEmailReplyForLead(
   leadId: string,
   messageContent: string,
-  opts: { sentBy?: OutboundSentBy | null } = {}
+  opts: { sentBy?: OutboundSentBy | null; sentByUserId?: string | null } = {}
 ): Promise<SendEmailResult> {
   try {
     const lead = await prisma.lead.findUnique({
@@ -598,10 +606,11 @@ export async function sendEmailReplyForLead(
           preferredSenderEmailId: senderEmailId,
           refreshIfStale: true,
         });
-        senderEmailId = picked.senderEmailId;
-        if (!senderEmailId) {
+        const pickedSenderEmailId = picked.senderEmailId;
+        if (!pickedSenderEmailId) {
           return { success: false, error: "No sendable EmailBison sender account is configured for this workspace" };
         }
+        senderEmailId = pickedSenderEmailId;
         await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
       } else {
         const preferred = await prisma.emailBisonSenderEmailSnapshot
@@ -716,6 +725,7 @@ export async function sendEmailReplyForLead(
         leadId: lead.id,
         sentAt: new Date(),
         sentBy: opts.sentBy || undefined,
+        sentByUserId: opts.sentByUserId || undefined,
       },
     });
 

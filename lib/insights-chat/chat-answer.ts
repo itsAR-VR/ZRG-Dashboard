@@ -54,7 +54,8 @@ export async function answerInsightsChatQuestion(opts: {
     throw new Error("OPENAI_API_KEY not configured");
   }
 
-  const prompt = getAIPromptTemplate("insights.chat_answer.v2");
+  // Use v3 prompt with follow-up weighting (Phase 29d)
+  const prompt = getAIPromptTemplate("insights.chat_answer.v3");
   const system =
     prompt?.messages.find((m) => m.role === "system")?.content ||
     `You are an analytics insights assistant for a sales outreach dashboard.
@@ -94,6 +95,9 @@ OUTPUT:
           campaign_name: t.campaignName,
           lead_label: t.leadLabel,
           summary: t.summary,
+          // Follow-up metadata (Phase 29d) - helps v3 prompt weight citations
+          follow_up_score: t.followUpScore ?? null,
+          converted_after_objection: t.convertedAfterObjection ?? null,
         }))
       : null,
     recent_chat: history || null,
@@ -115,7 +119,7 @@ OUTPUT:
   const { response, interactionId } = await runResponseWithInteraction({
     clientId: opts.clientId,
     featureId: prompt?.featureId || "insights.chat_answer",
-    promptKey: prompt?.key || "insights.chat_answer.v2",
+    promptKey: prompt?.key || "insights.chat_answer.v3",
     params: {
       model: opts.model,
       reasoning: { effort: opts.reasoningEffort },

@@ -39,6 +39,8 @@ export interface SendResult {
   chatId?: string;
   messageType?: "dm" | "inmail" | "connection_request";
   error?: string;
+  /** True if the error indicates the Unipile account is disconnected */
+  isDisconnectedAccount?: boolean;
 }
 
 export interface InMailBalanceResult {
@@ -46,6 +48,63 @@ export interface InMailBalanceResult {
   premium: number | null;
   recruiter: number | null;
   salesNavigator: number | null;
+}
+
+/**
+ * Result of parsing a Unipile API error response
+ */
+export interface UnipileErrorInfo {
+  isDisconnectedAccount: boolean;
+  detail: string;
+  type?: string;
+}
+
+/**
+ * Parse a Unipile error response and detect disconnected account errors.
+ * Returns structured info for logging and notification logic.
+ */
+export function parseUnipileErrorResponse(responseText: string, status: number): UnipileErrorInfo {
+  try {
+    const parsed = JSON.parse(responseText);
+    const type = parsed.type || "";
+    const detail = parsed.detail || parsed.message || parsed.title || responseText;
+
+    // Detect disconnected account: type="errors/disconnected_account" OR (401 + related keywords)
+    const isDisconnectedAccount =
+      type === "errors/disconnected_account" ||
+      (status === 401 &&
+        (detail.toLowerCase().includes("disconnected") ||
+          detail.toLowerCase().includes("reconnect")));
+
+    return { isDisconnectedAccount, detail, type };
+  } catch {
+    // Not JSON, check for keywords in raw text
+    const isDisconnectedAccount =
+      status === 401 &&
+      (responseText.toLowerCase().includes("disconnected") ||
+        responseText.toLowerCase().includes("reconnect"));
+
+    return { isDisconnectedAccount, detail: responseText, type: undefined };
+  }
+}
+
+/**
+ * Check if an error indicates a disconnected Unipile account.
+ * Works with Error objects from API calls.
+ */
+export function isDisconnectedAccountError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const msg =
+    (error as { message?: string }).message ||
+    (error as { detail?: string }).detail ||
+    "";
+
+  return (
+    msg.includes("disconnected_account") ||
+    msg.includes("Disconnected account") ||
+    msg.includes("account appears to be disconnected")
+  );
 }
 
 /**
@@ -237,11 +296,13 @@ export async function sendLinkedInDM(
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      console.error(`[Unipile] DM send failed (${response.status}):`, error);
+      const errorText = await response.text();
+      const errorInfo = parseUnipileErrorResponse(errorText, response.status);
+      console.error(`[Unipile] DM send failed (${response.status}):`, errorText);
       return {
         success: false,
-        error: `Failed to send DM (${response.status}): ${error}`,
+        error: `Failed to send DM (${response.status}): ${errorInfo.detail}`,
+        isDisconnectedAccount: errorInfo.isDisconnectedAccount,
       };
     }
 
@@ -259,6 +320,7 @@ export async function sendLinkedInDM(
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
+      isDisconnectedAccount: isDisconnectedAccountError(error),
     };
   }
 }
@@ -308,11 +370,12 @@ export async function sendLinkedInInMail(
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      console.error(`[Unipile] InMail send failed (${response.status}):`, error);
+      const errorText = await response.text();
+      const errorInfo = parseUnipileErrorResponse(errorText, response.status);
+      console.error(`[Unipile] InMail send failed (${response.status}):`, errorText);
 
       // Check if failure is due to no credits
-      if (error.includes("credit") || error.includes("balance") || response.status === 402) {
+      if (errorText.includes("credit") || errorText.includes("balance") || response.status === 402) {
         return {
           success: false,
           error: "NO_INMAIL_CREDITS",
@@ -321,7 +384,8 @@ export async function sendLinkedInInMail(
 
       return {
         success: false,
-        error: `Failed to send InMail (${response.status}): ${error}`,
+        error: `Failed to send InMail (${response.status}): ${errorInfo.detail}`,
+        isDisconnectedAccount: errorInfo.isDisconnectedAccount,
       };
     }
 
@@ -339,6 +403,7 @@ export async function sendLinkedInInMail(
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
+      isDisconnectedAccount: isDisconnectedAccountError(error),
     };
   }
 }
@@ -383,11 +448,13 @@ export async function sendLinkedInConnectionRequest(
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      console.error(`[Unipile] Connection request failed (${response.status}):`, error);
+      const errorText = await response.text();
+      const errorInfo = parseUnipileErrorResponse(errorText, response.status);
+      console.error(`[Unipile] Connection request failed (${response.status}):`, errorText);
       return {
         success: false,
-        error: `Failed to send connection request (${response.status}): ${error}`,
+        error: `Failed to send connection request (${response.status}): ${errorInfo.detail}`,
+        isDisconnectedAccount: errorInfo.isDisconnectedAccount,
       };
     }
 
@@ -404,6 +471,7 @@ export async function sendLinkedInConnectionRequest(
     return {
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
+      isDisconnectedAccount: isDisconnectedAccountError(error),
     };
   }
 }

@@ -8,8 +8,18 @@ import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTe
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { z } from "zod";
 import type { ConversationInsightOutcome } from "@prisma/client";
-import { formatLeadTranscript } from "@/lib/insights-chat/transcript";
+import { formatLeadTranscript, type ClassifiedTranscriptMessage } from "@/lib/insights-chat/transcript";
 import type { InsightsChatModel, OpenAIReasoningEffort } from "@/lib/insights-chat/config";
+
+// ============================================================================
+// Schema Version for Backfill Detection (Phase 29e)
+// ============================================================================
+
+/**
+ * Current schema version for conversation insights.
+ * Bump this when the schema changes meaningfully to trigger re-extraction of cached insights.
+ */
+export const CONVERSATION_INSIGHT_SCHEMA_VERSION = "v2_followup_weighting" as const;
 
 const ChunkCompressionSchema = z.object({
   key_events: z.array(z.string()).max(12),
@@ -19,7 +29,67 @@ const ChunkCompressionSchema = z.object({
 
 export type ThreadChunkCompression = z.infer<typeof ChunkCompressionSchema>;
 
+// ============================================================================
+// Objection Type Taxonomy (for follow-up response mapping)
+// ============================================================================
+
+/**
+ * Lightweight taxonomy for objection types in sales conversations.
+ */
+export const OBJECTION_TYPES = [
+  "pricing", // cost, budget, ROI concerns
+  "timing", // not now, busy, check back later
+  "authority", // need to check with boss/team
+  "need", // not sure we need this, already have something
+  "trust", // need more info, who are you, references
+  "competitor", // using X, happy with current solution
+  "none", // no clear objection
+] as const;
+
+export type ObjectionType = (typeof OBJECTION_TYPES)[number];
+
+// ============================================================================
+// Follow-Up Response Schemas (Phase 29b)
+// ============================================================================
+
+/**
+ * Schema for objection-response mapping within follow-up analysis.
+ */
+const ObjectionResponseSchema = z.object({
+  objection_type: z.enum(OBJECTION_TYPES),
+  agent_response: z.string().max(300),
+  outcome: z.enum(["positive", "negative", "neutral"]),
+});
+
+/**
+ * Schema for follow-up specific analysis.
+ */
+const FollowUpAnalysisSchema = z.object({
+  what_worked: z.array(z.string()).max(10),
+  what_failed: z.array(z.string()).max(10),
+  key_phrases: z.array(z.string()).max(12),
+  tone_observations: z.array(z.string()).max(6),
+  objection_responses: z.array(ObjectionResponseSchema).max(8),
+});
+
+/**
+ * Schema for follow-up effectiveness scoring.
+ */
+const FollowUpEffectivenessSchema = z.object({
+  score: z.number().min(0).max(100),
+  converted_after_objection: z.boolean(),
+  notes: z.array(z.string()).max(5),
+});
+
+// ============================================================================
+// Conversation Insight Schema (v2 with follow-up weighting)
+// ============================================================================
+
 const ConversationInsightSchema = z.object({
+  // Schema version for backfill detection
+  schema_version: z.literal(CONVERSATION_INSIGHT_SCHEMA_VERSION).optional(),
+
+  // Original v1 fields (preserved for backwards compatibility)
   summary: z.string().max(1200),
   key_events: z.array(z.string()).max(18),
   what_worked: z.array(z.string()).max(14),
@@ -27,9 +97,87 @@ const ConversationInsightSchema = z.object({
   key_phrases: z.array(z.string()).max(18),
   evidence_quotes: z.array(z.string()).max(10),
   recommended_tests: z.array(z.string()).max(12),
+
+  // NEW: Follow-up specific analysis (Phase 29b)
+  follow_up: FollowUpAnalysisSchema.optional(),
+
+  // NEW: Follow-up effectiveness scoring (Phase 29b)
+  follow_up_effectiveness: FollowUpEffectivenessSchema.nullable().optional(),
 });
 
 export type ConversationInsight = z.infer<typeof ConversationInsightSchema>;
+export type FollowUpAnalysis = z.infer<typeof FollowUpAnalysisSchema>;
+export type FollowUpEffectiveness = z.infer<typeof FollowUpEffectivenessSchema>;
+export type ObjectionResponse = z.infer<typeof ObjectionResponseSchema>;
+
+// ============================================================================
+// Follow-Up Stats Computation (deterministic, no AI)
+// ============================================================================
+
+/**
+ * Compute follow-up statistics from classified messages.
+ */
+export function computeFollowUpStats(messages: ClassifiedTranscriptMessage[]): {
+  hasFollowUp: boolean;
+  followUpCount: number;
+  initialOutboundCount: number;
+  inboundCount: number;
+} {
+  let followUpCount = 0;
+  let initialOutboundCount = 0;
+  let inboundCount = 0;
+
+  for (const m of messages) {
+    switch (m.responseType) {
+      case "follow_up_response":
+        followUpCount++;
+        break;
+      case "initial_outbound":
+        initialOutboundCount++;
+        break;
+      case "inbound":
+        inboundCount++;
+        break;
+    }
+  }
+
+  return {
+    hasFollowUp: followUpCount > 0,
+    followUpCount,
+    initialOutboundCount,
+    inboundCount,
+  };
+}
+
+/**
+ * Compute base effectiveness score from outcome (deterministic).
+ *
+ * Base scoring:
+ * - Start at 50 points
+ * - +40 points: Outcome BOOKED
+ * - +25 points: Outcome REQUESTED
+ * - -10 points: Outcome STALLED
+ * - -25 points: Outcome NO_RESPONSE
+ * - ±0 points: UNKNOWN
+ *
+ * This is a floor/ceiling that the LLM score can adjust within.
+ */
+export function computeBaseEffectivenessScore(outcome: ConversationInsightOutcome): number {
+  const base = 50;
+  switch (outcome) {
+    case "BOOKED":
+      return Math.min(100, base + 40); // 90
+    case "REQUESTED":
+      return Math.min(100, base + 25); // 75
+    case "STALLED":
+      return Math.max(0, base - 10); // 40
+    case "NO_RESPONSE":
+      return Math.max(0, base - 25); // 25
+    case "UNKNOWN":
+    default:
+      return base; // 50
+  }
+}
 
 function splitIntoChunks(text: string, opts: { chunkSize: number; overlap: number }): string[] {
   const cleaned = (text || "").trim();
@@ -177,16 +325,20 @@ export async function extractConversationInsightForLead(opts: {
   if (!lead) throw new Error("Lead not found");
   if (lead.clientId !== opts.clientId) throw new Error("Lead is not in workspace");
 
-  const { header, transcript, lastMessages } = formatLeadTranscript({
+  const { header, transcript, lastMessages, classifiedMessages } = formatLeadTranscript({
     lead,
     campaign: lead.emailCampaign ? { id: lead.emailCampaign.id, name: lead.emailCampaign.name } : null,
     messages,
   });
 
+  // Compute follow-up stats for input context
+  const followUpStats = computeFollowUpStats(classifiedMessages);
+
   const sourceMessageCount = messages.length;
   const sourceLastMessageAt = messages.length ? messages[messages.length - 1]!.sentAt : null;
 
-  const extractPrompt = getAIPromptTemplate("insights.thread_extract.v1");
+  // Use v2 prompt with follow-up weighting
+  const extractPrompt = getAIPromptTemplate("insights.thread_extract.v2");
   const compressPrompt = getAIPromptTemplate("insights.thread_compress.v1");
 
   const extractSystem =
@@ -277,6 +429,13 @@ export async function extractConversationInsightForLead(opts: {
       header: headerObj,
       outcome: opts.outcome,
       sentimentTag: lead.sentimentTag || null,
+      // Follow-up stats for model context
+      follow_up_stats: {
+        has_follow_up: followUpStats.hasFollowUp,
+        follow_up_count: followUpStats.followUpCount,
+        initial_outbound_count: followUpStats.initialOutboundCount,
+        inbound_count: followUpStats.inboundCount,
+      },
       transcript: transcriptForModel,
       last_messages: lastMessages,
     },
@@ -284,18 +443,19 @@ export async function extractConversationInsightForLead(opts: {
     2
   );
 
+  // Increase budget for v2 schema (includes follow_up + follow_up_effectiveness)
   const baseBudget = await computeAdaptiveMaxOutputTokens({
     model: opts.model,
     instructions: extractSystem,
     input: [{ role: "user", content: extractInput }],
-    min: 600,
-    max: 1800,
-    overheadTokens: 420,
-    outputScale: 0.22,
+    min: 800,
+    max: 2400,
+    overheadTokens: 520,
+    outputScale: 0.25,
     preferApiCount: true,
   });
 
-  const attempts = [baseBudget.maxOutputTokens, Math.min(baseBudget.maxOutputTokens + 700, 2600)];
+  const attempts = [baseBudget.maxOutputTokens, Math.min(baseBudget.maxOutputTokens + 900, 3200)];
   let lastInteractionId: string | null = null;
   let lastErrorMessage: string | null = null;
 
@@ -304,30 +464,89 @@ export async function extractConversationInsightForLead(opts: {
     const maxRetries = getInsightsMaxRetries();
 
     try {
+      // Build the v2 JSON schema with follow-up fields
+      const jsonSchema = {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          schema_version: { type: "string", enum: [CONVERSATION_INSIGHT_SCHEMA_VERSION] },
+          summary: { type: "string" },
+          key_events: { type: "array", items: { type: "string" } },
+          what_worked: { type: "array", items: { type: "string" } },
+          what_failed: { type: "array", items: { type: "string" } },
+          key_phrases: { type: "array", items: { type: "string" } },
+          evidence_quotes: { type: "array", items: { type: "string" } },
+          recommended_tests: { type: "array", items: { type: "string" } },
+          // Follow-up analysis (Phase 29b)
+          follow_up: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              what_worked: { type: "array", items: { type: "string" } },
+              what_failed: { type: "array", items: { type: "string" } },
+              key_phrases: { type: "array", items: { type: "string" } },
+              tone_observations: { type: "array", items: { type: "string" } },
+              objection_responses: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    objection_type: {
+                      type: "string",
+                      enum: ["pricing", "timing", "authority", "need", "trust", "competitor", "none"],
+                    },
+                    agent_response: { type: "string" },
+                    outcome: { type: "string", enum: ["positive", "negative", "neutral"] },
+                  },
+                  required: ["objection_type", "agent_response", "outcome"],
+                },
+              },
+            },
+            required: ["what_worked", "what_failed", "key_phrases", "tone_observations", "objection_responses"],
+          },
+          // Follow-up effectiveness (nullable if no follow-up exists)
+          follow_up_effectiveness: {
+            anyOf: [
+              {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  score: { type: "number" },
+                  converted_after_objection: { type: "boolean" },
+                  notes: { type: "array", items: { type: "string" } },
+                },
+                required: ["score", "converted_after_objection", "notes"],
+              },
+              { type: "null" },
+            ],
+          },
+        },
+        required: [
+          "schema_version",
+          "summary",
+          "key_events",
+          "what_worked",
+          "what_failed",
+          "key_phrases",
+          "evidence_quotes",
+          "recommended_tests",
+          "follow_up",
+          "follow_up_effectiveness",
+        ],
+      };
+
       const { parsed, interactionId } = await runStructuredJson<ConversationInsight>({
         clientId: opts.clientId,
         leadId: opts.leadId,
         featureId: extractPrompt?.featureId || "insights.thread_extract",
         promptKey:
-          (extractPrompt?.key || "insights.thread_extract.v1") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
+          (extractPrompt?.key || "insights.thread_extract.v2") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
         model: opts.model,
         reasoningEffort: opts.reasoningEffort,
         instructions: extractSystem,
         input: [{ role: "user", content: extractInput }],
-        jsonSchema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            summary: { type: "string" },
-            key_events: { type: "array", items: { type: "string" } },
-            what_worked: { type: "array", items: { type: "string" } },
-            what_failed: { type: "array", items: { type: "string" } },
-            key_phrases: { type: "array", items: { type: "string" } },
-            evidence_quotes: { type: "array", items: { type: "string" } },
-            recommended_tests: { type: "array", items: { type: "string" } },
-          },
-          required: ["summary", "key_events", "what_worked", "what_failed", "key_phrases", "evidence_quotes", "recommended_tests"],
-        },
+        jsonSchema,
         maxOutputTokens: attempts[attemptIndex],
         timeoutMs,
         maxRetries,

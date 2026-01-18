@@ -51,6 +51,7 @@ import {
   updateLeadFollowUpStatus,
   type FollowUpTaggedLeadData,
   type FollowUpOutcome,
+  type FollowUpTaskType,
 } from "@/actions/followup-actions"
 import {
   getWorkspaceFollowUpInstances,
@@ -64,19 +65,27 @@ import { ReactivationsView } from "./reactivations-view"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
 
-const typeIcons = {
+const typeIcons: Record<FollowUpTaskType, typeof Mail> = {
   email: Mail,
   call: Phone,
   linkedin: Linkedin,
   sms: MessageSquare,
+  "meeting-canceled": XCircle,
+  "meeting-rescheduled": Calendar,
 }
 
-const typeColors = {
+const typeColors: Record<FollowUpTaskType, string> = {
   email: "text-blue-500",
   call: "text-green-500",
   linkedin: "text-sky-500",
   sms: "text-purple-500",
+  "meeting-canceled": "text-red-500",
+  "meeting-rescheduled": "text-orange-500",
 }
+
+// Default icon for unknown task types (defensive fallback)
+const defaultIcon = AlertCircle
+const defaultColor = "text-muted-foreground"
 
 function isToday(date: Date): boolean {
   const today = new Date()
@@ -122,7 +131,7 @@ function formatTimeSince(date: Date | null): string {
 // Unified task type
 interface UnifiedTask {
   id: string
-  type: "email" | "call" | "linkedin" | "sms"
+  type: FollowUpTaskType
   dueDate: Date
   leadName: string
   leadCompany: string
@@ -132,6 +141,7 @@ interface UnifiedTask {
   totalSteps?: number | null
   campaignName?: string | null
   suggestedMessage?: string | null
+  isUrgent?: boolean
 }
 
 interface TaskCardProps {
@@ -406,20 +416,35 @@ function SequenceInstanceCard({ instance, onPause, onResume, onCancel, actionInP
 // ============================================================================
 
 function TaskCard({ task, onExecute, onSnooze, onSkip }: TaskCardProps) {
-  const Icon = typeIcons[task.type]
+  // Safe icon/color lookup with fallback for unknown types
+  const Icon = typeIcons[task.type] ?? defaultIcon
+  const iconColor = typeColors[task.type] ?? defaultColor
   const overdue = isOverdue(task.dueDate)
+  const isUrgent = task.isUrgent || task.type === "meeting-canceled" || task.type === "meeting-rescheduled"
+
+  // Determine card styling: urgent tasks get red border/background
+  const cardClass = cn(
+    "transition-colors",
+    isUrgent && "border-red-500/50 bg-red-50 dark:bg-red-950/20",
+    overdue && !isUrgent && "border-destructive/50 bg-destructive/5"
+  )
 
   return (
-    <Card className={`transition-colors ${overdue ? "border-destructive/50 bg-destructive/5" : ""}`}>
+    <Card className={cardClass}>
       <CardContent className="p-4">
         <div className="flex items-start gap-4">
-          <div className={`mt-1 rounded-lg bg-muted p-2 ${typeColors[task.type]}`}>
+          <div className={`mt-1 rounded-lg bg-muted p-2 ${iconColor}`}>
             <Icon className="h-5 w-5" />
           </div>
 
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 mb-1">
               <span className="font-semibold truncate">{task.leadName}</span>
+              {isUrgent && (
+                <Badge variant="destructive" className="text-xs shrink-0">
+                  {task.type === "meeting-canceled" ? "Canceled" : "Rescheduled"}
+                </Badge>
+              )}
               {task.leadScore && (
                 <Badge variant="outline" className="text-xs shrink-0">
                   Score: {task.leadScore}
@@ -536,6 +561,7 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
           totalSteps: t.totalSteps,
           campaignName: t.campaignName,
           suggestedMessage: t.suggestedMessage,
+          isUrgent: t.isUrgent,
         }))
         setTasks(dbTasks)
       } else {

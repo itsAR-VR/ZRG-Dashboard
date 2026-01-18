@@ -49,6 +49,7 @@ import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
 import { subscribeToLeads, unsubscribe } from "@/lib/supabase"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
+import { LeadScoreBadge } from "./lead-score-badge"
 
 type LeadStatus = "new" | "qualified" | "unqualified" | "meeting-booked" | "not-interested" | "blacklisted"
 
@@ -68,16 +69,6 @@ const statusLabels: Record<LeadStatus, string> = {
   "meeting-booked": "Meeting Booked",
   "not-interested": "Not Interested",
   blacklisted: "Blacklisted",
-}
-
-function LeadScoreBadge({ score }: { score: number }) {
-  const color = score >= 80 ? "text-green-500" : score >= 50 ? "text-yellow-500" : "text-red-500"
-  const bg = score >= 80 ? "bg-green-500/10" : score >= 50 ? "bg-yellow-500/10" : "bg-red-500/10"
-  return (
-    <span className={`inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-bold ${color} ${bg}`}>
-      {score}
-    </span>
-  )
 }
 
 interface LeadDetailSheetProps {
@@ -158,7 +149,7 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
         <SheetHeader>
           <div className="flex items-center justify-between">
             <SheetTitle className="text-xl">{lead.name}</SheetTitle>
-            <LeadScoreBadge score={lead.leadScore} />
+            <LeadScoreBadge score={lead.overallScore} size="md" showTooltip scoredAt={lead.scoredAt} />
           </div>
         </SheetHeader>
 
@@ -363,7 +354,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
   
   // Filter states
   const [statusFilter, setStatusFilter] = useState<string>("all")
-  const [sortField, setSortField] = useState<"firstName" | "leadScore" | "updatedAt">("updatedAt")
+  const [sortField, setSortField] = useState<"firstName" | "overallScore" | "updatedAt">("updatedAt")
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc")
   
   // UI states
@@ -673,9 +664,9 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
               <div className="w-[150px]">Sentiment</div>
               <div 
                 className="w-[80px] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1"
-                onClick={() => handleSort("leadScore")}
+                onClick={() => handleSort("overallScore")}
               >
-                Score <SortIcon field="leadScore" />
+                Score <SortIcon field="overallScore" />
               </div>
               <div className="w-[160px]">Status</div>
               <div className="w-[50px] text-right">Actions</div>
@@ -785,7 +776,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                     
                     {/* Score */}
                     <div className="w-[80px]">
-                      <LeadScoreBadge score={lead.leadScore} />
+                      <LeadScoreBadge score={lead.overallScore} showTooltip scoredAt={lead.scoredAt} />
                     </div>
                     
                     {/* Status */}

@@ -107,6 +107,7 @@ export async function getClients() {
         instantlyApiKey: true,
         instantlyWebhookSecret: true,
         unipileAccountId: true,
+        unipileConnectionStatus: true,
         calendlyAccessToken: true,
         calendlyWebhookSubscriptionUri: true,
         createdAt: true,
@@ -169,6 +170,7 @@ export async function getClients() {
             !!instantlyWebhookSecret ||
             (client.unipileAccountId ?? "").trim()
         ),
+        unipileConnectionStatus: client.unipileConnectionStatus,
       };
     });
     return { success: true, data: withHealth };

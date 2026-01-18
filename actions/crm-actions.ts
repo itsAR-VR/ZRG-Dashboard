@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { shouldGenerateDraft } from "@/lib/ai-drafts";
@@ -17,7 +18,6 @@ export interface CRMLeadData {
   smsCampaignName: string | null;
   title: string;
   status: string;
-  leadScore: number;
   sentimentTag: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -35,6 +35,9 @@ export interface CRMLeadData {
   // GHL integration data
   ghlContactId: string | null;
   ghlLocationId: string | null;
+  // Lead scoring (Phase 33)
+  overallScore: number | null;
+  scoredAt: Date | null;
 }
 
 /**
@@ -76,17 +79,6 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
     const crmLeads: CRMLeadData[] = leads.map((lead) => {
       const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
 
-      // Calculate a simple lead score based on available data
-      let score = 50; // Base score
-      if (lead.email) score += 10;
-      if (lead.phone) score += 10;
-      if (lead.sentimentTag === "Meeting Requested") score += 20;
-      if (lead.sentimentTag === "Positive") score += 15;
-      if (lead.sentimentTag === "Information Requested") score += 10;
-      if (lead.sentimentTag === "Not Interested") score -= 20;
-      if (lead.sentimentTag === "Blacklist") score -= 40;
-      score = Math.max(0, Math.min(100, score)); // Clamp between 0-100
-
       return {
         id: lead.id,
         name: fullName,
@@ -97,13 +89,13 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
         smsCampaignName: lead.smsCampaign?.name ?? null,
         title: "", // Not in current schema
         status: lead.status,
-        leadScore: score,
         sentimentTag: lead.sentimentTag,
         createdAt: lead.createdAt,
         updatedAt: lead.updatedAt,
         messageCount: lead._count.messages,
         autoReplyEnabled: lead.autoReplyEnabled,
         autoFollowUpEnabled: lead.autoFollowUpEnabled,
+        smsDndActive: lead.smsDndActive,
         // Enrichment data
         linkedinUrl: lead.linkedinUrl,
         companyName: lead.companyName,
@@ -114,6 +106,9 @@ export async function getCRMLeads(clientId?: string | null): Promise<{
         // GHL integration data
         ghlContactId: lead.ghlContactId,
         ghlLocationId: lead.client.ghlLocationId,
+        // Lead scoring (Phase 33)
+        overallScore: lead.overallScore,
+        scoredAt: lead.scoredAt,
       };
     });
 
@@ -616,7 +611,7 @@ export interface CRMLeadsCursorOptions {
   limit?: number;
   search?: string;
   status?: string;
-  sortField?: "updatedAt" | "firstName" | "leadScore";
+  sortField?: "updatedAt" | "firstName" | "overallScore";
   sortDirection?: "asc" | "desc";
 }
 
@@ -626,25 +621,6 @@ export interface CRMLeadsCursorResult {
   nextCursor: string | null;
   hasMore: boolean;
   error?: string;
-}
-
-/**
- * Helper function to calculate lead score
- */
-function calculateLeadScore(lead: {
-  email: string | null;
-  phone: string | null;
-  sentimentTag: string | null;
-}): number {
-  let score = 50; // Base score
-  if (lead.email) score += 10;
-  if (lead.phone) score += 10;
-  if (lead.sentimentTag === "Meeting Requested") score += 20;
-  if (lead.sentimentTag === "Positive") score += 15;
-  if (lead.sentimentTag === "Information Requested") score += 10;
-  if (lead.sentimentTag === "Not Interested") score -= 20;
-  if (lead.sentimentTag === "Blacklist") score -= 40;
-  return Math.max(0, Math.min(100, score)); // Clamp between 0-100
 }
 
 /**
@@ -663,7 +639,6 @@ function transformLeadToCRM(lead: any): CRMLeadData {
     smsCampaignName: lead.smsCampaign?.name ?? null,
     title: "", // Not in current schema
     status: lead.status,
-    leadScore: calculateLeadScore(lead),
     sentimentTag: lead.sentimentTag,
     createdAt: lead.createdAt,
     updatedAt: lead.updatedAt,
@@ -681,6 +656,9 @@ function transformLeadToCRM(lead: any): CRMLeadData {
     // GHL integration data
     ghlContactId: lead.ghlContactId,
     ghlLocationId: lead.client.ghlLocationId,
+    // Lead scoring (Phase 33)
+    overallScore: lead.overallScore,
+    scoredAt: lead.scoredAt,
   };
 }
 
@@ -734,10 +712,24 @@ export async function getCRMLeadsCursor(
       : undefined;
 
     // Build query with cursor pagination
+    const sortOrder = sortDirection as Prisma.SortOrder;
+    const scoreNullsOrder: Prisma.NullsOrder = sortDirection === "desc" ? "last" : "first";
+
+    const orderBy: Prisma.LeadOrderByWithRelationInput[] =
+      sortField === "overallScore"
+        ? [
+            { overallScore: { sort: sortOrder, nulls: scoreNullsOrder } },
+            { updatedAt: "desc" },
+            { id: "desc" },
+          ]
+        : sortField === "updatedAt"
+          ? [{ updatedAt: sortOrder }, { id: "desc" }]
+          : [{ [sortField]: sortOrder } as Prisma.LeadOrderByWithRelationInput, { updatedAt: "desc" }, { id: "desc" }];
+
     const queryOptions: any = {
       where,
       take: limit + 1, // Fetch one extra to check if there are more
-      orderBy: { [sortField]: sortDirection },
+      orderBy,
       include: {
         client: {
           select: {
@@ -841,10 +833,21 @@ export async function getCRMLeadsFromEnd(
       : undefined;
 
     // Fetch from the "end" by reversing sort order
+    const orderBy: Prisma.LeadOrderByWithRelationInput[] =
+      sortField === "overallScore"
+        ? [
+            { overallScore: { sort: "asc", nulls: "first" } },
+            { updatedAt: "asc" },
+            { id: "asc" },
+          ]
+        : sortField === "updatedAt"
+          ? [{ updatedAt: "asc" }, { id: "asc" }]
+          : [{ [sortField]: "asc" } as Prisma.LeadOrderByWithRelationInput, { updatedAt: "asc" }, { id: "asc" }];
+
     const leads = await prisma.lead.findMany({
       where,
       take: limit,
-      orderBy: { [sortField]: "asc" }, // Reverse order to get oldest/lowest first
+      orderBy, // Reverse order to get oldest/lowest first
       include: {
         client: {
           select: {

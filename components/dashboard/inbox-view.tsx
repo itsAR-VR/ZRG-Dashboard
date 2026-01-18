@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ConversationFeed } from "./conversation-feed";
+import { ConversationFeed, type ScoreFilter } from "./conversation-feed";
 import { ActionStation } from "./action-station";
 import { CrmDrawer } from "./crm-drawer";
 import { 
@@ -82,6 +82,9 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
       ghlLocationId: conv.lead.ghlLocationId,
       // Sentiment tag (from conversation level)
       sentimentTag: conv.sentimentTag,
+      // Lead scoring (Phase 33)
+      overallScore: conv.lead.overallScore,
+      scoredAt: conv.lead.scoredAt,
     },
     channels: conv.channels,
     availableChannels: conv.availableChannels,
@@ -125,6 +128,7 @@ export function InboxView({
   const [isLive, setIsLive] = useState(false);
   const [activeSentiments, setActiveSentiments] = useState<string[]>([]);
   const [activeSmsClient, setActiveSmsClient] = useState<string>("all");
+  const [activeScoreFilter, setActiveScoreFilter] = useState<ScoreFilter>("all");
   const [newConversationCount, setNewConversationCount] = useState(0);
   const [searchQuery, setSearchQuery] = useState<string>("");
   
@@ -144,9 +148,10 @@ export function InboxView({
   const prevConversationIdRef = useRef<string | null>(null);
   const lastAutoSyncRef = useRef<Map<string, number>>(new Map());
 
-  // Reset SMS sub-client filter when switching workspaces
+  // Reset SMS sub-client and score filters when switching workspaces
   useEffect(() => {
     setActiveSmsClient("all");
+    setActiveScoreFilter("all");
   }, [activeWorkspace]);
 
   // Reset selection when switching workspaces to avoid showing a lead from another workspace.
@@ -227,6 +232,7 @@ export function InboxView({
       previous.smsCampaignId === nextBase.smsCampaignId &&
       previous.smsCampaignUnattributed === nextBase.smsCampaignUnattributed &&
       previous.filter === nextBase.filter &&
+      previous.scoreFilter === nextBase.scoreFilter &&
       previous.limit === nextBase.limit &&
       isSameStringArray(previous.channels as string[] | undefined, nextBase.channels as string[] | undefined) &&
       isSameStringArray(previous.sentimentTags, nextBase.sentimentTags)
@@ -244,8 +250,9 @@ export function InboxView({
         : undefined,
     smsCampaignUnattributed: activeSmsClient === "unattributed" ? true : undefined,
     filter: activeFilter as "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "all" | undefined,
+    scoreFilter: activeScoreFilter !== "all" ? activeScoreFilter : undefined,
     limit: 50,
-  }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter]);
+  }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter, activeScoreFilter]);
 
   // Full query options (includes search)
   const queryOptions: ConversationsCursorOptions = useMemo(() => ({
@@ -816,11 +823,12 @@ export function InboxView({
   const filteredConversations = conversations;
 
   // Check if any filters are currently active
-  const hasActiveFilters = activeFilter !== "" || activeSentiments.length > 0 || activeChannels.length > 0;
+  const hasActiveFilters = activeFilter !== "" || activeSentiments.length > 0 || activeChannels.length > 0 || activeScoreFilter !== "all";
 
-  // Handle clearing all filters (resets sentiment locally and calls parent for channel/filter)
+  // Handle clearing all filters (resets sentiment and score filters locally and calls parent for channel/filter)
   const handleClearAllFilters = useCallback(() => {
     setActiveSentiments([]);
+    setActiveScoreFilter("all");
     onClearFilters?.();
   }, [onClearFilters]);
 
@@ -986,6 +994,8 @@ export function InboxView({
 		        smsClientOptions={activeWorkspace ? smsCampaignFilters?.campaigns || [] : []}
 		        smsClientUnattributedCount={activeWorkspace ? smsCampaignFilters?.unattributedLeadCount || 0 : 0}
 	        isLoadingSmsClients={activeWorkspace ? smsCampaignFiltersQuery.isLoading : false}
+	        activeScoreFilter={activeScoreFilter}
+	        onScoreFilterChange={activeWorkspace ? setActiveScoreFilter : undefined}
 	        syncingLeadIds={syncingLeadIds}
 	        onSyncAll={handleSyncAll}
 	        isSyncingAll={isSyncingAll}
