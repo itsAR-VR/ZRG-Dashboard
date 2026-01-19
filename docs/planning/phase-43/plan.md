@@ -86,7 +86,7 @@ Implement automatic round-robin lead assignment for setter accounts in the Found
 
 ## Success Criteria
 
-- [ ] Schema changes applied: `Lead.assignedToUserId`, `Lead.assignedAt`, `WorkspaceSettings.roundRobinEnabled`, `WorkspaceSettings.roundRobinLastSetterIndex`
+- [x] Schema changes applied: `Lead.assignedToUserId`, `Lead.assignedAt`, `WorkspaceSettings.roundRobinEnabled`, `WorkspaceSettings.roundRobinLastSetterIndex`
 - [ ] 3 setter accounts created and can log in to Founders Club workspace
 - [ ] New positive-sentiment leads are automatically assigned round-robin
 - [ ] Setters see only their assigned leads in inbox
@@ -155,13 +155,12 @@ Implement automatic round-robin lead assignment for setter accounts in the Found
 
 ## Phase Summary
 
-- Shipped (repo evidence):
-  - Schema fields exist in `prisma/schema.prisma` (`Lead.assignedToUserId`, `Lead.assignedAt`, `WorkspaceSettings.roundRobinEnabled`, `WorkspaceSettings.roundRobinLastSetterIndex`).
-  - Inbox filtering code exists in `actions/lead-actions.ts` and role helpers exist in `lib/workspace-access.ts`.
-  - Background-job assignment hooks + setter funnel analytics are present in the working tree (see `docs/planning/phase-43/review.md`).
-- Verified (combined working tree state, 2026-01-19):
+- Shipped:
+  - Commit `53f9e13`: Phase 43 core implementation (lead assignment, inbox filtering, analytics, docs).
+  - Commit `9311dd7`: follow-up fix to populate `setterEmailMap` for `getConversationsFromEnd(...)`.
+- Verified (2026-01-19):
   - `npm run lint`: pass (0 errors, 17 warnings)
   - `npm run build`: pass
-- Notes:
-  - Some Phase 43 implementation artifacts are currently uncommitted/untracked (notably `lib/lead-assignment.ts`), so a clean checkout may fail until those are committed.
-  - This working tree also includes unrelated Phase 40 Crawl4AI deployment changes; lint/build results are for the combined state.
+  - DB checks (Supabase MCP SQL): schema columns exist; Founders Club has `roundRobinEnabled=true` and 3 SETTER memberships.
+- Not final yet:
+  - Founders Club still has positive-but-unassigned leads in inbox as of `2026-01-19T19:41:44Z` (see `docs/planning/phase-43/review.md` follow-ups).
