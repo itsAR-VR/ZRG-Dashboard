@@ -605,6 +605,7 @@ export async function syncEmailConversationHistorySystem(
         client: {
           select: {
             emailBisonApiKey: true,
+            emailBisonBaseHost: { select: { host: true } },
           },
         },
         _count: {
@@ -641,12 +642,16 @@ export async function syncEmailConversationHistorySystem(
       `[EmailSync] Fetching conversation history for lead ${leadId} (EmailBison ID: ${lead.emailBisonLeadId})`
     );
 
-    const repliesResult = await fetchEmailBisonReplies(lead.client.emailBisonApiKey, lead.emailBisonLeadId);
+    const repliesResult = await fetchEmailBisonReplies(lead.client.emailBisonApiKey, lead.emailBisonLeadId, {
+      baseHost: lead.client.emailBisonBaseHost?.host ?? null,
+    });
     if (!repliesResult.success) {
       return { success: false, error: repliesResult.error || "Failed to fetch replies from EmailBison" };
     }
 
-    const sentResult = await fetchEmailBisonSentEmails(lead.client.emailBisonApiKey, lead.emailBisonLeadId);
+    const sentResult = await fetchEmailBisonSentEmails(lead.client.emailBisonApiKey, lead.emailBisonLeadId, {
+      baseHost: lead.client.emailBisonBaseHost?.host ?? null,
+    });
     if (!sentResult.success) {
       return { success: false, error: sentResult.error || "Failed to fetch sent emails from EmailBison" };
     }

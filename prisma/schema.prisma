@@ -93,6 +93,7 @@ enum BackgroundJobType {
   SMARTLEAD_INBOUND_POST_PROCESS
   INSTANTLY_INBOUND_POST_PROCESS
   LEAD_SCORING_POST_PROCESS
+  CONVERSATION_SYNC
 }
 
 enum BackgroundJobStatus {
@@ -118,6 +119,7 @@ model Client {
   emailProvider         EmailIntegrationProvider?
   emailBisonApiKey     String?
   emailBisonWorkspaceId String?     @unique // EmailBison workspace ID for webhook matching
+  emailBisonBaseHostId  String?
   smartLeadApiKey       String?
   smartLeadWebhookSecret String?
   instantlyApiKey       String?
@@ -160,8 +162,10 @@ model Client {
   insightChatAuditEvents InsightChatAuditEvent[]
   bookingProcesses BookingProcess[]
   aiPersonas AiPersona[]           // AI personas for draft generation (Phase 39)
+  emailBisonBaseHost EmailBisonBaseHost? @relation(fields: [emailBisonBaseHostId], references: [id], onDelete: SetNull)
 
   @@index([userId])
+  @@index([emailBisonBaseHostId])
 }
 
 model ClientMember {
@@ -177,6 +181,16 @@ model ClientMember {
   @@unique([clientId, userId, role])
   @@index([userId])
   @@index([clientId])
+}
+
+// EmailBison base host allowlist (hostname only). Workspaces can select one base host.
+model EmailBisonBaseHost {
+  id        String   @id @default(uuid())
+  host      String   @unique
+  label     String?
+  clients   Client[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Workspace-specific settings (AI personality, automation, etc.)
@@ -221,6 +235,9 @@ model WorkspaceSettings {
   autoBlacklist        Boolean  @default(true)
   autoFollowUpsOnReply Boolean  @default(false) // When true, auto-enable follow-ups for leads after a positive inbound EMAIL reply.
   airtableMode         Boolean  @default(false) // When true, email is handled externally (Airtable/n8n); follow-up sequences should be SMS/LinkedIn only.
+  // Round-robin lead assignment (Phase 43)
+  roundRobinEnabled         Boolean  @default(false)  // When true, new positive leads are assigned to setters in rotation
+  roundRobinLastSetterIndex Int?                      // Index of last assigned setter (for rotation)
   // Notification Settings
   emailDigest          Boolean  @default(true)
   slackAlerts          Boolean  @default(true)
@@ -320,6 +337,9 @@ model Lead {
   // Automation settings
   autoReplyEnabled Boolean   @default(false)
   autoFollowUpEnabled Boolean @default(false)
+  // Round-robin lead assignment (Phase 43)
+  assignedToUserId    String?    // Supabase Auth user ID of assigned setter
+  assignedAt          DateTime?  // When assignment occurred
   // SMS deliverability flags
   smsDndActive Boolean @default(false) // GHL indicates contact is in SMS DND window
   smsDndUpdatedAt DateTime? // Last time we detected/cleared SMS DND
@@ -399,6 +419,9 @@ model Lead {
   @@index([overallScore])                                      // Filter by score
   @@index([clientId, overallScore])                            // Workspace-scoped score filter
   @@index([clientId, overallScore, updatedAt(sort: Desc)])     // Score filter + sort
+  // Round-robin assignment indexes (Phase 43)
+  @@index([assignedToUserId])                           // Filter by assignee
+  @@index([clientId, assignedToUserId])                 // Workspace + assignee filter (inbox)
 }
 
 // =============================================================================

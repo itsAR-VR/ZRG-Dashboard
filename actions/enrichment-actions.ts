@@ -205,6 +205,7 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
       client: {
         select: {
           emailBisonApiKey: true,
+          emailBisonBaseHost: { select: { host: true } },
         },
       },
     },
@@ -225,10 +226,9 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
   }
 
   // 2. Fetch lead details from EmailBison API
-  const emailBisonResult = await fetchEmailBisonLead(
-    lead.client.emailBisonApiKey,
-    lead.emailBisonLeadId
-  );
+  const emailBisonResult = await fetchEmailBisonLead(lead.client.emailBisonApiKey, lead.emailBisonLeadId, {
+    baseHost: lead.client.emailBisonBaseHost?.host ?? null,
+  });
 
   if (!emailBisonResult.success || !emailBisonResult.data) {
     return { ...result, error: emailBisonResult.error || "Failed to fetch EmailBison lead data" };

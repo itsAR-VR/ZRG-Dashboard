@@ -161,15 +161,17 @@ function computeIsSenderEmailSendable(sender: Record<string, unknown>): { isSend
   return { isSendable: !isExplicitlyNonSendable, status };
 }
 
-async function refreshSenderEmailSnapshotsForClient(clientId: string): Promise<{ refreshed: boolean; count: number; error?: string }> {
+ async function refreshSenderEmailSnapshotsForClient(clientId: string): Promise<{ refreshed: boolean; count: number; error?: string }> {
   const client = await prisma.client.findUnique({
     where: { id: clientId },
-    select: { emailBisonApiKey: true },
+    select: { emailBisonApiKey: true, emailBisonBaseHost: { select: { host: true } } },
   });
 
   if (!client?.emailBisonApiKey) return { refreshed: false, count: 0, error: "missing_emailbison_api_key" };
 
-  const senderResult = await fetchEmailBisonSenderEmails(client.emailBisonApiKey);
+  const senderResult = await fetchEmailBisonSenderEmails(client.emailBisonApiKey, {
+    baseHost: client.emailBisonBaseHost?.host ?? null,
+  });
   if (!senderResult.success || !senderResult.data) {
     return { refreshed: false, count: 0, error: senderResult.error || "sender_fetch_failed" };
   }
@@ -324,7 +326,7 @@ export async function resolveReactivationEnrollmentsDue(opts?: {
     try {
       const client = await prisma.client.findUnique({
         where: { id: enrollment.campaign.clientId },
-        select: { id: true, emailBisonApiKey: true, settings: { select: { timezone: true } } },
+        select: { id: true, emailBisonApiKey: true, emailBisonBaseHost: { select: { host: true } }, settings: { select: { timezone: true } } },
       });
       if (!client?.emailBisonApiKey) {
         await prisma.reactivationEnrollment.update({
@@ -358,13 +360,17 @@ export async function resolveReactivationEnrollmentsDue(opts?: {
       }
 
       if (!bisonLeadId) {
-        const found = await findEmailBisonLeadIdByEmail(client.emailBisonApiKey, leadEmail);
+        const found = await findEmailBisonLeadIdByEmail(client.emailBisonApiKey, leadEmail, {
+          baseHost: client.emailBisonBaseHost?.host ?? null,
+        });
         if (found.success && found.leadId) {
           bisonLeadId = found.leadId;
           leadIdByEmail.set(leadEmail.toLowerCase(), bisonLeadId);
         } else {
           // Fallback: search global replies and extract lead_id if present.
-          const global = await fetchEmailBisonRepliesGlobal(client.emailBisonApiKey, { search: leadEmail });
+          const global = await fetchEmailBisonRepliesGlobal(client.emailBisonApiKey, { search: leadEmail }, {
+            baseHost: client.emailBisonBaseHost?.host ?? null,
+          });
           const leadIdFromReplies =
             global.success && global.data
               ? global.data
@@ -391,7 +397,9 @@ export async function resolveReactivationEnrollmentsDue(opts?: {
         continue;
       }
 
-      const repliesResult = await fetchEmailBisonReplies(client.emailBisonApiKey, bisonLeadId);
+      const repliesResult = await fetchEmailBisonReplies(client.emailBisonApiKey, bisonLeadId, {
+        baseHost: client.emailBisonBaseHost?.host ?? null,
+      });
       if (!repliesResult.success || !repliesResult.data) {
         await prisma.reactivationEnrollment.update({
           where: { id: enrollment.id },
@@ -667,7 +675,7 @@ export async function processReactivationSendsDue(opts?: {
 
       const client = await prisma.client.findUnique({
         where: { id: enrollment.campaign.clientId },
-        select: { id: true, emailBisonApiKey: true, settings: { select: { timezone: true } } },
+        select: { id: true, emailBisonApiKey: true, emailBisonBaseHost: { select: { host: true } }, settings: { select: { timezone: true } } },
       });
       if (!client?.emailBisonApiKey) {
         await prisma.reactivationEnrollment.update({
@@ -712,13 +720,18 @@ export async function processReactivationSendsDue(opts?: {
         continue;
       }
 
-      const sendResult = await sendEmailBisonReply(client.emailBisonApiKey, enrollment.anchorReplyId, {
-        message: emailBisonHtmlFromPlainText(content),
-        sender_email_id: senderEmailIdNum,
-        to_emails: [{ name: enrollment.lead.firstName || null, email_address: enrollment.lead.email! }],
-        inject_previous_email_body: true,
-        content_type: "html",
-      });
+      const sendResult = await sendEmailBisonReply(
+        client.emailBisonApiKey,
+        enrollment.anchorReplyId,
+        {
+          message: emailBisonHtmlFromPlainText(content),
+          sender_email_id: senderEmailIdNum,
+          to_emails: [{ name: enrollment.lead.firstName || null, email_address: enrollment.lead.email! }],
+          inject_previous_email_body: true,
+          content_type: "html",
+        },
+        { baseHost: client.emailBisonBaseHost?.host ?? null }
+      );
 
       if (!sendResult.success) {
         await prisma.reactivationEnrollment.update({

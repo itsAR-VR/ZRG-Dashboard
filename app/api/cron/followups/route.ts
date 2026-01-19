@@ -10,6 +10,9 @@ import { backfillNoResponseFollowUpsDueOnCron } from "@/lib/followup-backfill";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { retrySmsDndHeldLeads } from "@/lib/booking-sms-dnd-retry";
 
+// Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
+export const maxDuration = 800;
+
 /**
  * GET /api/cron/followups
  * 

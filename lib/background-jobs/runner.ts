@@ -10,6 +10,7 @@ import { runSmsInboundPostProcessJob } from "@/lib/background-jobs/sms-inbound-p
 import { runLinkedInInboundPostProcessJob } from "@/lib/background-jobs/linkedin-inbound-post-process";
 import { runSmartLeadInboundPostProcessJob } from "@/lib/background-jobs/smartlead-inbound-post-process";
 import { runInstantlyInboundPostProcessJob } from "@/lib/background-jobs/instantly-inbound-post-process";
+import { runConversationSyncJob } from "@/lib/background-jobs/conversation-sync";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value || "", 10);
@@ -185,6 +186,16 @@ export async function processBackgroundJobs(): Promise<{
           );
           break;
         }
+        case BackgroundJobType.CONVERSATION_SYNC: {
+          await withAiTelemetrySource(telemetrySource, () =>
+            runConversationSyncJob({
+              clientId: lockedJob.clientId,
+              leadId: lockedJob.leadId,
+              messageId: lockedJob.messageId,
+            })
+          );
+          break;
+        }
         default: {
           console.warn(`[Background Jobs] Unsupported type: ${String(lockedJob.type)}`);
           skipped++;
@@ -239,4 +250,3 @@ export async function processBackgroundJobs(): Promise<{
     remaining,
   };
 }
-

@@ -107,7 +107,11 @@ export async function sendEmailReply(
       include: {
         lead: {
           include: {
-            client: true,
+            client: {
+              include: {
+                emailBisonBaseHost: { select: { host: true } },
+              },
+            },
           },
         },
       },
@@ -322,7 +326,12 @@ export async function sendEmailReply(
       });
 
       // Call sendEmailBisonReply with correct 3 parameters: (apiKey, replyId, payload)
-      let sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyKey, buildPayload(senderEmailId));
+      let sendResult = await sendEmailBisonReply(
+        client.emailBisonApiKey,
+        replyKey,
+        buildPayload(senderEmailId),
+        { baseHost: client.emailBisonBaseHost?.host ?? null }
+      );
 
       // Retry once with a fallback sender if the configured sender was invalid in EmailBison.
       if (!sendResult.success && isInvalidSenderEmailIdErrorText(sendResult.error || "")) {
@@ -341,7 +350,12 @@ export async function sendEmailReply(
         if (picked.senderEmailId && picked.senderEmailId !== senderEmailId) {
           senderEmailId = picked.senderEmailId;
           await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
-          sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyKey, buildPayload(senderEmailId));
+          sendResult = await sendEmailBisonReply(
+            client.emailBisonApiKey,
+            replyKey,
+            buildPayload(senderEmailId),
+            { baseHost: client.emailBisonBaseHost?.host ?? null }
+          );
         }
       }
 
@@ -462,7 +476,11 @@ export async function sendEmailReplyForLead(
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       include: {
-        client: true,
+        client: {
+          include: {
+            emailBisonBaseHost: { select: { host: true } },
+          },
+        },
       },
     });
 
@@ -644,7 +662,12 @@ export async function sendEmailReplyForLead(
         content_type: "html" as const,
       });
 
-      let sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyKey, buildPayload(senderEmailId));
+      let sendResult = await sendEmailBisonReply(
+        client.emailBisonApiKey,
+        replyKey,
+        buildPayload(senderEmailId),
+        { baseHost: client.emailBisonBaseHost?.host ?? null }
+      );
 
       if (!sendResult.success && isInvalidSenderEmailIdErrorText(sendResult.error || "")) {
         await prisma.emailBisonSenderEmailSnapshot
@@ -662,7 +685,12 @@ export async function sendEmailReplyForLead(
         if (picked.senderEmailId && picked.senderEmailId !== senderEmailId) {
           senderEmailId = picked.senderEmailId;
           await prisma.lead.update({ where: { id: lead.id }, data: { senderAccountId: senderEmailId } }).catch(() => undefined);
-          sendResult = await sendEmailBisonReply(client.emailBisonApiKey, replyKey, buildPayload(senderEmailId));
+          sendResult = await sendEmailBisonReply(
+            client.emailBisonApiKey,
+            replyKey,
+            buildPayload(senderEmailId),
+            { baseHost: client.emailBisonBaseHost?.host ?? null }
+          );
         }
       }
 

@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { refreshSenderEmailSnapshotsDue, resolveReactivationEnrollmentsDue, processReactivationSendsDue } from "@/lib/reactivation-engine";
 
+// Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
+export const maxDuration = 800;
+
 function isAuthorized(request: NextRequest): boolean {
   const expectedSecret = process.env.CRON_SECRET;
   if (!expectedSecret) return false;
@@ -45,4 +48,3 @@ export async function POST(request: NextRequest) {
   // Alias for manual triggers/external cron services.
   return GET(request);
 }
-

@@ -14,6 +14,7 @@ export interface ClientData {
   emailProvider?: EmailIntegrationProvider | null;
   emailBisonApiKey?: string;
   emailBisonWorkspaceId?: string;
+  emailBisonBaseHostId?: string | null;
   smartLeadApiKey?: string;
   smartLeadWebhookSecret?: string;
   instantlyApiKey?: string;
@@ -30,6 +31,13 @@ function normalizeOptionalString(value: string | undefined): string | undefined 
 function normalizeEmailBisonWorkspaceId(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   return value.trim().replace(/^#\s*/, "");
+}
+
+function normalizeOptionalId(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
 }
 
 function validateEmailBisonWorkspaceId(value: string | undefined): string | null {
@@ -102,6 +110,7 @@ export async function getClients() {
         emailProvider: true,
         emailBisonApiKey: true,
         emailBisonWorkspaceId: true,
+        emailBisonBaseHostId: true,
         smartLeadApiKey: true,
         smartLeadWebhookSecret: true,
         instantlyApiKey: true,
@@ -196,6 +205,7 @@ export async function createClient(data: ClientData) {
     const emailProviderInput = parseEmailProvider(emailProviderRaw);
     const emailBisonApiKey = normalizeOptionalString(data.emailBisonApiKey);
     const emailBisonWorkspaceId = normalizeEmailBisonWorkspaceId(data.emailBisonWorkspaceId);
+    const emailBisonBaseHostId = normalizeOptionalId(data.emailBisonBaseHostId);
     const smartLeadApiKey = normalizeOptionalString(data.smartLeadApiKey);
     const smartLeadWebhookSecret = normalizeOptionalString(data.smartLeadWebhookSecret);
     const instantlyApiKey = normalizeOptionalString(data.instantlyApiKey);
@@ -266,24 +276,20 @@ export async function createClient(data: ClientData) {
       }
     }
 
-    const emailIntegrationData: Pick<
-      Prisma.ClientCreateInput,
-      | "emailProvider"
-      | "emailBisonApiKey"
-      | "emailBisonWorkspaceId"
-      | "smartLeadApiKey"
-      | "smartLeadWebhookSecret"
-      | "instantlyApiKey"
-      | "instantlyWebhookSecret"
-    > = {
-      emailProvider: resolvedProvider,
-      emailBisonApiKey: resolvedProvider === EmailIntegrationProvider.EMAILBISON ? (emailBisonApiKey || null) : null,
-      emailBisonWorkspaceId: resolvedProvider === EmailIntegrationProvider.EMAILBISON ? (emailBisonWorkspaceId || null) : null,
-      smartLeadApiKey: resolvedProvider === EmailIntegrationProvider.SMARTLEAD ? (smartLeadApiKey || null) : null,
-      smartLeadWebhookSecret: resolvedProvider === EmailIntegrationProvider.SMARTLEAD ? (smartLeadWebhookSecret || null) : null,
-      instantlyApiKey: resolvedProvider === EmailIntegrationProvider.INSTANTLY ? (instantlyApiKey || null) : null,
-      instantlyWebhookSecret: resolvedProvider === EmailIntegrationProvider.INSTANTLY ? (instantlyWebhookSecret || null) : null,
-    };
+    if (resolvedProvider === EmailIntegrationProvider.EMAILBISON && emailBisonBaseHostId) {
+      const exists = await prisma.emailBisonBaseHost.findUnique({
+        where: { id: emailBisonBaseHostId },
+        select: { id: true },
+      });
+      if (!exists) {
+        return { success: false, error: "Selected EmailBison base host not found" };
+      }
+    }
+
+    const emailBisonBaseHostConnect =
+      resolvedProvider === EmailIntegrationProvider.EMAILBISON && emailBisonBaseHostId
+        ? { emailBisonBaseHost: { connect: { id: emailBisonBaseHostId } } }
+        : {};
 
     // Create the client/workspace with userId
     const client = await prisma.client.create({
@@ -291,7 +297,14 @@ export async function createClient(data: ClientData) {
         name,
         ghlLocationId,
         ghlPrivateKey,
-        ...emailIntegrationData,
+        emailProvider: resolvedProvider,
+        emailBisonApiKey: resolvedProvider === EmailIntegrationProvider.EMAILBISON ? (emailBisonApiKey || null) : null,
+        emailBisonWorkspaceId: resolvedProvider === EmailIntegrationProvider.EMAILBISON ? (emailBisonWorkspaceId || null) : null,
+        smartLeadApiKey: resolvedProvider === EmailIntegrationProvider.SMARTLEAD ? (smartLeadApiKey || null) : null,
+        smartLeadWebhookSecret: resolvedProvider === EmailIntegrationProvider.SMARTLEAD ? (smartLeadWebhookSecret || null) : null,
+        instantlyApiKey: resolvedProvider === EmailIntegrationProvider.INSTANTLY ? (instantlyApiKey || null) : null,
+        instantlyWebhookSecret: resolvedProvider === EmailIntegrationProvider.INSTANTLY ? (instantlyWebhookSecret || null) : null,
+        ...emailBisonBaseHostConnect,
         unipileAccountId: unipileAccountId || null,
         calendlyAccessToken: calendlyAccessToken || null,
         userId: user.id, // Workspace owner (admin)
@@ -329,6 +342,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
     const emailProviderInput = parseEmailProvider(emailProviderRaw);
     const emailBisonApiKey = normalizeOptionalString(data.emailBisonApiKey);
     const emailBisonWorkspaceId = normalizeEmailBisonWorkspaceId(data.emailBisonWorkspaceId);
+    const emailBisonBaseHostId = normalizeOptionalId(data.emailBisonBaseHostId);
     const smartLeadApiKey = normalizeOptionalString(data.smartLeadApiKey);
     const smartLeadWebhookSecret = normalizeOptionalString(data.smartLeadWebhookSecret);
     const instantlyApiKey = normalizeOptionalString(data.instantlyApiKey);
@@ -379,6 +393,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
       (data as unknown as Record<string, unknown>).emailProvider !== undefined ||
       data.emailBisonApiKey !== undefined ||
       data.emailBisonWorkspaceId !== undefined ||
+      (data as unknown as Record<string, unknown>).emailBisonBaseHostId !== undefined ||
       data.smartLeadApiKey !== undefined ||
       data.smartLeadWebhookSecret !== undefined ||
       data.instantlyApiKey !== undefined ||
@@ -390,6 +405,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
         updateData.emailProvider = null;
         updateData.emailBisonApiKey = null;
         updateData.emailBisonWorkspaceId = null;
+        updateData.emailBisonBaseHost = { disconnect: true };
         updateData.smartLeadApiKey = null;
         updateData.smartLeadWebhookSecret = null;
         updateData.instantlyApiKey = null;
@@ -447,6 +463,20 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
 
           if (data.emailBisonApiKey !== undefined) updateData.emailBisonApiKey = emailBisonApiKey || null;
           if (data.emailBisonWorkspaceId !== undefined) updateData.emailBisonWorkspaceId = emailBisonWorkspaceId || null;
+          if ((data as unknown as Record<string, unknown>).emailBisonBaseHostId !== undefined) {
+            if (emailBisonBaseHostId) {
+              const exists = await prisma.emailBisonBaseHost.findUnique({
+                where: { id: emailBisonBaseHostId },
+                select: { id: true },
+              });
+              if (!exists) {
+                return { success: false, error: "Selected EmailBison base host not found" };
+              }
+              updateData.emailBisonBaseHost = { connect: { id: emailBisonBaseHostId } };
+            } else {
+              updateData.emailBisonBaseHost = { disconnect: true };
+            }
+          }
           updateData.smartLeadApiKey = null;
           updateData.smartLeadWebhookSecret = null;
           updateData.instantlyApiKey = null;
@@ -454,6 +484,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
         } else if (resolvedProvider === EmailIntegrationProvider.SMARTLEAD) {
           updateData.emailBisonApiKey = null;
           updateData.emailBisonWorkspaceId = null;
+          updateData.emailBisonBaseHost = { disconnect: true };
           if (data.smartLeadApiKey !== undefined) updateData.smartLeadApiKey = smartLeadApiKey || null;
           if (data.smartLeadWebhookSecret !== undefined) updateData.smartLeadWebhookSecret = smartLeadWebhookSecret || null;
           updateData.instantlyApiKey = null;
@@ -461,6 +492,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
         } else if (resolvedProvider === EmailIntegrationProvider.INSTANTLY) {
           updateData.emailBisonApiKey = null;
           updateData.emailBisonWorkspaceId = null;
+          updateData.emailBisonBaseHost = { disconnect: true };
           updateData.smartLeadApiKey = null;
           updateData.smartLeadWebhookSecret = null;
           if (data.instantlyApiKey !== undefined) updateData.instantlyApiKey = instantlyApiKey || null;
@@ -468,6 +500,7 @@ export async function updateClient(id: string, data: Partial<ClientData>) {
         } else {
           updateData.emailBisonApiKey = null;
           updateData.emailBisonWorkspaceId = null;
+          updateData.emailBisonBaseHost = { disconnect: true };
           updateData.smartLeadApiKey = null;
           updateData.smartLeadWebhookSecret = null;
           updateData.instantlyApiKey = null;

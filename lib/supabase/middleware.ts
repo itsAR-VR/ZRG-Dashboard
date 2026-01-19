@@ -1,5 +1,29 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { isSupabaseAuthError, isSupabaseInvalidOrMissingSessionError } from "@/lib/supabase/error-utils";
+
+function getDefaultSupabaseStorageKey(): string | null {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  if (!url) return null;
+
+  try {
+    const hostname = new URL(url).hostname;
+    const projectRef = hostname.split(".")[0];
+    if (!projectRef) return null;
+    return `sb-${projectRef}-auth-token`;
+  } catch {
+    return null;
+  }
+}
+
+function hasSupabaseAuthCookie(request: NextRequest): boolean {
+  const baseName = getDefaultSupabaseStorageKey();
+  if (!baseName) return false;
+
+  return request.cookies
+    .getAll()
+    .some(({ name }) => name === baseName || name.startsWith(`${baseName}.`));
+}
 
 export async function updateSession(request: NextRequest) {
   // Middleware runs for every request matched by `middleware.ts`. Avoid doing network work
@@ -11,6 +35,24 @@ export async function updateSession(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
     request,
   });
+
+  // Fast-path: if there is no Supabase auth cookie, skip creating a client and any network calls.
+  // This avoids noisy auth refresh attempts for signed-out users (e.g. refresh_token_not_found).
+  const isAuthPage = request.nextUrl.pathname.startsWith("/auth");
+  const isApiRoute = request.nextUrl.pathname.startsWith("/api");
+  const isPublicRoute = isAuthPage || isApiRoute;
+  const isAuthCallbackRoute = request.nextUrl.pathname === "/auth/callback";
+  const isResetPasswordRoute = request.nextUrl.pathname === "/auth/reset-password";
+
+  if (!hasSupabaseAuthCookie(request)) {
+    if (!isPublicRoute) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/auth/login";
+      return NextResponse.redirect(url);
+    }
+
+    return supabaseResponse;
+  }
 
   const timeoutMs = Math.max(
     500,
@@ -58,22 +100,31 @@ export async function updateSession(request: NextRequest) {
 
   let user: unknown = null;
   try {
-    const {
-      data: { user: fetchedUser },
-    } = await supabase.auth.getUser();
-    user = fetchedUser;
-  } catch (error) {
-    console.warn("[middleware] supabase.auth.getUser failed:", error instanceof Error ? error.message : error);
-    // Fail open at the middleware layer (no redirects). Server-side auth checks still apply.
-    return supabaseResponse;
-  }
+    const { data, error } = await supabase.auth.getUser();
 
-  // Protected routes - redirect to login if not authenticated
-  const isAuthPage = request.nextUrl.pathname.startsWith("/auth");
-  const isApiRoute = request.nextUrl.pathname.startsWith("/api");
-  const isPublicRoute = isAuthPage || isApiRoute;
-  const isAuthCallbackRoute = request.nextUrl.pathname === "/auth/callback";
-  const isResetPasswordRoute = request.nextUrl.pathname === "/auth/reset-password";
+    // Treat auth failures as a signed-out state; only fail-open on non-auth unexpected errors.
+    if (error) {
+      if (!isSupabaseAuthError(error)) {
+        console.warn(
+          "[middleware] supabase.auth.getUser error:",
+          error instanceof Error ? error.message : error
+        );
+        return supabaseResponse;
+      }
+    } else {
+      user = data.user;
+    }
+  } catch (error) {
+    // refresh_token_not_found and similar session errors are expected when cookies are stale/missing.
+    if (!isSupabaseInvalidOrMissingSessionError(error)) {
+      console.warn(
+        "[middleware] supabase.auth.getUser threw:",
+        error instanceof Error ? error.message : error
+      );
+      // Fail open at the middleware layer (no redirects). Server-side auth checks still apply.
+      return supabaseResponse;
+    }
+  }
 
   if (!user && !isPublicRoute) {
     // No user, redirect to login
@@ -91,7 +142,6 @@ export async function updateSession(request: NextRequest) {
 
   return supabaseResponse;
 }
-
 
 
 

@@ -44,6 +44,9 @@ export async function runLeadScoringPostProcessJob(opts: {
     }
   } else {
     console.error(`[Lead Scoring] Failed to score lead ${opts.leadId}: ${result.error}`);
-    // Don't throw - let the job succeed to avoid infinite retries for AI failures
+    // Retry only when the error is marked retryable (e.g. transient timeouts). Non-retryable failures should not churn.
+    if (result.retryable) {
+      throw new Error(result.error || "Lead scoring failed (retryable)");
+    }
   }
 }

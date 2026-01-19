@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { isSupabaseAuthError } from "@/lib/supabase/error-utils";
 import { redirect } from "next/navigation";
 
 export interface UserData {
@@ -36,6 +37,11 @@ export async function getCurrentUser(): Promise<{
       },
     };
   } catch (error) {
+    // Expected when cookies are missing/expired; treat as signed-out without noisy server logs.
+    if (isSupabaseAuthError(error)) {
+      return { success: false, error: "Not authenticated" };
+    }
+
     console.error("Failed to get current user:", error);
     return { success: false, error: "Failed to get current user" };
   }
@@ -49,7 +55,6 @@ export async function signOut() {
   await supabase.auth.signOut();
   redirect("/auth/login");
 }
-
 
 
 

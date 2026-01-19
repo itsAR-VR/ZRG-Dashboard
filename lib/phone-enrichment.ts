@@ -42,8 +42,11 @@ async function tryHydratePhoneFromRecentMessages(leadId: string): Promise<string
 async function tryHydratePhoneFromEmailBisonCustomVars(opts: {
   emailBisonLeadId: string;
   emailBisonApiKey: string;
+  baseHost?: string | null;
 }): Promise<string | null> {
-  const leadDetails = await fetchEmailBisonLead(opts.emailBisonApiKey, opts.emailBisonLeadId);
+  const leadDetails = await fetchEmailBisonLead(opts.emailBisonApiKey, opts.emailBisonLeadId, {
+    baseHost: opts.baseHost ?? null,
+  });
   if (!leadDetails.success || !leadDetails.data) return null;
 
   const customVars = leadDetails.data.custom_variables || [];
@@ -158,6 +161,7 @@ export async function enrichPhoneThenSyncToGhl(leadId: string, opts?: {
         client: {
           select: {
             emailBisonApiKey: true,
+            emailBisonBaseHost: { select: { host: true } },
             ghlPrivateKey: true,
             ghlLocationId: true,
           },
@@ -269,6 +273,7 @@ export async function enrichPhoneThenSyncToGhl(leadId: string, opts?: {
       const fromBison = await tryHydratePhoneFromEmailBisonCustomVars({
         emailBisonLeadId: lead.emailBisonLeadId,
         emailBisonApiKey: lead.client.emailBisonApiKey,
+        baseHost: lead.client.emailBisonBaseHost?.host ?? null,
       });
 
       if (fromBison) {

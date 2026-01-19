@@ -13,7 +13,7 @@ import {
   type ConversationsCursorOptions 
 } from "@/actions/lead-actions";
 import { getSmsCampaignFilters } from "@/actions/sms-campaign-actions";
-import { syncConversationHistory, syncAllConversations, syncEmailConversationHistory, syncAllEmailConversations, smartSyncConversation, reanalyzeLeadSentiment } from "@/actions/message-actions";
+import { syncAllConversations, enqueueConversationSync, reanalyzeLeadSentiment } from "@/actions/message-actions";
 import { getAutoFollowUpsOnReply, setAutoFollowUpsOnReply } from "@/actions/settings-actions";
 import { subscribeToLeads, unsubscribe } from "@/lib/supabase";
 import { Loader2, Wifi, WifiOff, Inbox, RefreshCw, FilterX } from "lucide-react";
@@ -372,15 +372,11 @@ export function InboxView({
     const lastSyncAt = lastAutoSyncRef.current.get(conversationId) || 0;
     const shouldSyncNow = shouldAutoSync && Date.now() - lastSyncAt > 5 * 60 * 1000; // 5 minutes
 
-    const syncPromise = shouldSyncNow
-      ? smartSyncConversation(conversationId).catch((err) => {
-          console.error("[InboxView] Auto-sync failed:", err);
-          return null;
-        })
-      : Promise.resolve(null);
-
     if (shouldSyncNow) {
       lastAutoSyncRef.current.set(conversationId, Date.now());
+      enqueueConversationSync(conversationId).catch((err) => {
+        console.error("[InboxView] Auto-sync enqueue failed:", err);
+      });
     }
 
     // Fetch full messages in background
@@ -445,23 +441,6 @@ export function InboxView({
       }
     }
 
-    const syncResult = await syncPromise;
-    if (syncResult?.success) {
-      const imported = syncResult.importedCount || 0;
-      const healed = syncResult.healedCount || 0;
-      const hasChanges = imported > 0 || healed > 0;
-
-      if (hasChanges) {
-        const refreshed = await getConversation(conversationId);
-        if (refreshed.success && refreshed.data && baseConv) {
-          setActiveConversation({
-            ...baseConv,
-            messages: refreshed.data.messages,
-          });
-        }
-        refetch().catch(() => undefined);
-      }
-    }
     if (showLoading) {
       setIsLoadingMessages(false);
     }
@@ -473,46 +452,19 @@ export function InboxView({
     setSyncingLeadIds(prev => new Set(prev).add(leadId));
     
     try {
-      // Use smart sync which determines the best sync method based on lead's actual IDs
-      const result = await smartSyncConversation(leadId);
-      
-      if (result.success) {
-        const imported = result.importedCount || 0;
-        const healed = result.healedCount || 0;
-        const leadUpdated = !!result.leadUpdated;
-        const hasChanges = imported > 0 || healed > 0;
-        const hasAnyChanges = hasChanges || leadUpdated;
+      const result = await enqueueConversationSync(leadId);
+      if (!result.success) {
+        toast.error(result.error || "Failed to queue sync");
+        return;
+      }
 
-        if (hasAnyChanges) {
-          if (hasChanges) {
-            const parts = [];
-            if (imported > 0) parts.push(`${imported} new`);
-            if (healed > 0) parts.push(`${healed} fixed`);
-            if (leadUpdated) parts.push(`contact updated`);
-
-            toast.success(`Synced: ${parts.join(", ")}`, {
-              description: `Total messages: ${result.totalMessages}`,
-            });
-          } else if (leadUpdated) {
-            toast.success("Contact updated", {
-              description: "Pulled missing fields from GoHighLevel",
-            });
-          }
-
-          // Refresh the active conversation if it's the one we synced
-          if (leadId === activeConversationId) {
-            fetchActiveConversation();
-          }
-        } else {
-          toast.info("No changes needed", {
-            description: `All ${result.totalMessages} messages already synced`
-          });
-        }
+      if (result.alreadyQueued) {
+        toast.info("Sync already queued", { description: "Processing in the background." });
       } else {
-        toast.error(result.error || "Failed to sync history");
+        toast.success("Sync queued", { description: "Processing in the background." });
       }
     } catch (err) {
-      toast.error("Failed to sync conversation");
+      toast.error("Failed to queue sync");
     } finally {
       // Remove from syncing set
       setSyncingLeadIds(prev => {

@@ -2,7 +2,6 @@
 
 import { prisma } from "@/lib/prisma";
 import { sendSMS, exportMessages, updateGHLContact, type GHLExportedMessage } from "@/lib/ghl-api";
-import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbison-api";
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, isPositiveSentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
@@ -26,6 +25,8 @@ import {
 } from "@/lib/unipile-api";
 import { recordOutboundForBookingProgress } from "@/lib/booking-progress";
 import { coerceSmsDraftPartsOrThrow } from "@/lib/sms-multipart";
+import { BackgroundJobType } from "@prisma/client";
+import { enqueueBackgroundJob } from "@/lib/background-jobs/enqueue";
 
 /**
  * Pre-classification check for sentiment analysis.
@@ -414,6 +415,65 @@ export async function smartSyncConversation(leadId: string, options: SyncOptions
   });
 }
 
+function getConversationSyncDedupeWindowMs(): number {
+  const parsed = Number.parseInt(process.env.CONVERSATION_SYNC_DEDUPE_WINDOW_MS || "", 10);
+  if (!Number.isFinite(parsed)) return 5 * 60_000;
+  return Math.max(30_000, Math.min(30 * 60_000, parsed));
+}
+
+export async function enqueueConversationSync(leadId: string): Promise<{
+  success: boolean;
+  queued?: boolean;
+  alreadyQueued?: boolean;
+  error?: string;
+}> {
+  return withAiTelemetrySourceIfUnset("action:message.enqueue_conversation_sync", async () => {
+    try {
+      const lead = await requireLeadAccess(leadId);
+
+      const existing = await prisma.backgroundJob.findFirst({
+        where: {
+          leadId,
+          type: BackgroundJobType.CONVERSATION_SYNC,
+          status: { in: ["PENDING", "RUNNING"] },
+        },
+        select: { id: true },
+      });
+
+      if (existing) {
+        return { success: true, queued: false, alreadyQueued: true };
+      }
+
+      const anchorMessage = await prisma.message.findFirst({
+        where: { leadId },
+        orderBy: { sentAt: "desc" },
+        select: { id: true },
+      });
+
+      if (!anchorMessage) {
+        return { success: false, error: "No messages found for this lead" };
+      }
+
+      const dedupeWindowMs = getConversationSyncDedupeWindowMs();
+      const bucket = Math.floor(Date.now() / dedupeWindowMs) * dedupeWindowMs;
+      const dedupeKey = `conversation_sync:${leadId}:${bucket}`;
+
+      const queued = await enqueueBackgroundJob({
+        type: BackgroundJobType.CONVERSATION_SYNC,
+        clientId: lead.clientId,
+        leadId,
+        messageId: anchorMessage.id,
+        dedupeKey,
+        maxAttempts: 3,
+      });
+
+      return { success: true, queued, alreadyQueued: !queued };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : "Failed to enqueue sync" };
+    }
+  });
+}
+
 /**
  * Check if a message with similar content already exists
  * Uses fuzzy timestamp matching (within 60 seconds) to handle timing differences
@@ -553,7 +613,7 @@ export async function syncAllConversations(clientId: string, options: SyncAllOpt
     // Throughput is also governed by the centralized GHL rate limiter in `lib/ghl-api.ts`.
     const configuredBatchSize = Number(process.env.SYNC_ALL_CONCURRENCY || "");
     const BATCH_SIZE =
-      Number.isFinite(configuredBatchSize) && configuredBatchSize > 0 ? Math.floor(configuredBatchSize) : 3;
+      Number.isFinite(configuredBatchSize) && configuredBatchSize > 0 ? Math.floor(configuredBatchSize) : 1;
 
     let nextIndex: number | null = null;
 

@@ -2,7 +2,7 @@ import "server-only";
 
 import "@/lib/server-dns";
 import { BackgroundJobType } from "@prisma/client";
-import { prisma } from "@/lib/prisma";
+import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
 import { runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { extractFirstCompleteJsonObjectFromText, getTrimmedOutputText } from "@/lib/ai/response-utils";
@@ -231,6 +231,15 @@ export async function scoreLeadFromConversation(
       if ([429, 500, 502, 503, 504].includes(status)) return true;
     }
 
+    const anyErr = error as unknown as { code?: unknown; cause?: unknown };
+    const code = typeof anyErr.code === "string" ? anyErr.code : null;
+    const causeCode =
+      anyErr.cause && typeof anyErr.cause === "object" && "code" in anyErr.cause
+        ? (anyErr.cause as { code?: unknown }).code
+        : null;
+    if (code === "UND_ERR_BODY_TIMEOUT" || code === "UND_ERR_HEADERS_TIMEOUT") return true;
+    if (causeCode === "UND_ERR_BODY_TIMEOUT" || causeCode === "UND_ERR_HEADERS_TIMEOUT") return true;
+
     if (error instanceof SyntaxError) return true; // Often caused by truncated/incomplete JSON output.
 
     const message = error.message.toLowerCase();
@@ -343,6 +352,7 @@ export async function scoreLeadFromConversation(
       };
     } catch (error) {
       const isRetryable = isRetryableLeadScoringError(error);
+      const isParseError = error instanceof SyntaxError;
 
       if (isRetryable && attempt < maxRetries) {
         console.warn(
@@ -352,8 +362,15 @@ export async function scoreLeadFromConversation(
         continue;
       }
 
-      console.error(`[Lead Scoring] Error scoring lead ${opts.leadId}:`, error);
-      return null;
+      // Parsing/truncation issues should not trigger BackgroundJob retries; treat as "no score".
+      if (isParseError) {
+        console.warn(`[Lead Scoring] Lead ${opts.leadId} failed to parse score JSON after ${maxRetries} attempts`);
+        return null;
+      }
+
+      const err = error instanceof Error ? error : new Error(String(error));
+      (err as unknown as { retryable?: boolean }).retryable = isRetryable;
+      throw err;
     }
   }
 
@@ -373,6 +390,7 @@ export async function scoreLead(leadId: string): Promise<{
   score: LeadScore | null;
   disqualified: boolean;
   error?: string;
+  retryable?: boolean;
 }> {
   try {
     const lead = await prisma.lead.findUnique({
@@ -489,6 +507,10 @@ export async function scoreLead(leadId: string): Promise<{
       score: null,
       disqualified: false,
       error: error instanceof Error ? error.message : "Unknown error",
+      retryable:
+        typeof (error as { retryable?: unknown } | null)?.retryable === "boolean"
+          ? Boolean((error as { retryable?: boolean }).retryable)
+          : undefined,
     };
   }
 }
@@ -508,29 +530,24 @@ export async function enqueueLeadScoringJob(opts: {
 }): Promise<{ enqueued: boolean; jobId?: string }> {
   const dedupeKey = `lead_scoring:${opts.leadId}:${opts.messageId}`;
 
-  // Check for existing pending/running job with same dedupe key
-  const existing = await prisma.backgroundJob.findFirst({
-    where: {
-      dedupeKey,
-      status: { in: ["PENDING", "RUNNING"] },
-    },
-    select: { id: true },
-  });
+  try {
+    const job = await prisma.backgroundJob.create({
+      data: {
+        type: BackgroundJobType.LEAD_SCORING_POST_PROCESS,
+        clientId: opts.clientId,
+        leadId: opts.leadId,
+        messageId: opts.messageId,
+        dedupeKey,
+        maxAttempts: 3,
+      },
+      select: { id: true },
+    });
 
-  if (existing) {
-    return { enqueued: false };
+    return { enqueued: true, jobId: job.id };
+  } catch (error) {
+    if (isPrismaUniqueConstraintError(error)) {
+      return { enqueued: false };
+    }
+    throw error;
   }
-
-  const job = await prisma.backgroundJob.create({
-    data: {
-      type: BackgroundJobType.LEAD_SCORING_POST_PROCESS,
-      clientId: opts.clientId,
-      leadId: opts.leadId,
-      messageId: opts.messageId,
-      dedupeKey,
-      maxAttempts: 3,
-    },
-  });
-
-  return { enqueued: true, jobId: job.id };
 }

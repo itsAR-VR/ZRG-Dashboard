@@ -42,6 +42,7 @@ import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
+import { maybeAssignLead } from "@/lib/lead-assignment";
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   for (const dateStr of dateStrs) {
@@ -92,11 +93,14 @@ async function backfillOutboundEmailMessagesIfMissing(opts: {
   leadId: string;
   emailBisonLeadId: string;
   apiKey: string;
+  baseHost?: string | null;
   limit?: number;
 }) {
   const limit = opts.limit ?? 12;
 
-  const sentEmailsResult = await fetchEmailBisonSentEmails(opts.apiKey, opts.emailBisonLeadId);
+  const sentEmailsResult = await fetchEmailBisonSentEmails(opts.apiKey, opts.emailBisonLeadId, {
+    baseHost: opts.baseHost ?? null,
+  });
   if (!sentEmailsResult.success || !sentEmailsResult.data || sentEmailsResult.data.length === 0) return;
 
   const sorted = [...sentEmailsResult.data].sort((a, b) => {
@@ -200,14 +204,15 @@ interface EmailBisonEnrichmentResult {
 async function enrichLeadFromEmailBison(
   leadId: string,
   emailBisonLeadId: string,
-  apiKey: string
+  apiKey: string,
+  baseHost?: string | null
 ): Promise<EmailBisonEnrichmentResult> {
   const result: EmailBisonEnrichmentResult = {
     clayData: {},
   };
 
   try {
-    const leadDetails = await fetchEmailBisonLead(apiKey, emailBisonLeadId);
+    const leadDetails = await fetchEmailBisonLead(apiKey, emailBisonLeadId, { baseHost: baseHost ?? null });
 
     if (!leadDetails.success || !leadDetails.data) {
       console.log(`[EmailBison Enrichment] Failed to fetch lead ${emailBisonLeadId}: ${leadDetails.error}`);
@@ -547,6 +552,7 @@ export async function runEmailInboundPostProcessJob(opts: {
         id: true,
         name: true,
         emailBisonApiKey: true,
+        emailBisonBaseHost: { select: { host: true } },
       },
     }),
     prisma.message.findUnique({
@@ -598,13 +604,19 @@ export async function runEmailInboundPostProcessJob(opts: {
 
   if (!lead) throw new Error("Lead not found");
 
+  const emailBisonBaseHost = client.emailBisonBaseHost?.host ?? null;
+
   // If this is an untracked reply and we don't have an EmailBison lead ID yet, try to create one.
   if (!lead.emailBisonLeadId && client.emailBisonApiKey && lead.email) {
-    const createResult = await createEmailBisonLead(client.emailBisonApiKey, {
-      email: lead.email,
-      first_name: lead.firstName ?? null,
-      last_name: lead.lastName ?? null,
-    });
+    const createResult = await createEmailBisonLead(
+      client.emailBisonApiKey,
+      {
+        email: lead.email,
+        first_name: lead.firstName ?? null,
+        last_name: lead.lastName ?? null,
+      },
+      { baseHost: emailBisonBaseHost }
+    );
 
     if (createResult.success && createResult.leadId) {
       lead = await prisma.lead.update({
@@ -647,6 +659,7 @@ export async function runEmailInboundPostProcessJob(opts: {
       leadId: lead.id,
       emailBisonLeadId: lead.emailBisonLeadId,
       apiKey: client.emailBisonApiKey,
+      baseHost: emailBisonBaseHost,
     });
   }
 
@@ -770,6 +783,14 @@ export async function runEmailInboundPostProcessJob(opts: {
     }
   }
 
+  // Round-robin lead assignment (Phase 43)
+  // Assign lead to next setter if sentiment is positive and not already assigned
+  await maybeAssignLead({
+    leadId: lead.id,
+    clientId: client.id,
+    sentimentTag: lead.sentimentTag,
+  });
+
   // Snooze detection: if the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
   const snoozeKeywordHit =
     /\b(after|until|from)\b/i.test(inboundText) &&
@@ -826,7 +847,12 @@ export async function runEmailInboundPostProcessJob(opts: {
   // STEP 2: EmailBison custom variables.
   let emailBisonData: EmailBisonEnrichmentData | undefined;
   if (lead.emailBisonLeadId && client.emailBisonApiKey) {
-    const enrichResult = await enrichLeadFromEmailBison(lead.id, lead.emailBisonLeadId, client.emailBisonApiKey);
+    const enrichResult = await enrichLeadFromEmailBison(
+      lead.id,
+      lead.emailBisonLeadId,
+      client.emailBisonApiKey,
+      emailBisonBaseHost
+    );
     emailBisonData = enrichResult.clayData;
   }
 
@@ -1021,4 +1047,3 @@ export async function runEmailInboundPostProcessJob(opts: {
     console.error(`[Email PostProcess] Failed to enqueue lead scoring job for lead ${lead.id}:`, error);
   }
 }
-

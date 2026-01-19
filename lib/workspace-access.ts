@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { createClient as createSupabaseClient } from "@/lib/supabase/server";
+import { isSupabaseAuthError } from "@/lib/supabase/error-utils";
 import { ClientMemberRole } from "@prisma/client";
 
 export type AuthUser = {
@@ -9,13 +10,23 @@ export type AuthUser = {
 
 export async function requireAuthUser(): Promise<AuthUser> {
   const supabase = await createSupabaseClient();
-  const { data: { user }, error } = await supabase.auth.getUser();
 
-  if (error || !user) {
-    throw new Error("Not authenticated");
+  try {
+    const { data: { user }, error } = await supabase.auth.getUser();
+
+    if (error || !user) {
+      throw new Error("Not authenticated");
+    }
+
+    return { id: user.id, email: user.email ?? null };
+  } catch (error) {
+    // Avoid leaking Supabase auth errors (e.g. refresh_token_not_found) into logs as unhandled exceptions.
+    if (isSupabaseAuthError(error)) {
+      throw new Error("Not authenticated");
+    }
+
+    throw error instanceof Error ? error : new Error("Not authenticated");
   }
-
-  return { id: user.id, email: user.email ?? null };
 }
 
 export async function getAccessibleClientIdsForUser(userId: string): Promise<string[]> {
@@ -101,4 +112,71 @@ export async function requireLeadAccessById(leadId: string): Promise<{ userId: s
   if (!lead) throw new Error("Lead not found");
   if (!accessible.includes(lead.clientId)) throw new Error("Unauthorized");
   return { userId: user.id, clientId: lead.clientId };
+}
+
+/**
+ * Role type including OWNER (for workspace owners who aren't in ClientMember)
+ */
+export type UserRole = ClientMemberRole | "OWNER";
+
+/**
+ * Role precedence for determining effective role (higher = more permissive).
+ * OWNER and ADMIN have same precedence since both have full access.
+ */
+const ROLE_PRECEDENCE: Record<UserRole, number> = {
+  OWNER: 4,
+  ADMIN: 4,
+  INBOX_MANAGER: 3,
+  SETTER: 1,
+};
+
+/**
+ * Get the user's effective role for a specific workspace.
+ *
+ * Returns "OWNER" if user owns the workspace.
+ * If user has multiple ClientMember roles (possible due to unique constraint on [clientId, userId, role]),
+ * returns the highest-precedence role.
+ *
+ * @returns The user's effective role, or null if no access
+ */
+export async function getUserRoleForClient(
+  userId: string,
+  clientId: string
+): Promise<UserRole | null> {
+  // Check if user is the workspace owner
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: { userId: true },
+  });
+
+  if (client?.userId === userId) {
+    return "OWNER";
+  }
+
+  // Get all memberships for this user+workspace (could be multiple roles)
+  const memberships = await prisma.clientMember.findMany({
+    where: { clientId, userId },
+    select: { role: true },
+  });
+
+  if (memberships.length === 0) {
+    return null;
+  }
+
+  // Return highest-precedence role
+  let bestRole: UserRole = memberships[0].role;
+  for (const membership of memberships) {
+    if (ROLE_PRECEDENCE[membership.role] > ROLE_PRECEDENCE[bestRole]) {
+      bestRole = membership.role;
+    }
+  }
+
+  return bestRole;
+}
+
+/**
+ * Check if a role should see only assigned leads (SETTER) or all leads (others).
+ */
+export function isSetterRole(role: UserRole | null): boolean {
+  return role === "SETTER";
 }

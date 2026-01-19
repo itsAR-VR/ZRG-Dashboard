@@ -2,7 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { getAvailableChannels } from "@/lib/lead-matching";
-import { getAccessibleClientIdsForUser, requireAuthUser, resolveClientScope } from "@/lib/workspace-access";
+import { getAccessibleClientIdsForUser, getUserRoleForClient, isSetterRole, requireAuthUser, resolveClientScope } from "@/lib/workspace-access";
 import { Prisma } from "@prisma/client";
 
 export type Channel = "sms" | "email" | "linkedin";
@@ -37,6 +37,9 @@ export interface ConversationData {
     // Lead scoring (Phase 33)
     overallScore: number | null;
     scoredAt: Date | null;
+    // Lead assignment (Phase 43)
+    assignedToUserId: string | null;
+    assignedAt: Date | null;
   };
   channels: Channel[];           // All channels this lead has messages on
   availableChannels: Channel[];  // Channels available based on contact info
@@ -291,6 +294,9 @@ export async function getConversations(clientId?: string | null): Promise<{
           // Lead scoring (Phase 33)
           overallScore: lead.overallScore,
           scoredAt: lead.scoredAt,
+          // Lead assignment (Phase 43)
+          assignedToUserId: lead.assignedToUserId ?? null,
+          assignedAt: lead.assignedAt ?? null,
         },
         channels,
         availableChannels,
@@ -335,23 +341,42 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
   needsRepair: number;
   total: number;
 }> {
+  const empty = {
+    allResponses: 0,
+    requiresAttention: 0,
+    previouslyRequiredAttention: 0,
+    awaitingReply: 0,
+    needsRepair: 0,
+    total: 0,
+  };
+
   try {
     const scope = await resolveClientScope(clientId);
-    if (scope.clientIds.length === 0) {
-      return {
-        allResponses: 0,
-        requiresAttention: 0,
-        previouslyRequiredAttention: 0,
-        awaitingReply: 0,
-        needsRepair: 0,
-        total: 0,
-      };
-    }
+    if (scope.clientIds.length === 0) return empty;
     const now = new Date();
     const snoozeFilter = { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] };
-    const clientFilter = { clientId: { in: scope.clientIds } };
+
+    // Phase 43: SETTER role filtering
+    // If a specific clientId is provided and user is SETTER, only count their assigned leads
+    let setterFilter: { assignedToUserId: string } | undefined;
+    if (clientId && scope.clientIds.length === 1) {
+      const userRole = await getUserRoleForClient(scope.userId, clientId);
+      if (isSetterRole(userRole)) {
+        setterFilter = { assignedToUserId: scope.userId };
+      }
+    }
+
+    const clientFilter = {
+      clientId: { in: scope.clientIds },
+      ...(setterFilter ?? {}),
+    };
 
     const attentionTags = ATTENTION_SENTIMENT_TAGS as unknown as string[];
+
+    // Build SETTER filter clause for raw SQL
+    const setterSqlClause = setterFilter
+      ? Prisma.sql`and l."assignedToUserId" = ${scope.userId}`
+      : Prisma.sql``;
 
     const [replyCounts, total, blacklisted, needsRepair] = await Promise.all([
       prisma.$queryRaw<
@@ -371,6 +396,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
           where l."clientId" in (${Prisma.join(scope.clientIds)})
             and (l."snoozedUntil" is null or l."snoozedUntil" <= ${now})
             and l."lastInboundAt" is not null
+            ${setterSqlClause}
         ),
         zrg_outbound as (
           select
@@ -436,15 +462,15 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       total: total + blacklisted, // Include blacklisted in total for reference
     };
   } catch (error) {
+    // Auth/authorization issues are expected in some states (signed-out, stale workspace selection).
+    // Avoid noisy error logs and return a safe empty-state.
+    const message = error instanceof Error ? error.message : "";
+    if (message === "Not authenticated" || message === "Unauthorized") {
+      return empty;
+    }
+
     console.error("Failed to get inbox counts:", error);
-    return {
-      allResponses: 0,
-      requiresAttention: 0,
-      previouslyRequiredAttention: 0,
-      awaitingReply: 0,
-      needsRepair: 0,
-      total: 0,
-    };
+    return empty;
   }
 }
 
@@ -530,6 +556,9 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           // Lead scoring (Phase 33)
           overallScore: lead.overallScore,
           scoredAt: lead.scoredAt,
+          // Lead assignment (Phase 43)
+          assignedToUserId: lead.assignedToUserId ?? null,
+          assignedAt: lead.assignedAt ?? null,
         },
         channels,
         availableChannels,
@@ -662,6 +691,9 @@ function transformLeadToConversation(lead: any, opts?: { hasOpenReply?: boolean 
       // Lead scoring (Phase 33)
       overallScore: lead.overallScore,
       scoredAt: lead.scoredAt,
+      // Lead assignment (Phase 43)
+      assignedToUserId: lead.assignedToUserId ?? null,
+      assignedAt: lead.assignedAt ?? null,
     },
     channels,
     availableChannels,
@@ -719,6 +751,15 @@ export async function getConversationsCursor(
     whereConditions.push({ OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] });
 
     whereConditions.push({ clientId: { in: scope.clientIds } });
+
+    // Phase 43: SETTER role filtering
+    // If user is SETTER for the selected workspace, only show their assigned leads
+    if (clientId && scope.clientIds.length === 1) {
+      const userRole = await getUserRoleForClient(scope.userId, clientId);
+      if (isSetterRole(userRole)) {
+        whereConditions.push({ assignedToUserId: scope.userId });
+      }
+    }
 
     // Search filter
     if (search && search.trim()) {
