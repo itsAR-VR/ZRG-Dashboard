@@ -105,13 +105,85 @@ export interface EmailBisonLeadListItem {
   [key: string]: unknown;
 }
 
-const INBOXXIA_BASE_URL = "https://send.meetinboxxia.com";
+export type EmailBisonRequestOptions = {
+  /**
+   * EmailBison base host for this request (hostname only).
+   * Example: `send.meetinboxxia.com`
+   */
+  baseHost?: string | null;
+};
 
-async function parseJsonSafe(response: Response) {
+// Deployment fallback for EmailBison base URL. Per-workspace base hosts should take precedence when provided.
+const DEFAULT_EMAILBISON_BASE_URL = (process.env.EMAILBISON_BASE_URL || "https://send.meetinboxxia.com").replace(/\/+$/, "");
+
+function truncateForLog(value: string, maxLen = 500): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLen) return normalized;
+  return `${normalized.slice(0, maxLen)}…`;
+}
+
+function resolveEmailBisonBaseUrl(baseHost?: string | null): string {
+  const candidate = typeof baseHost === "string" ? baseHost.trim() : "";
+  if (!candidate) return DEFAULT_EMAILBISON_BASE_URL;
+
+  const normalized = candidate.replace(/\/+$/, "");
+  const withScheme = normalized.startsWith("http://") || normalized.startsWith("https://")
+    ? normalized
+    : `https://${normalized}`;
+
   try {
-    return await response.json();
+    const url = new URL(withScheme);
+    return url.origin;
   } catch {
-    return null;
+    return DEFAULT_EMAILBISON_BASE_URL;
+  }
+}
+
+function resolveEmailBisonBaseHost(baseHost?: string | null): string {
+  const baseUrl = resolveEmailBisonBaseUrl(baseHost);
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return baseUrl;
+  }
+}
+
+function formatEmailBisonAuthFailure(status: number, upstreamMessage: string | null | undefined, baseHost?: string | null): string {
+  const host = resolveEmailBisonBaseHost(baseHost);
+  const hint = upstreamMessage ? ` (${truncateForLog(upstreamMessage, 200)})` : "";
+
+  return (
+    `EmailBison authentication failed (${status})${hint}. ` +
+    "This often means a URL/API key mismatch (the key does not exist for this base URL) or an invalid/expired key. " +
+    "Update your API key in Settings → Integrations. " +
+    `If the key is correct, confirm the EmailBison base host matches your account (Settings → Integrations → EmailBison Base Host; current host: ${host}).`
+  );
+}
+
+function formatEmailBisonHttpError(
+  status: number,
+  endpoint: string,
+  upstreamMessage: string | null | undefined,
+  baseHost?: string | null
+): string {
+  const host = resolveEmailBisonBaseHost(baseHost);
+  const message = upstreamMessage ? truncateForLog(upstreamMessage, 200) : "Unknown error";
+  return `EmailBison ${endpoint} failed (${status}) [host=${host}]: ${message}`;
+}
+
+async function readJsonOrTextSafe(
+  response: Response
+): Promise<{ json: any | null; text: string | null }> {
+  try {
+    const text = await response.text();
+    if (!text) return { json: null, text: null };
+    try {
+      return { json: JSON.parse(text), text };
+    } catch {
+      return { json: null, text };
+    }
+  } catch {
+    return { json: null, text: null };
   }
 }
 
@@ -130,6 +202,16 @@ function getEmailBisonMaxRetries(): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function redactEmailBisonUrlForLog(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    const [withoutQuery] = url.split("?");
+    return withoutQuery || url;
+  }
 }
 
 /**
@@ -222,7 +304,7 @@ async function emailBisonFetch(
       // Don't retry non-retryable errors
       if (!isRetryableError(error, callerAborted)) {
         if (abortKind === "caller") {
-          console.log(`[EmailBison] Request cancelled by caller: ${url}`);
+          console.log(`[EmailBison] Request cancelled by caller: ${redactEmailBisonUrlForLog(url)}`);
         } else {
           console.error(`[EmailBison] Non-retryable error (${abortKind}): ${lastError.message}`);
         }
@@ -233,7 +315,7 @@ async function emailBisonFetch(
       if (attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt);
         console.warn(
-          `[EmailBison] Retry ${attempt + 1}/${maxRetries} after ${delay}ms (${abortKind}): ${url}`
+          `[EmailBison] Retry ${attempt + 1}/${maxRetries} after ${delay}ms (${abortKind}): ${redactEmailBisonUrlForLog(url)}`
         );
         await sleep(delay);
         continue;
@@ -241,7 +323,7 @@ async function emailBisonFetch(
 
       // Out of retries
       console.error(
-        `[EmailBison] All ${maxRetries + 1} attempts failed for ${url}: ${lastError.message}`
+        `[EmailBison] All ${maxRetries + 1} attempts failed for ${redactEmailBisonUrlForLog(url)}: ${lastError.message}`
       );
       throw lastError;
     }
@@ -251,39 +333,158 @@ async function emailBisonFetch(
 }
 
 export async function fetchEmailBisonCampaigns(
-  apiKey: string
+  apiKey: string,
+  opts: EmailBisonRequestOptions = {}
 ): Promise<{ success: boolean; data?: EmailBisonCampaign[]; error?: string }> {
-  const url = `${INBOXXIA_BASE_URL}/api/campaigns`;
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const host = resolveEmailBisonBaseHost(opts.baseHost);
+  const baseUrl = `${baseOrigin}/api/campaigns`;
+  const endpoint = "GET /api/campaigns";
 
   try {
-    const response = await emailBisonFetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/json",
-      },
-    });
+    const byId = new Map<string, EmailBisonCampaign>();
+    const visited = new Set<string>();
+    let pagesFetched = 0;
+    let nextUrl: string | null = baseUrl;
 
-    if (!response.ok) {
-      const body = await parseJsonSafe(response);
-      return {
-        success: false,
-        error: `EmailBison campaigns fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"
-          }`,
-      };
+    while (nextUrl) {
+      pagesFetched += 1;
+      if (pagesFetched > 200) {
+        console.warn("[EmailBison] Campaigns fetch aborted: exceeded max pages", {
+          endpoint,
+          host,
+        });
+        return { success: false, error: "EmailBison campaigns fetch aborted: exceeded max pages (possible pagination loop)." };
+      }
+
+      if (visited.has(nextUrl)) {
+        console.warn("[EmailBison] Campaigns fetch aborted: pagination loop detected", {
+          endpoint,
+          host,
+          url: redactEmailBisonUrlForLog(nextUrl),
+        });
+        return { success: false, error: "EmailBison campaigns fetch aborted: pagination loop detected." };
+      }
+      visited.add(nextUrl);
+
+      const response = await emailBisonFetch(nextUrl, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        const { json: body, text } = await readJsonOrTextSafe(response);
+        const upstreamError =
+          body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+        if (response.status === 401 || response.status === 403) {
+          console.warn("[EmailBison] Campaigns fetch auth failed:", {
+            status: response.status,
+            endpoint,
+            host,
+            error: upstreamError ?? "Unknown error",
+          });
+          return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamError, opts.baseHost) };
+        }
+
+        console.warn("[EmailBison] Campaigns fetch failed:", {
+          status: response.status,
+          endpoint,
+          host,
+          error: upstreamError ?? "Unknown error",
+        });
+        return {
+          success: false,
+          error: formatEmailBisonHttpError(response.status, "campaigns fetch", upstreamError, opts.baseHost),
+        };
+      }
+
+      const { json: data, text } = await readJsonOrTextSafe(response);
+      if (!data) {
+        console.warn("[EmailBison] Campaigns fetch succeeded but response was not JSON:", {
+          endpoint,
+          host,
+          preview: typeof text === "string" ? truncateForLog(text) : null,
+        });
+        return { success: false, error: "EmailBison campaigns fetch succeeded but returned an invalid response." };
+      }
+
+      const campaignsArray: any[] =
+        Array.isArray(data)
+          ? data
+          : Array.isArray(data?.campaigns)
+            ? data.campaigns
+            : Array.isArray(data?.data)
+              ? data.data
+              : Array.isArray(data?.data?.campaigns)
+                ? data.data.campaigns
+                : Array.isArray(data?.results)
+                  ? data.results
+                  : [];
+
+      for (const c of campaignsArray) {
+        const id = String(c?.id ?? c?.bisonCampaignId ?? c?.campaignId ?? "").trim();
+        if (!id) continue;
+        byId.set(id, {
+          id,
+          name: (c?.name || c?.title || "Untitled Campaign").toString(),
+          status: c?.status,
+        });
+      }
+
+      const rawNextLink = data?.links?.next;
+      const nextLink = typeof rawNextLink === "string" && rawNextLink.trim().length > 0 ? rawNextLink.trim() : null;
+      if (nextLink) {
+        const resolvedNext = (() => {
+          try {
+            return new URL(nextLink, baseOrigin).toString();
+          } catch {
+            return null;
+          }
+        })();
+
+        if (resolvedNext) {
+          const originOk = (() => {
+            try {
+              return new URL(resolvedNext).origin === baseOrigin;
+            } catch {
+              return false;
+            }
+          })();
+
+          if (originOk) {
+            nextUrl = resolvedNext;
+            continue;
+          }
+
+          console.warn("[EmailBison] Ignoring campaigns pagination next link with unexpected origin", {
+            endpoint,
+            host,
+            next: redactEmailBisonUrlForLog(resolvedNext),
+          });
+        }
+      }
+
+      const currentPage = Number(data?.meta?.current_page);
+      const lastPage = Number(data?.meta?.last_page);
+      if (Number.isFinite(currentPage) && Number.isFinite(lastPage) && currentPage < lastPage) {
+        nextUrl = `${baseUrl}?page=${currentPage + 1}`;
+        continue;
+      }
+
+      nextUrl = null;
     }
 
-    const data = (await response.json()) as any;
-    const campaignsArray: any[] =
-      Array.isArray(data) ? data : Array.isArray(data?.campaigns) ? data.campaigns : [];
+    console.log("[EmailBison] Campaigns fetch succeeded", {
+      host,
+      campaigns: byId.size,
+      pages: pagesFetched,
+    });
 
-    const campaigns: EmailBisonCampaign[] = campaignsArray.map((c) => ({
-      id: String(c.id ?? c.bisonCampaignId ?? c.campaignId ?? ""),
-      name: c.name || c.title || "Untitled Campaign",
-      status: c.status,
-    }));
-
-    return { success: true, data: campaigns };
+    return { success: true, data: Array.from(byId.values()) };
   } catch (error) {
     console.error("[EmailBison] Failed to fetch campaigns:", error);
     return {
@@ -296,15 +497,19 @@ export async function fetchEmailBisonCampaigns(
 export async function sendEmailBisonReply(
   apiKey: string,
   replyId: string,
-  payload: EmailBisonReplyPayload
+  payload: EmailBisonReplyPayload,
+  opts: EmailBisonRequestOptions = {}
 ): Promise<{ success: boolean; data?: any; error?: string }> {
-  const url = `${INBOXXIA_BASE_URL}/api/replies/${replyId}/reply`;
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const host = resolveEmailBisonBaseHost(opts.baseHost);
+  const url = `${baseOrigin}/api/replies/${replyId}/reply`;
 
-  console.log(`[EmailBison] Sending reply to ${replyId}:`, {
-    to: payload.to_emails.map(e => e.email_address),
-    sender_email_id: payload.sender_email_id,
-    subject: payload.subject,
-    messagePreview: payload.message.substring(0, 50) + "...",
+  console.log(`[EmailBison] Sending reply ${replyId}`, {
+    toCount: payload.to_emails.length,
+    senderEmailId: payload.sender_email_id,
+    subjectLen: (payload.subject ?? "").length,
+    messageLen: payload.message.length,
+    contentType: payload.content_type ?? "text",
   });
 
   try {
@@ -319,16 +524,34 @@ export async function sendEmailBisonReply(
     });
 
     if (!response.ok) {
-      const body = await parseJsonSafe(response);
-      console.error(`[EmailBison] Reply send failed (${response.status}):`, body);
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamMessage =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        console.warn("[EmailBison] Reply send auth failed:", {
+          status: response.status,
+          endpoint: "POST /api/replies/:id/reply",
+          host,
+          error: upstreamMessage ?? "Unknown error",
+        });
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamMessage, opts.baseHost) };
+      }
+
+      console.warn("[EmailBison] Reply send failed:", {
+        status: response.status,
+        endpoint: "POST /api/replies/:id/reply",
+        host,
+        error: upstreamMessage ?? "Unknown error",
+      });
       return {
         success: false,
-        error: `EmailBison reply send failed (${response.status}): ${body?.error || body?.message || JSON.stringify(body) || "Unknown error"}`,
+        error: formatEmailBisonHttpError(response.status, "reply send", upstreamMessage, opts.baseHost),
       };
     }
 
-    const body = await parseJsonSafe(response);
-    console.log(`[EmailBison] Reply sent successfully:`, body);
+    const { json: body } = await readJsonOrTextSafe(response);
+    console.log(`[EmailBison] Reply sent successfully (${replyId})`);
     return { success: true, data: body };
   } catch (error) {
     console.error("[EmailBison] Failed to send reply:", error);
@@ -345,9 +568,12 @@ export async function sendEmailBisonReply(
  */
 export async function fetchEmailBisonReplies(
   apiKey: string,
-  bisonLeadId: string
+  bisonLeadId: string,
+  opts: EmailBisonRequestOptions = {}
 ): Promise<{ success: boolean; data?: EmailBisonReplyMessage[]; error?: string }> {
-  const url = `${INBOXXIA_BASE_URL}/api/leads/${bisonLeadId}/replies?filters[folder]=all`;
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const host = resolveEmailBisonBaseHost(opts.baseHost);
+  const url = `${baseOrigin}/api/leads/${bisonLeadId}/replies?filters[folder]=all`;
 
   console.log(`[EmailBison] Fetching replies for lead ${bisonLeadId}`);
 
@@ -361,15 +587,41 @@ export async function fetchEmailBisonReplies(
     });
 
     if (!response.ok) {
-      const body = await parseJsonSafe(response);
-      console.error(`[EmailBison] Replies fetch failed (${response.status}):`, body);
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamMessage =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        console.warn("[EmailBison] Replies fetch auth failed:", {
+          status: response.status,
+          endpoint: "GET /api/leads/:id/replies",
+          host,
+          error: upstreamMessage ?? "Unknown error",
+        });
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamMessage, opts.baseHost) };
+      }
+
+      console.warn("[EmailBison] Replies fetch failed:", {
+        status: response.status,
+        endpoint: "GET /api/leads/:id/replies",
+        host,
+        error: upstreamMessage ?? "Unknown error",
+      });
       return {
         success: false,
-        error: `EmailBison replies fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+        error: formatEmailBisonHttpError(response.status, "replies fetch", upstreamMessage, opts.baseHost),
       };
     }
 
-    const data = await response.json();
+    const { json: data, text } = await readJsonOrTextSafe(response);
+    if (!data) {
+      console.warn("[EmailBison] Replies fetch succeeded but response was not JSON:", {
+        host,
+        endpoint: "GET /api/leads/:id/replies",
+        preview: typeof text === "string" ? truncateForLog(text) : null,
+      });
+      return { success: false, error: "EmailBison replies fetch succeeded but returned an invalid response." };
+    }
 
     // Handle both array response and object with replies property
     const repliesArray: EmailBisonReplyMessage[] = Array.isArray(data)
@@ -380,16 +632,7 @@ export async function fetchEmailBisonReplies(
           ? data.replies
           : [];
 
-    console.log(`[EmailBison] Found ${repliesArray.length} replies for lead ${bisonLeadId}:`,
-      repliesArray.map(r => ({
-        id: r.id,
-        subject: (r.subject ?? r.email_subject ?? "")?.substring(0, 30),
-        from: r.from_email_address,
-        folder: r.folder,
-        type: r.type,
-        date: r.date_received || r.created_at,
-      }))
-    );
+    console.log(`[EmailBison] Found ${repliesArray.length} replies for lead ${bisonLeadId}`);
     return { success: true, data: repliesArray };
   } catch (error) {
     console.error("[EmailBison] Failed to fetch replies:", error);
@@ -406,9 +649,12 @@ export async function fetchEmailBisonReplies(
  */
 export async function fetchEmailBisonSentEmails(
   apiKey: string,
-  bisonLeadId: string
+  bisonLeadId: string,
+  opts: EmailBisonRequestOptions = {}
 ): Promise<{ success: boolean; data?: EmailBisonSentEmail[]; error?: string }> {
-  const url = `${INBOXXIA_BASE_URL}/api/leads/${bisonLeadId}/sent-emails`;
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const host = resolveEmailBisonBaseHost(opts.baseHost);
+  const url = `${baseOrigin}/api/leads/${bisonLeadId}/sent-emails`;
 
   console.log(`[EmailBison] Fetching sent emails for lead ${bisonLeadId}`);
 
@@ -422,15 +668,41 @@ export async function fetchEmailBisonSentEmails(
     });
 
     if (!response.ok) {
-      const body = await parseJsonSafe(response);
-      console.error(`[EmailBison] Sent emails fetch failed (${response.status}):`, body);
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamMessage =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        console.warn("[EmailBison] Sent emails fetch auth failed:", {
+          status: response.status,
+          endpoint: "GET /api/leads/:id/sent-emails",
+          host,
+          error: upstreamMessage ?? "Unknown error",
+        });
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamMessage, opts.baseHost) };
+      }
+
+      console.warn("[EmailBison] Sent emails fetch failed:", {
+        status: response.status,
+        endpoint: "GET /api/leads/:id/sent-emails",
+        host,
+        error: upstreamMessage ?? "Unknown error",
+      });
       return {
         success: false,
-        error: `EmailBison sent emails fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+        error: formatEmailBisonHttpError(response.status, "sent-emails fetch", upstreamMessage, opts.baseHost),
       };
     }
 
-    const data = await response.json();
+    const { json: data, text } = await readJsonOrTextSafe(response);
+    if (!data) {
+      console.warn("[EmailBison] Sent emails fetch succeeded but response was not JSON:", {
+        host,
+        endpoint: "GET /api/leads/:id/sent-emails",
+        preview: typeof text === "string" ? truncateForLog(text) : null,
+      });
+      return { success: false, error: "EmailBison sent emails fetch succeeded but returned an invalid response." };
+    }
 
     // Handle both array response and object with sent_emails property
     const sentEmailsArray: EmailBisonSentEmail[] = Array.isArray(data)
@@ -465,7 +737,8 @@ export async function fetchEmailBisonLeadReplies(
     sender_email_id?: number | string;
     search?: string;
     read?: boolean;
-  }
+  },
+  opts: EmailBisonRequestOptions = {}
 ): Promise<{ success: boolean; data?: EmailBisonReplyMessage[]; error?: string }> {
   const encoded = encodeURIComponent(leadId);
   const qs = new URLSearchParams();
@@ -476,7 +749,8 @@ export async function fetchEmailBisonLeadReplies(
   if (filters?.search) qs.set("filters[search]", filters.search);
   if (filters?.read != null) qs.set("filters[read]", String(filters.read));
 
-  const url = `${INBOXXIA_BASE_URL}/api/leads/${encoded}/replies${qs.toString() ? `?${qs.toString()}` : ""}`;
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const url = `${baseOrigin}/api/leads/${encoded}/replies${qs.toString() ? `?${qs.toString()}` : ""}`;
 
   try {
     const response = await emailBisonFetch(url, {
@@ -488,14 +762,21 @@ export async function fetchEmailBisonLeadReplies(
     });
 
     if (!response.ok) {
-      const body = await parseJsonSafe(response);
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamMessage =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamMessage, opts.baseHost) };
+      }
+
       return {
         success: false,
-        error: `EmailBison lead replies fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+        error: formatEmailBisonHttpError(response.status, "lead replies fetch", upstreamMessage, opts.baseHost),
       };
     }
 
-    const body = await parseJsonSafe(response);
+    const { json: body } = await readJsonOrTextSafe(response);
     const repliesArray: EmailBisonReplyMessage[] =
       Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : Array.isArray(body?.replies) ? body.replies : [];
 
@@ -508,10 +789,11 @@ export async function fetchEmailBisonLeadReplies(
 
 async function fetchEmailBisonLeadsListByUrl(
   apiKey: string,
-  url: string
+  url: string,
+  opts: EmailBisonRequestOptions
 ): Promise<{ success: boolean; data?: EmailBisonLeadListItem[]; error?: string }> {
   try {
-    const response = await fetch(url, {
+    const response = await emailBisonFetch(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -520,14 +802,21 @@ async function fetchEmailBisonLeadsListByUrl(
     });
 
     if (!response.ok) {
-      const body = await parseJsonSafe(response);
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamError =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamError, opts.baseHost) };
+      }
+
       return {
         success: false,
-        error: `EmailBison leads fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+        error: formatEmailBisonHttpError(response.status, "leads fetch", upstreamError, opts.baseHost),
       };
     }
 
-    const body = await parseJsonSafe(response);
+    const { json: body } = await readJsonOrTextSafe(response);
     const list: EmailBisonLeadListItem[] =
       Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : Array.isArray(body?.leads) ? body.leads : [];
 
@@ -544,20 +833,22 @@ async function fetchEmailBisonLeadsListByUrl(
  */
 export async function findEmailBisonLeadIdByEmail(
   apiKey: string,
-  email: string
+  email: string,
+  opts: EmailBisonRequestOptions = {}
 ): Promise<{ success: boolean; leadId?: string; error?: string }> {
   const needle = email.trim().toLowerCase();
   if (!needle) return { success: false, error: "missing_email" };
 
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
   const candidates = [
-    `${INBOXXIA_BASE_URL}/api/leads?filters[search]=${encodeURIComponent(needle)}&per_page=200`,
-    `${INBOXXIA_BASE_URL}/api/leads?search=${encodeURIComponent(needle)}&per_page=200`,
-    `${INBOXXIA_BASE_URL}/api/leads?filters[email]=${encodeURIComponent(needle)}&per_page=200`,
-    `${INBOXXIA_BASE_URL}/api/leads?filters[email_address]=${encodeURIComponent(needle)}&per_page=200`,
+    `${baseOrigin}/api/leads?filters[search]=${encodeURIComponent(needle)}&per_page=200`,
+    `${baseOrigin}/api/leads?search=${encodeURIComponent(needle)}&per_page=200`,
+    `${baseOrigin}/api/leads?filters[email]=${encodeURIComponent(needle)}&per_page=200`,
+    `${baseOrigin}/api/leads?filters[email_address]=${encodeURIComponent(needle)}&per_page=200`,
   ];
 
   for (const url of candidates) {
-    const res = await fetchEmailBisonLeadsListByUrl(apiKey, url);
+    const res = await fetchEmailBisonLeadsListByUrl(apiKey, url, opts);
     if (!res.success || !res.data) continue;
 
     const match = res.data.find((l) => {
@@ -577,16 +868,18 @@ export async function findEmailBisonLeadIdByEmail(
  */
 export async function fetchEmailBisonRepliesGlobal(
   apiKey: string,
-  filters?: { folder?: string; search?: string }
+  filters?: { folder?: string; search?: string },
+  opts: EmailBisonRequestOptions = {}
 ): Promise<{ success: boolean; data?: EmailBisonReplyMessage[]; error?: string }> {
   const qs = new URLSearchParams();
   if (filters?.folder) qs.set("filters[folder]", filters.folder);
   if (filters?.search) qs.set("filters[search]", filters.search);
 
-  const url = `${INBOXXIA_BASE_URL}/api/replies${qs.toString() ? `?${qs.toString()}` : ""}`;
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const url = `${baseOrigin}/api/replies${qs.toString() ? `?${qs.toString()}` : ""}`;
 
   try {
-    const response = await fetch(url, {
+    const response = await emailBisonFetch(url, {
       method: "GET",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -595,14 +888,21 @@ export async function fetchEmailBisonRepliesGlobal(
     });
 
     if (!response.ok) {
-      const body = await parseJsonSafe(response);
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamError =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamError, opts.baseHost) };
+      }
+
       return {
         success: false,
-        error: `EmailBison replies fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+        error: formatEmailBisonHttpError(response.status, "replies fetch", upstreamError, opts.baseHost),
       };
     }
 
-    const body = await parseJsonSafe(response);
+    const { json: body } = await readJsonOrTextSafe(response);
     const replies: EmailBisonReplyMessage[] =
       Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : Array.isArray(body?.replies) ? body.replies : [];
 
@@ -617,9 +917,11 @@ export async function fetchEmailBisonRepliesGlobal(
  * Fetch all sender email accounts for the workspace associated with the API key.
  */
 export async function fetchEmailBisonSenderEmails(
-  apiKey: string
+  apiKey: string,
+  opts: EmailBisonRequestOptions = {}
 ): Promise<{ success: boolean; data?: EmailBisonSenderEmailAccount[]; error?: string }> {
-  const url = `${INBOXXIA_BASE_URL}/api/sender-emails`;
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const url = `${baseOrigin}/api/sender-emails`;
 
   try {
     const response = await emailBisonFetch(url, {
@@ -631,14 +933,21 @@ export async function fetchEmailBisonSenderEmails(
     });
 
     if (!response.ok) {
-      const body = await parseJsonSafe(response);
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamError =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamError, opts.baseHost) };
+      }
+
       return {
         success: false,
-        error: `EmailBison sender-emails fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+        error: formatEmailBisonHttpError(response.status, "sender-emails fetch", upstreamError, opts.baseHost),
       };
     }
 
-    const body = await parseJsonSafe(response);
+    const { json: body } = await readJsonOrTextSafe(response);
     const list: EmailBisonSenderEmailAccount[] =
       Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : Array.isArray(body?.sender_emails) ? body.sender_emails : [];
 
@@ -660,11 +969,14 @@ export async function createEmailBisonLead(
     email: string;
     first_name?: string | null;
     last_name?: string | null;
-  }
+  },
+  opts: EmailBisonRequestOptions = {}
 ): Promise<{ success: boolean; leadId?: string; error?: string }> {
-  const url = `${INBOXXIA_BASE_URL}/api/leads`;
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const host = resolveEmailBisonBaseHost(opts.baseHost);
+  const url = `${baseOrigin}/api/leads`;
 
-  console.log(`[EmailBison] Creating lead for email: ${leadData.email}`);
+  console.log("[EmailBison] Creating lead");
 
   try {
     const response = await emailBisonFetch(url, {
@@ -682,21 +994,40 @@ export async function createEmailBisonLead(
     });
 
     if (!response.ok) {
-      const body = await parseJsonSafe(response);
-      console.error(`[EmailBison] Lead creation failed (${response.status}):`, body);
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamError =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+      if (response.status === 401 || response.status === 403) {
+        console.warn("[EmailBison] Lead creation auth failed:", {
+          status: response.status,
+          endpoint: "POST /api/leads",
+          host,
+          error: upstreamError ?? "Unknown error",
+        });
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamError, opts.baseHost) };
+      }
+
+      console.warn("[EmailBison] Lead creation failed:", {
+        status: response.status,
+        endpoint: "POST /api/leads",
+        host,
+        error: upstreamError ?? "Unknown error",
+      });
       return {
         success: false,
-        error: `EmailBison lead creation failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+        error: formatEmailBisonHttpError(response.status, "lead creation", upstreamError, opts.baseHost),
       };
     }
 
-    const data = await response.json();
+    const { json: data } = await readJsonOrTextSafe(response);
+    if (!data) {
+      return { success: false, error: "EmailBison lead creation succeeded but returned an invalid response." };
+    }
 
     // The response should contain the created lead with its ID
     const leadId = data?.id || data?.lead?.id || data?.data?.id;
 
     if (!leadId) {
-      console.error("[EmailBison] Lead created but no ID returned:", data);
       return {
         success: false,
         error: "Lead created but no ID returned from EmailBison",
@@ -720,9 +1051,12 @@ export async function createEmailBisonLead(
  */
 export async function fetchEmailBisonLead(
   apiKey: string,
-  bisonLeadId: string
+  bisonLeadId: string,
+  opts: EmailBisonRequestOptions = {}
 ): Promise<{ success: boolean; data?: EmailBisonLeadDetails; error?: string }> {
-  const url = `${INBOXXIA_BASE_URL}/api/leads/${bisonLeadId}`;
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const host = resolveEmailBisonBaseHost(opts.baseHost);
+  const url = `${baseOrigin}/api/leads/${bisonLeadId}`;
 
   console.log(`[EmailBison] Fetching lead details for ID: ${bisonLeadId}`);
 
@@ -736,21 +1070,40 @@ export async function fetchEmailBisonLead(
     });
 
     if (!response.ok) {
-      const body = await parseJsonSafe(response);
-      console.error(`[EmailBison] Lead fetch failed (${response.status}):`, body);
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamError =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+      if (response.status === 401 || response.status === 403) {
+        console.warn("[EmailBison] Lead fetch auth failed:", {
+          status: response.status,
+          endpoint: "GET /api/leads/:id",
+          host,
+          error: upstreamError ?? "Unknown error",
+        });
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamError, opts.baseHost) };
+      }
+
+      console.warn("[EmailBison] Lead fetch failed:", {
+        status: response.status,
+        endpoint: "GET /api/leads/:id",
+        host,
+        error: upstreamError ?? "Unknown error",
+      });
       return {
         success: false,
-        error: `EmailBison lead fetch failed (${response.status}): ${body?.error || body?.message || "Unknown error"}`,
+        error: formatEmailBisonHttpError(response.status, "lead fetch", upstreamError, opts.baseHost),
       };
     }
 
-    const data = await response.json();
+    const { json: data } = await readJsonOrTextSafe(response);
+    if (!data) {
+      return { success: false, error: "EmailBison lead fetch succeeded but returned an invalid response." };
+    }
 
     // Handle response format - could be direct lead object or wrapped
     const leadData: EmailBisonLeadDetails = data?.lead || data?.data || data;
 
     if (!leadData?.id) {
-      console.error("[EmailBison] Lead fetch returned no data:", data);
       return {
         success: false,
         error: "Lead fetch returned no data from EmailBison",

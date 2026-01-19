@@ -280,6 +280,7 @@ model Message {
 | `SYNC_ALL_CONCURRENCY` | (Optional) Concurrency for "Sync All" batches (default `3`) |
 | `EMAILBISON_TIMEOUT_MS` | (Optional) Fetch timeout for EmailBison API calls (default `30000`) |
 | `EMAILBISON_MAX_RETRIES` | (Optional) Max retries for EmailBison GET requests on network/timeout errors (default `2`) |
+| `EMAILBISON_BASE_URL` | (Optional) Override EmailBison API base URL (default `https://send.meetinboxxia.com`) |
 | `INSIGHTS_CONTEXT_PACK_CRON_LIMIT` | (Optional) Max context packs to process per cron tick (default `3`) |
 | `INSIGHTS_CONTEXT_PACK_CRON_BATCH` | (Optional) Session batch size per context pack (default `15`) |
 

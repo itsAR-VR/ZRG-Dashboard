@@ -19,10 +19,12 @@ import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getClients, createClient, deleteClient, updateClient } from "@/actions/client-actions";
 import { getGlobalAdminStatus } from "@/actions/access-actions";
+import { createEmailBisonBaseHost, deleteEmailBisonBaseHost, getEmailBisonBaseHosts, type EmailBisonBaseHostRow } from "@/actions/emailbison-base-host-actions";
 import { syncCampaignsFromGHL } from "@/actions/campaign-actions";
 import { syncEmailCampaignsFromEmailBison, syncEmailCampaignsFromInstantly, syncEmailCampaignsFromSmartLead } from "@/actions/email-campaign-actions";
 import { cleanupBounceLeads } from "@/actions/message-actions";
 import { getClientAssignments, setClientAssignments } from "@/actions/client-membership-actions";
+import { dispatchEmailCampaignsSynced } from "@/lib/client-events";
 import { toast } from "sonner";
 import type { EmailIntegrationProvider } from "@prisma/client";
 
@@ -39,6 +41,7 @@ interface Client {
   hasConnectedAccounts: boolean;
   emailProvider: EmailIntegrationProvider | null;
   emailBisonWorkspaceId: string | null;
+  emailBisonBaseHostId: string | null;
   hasEmailBisonApiKey: boolean;
   hasSmartLeadApiKey: boolean;
   hasSmartLeadWebhookSecret: boolean;
@@ -86,6 +89,10 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
   const [editingClientId, setEditingClientId] = useState<string | null>(null);
   const [isLoadingAssignments, setIsLoadingAssignments] = useState(false);
   const [showAllWorkspaces, setShowAllWorkspaces] = useState(false);
+  const [emailBisonBaseHosts, setEmailBisonBaseHosts] = useState<EmailBisonBaseHostRow[]>([]);
+  const [isLoadingEmailBisonBaseHosts, setIsLoadingEmailBisonBaseHosts] = useState(true);
+  const [newEmailBisonHost, setNewEmailBisonHost] = useState("");
+  const [newEmailBisonHostLabel, setNewEmailBisonHostLabel] = useState("");
 
   function inferEmailProvider(client: Client): EmailIntegrationProvider | null {
     if (client.emailProvider) return client.emailProvider;
@@ -117,6 +124,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     emailProvider: "NONE" as EmailIntegrationProvider | "NONE",
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
+    emailBisonBaseHostId: "",
     smartLeadApiKey: "",
     smartLeadWebhookSecret: "",
     instantlyApiKey: "",
@@ -134,6 +142,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
     emailProvider: "NONE" as EmailIntegrationProvider | "NONE",
     emailBisonApiKey: "",
     emailBisonWorkspaceId: "",
+    emailBisonBaseHostId: "",
     smartLeadApiKey: "",
     smartLeadWebhookSecret: "",
     instantlyApiKey: "",
@@ -188,6 +197,18 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
       setIsAdminLoading(false);
     }
     fetchAdminStatus();
+  }, []);
+
+  useEffect(() => {
+    async function fetchEmailBisonHosts() {
+      setIsLoadingEmailBisonBaseHosts(true);
+      const result = await getEmailBisonBaseHosts();
+      if (result.success && result.data) {
+        setEmailBisonBaseHosts(result.data);
+      }
+      setIsLoadingEmailBisonBaseHosts(false);
+    }
+    fetchEmailBisonHosts();
   }, []);
 
   async function loadAssignments(clientId: string) {
@@ -283,6 +304,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
         emailProvider?: EmailIntegrationProvider | null;
         emailBisonApiKey?: string;
         emailBisonWorkspaceId?: string;
+        emailBisonBaseHostId?: string | null;
         smartLeadApiKey?: string;
         smartLeadWebhookSecret?: string;
         instantlyApiKey?: string;
@@ -323,6 +345,12 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
         // Update workspace ID (allow empty to clear)
         if (integrationsForm.emailBisonWorkspaceId !== (currentClient?.emailBisonWorkspaceId || "")) {
           updatePayload.emailBisonWorkspaceId = integrationsForm.emailBisonWorkspaceId;
+        }
+
+        const currentBaseHostId = currentClient?.emailBisonBaseHostId || "";
+        const nextBaseHostId = (integrationsForm.emailBisonBaseHostId || "").trim();
+        if (nextBaseHostId !== currentBaseHostId) {
+          updatePayload.emailBisonBaseHostId = nextBaseHostId ? nextBaseHostId : null;
         }
 
         // Only update API key if user entered a new one (not blank placeholder)
@@ -375,28 +403,32 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
   async function handleSyncEmailCampaigns(client: Client) {
     setSyncingEmailClientId(client.id);
 
-    const provider = inferEmailProvider(client);
-    if (!provider) {
-      toast.error("No email provider is configured for this workspace");
+    try {
+      const provider = inferEmailProvider(client);
+      if (!provider) {
+        toast.error("No email provider is configured for this workspace");
+        return;
+      }
+
+      const result =
+        provider === "SMARTLEAD"
+          ? await syncEmailCampaignsFromSmartLead(client.id)
+          : provider === "INSTANTLY"
+            ? await syncEmailCampaignsFromInstantly(client.id)
+            : await syncEmailCampaignsFromEmailBison(client.id);
+
+      if (result.success) {
+        toast.success(`Synced ${result.synced} email campaigns from ${providerLabel(provider)}`);
+        dispatchEmailCampaignsSynced({ clientId: client.id, provider, synced: result.synced });
+        await fetchClients();
+      } else {
+        toast.error(result.error || "Failed to sync email campaigns");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to sync email campaigns");
+    } finally {
       setSyncingEmailClientId(null);
-      return;
     }
-
-    const result =
-      provider === "SMARTLEAD"
-        ? await syncEmailCampaignsFromSmartLead(client.id)
-        : provider === "INSTANTLY"
-          ? await syncEmailCampaignsFromInstantly(client.id)
-          : await syncEmailCampaignsFromEmailBison(client.id);
-
-    if (result.success) {
-      toast.success(`Synced ${result.synced} email campaigns from ${providerLabel(provider)}`);
-      await fetchClients();
-    } else {
-      toast.error(result.error || "Failed to sync email campaigns");
-    }
-
-    setSyncingEmailClientId(null);
   }
 
   async function handleCleanupBounceLeads(clientId: string) {
@@ -504,6 +536,141 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
         {error && (
           <div className="p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
             {error}
+          </div>
+        )}
+
+        {/* EmailBison Base Hosts (allowlist) */}
+        {isAdmin && (
+          <div className="p-4 border rounded-lg bg-muted/20 space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Mail className="h-4 w-4" />
+                  EmailBison Base Hosts
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Allowed EmailBison base hosts (hostname only). Workspaces can select one for white-label accounts.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={async () => {
+                  setIsLoadingEmailBisonBaseHosts(true);
+                  const refreshed = await getEmailBisonBaseHosts();
+                  if (refreshed.success && refreshed.data) setEmailBisonBaseHosts(refreshed.data);
+                  setIsLoadingEmailBisonBaseHosts(false);
+                }}
+                disabled={isLoadingEmailBisonBaseHosts}
+              >
+                <RefreshCw className="h-4 w-4 mr-1" />
+                Refresh
+              </Button>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="emailBisonBaseHost" className="text-sm">
+                  Hostname
+                </Label>
+                <Input
+                  id="emailBisonBaseHost"
+                  placeholder="send.example.com"
+                  value={newEmailBisonHost}
+                  onChange={(e) => setNewEmailBisonHost(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">Hostname only (no scheme, path, or port).</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="emailBisonBaseHostLabel" className="text-sm">
+                  Label (optional)
+                </Label>
+                <Input
+                  id="emailBisonBaseHostLabel"
+                  placeholder="e.g., Founders Club"
+                  value={newEmailBisonHostLabel}
+                  onChange={(e) => setNewEmailBisonHostLabel(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                onClick={() => {
+                  startTransition(async () => {
+                    const res = await createEmailBisonBaseHost({ host: newEmailBisonHost, label: newEmailBisonHostLabel });
+                    if (!res.success) {
+                      toast.error(res.error || "Failed to add base host");
+                      return;
+                    }
+                    setNewEmailBisonHost("");
+                    setNewEmailBisonHostLabel("");
+                    toast.success("Base host added");
+                    const refreshed = await getEmailBisonBaseHosts();
+                    if (refreshed.success && refreshed.data) setEmailBisonBaseHosts(refreshed.data);
+                  });
+                }}
+                disabled={isPending || !newEmailBisonHost.trim()}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Add Host
+              </Button>
+            </div>
+
+            <div className="border rounded-md">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Host</TableHead>
+                    <TableHead>Label</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {emailBisonBaseHosts.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={3} className="text-center text-muted-foreground">
+                        {isLoadingEmailBisonBaseHosts ? "Loading…" : "No hosts configured"}
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    emailBisonBaseHosts.map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell className="font-mono text-xs">{row.host}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{row.label || "—"}</TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            disabled={isPending}
+                            onClick={() => {
+                              const ok = confirm(`Delete base host ${row.host}? This clears it for workspaces using it.`);
+                              if (!ok) return;
+                              startTransition(async () => {
+                                const res = await deleteEmailBisonBaseHost(row.id);
+                                if (!res.success) {
+                                  toast.error(res.error || "Failed to delete host");
+                                  return;
+                                }
+                                toast.success("Base host deleted");
+                                const refreshed = await getEmailBisonBaseHosts();
+                                if (refreshed.success && refreshed.data) setEmailBisonBaseHosts(refreshed.data);
+                              });
+                            }}
+                            aria-label={`Delete ${row.host}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </div>
         )}
 
@@ -617,6 +784,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             ...newClientForm,
                             emailProvider: value as EmailIntegrationProvider | "NONE",
                             emailBisonApiKey: "",
+                            emailBisonBaseHostId: "",
                             smartLeadApiKey: "",
                             smartLeadWebhookSecret: "",
                             instantlyApiKey: "",
@@ -1017,6 +1185,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                   emailProvider: emailProvider ?? "NONE",
                                   emailBisonApiKey: "",
                                   emailBisonWorkspaceId: client.emailBisonWorkspaceId || "",
+                                  emailBisonBaseHostId: client.emailBisonBaseHostId || "",
                                   smartLeadApiKey: "",
                                   smartLeadWebhookSecret: "",
                                   instantlyApiKey: "",
@@ -1159,6 +1328,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                     ...integrationsForm,
                                     emailProvider: value as EmailIntegrationProvider | "NONE",
                                     emailBisonApiKey: "",
+                                    emailBisonBaseHostId: "",
                                     smartLeadApiKey: "",
                                     smartLeadWebhookSecret: "",
                                     instantlyApiKey: "",
@@ -1183,6 +1353,32 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
 
                             {integrationsForm.emailProvider === "EMAILBISON" && (
                               <>
+                                <div className="space-y-2">
+                                  <Label htmlFor={`emailBisonBaseHost-${client.id}`} className="text-xs">
+                                    EmailBison Base Host
+                                  </Label>
+                                  <Select
+                                    value={integrationsForm.emailBisonBaseHostId || ""}
+                                    onValueChange={(value) =>
+                                      setIntegrationsForm({ ...integrationsForm, emailBisonBaseHostId: value })
+                                    }
+                                  >
+                                    <SelectTrigger size="sm" className="w-full">
+                                      <SelectValue placeholder="Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="">Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)</SelectItem>
+                                      {emailBisonBaseHosts.map((row) => (
+                                        <SelectItem key={row.id} value={row.id}>
+                                          {row.host}{row.label ? ` — ${row.label}` : ""}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                  <p className="text-[10px] text-muted-foreground">
+                                    If you see EmailBison 401s, confirm the host matches your account (URL/key mismatch is common).
+                                  </p>
+                                </div>
                                 <div className="space-y-2">
                                   <Label htmlFor={`workspaceId-${client.id}`} className="text-xs">EmailBison Workspace ID (optional)</Label>
                                   <Input

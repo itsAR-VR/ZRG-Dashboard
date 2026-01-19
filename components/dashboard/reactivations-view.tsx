@@ -26,6 +26,7 @@ import {
 } from "@/actions/reactivation-actions";
 import { getEmailCampaigns } from "@/actions/email-campaign-actions";
 import { getFollowUpSequences } from "@/actions/followup-sequence-actions";
+import { EMAIL_CAMPAIGNS_SYNCED_EVENT, type EmailCampaignsSyncedDetail } from "@/lib/client-events";
 
 type Campaign = NonNullable<Awaited<ReturnType<typeof getReactivationCampaigns>>["data"]>[number];
 type EnrollmentRow = NonNullable<Awaited<ReturnType<typeof getReactivationEnrollments>>["data"]>[number];
@@ -112,6 +113,20 @@ export function ReactivationsView({ activeWorkspace }: { activeWorkspace: string
     loadCampaigns();
     loadAux();
   }, [loadCampaigns, loadAux]);
+
+  useEffect(() => {
+    if (!activeWorkspace) return;
+
+    const handler = ((event: Event) => {
+      const detail = (event as CustomEvent<EmailCampaignsSyncedDetail>).detail;
+      if (!detail?.clientId) return;
+      if (detail.clientId !== activeWorkspace) return;
+      loadAux();
+    }) as EventListener;
+
+    window.addEventListener(EMAIL_CAMPAIGNS_SYNCED_EVENT, handler);
+    return () => window.removeEventListener(EMAIL_CAMPAIGNS_SYNCED_EVENT, handler);
+  }, [activeWorkspace, loadAux]);
 
   useEffect(() => {
     loadEnrollments(selectedCampaignId);
@@ -483,6 +498,11 @@ export function ReactivationsView({ activeWorkspace }: { activeWorkspace: string
                     ))}
                   </SelectContent>
                 </Select>
+                {activeWorkspace && emailCampaigns.length === 0 && (
+                  <div className="text-xs text-muted-foreground">
+                    No email campaigns found. If you expect campaigns here, go to Settings → Integrations and run “Sync Email”.
+                  </div>
+                )}
               </div>
               <div className="grid gap-2">
                 <Label>Follow-up Sequence (optional)</Label>
@@ -561,6 +581,11 @@ export function ReactivationsView({ activeWorkspace }: { activeWorkspace: string
                     ))}
                   </SelectContent>
                 </Select>
+                {activeWorkspace && emailCampaigns.length === 0 && (
+                  <div className="text-xs text-muted-foreground">
+                    No email campaigns found. If you expect campaigns here, go to Settings → Integrations and run “Sync Email”.
+                  </div>
+                )}
               </div>
               <div className="grid gap-2">
                 <Label>Follow-up Sequence (optional)</Label>

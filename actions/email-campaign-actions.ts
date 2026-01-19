@@ -150,6 +150,7 @@ export async function syncEmailCampaignsFromEmailBison(clientId: string): Promis
         emailProvider: true,
         emailBisonApiKey: true,
         emailBisonWorkspaceId: true,
+        emailBisonBaseHost: { select: { host: true } },
         smartLeadApiKey: true,
         smartLeadWebhookSecret: true,
         instantlyApiKey: true,
@@ -172,9 +173,22 @@ export async function syncEmailCampaignsFromEmailBison(clientId: string): Promis
 
     if (!client.emailBisonApiKey) return { success: false, error: "Client missing EmailBison credentials" };
 
-    const campaignsResult = await fetchEmailBisonCampaigns(client.emailBisonApiKey);
+    console.log("[EmailCampaign] Sync email campaigns start:", {
+      clientId,
+      provider: "EMAILBISON",
+      hasApiKey: true,
+    });
+
+    const campaignsResult = await fetchEmailBisonCampaigns(client.emailBisonApiKey, {
+      baseHost: client.emailBisonBaseHost?.host ?? null,
+    });
 
     if (!campaignsResult.success || !campaignsResult.data) {
+      console.warn("[EmailCampaign] Sync email campaigns failed:", {
+        clientId,
+        provider: "EMAILBISON",
+        error: campaignsResult.error || "Failed to fetch EmailBison campaigns",
+      });
       return { success: false, error: campaignsResult.error || "Failed to fetch EmailBison campaigns" };
     }
 
@@ -199,7 +213,14 @@ export async function syncEmailCampaignsFromEmailBison(clientId: string): Promis
       synced++;
     }
 
+    console.log("[EmailCampaign] Sync email campaigns complete:", {
+      clientId,
+      provider: "EMAILBISON",
+      synced,
+    });
+
     revalidatePath("/");
+    revalidatePath("/settings");
 
     return { success: true, synced };
   } catch (error) {
@@ -274,6 +295,7 @@ export async function syncEmailCampaignsFromSmartLead(clientId: string): Promise
     }
 
     revalidatePath("/");
+    revalidatePath("/settings");
     return { success: true, synced };
   } catch (error) {
     console.error("[EmailCampaign] Failed to sync SmartLead campaigns:", error);
@@ -344,6 +366,7 @@ export async function syncEmailCampaignsFromInstantly(clientId: string): Promise
     }
 
     revalidatePath("/");
+    revalidatePath("/settings");
     return { success: true, synced };
   } catch (error) {
     console.error("[EmailCampaign] Failed to sync Instantly campaigns:", error);

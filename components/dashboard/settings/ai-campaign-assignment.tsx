@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { getEmailCampaigns, updateEmailCampaignConfig, assignBookingProcessToCampaign, assignPersonaToCampaign } from "@/actions/email-campaign-actions"
 import { listBookingProcesses, type BookingProcessSummary } from "@/actions/booking-process-actions"
 import { listAiPersonas, type AiPersonaSummary } from "@/actions/ai-persona-actions"
+import { EMAIL_CAMPAIGNS_SYNCED_EVENT, type EmailCampaignsSyncedDetail } from "@/lib/client-events"
 import type { CampaignResponseMode } from "@prisma/client"
 
 type CampaignRow = {
@@ -108,6 +109,20 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    if (!activeWorkspace) return
+
+    const handler = ((event: Event) => {
+      const detail = (event as CustomEvent<EmailCampaignsSyncedDetail>).detail
+      if (!detail?.clientId) return
+      if (detail.clientId !== activeWorkspace) return
+      load()
+    }) as EventListener
+
+    window.addEventListener(EMAIL_CAMPAIGNS_SYNCED_EVENT, handler)
+    return () => window.removeEventListener(EMAIL_CAMPAIGNS_SYNCED_EVENT, handler)
+  }, [activeWorkspace, load])
 
   const dirtyIds = useMemo(() => {
     const ids = new Set<string>()
@@ -455,4 +470,3 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
     </Card>
   )
 }
-

@@ -230,8 +230,10 @@ export function BookingProcessAnalytics({
             {/* Metrics Table */}
             {metrics.length === 0 ? (
               <div className="py-8 text-center text-muted-foreground">
-                No booking process data yet. Assign booking processes to
-                campaigns and send outbound messages to start tracking.
+                No booking process data yet. Assign booking processes to campaigns and send outbound messages to start tracking.
+                <div className="mt-2 text-xs text-muted-foreground/80">
+                  If you don’t see expected campaigns, go to Settings → Integrations and run “Sync Email”.
+                </div>
               </div>
             ) : (
               <Table>
