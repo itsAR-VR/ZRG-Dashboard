@@ -55,6 +55,10 @@ export interface Lead {
   // Lead scoring (Phase 33)
   overallScore?: number | null
   scoredAt?: Date | null
+  // Lead assignment (Phase 43)
+  assignedToUserId?: string | null
+  assignedToEmail?: string | null
+  assignedAt?: Date | null
 }
 
 export type Channel = "sms" | "email" | "linkedin";

@@ -2,10 +2,21 @@
 
 import { cn } from "@/lib/utils"
 import type { Conversation } from "@/lib/mock-data"
-import { Mail, MessageSquare, Linkedin, AlertCircle, Loader2, Moon } from "lucide-react"
+import { Mail, MessageSquare, Linkedin, AlertCircle, Loader2, Moon, UserCheck } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { formatDistanceToNow } from "date-fns"
 import { LeadScoreBadge } from "./lead-score-badge"
+
+/**
+ * Extract first name from email (e.g., "vanessa@company.com" -> "Vanessa")
+ */
+function getFirstNameFromEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const localPart = email.split("@")[0];
+  if (!localPart) return null;
+  // Capitalize first letter
+  return localPart.charAt(0).toUpperCase() + localPart.slice(1).toLowerCase();
+}
 
 interface ConversationCardProps {
   conversation: Conversation
@@ -191,6 +202,17 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
         ) : conversation.hasAiDraft ? (
           <Badge variant="outline" className="text-xs border-primary/20 bg-primary/10 text-primary">
             AI Draft Ready
+          </Badge>
+        ) : null}
+        {/* Setter assignment badge (Phase 43) */}
+        {conversation.lead.assignedToEmail ? (
+          <Badge
+            variant="outline"
+            className="text-xs border-violet-500/20 bg-violet-500/10 text-violet-500"
+            title={`Assigned to ${conversation.lead.assignedToEmail}`}
+          >
+            <UserCheck className="h-3 w-3 mr-1" />
+            {getFirstNameFromEmail(conversation.lead.assignedToEmail)}
           </Badge>
         ) : null}
       </div>

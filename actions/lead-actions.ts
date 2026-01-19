@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { getAvailableChannels } from "@/lib/lead-matching";
 import { getAccessibleClientIdsForUser, getUserRoleForClient, isSetterRole, requireAuthUser, resolveClientScope } from "@/lib/workspace-access";
+import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
 import { Prisma } from "@prisma/client";
 
 export type Channel = "sms" | "email" | "linkedin";
@@ -39,6 +40,7 @@ export interface ConversationData {
     scoredAt: Date | null;
     // Lead assignment (Phase 43)
     assignedToUserId: string | null;
+    assignedToEmail: string | null;
     assignedAt: Date | null;
   };
   channels: Channel[];           // All channels this lead has messages on
@@ -247,6 +249,16 @@ export async function getConversations(clientId?: string | null): Promise<{
       },
     });
 
+    // Batch fetch setter emails for assigned leads (Phase 43)
+    const assignedUserIds = [...new Set(
+      leads
+        .map((lead) => lead.assignedToUserId)
+        .filter((id): id is string => id !== null)
+    )];
+    const setterEmailMap = assignedUserIds.length > 0
+      ? await getSupabaseUserEmailsByIds(assignedUserIds)
+      : new Map<string, string | null>();
+
     const conversations: ConversationData[] = leads.map((lead) => {
       const latestMessage = lead.messages[0];
       const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
@@ -296,6 +308,9 @@ export async function getConversations(clientId?: string | null): Promise<{
           scoredAt: lead.scoredAt,
           // Lead assignment (Phase 43)
           assignedToUserId: lead.assignedToUserId ?? null,
+          assignedToEmail: lead.assignedToUserId
+            ? setterEmailMap.get(lead.assignedToUserId) ?? null
+            : null,
           assignedAt: lead.assignedAt ?? null,
         },
         channels,
@@ -523,6 +538,13 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
       linkedinId: lead.linkedinId,
     });
 
+    // Fetch setter email for assigned lead (Phase 43)
+    let assignedToEmail: string | null = null;
+    if (lead.assignedToUserId) {
+      const emailMap = await getSupabaseUserEmailsByIds([lead.assignedToUserId]);
+      assignedToEmail = emailMap.get(lead.assignedToUserId) ?? null;
+    }
+
     return {
       success: true,
       data: {
@@ -558,6 +580,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           scoredAt: lead.scoredAt,
           // Lead assignment (Phase 43)
           assignedToUserId: lead.assignedToUserId ?? null,
+          assignedToEmail,
           assignedAt: lead.assignedAt ?? null,
         },
         channels,
@@ -646,7 +669,10 @@ export interface ConversationsCursorResult {
 /**
  * Transform a lead to ConversationData format
  */
-function transformLeadToConversation(lead: any, opts?: { hasOpenReply?: boolean }): ConversationData {
+function transformLeadToConversation(
+  lead: any,
+  opts?: { hasOpenReply?: boolean; setterEmailMap?: Map<string, string | null> }
+): ConversationData {
   const latestMessage = lead.messages[0];
   const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
   const primaryChannel = detectPrimaryChannel(latestMessage, lead);
@@ -693,6 +719,9 @@ function transformLeadToConversation(lead: any, opts?: { hasOpenReply?: boolean 
       scoredAt: lead.scoredAt,
       // Lead assignment (Phase 43)
       assignedToUserId: lead.assignedToUserId ?? null,
+      assignedToEmail: lead.assignedToUserId
+        ? opts?.setterEmailMap?.get(lead.assignedToUserId) ?? null
+        : null,
       assignedAt: lead.assignedAt ?? null,
     },
     channels,
@@ -982,9 +1011,21 @@ export async function getConversationsCursor(
     const resultLeads = hasMore ? leads.slice(0, limit) : leads;
     const nextCursor = hasMore && resultLeads.length > 0 ? resultLeads[resultLeads.length - 1].id : null;
 
+    // Batch fetch setter emails for assigned leads (Phase 43)
+    const assignedUserIds = [...new Set(
+      resultLeads
+        .map((lead: any) => lead.assignedToUserId)
+        .filter((id: string | null): id is string => id !== null)
+    )];
+    const setterEmailMap = assignedUserIds.length > 0
+      ? await getSupabaseUserEmailsByIds(assignedUserIds)
+      : new Map<string, string | null>();
+
     // Transform to conversation format
     const hasOpenReplyOverride = replyStateFilter === "open" ? true : replyStateFilter === "handled" ? false : undefined;
-    const conversations = resultLeads.map((lead: any) => transformLeadToConversation(lead, { hasOpenReply: hasOpenReplyOverride }));
+    const conversations = resultLeads.map((lead: any) =>
+      transformLeadToConversation(lead, { hasOpenReply: hasOpenReplyOverride, setterEmailMap })
+    );
 
     return {
       success: true,

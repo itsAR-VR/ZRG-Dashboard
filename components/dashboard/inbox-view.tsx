@@ -85,6 +85,10 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
       // Lead scoring (Phase 33)
       overallScore: conv.lead.overallScore,
       scoredAt: conv.lead.scoredAt,
+      // Lead assignment (Phase 43)
+      assignedToUserId: conv.lead.assignedToUserId,
+      assignedToEmail: conv.lead.assignedToEmail,
+      assignedAt: conv.lead.assignedAt,
     },
     channels: conv.channels,
     availableChannels: conv.availableChannels,
