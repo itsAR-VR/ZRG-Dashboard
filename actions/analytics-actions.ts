@@ -1096,7 +1096,7 @@ export interface SetterFunnelStats {
   email: string;
   // Volume metrics
   assignedLeadsCount: number;
-  respondedLeadsCount: number; // Leads with at least one outbound message (any user)
+  respondedLeadsCount: number; // Leads with at least one outbound message from this setter
   // Conversion funnel
   positiveLeadsCount: number; // Leads with positive sentiment
   meetingsRequestedCount: number; // "Meeting Requested" or "Call Requested"
@@ -1158,7 +1158,10 @@ export async function getSetterFunnelAnalytics(
           _count: {
             select: {
               messages: {
-                where: { direction: "outbound" },
+                where: {
+                  direction: "outbound",
+                  sentByUserId: setter.userId, // Only count messages sent BY this setter
+                },
               },
             },
           },
@@ -1167,7 +1170,7 @@ export async function getSetterFunnelAnalytics(
 
       const assignedCount = assignedLeads.length;
 
-      // Responded = leads with at least one outbound message
+      // Responded = leads with at least one outbound message from this setter
       const respondedCount = assignedLeads.filter((l) => l._count.messages > 0).length;
 
       // Positive sentiment
