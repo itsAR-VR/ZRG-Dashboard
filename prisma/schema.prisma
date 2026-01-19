@@ -195,7 +195,7 @@ model WorkspaceSettings {
   aiSignature          String?  @db.Text
   aiGoals              String?  @db.Text
   chatgptExportDefaults String? @db.Text // JSON string (see lib/chatgpt-export.ts)
-  // Insights Chatbot (read-only v1; action tools are gated by toggles)
+  // Campaign Assistant (read-only v1; action tools are gated by toggles)
   insightsChatModel String? @default("gpt-5-mini")
   insightsChatReasoningEffort String? @default("medium") // low | medium | high | extra_high (gpt-5.2 only)
   insightsChatEnableCampaignChanges Boolean @default(false)

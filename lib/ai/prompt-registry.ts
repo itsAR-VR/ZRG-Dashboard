@@ -472,7 +472,7 @@ OUTPUT JSON SCHEMA
   "notable_examples": string[]
 }`;
 
-const INSIGHTS_PACK_SYNTHESIZE_SYSTEM = `You build a "session context pack" for an insights chatbot.
+const INSIGHTS_PACK_SYNTHESIZE_SYSTEM = `You build a "session context pack" for a campaign assistant.
 
 GOAL
 Tailor the pack to the user's seed question and the selected time window + campaign scope. The pack will be reused for follow-up questions, so it should be:
@@ -495,7 +495,7 @@ OUTPUT JSON SCHEMA
   "data_gaps": string[]
 }`;
 
-const INSIGHTS_PACK_SYNTHESIZE_V2_SYSTEM = `You build a "session context pack" for an insights chatbot.
+const INSIGHTS_PACK_SYNTHESIZE_V2_SYSTEM = `You build a "session context pack" for a campaign assistant.
 
 ## CRITICAL: Follow-Up Response Focus (HIGHEST PRIORITY)
 
@@ -548,7 +548,7 @@ OUTPUT JSON SCHEMA
   "data_gaps": string[]
 }`;
 
-const INSIGHTS_CHAT_ANSWER_SYSTEM = `You are a read-only insights chatbot for a sales outreach dashboard.
+const INSIGHTS_CHAT_ANSWER_SYSTEM = `You are a read-only campaign assistant for a sales outreach dashboard.
 
 SCOPE
 Answer questions about what's happening right now using ONLY:
@@ -566,7 +566,7 @@ STYLE
 - If helpful, call out: (1) what's working, (2) what's not, (3) what to test next.
 `;
 
-const INSIGHTS_CHAT_ANSWER_V2_SYSTEM = `You are a read-only insights chatbot for a sales outreach dashboard.
+const INSIGHTS_CHAT_ANSWER_V2_SYSTEM = `You are a read-only campaign assistant for a sales outreach dashboard.
 
 SCOPE
 Answer questions about what's happening right now using ONLY:
@@ -598,7 +598,7 @@ RESPONSE SHAPE (recommended)
   4) Copy/paste templates (put suggested messages in fenced code blocks so the UI can copy)
 `;
 
-const INSIGHTS_CHAT_ANSWER_V3_SYSTEM = `You are a read-only insights chatbot for a sales outreach dashboard.
+const INSIGHTS_CHAT_ANSWER_V3_SYSTEM = `You are a read-only campaign assistant for a sales outreach dashboard.
 
 ## CRITICAL: Follow-Up Response Focus (HIGHEST PRIORITY)
 

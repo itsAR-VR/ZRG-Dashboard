@@ -22,7 +22,7 @@ export interface UserSettingsData {
   aiSignature: string | null;
   aiGoals: string | null;
   idealCustomerProfile: string | null;  // ICP for lead scoring (Phase 33)
-  // Insights Chatbot (workspace-level, admin-gated updates)
+  // Campaign Assistant (workspace-level, admin-gated updates)
   insightsChatModel: string | null;
   insightsChatReasoningEffort: string | null;
   insightsChatEnableCampaignChanges: boolean;

@@ -2424,10 +2424,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Sparkles className="h-5 w-5" />
-                  Insights Chatbot
+                  Campaign Assistant
                 </CardTitle>
                 <CardDescription>
-                  Model + reasoning settings for the Insights Console (read-only v1). Action tools are wired but disabled by default.
+                  Model + reasoning settings for the Campaign Assistant (read-only v1). Action tools are wired but disabled by default.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
