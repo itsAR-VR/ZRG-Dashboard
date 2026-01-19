@@ -1222,9 +1222,21 @@ export async function getConversationsFromEnd(
     // Reverse to get correct display order
     const reversedLeads = leads.reverse();
 
+    // Batch fetch setter emails for assigned leads (Phase 43)
+    const assignedUserIds = [...new Set(
+      reversedLeads
+        .map((lead: any) => lead.assignedToUserId)
+        .filter((id: string | null): id is string => id !== null)
+    )];
+    const setterEmailMap = assignedUserIds.length > 0
+      ? await getSupabaseUserEmailsByIds(assignedUserIds)
+      : new Map<string, string | null>();
+
     // Transform to conversation format
     const hasOpenReplyOverride = replyStateFilter === "open" ? true : replyStateFilter === "handled" ? false : undefined;
-    const conversations = reversedLeads.map((lead: any) => transformLeadToConversation(lead, { hasOpenReply: hasOpenReplyOverride }));
+    const conversations = reversedLeads.map((lead: any) =>
+      transformLeadToConversation(lead, { hasOpenReply: hasOpenReplyOverride, setterEmailMap })
+    );
 
     const nextCursor = reversedLeads.length > 0 ? reversedLeads[0].id : null;
 
