@@ -4,8 +4,43 @@ import { prisma } from "@/lib/prisma";
 import { POSITIVE_SENTIMENTS } from "@/lib/sentiment-shared";
 import { resolveClientScope } from "@/lib/workspace-access";
 import { areBothWithinEstBusinessHours, formatDurationMs } from "@/lib/business-hours";
-import { getSupabaseUserEmailById } from "@/lib/supabase/admin";
+import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
 import type { MeetingBookingProvider, ClientMemberRole } from "@prisma/client";
+
+// Simple in-memory cache for analytics with TTL (5 minutes)
+// Analytics data can be slightly stale without issues, and this dramatically reduces DB load
+const ANALYTICS_CACHE_TTL_MS = 5 * 60 * 1000;
+interface AnalyticsCacheEntry {
+  data: AnalyticsData;
+  expiresAt: number;
+}
+const analyticsCache = new Map<string, AnalyticsCacheEntry>();
+
+// Cleanup stale entries periodically (every 10 minutes)
+let lastCleanup = Date.now();
+function maybeCleanupCache() {
+  const now = Date.now();
+  if (now - lastCleanup > 10 * 60 * 1000) {
+    lastCleanup = now;
+    for (const [key, entry] of analyticsCache) {
+      if (entry.expiresAt < now) {
+        analyticsCache.delete(key);
+      }
+    }
+  }
+}
+
+/**
+ * Invalidate analytics cache for a specific client or all clients.
+ * Call this after significant data changes (e.g., new leads, messages, bookings).
+ */
+export async function invalidateAnalyticsCache(clientId?: string | null) {
+  if (clientId) {
+    analyticsCache.delete(clientId);
+  } else {
+    analyticsCache.clear();
+  }
+}
 
 export interface ResponseTimeMetrics {
   setterResponseTime: {
@@ -282,14 +317,8 @@ async function calculatePerSetterResponseTimes(clientId: string): Promise<Setter
 
     const memberByUserId = new Map(members.map((m) => [m.userId, m]));
 
-    // Fetch emails for all unique userIds (batched for efficiency)
-    const emailByUserId = new Map<string, string | null>();
-    await Promise.all(
-      userIds.map(async (userId) => {
-        const email = await getSupabaseUserEmailById(userId);
-        emailByUserId.set(userId, email);
-      })
-    );
+    // Batch fetch emails for all unique userIds (single operation instead of N+1 queries)
+    const emailByUserId = await getSupabaseUserEmailsByIds(userIds);
 
     // Build result rows
     const rows: SetterResponseTimeRow[] = [];
@@ -320,13 +349,32 @@ async function calculatePerSetterResponseTimes(clientId: string): Promise<Setter
 /**
  * Get analytics data from the database
  * @param clientId - Optional workspace ID to filter by
+ * @param opts - Options for fetching analytics
+ * @param opts.forceRefresh - Skip cache and fetch fresh data
  */
-export async function getAnalytics(clientId?: string | null): Promise<{
+export async function getAnalytics(
+  clientId?: string | null,
+  opts?: { forceRefresh?: boolean }
+): Promise<{
   success: boolean;
   data?: AnalyticsData;
   error?: string;
 }> {
   try {
+    // Cleanup stale cache entries periodically
+    maybeCleanupCache();
+
+    // Check cache first (using clientId or "all" as cache key)
+    const cacheKey = clientId || "__all__";
+    const now = Date.now();
+
+    if (!opts?.forceRefresh) {
+      const cached = analyticsCache.get(cacheKey);
+      if (cached && cached.expiresAt > now) {
+        return { success: true, data: cached.data };
+      }
+    }
+
     const scope = await resolveClientScope(clientId);
     if (scope.clientIds.length === 0) {
       return {
@@ -443,76 +491,96 @@ export async function getAnalytics(clientId?: string | null): Promise<{
         : 0,
     }));
 
-    // Get weekly message stats (last 7 days)
-    const now = new Date();
-    const sevenDaysAgo = new Date(now);
+    // Get weekly message stats (last 7 days) - using SQL GROUP BY for efficiency
+    const currentDate = new Date();
+    const sevenDaysAgo = new Date(currentDate);
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6); // 6 days ago + today = 7 days
     sevenDaysAgo.setHours(0, 0, 0, 0);
 
-    const messages = await prisma.message.findMany({
-      where: {
-        lead: { clientId: { in: scope.clientIds } },
-        sentAt: {
-          gte: sevenDaysAgo,
-        },
-      },
-      select: {
-        direction: true,
-        sentAt: true,
-      },
-    });
+    // Use raw SQL to group by date in the database instead of fetching all messages
+    const weeklyMessageStats = await prisma.$queryRaw<
+      Array<{ day_date: Date; direction: string; count: bigint }>
+    >`
+      SELECT
+        DATE_TRUNC('day', m."sentAt") as day_date,
+        m.direction,
+        COUNT(*) as count
+      FROM "Message" m
+      INNER JOIN "Lead" l ON m."leadId" = l.id
+      WHERE l."clientId" = ANY(${scope.clientIds})
+        AND m."sentAt" >= ${sevenDaysAgo}
+      GROUP BY DATE_TRUNC('day', m."sentAt"), m.direction
+      ORDER BY day_date ASC
+    `;
 
-    // Group messages by actual date (last 7 days)
+    // Build a lookup map for quick access
     const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const weeklyStats: { day: string; inbound: number; outbound: number }[] = [];
+    const statsMap = new Map<string, { inbound: number; outbound: number }>();
 
+    for (const row of weeklyMessageStats) {
+      const dateKey = new Date(row.day_date).toISOString().split('T')[0];
+      if (!statsMap.has(dateKey)) {
+        statsMap.set(dateKey, { inbound: 0, outbound: 0 });
+      }
+      const entry = statsMap.get(dateKey)!;
+      if (row.direction === "inbound") {
+        entry.inbound = Number(row.count);
+      } else if (row.direction === "outbound") {
+        entry.outbound = Number(row.count);
+      }
+    }
+
+    // Build the weeklyStats array for the last 7 days
+    const weeklyStats: { day: string; inbound: number; outbound: number }[] = [];
     for (let i = 6; i >= 0; i--) {
-      const date = new Date(now);
+      const date = new Date(currentDate);
       date.setDate(date.getDate() - i);
       date.setHours(0, 0, 0, 0);
-
-      const nextDate = new Date(date);
-      nextDate.setDate(nextDate.getDate() + 1);
-
-      const dayMessages = messages.filter((m) => {
-        const msgDate = new Date(m.sentAt);
-        return msgDate >= date && msgDate < nextDate;
-      });
+      const dateKey = date.toISOString().split('T')[0];
+      const stats = statsMap.get(dateKey) || { inbound: 0, outbound: 0 };
 
       weeklyStats.push({
         day: dayNames[date.getDay()],
-        inbound: dayMessages.filter((m) => m.direction === "inbound").length,
-        outbound: dayMessages.filter((m) => m.direction === "outbound").length,
+        inbound: stats.inbound,
+        outbound: stats.outbound,
       });
     }
 
-    // Get top clients
-    const clients = await prisma.client.findMany({
-      where: { id: { in: scope.clientIds } },
-      include: {
-        leads: {
-          select: {
-            id: true,
-            ghlAppointmentId: true,
-            calendlyInviteeUri: true,
-            calendlyScheduledEventUri: true,
-            appointmentBookedAt: true,
-          },
+    // Get top clients - use _count instead of loading all leads for efficiency
+    const [clientsWithCounts, meetingCounts] = await Promise.all([
+      // Get clients with lead counts using Prisma _count
+      prisma.client.findMany({
+        where: { id: { in: scope.clientIds } },
+        select: {
+          id: true,
+          name: true,
+          _count: { select: { leads: true } },
         },
-      },
-    });
+      }),
+      // Get meeting counts per client using raw SQL for efficiency
+      prisma.$queryRaw<Array<{ client_id: string; meeting_count: bigint }>>`
+        SELECT "clientId" as client_id, COUNT(*) as meeting_count
+        FROM "Lead"
+        WHERE "clientId" = ANY(${scope.clientIds})
+          AND (
+            "appointmentBookedAt" IS NOT NULL
+            OR "ghlAppointmentId" IS NOT NULL
+            OR "calendlyInviteeUri" IS NOT NULL
+            OR "calendlyScheduledEventUri" IS NOT NULL
+          )
+        GROUP BY "clientId"
+      `,
+    ]);
 
-    const topClients = clients
+    const meetingCountByClient = new Map(
+      meetingCounts.map((m) => [m.client_id, Number(m.meeting_count)])
+    );
+
+    const topClients = clientsWithCounts
       .map((client) => ({
         name: client.name,
-        leads: client.leads.length,
-        meetings: client.leads.filter(
-          (l) =>
-            l.appointmentBookedAt != null ||
-            l.ghlAppointmentId != null ||
-            l.calendlyInviteeUri != null ||
-            l.calendlyScheduledEventUri != null
-        ).length,
+        leads: client._count.leads,
+        meetings: meetingCountByClient.get(client.id) || 0,
       }))
       .sort((a, b) => b.leads - a.leads)
       .slice(0, 5);
@@ -604,27 +672,32 @@ export async function getAnalytics(clientId?: string | null): Promise<{
       ? await calculatePerSetterResponseTimes(clientId)
       : [];
 
-    return {
-      success: true,
-      data: {
-        overview: {
-          totalLeads,
-          outboundLeadsContacted,
-          responses,
-          responseRate,
-          meetingsBooked,
-          avgResponseTime: responseTimeMetrics.setterResponseTime.formatted, // Backward compatibility
-          setterResponseTime: responseTimeMetrics.setterResponseTime.formatted,
-          clientResponseTime: responseTimeMetrics.clientResponseTime.formatted,
-        },
-        sentimentBreakdown,
-        weeklyStats,
-        leadsByStatus,
-        topClients,
-        smsSubClients,
-        perSetterResponseTimes,
+    const analyticsData: AnalyticsData = {
+      overview: {
+        totalLeads,
+        outboundLeadsContacted,
+        responses,
+        responseRate,
+        meetingsBooked,
+        avgResponseTime: responseTimeMetrics.setterResponseTime.formatted, // Backward compatibility
+        setterResponseTime: responseTimeMetrics.setterResponseTime.formatted,
+        clientResponseTime: responseTimeMetrics.clientResponseTime.formatted,
       },
+      sentimentBreakdown,
+      weeklyStats,
+      leadsByStatus,
+      topClients,
+      smsSubClients,
+      perSetterResponseTimes,
     };
+
+    // Store in cache for future requests
+    analyticsCache.set(cacheKey, {
+      data: analyticsData,
+      expiresAt: Date.now() + ANALYTICS_CACHE_TTL_MS,
+    });
+
+    return { success: true, data: analyticsData };
   } catch (error) {
     console.error("Failed to fetch analytics:", error);
     return { success: false, error: "Failed to fetch analytics" };

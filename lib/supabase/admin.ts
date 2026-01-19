@@ -71,3 +71,53 @@ export async function getSupabaseUserEmailById(userId: string): Promise<string |
   return null;
 }
 
+/**
+ * Batch fetch emails for multiple user IDs in a single operation.
+ * Much more efficient than calling getSupabaseUserEmailById in a loop.
+ * Fetches all users once and returns a Map of userId -> email.
+ */
+export async function getSupabaseUserEmailsByIds(userIds: string[]): Promise<Map<string, string | null>> {
+  const result = new Map<string, string | null>();
+  if (userIds.length === 0) return result;
+
+  const uniqueIds = [...new Set(userIds)];
+  const supabase = createSupabaseAdminClient();
+  const admin: any = supabase.auth.admin as any;
+
+  // Build a set for O(1) lookups
+  const targetIds = new Set(uniqueIds);
+  let foundCount = 0;
+
+  // Page through all users and collect matches
+  const perPage = 200;
+  for (let page = 1; page <= 50; page += 1) {
+    const { data, error } = await admin.listUsers({ page, perPage });
+    if (error) {
+      console.error("[Supabase Admin] listUsers error:", error);
+      break;
+    }
+
+    for (const user of data.users || []) {
+      if (targetIds.has(user.id)) {
+        result.set(user.id, user.email ?? null);
+        foundCount++;
+        // Early exit if all found
+        if (foundCount >= uniqueIds.length) {
+          return result;
+        }
+      }
+    }
+
+    if ((data.users || []).length < perPage) break;
+  }
+
+  // Fill in nulls for any IDs not found
+  for (const id of uniqueIds) {
+    if (!result.has(id)) {
+      result.set(id, null);
+    }
+  }
+
+  return result;
+}
+
