@@ -1,7 +1,12 @@
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
 import { runResponse, runResponseWithInteraction, markAiInteractionError } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { getFirstRefusal, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
+import {
+  extractFirstCompleteJsonObjectFromText,
+  getFirstRefusal,
+  getTrimmedOutputText,
+  summarizeResponseForTelemetry,
+} from "@/lib/ai/response-utils";
 import { prisma } from "@/lib/prisma";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
@@ -361,11 +366,14 @@ const EMAIL_DRAFT_STRATEGY_JSON_SCHEMA = {
   properties: {
     personalization_points: {
       type: "array",
-      items: { type: "string" },
+      minItems: 0,
+      maxItems: 4,
+      items: { type: "string", maxLength: 140 },
       description: "2-4 short personalization points specific to this lead (company, industry, previous conversation context)",
     },
     intent_summary: {
       type: "string",
+      maxLength: 400,
       description: "One sentence summarizing the lead's intent and what the response should accomplish",
     },
     should_offer_times: {
@@ -374,17 +382,22 @@ const EMAIL_DRAFT_STRATEGY_JSON_SCHEMA = {
     },
     times_to_offer: {
       type: ["array", "null"],
-      items: { type: "string" },
+      maxItems: 6,
+      items: { type: "string", maxLength: 80 },
       description: "If should_offer_times is true, which specific times to offer (verbatim from availability list); null otherwise",
     },
     outline: {
       type: "array",
-      items: { type: "string" },
+      minItems: 0,
+      maxItems: 5,
+      items: { type: "string", maxLength: 160 },
       description: "3-5 bullet points describing the structure/flow of the email (what each section should accomplish)",
     },
     must_avoid: {
       type: "array",
-      items: { type: "string" },
+      minItems: 0,
+      maxItems: 6,
+      items: { type: "string", maxLength: 160 },
       description: "Any specific topics, tones, or approaches to avoid based on conversation context",
     },
   },
@@ -400,6 +413,12 @@ interface EmailDraftStrategy {
   outline: string[];
   must_avoid: string[];
 }
+
+type StrategyParseStatus = "complete" | "incomplete" | "none" | "invalid";
+
+type ParsedStrategyResult =
+  | { status: "complete"; strategy: EmailDraftStrategy }
+  | { status: Exclude<StrategyParseStatus, "complete">; strategy: null; rawSample?: string };
 
 /**
  * Build the Step 1 (Strategy) system instructions.
@@ -551,26 +570,103 @@ Write the email now, following the strategy and archetype structure exactly.`;
 
 /**
  * Attempt to parse strategy JSON from response text.
- * Returns null on parse failure.
  */
-function parseStrategyJson(text: string | null | undefined): EmailDraftStrategy | null {
-  if (!text) return null;
-  try {
-    const parsed = JSON.parse(text);
-    // Validate required fields exist
-    if (
-      Array.isArray(parsed.personalization_points) &&
-      typeof parsed.intent_summary === "string" &&
-      typeof parsed.should_offer_times === "boolean" &&
-      Array.isArray(parsed.outline) &&
-      Array.isArray(parsed.must_avoid)
-    ) {
-      return parsed as EmailDraftStrategy;
-    }
-    return null;
-  } catch {
-    return null;
+function parseStrategyJson(text: string | null | undefined): ParsedStrategyResult {
+  if (!text) return { status: "none", strategy: null };
+
+  const extracted = extractFirstCompleteJsonObjectFromText(text);
+  if (extracted.status === "incomplete") {
+    return { status: "incomplete", strategy: null, rawSample: text.slice(0, 500) };
   }
+
+  if (extracted.status === "none" || !extracted.json) {
+    return { status: "none", strategy: null, rawSample: text.slice(0, 500) };
+  }
+
+  try {
+    const parsed = JSON.parse(extracted.json) as Partial<EmailDraftStrategy>;
+
+    const personalization_points = parsed.personalization_points;
+    const intent_summary = parsed.intent_summary;
+    const should_offer_times = parsed.should_offer_times;
+    const times_to_offer = parsed.times_to_offer;
+    const outline = parsed.outline;
+    const must_avoid = parsed.must_avoid;
+
+    const timesToOfferOk =
+      times_to_offer === null ||
+      (Array.isArray(times_to_offer) && times_to_offer.every((t) => typeof t === "string"));
+
+    if (
+      Array.isArray(personalization_points) &&
+      personalization_points.every((p) => typeof p === "string") &&
+      typeof intent_summary === "string" &&
+      typeof should_offer_times === "boolean" &&
+      timesToOfferOk &&
+      Array.isArray(outline) &&
+      outline.every((o) => typeof o === "string") &&
+      Array.isArray(must_avoid) &&
+      must_avoid.every((m) => typeof m === "string")
+    ) {
+      return {
+        status: "complete",
+        strategy: {
+          personalization_points,
+          intent_summary,
+          should_offer_times,
+          times_to_offer: times_to_offer as string[] | null,
+          outline,
+          must_avoid,
+        },
+      };
+    }
+
+    return { status: "invalid", strategy: null, rawSample: extracted.json.slice(0, 500) };
+  } catch {
+    return { status: "invalid", strategy: null, rawSample: extracted.json.slice(0, 500) };
+  }
+}
+
+function buildDeterministicFallbackDraft(opts: {
+  channel: DraftChannel;
+  aiName: string;
+  aiGreeting: string;
+  firstName: string;
+  signature: string | null;
+  sentimentTag: string;
+  availability: string[];
+}): string {
+  const safeFirstName = opts.firstName || "there";
+  const greetingTemplate = opts.aiGreeting || "Hi {firstName},";
+  const greeting = greetingTemplate.replace("{firstName}", safeFirstName);
+  const hasAvailability = Array.isArray(opts.availability) && opts.availability.length > 0;
+
+  const normalizedSentiment = opts.sentimentTag === "Positive" ? "Interested" : opts.sentimentTag;
+
+  const askLine =
+    normalizedSentiment === "Follow Up"
+      ? "What timeline are you thinking—this quarter, later this year, or further out?"
+      : normalizedSentiment === "Information Requested"
+        ? "What would be most helpful to start—pricing, examples, or a quick overview of next steps?"
+        : hasAvailability
+          ? "If a quick call helps, I can share a few times that work, or you can send a couple options on your end."
+          : "If a quick call helps, what times work best on your end?";
+
+  if (opts.channel === "email") {
+    const body = `${greeting}
+
+Thanks for reaching out — happy to help.
+
+${askLine}
+
+What would you like to focus on first?`;
+
+    const closing = opts.signature ? `\n\n${opts.signature.trim()}` : `\n\nBest,\n${opts.aiName}`;
+    return body + closing;
+  }
+
+  // SMS / LinkedIn: keep it short (draft is human-reviewed).
+  return `${greeting} Thanks for reaching out — happy to help. What would you like to focus on first?`;
 }
 
 /**
@@ -859,6 +955,33 @@ export async function generateResponseDraft(
       let strategy: EmailDraftStrategy | null = null;
       let strategyInteractionId: string | null = null;
 
+      function isRetryableEmailStrategyError(error: unknown): boolean {
+        if (!(error instanceof Error)) return false;
+
+        const status = (error as unknown as { status?: unknown }).status;
+        if (typeof status === "number") {
+          if ([429, 500, 502, 503, 504].includes(status)) return true;
+        }
+
+        const message = error.message.toLowerCase();
+        return (
+          message.includes("429") ||
+          message.includes("rate") ||
+          message.includes("timeout") ||
+          message.includes("timed out") ||
+          message.includes("connection error") ||
+          message.includes("socket hang up") ||
+          message.includes("econnreset") ||
+          message.includes("etimedout") ||
+          message.includes("eai_again") ||
+          message.includes("enotfound") ||
+          message.includes("503") ||
+          message.includes("502") ||
+          message.includes("504") ||
+          message.includes("500")
+        );
+      }
+
       let strategyInstructions = buildEmailDraftStrategyInstructions({
         aiName,
         aiTone,
@@ -897,42 +1020,129 @@ ${conversationTranscript}
 Analyze this conversation and produce a JSON strategy for writing a personalized email response.
 </task>`;
 
-      try {
-        const { response: strategyResponse, interactionId } = await runResponseWithInteraction({
-          clientId: lead.clientId,
-          leadId,
-          featureId: "draft.generate.email.strategy",
-          promptKey: `draft.generate.email.strategy.v1.arch_${archetype.id}`,
-          params: {
-            model: draftModel,
-            instructions: strategyInstructions,
-            input: [{ role: "user" as const, content: strategyInput }],
-            reasoning: { effort: strategyReasoningApi },
-            text: {
-              format: {
-                type: "json_schema",
-                name: "email_draft_strategy",
-                strict: true,
-                schema: EMAIL_DRAFT_STRATEGY_JSON_SCHEMA,
+      const strategyMaxAttempts = Math.max(
+        1,
+        Math.min(5, Number.parseInt(process.env.OPENAI_EMAIL_STRATEGY_MAX_ATTEMPTS || "3", 10) || 3)
+      );
+      const strategyBaseMaxOutputTokens = Math.max(
+        500,
+        Number.parseInt(process.env.OPENAI_EMAIL_STRATEGY_BASE_MAX_OUTPUT_TOKENS || "2000", 10) || 2000
+      );
+      const strategyMaxOutputTokensCap = Math.max(
+        strategyBaseMaxOutputTokens,
+        Number.parseInt(process.env.OPENAI_EMAIL_STRATEGY_MAX_OUTPUT_TOKENS || "5000", 10) || 5000
+      );
+      const strategyTokenIncrement = Math.max(
+        0,
+        Number.parseInt(process.env.OPENAI_EMAIL_STRATEGY_TOKEN_INCREMENT || "1500", 10) || 1500
+      );
+
+      const strategyBasePromptKey = `draft.generate.email.strategy.v1.arch_${archetype.id}`;
+      const strategyStartMs = Date.now();
+
+      for (let attempt = 1; attempt <= strategyMaxAttempts; attempt++) {
+        const elapsedMs = Date.now() - strategyStartMs;
+        const remainingMs = strategyTimeoutMs - elapsedMs;
+        if (attempt > 1 && remainingMs < 2500) break;
+
+        const attemptTimeoutMs = Math.max(2500, Math.min(strategyTimeoutMs, remainingMs));
+        const attemptMaxTokens = Math.min(
+          strategyMaxOutputTokensCap,
+          strategyBaseMaxOutputTokens + (attempt - 1) * strategyTokenIncrement
+        );
+
+        try {
+          const { response: strategyResponse, interactionId } = await runResponseWithInteraction({
+            clientId: lead.clientId,
+            leadId,
+            featureId: "draft.generate.email.strategy",
+            promptKey: attempt === 1 ? strategyBasePromptKey : `${strategyBasePromptKey}.retry${attempt}`,
+            params: {
+              model: draftModel,
+              instructions: strategyInstructions,
+              input: [{ role: "user" as const, content: strategyInput }],
+              reasoning: { effort: strategyReasoningApi },
+              text: {
+                format: {
+                  type: "json_schema",
+                  name: "email_draft_strategy",
+                  strict: true,
+                  schema: EMAIL_DRAFT_STRATEGY_JSON_SCHEMA,
+                },
               },
+              max_output_tokens: attemptMaxTokens,
             },
-            max_output_tokens: 1500, // Strategy should be compact
-          },
-          requestOptions: {
-            timeout: strategyTimeoutMs,
-            maxRetries: 0,
-          },
-        });
+            requestOptions: {
+              timeout: attemptTimeoutMs,
+              maxRetries: 0,
+            },
+          });
 
-        strategyInteractionId = interactionId;
-        const strategyText = getTrimmedOutputText(strategyResponse)?.trim();
-        strategy = parseStrategyJson(strategyText);
+          strategyInteractionId = interactionId;
 
-        if (!strategy && strategyInteractionId) {
-          await markAiInteractionError(strategyInteractionId, "strategy_parse_failed: Could not parse strategy JSON");
+          const strategyText = getTrimmedOutputText(strategyResponse)?.trim();
+          const parseResult = parseStrategyJson(strategyText);
+
+          if (parseResult.status === "complete") {
+            strategy = parseResult.strategy;
+            break;
+          }
+
+          const incompleteReason = strategyResponse?.incomplete_details?.reason;
+          const incompleteSuffix = incompleteReason ? ` incomplete=${String(incompleteReason)}` : "";
+
+          if (attempt < strategyMaxAttempts) {
+            console.warn(
+              `[AI Drafts] Strategy JSON parse ${parseResult.status} (attempt ${attempt}/${strategyMaxAttempts})${incompleteSuffix}; retrying`
+            );
+            continue;
+          }
+
+          if (strategyInteractionId) {
+            const details = summarizeResponseForTelemetry(strategyResponse);
+            const kind =
+              parseResult.status === "incomplete" || incompleteReason === "max_output_tokens"
+                ? "strategy_truncated"
+                : parseResult.status === "none"
+                  ? "strategy_empty"
+                  : "strategy_invalid";
+
+            const sample = parseResult.rawSample
+              ? ` | sample=${parseResult.rawSample.replace(/\s+/g, " ").slice(0, 500)}`
+              : "";
+
+            await markAiInteractionError(
+              strategyInteractionId,
+              `${kind}: status=${parseResult.status} attempt=${attempt}/${strategyMaxAttempts} max_output_tokens=${attemptMaxTokens}${incompleteSuffix}${details ? ` (${details})` : ""}${sample}`
+            );
+
+            console.error("[AI Drafts] Strategy step failed; falling back to single-step.", {
+              leadId,
+              interactionId: strategyInteractionId,
+              kind,
+              status: parseResult.status,
+              attempt,
+              maxAttempts: strategyMaxAttempts,
+              maxOutputTokens: attemptMaxTokens,
+              incompleteReason: incompleteReason || null,
+              details: details || null,
+            });
+          }
+        } catch (error) {
+          const retryable = isRetryableEmailStrategyError(error);
+
+          if (retryable && attempt < strategyMaxAttempts) {
+            console.warn(
+              `[AI Drafts] Strategy attempt ${attempt}/${strategyMaxAttempts} retryable error: ${error instanceof Error ? error.message : String(error)}`
+            );
+            const status = (error as unknown as { status?: unknown }).status;
+            if (status === 429) await new Promise((r) => setTimeout(r, 250));
+            continue;
+          }
+
+          console.error(`[AI Drafts] Step 1 (Strategy) attempt ${attempt} failed:`, error);
+          break;
         }
-      } catch (error) {
-        console.error("[AI Drafts] Step 1 (Strategy) failed:", error);
       }
 
       // Step 2: Generation (if strategy succeeded)
@@ -1051,30 +1261,82 @@ Generate an appropriate email response following the guidelines and structure ar
           preferApiCount,
         });
 
-        try {
-          const fallbackResponse = await runResponse({
-            clientId: lead.clientId,
-            leadId,
-            featureId: "draft.generate.email",
-            promptKey: `draft.generate.email.v1.fallback.arch_${archetype.id}`,
-            params: {
-              model: draftModel,
-              instructions: fallbackSystemPrompt,
-              input: fallbackInputMessages,
-              temperature: 0.95,
-              reasoning: { effort: strategyReasoningApi },
-              max_output_tokens: fallbackBudget.maxOutputTokens,
-            },
-            requestOptions: {
-              timeout: timeoutMs,
-              maxRetries: 0,
-            },
-          });
+        const fallbackBasePromptKey = `draft.generate.email.v1.fallback.arch_${archetype.id}`;
+        const fallbackMaxAttempts = Math.max(
+          1,
+          Math.min(4, Number.parseInt(process.env.OPENAI_EMAIL_FALLBACK_MAX_ATTEMPTS || "2", 10) || 2)
+        );
+        const fallbackMaxOutputTokensCap = Math.max(
+          1500,
+          Number.parseInt(process.env.OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP || "12000", 10) || 12_000
+        );
 
-          draftContent = getTrimmedOutputText(fallbackResponse)?.trim() || null;
-          response = fallbackResponse;
-        } catch (error) {
-          console.error("[AI Drafts] Single-step fallback failed:", error);
+        for (let attempt = 1; attempt <= fallbackMaxAttempts; attempt++) {
+          const attemptMaxOutputTokens = Math.min(
+            fallbackMaxOutputTokensCap,
+            Math.max(800, fallbackBudget.maxOutputTokens) + (attempt - 1) * 2000
+          );
+
+          try {
+            const { response: fallbackResponse, interactionId } = await runResponseWithInteraction({
+              clientId: lead.clientId,
+              leadId,
+              featureId: "draft.generate.email",
+              promptKey: attempt === 1 ? fallbackBasePromptKey : `${fallbackBasePromptKey}.retry${attempt}`,
+              params: {
+                model: draftModel,
+                instructions: fallbackSystemPrompt,
+                input: fallbackInputMessages,
+                temperature: 0.95,
+                reasoning: { effort: strategyReasoningApi },
+                max_output_tokens: attemptMaxOutputTokens,
+              },
+              requestOptions: {
+                timeout: timeoutMs,
+                maxRetries: 0,
+              },
+            });
+
+            const text = getTrimmedOutputText(fallbackResponse)?.trim() || null;
+            if (text) {
+              draftContent = text;
+              response = fallbackResponse;
+              break;
+            }
+
+            const details = summarizeResponseForTelemetry(fallbackResponse);
+            console.warn(
+              `[AI Drafts] Email single-step fallback produced empty output (attempt ${attempt}/${fallbackMaxAttempts})${details ? ` (${details})` : ""}`
+            );
+
+            if (attempt === fallbackMaxAttempts && interactionId) {
+              await markAiInteractionError(
+                interactionId,
+                `email_fallback_empty: attempt=${attempt}/${fallbackMaxAttempts} max_output_tokens=${attemptMaxOutputTokens}${details ? ` (${details})` : ""}`
+              );
+              console.error("[AI Drafts] Email single-step fallback exhausted attempts (empty output).", {
+                leadId,
+                interactionId,
+                attempt,
+                maxAttempts: fallbackMaxAttempts,
+                maxOutputTokens: attemptMaxOutputTokens,
+                details: details || null,
+              });
+            }
+          } catch (error) {
+            const retryable = isRetryableEmailStrategyError(error);
+            if (retryable && attempt < fallbackMaxAttempts) {
+              console.warn(
+                `[AI Drafts] Email single-step fallback retryable error (attempt ${attempt}/${fallbackMaxAttempts}): ${error instanceof Error ? error.message : String(error)}`
+              );
+              const status = (error as unknown as { status?: unknown }).status;
+              if (status === 429) await new Promise((r) => setTimeout(r, 250));
+              continue;
+            }
+
+            console.error(`[AI Drafts] Email single-step fallback failed (attempt ${attempt}):`, error);
+            break;
+          }
         }
       }
     }
@@ -1262,12 +1524,24 @@ Generate an appropriate ${channel} response following the guidelines above.
     if (!draftContent) {
       const refusal = response ? getFirstRefusal(response) : null;
       const details = response ? summarizeResponseForTelemetry(response) : null;
-      return {
-        success: false,
-        error: refusal
-          ? `AI refused to generate a draft (${refusal.slice(0, 180)})`
-          : `Failed to generate draft content${details ? ` (${details})` : ""}`,
-      };
+
+      console.error("[AI Drafts] OpenAI draft generation failed; using deterministic fallback draft.", {
+        leadId,
+        channel,
+        sentimentTag,
+        refusal: refusal ? refusal.slice(0, 200) : null,
+        details: details || null,
+      });
+
+      draftContent = buildDeterministicFallbackDraft({
+        channel,
+        aiName,
+        aiGreeting,
+        firstName,
+        signature: aiSignature || null,
+        sentimentTag,
+        availability,
+      });
     }
 
     try {
