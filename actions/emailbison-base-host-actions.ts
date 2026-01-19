@@ -40,7 +40,7 @@ function parseHostOnly(value: string): string | null {
 function validateEmailBisonBaseHost(hostname: string): string | null {
   const host = normalizeHostInput(hostname);
   if (!host) return "Host is required";
-  if (host !== hostname.toLowerCase()) return "Host must be lowercase";
+  if (hostname.trim() !== host) return "Host must be lowercase";
   if (host.includes("..")) return "Host is invalid";
   if (!host.includes(".")) return "Host must be a valid hostname";
 
