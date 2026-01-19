@@ -56,6 +56,103 @@ export type DraftGenerationOptions = {
   preferApiCount?: boolean;
 };
 
+// ---------------------------------------------------------------------------
+// AI Persona Resolution (Phase 39)
+// ---------------------------------------------------------------------------
+
+type ResolvedPersona = {
+  personaName: string;
+  tone: string;
+  greeting: string;
+  smsGreeting: string;
+  signature: string | null;
+  goals: string | null;
+  serviceDescription: string | null;
+  idealCustomerProfile: string | null;
+  source: "campaign" | "default" | "settings";
+};
+
+type PersonaData = {
+  id: string;
+  name: string;
+  personaName: string | null;
+  tone: string;
+  greeting: string | null;
+  smsGreeting: string | null;
+  signature: string | null;
+  goals: string | null;
+  serviceDescription: string | null;
+  idealCustomerProfile: string | null;
+};
+
+type LeadForPersona = {
+  client: {
+    name: string;
+    settings: {
+      aiPersonaName: string | null;
+      aiTone: string | null;
+      aiGreeting: string | null;
+      aiSmsGreeting: string | null;
+      aiSignature: string | null;
+      aiGoals: string | null;
+      serviceDescription: string | null;
+      idealCustomerProfile: string | null;
+    } | null;
+    aiPersonas: PersonaData[];
+  } | null;
+  emailCampaign: {
+    id: string;
+    aiPersona: PersonaData | null;
+  } | null;
+};
+
+function resolvePersona(
+  lead: LeadForPersona,
+  channel: "sms" | "email" | "linkedin"
+): ResolvedPersona {
+  const settings = lead.client?.settings;
+  const campaignPersona = lead.emailCampaign?.aiPersona;
+  const defaultPersona = lead.client?.aiPersonas?.[0]; // isDefault: true from query
+
+  // Priority: campaign persona > default persona > settings
+  const persona = campaignPersona ?? defaultPersona;
+
+  const defaultGreeting = "Hi {firstName},";
+
+  if (persona) {
+    return {
+      personaName: persona.personaName || lead.client?.name || "Your Sales Rep",
+      tone: persona.tone || "friendly-professional",
+      greeting:
+        channel === "sms"
+          ? persona.smsGreeting?.trim() || persona.greeting?.trim() || defaultGreeting
+          : persona.greeting?.trim() || defaultGreeting,
+      smsGreeting: persona.smsGreeting?.trim() || persona.greeting?.trim() || defaultGreeting,
+      signature: persona.signature?.trim() || null,
+      goals: persona.goals?.trim() || null,
+      serviceDescription: persona.serviceDescription?.trim() || null,
+      idealCustomerProfile: persona.idealCustomerProfile?.trim() || null,
+      source: campaignPersona ? "campaign" : "default",
+    };
+  }
+
+  // Fallback to WorkspaceSettings (backward compatibility)
+  return {
+    personaName: settings?.aiPersonaName || lead.client?.name || "Your Sales Rep",
+    tone: settings?.aiTone || "friendly-professional",
+    greeting:
+      channel === "sms"
+        ? settings?.aiSmsGreeting?.trim() || settings?.aiGreeting?.trim() || defaultGreeting
+        : settings?.aiGreeting?.trim() || defaultGreeting,
+    smsGreeting: settings?.aiSmsGreeting?.trim() || settings?.aiGreeting?.trim() || defaultGreeting,
+    signature: settings?.aiSignature?.trim() || null,
+    goals: settings?.aiGoals?.trim() || null,
+    serviceDescription: settings?.serviceDescription?.trim() || null,
+    idealCustomerProfile: settings?.idealCustomerProfile?.trim() || null,
+    source: "settings",
+  };
+}
+
 function isPrismaUniqueConstraintError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   return "code" in error && (error as { code?: unknown }).code === "P2002";
@@ -731,6 +828,43 @@ export async function generateResponseDraft(
                 },
               },
             },
+            // Fetch default AI persona for fallback (Phase 39)
+            aiPersonas: {
+              where: { isDefault: true },
+              take: 1,
+              select: {
+                id: true,
+                name: true,
+                personaName: true,
+                tone: true,
+                greeting: true,
+                smsGreeting: true,
+                signature: true,
+                goals: true,
+                serviceDescription: true,
+                idealCustomerProfile: true,
+              },
+            },
+          },
+        },
+        // Fetch campaign-assigned AI persona (Phase 39)
+        emailCampaign: {
+          select: {
+            id: true,
+            aiPersona: {
+              select: {
+                id: true,
+                name: true,
+                personaName: true,
+                tone: true,
+                greeting: true,
+                smsGreeting: true,
+                signature: true,
+                goals: true,
+                serviceDescription: true,
+                idealCustomerProfile: true,
+              },
+            },
           },
         },
       },
@@ -741,18 +875,25 @@ export async function generateResponseDraft(
     }
 
     const settings = lead?.client?.settings;
-    const aiTone = settings?.aiTone || "friendly-professional";
-    const aiName = settings?.aiPersonaName || lead?.client?.name || "Your Sales Rep";
-    // Use channel-specific greeting with fallback chain:
-    // SMS: aiSmsGreeting -> aiGreeting -> default
-    // Email: aiGreeting -> default
-    const defaultGreeting = "Hi {firstName},";
-    const aiGreeting = channel === "sms"
-      ? (settings?.aiSmsGreeting?.trim() || settings?.aiGreeting?.trim() || defaultGreeting)
-      : (settings?.aiGreeting?.trim() || defaultGreeting);
-    const aiGoals = settings?.aiGoals?.trim();
-    const aiSignature = settings?.aiSignature?.trim();
-    const serviceDescription = settings?.serviceDescription?.trim();
+
+    // ---------------------------------------------------------------------------
+    // Resolve AI Persona (Phase 39)
+    // Priority: campaign persona > default persona > workspace settings
+    // ---------------------------------------------------------------------------
+    const persona = resolvePersona(lead as LeadForPersona, channel);
+    const aiTone = persona.tone;
+    const aiName = persona.personaName;
+    const aiGreeting = persona.greeting;
+    const aiGoals = persona.goals;
+    const aiSignature = persona.signature;
+    const serviceDescription = persona.serviceDescription;
+
+    // Log persona source for debugging (can be removed once stable)
+    console.log(
+      `[AI Drafts] Lead ${leadId} using persona source: ${persona.source}` +
+        (lead.emailCampaign?.aiPersona ? ` (campaign: ${lead.emailCampaign.aiPersona.name})` : "") +
+        (persona.source === "default" && lead.client?.aiPersonas?.[0] ? ` (${lead.client.aiPersonas[0].name})` : "")
+    );
     // Company context - fallback to workspace name if not set
     const companyName = settings?.companyName?.trim() || lead?.client?.name || null;
     const targetResult = settings?.targetResult?.trim() || null;

@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Bot, Clock, RefreshCw, Save, Undo2 } from "lucide-react"
+import { Bot, Clock, RefreshCw, Save, Undo2, User } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -10,8 +10,9 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getEmailCampaigns, updateEmailCampaignConfig, assignBookingProcessToCampaign } from "@/actions/email-campaign-actions"
+import { getEmailCampaigns, updateEmailCampaignConfig, assignBookingProcessToCampaign, assignPersonaToCampaign } from "@/actions/email-campaign-actions"
 import { listBookingProcesses, type BookingProcessSummary } from "@/actions/booking-process-actions"
+import { listAiPersonas, type AiPersonaSummary } from "@/actions/ai-persona-actions"
 import type { CampaignResponseMode } from "@prisma/client"
 
 type CampaignRow = {
@@ -23,6 +24,8 @@ type CampaignRow = {
   autoSendConfidenceThreshold: number
   bookingProcessId: string | null
   bookingProcessName: string | null
+  aiPersonaId: string | null
+  aiPersonaName: string | null
 }
 
 function clamp01(value: number): number {
@@ -36,7 +39,8 @@ function areEqual(a: CampaignRow, b: CampaignRow): boolean {
   return (
     a.responseMode === b.responseMode &&
     Math.abs((a.autoSendConfidenceThreshold ?? 0) - (b.autoSendConfidenceThreshold ?? 0)) < 0.00001 &&
-    a.bookingProcessId === b.bookingProcessId
+    a.bookingProcessId === b.bookingProcessId &&
+    a.aiPersonaId === b.aiPersonaId
   )
 }
 
@@ -44,6 +48,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
   const [rows, setRows] = useState<CampaignRow[]>([])
   const [baselineById, setBaselineById] = useState<Record<string, CampaignRow>>({})
   const [bookingProcesses, setBookingProcesses] = useState<BookingProcessSummary[]>([])
+  const [personas, setPersonas] = useState<AiPersonaSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [savingIds, setSavingIds] = useState<Record<string, boolean>>({})
 
@@ -52,15 +57,17 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       setRows([])
       setBaselineById({})
       setBookingProcesses([])
+      setPersonas([])
       return
     }
 
     setLoading(true)
 
-    // Load campaigns and booking processes in parallel
-    const [campaignsRes, bookingRes] = await Promise.all([
+    // Load campaigns, booking processes, and personas in parallel
+    const [campaignsRes, bookingRes, personasRes] = await Promise.all([
       getEmailCampaigns(activeWorkspace),
       listBookingProcesses(activeWorkspace),
+      listAiPersonas(activeWorkspace),
     ])
 
     if (!campaignsRes.success || !campaignsRes.data) {
@@ -73,6 +80,10 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       setBookingProcesses(bookingRes.data)
     }
 
+    if (personasRes.success && personasRes.data) {
+      setPersonas(personasRes.data)
+    }
+
     const nextRows: CampaignRow[] = campaignsRes.data.map((c) => ({
       id: c.id,
       name: c.name,
@@ -82,6 +93,8 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold ?? 0.9,
       bookingProcessId: c.bookingProcessId,
       bookingProcessName: c.bookingProcessName,
+      aiPersonaId: c.aiPersonaId,
+      aiPersonaName: c.aiPersonaName,
     }))
 
     const nextBaseline: Record<string, CampaignRow> = {}
@@ -138,6 +151,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       row.responseMode !== baseline.responseMode ||
       Math.abs((row.autoSendConfidenceThreshold ?? 0) - (baseline.autoSendConfidenceThreshold ?? 0)) >= 0.00001
     const bookingProcessChanged = row.bookingProcessId !== baseline.bookingProcessId
+    const personaChanged = row.aiPersonaId !== baseline.aiPersonaId
 
     let nextRow = { ...row }
 
@@ -170,6 +184,20 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
 
       nextRow.bookingProcessId = res.data.bookingProcessId
       nextRow.bookingProcessName = res.data.bookingProcessName
+    }
+
+    // Save AI persona if changed
+    if (personaChanged) {
+      const res = await assignPersonaToCampaign(row.id, row.aiPersonaId)
+
+      if (!res.success || !res.data) {
+        toast.error(res.error || "Failed to assign AI persona")
+        setSavingIds((prev) => ({ ...prev, [id]: false }))
+        return
+      }
+
+      nextRow.aiPersonaId = res.data.aiPersonaId
+      nextRow.aiPersonaName = res.data.aiPersonaName
     }
 
     setRows((prev) => prev.map((r) => (r.id === id ? nextRow : r)))
@@ -245,6 +273,12 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                   <div className="flex items-center gap-1.5">
                     <Clock className="h-4 w-4" />
                     <span>Booking Process</span>
+                  </div>
+                </TableHead>
+                <TableHead>
+                  <div className="flex items-center gap-1.5">
+                    <User className="h-4 w-4" />
+                    <span>AI Persona</span>
                   </div>
                 </TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -350,6 +384,41 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                           <span>Controls how AI offers booking</span>
                         ) : (
                           <span>AI drafts without booking guidance</span>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="min-w-[180px]">
+                      <Select
+                        value={row.aiPersonaId ?? "default"}
+                        onValueChange={(v) => {
+                          const personaId = v === "default" ? null : v
+                          const persona = personas.find((p) => p.id === personaId)
+                          updateRow(row.id, {
+                            aiPersonaId: personaId,
+                            aiPersonaName: persona?.name ?? null,
+                          })
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Default">
+                            {row.aiPersonaName ?? "Default"}
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="default">Default (Workspace)</SelectItem>
+                          {personas.map((p) => (
+                            <SelectItem key={p.id} value={p.id}>
+                              {p.name}
+                              {p.isDefault && " ★"}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {row.aiPersonaId ? (
+                          <span>Custom persona for this campaign</span>
+                        ) : (
+                          <span>Uses workspace default persona</span>
                         )}
                       </div>
                     </TableCell>

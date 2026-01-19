@@ -159,6 +159,7 @@ model Client {
   insightChatUserPreferences InsightChatUserPreference[]
   insightChatAuditEvents InsightChatAuditEvent[]
   bookingProcesses BookingProcess[]
+  aiPersonas AiPersona[]           // AI personas for draft generation (Phase 39)
 
   @@index([userId])
 }
@@ -772,12 +773,16 @@ model EmailCampaign {
   bookingProcessId String?
   bookingProcess   BookingProcess? @relation(fields: [bookingProcessId], references: [id], onDelete: SetNull)
   bookingProgress  LeadCampaignBookingProgress[]  // Booking wave tracking for leads in this campaign
+  // AI Persona assignment (Phase 39)
+  aiPersonaId      String?
+  aiPersona        AiPersona? @relation(fields: [aiPersonaId], references: [id], onDelete: SetNull)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   @@unique([clientId, bisonCampaignId])
   @@index([clientId])
   @@index([bookingProcessId])
+  @@index([aiPersonaId])
 }
 
 // Knowledge assets for AI context (uploaded files, text snippets)
@@ -1161,4 +1166,42 @@ model LeadCampaignBookingProgress {
   @@index([activeBookingProcessId])
   @@index([currentWave])
   @@index([smsDndHeldSince])  // For cron retry queries
+}
+
+// =============================================================================
+// AI Personas (Phase 39)
+// =============================================================================
+
+// Reusable AI persona definition per workspace
+// Defines how the AI communicates: name, tone, greeting, signature, goals, etc.
+model AiPersona {
+  id          String   @id @default(uuid())
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  name        String                    // Display name (e.g., "Direct Sales Rep", "Consultative Advisor")
+  isDefault   Boolean  @default(false)  // One default per workspace
+
+  // Communication style
+  personaName       String?             // AI display name in messages (e.g., "Sarah")
+  tone              String   @default("friendly-professional")
+  greeting          String?             // Email greeting (e.g., "Hi {firstName},")
+  smsGreeting       String?             // SMS greeting (falls back to greeting)
+  signature         String?  @db.Text   // Email signature block
+
+  // Strategy & context
+  goals             String?  @db.Text   // AI goals & strategy
+  serviceDescription String? @db.Text   // Business/service description
+  idealCustomerProfile String? @db.Text // ICP for lead scoring context
+
+  // Relations
+  campaigns   EmailCampaign[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?                   // Supabase Auth user ID who created
+
+  @@unique([clientId, name])            // Unique persona names per workspace
+  @@index([clientId])
+  @@index([clientId, isDefault])        // Fast lookup for default persona
 }

@@ -20,6 +20,9 @@ interface EmailCampaignData {
   autoSendConfidenceThreshold: number;
   bookingProcessId: string | null;
   bookingProcessName: string | null;
+  // AI Persona assignment (Phase 39)
+  aiPersonaId: string | null;
+  aiPersonaName: string | null;
   createdAt: Date;
 }
 
@@ -40,6 +43,9 @@ export async function getEmailCampaigns(clientId?: string): Promise<{
         bookingProcess: {
           select: { id: true, name: true },
         },
+        aiPersona: {
+          select: { id: true, name: true },
+        },
         _count: {
           select: { leads: true },
         },
@@ -58,6 +64,8 @@ export async function getEmailCampaigns(clientId?: string): Promise<{
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold,
       bookingProcessId: c.bookingProcess?.id ?? null,
       bookingProcessName: c.bookingProcess?.name ?? null,
+      aiPersonaId: c.aiPersona?.id ?? null,
+      aiPersonaName: c.aiPersona?.name ?? null,
       createdAt: c.createdAt,
     }));
 
@@ -446,6 +454,85 @@ export async function assignBookingProcessToCampaign(
     return {
       success: false,
       error: error instanceof Error ? error.message : "Failed to assign booking process",
+    };
+  }
+}
+
+// ----------------------------------------------------------------------------
+// AI Persona Assignment (Phase 39)
+// ----------------------------------------------------------------------------
+
+export async function assignPersonaToCampaign(
+  emailCampaignId: string,
+  personaId: string | null
+): Promise<{
+  success: boolean;
+  data?: { aiPersonaId: string | null; aiPersonaName: string | null };
+  error?: string;
+}> {
+  try {
+    const campaign = await prisma.emailCampaign.findUnique({
+      where: { id: emailCampaignId },
+      select: { clientId: true },
+    });
+
+    if (!campaign) {
+      return { success: false, error: "Email campaign not found" };
+    }
+
+    await requireClientAdminAccess(campaign.clientId);
+
+    // Validate persona belongs to same client
+    if (personaId) {
+      const persona = await prisma.aiPersona.findUnique({
+        where: { id: personaId },
+        select: { id: true, name: true, clientId: true },
+      });
+
+      if (!persona) {
+        return { success: false, error: "AI persona not found" };
+      }
+
+      if (persona.clientId !== campaign.clientId) {
+        return { success: false, error: "AI persona does not belong to this workspace" };
+      }
+
+      await prisma.emailCampaign.update({
+        where: { id: emailCampaignId },
+        data: { aiPersonaId: personaId },
+      });
+
+      revalidatePath("/");
+
+      return {
+        success: true,
+        data: {
+          aiPersonaId: persona.id,
+          aiPersonaName: persona.name,
+        },
+      };
+    }
+
+    // Unassign persona (revert to workspace default)
+    await prisma.emailCampaign.update({
+      where: { id: emailCampaignId },
+      data: { aiPersonaId: null },
+    });
+
+    revalidatePath("/");
+
+    return {
+      success: true,
+      data: {
+        aiPersonaId: null,
+        aiPersonaName: null,
+      },
+    };
+  } catch (error) {
+    console.error("[EmailCampaign] Failed to assign persona:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to assign AI persona",
     };
   }
 }

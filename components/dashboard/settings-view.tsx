@@ -55,6 +55,7 @@ import { IntegrationsManager } from "./settings/integrations-manager"
 import { AiCampaignAssignmentPanel } from "./settings/ai-campaign-assignment"
 import { BookingProcessManager } from "./settings/booking-process-manager"
 import { BookingProcessAnalytics } from "./settings/booking-process-analytics"
+import { AiPersonaManager } from "./settings/ai-persona-manager"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { getWorkspaceAdminStatus } from "@/actions/access-actions"
 	import { 
@@ -1282,6 +1283,29 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     Used in messages as {"{result}"} - e.g., &quot;in case you were still interested in {"{result}"}&quot;
                   </p>
                 </div>
+
+                <Separator />
+
+                {/* ICP - Ideal Customer Profile (Phase 39g - workspace-level) */}
+                <div className="space-y-2">
+                  <Label htmlFor="idealCustomerProfile" className="flex items-center gap-2">
+                    <Users className="h-4 w-4" />
+                    Ideal Customer Profile (ICP)
+                  </Label>
+                  <Textarea
+                    id="idealCustomerProfile"
+                    placeholder="Job titles, company size, industry, pain points, buying signals..."
+                    value={aiPersona.idealCustomerProfile}
+                    onChange={(e) => {
+                      setAiPersona({ ...aiPersona, idealCustomerProfile: e.target.value })
+                      handleChange()
+                    }}
+                    rows={4}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Describes your ideal buyer persona. Used by lead scoring to assess fit and intent.
+                  </p>
+                </div>
               </CardContent>
             </Card>
 
@@ -1985,171 +2009,21 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
           {/* AI Personality */}
           <TabsContent value="ai" className="space-y-6">
+            {/* AI Personas Manager (Phase 39) */}
+            <AiPersonaManager activeWorkspace={activeWorkspace} />
+
+            {/* Workspace-Level Settings Card (Qualification Questions, Knowledge Assets) */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Bot className="h-5 w-5" />
-                  AI Persona Configuration
+                  <HelpCircle className="h-5 w-5" />
+                  Workspace Settings
                 </CardTitle>
-                <CardDescription>Customize how the AI represents you in outreach</CardDescription>
+                <CardDescription>
+                  Settings shared across all personas (qualification questions, knowledge assets)
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="aiName">AI Display Name</Label>
-                    <Input
-                      id="aiName"
-                      value={aiPersona.name}
-                      onChange={(e) => {
-                        setAiPersona({ ...aiPersona, name: e.target.value })
-                        handleChange()
-                      }}
-                      placeholder="Your name for outreach"
-                    />
-                    <p className="text-xs text-muted-foreground">The name used in outreach messages</p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Communication Tone</Label>
-                    <Select 
-                      value={aiPersona.tone} 
-                      onValueChange={(v) => {
-                        setAiPersona({ ...aiPersona, tone: v })
-                        handleChange()
-                      }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="friendly-professional">Friendly Professional</SelectItem>
-                        <SelectItem value="professional">Professional</SelectItem>
-                        <SelectItem value="friendly">Friendly</SelectItem>
-                        <SelectItem value="casual">Casual</SelectItem>
-                        <SelectItem value="formal">Formal</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="greeting" className="flex items-center gap-2">
-                      <Mail className="h-4 w-4" />
-                      Email Greeting
-                    </Label>
-                    <Input
-                      id="greeting"
-                      value={aiPersona.greeting}
-                      onChange={(e) => {
-                        setAiPersona({ ...aiPersona, greeting: e.target.value })
-                        handleChange()
-                      }}
-                      placeholder="Hi {firstName},"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Opening line for email messages
-                    </p>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="smsGreeting" className="flex items-center gap-2">
-                      <MessageSquare className="h-4 w-4" />
-                      SMS Greeting
-                    </Label>
-                    <Input
-                      id="smsGreeting"
-                      value={aiPersona.smsGreeting}
-                      onChange={(e) => {
-                        setAiPersona({ ...aiPersona, smsGreeting: e.target.value })
-                        handleChange()
-                      }}
-                      placeholder="Hi {firstName},"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Opening line for SMS messages
-                    </p>
-                  </div>
-                </div>
-                <p className="text-xs text-muted-foreground -mt-2">
-                  Use {"{firstName}"}, {"{lastName}"} as variables in greetings
-                </p>
-
-                <div className="space-y-2">
-                  <Label htmlFor="signature">Email Signature</Label>
-                  <Textarea
-                    id="signature"
-                    value={aiPersona.signature}
-                    onChange={(e) => {
-                      setAiPersona({ ...aiPersona, signature: e.target.value })
-                      handleChange()
-                    }}
-                    rows={4}
-                    placeholder="Best regards,&#10;Your Name&#10;Company Name"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="aiGoals">AI Goals & Strategy</Label>
-                  <Textarea
-                    id="aiGoals"
-                    value={aiPersona.goals}
-                    onChange={(e) => {
-                      setAiPersona({ ...aiPersona, goals: e.target.value })
-                      handleChange()
-                    }}
-                    rows={4}
-                    placeholder="Example: Prioritize booking intro calls within 7 days; keep tone consultative; surface upsell opportunities."
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Describe the goals/strategy the AI should prioritize. Combined with sentiment to choose responses.
-                  </p>
-                </div>
-
-                <Separator />
-
-                {/* Service Description */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Briefcase className="h-5 w-5 text-primary" />
-                    <h4 className="font-semibold">Service Description</h4>
-                  </div>
-                  <Textarea
-                    id="serviceDescription"
-                    value={aiPersona.serviceDescription}
-                    onChange={(e) => {
-                      setAiPersona({ ...aiPersona, serviceDescription: e.target.value })
-                      handleChange()
-                    }}
-                    rows={6}
-                    placeholder="Describe your business, services, and value proposition. This helps the AI understand what you offer and communicate it effectively to leads.&#10;&#10;Example: We are a B2B SaaS company providing AI-powered sales automation tools. Our main product helps sales teams automate follow-ups, qualify leads, and book more meetings."
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Provide detailed context about your business so the AI can tailor responses appropriately.
-                  </p>
-                </div>
-
-                {/* Ideal Customer Profile (ICP) - Phase 33 */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Target className="h-5 w-5 text-primary" />
-                    <h4 className="font-semibold">Ideal Customer Profile (ICP)</h4>
-                  </div>
-                  <Textarea
-                    id="idealCustomerProfile"
-                    value={aiPersona.idealCustomerProfile}
-                    onChange={(e) => {
-                      setAiPersona({ ...aiPersona, idealCustomerProfile: e.target.value })
-                      handleChange()
-                    }}
-                    rows={4}
-                    placeholder="Describe your ideal customer profile for lead scoring. Include job titles, company size, industry, pain points, and buying signals.&#10;&#10;Example: VP/Director of Sales at B2B SaaS companies with 50-500 employees. They struggle with slow response times and inconsistent follow-ups. High-intent signals: mentions specific pain points, asks about pricing, or requests a demo."
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Used by the AI to score leads (1-4) based on fit and intent. Leave blank to use general scoring criteria.
-                  </p>
-                </div>
-
-                <Separator />
-
                 {/* Qualification Questions */}
                 <div className="space-y-4">
                   <div className="flex items-center gap-2">
