@@ -5,7 +5,7 @@ import { BackgroundJobType } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { extractJsonObjectFromText, getTrimmedOutputText } from "@/lib/ai/response-utils";
+import { extractFirstCompleteJsonObjectFromText, getTrimmedOutputText } from "@/lib/ai/response-utils";
 import { buildSentimentTranscriptFromMessages } from "@/lib/sentiment";
 
 // ============================================================================
@@ -189,7 +189,7 @@ export async function scoreLeadFromConversation(
       ? `...[earlier messages truncated]...\n\n${transcript.slice(-maxTranscriptChars)}`
       : transcript;
 
-  const maxRetries = opts.maxRetries ?? 2;
+  const maxRetries = opts.maxRetries ?? 3;
   const model = "gpt-5-nano";
 
   const userPrompt = buildScoringUserPrompt({
@@ -202,8 +202,8 @@ export async function scoreLeadFromConversation(
     model,
     instructions: LEAD_SCORING_SYSTEM_PROMPT,
     input: [{ role: "user", content: userPrompt }] as const,
-    min: 256,
-    max: 800,
+    min: 400, // Increased from 256 to prevent truncation
+    max: 1000, // Increased from 800
     overheadTokens: 128,
     outputScale: 0.1,
     preferApiCount: true,
@@ -221,12 +221,44 @@ export async function scoreLeadFromConversation(
     required: ["fitScore", "intentScore", "overallScore", "reasoning"],
   } as const;
 
+  function isRetryableLeadScoringError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+
+    // OpenAI SDK errors typically expose `status` for HTTP errors.
+    const status = (error as unknown as { status?: unknown }).status;
+    if (typeof status === "number") {
+      // Retry typical transient statuses.
+      if ([429, 500, 502, 503, 504].includes(status)) return true;
+    }
+
+    if (error instanceof SyntaxError) return true; // Often caused by truncated/incomplete JSON output.
+
+    const message = error.message.toLowerCase();
+    return (
+      message.includes("429") ||
+      message.includes("rate") ||
+      message.includes("timeout") ||
+      message.includes("timed out") ||
+      message.includes("connection error") ||
+      message.includes("socket hang up") ||
+      message.includes("econnreset") ||
+      message.includes("etimedout") ||
+      message.includes("eai_again") ||
+      message.includes("enotfound") ||
+      message.includes("503") ||
+      message.includes("502") ||
+      message.includes("504") ||
+      message.includes("500")
+    );
+  }
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const timeoutMs = Math.max(
         5_000,
         Number.parseInt(process.env.OPENAI_LEAD_SCORING_TIMEOUT_MS || "20000", 10) || 20_000
       );
+      const attemptTimeoutMs = timeoutMs + (attempt - 1) * 5_000;
 
       const { response } = await runResponseWithInteraction({
         clientId: opts.clientId,
@@ -238,7 +270,7 @@ export async function scoreLeadFromConversation(
           instructions: LEAD_SCORING_SYSTEM_PROMPT,
           input: [{ role: "user", content: userPrompt }] as const,
           reasoning: { effort: "low" },
-          max_output_tokens: Math.min(baseBudget.maxOutputTokens + (attempt - 1) * 200, 1200),
+          max_output_tokens: Math.min(baseBudget.maxOutputTokens + (attempt - 1) * 250, 1500),
           text: {
             verbosity: "low",
             format: {
@@ -250,7 +282,7 @@ export async function scoreLeadFromConversation(
           },
         },
         requestOptions: {
-          timeout: timeoutMs,
+          timeout: attemptTimeoutMs,
           maxRetries: 0,
         },
       });
@@ -261,8 +293,23 @@ export async function scoreLeadFromConversation(
         return null;
       }
 
-      const jsonText = extractJsonObjectFromText(raw);
-      const parsed = JSON.parse(jsonText) as {
+      const extracted = extractFirstCompleteJsonObjectFromText(raw);
+
+      // If JSON is incomplete (truncated), retry with more tokens
+      if (extracted.status === "incomplete") {
+        console.warn(
+          `[Lead Scoring] Lead ${opts.leadId} got incomplete JSON (attempt ${attempt}/${maxRetries}), retrying with more tokens`
+        );
+        if (attempt < maxRetries) continue;
+        return null;
+      }
+
+      if (extracted.status === "none" || !extracted.json) {
+        if (attempt < maxRetries) continue;
+        return null;
+      }
+
+      const parsed = JSON.parse(extracted.json) as {
         fitScore?: number;
         intentScore?: number;
         overallScore?: number;
@@ -295,14 +342,12 @@ export async function scoreLeadFromConversation(
         reasoning: reasoning.slice(0, 500), // Cap reasoning length
       };
     } catch (error) {
-      const isRetryable =
-        error instanceof Error &&
-        (error.message.includes("500") ||
-          error.message.includes("503") ||
-          error.message.toLowerCase().includes("rate") ||
-          error.message.toLowerCase().includes("timeout"));
+      const isRetryable = isRetryableLeadScoringError(error);
 
       if (isRetryable && attempt < maxRetries) {
+        console.warn(
+          `[Lead Scoring] Lead ${opts.leadId} retryable error (attempt ${attempt}/${maxRetries}): ${error instanceof Error ? error.message : error}`
+        );
         await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
         continue;
       }

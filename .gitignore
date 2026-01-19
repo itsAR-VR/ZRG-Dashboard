@@ -35,6 +35,7 @@ ZRG Dashboard Logs*.json
 .rerun-sentiment-neutral-or-new.state.json
 .rerun-sentiment-neutral-or-new.state.json.bak.*
 .backfill-lead-scoring.state.json
+.backfill-lead-scoring.state.json.bak.*
 
 # local AI/editor tooling
 .claude/
