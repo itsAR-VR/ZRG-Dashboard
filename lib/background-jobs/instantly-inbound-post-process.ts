@@ -24,6 +24,7 @@ import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
+import { maybeAssignLead } from "@/lib/lead-assignment";
 
 function mapInboxClassificationToSentimentTag(classification: string): SentimentTag {
   switch (classification) {
@@ -188,6 +189,14 @@ export async function runInstantlyInboundPostProcessJob(params: {
   });
 
   console.log("[Instantly Post-Process] Sentiment:", sentimentTag, "Status:", leadStatus);
+
+  // 3b. Round-robin lead assignment (Phase 43)
+  // Assign lead to next setter if sentiment is positive and not already assigned
+  await maybeAssignLead({
+    leadId: lead.id,
+    clientId: client.id,
+    sentimentTag,
+  });
 
   // 4. Apply Auto Follow-Up Policy
   await applyAutoFollowUpPolicyOnInboundEmail({ clientId: client.id, leadId: lead.id, sentimentTag });

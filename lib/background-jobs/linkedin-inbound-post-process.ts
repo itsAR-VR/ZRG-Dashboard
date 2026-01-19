@@ -11,6 +11,7 @@ import { pauseFollowUpsOnReply, resumeAwaitingEnrichmentFollowUpsForLead } from 
 import { toStoredPhone } from "@/lib/phone-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
+import { maybeAssignLead } from "@/lib/lead-assignment";
 
 export async function runLinkedInInboundPostProcessJob(params: {
   clientId: string;
@@ -150,6 +151,19 @@ export async function runLinkedInInboundPostProcessJob(params: {
   } else {
     console.log(`[LinkedIn Post-Process] Sentiment already analyzed: ${currentSentiment}`);
   }
+
+  // 2b. Round-robin lead assignment (Phase 43)
+  // Assign lead to next setter if sentiment is positive and not already assigned
+  const finalSentiment = (await prisma.lead.findUnique({
+    where: { id: lead.id },
+    select: { sentimentTag: true },
+  }))?.sentimentTag ?? null;
+
+  await maybeAssignLead({
+    leadId: lead.id,
+    clientId: client.id,
+    sentimentTag: finalSentiment,
+  });
 
   // 3. Pause Follow-Ups on Reply
   await pauseFollowUpsOnReply(lead.id);

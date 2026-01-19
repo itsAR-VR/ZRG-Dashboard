@@ -1086,3 +1086,130 @@ export async function getEmailCampaignAnalytics(opts?: {
     return { success: false, error: error instanceof Error ? error.message : "Failed to fetch email campaign analytics" };
   }
 }
+
+// ============================================================================
+// Phase 43: Per-Setter Funnel Analytics
+// ============================================================================
+
+export interface SetterFunnelStats {
+  userId: string;
+  email: string;
+  // Volume metrics
+  assignedLeadsCount: number;
+  respondedLeadsCount: number; // Leads with at least one outbound message (any user)
+  // Conversion funnel
+  positiveLeadsCount: number; // Leads with positive sentiment
+  meetingsRequestedCount: number; // "Meeting Requested" or "Call Requested"
+  meetingsBookedCount: number; // Has appointmentBookedAt or ghlAppointmentId
+  // Rates (0-1)
+  responseRate: number; // respondedLeadsCount / assignedLeadsCount
+  positiveRate: number; // positiveLeadsCount / assignedLeadsCount
+  meetingRequestRate: number; // meetingsRequestedCount / assignedLeadsCount
+  bookingRate: number; // meetingsBookedCount / assignedLeadsCount
+  requestToBookRate: number; // meetingsBookedCount / meetingsRequestedCount
+}
+
+/**
+ * Get per-setter funnel analytics for a workspace.
+ *
+ * Tracks each setter's full conversion funnel:
+ * Assigned → Responded → Positive → Meeting Requested → Meeting Booked
+ */
+export async function getSetterFunnelAnalytics(
+  clientId: string
+): Promise<{ success: true; data: SetterFunnelStats[] } | { success: false; error: string }> {
+  try {
+    const scope = await resolveClientScope(clientId);
+    if (!scope.clientIds.includes(clientId)) {
+      return { success: false, error: "Unauthorized" };
+    }
+
+    // Get all setters for this workspace
+    const setters = await prisma.clientMember.findMany({
+      where: { clientId, role: "SETTER" },
+      select: { userId: true },
+    });
+
+    if (setters.length === 0) {
+      return { success: true, data: [] };
+    }
+
+    // Fetch emails from Supabase auth
+    const setterIds = setters.map((s) => s.userId);
+    const emailMap = await getSupabaseUserEmailsByIds(setterIds);
+
+    const results: SetterFunnelStats[] = [];
+
+    // Positive sentiment tags (reuse from sentiment-shared)
+    const positiveSentiments = [...POSITIVE_SENTIMENTS] as string[];
+
+    for (const setter of setters) {
+      // Get assigned leads with aggregated stats
+      const assignedLeads = await prisma.lead.findMany({
+        where: {
+          clientId,
+          assignedToUserId: setter.userId,
+        },
+        select: {
+          id: true,
+          sentimentTag: true,
+          appointmentBookedAt: true,
+          ghlAppointmentId: true,
+          _count: {
+            select: {
+              messages: {
+                where: { direction: "outbound" },
+              },
+            },
+          },
+        },
+      });
+
+      const assignedCount = assignedLeads.length;
+
+      // Responded = leads with at least one outbound message
+      const respondedCount = assignedLeads.filter((l) => l._count.messages > 0).length;
+
+      // Positive sentiment
+      const positiveCount = assignedLeads.filter(
+        (l) => l.sentimentTag && positiveSentiments.includes(l.sentimentTag)
+      ).length;
+
+      // Meeting requested
+      const meetingRequestedCount = assignedLeads.filter(
+        (l) => l.sentimentTag === "Meeting Requested" || l.sentimentTag === "Call Requested"
+      ).length;
+
+      // Booked (either ZRG booking or GHL appointment)
+      const bookedCount = assignedLeads.filter(
+        (l) => l.appointmentBookedAt !== null || l.ghlAppointmentId !== null
+      ).length;
+
+      // Calculate rates (avoid division by zero)
+      const safeDiv = (num: number, denom: number) => (denom > 0 ? num / denom : 0);
+
+      results.push({
+        userId: setter.userId,
+        email: emailMap.get(setter.userId) ?? "Unknown",
+        assignedLeadsCount: assignedCount,
+        respondedLeadsCount: respondedCount,
+        positiveLeadsCount: positiveCount,
+        meetingsRequestedCount: meetingRequestedCount,
+        meetingsBookedCount: bookedCount,
+        responseRate: safeDiv(respondedCount, assignedCount),
+        positiveRate: safeDiv(positiveCount, assignedCount),
+        meetingRequestRate: safeDiv(meetingRequestedCount, assignedCount),
+        bookingRate: safeDiv(bookedCount, assignedCount),
+        requestToBookRate: safeDiv(bookedCount, meetingRequestedCount),
+      });
+    }
+
+    // Sort by assigned count descending (most active setters first)
+    results.sort((a, b) => b.assignedLeadsCount - a.assignedLeadsCount);
+
+    return { success: true, data: results };
+  } catch (error) {
+    console.error("[getSetterFunnelAnalytics] Failed:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to fetch setter analytics" };
+  }
+}

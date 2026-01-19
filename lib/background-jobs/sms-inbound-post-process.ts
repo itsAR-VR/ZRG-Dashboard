@@ -15,6 +15,7 @@ import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
+import { maybeAssignLead } from "@/lib/lead-assignment";
 
 export async function runSmsInboundPostProcessJob(params: {
   clientId: string;
@@ -188,6 +189,19 @@ export async function runSmsInboundPostProcessJob(params: {
   } else {
     console.log(`[SMS Post-Process] Sentiment already analyzed: ${currentSentiment}`);
   }
+
+  // 3b. Round-robin lead assignment (Phase 43)
+  // Assign lead to next setter if sentiment is positive and not already assigned
+  const finalSentiment = (await prisma.lead.findUnique({
+    where: { id: lead.id },
+    select: { sentimentTag: true },
+  }))?.sentimentTag ?? null;
+
+  await maybeAssignLead({
+    leadId: lead.id,
+    clientId: client.id,
+    sentimentTag: finalSentiment,
+  });
 
   // 4. Pause Follow-Ups on Reply
   // Any inbound reply pauses active follow-up sequences
