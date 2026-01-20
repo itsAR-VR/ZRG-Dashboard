@@ -58,6 +58,12 @@ import { BookingProcessAnalytics } from "./settings/booking-process-analytics"
 import { AiPersonaManager } from "./settings/ai-persona-manager"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { getWorkspaceAdminStatus } from "@/actions/access-actions"
+import {
+  getClientEmailBisonBaseHost,
+  getEmailBisonBaseHosts,
+  setClientEmailBisonBaseHost,
+  type EmailBisonBaseHostRow,
+} from "@/actions/emailbison-base-host-actions"
 	import { 
 	  getUserSettings, 
 	  updateUserSettings, 
@@ -266,6 +272,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [canViewAiObs, setCanViewAiObs] = useState(false)
   const [aiObsError, setAiObsError] = useState<string | null>(null)
 
+  // EmailBison base host (per active workspace)
+  const [emailBisonBaseHosts, setEmailBisonBaseHosts] = useState<EmailBisonBaseHostRow[]>([])
+  const [emailBisonBaseHostId, setEmailBisonBaseHostId] = useState<string>("")
+  const [emailBisonBaseHostLoading, setEmailBisonBaseHostLoading] = useState(false)
+  const [emailBisonBaseHostSaving, setEmailBisonBaseHostSaving] = useState(false)
+  const [emailBisonBaseHostError, setEmailBisonBaseHostError] = useState<string | null>(null)
+
   const [aiPromptsOpen, setAiPromptsOpen] = useState(false)
   const [aiPromptTemplates, setAiPromptTemplates] = useState<AiPromptTemplatePublic[] | null>(null)
   const [aiPromptsLoading, setAiPromptsLoading] = useState(false)
@@ -418,6 +431,71 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
     loadSettings()
   }, [activeWorkspace])
+
+  // Load EmailBison base host state for the active workspace
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadEmailBisonBaseHost() {
+      if (!activeWorkspace) {
+        setEmailBisonBaseHostId("")
+        setEmailBisonBaseHostError(null)
+        return
+      }
+
+      setEmailBisonBaseHostLoading(true)
+      setEmailBisonBaseHostError(null)
+
+      const [hostsRes, currentRes] = await Promise.all([
+        getEmailBisonBaseHosts(),
+        getClientEmailBisonBaseHost(activeWorkspace),
+      ])
+
+      if (cancelled) return
+
+      if (hostsRes.success && hostsRes.data) {
+        setEmailBisonBaseHosts(hostsRes.data)
+      }
+
+      if (currentRes.success && currentRes.data) {
+        setEmailBisonBaseHostId(currentRes.data.baseHostId || "")
+      } else {
+        setEmailBisonBaseHostId("")
+        if (currentRes.error) setEmailBisonBaseHostError(currentRes.error)
+      }
+
+      setEmailBisonBaseHostLoading(false)
+    }
+
+    loadEmailBisonBaseHost()
+    return () => {
+      cancelled = true
+    }
+  }, [activeWorkspace])
+
+  async function handleSaveEmailBisonBaseHost() {
+    if (!activeWorkspace) return
+    if (!isWorkspaceAdmin) {
+      toast.error("Only workspace admins can change the EmailBison base host")
+      return
+    }
+
+    setEmailBisonBaseHostSaving(true)
+    try {
+      const res = await setClientEmailBisonBaseHost(activeWorkspace, emailBisonBaseHostId || null)
+      if (res.success) {
+        toast.success("EmailBison base host updated")
+        const refreshed = await getClientEmailBisonBaseHost(activeWorkspace)
+        if (refreshed.success && refreshed.data) {
+          setEmailBisonBaseHostId(refreshed.data.baseHostId || "")
+        }
+      } else {
+        toast.error(res.error || "Failed to update EmailBison base host")
+      }
+    } finally {
+      setEmailBisonBaseHostSaving(false)
+    }
+  }
 
   const refreshAiObservability = useCallback(async () => {
     if (!activeWorkspace) {
@@ -1463,6 +1541,71 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           <TabsContent value="integrations" className="space-y-6">
             {/* GHL Workspaces - Dynamic Multi-Tenancy */}
             <IntegrationsManager onWorkspacesChange={onWorkspacesChange} />
+
+            {/* EmailBison base host (per workspace) */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Mail className="h-5 w-5" />
+                  EmailBison Base Host
+                </CardTitle>
+                <CardDescription>
+                  Required for white-label EmailBison accounts. Set the correct send domain for the selected workspace.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {!activeWorkspace ? (
+                  <p className="text-sm text-muted-foreground">Select a workspace to configure EmailBison.</p>
+                ) : !isWorkspaceAdmin ? (
+                  <p className="text-sm text-muted-foreground">Only workspace admins can change this setting.</p>
+                ) : (
+                  <>
+                    {emailBisonBaseHostError && (
+                      <div className="text-sm text-destructive">{emailBisonBaseHostError}</div>
+                    )}
+
+                    <div className="space-y-2">
+                      <Label>EmailBison Base Host</Label>
+                      <Select value={emailBisonBaseHostId} onValueChange={setEmailBisonBaseHostId}>
+                        <SelectTrigger>
+                          <SelectValue
+                            placeholder={
+                              emailBisonBaseHostLoading ? "Loading…" : "Select a base host"
+                            }
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="">Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)</SelectItem>
+                          {emailBisonBaseHosts.map((row) => (
+                            <SelectItem key={row.id} value={row.id}>
+                              {row.host}
+                              {row.label ? ` — ${row.label}` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        Example: Founders Club should use <code className="bg-background px-1 py-0.5 rounded">send.foundersclubsend.com</code>.
+                      </p>
+                    </div>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleSaveEmailBisonBaseHost}
+                      disabled={emailBisonBaseHostLoading || emailBisonBaseHostSaving}
+                    >
+                      {emailBisonBaseHostSaving ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Save className="h-4 w-4 mr-2" />
+                      )}
+                      Save
+                    </Button>
+                  </>
+                )}
+              </CardContent>
+            </Card>
 
             {/* Meeting Booking Configuration */}
             <Card>

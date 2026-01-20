@@ -89,6 +89,41 @@ export async function getEmailBisonBaseHosts(): Promise<{
   }
 }
 
+export async function getClientEmailBisonBaseHost(clientId: string): Promise<{
+  success: boolean;
+  data?: {
+    baseHostId: string | null;
+    host: string | null;
+    label: string | null;
+  };
+  error?: string;
+}> {
+  try {
+    await requireClientAdminAccess(clientId);
+    await ensureDefaultBaseHosts();
+
+    const client = await prisma.client.findUnique({
+      where: { id: clientId },
+      select: {
+        emailBisonBaseHostId: true,
+        emailBisonBaseHost: { select: { host: true, label: true } },
+      },
+    });
+    if (!client) return { success: false, error: "Workspace not found" };
+
+    return {
+      success: true,
+      data: {
+        baseHostId: client.emailBisonBaseHostId ?? null,
+        host: client.emailBisonBaseHost?.host ?? null,
+        label: client.emailBisonBaseHost?.label ?? null,
+      },
+    };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to load base host" };
+  }
+}
+
 export async function createEmailBisonBaseHost(input: {
   host: string;
   label?: string;

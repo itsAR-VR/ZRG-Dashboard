@@ -139,6 +139,14 @@ export async function ensureCalendlyWebhookSubscriptionForWorkspace(clientId: st
           await deleteCalendlyWebhookSubscription(client.calendlyAccessToken, subscriptionUri).catch(() => undefined);
           subscriptionUri = null;
           signingKey = null;
+        } else if (!client.calendlyWebhookSigningKey) {
+          // Subscription is valid but we have no local signing key stored.
+          // Calendly only returns signing_key on POST (creation), not on GET requests.
+          // Force recreation to capture the signing key.
+          console.log("[Calendly] Subscription exists but signing key missing locally; recreating webhook to capture signing key");
+          await deleteCalendlyWebhookSubscription(client.calendlyAccessToken, subscriptionUri).catch(() => undefined);
+          subscriptionUri = null;
+          signingKey = null;
         } else if (typeof existing.data.signing_key === "string" && existing.data.signing_key.trim()) {
           signingKey = existing.data.signing_key.trim();
         }

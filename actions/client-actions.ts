@@ -1,7 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { EmailIntegrationProvider, Prisma } from "@prisma/client";
+import { ClientMemberRole, EmailIntegrationProvider, Prisma } from "@prisma/client";
 import { requireAuthUser, getAccessibleClientIdsForUser, isGlobalAdminUser, requireClientAdminAccess } from "@/lib/workspace-access";
 import { revalidatePath } from "next/cache";
 import { ensureDefaultSequencesIncludeLinkedInStepsForClient } from "@/lib/followup-sequence-linkedin";
@@ -99,43 +99,52 @@ export async function getClients() {
     const clientIds = await getAccessibleClientIdsForUser(user.id);
     if (clientIds.length === 0) return { success: true, data: [] };
 
-    const clients = await prisma.client.findMany({
-      where: { id: { in: clientIds } },
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        name: true,
-        ghlLocationId: true,
-        ghlPrivateKey: true,
-        emailProvider: true,
-        emailBisonApiKey: true,
-        emailBisonWorkspaceId: true,
-        emailBisonBaseHostId: true,
-        smartLeadApiKey: true,
-        smartLeadWebhookSecret: true,
-        instantlyApiKey: true,
-        instantlyWebhookSecret: true,
-        unipileAccountId: true,
-        unipileConnectionStatus: true,
-        calendlyAccessToken: true,
-        calendlyWebhookSubscriptionUri: true,
-        createdAt: true,
-        settings: {
-          select: {
-            brandName: true,
-            brandLogoUrl: true,
+    const [clients, adminMemberships] = await Promise.all([
+      prisma.client.findMany({
+        where: { id: { in: clientIds } },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          name: true,
+          userId: true,
+          ghlLocationId: true,
+          ghlPrivateKey: true,
+          emailProvider: true,
+          emailBisonApiKey: true,
+          emailBisonWorkspaceId: true,
+          emailBisonBaseHostId: true,
+          smartLeadApiKey: true,
+          smartLeadWebhookSecret: true,
+          instantlyApiKey: true,
+          instantlyWebhookSecret: true,
+          unipileAccountId: true,
+          unipileConnectionStatus: true,
+          calendlyAccessToken: true,
+          calendlyWebhookSubscriptionUri: true,
+          createdAt: true,
+          settings: {
+            select: {
+              brandName: true,
+              brandLogoUrl: true,
+            },
+          },
+          calendarLinks: {
+            where: { isDefault: true },
+            select: { id: true },
+            take: 1,
+          },
+          _count: {
+            select: { leads: true },
           },
         },
-        calendarLinks: {
-          where: { isDefault: true },
-          select: { id: true },
-          take: 1,
-        },
-        _count: {
-          select: { leads: true },
-        },
-      },
-    });
+      }),
+      prisma.clientMember.findMany({
+        where: { userId: user.id, clientId: { in: clientIds }, role: ClientMemberRole.ADMIN },
+        select: { clientId: true },
+      }),
+    ]);
+    const adminClientIds = new Set(adminMemberships.map((row) => row.clientId));
+
     const withHealth = clients.map((client) => {
       const {
         calendarLinks,
@@ -148,12 +157,14 @@ export async function getClients() {
         instantlyApiKey,
         instantlyWebhookSecret,
         settings,
+        userId,
         ...rest
       } = client;
 
       const hasGhlLocationId = Boolean((client.ghlLocationId ?? "").trim());
       const hasGhlPrivateKey = Boolean((ghlPrivateKey ?? "").trim());
       const hasGhlIntegration = hasGhlLocationId && hasGhlPrivateKey;
+      const isWorkspaceAdmin = userId === user.id || adminClientIds.has(client.id);
       return {
         ...rest,
         hasDefaultCalendarLink: calendarLinks.length > 0,
@@ -180,6 +191,7 @@ export async function getClients() {
             (client.unipileAccountId ?? "").trim()
         ),
         unipileConnectionStatus: client.unipileConnectionStatus,
+        isWorkspaceAdmin,
       };
     });
     return { success: true, data: withHealth };

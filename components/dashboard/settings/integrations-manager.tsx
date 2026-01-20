@@ -50,6 +50,7 @@ interface Client {
   unipileAccountId: string | null;
   hasCalendlyAccessToken?: boolean;
   hasCalendlyWebhookSubscription?: boolean;
+  isWorkspaceAdmin: boolean;
   createdAt: Date;
   _count: {
     leads: number;
@@ -1166,7 +1167,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                         </div>
                         
                         {/* Configure/Edit Integrations button */}
-                        {isAdmin && (
+                        {client.isWorkspaceAdmin && (
                           <Button
                             variant="ghost"
                             size="sm"
