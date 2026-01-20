@@ -110,6 +110,8 @@ import { backfillNoResponseFollowUpsForAwaitingReplyLeads } from "@/actions/crm-
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
 
+const EMAILBISON_BASE_HOST_DEFAULT_VALUE = "__DEFAULT__"
+
 interface SettingsViewProps {
   activeWorkspace?: string | null
   activeTab?: string
@@ -1566,16 +1568,25 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
                     <div className="space-y-2">
                       <Label>EmailBison Base Host</Label>
-                      <Select value={emailBisonBaseHostId} onValueChange={setEmailBisonBaseHostId}>
+                      <Select
+                        value={emailBisonBaseHostId}
+                        onValueChange={(value) =>
+                          setEmailBisonBaseHostId(value === EMAILBISON_BASE_HOST_DEFAULT_VALUE ? "" : value)
+                        }
+                      >
                         <SelectTrigger>
                           <SelectValue
                             placeholder={
-                              emailBisonBaseHostLoading ? "Loading…" : "Select a base host"
+                              emailBisonBaseHostLoading
+                                ? "Loading…"
+                                : "Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)"
                             }
                           />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)</SelectItem>
+                          <SelectItem value={EMAILBISON_BASE_HOST_DEFAULT_VALUE}>
+                            Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)
+                          </SelectItem>
                           {emailBisonBaseHosts.map((row) => (
                             <SelectItem key={row.id} value={row.id}>
                               {row.host}

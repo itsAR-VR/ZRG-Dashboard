@@ -28,6 +28,8 @@ import { dispatchEmailCampaignsSynced } from "@/lib/client-events";
 import { toast } from "sonner";
 import type { EmailIntegrationProvider } from "@prisma/client";
 
+const EMAILBISON_BASE_HOST_DEFAULT_VALUE = "__DEFAULT__";
+
 interface Client {
   id: string;
   name: string;
@@ -1361,14 +1363,20 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                   <Select
                                     value={integrationsForm.emailBisonBaseHostId || ""}
                                     onValueChange={(value) =>
-                                      setIntegrationsForm({ ...integrationsForm, emailBisonBaseHostId: value })
+                                      setIntegrationsForm({
+                                        ...integrationsForm,
+                                        emailBisonBaseHostId:
+                                          value === EMAILBISON_BASE_HOST_DEFAULT_VALUE ? "" : value,
+                                      })
                                     }
                                   >
                                     <SelectTrigger size="sm" className="w-full">
                                       <SelectValue placeholder="Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)" />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      <SelectItem value="">Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)</SelectItem>
+                                      <SelectItem value={EMAILBISON_BASE_HOST_DEFAULT_VALUE}>
+                                        Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)
+                                      </SelectItem>
                                       {emailBisonBaseHosts.map((row) => (
                                         <SelectItem key={row.id} value={row.id}>
                                           {row.host}{row.label ? ` — ${row.label}` : ""}
