@@ -249,8 +249,12 @@ model Message {
 | `OPENAI_DRAFT_TIMEOUT_MS` | (Optional) Max time for AI draft generation (default `120000`) |
 | `OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS` | (Optional) Max time for AI draft generation inside webhooks (default `20000`) |
 | `OPENAI_DRAFT_TOKEN_BUDGET_MULTIPLIER` | (Optional) Output token budget multiplier for drafts (default `3`) |
-| `OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP` | (Optional) Hard cap for `max_output_tokens` on draft retries (default `8000`) |
+| `OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP` | (Optional) Hard cap for `max_output_tokens` on draft retries (default `12000`) |
 | `OPENAI_DRAFT_PREFER_API_TOKEN_COUNT` | (Optional) Use OpenAI input-tokens count API for sizing draft budgets (default `false`) |
+| `OPENAI_EMAIL_DRAFT_MIN_CHARS` | (Optional) Minimum characters for generated email drafts (default `220`) |
+| `OPENAI_EMAIL_DRAFT_MAX_CHARS` | (Optional) Maximum characters for generated email drafts (default `1200`) |
+| `OPENAI_EMAIL_GENERATION_MAX_ATTEMPTS` | (Optional) Max attempts for the email generation step when output is truncated (default `2`) |
+| `OPENAI_EMAIL_GENERATION_TOKEN_INCREMENT` | (Optional) Output token increment per email generation retry (default `2000`) |
 | `SUPABASE_KNOWLEDGE_ASSETS_BUCKET` | (Optional) Supabase Storage bucket name for Knowledge Asset uploads (default `knowledge-assets`) |
 | `KNOWLEDGE_ASSET_MAX_BYTES` | (Optional) Max upload size for Knowledge Asset files (default `12582912` = 12MB) |
 | `CRAWL4AI_SERVICE_URL` | (Optional) Crawl4AI HTTP service URL for best website extraction (recommended for prod) |
@@ -278,6 +282,7 @@ model Message {
 | `GHL_EXPORT_MAX_PAGES` | (Optional) Max pages to fetch from `/conversations/messages/export` per lead during sync (default `5`) |
 | `GHL_EXPORT_MAX_MESSAGES` | (Optional) Cap messages fetched via export per lead during sync (default `2000`) |
 | `SYNC_ALL_CONCURRENCY` | (Optional) Concurrency for "Sync All" batches (default `3`) |
+| `REGENERATE_ALL_DRAFTS_CONCURRENCY` | (Optional) Concurrency for bulk draft regeneration (default `1`) |
 | `EMAILBISON_TIMEOUT_MS` | (Optional) Fetch timeout for EmailBison API calls (default `30000`) |
 | `EMAILBISON_MAX_RETRIES` | (Optional) Max retries for EmailBison GET requests on network/timeout errors (default `2`) |
 | `EMAILBISON_BASE_URL` | (Optional) Override EmailBison API base URL (default `https://send.meetinboxxia.com`) |

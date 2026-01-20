@@ -155,10 +155,13 @@ export async function updateLeadSentimentTag(
       return { success: false, error: "Invalid sentiment tag" };
     }
 
-    await prisma.lead.update({
+    const updatedLead = await prisma.lead.update({
       where: { id: leadId },
       data: {
         sentimentTag: nextTag,
+      },
+      select: {
+        email: true,
       },
     });
 
@@ -172,7 +175,7 @@ export async function updateLeadSentimentTag(
     }
 
     // Draft policy/backstop: only generate drafts for eligible sentiments.
-    if (!shouldGenerateDraft(nextTag)) {
+    if (!shouldGenerateDraft(nextTag, updatedLead.email)) {
       await prisma.aIDraft.updateMany({
         where: {
           leadId,

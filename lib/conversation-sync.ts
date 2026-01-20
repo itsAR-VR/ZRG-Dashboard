@@ -113,7 +113,12 @@ async function refreshLeadSentimentTagSystem(leadId: string, clientId: string): 
     });
   }
 
-  if (!shouldGenerateDraft(sentimentTag)) {
+  const leadEmail = await prisma.lead.findUnique({
+    where: { id: leadId },
+    select: { email: true },
+  });
+
+  if (!shouldGenerateDraft(sentimentTag, leadEmail?.email ?? null)) {
     await prisma.aIDraft.updateMany({
       where: { leadId, status: "pending" },
       data: { status: "rejected" },
@@ -594,6 +599,29 @@ function cleanEmailBody(htmlBody?: string | null, textBody?: string | null): str
     .substring(0, 500);
 }
 
+const EMAILBISON_OUTBOUND_HEAL_WINDOW_MS = 2 * 60 * 1000;
+const EMAILBISON_OUTBOUND_HEAL_AMBIGUOUS_MS = 15 * 1000;
+
+function normalizeForMatch(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function scoreBodyMatch(candidateBody: string, importedBody: string): number {
+  const normalizedCandidate = normalizeForMatch(candidateBody);
+  const normalizedImported = normalizeForMatch(importedBody);
+
+  if (!normalizedCandidate || !normalizedImported) return 0;
+
+  const prefix = normalizedImported.slice(0, 160);
+  if (!prefix) return 0;
+
+  if (normalizedCandidate.includes(prefix)) return prefix.length;
+  return 0;
+}
+
 export async function syncEmailConversationHistorySystem(
   leadId: string,
   options: SyncOptions = {}
@@ -665,6 +693,11 @@ export async function syncEmailConversationHistorySystem(
     let healedCount = 0;
     let skippedDuplicates = 0;
     let touchedInbound = false;
+    let healedOutboundReplies = 0;
+    let importedOutboundReplies = 0;
+    let healedInboundReplies = 0;
+    let importedInboundReplies = 0;
+    let ambiguousOutboundReplies = 0;
 
     for (const reply of replies) {
       try {
@@ -710,41 +743,131 @@ export async function syncEmailConversationHistorySystem(
             });
             console.log(`[EmailSync] Healed replyId ${emailBisonReplyId} (${Object.keys(updateData).join(", ")})`);
             healedCount++;
-            if (direction === "inbound") touchedInbound = true;
+            if (direction === "inbound") {
+              touchedInbound = true;
+              healedInboundReplies++;
+            } else {
+              healedOutboundReplies++;
+            }
           } else {
             skippedDuplicates++;
           }
           continue;
         }
 
-        const existingByContent = await prisma.message.findFirst({
-          where: {
-            leadId,
-            channel: "email",
-            emailBisonReplyId: null,
-            OR: [
-              { body: { contains: body.substring(0, 100) } },
-              ...(subject ? [{ subject }] : []),
-            ],
-            ...(isOutbound ? {} : { direction: "inbound" }),
-          },
-        });
+        if (isOutbound) {
+          const start = new Date(msgTimestamp.getTime() - EMAILBISON_OUTBOUND_HEAL_WINDOW_MS);
+          const end = new Date(msgTimestamp.getTime() + EMAILBISON_OUTBOUND_HEAL_WINDOW_MS);
 
-        if (existingByContent) {
-          await prisma.message.update({
-            where: { id: existingByContent.id },
-            data: {
-              emailBisonReplyId,
-              sentAt: msgTimestamp,
-              subject: subject || existingByContent.subject,
-              direction,
-              ...(isOutbound ? { isRead: true } : {}),
+          const findCandidates = async (filterSubject: boolean) =>
+            prisma.message.findMany({
+              where: {
+                leadId,
+                channel: "email",
+                direction: "outbound",
+                source: "zrg",
+                emailBisonReplyId: null,
+                sentAt: { gte: start, lte: end },
+                ...(filterSubject && subject ? { subject } : {}),
+              },
+              select: {
+                id: true,
+                body: true,
+                subject: true,
+                sentAt: true,
+                createdAt: true,
+                sentBy: true,
+                aiDraftId: true,
+                rawHtml: true,
+                rawText: true,
+              },
+              take: 5,
+            });
+
+          const candidates = await findCandidates(true);
+          const fallbackCandidates = candidates.length > 0 ? candidates : await findCandidates(false);
+
+          const scored = fallbackCandidates
+            .map((candidate) => ({
+              candidate,
+              timeDiffMs: Math.abs(candidate.sentAt.getTime() - msgTimestamp.getTime()),
+              bodyScore: scoreBodyMatch(candidate.body, body),
+              hasDraft: candidate.aiDraftId ? 1 : 0,
+              hasSentBy: candidate.sentBy ? 1 : 0,
+            }))
+            .sort((a, b) => {
+              if (a.timeDiffMs !== b.timeDiffMs) return a.timeDiffMs - b.timeDiffMs;
+              if (a.bodyScore !== b.bodyScore) return b.bodyScore - a.bodyScore;
+              if (a.hasDraft !== b.hasDraft) return b.hasDraft - a.hasDraft;
+              if (a.hasSentBy !== b.hasSentBy) return b.hasSentBy - a.hasSentBy;
+              return b.candidate.createdAt.getTime() - a.candidate.createdAt.getTime();
+            });
+
+          const best = scored[0];
+          const second = scored[1];
+
+          const isAmbiguous =
+            Boolean(best && second) &&
+            best.timeDiffMs <= EMAILBISON_OUTBOUND_HEAL_AMBIGUOUS_MS &&
+            second.timeDiffMs <= EMAILBISON_OUTBOUND_HEAL_AMBIGUOUS_MS &&
+            second.timeDiffMs - best.timeDiffMs < 5_000 &&
+            best.bodyScore === second.bodyScore &&
+            best.hasDraft === second.hasDraft;
+
+          if (best && !isAmbiguous) {
+            await prisma.message.update({
+              where: { id: best.candidate.id },
+              data: {
+                emailBisonReplyId,
+                sentAt: msgTimestamp,
+                subject: subject || best.candidate.subject,
+                rawHtml: best.candidate.rawHtml ?? (reply.html_body ?? null),
+                rawText: best.candidate.rawText ?? (reply.text_body ?? null),
+                isRead: true,
+              },
+            });
+
+            healedCount++;
+            healedOutboundReplies++;
+            console.log(
+              `[EmailSync] Healed outbound replyId ${emailBisonReplyId} -> message ${best.candidate.id} (Δ${best.timeDiffMs}ms)`
+            );
+            continue;
+          }
+
+          if (isAmbiguous) {
+            ambiguousOutboundReplies++;
+          }
+        } else {
+          const existingByContent = await prisma.message.findFirst({
+            where: {
+              leadId,
+              channel: "email",
+              direction: "inbound",
+              emailBisonReplyId: null,
+              OR: [
+                { body: { contains: body.substring(0, 100) } },
+                ...(subject ? [{ subject }] : []),
+              ],
             },
           });
-          healedCount++;
-          if (existingByContent.direction !== direction && direction === "inbound") touchedInbound = true;
-          console.log(`[EmailSync] Healed reply -> replyId: ${emailBisonReplyId}, dir: ${direction}, bodyLen: ${body.length}`);
-          continue;
+
+          if (existingByContent) {
+            await prisma.message.update({
+              where: { id: existingByContent.id },
+              data: {
+                emailBisonReplyId,
+                sentAt: msgTimestamp,
+                subject: subject || existingByContent.subject,
+                direction,
+              },
+            });
+            healedCount++;
+            touchedInbound = true;
+            healedInboundReplies++;
+            console.log(`[EmailSync] Healed inbound reply -> replyId: ${emailBisonReplyId}, bodyLen: ${body.length}`);
+            continue;
+          }
         }
 
         await prisma.message.create({
@@ -763,7 +886,12 @@ export async function syncEmailConversationHistorySystem(
           },
         });
         importedCount++;
-        if (direction === "inbound") touchedInbound = true;
+        if (direction === "inbound") {
+          touchedInbound = true;
+          importedInboundReplies++;
+        } else {
+          importedOutboundReplies++;
+        }
         console.log(
           `[EmailSync] Imported reply -> replyId: ${emailBisonReplyId}, dir: ${direction}, bodyLen: ${body.length}, sentAt: ${msgTimestamp.toISOString()}`
         );
@@ -838,6 +966,13 @@ export async function syncEmailConversationHistorySystem(
     }
 
     console.log(`[EmailSync] Complete: ${importedCount} imported, ${healedCount} healed, ${skippedDuplicates} unchanged`);
+    console.log("[EmailSync] Reply stats", {
+      healedOutboundReplies,
+      importedOutboundReplies,
+      healedInboundReplies,
+      importedInboundReplies,
+      ambiguousOutboundReplies,
+    });
 
     await recomputeLeadMessageRollups(leadId);
 

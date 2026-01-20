@@ -56,6 +56,7 @@ import { AiCampaignAssignmentPanel } from "./settings/ai-campaign-assignment"
 import { BookingProcessManager } from "./settings/booking-process-manager"
 import { BookingProcessAnalytics } from "./settings/booking-process-analytics"
 import { AiPersonaManager } from "./settings/ai-persona-manager"
+import { BulkDraftRegenerationCard } from "./settings/bulk-draft-regeneration"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { getWorkspaceAdminStatus } from "@/actions/access-actions"
 import {
@@ -2727,11 +2728,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             </Card>
 
             {/* Email Draft Generation Model (Phase 30) */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Mail className="h-5 w-5" />
-                  Email Draft Generation
+	            <Card>
+	              <CardHeader>
+	                <CardTitle className="flex items-center gap-2">
+	                  <Mail className="h-5 w-5" />
+	                  Email Draft Generation
                 </CardTitle>
                 <CardDescription>
                   Configure the AI model used for generating email draft responses.
@@ -2826,13 +2827,17 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     </p>
                   </div>
                 </div>
-              </CardContent>
-            </Card>
+	              </CardContent>
+	            </Card>
 
-            {canViewAiObs ? (
-              <>
-                <Card>
-                  <CardHeader>
+	            {isWorkspaceAdmin && activeWorkspace ? (
+	              <BulkDraftRegenerationCard clientId={activeWorkspace} />
+	            ) : null}
+
+	            {canViewAiObs ? (
+	              <>
+	                <Card>
+	                  <CardHeader>
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <CardTitle className="flex items-center gap-2">

@@ -153,7 +153,12 @@ async function refreshLeadSentimentTag(leadId: string): Promise<{
   }
 
   // Policy/backstop: drafts only exist for positive intents (plus Follow Up deferrals).
-  if (!shouldGenerateDraft(sentimentTag)) {
+  const leadEmail = await prisma.lead.findUnique({
+    where: { id: leadId },
+    select: { email: true },
+  });
+
+  if (!shouldGenerateDraft(sentimentTag, leadEmail?.email ?? null)) {
     await prisma.aIDraft.updateMany({
       where: {
         leadId,
@@ -809,10 +814,10 @@ export async function syncAllEmailConversations(clientId: string): Promise<SyncA
           try {
             const lead = await prisma.lead.findUnique({
               where: { id: leadId },
-              select: { sentimentTag: true, status: true },
+              select: { sentimentTag: true, status: true, email: true },
             });
 
-            if (lead && shouldGenerateDraft(lead.sentimentTag || "Neutral")) {
+            if (lead && shouldGenerateDraft(lead.sentimentTag || "Neutral", lead.email)) {
               const draftResult = await regenerateDraft(leadId, "email");
               if (draftResult.success) {
                 totalDraftsGenerated++;
@@ -1312,64 +1317,275 @@ export async function regenerateDraft(
   return withAiTelemetrySourceIfUnset("action:message.regenerate_draft", async () => {
     try {
       await requireLeadAccess(leadId);
-      // Get the lead with messages for context
+
       const lead = await prisma.lead.findUnique({
         where: { id: leadId },
-        include: {
-          messages: {
-            orderBy: { sentAt: "asc" }, // Order by actual message time
-            take: 10, // Last 10 messages for context
-          },
+        select: {
+          id: true,
+          sentimentTag: true,
+          email: true,
         },
       });
 
-    if (!lead) {
-      return { success: false, error: "Lead not found" };
-    }
+      if (!lead) {
+        return { success: false, error: "Lead not found" };
+      }
 
-    // Reject any existing pending drafts
-    await prisma.aIDraft.updateMany({
-      where: {
-        leadId,
-        status: "pending",
-        channel,
-      },
-      data: { status: "rejected" },
-    });
+      // Reject any existing pending drafts for this channel
+      await prisma.aIDraft.updateMany({
+        where: {
+          leadId,
+          status: "pending",
+          channel,
+        },
+        data: { status: "rejected" },
+      });
 
-    // Build conversation transcript from messages
-    const transcript = lead.messages
-      .map((msg) => `${msg.direction === "inbound" ? "Lead" : "Agent"}: ${msg.body}`)
-      .join("\n");
+      // Build conversation transcript from recent messages (chronological)
+      const recentMessages = await prisma.message.findMany({
+        where: { leadId },
+        orderBy: { sentAt: "desc" },
+        take: 80,
+        select: {
+          sentAt: true,
+          channel: true,
+          direction: true,
+          body: true,
+          subject: true,
+        },
+      });
 
-    // Determine sentiment - use existing or default to "Neutral"
-    const sentimentTag = lead.sentimentTag || "Neutral";
+      const transcript = buildSentimentTranscriptFromMessages(recentMessages.reverse());
+      const sentimentTag = lead.sentimentTag || "Neutral";
+      const email = channel === "email" ? lead.email : null;
 
-    // Check if we should generate a draft for this sentiment
-    if (!shouldGenerateDraft(sentimentTag)) {
-      return { success: false, error: "Cannot generate draft for this sentiment" };
-    }
+      if (!shouldGenerateDraft(sentimentTag, email)) {
+        return { success: false, error: "Cannot generate draft for this sentiment" };
+      }
 
-    // Generate new draft
-    const draftResult = await generateResponseDraft(leadId, transcript, sentimentTag, channel);
+      const draftResult = await generateResponseDraft(leadId, transcript, sentimentTag, channel);
 
-    if (!draftResult.success || !draftResult.draftId || !draftResult.content) {
-      return { success: false, error: draftResult.error || "Failed to generate draft" };
-    }
+      if (!draftResult.success || !draftResult.draftId || !draftResult.content) {
+        return { success: false, error: draftResult.error || "Failed to generate draft" };
+      }
 
-    revalidatePath("/");
+      revalidatePath("/");
 
       return {
         success: true,
         data: {
           id: draftResult.draftId,
-          content: draftResult.content
-        }
+          content: draftResult.content,
+        },
       };
     } catch (error) {
       console.error("Failed to regenerate draft:", error);
       return {
         success: false,
+        error: error instanceof Error ? error.message : "Unknown error",
+      };
+    }
+  });
+}
+
+// =============================================================================
+// Bulk Draft Regeneration (Phase 45)
+// =============================================================================
+
+type DraftChannel = "sms" | "email" | "linkedin";
+
+export type RegenerateAllDraftsMode = "pending_only" | "all_eligible";
+
+export type RegenerateAllDraftsResult = {
+  success: boolean;
+  totalEligible: number;
+  processedLeads: number;
+  nextCursor: number | null;
+  hasMore: boolean;
+  regenerated: number;
+  skipped: number;
+  errors: number;
+  error?: string;
+};
+
+type RegenerateAllDraftsOptions = {
+  cursor?: number | null;
+  maxSeconds?: number;
+  mode?: RegenerateAllDraftsMode;
+};
+
+async function regenerateDraftSystem(leadId: string, channel: DraftChannel): Promise<{ success: boolean; error?: string }> {
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+    select: {
+      id: true,
+      sentimentTag: true,
+      email: true,
+    },
+  });
+
+  if (!lead) return { success: false, error: "Lead not found" };
+
+  // Reject any existing pending drafts for this channel
+  await prisma.aIDraft.updateMany({
+    where: {
+      leadId,
+      status: "pending",
+      channel,
+    },
+    data: { status: "rejected" },
+  });
+
+  const recentMessages = await prisma.message.findMany({
+    where: { leadId },
+    orderBy: { sentAt: "desc" },
+    take: 80,
+    select: {
+      sentAt: true,
+      channel: true,
+      direction: true,
+      body: true,
+      subject: true,
+    },
+  });
+
+  const transcript = buildSentimentTranscriptFromMessages(recentMessages.reverse());
+
+  const sentimentTag = lead.sentimentTag || "Neutral";
+  const email = channel === "email" ? lead.email : null;
+
+  if (!shouldGenerateDraft(sentimentTag, email)) {
+    return { success: false, error: "Cannot generate draft for this sentiment" };
+  }
+
+  const draftResult = await generateResponseDraft(leadId, transcript, sentimentTag, channel);
+  if (!draftResult.success || !draftResult.draftId || !draftResult.content) {
+    return { success: false, error: draftResult.error || "Failed to generate draft" };
+  }
+
+  return { success: true };
+}
+
+export async function regenerateAllDrafts(
+  clientId: string,
+  channel: DraftChannel,
+  options: RegenerateAllDraftsOptions = {}
+): Promise<RegenerateAllDraftsResult> {
+  return withAiTelemetrySourceIfUnset("action:message.regenerate_all_drafts", async () => {
+    try {
+      await requireClientAdminAccess(clientId);
+
+      const startedAtMs = Date.now();
+      const maxSeconds = Number.isFinite(options.maxSeconds) && (options.maxSeconds || 0) > 0 ? options.maxSeconds! : 55;
+      const deadlineMs = startedAtMs + maxSeconds * 1000;
+
+      const configuredConcurrency = Number(process.env.REGENERATE_ALL_DRAFTS_CONCURRENCY || "");
+      const CONCURRENCY =
+        Number.isFinite(configuredConcurrency) && configuredConcurrency > 0 ? Math.floor(configuredConcurrency) : 1;
+
+      const mode: RegenerateAllDraftsMode = options.mode ?? "pending_only";
+      const startIndex = options.cursor && options.cursor > 0 ? Math.floor(options.cursor) : 0;
+
+      const eligibleSentiments = [
+        "Meeting Requested",
+        "Call Requested",
+        "Information Requested",
+        "Interested",
+        "Follow Up",
+        "Positive", // legacy
+      ];
+
+      const leads = await prisma.lead.findMany({
+        where: {
+          clientId,
+          ...(mode === "pending_only"
+            ? { aiDrafts: { some: { status: "pending", channel } } }
+            : { sentimentTag: { in: eligibleSentiments } }),
+        },
+        select: {
+          id: true,
+          sentimentTag: true,
+          email: true,
+        },
+        orderBy: { id: "asc" },
+      });
+
+      let processedLeads = 0;
+      let regenerated = 0;
+      let skipped = 0;
+      let errors = 0;
+      let nextIndex: number | null = null;
+
+      for (let i = startIndex; i < leads.length; i += CONCURRENCY) {
+        if (Date.now() >= deadlineMs) {
+          nextIndex = i;
+          break;
+        }
+
+        const batch = leads.slice(i, i + CONCURRENCY);
+        processedLeads += batch.length;
+
+        const results = await Promise.allSettled(
+          batch.map(async (lead) => {
+            const sentimentTag = lead.sentimentTag || "Neutral";
+            const email = channel === "email" ? lead.email : null;
+
+            if (!shouldGenerateDraft(sentimentTag, email)) {
+              return { status: "skipped" as const };
+            }
+
+            const draftResult = await regenerateDraftSystem(lead.id, channel);
+            if (!draftResult.success) {
+              return {
+                status:
+                  draftResult.error === "Cannot generate draft for this sentiment"
+                    ? ("skipped" as const)
+                    : ("error" as const),
+              };
+            }
+
+            return { status: "regenerated" as const };
+          })
+        );
+
+        for (const result of results) {
+          if (result.status === "fulfilled") {
+            if (result.value.status === "regenerated") regenerated++;
+            else if (result.value.status === "skipped") skipped++;
+            else errors++;
+          } else {
+            errors++;
+          }
+        }
+      }
+
+      const hasMore = nextIndex != null && nextIndex < leads.length;
+
+      if (regenerated > 0) {
+        revalidatePath("/");
+      }
+
+      return {
+        success: true,
+        totalEligible: leads.length,
+        processedLeads,
+        nextCursor: hasMore ? nextIndex : null,
+        hasMore,
+        regenerated,
+        skipped,
+        errors,
+      };
+    } catch (error) {
+      console.error("[RegenerateAllDrafts] Failed:", error);
+      return {
+        success: false,
+        totalEligible: 0,
+        processedLeads: 0,
+        nextCursor: null,
+        hasMore: false,
+        regenerated: 0,
+        skipped: 0,
+        errors: 1,
         error: error instanceof Error ? error.message : "Unknown error",
       };
     }

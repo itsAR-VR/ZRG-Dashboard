@@ -195,6 +195,28 @@ function toPlainTextIfHtml(input: string | null | undefined): string {
   return htmlToPlainTextForDisplay(value);
 }
 
+function toUiSender(msg: {
+  direction: string;
+  source?: string | null;
+  sentBy?: string | null;
+  sentByUserId?: string | null;
+  aiDraftId?: string | null;
+}): "lead" | "ai" | "human" {
+  if (msg.direction === "inbound") return "lead";
+
+  // Campaign sends are automated by definition.
+  if (msg.source === "inboxxia_campaign") return "ai";
+
+  // Explicit attribution from our send paths.
+  if (msg.sentBy === "setter" || msg.sentByUserId) return "human";
+  if (msg.sentBy === "ai") return "ai";
+
+  // Backstop: drafts without a user are likely automation.
+  if (msg.aiDraftId && !msg.sentByUserId) return "ai";
+
+  return "ai";
+}
+
 /**
  * Fetch all conversations (leads with messages) for the inbox
  * @param clientId - Optional client ID to filter by workspace
@@ -588,7 +610,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
         primaryChannel,
         messages: lead.messages.map((msg) => ({
           id: msg.id,
-          sender: msg.direction === "inbound" ? ("lead" as const) : ("ai" as const),
+          sender: toUiSender(msg),
           content: toPlainTextIfHtml(msg.body),
           subject: msg.subject || undefined,
           rawHtml: msg.rawHtml || undefined,

@@ -17,8 +17,9 @@ interface ChatMessageProps {
 
 export function ChatMessage({ message, leadName, userName = "You", userAvatar }: ChatMessageProps) {
   // Map sender types
-  const isOutbound = message.sender === "ai" || message.sender === "human"
   const isLead = message.sender === "lead"
+  const isHuman = message.sender === "human"
+  const isAi = message.sender === "ai"
   const isEmail = message.channel === "email" || !!message.subject
   const [showOriginal, setShowOriginal] = useState(false)
 
@@ -30,13 +31,21 @@ export function ChatMessage({ message, leadName, userName = "You", userAvatar }:
         bubbleClass: "bg-muted",
         align: "left" as const,
       }
-    : {
-        label: userName,
-        icon: User,
-        avatarClass: "bg-primary/10 text-primary",
-        bubbleClass: "bg-primary/10 border border-primary/20",
-        align: "right" as const,
-      }
+    : isAi
+      ? {
+          label: "AI",
+          icon: Bot,
+          avatarClass: "bg-emerald-500/10 text-emerald-600",
+          bubbleClass: "bg-emerald-500/10 border border-emerald-500/20",
+          align: "right" as const,
+        }
+      : {
+          label: userName,
+          icon: User,
+          avatarClass: "bg-primary/10 text-primary",
+          bubbleClass: "bg-primary/10 border border-primary/20",
+          align: "right" as const,
+        }
 
   const Icon = config.icon
   const isRight = config.align === "right"
@@ -54,11 +63,11 @@ export function ChatMessage({ message, leadName, userName = "You", userAvatar }:
   return (
     <div className={cn("flex gap-3", isRight && "flex-row-reverse")}>
       <Avatar className={cn("h-8 w-8 shrink-0", !userAvatar && config.avatarClass)}>
-        {isOutbound && userAvatar ? (
+        {isHuman && userAvatar ? (
           <AvatarImage src={userAvatar} alt={userName} />
         ) : null}
         <AvatarFallback className={config.avatarClass}>
-          {isOutbound ? getInitials(userName) : <Icon className="h-4 w-4" />}
+          {isHuman ? getInitials(userName) : <Icon className="h-4 w-4" />}
         </AvatarFallback>
       </Avatar>
 

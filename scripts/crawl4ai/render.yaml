@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: zrg-crawl4ai
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: CRAWL4AI_SERVICE_SECRET
+        sync: false  # Must be set manually in Render dashboard
+    autoDeploy: false  # Deploy manually or via GitHub integration

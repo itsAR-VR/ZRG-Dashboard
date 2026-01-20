@@ -189,6 +189,14 @@ async function buildStageInstructions(
           `Include a booking link as hyperlinked text (e.g., "book a time here" or "schedule a call"). Link URL: ${bookingLink}`
         );
       }
+    } else {
+      // Explicitly prevent placeholder link hallucinations when no booking link is configured.
+      instructions.push(
+        `IMPORTANT: No booking link is configured for this workspace. Do NOT include any placeholder text like "{booking link}", "{insert booking link}", "[booking link]", or similar. Instead, ask the lead for their availability or offer to send specific times.`
+      );
+      console.warn(
+        `[BookingProcess] Stage ${stage.stageNumber} requests booking link but none configured for client ${clientId}`
+      );
     }
   }
 
