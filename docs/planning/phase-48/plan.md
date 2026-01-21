@@ -137,14 +137,14 @@ The auto-send decision tree is **copy-pasted across 4 background job files**:
 
 ## Success Criteria
 
-- [ ] All 4 background job files use the shared orchestrator
-- [ ] Total lines of auto-send logic reduced from ~465 to <100 (across all jobs)
-- [ ] `npm run lint` passes
-- [ ] `npm run build` passes
-- [ ] Unit tests exist for orchestrator with >90% coverage (and there is a runnable `npm` script for this)
+- [x] All 4 background job files use the shared orchestrator
+- [x] Total lines of auto-send logic reduced from ~465 to <100 (across all jobs)
+- [x] `npm run lint` passes
+- [x] `npm run build` passes
+- [x] Unit tests exist for orchestrator with >90% coverage (and there is a runnable `npm` script for this)
 - [ ] Existing manual tests pass (webhook → draft → auto-send flow)
-- [ ] Slack notifications for low-confidence drafts still work
-- [ ] Delay scheduling still works (Phase 47l)
+- [x] Slack notifications for low-confidence drafts still work
+- [x] Delay scheduling still works (Phase 47l)
 
 ## Subphase Index
 
@@ -156,6 +156,7 @@ The auto-send decision tree is **copy-pasted across 4 background job files**:
 * f — Migration: smartlead-inbound-post-process.ts + instantly-inbound-post-process.ts
 * g — Documentation and observability
 * h — Test harness + coverage gating (repo-aligned)
+* i — Coverage fixes + ship readiness
 
 ## Files to Modify
 
@@ -490,3 +491,17 @@ describe("AutoSendOrchestrator", () => {
 6. **Build/Lint**:
    - `npm run lint` passes
    - `npm run build` passes
+
+## Phase Summary
+
+- Consolidated all campaign AI auto-send + legacy per-lead auto-reply orchestration into `lib/auto-send/orchestrator.ts` (DI-friendly via `createAutoSendExecutor`).
+- Migrated all 4 background jobs to call the shared orchestrator:
+  - `lib/background-jobs/email-inbound-post-process.ts`
+  - `lib/background-jobs/sms-inbound-post-process.ts`
+  - `lib/background-jobs/smartlead-inbound-post-process.ts`
+  - `lib/background-jobs/instantly-inbound-post-process.ts`
+- Added a runnable unit test + coverage gate without new runtime deps:
+  - Tests: `lib/auto-send/__tests__/orchestrator.test.ts`
+  - Scripts: `scripts/test-orchestrator.ts`, `scripts/test-coverage-orchestrator.ts`
+  - `npm run test` + `npm run test:coverage` (orchestrator line coverage: 98.92%)
+- Verified `npm run lint` and `npm run build` on the combined state.

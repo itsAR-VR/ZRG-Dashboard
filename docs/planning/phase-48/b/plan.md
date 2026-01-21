@@ -371,8 +371,9 @@ export * from "./types";
 
 - `lib/auto-send/orchestrator.ts` created with full implementation
 - `lib/auto-send/index.ts` created for public exports
-- All existing behavior preserved (delay, Slack notifications, etc.)
-- Clear separation: mode determination → evaluation → execution
+- Behavior parity preserved via explicit context toggles:
+  - `validateImmediateSend` (SmartLead/Instantly immediate-send validation)
+  - `includeDraftPreviewInSlack` (Email/SMS Slack review preview blocks)
 
 ## Handoff
 

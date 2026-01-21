@@ -36,14 +36,9 @@ import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { cleanEmailBody } from "@/lib/email-cleaning";
 import { buildSentimentTranscriptFromMessages, detectBounce, isOptOutText } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { evaluateAutoSend } from "@/lib/auto-send-evaluator";
-import { approveAndSendDraftSystem } from "@/actions/message-actions";
-import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
-import { sendSlackDmByEmail } from "@/lib/slack-dm";
-import { getPublicAppUrl } from "@/lib/app-url";
+import { executeAutoSend } from "@/lib/auto-send";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { maybeAssignLead } from "@/lib/lead-assignment";
-import { scheduleDelayedAutoSend, getCampaignDelayConfig, validateDelayedAutoSend } from "@/lib/background-jobs/delayed-auto-send";
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   for (const dateStr of dateStrs) {
@@ -929,134 +924,63 @@ export async function runEmailInboundPostProcessJob(opts: {
         const draftId = draftResult.draftId;
         const draftContent = draftResult.content;
 
-        const responseMode = lead.emailCampaign?.responseMode ?? null;
-        const autoSendThreshold = lead.emailCampaign?.autoSendConfidenceThreshold ?? 0.9;
-
         let autoReplySent = false;
 
-        if (responseMode === "AI_AUTO_SEND") {
-          const evaluation = await evaluateAutoSend({
-            clientId: client.id,
-            leadId: lead.id,
-            channel: "email",
-            latestInbound: inboundText,
-            subject,
-            conversationHistory: transcript,
-            categorization: lead.sentimentTag,
-            automatedReply: null,
-            replyReceivedAt: message.sentAt,
-            draft: draftContent,
-          });
+        const autoSendResult = await executeAutoSend({
+          clientId: client.id,
+          leadId: lead.id,
+          triggerMessageId: message.id,
+          draftId,
+          draftContent,
+          channel: "email",
+          latestInbound: inboundText,
+          subject,
+          conversationHistory: transcript,
+          sentimentTag: lead.sentimentTag,
+          messageSentAt: message.sentAt ?? new Date(),
+          automatedReply: null,
+          leadFirstName: lead.firstName,
+          leadLastName: lead.lastName,
+          leadEmail: lead.email,
+          emailCampaign: lead.emailCampaign,
+          autoReplyEnabled: lead.autoReplyEnabled,
+          validateImmediateSend: true,
+          includeDraftPreviewInSlack: true,
+        });
 
-          if (evaluation.safeToSend && evaluation.confidence >= autoSendThreshold) {
-            // Phase 47l: Check for delay configuration
-            const delayConfig = lead.emailCampaign?.id ? await getCampaignDelayConfig(lead.emailCampaign.id) : null;
-
-            if (delayConfig && (delayConfig.delayMinSeconds > 0 || delayConfig.delayMaxSeconds > 0)) {
-              // Schedule delayed send
-              const scheduleResult = await scheduleDelayedAutoSend({
-                clientId: client.id,
-                leadId: lead.id,
-                triggerMessageId: message.id,
-                draftId,
-                delayMinSeconds: delayConfig.delayMinSeconds,
-                delayMaxSeconds: delayConfig.delayMaxSeconds,
-                inboundSentAt: message.sentAt ?? new Date(),
-              });
-
-              if (scheduleResult.scheduled) {
-                console.log(`[Auto-Send] Scheduled delayed send for draft ${draftId}, runAt: ${scheduleResult.runAt?.toISOString()}`);
-              } else {
-                console.log(`[Auto-Send] Delayed send not scheduled: ${scheduleResult.skipReason}`);
-              }
-            } else {
-              // Immediate send (no delay configured)
-              const validation = await validateDelayedAutoSend({
-                leadId: lead.id,
-                triggerMessageId: message.id,
-                draftId,
-              });
-              if (!validation.proceed) {
-                console.log(`[Auto-Send] Skipping immediate send for draft ${draftId}: ${validation.reason || "unknown_reason"}`);
-              } else {
-                const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
-                if (sendResult.success) {
-                  autoReplySent = true;
-                } else {
-                  console.error(`[Auto-Send] Failed to send draft ${draftId}: ${sendResult.error}`);
-                }
-              }
-            }
-          } else {
-            const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
-            const campaignLabel = lead.emailCampaign
-              ? `${lead.emailCampaign.name} (${lead.emailCampaign.bisonCampaignId})`
-              : "Unknown campaign";
-            const url = `${getPublicAppUrl()}/?view=inbox&leadId=${lead.id}`;
-            const confidenceText = `${evaluation.confidence.toFixed(2)} < ${autoSendThreshold.toFixed(2)}`;
-
-            const dmResult = await sendSlackDmByEmail({
-              email: "jon@zeroriskgrowth.com",
-              dedupeKey: `auto_send_review:${draftId}`,
-              text: `AI auto-send review needed (${confidenceText})`,
-              blocks: [
-                {
-                  type: "header",
-                  text: { type: "plain_text", text: "AI Auto-Send: Review Needed", emoji: true },
-                },
-                {
-                  type: "section",
-                  fields: [
-                    { type: "mrkdwn", text: `*Lead:*\n${leadName}${lead.email ? `\n${lead.email}` : ""}` },
-                    { type: "mrkdwn", text: `*Campaign:*\n${campaignLabel}` },
-                    { type: "mrkdwn", text: `*Sentiment:*\n${lead.sentimentTag || "Unknown"}` },
-                    {
-                      type: "mrkdwn",
-                      text: `*Confidence:*\n${evaluation.confidence.toFixed(2)} (thresh ${autoSendThreshold.toFixed(2)})`,
-                    },
-                  ],
-                },
-                {
-                  type: "section",
-                  text: { type: "mrkdwn", text: `*Reason:*\n${evaluation.reason}` },
-                },
-                {
-                  type: "section",
-                  text: {
-                    type: "mrkdwn",
-                    text: `*Draft Preview:*\n\`\`\`\n${draftContent.slice(0, 1400)}\n\`\`\``,
-                  },
-                },
-                {
-                  type: "section",
-                  text: { type: "mrkdwn", text: `<${url}|Open lead in dashboard>` },
-                },
-              ],
-            });
-            if (!dmResult.success) {
-              console.error(`[Slack DM] Failed to notify Jon for draft ${draftId}: ${dmResult.error || "unknown error"}`);
-            }
+        switch (autoSendResult.outcome.action) {
+          case "send_immediate": {
+            autoReplySent = true;
+            break;
           }
-        } else if (!lead.emailCampaign && lead.autoReplyEnabled) {
-          const decision = await decideShouldAutoReply({
-            clientId: client.id,
-            leadId: lead.id,
-            channel: "email",
-            latestInbound: inboundText,
-            subject,
-            conversationHistory: transcript,
-            categorization: lead.sentimentTag,
-            automatedReply: null,
-            replyReceivedAt: message.sentAt,
-          });
-
-          if (decision.shouldReply) {
-            const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
-            if (sendResult.success) {
-              autoReplySent = true;
-            } else {
-              console.error(`[Auto-Reply] Failed to send draft ${draftId}: ${sendResult.error}`);
+          case "send_delayed": {
+            console.log(
+              `[Auto-Send] Scheduled delayed send for draft ${draftId}, runAt: ${autoSendResult.outcome.runAt.toISOString()}`
+            );
+            break;
+          }
+          case "needs_review": {
+            if (!autoSendResult.outcome.slackDm.sent) {
+              console.error(
+                `[Slack DM] Failed to notify Jon for draft ${draftId}: ${autoSendResult.outcome.slackDm.error || "unknown error"}`
+              );
             }
+            break;
+          }
+          case "skip": {
+            if (autoSendResult.telemetry.delayedScheduleSkipReason) {
+              console.log(`[Auto-Send] Delayed send not scheduled: ${autoSendResult.telemetry.delayedScheduleSkipReason}`);
+            } else if (autoSendResult.telemetry.immediateValidationSkipReason || autoSendResult.telemetry.immediateValidationSkipReason === "") {
+              console.log(
+                `[Auto-Send] Skipping immediate send for draft ${draftId}: ${autoSendResult.telemetry.immediateValidationSkipReason || "unknown_reason"}`
+              );
+            }
+            break;
+          }
+          case "error": {
+            const prefix = autoSendResult.mode === "LEGACY_AUTO_REPLY" ? "Auto-Reply" : "Auto-Send";
+            console.error(`[${prefix}] Failed to send draft ${draftId}: ${autoSendResult.outcome.error}`);
+            break;
           }
         }
 

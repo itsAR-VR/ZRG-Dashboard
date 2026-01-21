@@ -126,10 +126,11 @@ Create a shared types module (`lib/auto-send/types.ts`) that defines all the int
 
 ## Output
 
-- `lib/auto-send/types.ts` created with all shared types
-- Types are strict (no `any`)
-- JSDoc comments explain each type's purpose
-- No runtime code (pure type definitions + constants)
+- `lib/auto-send/types.ts` created with shared orchestrator types
+- Added per-job behavior toggles to preserve existing semantics:
+  - `validateImmediateSend` (SmartLead/Instantly only)
+  - `includeDraftPreviewInSlack` (Email/SMS only)
+- Exported `AUTO_SEND_CONSTANTS` (`REVIEW_NOTIFICATION_EMAIL`, `DEFAULT_CONFIDENCE_THRESHOLD`)
 
 ## Handoff
 

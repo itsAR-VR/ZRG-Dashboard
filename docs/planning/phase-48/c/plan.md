@@ -116,7 +116,7 @@ describe("determineAutoSendMode", () => {
 
   it("returns DISABLED when campaign exists but not AI mode", () => {
     const context = createTestContext({
-      emailCampaign: createAiAutoSendCampaign({ responseMode: "DRAFT_ONLY" }),
+      emailCampaign: createAiAutoSendCampaign({ responseMode: "SETTER_MANAGED" }),
     });
     expect(determineAutoSendMode(context)).toBe("DISABLED");
   });
@@ -148,7 +148,7 @@ describe("determineAutoSendMode", () => {
 
     it("LEGACY_AUTO_REPLY only activates when no emailCampaign exists", () => {
       const context = createTestContext({
-        emailCampaign: createAiAutoSendCampaign({ responseMode: "DRAFT_ONLY" }),
+        emailCampaign: createAiAutoSendCampaign({ responseMode: "SETTER_MANAGED" }),
         autoReplyEnabled: true,
       });
       // Campaign exists (even if not AI mode), so legacy doesn't activate

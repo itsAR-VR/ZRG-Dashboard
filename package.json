@@ -6,6 +6,8 @@
     "build": "prisma generate && next build",
     "dev": "next dev",
     "lint": "eslint .",
+    "test": "node --import tsx scripts/test-orchestrator.ts",
+    "test:coverage": "node --import tsx scripts/test-coverage-orchestrator.ts",
     "typecheck": "tsc --noEmit",
     "start": "next start",
     "postinstall": "prisma generate",

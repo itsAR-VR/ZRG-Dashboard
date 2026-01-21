@@ -69,6 +69,8 @@ lib/                # Core domain logic
   sentiment.ts      # AI sentiment classification
   ai-drafts.ts      # AI draft generation with availability-aware rules
   auto-reply-gate.ts # Safety gate for auto-sends
+  auto-send/        # Auto-send orchestration (executeAutoSend)
+  auto-send-evaluator.ts # AI auto-send confidence evaluator (campaign mode)
   followup-engine.ts # Multi-step sequence execution (cron-driven)
   availability-*.ts  # Calendar availability caching, formatting, distribution
   ghl-api.ts        # GoHighLevel API client with rate limiting
