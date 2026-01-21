@@ -27,7 +27,9 @@ import {
   selectArchetypeFromSeed,
   type EmailDraftArchetype,
 } from "@/lib/ai-drafts/config";
+import { enforceCanonicalBookingLink, replaceEmDashesWithCommaSpace } from "@/lib/ai-drafts/step3-verifier";
 import { getBookingProcessInstructions } from "@/lib/booking-process-instructions";
+import { getBookingLink } from "@/lib/meeting-booking-provider";
 
 type DraftChannel = "sms" | "email" | "linkedin";
 
@@ -67,9 +69,9 @@ export type DraftGenerationOptions = {
 // ---------------------------------------------------------------------------
 
 const BOOKING_LINK_PLACEHOLDER_REGEX =
-  /(\{|\[)\s*(?:insert\s+)?(?:your\s+)?(?:booking|calendar)\s+link\s*(\}|\])/i;
+  /(\{|\[)\s*(?:insert\s+)?(?:your\s+)?(?:booking|calendar|calendly|scheduling)\s+link\s*(\}|\])/i;
 const BOOKING_LINK_PLACEHOLDER_GLOBAL_REGEX =
-  /(\{|\[)\s*(?:insert\s+)?(?:your\s+)?(?:booking|calendar)\s+link\s*(\}|\])/gi;
+  /(\{|\[)\s*(?:insert\s+)?(?:your\s+)?(?:booking|calendar|calendly|scheduling)\s+link\s*(\}|\])/gi;
 
 // Matches truncated URLs like "https://c" or "https://cal." (but not "https://cal.com/user").
 const TRUNCATED_URL_REGEX = /https?:\/\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.?(?=\s|$)/i;
@@ -144,6 +146,214 @@ export function sanitizeDraftContent(content: string, leadId: string, channel: D
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Step 3 — Email Draft Verification (Phase 49)
+// ---------------------------------------------------------------------------
+
+async function getLatestInboundEmailTextForVerifier(opts: {
+  leadId: string;
+  triggerMessageId: string | null;
+}): Promise<string | null> {
+  if (opts.triggerMessageId) {
+    const trigger = await prisma.message.findUnique({
+      where: { id: opts.triggerMessageId },
+      select: { leadId: true, direction: true, channel: true, body: true, subject: true },
+    });
+
+    if (trigger?.leadId === opts.leadId && trigger.direction === "inbound" && trigger.channel === "email") {
+      const subject = trigger.subject ? `Subject: ${trigger.subject}\n\n` : "";
+      return `${subject}${trigger.body}`.trim();
+    }
+  }
+
+  const latest = await prisma.message.findFirst({
+    where: { leadId: opts.leadId, direction: "inbound", channel: "email" },
+    orderBy: [{ sentAt: "desc" }, { createdAt: "desc" }],
+    select: { body: true, subject: true },
+  });
+
+  if (!latest?.body) return null;
+  const subject = latest.subject ? `Subject: ${latest.subject}\n\n` : "";
+  return `${subject}${latest.body}`.trim();
+}
+
+function isLikelyRewrite(before: string, after: string): boolean {
+  const beforeTrimmed = before.trim();
+  const afterTrimmed = after.trim();
+  if (!beforeTrimmed || !afterTrimmed) return false;
+
+  const beforeLen = beforeTrimmed.length;
+  const afterLen = afterTrimmed.length;
+  const delta = Math.abs(afterLen - beforeLen);
+  const ratio = delta / Math.max(1, beforeLen);
+
+  // Conservative: allow small edits, but reject large rewrites.
+  return (ratio > 0.45 && delta > 250) || delta > 900;
+}
+
+async function runEmailDraftVerificationStep3(opts: {
+  clientId: string;
+  leadId: string;
+  triggerMessageId: string | null;
+  draft: string;
+  availability: string[];
+  bookingLink: string | null;
+  bookingProcessInstructions: string | null;
+  forbiddenTerms: string[];
+  serviceDescription: string | null;
+  knowledgeContext: string;
+  timeoutMs: number;
+}): Promise<string | null> {
+  const promptKey = "draft.verify.email.step3.v1";
+  const latestInbound = await getLatestInboundEmailTextForVerifier({
+    leadId: opts.leadId,
+    triggerMessageId: opts.triggerMessageId,
+  });
+
+  const overrideResult = await getPromptWithOverrides(promptKey, opts.clientId);
+  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate(promptKey);
+  const overrideVersion = overrideResult?.overrideVersion ?? null;
+
+  if (!promptTemplate) {
+    console.warn(`[AI Drafts] Missing verifier prompt template: ${promptKey}`);
+    return null;
+  }
+
+  const templateVars: Record<string, string> = {
+    latestInbound: latestInbound || "None.",
+    availability: opts.availability.length ? opts.availability.map((s) => `- ${s}`).join("\n") : "None.",
+    bookingLink: (opts.bookingLink || "").trim() || "None.",
+    bookingProcessInstructions: (opts.bookingProcessInstructions || "").trim() || "None.",
+    serviceDescription: (opts.serviceDescription || "").trim() || "None.",
+    knowledgeContext: (opts.knowledgeContext || "").trim() || "None.",
+    forbiddenTerms: opts.forbiddenTerms.length ? opts.forbiddenTerms.join("\n") : "None.",
+    draft: opts.draft || "",
+  };
+
+  const applyTemplateVars = (content: string): string => {
+    let next = content;
+    for (const [key, value] of Object.entries(templateVars)) {
+      next = next.replaceAll(`{{${key}}}`, value);
+      next = next.replaceAll(`{${key}}`, value);
+    }
+    return next;
+  };
+
+  const instructions =
+    promptTemplate.messages
+      .filter((m) => m.role === "system")
+      .map((m) => applyTemplateVars(m.content))
+      .join("\n\n")
+      .trim() || "";
+
+  const inputMessages = promptTemplate.messages
+    .filter((m) => m.role !== "system")
+    .map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: applyTemplateVars(m.content),
+    }));
+
+  const verifierModel = "gpt-5-mini";
+  const verifierReasoningEffort = "medium" as const;
+
+  let interactionId: string | null = null;
+
+  try {
+    const { response, interactionId: iid } = await runResponseWithInteraction({
+      clientId: opts.clientId,
+      leadId: opts.leadId,
+      featureId: promptTemplate.featureId || "draft.verify.email.step3",
+      promptKey: (promptTemplate.key || promptKey) + (overrideVersion ? `.${overrideVersion}` : ""),
+      params: {
+        model: verifierModel,
+        instructions,
+        input: inputMessages,
+        temperature: 0,
+        reasoning: { effort: verifierReasoningEffort },
+        text: {
+          format: {
+            type: "json_schema",
+            name: "email_draft_verification_step3",
+            strict: true,
+            schema: EMAIL_DRAFT_VERIFY_STEP3_JSON_SCHEMA,
+          },
+        },
+        max_output_tokens: 1400,
+      },
+      requestOptions: {
+        timeout: Math.max(2500, opts.timeoutMs),
+        maxRetries: 0,
+      },
+    });
+
+    interactionId = iid;
+
+    if (isMaxOutputTokensIncomplete(response)) {
+      const details = summarizeResponseForTelemetry(response);
+      console.warn(`[AI Drafts] Step 3 verifier hit max_output_tokens; discarding output`, {
+        leadId: opts.leadId,
+        details: details || null,
+      });
+      if (interactionId) {
+        await markAiInteractionError(interactionId, `email_step3_truncated${details ? ` (${details})` : ""}`);
+      }
+      return null;
+    }
+
+    const text = getTrimmedOutputText(response)?.trim() || "";
+    const extracted = extractFirstCompleteJsonObjectFromText(text);
+    const jsonText = extracted.status === "none" ? text : extracted.json;
+    if (!jsonText || !jsonText.trim()) return null;
+
+    let parsed: EmailDraftVerificationStep3 | null = null;
+    try {
+      parsed = JSON.parse(jsonText) as EmailDraftVerificationStep3;
+    } catch {
+      // ignore
+    }
+
+    if (!parsed || typeof parsed.finalDraft !== "string") {
+      if (interactionId) {
+        await markAiInteractionError(interactionId, "email_step3_invalid_json");
+      }
+      return null;
+    }
+
+    const finalDraft = parsed.finalDraft.trim();
+    if (!finalDraft) return null;
+
+    if (isLikelyRewrite(opts.draft, finalDraft)) {
+      console.warn(`[AI Drafts] Step 3 verifier produced a likely rewrite; discarding output`, {
+        leadId: opts.leadId,
+        beforeLen: opts.draft.trim().length,
+        afterLen: finalDraft.length,
+      });
+      if (interactionId) {
+        await markAiInteractionError(interactionId, "email_step3_rewrite_guardrail");
+      }
+      return null;
+    }
+
+    if (parsed.changed || parsed.violationsDetected.length || parsed.changes.length) {
+      console.log(`[AI Drafts] Step 3 verifier applied changes`, {
+        leadId: opts.leadId,
+        changed: parsed.changed,
+        violationsDetected: parsed.violationsDetected.slice(0, 8),
+        changes: parsed.changes.slice(0, 8),
+      });
+    }
+
+    return finalDraft;
+  } catch (error) {
+    console.error("[AI Drafts] Step 3 verifier failed:", error);
+    if (interactionId) {
+      const message = error instanceof Error ? error.message : String(error);
+      await markAiInteractionError(interactionId, `email_step3_error: ${message.slice(0, 200)}`);
+    }
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +733,48 @@ const EMAIL_DRAFT_STRATEGY_JSON_SCHEMA = {
   additionalProperties: false,
 };
 
+// ---------------------------------------------------------------------------
+// Email Draft Verification (Step 3) (Phase 49)
+// ---------------------------------------------------------------------------
+
+const EMAIL_DRAFT_VERIFY_STEP3_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    finalDraft: {
+      type: "string",
+      maxLength: 6000,
+      description: "The minimally corrected final email draft (plain text).",
+    },
+    changed: {
+      type: "boolean",
+      description: "True if any changes were made to the draft.",
+    },
+    violationsDetected: {
+      type: "array",
+      minItems: 0,
+      maxItems: 30,
+      items: { type: "string", maxLength: 120 },
+      description: "Short list of violations detected (e.g. wrong_link, em_dash, pricing_mismatch).",
+    },
+    changes: {
+      type: "array",
+      minItems: 0,
+      maxItems: 30,
+      items: { type: "string", maxLength: 180 },
+      description: "Short list of changes applied (human-readable).",
+    },
+  },
+  required: ["finalDraft", "changed", "violationsDetected", "changes"],
+  additionalProperties: false,
+};
+
+type EmailDraftVerificationStep3 = {
+  finalDraft: string;
+  changed: boolean;
+  violationsDetected: string[];
+  changes: string[];
+};
+
 interface EmailDraftStrategy {
   personalization_points: string[];
   intent_summary: string;
@@ -845,6 +1097,8 @@ export async function generateResponseDraft(
             settings: {
               include: {
                 knowledgeAssets: {
+                  orderBy: { updatedAt: "desc" },
+                  take: 5,
                   select: {
                     name: true,
                     textContent: true,
@@ -938,7 +1192,6 @@ export async function generateResponseDraft(
     if (settings?.knowledgeAssets && settings.knowledgeAssets.length > 0) {
       const assetSnippets = settings.knowledgeAssets
         .filter(a => a.textContent)
-        .slice(0, 3) // Limit to 3 most recent assets
         .map(a => `[${a.name}]: ${a.textContent!.slice(0, 1000)}${a.textContent!.length > 1000 ? "..." : ""}`);
 
       if (assetSnippets.length > 0) {
@@ -1097,6 +1350,7 @@ export async function generateResponseDraft(
 
     let draftContent: string | null = null;
     let response: any = null;
+    let emailVerifierForbiddenTerms: string[] | null = null;
 
     // ---------------------------------------------------------------------------
     // Email: Two-Step Pipeline (Phase 30)
@@ -1110,6 +1364,7 @@ export async function generateResponseDraft(
         getEffectiveForbiddenTerms(lead.clientId),
         buildEffectiveEmailLengthRules(lead.clientId),
       ]);
+      emailVerifierForbiddenTerms = effectiveForbiddenTerms;
 
       // Coerce model/reasoning from workspace settings
       const draftModel = coerceDraftGenerationModel(settings?.draftGenerationModel);
@@ -1961,6 +2216,41 @@ Generate an appropriate ${channel} response following the guidelines above.
 	        availability,
 	      });
 	    }
+
+      if (channel === "email" && draftContent) {
+        let bookingLink: string | null = null;
+        try {
+          bookingLink = await getBookingLink(lead.clientId, settings);
+        } catch (error) {
+          console.error("[AI Drafts] Failed to resolve canonical booking link:", error);
+        }
+
+        try {
+          const verified = await runEmailDraftVerificationStep3({
+            clientId: lead.clientId,
+            leadId,
+            triggerMessageId,
+            draft: draftContent,
+            availability,
+            bookingLink,
+            bookingProcessInstructions,
+            forbiddenTerms: emailVerifierForbiddenTerms ?? DEFAULT_FORBIDDEN_TERMS,
+            serviceDescription,
+            knowledgeContext,
+            timeoutMs: Math.min(20_000, Math.max(3_000, Math.floor(timeoutMs * 0.25))),
+          });
+
+          if (verified) {
+            draftContent = verified;
+          }
+        } catch (error) {
+          console.error("[AI Drafts] Step 3 verifier threw unexpectedly:", error);
+        }
+
+        // Hard post-pass enforcement (even if verifier fails).
+        draftContent = enforceCanonicalBookingLink(draftContent, bookingLink);
+        draftContent = replaceEmDashesWithCommaSpace(draftContent);
+      }
 
 	    draftContent = sanitizeDraftContent(draftContent, leadId, channel);
 

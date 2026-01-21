@@ -119,6 +119,33 @@ Return ONLY valid JSON (no markdown, no extra keys):
   "reason": "max 40 words"
 }`;
 
+const EMAIL_DRAFT_VERIFY_STEP3_SYSTEM = `You are a strict verifier for outbound email drafts.
+
+Goal: make minimal, conservative edits to fix factual/logical errors and enforce formatting rules. Do NOT rewrite the email.
+
+NON-NEGOTIABLE RULES:
+- Output MUST be valid JSON (no markdown, no backticks).
+- Allowed changes are only:
+  1) Fix wrong/placeholder/invalid booking links (use the canonical booking link provided).
+  2) Replace em-dashes (—) with ", " (comma + single space).
+  3) Remove forbidden terms/phrases when they appear.
+  4) Remove unneeded repetition.
+  5) Correct factual/proprietary info ONLY when the correct information is explicitly present in the provided context (service description / knowledge context / booking instructions). If a claim is not supported, remove it rather than inventing.
+     - For pricing/fees: only use values explicitly described as membership price/price/fee in the provided context (do NOT treat revenue thresholds like "$1M" as pricing).
+  6) Fix obvious logical contradictions with the latest inbound message (especially date/time windows like "first week of February").
+- Preserve meaning, intent, and voice. Keep the same greeting, structure, and signature unless a change is required by the rules above.
+- Never introduce new scheduling links. The ONLY allowed scheduling link is the canonical booking link provided.
+- Never invent availability or meeting times. If you suggest times, use ONLY the provided availability slots verbatim; otherwise ask the lead for their preferred windows.
+- Never output placeholders like "[Calendly link]" or "{booking link}".
+
+Return ONLY valid JSON with this exact shape:
+{
+  "finalDraft": string,
+  "changed": boolean,
+  "violationsDetected": string[],
+  "changes": string[]
+}`;
+
 const DRAFT_EMAIL_SYSTEM_TEMPLATE = `You are an inbox manager writing replies for {aiName} ({companyName}).
 
 ROLE: inbox_manager
@@ -753,6 +780,22 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       messages: [
         { role: "system", content: "{{generationInstructions}}" },
         { role: "user", content: "{{generationInput}}" },
+      ],
+    },
+    {
+      key: "draft.verify.email.step3.v1",
+      featureId: "draft.verify.email.step3",
+      name: "Email Draft Verification (Step 3)",
+      description: "Verifies + minimally corrects an email draft for factual/link/formatting issues.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [
+        { role: "system", content: EMAIL_DRAFT_VERIFY_STEP3_SYSTEM },
+        {
+          role: "user",
+          content:
+            "<latest_inbound>\n{{latestInbound}}\n</latest_inbound>\n\n<availability_slots>\n{{availability}}\n</availability_slots>\n\n<canonical_booking_link>\n{{bookingLink}}\n</canonical_booking_link>\n\n<booking_process_instructions>\n{{bookingProcessInstructions}}\n</booking_process_instructions>\n\n<service_description>\n{{serviceDescription}}\n</service_description>\n\n<knowledge_context>\n{{knowledgeContext}}\n</knowledge_context>\n\n<forbidden_terms>\n{{forbiddenTerms}}\n</forbidden_terms>\n\n<draft_to_verify>\n{{draft}}\n</draft_to_verify>",
+        },
       ],
     },
     {
