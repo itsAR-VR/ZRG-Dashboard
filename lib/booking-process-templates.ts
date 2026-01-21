@@ -8,6 +8,7 @@
 import type { BookingProcessLinkType } from "@prisma/client";
 
 export type BookingProcessStageInput = {
+  id?: string;
   stageNumber: number;
   includeBookingLink: boolean;
   linkType: BookingProcessLinkType;

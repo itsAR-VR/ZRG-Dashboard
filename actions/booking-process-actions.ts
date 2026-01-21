@@ -269,15 +269,7 @@ export async function updateBookingProcess(
 
     // Update in transaction
     const process = await prisma.$transaction(async (tx) => {
-      // Delete existing stages if new stages provided
-      if (data.stages) {
-        await tx.bookingProcessStage.deleteMany({
-          where: { bookingProcessId: id },
-        });
-      }
-
-      // Update booking process
-      return tx.bookingProcess.update({
+      const updatedProcess = await tx.bookingProcess.update({
         where: { id },
         data: {
           ...(data.name && { name: data.name }),
@@ -285,25 +277,118 @@ export async function updateBookingProcess(
           ...(data.maxWavesBeforeEscalation !== undefined && {
             maxWavesBeforeEscalation: data.maxWavesBeforeEscalation,
           }),
-          ...(data.stages && {
-            stages: {
-              create: data.stages.map((stage) => ({
-                stageNumber: stage.stageNumber,
-                includeBookingLink: stage.includeBookingLink,
-                linkType: stage.linkType,
-                includeSuggestedTimes: stage.includeSuggestedTimes,
-                numberOfTimesToSuggest: stage.numberOfTimesToSuggest,
-                includeQualifyingQuestions: stage.includeQualifyingQuestions,
-                qualificationQuestionIds: stage.qualificationQuestionIds,
-                includeTimezoneAsk: stage.includeTimezoneAsk,
-                applyToEmail: stage.applyToEmail,
-                applyToSms: stage.applyToSms,
-                applyToLinkedin: stage.applyToLinkedin,
-              })),
-            },
-          }),
         },
       });
+
+      if (data.stages) {
+        const existingStages = await tx.bookingProcessStage.findMany({
+          where: { bookingProcessId: id },
+          select: { id: true, stageNumber: true },
+          orderBy: { stageNumber: "asc" },
+        });
+
+        const existingStageIds = new Set(existingStages.map((s) => s.id));
+        const requestStageIds = data.stages
+          .map((s) => s.id)
+          .filter((stageId): stageId is string => Boolean(stageId));
+
+        const hasAnyStageIds = requestStageIds.length > 0;
+
+        const stageDataFromInput = (stage: BookingProcessStageInput) => ({
+          includeBookingLink: stage.includeBookingLink,
+          linkType: stage.linkType,
+          includeSuggestedTimes: stage.includeSuggestedTimes,
+          numberOfTimesToSuggest: stage.numberOfTimesToSuggest,
+          includeQualifyingQuestions: stage.includeQualifyingQuestions,
+          qualificationQuestionIds: stage.qualificationQuestionIds,
+          includeTimezoneAsk: stage.includeTimezoneAsk,
+          applyToEmail: stage.applyToEmail,
+          applyToSms: stage.applyToSms,
+          applyToLinkedin: stage.applyToLinkedin,
+        });
+
+        if (hasAnyStageIds) {
+          // Ensure all provided stage IDs belong to this booking process
+          for (const stageId of requestStageIds) {
+            if (!existingStageIds.has(stageId)) {
+              throw new Error("Invalid stage id in update payload");
+            }
+          }
+
+          // Delete any stages removed from the payload
+          await tx.bookingProcessStage.deleteMany({
+            where: {
+              bookingProcessId: id,
+              id: { notIn: requestStageIds },
+            },
+          });
+
+          // Avoid stageNumber uniqueness collisions during reorders by moving existing stages to a temp range first.
+          for (const stage of data.stages) {
+            if (!stage.id) continue;
+            await tx.bookingProcessStage.update({
+              where: { id: stage.id },
+              data: { stageNumber: 10_000 + stage.stageNumber },
+            });
+          }
+
+          // Apply updates + creates in final order; preserves instructionTemplates on existing stage rows.
+          for (const stage of data.stages) {
+            if (stage.id && existingStageIds.has(stage.id)) {
+              await tx.bookingProcessStage.update({
+                where: { id: stage.id },
+                data: {
+                  stageNumber: stage.stageNumber,
+                  ...stageDataFromInput(stage),
+                },
+              });
+            } else {
+              await tx.bookingProcessStage.create({
+                data: {
+                  bookingProcessId: id,
+                  stageNumber: stage.stageNumber,
+                  ...stageDataFromInput(stage),
+                },
+              });
+            }
+          }
+        } else {
+          // Backwards compatibility path: no stage IDs. Preserve existing instructionTemplates by updating in place
+          // based on stageNumber (best-effort; can't safely detect reorders without IDs).
+          const existingByStageNumber = new Map(existingStages.map((s) => [s.stageNumber, s.id]));
+
+          // Delete any trailing stages that no longer exist.
+          await tx.bookingProcessStage.deleteMany({
+            where: {
+              bookingProcessId: id,
+              stageNumber: { gt: data.stages.length },
+            },
+          });
+
+          for (const stage of data.stages) {
+            const existingId = existingByStageNumber.get(stage.stageNumber);
+            if (existingId) {
+              await tx.bookingProcessStage.update({
+                where: { id: existingId },
+                data: {
+                  stageNumber: stage.stageNumber,
+                  ...stageDataFromInput(stage),
+                },
+              });
+            } else {
+              await tx.bookingProcessStage.create({
+                data: {
+                  bookingProcessId: id,
+                  stageNumber: stage.stageNumber,
+                  ...stageDataFromInput(stage),
+                },
+              });
+            }
+          }
+        }
+      }
+
+      return updatedProcess;
     });
 
     return { success: true, data: process };
@@ -420,6 +505,7 @@ export async function duplicateBookingProcess(
             applyToEmail: stage.applyToEmail,
             applyToSms: stage.applyToSms,
             applyToLinkedin: stage.applyToLinkedin,
+            instructionTemplates: stage.instructionTemplates ?? undefined,
           })),
         },
       },
@@ -455,4 +541,140 @@ export async function createBookingProcessFromTemplate(
     description: template.description,
     stages: template.stages,
   });
+}
+
+// ----------------------------------------------------------------------------
+// Update Stage Instruction Templates (Phase 47k)
+// ----------------------------------------------------------------------------
+
+import { Prisma } from "@prisma/client";
+import type { BookingStageTemplates } from "@/lib/booking-stage-templates";
+
+/**
+ * Get a booking process stage by ID, including its instruction templates.
+ */
+export async function getBookingProcessStage(
+  stageId: string
+): Promise<{ success: boolean; data?: BookingProcessStage; error?: string }> {
+  try {
+    const stage = await prisma.bookingProcessStage.findUnique({
+      where: { id: stageId },
+      include: {
+        bookingProcess: {
+          select: { clientId: true },
+        },
+      },
+    });
+
+    if (!stage) {
+      return { success: false, error: "Stage not found" };
+    }
+
+    await requireClientAccess(stage.bookingProcess.clientId);
+
+    return { success: true, data: stage };
+  } catch (error) {
+    console.error("[getBookingProcessStage] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to get stage",
+    };
+  }
+}
+
+/**
+ * Update instruction templates for a booking process stage.
+ * Admin-gated to prevent unauthorized edits.
+ */
+export async function updateBookingStageTemplates(
+  stageId: string,
+  templates: BookingStageTemplates | null
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    // Get stage to find clientId for auth check
+    const stage = await prisma.bookingProcessStage.findUnique({
+      where: { id: stageId },
+      include: {
+        bookingProcess: {
+          select: { clientId: true },
+        },
+      },
+    });
+
+    if (!stage) {
+      return { success: false, error: "Stage not found" };
+    }
+
+    // Admin-only
+    await requireClientAdminAccess(stage.bookingProcess.clientId);
+
+    // Update templates (set to Prisma.DbNull to reset to defaults)
+    await prisma.bookingProcessStage.update({
+      where: { id: stageId },
+      data: {
+        instructionTemplates: templates === null ? Prisma.DbNull : templates,
+      },
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error("[updateBookingStageTemplates] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to update stage templates",
+    };
+  }
+}
+
+/**
+ * Get all stages for a booking process with their templates.
+ */
+export async function getBookingProcessStagesWithTemplates(
+  bookingProcessId: string
+): Promise<{
+  success: boolean;
+  data?: Array<{
+    id: string;
+    stageNumber: number;
+    instructionTemplates: BookingStageTemplates | null;
+  }>;
+  error?: string;
+}> {
+  try {
+    const process = await prisma.bookingProcess.findUnique({
+      where: { id: bookingProcessId },
+      select: { clientId: true },
+    });
+
+    if (!process) {
+      return { success: false, error: "Booking process not found" };
+    }
+
+    await requireClientAccess(process.clientId);
+
+    const stages = await prisma.bookingProcessStage.findMany({
+      where: { bookingProcessId },
+      orderBy: { stageNumber: "asc" },
+      select: {
+        id: true,
+        stageNumber: true,
+        instructionTemplates: true,
+      },
+    });
+
+    return {
+      success: true,
+      data: stages.map((s) => ({
+        id: s.id,
+        stageNumber: s.stageNumber,
+        instructionTemplates: s.instructionTemplates as BookingStageTemplates | null,
+      })),
+    };
+  } catch (error) {
+    console.error("[getBookingProcessStagesWithTemplates] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to get stages",
+    };
+  }
 }

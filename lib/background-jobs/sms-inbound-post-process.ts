@@ -16,6 +16,7 @@ import { getPublicAppUrl } from "@/lib/app-url";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { maybeAssignLead } from "@/lib/lead-assignment";
+import { scheduleDelayedAutoSend, getCampaignDelayConfig, validateDelayedAutoSend } from "@/lib/background-jobs/delayed-auto-send";
 
 export async function runSmsInboundPostProcessJob(params: {
   clientId: string;
@@ -276,15 +277,49 @@ export async function runSmsInboundPostProcessJob(params: {
 
         if (evaluation.safeToSend && evaluation.confidence >= autoSendThreshold) {
           console.log(
-            `[SMS Post-Process] Auto-sending draft ${draftId} for lead ${lead.id} (confidence ${evaluation.confidence.toFixed(2)} >= ${autoSendThreshold.toFixed(2)})`
+            `[SMS Post-Process] Auto-send approved for draft ${draftId} (confidence ${evaluation.confidence.toFixed(2)} >= ${autoSendThreshold.toFixed(2)})`
           );
 
-          const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
+          // Phase 47l: Check for delay configuration
+          const delayConfig = lead.emailCampaign?.id ? await getCampaignDelayConfig(lead.emailCampaign.id) : null;
 
-          if (sendResult.success) {
-            console.log(`[SMS Post-Process] Sent message: ${sendResult.messageId}`);
+          if (delayConfig && (delayConfig.delayMinSeconds > 0 || delayConfig.delayMaxSeconds > 0)) {
+            // Schedule delayed send
+            const scheduleResult = await scheduleDelayedAutoSend({
+              clientId: client.id,
+              leadId: lead.id,
+              triggerMessageId: message.id,
+              draftId,
+              delayMinSeconds: delayConfig.delayMinSeconds,
+              delayMaxSeconds: delayConfig.delayMaxSeconds,
+              inboundSentAt: messageSentAt,
+            });
+
+            if (scheduleResult.scheduled) {
+              console.log(`[SMS Post-Process] Scheduled delayed send for draft ${draftId}, runAt: ${scheduleResult.runAt?.toISOString()}`);
+            } else {
+              console.log(`[SMS Post-Process] Delayed send not scheduled: ${scheduleResult.skipReason}`);
+            }
           } else {
-            console.error(`[SMS Post-Process] Auto-send failed: ${sendResult.error}`);
+            // Immediate send (no delay configured)
+            const validation = await validateDelayedAutoSend({
+              leadId: lead.id,
+              triggerMessageId: message.id,
+              draftId,
+            });
+            if (!validation.proceed) {
+              console.log(
+                `[SMS Post-Process] Skipping immediate auto-send for draft ${draftId}: ${validation.reason || "unknown_reason"}`
+              );
+            } else {
+              const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
+
+              if (sendResult.success) {
+                console.log(`[SMS Post-Process] Sent message: ${sendResult.messageId}`);
+              } else {
+                console.error(`[SMS Post-Process] Auto-send failed: ${sendResult.error}`);
+              }
+            }
           }
         } else {
           // Send Slack notification for review

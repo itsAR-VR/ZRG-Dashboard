@@ -1,6 +1,12 @@
-import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
 import { runResponse, runResponseWithInteraction, markAiInteractionError } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
+import {
+  getEffectiveForbiddenTerms,
+  DEFAULT_FORBIDDEN_TERMS,
+  buildEffectiveEmailLengthRules,
+  getEffectiveArchetypeInstructions,
+} from "@/lib/ai/prompt-snippets";
 import {
   extractFirstCompleteJsonObjectFromText,
   getFirstRefusal,
@@ -242,78 +248,9 @@ function isPrismaUniqueConstraintError(error: unknown): boolean {
   return "code" in error && (error as { code?: unknown }).code === "P2002";
 }
 
-const EMAIL_FORBIDDEN_TERMS = [
-  "Tailored",
-  "Surface",
-  "Actionable",
-  "Accordingly",
-  "Additionally",
-  "Arguably",
-  "Certainly",
-  "Consequently",
-  "Hence",
-  "However",
-  "Indeed",
-  "Moreover",
-  "Nevertheless",
-  "Nonetheless",
-  "Notwithstanding",
-  "Thus",
-  "Undoubtedly",
-  "Adept",
-  "Commendable",
-  "Dynamic",
-  "Efficient",
-  "Ever-evolving",
-  "Exciting",
-  "Exemplary",
-  "Innovative",
-  "Invaluable",
-  "Robust",
-  "Seamless",
-  "Synergistic",
-  "Thought-provoking",
-  "Transformative",
-  "Utmost",
-  "Vibrant",
-  "Vital",
-  "Efficiency",
-  "Innovation",
-  "Institution",
-  "Integration",
-  "Implementation",
-  "Landscape",
-  "Optimization",
-  "Realm",
-  "Tapestry",
-  "Transformation",
-  "Aligns",
-  "Augment",
-  "Delve",
-  "Embark",
-  "Facilitate",
-  "Maximize",
-  "Underscores",
-  "Utilize",
-  "A testament to…",
-  "In conclusion…",
-  "In summary…",
-  "It’s important to note/consider…",
-  "It’s worth noting that…",
-  "On the contrary…",
-  "Deliver actionable insights through in-depth data analysis",
-  "Drive insightful data-driven decisions",
-  "Leveraging data-driven insights",
-  "Leveraging complex datasets to extract meaningful insights",
-  "Overly complex sentence structures",
-  "An unusually formal tone in text that’s supposed to be conversational or casual",
-  "An overly casual tone for a text that’s supposed to be formal or business casual",
-  "Unnecessarily long and wordy",
-  "Vague statements",
-  "Note",
-  "Your note",
-  "Thanks for your note",
-];
+// Email forbidden terms now sourced from prompt-snippets.ts (Phase 47e)
+// This reference is kept for backward compatibility in non-async contexts
+const EMAIL_FORBIDDEN_TERMS = DEFAULT_FORBIDDEN_TERMS;
 
 function buildSmsPrompt(opts: {
   aiName: string;
@@ -695,6 +632,7 @@ function buildEmailDraftGenerationInstructions(opts: {
   sentimentTag: string;
   strategy: EmailDraftStrategy;
   archetype: EmailDraftArchetype;
+  forbiddenTerms?: string[]; // Phase 47e: workspace-specific forbidden terms
 }): string {
   const greeting = opts.aiGreeting.replace("{firstName}", opts.firstName);
 
@@ -716,7 +654,9 @@ ${opts.strategy.should_offer_times && opts.strategy.times_to_offer?.length
 MUST AVOID:
 ${opts.strategy.must_avoid.length > 0 ? opts.strategy.must_avoid.map(a => `- ${a}`).join("\n") : "- No specific avoidances identified."}`;
 
-  const forbiddenTerms = EMAIL_FORBIDDEN_TERMS.slice(0, 30).join(", ");
+  // Use workspace-specific forbidden terms if provided, otherwise default (Phase 47e)
+  const forbiddenTermsList = opts.forbiddenTerms ?? EMAIL_FORBIDDEN_TERMS;
+  const forbiddenTerms = forbiddenTermsList.slice(0, 30).join(", ");
 
   return `You are an inbox manager writing a reply for ${opts.aiName}${opts.ourCompanyName ? ` (${opts.ourCompanyName})` : ""}.
 
@@ -1162,6 +1102,15 @@ export async function generateResponseDraft(
     // Email: Two-Step Pipeline (Phase 30)
     // ---------------------------------------------------------------------------
     if (channel === "email") {
+      // Fetch effective overrides in parallel (Phase 47e/47g: workspace overrides)
+      const [
+        { terms: effectiveForbiddenTerms },
+        { rules: emailLengthRules, bounds: emailLengthBounds },
+      ] = await Promise.all([
+        getEffectiveForbiddenTerms(lead.clientId),
+        buildEffectiveEmailLengthRules(lead.clientId),
+      ]);
+
       // Coerce model/reasoning from workspace settings
       const draftModel = coerceDraftGenerationModel(settings?.draftGenerationModel);
       const { api: strategyReasoningApi } = coerceDraftGenerationReasoningEffort({
@@ -1175,10 +1124,14 @@ export async function generateResponseDraft(
         triggerMessageId,
         draftRequestStartedAtMs,
       });
-	      const archetype = selectArchetypeFromSeed(archetypeSeed);
+      const baseArchetype = selectArchetypeFromSeed(archetypeSeed);
 
-	      const emailLengthBounds = getEmailDraftCharBoundsFromEnv();
-	      const emailLengthRules = buildEmailLengthRules(emailLengthBounds);
+      // Apply archetype instructions override if present (Phase 47g)
+      const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
+        baseArchetype.id,
+        lead.clientId
+      );
+      const archetype = { ...baseArchetype, instructions: effectiveArchetypeInstructions };
 
 	      // Split timeout: ~40% for strategy, ~60% for generation
 	      const strategyTimeoutMs = Math.max(3000, Math.floor(timeoutMs * 0.4));
@@ -1390,6 +1343,7 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
 	          sentimentTag,
 	          strategy,
 	          archetype,
+	          forbiddenTerms: effectiveForbiddenTerms, // Phase 47e
 	        }) + emailLengthRules;
 
         const generationInput = `<conversation_transcript>
@@ -1439,8 +1393,8 @@ Write the email response now, following the strategy and structure archetype.
 	            `- Preserve any full URLs exactly as-is.\n` +
 	            `- Do NOT add booking links or placeholders like "{insert booking link}".\n` +
 	            `- If the original includes a signature block, keep it; otherwise do not add one.\n\n` +
-	            `TARGET:\n- The rewrite is ${reason.replace("_", " ")}.\n` +
-	            buildEmailLengthRules(emailLengthBounds);
+	            `TARGET:\n- The rewrite is ${reason.replace("_", " ")}.` +
+	            emailLengthRules;
 
 		          try {
 		            const rewriteResponse = await runResponse({
@@ -1594,7 +1548,7 @@ Write the email response now, following the strategy and structure archetype.
         const fallbackInputMessages = [
           {
             role: "assistant" as const,
-            content: `Completely avoid the usage of these words/phrases/tones:\n\n${EMAIL_FORBIDDEN_TERMS.join("\n")}`,
+            content: `Completely avoid the usage of these words/phrases/tones:\n\n${effectiveForbiddenTerms.join("\n")}`,
           },
           {
             role: "user" as const,
@@ -1731,7 +1685,46 @@ Generate an appropriate email response following the guidelines and structure ar
     // SMS / LinkedIn: Single-step
     // ---------------------------------------------------------------------------
     else {
-      let systemPrompt =
+      const promptKey = channel === "linkedin" ? "draft.generate.linkedin.v1" : "draft.generate.sms.v1";
+      // Use override-aware prompt lookup (Phase 47i)
+      const overrideResult = await getPromptWithOverrides(promptKey, lead.clientId);
+      const promptTemplate = overrideResult?.template ?? getAIPromptTemplate(promptKey);
+      const overrideVersion = overrideResult?.overrideVersion ?? null;
+
+      const greeting = aiGreeting.replace("{firstName}", firstName);
+      const safeCompanyName = companyName && companyName.trim() ? companyName : "the company";
+      const safeTargetResult = targetResult && targetResult.trim() ? targetResult : "their growth goals";
+      const safeGoals =
+        aiGoals?.trim() || "Use good judgment to advance the conversation while respecting user intent.";
+
+      const templateVars: Record<string, string> = {
+        aiName,
+        aiTone,
+        responseStrategy,
+        aiGoals: safeGoals,
+        greeting,
+        companyName: safeCompanyName,
+        targetResult: safeTargetResult,
+        serviceDescription: serviceDescription?.trim() || "None.",
+        knowledgeContext: knowledgeContext?.trim() || "None.",
+        qualificationQuestions: qualificationQuestions.length
+          ? qualificationQuestions.map((q) => `- ${q}`).join("\n")
+          : "None.",
+        availability: availability.length ? availability.map((s) => `- ${s}`).join("\n") : "None.",
+        conversationTranscript: conversationTranscript || "",
+        sentimentTag: sentimentTag || "",
+      };
+
+      const applyTemplateVars = (content: string): string => {
+        let next = content;
+        for (const [key, value] of Object.entries(templateVars)) {
+          next = next.replaceAll(`{{${key}}}`, value);
+          next = next.replaceAll(`{${key}}`, value);
+        }
+        return next;
+      };
+
+      const fallbackSystemPrompt =
         channel === "linkedin"
           ? buildLinkedInPrompt({
               aiName,
@@ -1740,7 +1733,7 @@ Generate an appropriate email response following the guidelines and structure ar
               firstName,
               responseStrategy,
               sentimentTag,
-              aiGoals,
+              aiGoals: safeGoals,
               serviceDescription,
               qualificationQuestions,
               knowledgeContext,
@@ -1755,7 +1748,7 @@ Generate an appropriate email response following the guidelines and structure ar
               firstName,
               responseStrategy,
               sentimentTag,
-              aiGoals,
+              aiGoals: safeGoals,
               serviceDescription,
               qualificationQuestions,
               knowledgeContext,
@@ -1764,15 +1757,29 @@ Generate an appropriate email response following the guidelines and structure ar
               availability,
             });
 
+      let instructions =
+        promptTemplate?.messages.filter((m) => m.role === "system").map((m) => applyTemplateVars(m.content)).join("\n\n").trim() ||
+        fallbackSystemPrompt;
+
       // Append booking process instructions if available (Phase 36)
       if (bookingProcessInstructions) {
-        systemPrompt += bookingProcessInstructions;
+        instructions += bookingProcessInstructions;
       }
 
-      const inputMessages = [
-        {
-          role: "user" as const,
-          content: `<conversation_transcript>
+      const templatedInput = promptTemplate?.messages
+        .filter((m) => m.role !== "system")
+        .map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: applyTemplateVars(m.content),
+        }));
+
+      const inputMessages: Array<{ role: "user" | "assistant"; content: string }> =
+        templatedInput && templatedInput.length > 0
+          ? templatedInput
+          : [
+              {
+                role: "user",
+                content: `<conversation_transcript>
 ${conversationTranscript}
 </conversation_transcript>
 
@@ -1781,11 +1788,8 @@ ${conversationTranscript}
 <task>
 Generate an appropriate ${channel} response following the guidelines above.
 </task>`,
-        },
-      ];
-
-      const promptKey = channel === "linkedin" ? "draft.generate.linkedin.v1" : "draft.generate.sms.v1";
-      const promptTemplate = getAIPromptTemplate(promptKey);
+              },
+            ];
 
 	      const primaryModel = "gpt-5-mini";
 	      const reasoningEffort = "medium" as const;
@@ -1795,7 +1799,7 @@ Generate an appropriate ${channel} response following the guidelines above.
 
       const budget = await computeAdaptiveMaxOutputTokens({
         model: primaryModel,
-        instructions: systemPrompt,
+        instructions,
         input: inputMessages,
         min: Math.max(1, Math.floor(primaryBudgetMin)),
         max: Math.max(1, Math.floor(primaryBudgetMax)),
@@ -1809,10 +1813,10 @@ Generate an appropriate ${channel} response following the guidelines above.
           clientId: lead.clientId,
           leadId,
           featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-          promptKey: promptTemplate?.key || promptKey,
+          promptKey: (promptTemplate?.key || promptKey) + (overrideVersion ? `.${overrideVersion}` : ""),
           params: {
             model: primaryModel,
-            instructions: systemPrompt,
+            instructions,
             input: inputMessages,
             text: { verbosity: "low" },
             reasoning: { effort: reasoningEffort },
@@ -1850,10 +1854,10 @@ Generate an appropriate ${channel} response following the guidelines above.
 	              clientId: lead.clientId,
 	              leadId,
 	              featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-	              promptKey: `${promptTemplate?.key || promptKey}.retry_more_tokens${attempt}`,
+	              promptKey: `${promptTemplate?.key || promptKey}${overrideVersion ? `.${overrideVersion}` : ""}.retry_more_tokens${attempt}`,
 	              params: {
 	                model: primaryModel,
-	                instructions: systemPrompt,
+	                instructions,
 	                input: inputMessages,
 	                text: { verbosity: "low" },
 	                // Reduce reasoning budget on retry to avoid spending output tokens on hidden reasoning.
@@ -1893,7 +1897,7 @@ Generate an appropriate ${channel} response following the guidelines above.
 
         const fallbackBudget = await computeAdaptiveMaxOutputTokens({
           model: primaryModel,
-          instructions: systemPrompt,
+          instructions,
           input: inputMessages,
           min: Math.max(1, Math.floor(fallbackBudgetMin)),
           max: Math.max(1, Math.floor(fallbackBudgetMax)),
@@ -1910,7 +1914,7 @@ Generate an appropriate ${channel} response following the guidelines above.
             promptKey: `${promptTemplate?.key || promptKey}.fallback`,
             params: {
               model: primaryModel,
-              instructions: systemPrompt,
+              instructions,
               input: inputMessages,
               text: { verbosity: "low" },
               reasoning: { effort: reasoningEffort },

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequence-actions";
-import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
 import { runResponse } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
@@ -1783,7 +1783,10 @@ export async function parseAcceptedTimeFromMessage(
       .map((slot, i) => `${i + 1}. ${slot.label} (${slot.datetime})`)
       .join("\n");
 
-    const promptTemplate = getAIPromptTemplate("followup.parse_accepted_time.v1");
+    // Use override-aware prompt lookup (Phase 47i)
+    const overrideResult = await getPromptWithOverrides("followup.parse_accepted_time.v1", meta.clientId);
+    const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("followup.parse_accepted_time.v1");
+    const overrideVersion = overrideResult?.overrideVersion ?? null;
     const systemTemplate =
       promptTemplate?.messages.find((m) => m.role === "system")?.content ||
       "Match the message to one of the provided slots; reply with a slot number or NONE.";
@@ -1806,7 +1809,7 @@ export async function parseAcceptedTimeFromMessage(
       clientId: meta.clientId,
       leadId: meta.leadId,
       featureId: promptTemplate?.featureId || "followup.parse_accepted_time",
-      promptKey: promptTemplate?.key || "followup.parse_accepted_time.v1",
+      promptKey: (promptTemplate?.key || "followup.parse_accepted_time.v1") + (overrideVersion ? `.${overrideVersion}` : ""),
       params: {
         model,
         instructions: systemPrompt,
@@ -1848,7 +1851,10 @@ export async function detectMeetingAcceptedIntent(
     // Validate OpenAI API key is configured
     if (!process.env.OPENAI_API_KEY) return false;
 
-    const promptTemplate = getAIPromptTemplate("followup.detect_meeting_accept_intent.v1");
+    // Use override-aware prompt lookup (Phase 47i)
+    const overrideResult = await getPromptWithOverrides("followup.detect_meeting_accept_intent.v1", meta.clientId);
+    const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("followup.detect_meeting_accept_intent.v1");
+    const overrideVersion = overrideResult?.overrideVersion ?? null;
     const systemPrompt =
       promptTemplate?.messages.find((m) => m.role === "system")?.content ||
       "Determine if the message indicates acceptance. Reply YES or NO.";
@@ -1870,7 +1876,7 @@ export async function detectMeetingAcceptedIntent(
       clientId: meta.clientId,
       leadId: meta.leadId,
       featureId: promptTemplate?.featureId || "followup.detect_meeting_accept_intent",
-      promptKey: promptTemplate?.key || "followup.detect_meeting_accept_intent.v1",
+      promptKey: (promptTemplate?.key || "followup.detect_meeting_accept_intent.v1") + (overrideVersion ? `.${overrideVersion}` : ""),
       params: {
         model,
         instructions: systemPrompt,

@@ -12,6 +12,13 @@ Add server actions to create, update, and reset prompt overrides from the UI, wi
 
 ## Work
 
+0. **Add a safe base-hash helper (server-only):**
+   - Implement `computePromptMessageBaseHash({ promptKey, role, index })` by:
+     - loading the base template from `lib/ai/prompt-registry.ts`
+     - selecting the message by `(role, indexWithinRole)`
+     - returning a stable hash (sha256) of the base message content
+   - If the message doesn’t exist → reject save with a clear error (prevents writing orphan overrides).
+
 1. **Add server actions to `actions/ai-observability-actions.ts`:**
 
 ```typescript
@@ -33,6 +40,13 @@ export async function savePromptOverride(
   try {
     await requireWorkspaceAdmin(clientId);
 
+    // Compute baseContentHash from the current registry template (prevents index drift)
+    const baseContentHash = computePromptMessageBaseHash({
+      promptKey: override.promptKey,
+      role: override.role,
+      index: override.index,
+    });
+
     await prisma.promptOverride.upsert({
       where: {
         clientId_promptKey_role_index: {
@@ -47,9 +61,11 @@ export async function savePromptOverride(
         promptKey: override.promptKey,
         role: override.role,
         index: override.index,
+        baseContentHash,
         content: override.content,
       },
       update: {
+        baseContentHash,
         content: override.content,
       },
     });
@@ -135,6 +151,7 @@ export async function getPromptOverrides(
         promptKey: true,
         role: true,
         index: true,
+        baseContentHash: true,
         content: true,
       },
     });
@@ -155,11 +172,21 @@ Ensure `PromptOverrideInput` is exported for use in UI components.
 
 ## Output
 
-- `savePromptOverride()` — create/update an override
-- `resetPromptOverride()` — delete a single override
-- `resetAllPromptOverrides()` — delete all overrides for a prompt
-- `getPromptOverrides()` — fetch all overrides for a workspace
+**Completed:**
+- Added types: `PromptOverrideInput`, `PromptOverrideRecord`
+- Added `savePromptOverride(clientId, override)` — create/update with automatic baseContentHash computation
+- Added `resetPromptOverride(clientId, promptKey, role, index)` — delete single override
+- Added `resetAllPromptOverrides(clientId, promptKey)` — delete all overrides for a prompt (returns deletedCount)
+- Added `getPromptOverrides(clientId)` — fetch all overrides for UI display
+
+**Key implementation details:**
+- All actions are admin-gated via `requireWorkspaceAdmin(clientId)`
+- `savePromptOverride` validates that the target message exists (returns clear error if not)
+- `baseContentHash` is recomputed on every save (always reflects current template)
+- Actions use the existing pattern: `{ success: boolean; error?: string; ... }`
+
+**File modified:** `actions/ai-observability-actions.ts`
 
 ## Handoff
 
-Subphase d will use these server actions to build the editable UI in the prompt modal.
+Subphase 47d will transform the read-only "Backend Prompts" modal in `settings-view.tsx` into an editable interface using these server actions.

@@ -94,6 +94,7 @@ enum BackgroundJobType {
   INSTANTLY_INBOUND_POST_PROCESS
   LEAD_SCORING_POST_PROCESS
   CONVERSATION_SYNC
+  AI_AUTO_SEND_DELAYED // Phase 47l: Delayed auto-send execution
 }
 
 enum BackgroundJobStatus {
@@ -162,6 +163,8 @@ model Client {
   insightChatAuditEvents InsightChatAuditEvent[]
   bookingProcesses BookingProcess[]
   aiPersonas AiPersona[]           // AI personas for draft generation (Phase 39)
+  promptOverrides PromptOverride[] // AI prompt overrides (Phase 47)
+  promptSnippetOverrides PromptSnippetOverride[] // AI prompt snippet overrides (Phase 47)
   emailBisonBaseHost EmailBisonBaseHost? @relation(fields: [emailBisonBaseHostId], references: [id], onDelete: SetNull)
 
   @@index([userId])
@@ -707,6 +710,8 @@ model AIDraft {
   status    String   @default("pending") // pending, approved, rejected
   // Phase 36: one-to-many for multipart SMS (single draft can produce 1-3 outbound messages)
   sentMessages Message[]
+  // Phase 47l: Delayed auto-send jobs referencing this draft
+  backgroundJobs BackgroundJob[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -729,6 +734,9 @@ model BackgroundJob {
   lead        Lead              @relation(fields: [leadId], references: [id], onDelete: Cascade)
   messageId   String
   message     Message           @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  // Phase 47l: Optional draft ID for delayed auto-send jobs
+  draftId     String?
+  draft       AIDraft?          @relation(fields: [draftId], references: [id], onDelete: SetNull)
 
   runAt       DateTime          @default(now())
   attempts    Int               @default(0)
@@ -746,6 +754,7 @@ model BackgroundJob {
   @@index([clientId])
   @@index([leadId])
   @@index([messageId])
+  @@index([draftId])
 }
 
 // AI usage telemetry (admin-only observability)
@@ -792,6 +801,10 @@ model EmailCampaign {
   reactivationCampaigns ReactivationCampaign[]
   responseMode   CampaignResponseMode @default(SETTER_MANAGED)
   autoSendConfidenceThreshold Float @default(0.9)
+  // Phase 47l: Auto-send delay window (seconds)
+  // When responseMode = AI_AUTO_SEND, wait this long after inbound before auto-sending
+  autoSendDelayMinSeconds Int @default(180) // 3 minutes
+  autoSendDelayMaxSeconds Int @default(420) // 7 minutes
   // Booking process assignment (Phase 36)
   bookingProcessId String?
   bookingProcess   BookingProcess? @relation(fields: [bookingProcessId], references: [id], onDelete: SetNull)
@@ -1133,6 +1146,13 @@ model BookingProcessStage {
   applyToSms      Boolean @default(true)
   applyToLinkedin Boolean @default(true)
 
+  // Phase 47k: Per-stage instruction text templates (JSON)
+  // Keys: bookingLinkPlainTemplate, bookingLinkHyperlinkTemplate, noBookingLinkTemplate,
+  //       suggestedTimesWithSlotsTemplate, suggestedTimesNoSlotsTemplate,
+  //       qualifyingQuestionOneTemplate, qualifyingQuestionManyTemplate,
+  //       smsParaphraseHintTemplate, timezoneAskTemplate, earlyAcceptanceHintTemplate
+  instructionTemplates Json?
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -1189,6 +1209,43 @@ model LeadCampaignBookingProgress {
   @@index([activeBookingProcessId])
   @@index([currentWave])
   @@index([smsDndHeldSince])  // For cron retry queries
+}
+
+// =============================================================================
+// AI Prompt Overrides (Phase 47)
+// =============================================================================
+
+// Per-workspace prompt override for customizing AI prompt templates
+// Allows admins to customize specific messages within prompt templates without code changes
+model PromptOverride {
+  id              String   @id @default(uuid())
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  promptKey       String   // e.g., "sentiment.classify.v1"
+  role            String   // "system", "assistant", or "user"
+  index           Int      // Message index within the role group (0-based)
+  baseContentHash String   // Hash of the default message content at save-time (prevents index drift)
+  content         String   @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([clientId, promptKey, role, index])
+  @@index([clientId])
+}
+
+// Per-workspace snippet override for customizing reusable text blocks
+// Snippets are referenced by templates via placeholders like {forbiddenTerms}
+model PromptSnippetOverride {
+  id         String   @id @default(uuid())
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  snippetKey String   // e.g., "forbiddenTerms", "emailResponseFormattingRules"
+  content    String   @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([clientId, snippetKey])
+  @@index([clientId])
 }
 
 // =============================================================================

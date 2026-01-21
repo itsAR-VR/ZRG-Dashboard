@@ -1,5 +1,5 @@
 import "@/lib/server-dns";
-import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
@@ -97,7 +97,10 @@ export async function evaluateAutoSend(opts: {
         ? opts.replyReceivedAt.toISOString()
         : "";
 
-  const promptTemplate = getAIPromptTemplate("auto_send.evaluate.v1");
+  // Use override-aware prompt lookup (Phase 47i)
+  const overrideResult = await getPromptWithOverrides("auto_send.evaluate.v1", opts.clientId);
+  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("auto_send.evaluate.v1");
+  const overrideVersion = overrideResult?.overrideVersion ?? null;
   const system =
     promptTemplate?.messages.find((m) => m.role === "system")?.content ||
     `Return ONLY valid JSON:
@@ -157,7 +160,7 @@ export async function evaluateAutoSend(opts: {
         leadId: opts.leadId,
         featureId: promptTemplate?.featureId || "auto_send.evaluate",
         promptKey:
-          (promptTemplate?.key || "auto_send.evaluate.v1") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
+          (promptTemplate?.key || "auto_send.evaluate.v1") + (overrideVersion ? `.${overrideVersion}` : "") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
         params: {
           model,
           reasoning: { effort: "low" },

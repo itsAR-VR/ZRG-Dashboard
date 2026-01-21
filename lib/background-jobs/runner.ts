@@ -11,6 +11,7 @@ import { runLinkedInInboundPostProcessJob } from "@/lib/background-jobs/linkedin
 import { runSmartLeadInboundPostProcessJob } from "@/lib/background-jobs/smartlead-inbound-post-process";
 import { runInstantlyInboundPostProcessJob } from "@/lib/background-jobs/instantly-inbound-post-process";
 import { runConversationSyncJob } from "@/lib/background-jobs/conversation-sync";
+import { runAiAutoSendDelayedJob } from "@/lib/background-jobs/ai-auto-send-delayed";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value || "", 10);
@@ -113,6 +114,7 @@ export async function processBackgroundJobs(): Promise<{
         clientId: true,
         leadId: true,
         messageId: true,
+        draftId: true, // Phase 47l: For delayed auto-send jobs
         attempts: true,
         maxAttempts: true,
       },
@@ -192,6 +194,18 @@ export async function processBackgroundJobs(): Promise<{
               clientId: lockedJob.clientId,
               leadId: lockedJob.leadId,
               messageId: lockedJob.messageId,
+            })
+          );
+          break;
+        }
+        case BackgroundJobType.AI_AUTO_SEND_DELAYED: {
+          // Phase 47l: Delayed auto-send execution
+          await withAiTelemetrySource(telemetrySource, () =>
+            runAiAutoSendDelayedJob({
+              clientId: lockedJob.clientId,
+              leadId: lockedJob.leadId,
+              messageId: lockedJob.messageId,
+              draftId: lockedJob.draftId,
             })
           );
           break;

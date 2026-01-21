@@ -25,6 +25,7 @@ import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { maybeAssignLead } from "@/lib/lead-assignment";
+import { scheduleDelayedAutoSend, getCampaignDelayConfig, validateDelayedAutoSend } from "@/lib/background-jobs/delayed-auto-send";
 
 function mapInboxClassificationToSentimentTag(classification: string): SentimentTag {
   switch (classification) {
@@ -296,14 +297,50 @@ export async function runInstantlyInboundPostProcessJob(params: {
         });
 
         if (evaluation.safeToSend && evaluation.confidence >= autoSendThreshold) {
-          console.log("[Instantly Post-Process] Auto-sending draft", draftId, "confidence", evaluation.confidence.toFixed(2));
+          console.log("[Instantly Post-Process] Auto-send approved for draft", draftId, "confidence", evaluation.confidence.toFixed(2));
 
-          const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
+          // Phase 47l: Check for delay configuration
+          const delayConfig = emailCampaign?.id ? await getCampaignDelayConfig(emailCampaign.id) : null;
 
-          if (sendResult.success) {
-            console.log("[Instantly Post-Process] Sent message:", sendResult.messageId);
+          if (delayConfig && (delayConfig.delayMinSeconds > 0 || delayConfig.delayMaxSeconds > 0)) {
+            // Schedule delayed send
+            const scheduleResult = await scheduleDelayedAutoSend({
+              clientId: client.id,
+              leadId: lead.id,
+              triggerMessageId: message.id,
+              draftId,
+              delayMinSeconds: delayConfig.delayMinSeconds,
+              delayMaxSeconds: delayConfig.delayMaxSeconds,
+              inboundSentAt: messageSentAt,
+            });
+
+            if (scheduleResult.scheduled) {
+              console.log("[Instantly Post-Process] Scheduled delayed send for draft", draftId, "runAt:", scheduleResult.runAt?.toISOString());
+            } else {
+              console.log("[Instantly Post-Process] Delayed send not scheduled:", scheduleResult.skipReason);
+            }
           } else {
-            console.error("[Instantly Post-Process] Auto-send failed:", sendResult.error);
+            // Immediate send (no delay configured)
+            const validation = await validateDelayedAutoSend({
+              leadId: lead.id,
+              triggerMessageId: message.id,
+              draftId,
+            });
+            if (!validation.proceed) {
+              console.log(
+                "[Instantly Post-Process] Skipping immediate auto-send for draft",
+                draftId,
+                validation.reason || "unknown_reason"
+              );
+            } else {
+              const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
+
+              if (sendResult.success) {
+                console.log("[Instantly Post-Process] Sent message:", sendResult.messageId);
+              } else {
+                console.error("[Instantly Post-Process] Auto-send failed:", sendResult.error);
+              }
+            }
           }
         } else {
           // Send Slack notification for review

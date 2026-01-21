@@ -66,15 +66,41 @@ model PromptSnippetOverride {
 
 ## Output
 
-- `PromptSnippetOverride` schema + Prisma types
-- Server actions to read/write snippet overrides (admin-gated)
-- Runtime email draft generation uses snippet overrides for forbidden terms
-- Telemetry promptKey distinguishes default vs overridden content (suffix)
+**Completed:**
+
+1. **Schema** (`prisma/schema.prisma`):
+   - Added `PromptSnippetOverride` model with `clientId`, `snippetKey`, `content`
+   - Added relation to `Client`: `promptSnippetOverrides PromptSnippetOverride[]`
+   - `npm run db:push` succeeded
+
+2. **Snippet Defaults Helper** (`lib/ai/prompt-snippets.ts`):
+   - Exported `DEFAULT_FORBIDDEN_TERMS` — canonical list of ~70 terms
+   - Exported `SNIPPET_DEFAULTS` registry: `{ forbiddenTerms: string }`
+   - Functions: `getSnippetDefault()`, `listSnippetKeys()`
+   - Formatting: `formatSnippetAsCommaSeparated()`, `formatSnippetAsNewlineSeparated()`
+   - Lookup: `getEffectiveSnippet()`, `getEffectiveForbiddenTerms()`, `getSnippetOverridesForWorkspace()`
+
+3. **Server Actions** (`actions/ai-observability-actions.ts`):
+   - `getPromptSnippetOverrides(clientId)` — fetch all snippet overrides
+   - `savePromptSnippetOverride(clientId, snippetKey, content)` — upsert
+   - `resetPromptSnippetOverride(clientId, snippetKey)` — delete
+
+4. **Runtime Integration** (`lib/ai-drafts.ts`):
+   - Replaced hardcoded `EMAIL_FORBIDDEN_TERMS` with `DEFAULT_FORBIDDEN_TERMS` import
+   - Added `effectiveForbiddenTerms` fetch at start of email draft pipeline
+   - Updated `buildEmailDraftGenerationInstructions()` to accept `forbiddenTerms` param
+   - Updated fallback single-step path to use `effectiveForbiddenTerms`
+
+**Note:** Telemetry promptKey versioning for snippet overrides deferred to 47i (call-site alignment).
+
+**Verification:**
+- `npm run lint` — passed
+- `npm run build` — passed
 
 ## Handoff
 
 Phase 47f updates the Settings → AI Dashboard prompt editor UI to:
-- display snippet values nested under the template message(s)
-- allow editing/resetting snippets (starting with forbidden terms)
-- show an “effective preview” (with snippet replacement) without leaking lead data
+- Display snippet values nested under template messages
+- Allow editing/resetting snippets (starting with forbidden terms)
+- Show snippet key labels and current values
 

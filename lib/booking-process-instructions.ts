@@ -20,6 +20,11 @@ import {
   storeSelectedRequiredQuestions,
 } from "@/lib/booking-progress";
 import { getBookingLink } from "@/lib/meeting-booking-provider";
+import {
+  getEffectiveTemplate,
+  renderTemplate,
+  type BookingStageTemplates,
+} from "@/lib/booking-stage-templates";
 import type { BookingProcessStage, WorkspaceSettings } from "@prisma/client";
 
 export type MessageChannel = "email" | "sms" | "linkedin";
@@ -166,6 +171,7 @@ function isChannelEnabledForStage(
 
 /**
  * Build instruction string for AI prompt based on stage configuration.
+ * Uses per-stage templates when available (Phase 47k).
  */
 async function buildStageInstructions(
   stage: BookingProcessStage,
@@ -174,6 +180,9 @@ async function buildStageInstructions(
   const instructions: string[] = [];
   const { channel, workspaceSettings, clientId, availableSlots, leadId, emailCampaignId } = context;
 
+  // Parse per-stage template overrides (Phase 47k)
+  const templates = (stage.instructionTemplates as BookingStageTemplates | null) ?? null;
+
   // Booking link
   if (stage.includeBookingLink) {
     const bookingLink = await getBookingLink(clientId, workspaceSettings);
@@ -181,19 +190,16 @@ async function buildStageInstructions(
     if (bookingLink) {
       // SMS/LinkedIn always use plain URL (no true hyperlink support)
       if (channel === "sms" || channel === "linkedin" || stage.linkType === "PLAIN_URL") {
-        instructions.push(
-          `Include the booking link as a plain URL in your response: ${bookingLink}`
-        );
+        const template = getEffectiveTemplate("bookingLinkPlainTemplate", templates);
+        instructions.push(renderTemplate(template, { bookingLink }));
       } else {
-        instructions.push(
-          `Include a booking link as hyperlinked text (e.g., "book a time here" or "schedule a call"). Link URL: ${bookingLink}`
-        );
+        const template = getEffectiveTemplate("bookingLinkHyperlinkTemplate", templates);
+        instructions.push(renderTemplate(template, { bookingLink }));
       }
     } else {
       // Explicitly prevent placeholder link hallucinations when no booking link is configured.
-      instructions.push(
-        `IMPORTANT: No booking link is configured for this workspace. Do NOT include any placeholder text like "{booking link}", "{insert booking link}", "[booking link]", or similar. Instead, ask the lead for their availability or offer to send specific times.`
-      );
+      const template = getEffectiveTemplate("noBookingLinkTemplate", templates);
+      instructions.push(template);
       console.warn(
         `[BookingProcess] Stage ${stage.stageNumber} requests booking link but none configured for client ${clientId}`
       );
@@ -206,13 +212,12 @@ async function buildStageInstructions(
 
     if (availableSlots && availableSlots.length > 0) {
       const timesToOffer = availableSlots.slice(0, numTimes);
-      instructions.push(
-        `Suggest ${timesToOffer.length} specific times for a call. Use these available slots verbatim:\n${timesToOffer.map((t) => `  - ${t}`).join("\n")}`
-      );
+      const timesBullets = timesToOffer.map((t) => `  - ${t}`).join("\n");
+      const template = getEffectiveTemplate("suggestedTimesWithSlotsTemplate", templates);
+      instructions.push(renderTemplate(template, { numTimes: timesToOffer.length, timesBullets }));
     } else {
-      instructions.push(
-        `Suggest ${numTimes} potential meeting times. If you don't have specific availability, propose to send options or ask for their availability.`
-      );
+      const template = getEffectiveTemplate("suggestedTimesNoSlotsTemplate", templates);
+      instructions.push(renderTemplate(template, { numTimes }));
     }
   }
 
@@ -228,20 +233,18 @@ async function buildStageInstructions(
 
     if (questions.length > 0) {
       if (questions.length === 1) {
-        instructions.push(
-          `Ask this qualifying question naturally in your response: "${questions[0]}"`
-        );
+        const template = getEffectiveTemplate("qualifyingQuestionOneTemplate", templates);
+        instructions.push(renderTemplate(template, { question: questions[0] }));
       } else {
-        instructions.push(
-          `Ask these qualifying questions naturally in your response:\n${questions.map((q) => `  - ${q}`).join("\n")}`
-        );
+        const questionsBullets = questions.map((q) => `  - ${q}`).join("\n");
+        const template = getEffectiveTemplate("qualifyingQuestionManyTemplate", templates);
+        instructions.push(renderTemplate(template, { questionsBullets }));
       }
 
       // SMS paraphrase hint
       if (channel === "sms") {
-        instructions.push(
-          `Note: Keep questions brief for SMS. Paraphrase if needed to stay under 160 characters.`
-        );
+        const template = getEffectiveTemplate("smsParaphraseHintTemplate", templates);
+        instructions.push(template);
       }
 
       // Store selected required question IDs for analytics attribution
@@ -257,29 +260,24 @@ async function buildStageInstructions(
 
   // Timezone ask
   if (stage.includeTimezoneAsk) {
-    instructions.push(
-      `Ask what timezone the lead is in so you can confirm meeting times work for them.`
-    );
+    const template = getEffectiveTemplate("timezoneAskTemplate", templates);
+    instructions.push(template);
   }
 
   // Special instruction for potential early booking acceptance
   if (stage.includeSuggestedTimes && !stage.includeBookingLink) {
-    instructions.push(
-      `If the lead clearly accepts one of the suggested times, confirm that specific time and proceed with booking. Don't require them to click a booking link if they've already said yes to a time.`
-    );
+    const template = getEffectiveTemplate("earlyAcceptanceHintTemplate", templates);
+    instructions.push(template);
   }
 
   if (instructions.length === 0) {
     return null;
   }
 
-  // Format as a distinct section for the AI prompt
-  return `
-
-BOOKING PROCESS INSTRUCTIONS (Stage ${stage.stageNumber}):
-${instructions.map((i) => `- ${i}`).join("\n")}
-
-Important: Follow these booking instructions carefully. They are based on the campaign's booking strategy.`;
+  // Format as a distinct section for the AI prompt using wrapper template
+  const bullets = instructions.map((i) => `- ${i}`).join("\n");
+  const wrapperTemplate = getEffectiveTemplate("stageBlockWrapperTemplate", templates);
+  return renderTemplate(wrapperTemplate, { stageNumber: stage.stageNumber, bullets });
 }
 
 /**

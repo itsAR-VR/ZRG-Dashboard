@@ -39,13 +39,16 @@ export async function getPromptWithOverrides(
     return base; // No overrides, return default
   }
 
-  // Build override lookup map: `${role}:${index}` -> content
-  const overrideMap = new Map<string, string>();
+  // Build override lookup map: `${role}:${index}` -> { content, baseContentHash }
+  const overrideMap = new Map<string, { content: string; baseContentHash: string }>();
   for (const o of overrides) {
-    overrideMap.set(`${o.role}:${o.index}`, o.content);
+    overrideMap.set(`${o.role}:${o.index}`, {
+      content: o.content,
+      baseContentHash: o.baseContentHash,
+    });
   }
 
-  // Apply overrides to messages
+  // Apply overrides to messages (only if base content still matches)
   const messages = base.messages.map((msg, idx) => {
     // Calculate index within this role
     const roleIndex = base.messages
@@ -55,9 +58,13 @@ export async function getPromptWithOverrides(
     const key = `${msg.role}:${roleIndex}`;
     const override = overrideMap.get(key);
 
-    return override !== undefined
-      ? { ...msg, content: override }
-      : msg;
+    if (!override) return msg;
+
+    // Prevent index drift: only apply if the base message content hash matches
+    const currentBaseHash = hashString(msg.content); // sha256 helper (server-only)
+    if (currentBaseHash !== override.baseContentHash) return msg;
+
+    return { ...msg, content: override.content };
   });
 
   return { ...base, messages };
@@ -101,10 +108,25 @@ const template = await getPromptWithOverrides("sentiment.classify.v1", clientId)
 
 ## Output
 
-- `getPromptWithOverrides()` function exported from prompt-registry
-- `hasPromptOverrides()` helper function
-- At least one AI call site updated to demonstrate the pattern
+**Completed:**
+- Added `hashPromptContent(content)` — stable SHA-256 hash (truncated to 16 chars) for drift detection
+- Added `computePromptMessageBaseHash({ promptKey, role, index })` — computes base hash for a specific message
+- Added `hasPromptOverrides(promptKey, clientId)` — checks if overrides exist
+- Added `getPromptOverrideMap(clientId)` — returns all overrides for UI display
+- Added `getPromptWithOverrides(promptKey, clientId)` — returns template with overrides applied + version suffix
+
+**Key implementation details:**
+- Override addressing uses `${role}:${index}` where index is 0-based within that role's messages
+- Drift detection: compares `baseContentHash` stored in override with current template hash; mismatches are ignored
+- Telemetry versioning: returns `overrideVersion` suffix (e.g., `ovr_20260121T0800`) for `AIInteraction.promptKey`
+- Returns `{ template, overrideVersion, hasOverrides }` to support both runtime and observability needs
+
+**Note:** AI call site updates deferred to Phase 47i (call-site alignment) per plan scope.
 
 ## Handoff
 
-Subphase c will use these functions to implement server actions for saving/resetting overrides from the UI.
+Subphase 47c will add server actions for CRUD operations:
+- `savePromptOverride()` — create/update override (uses `computePromptMessageBaseHash`)
+- `resetPromptOverride()` — delete single override
+- `resetAllPromptOverrides()` — delete all overrides for a prompt
+- `getPromptOverrides()` — fetch all overrides for UI

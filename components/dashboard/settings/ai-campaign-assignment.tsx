@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Bot, Clock, RefreshCw, Save, Undo2, User } from "lucide-react"
+import { Bot, Clock, RefreshCw, Save, Timer, Undo2, User } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -23,6 +23,9 @@ type CampaignRow = {
   leadCount: number
   responseMode: CampaignResponseMode
   autoSendConfidenceThreshold: number
+  // Phase 47l: Auto-send delay window
+  autoSendDelayMinSeconds: number
+  autoSendDelayMaxSeconds: number
   bookingProcessId: string | null
   bookingProcessName: string | null
   aiPersonaId: string | null
@@ -40,6 +43,8 @@ function areEqual(a: CampaignRow, b: CampaignRow): boolean {
   return (
     a.responseMode === b.responseMode &&
     Math.abs((a.autoSendConfidenceThreshold ?? 0) - (b.autoSendConfidenceThreshold ?? 0)) < 0.00001 &&
+    a.autoSendDelayMinSeconds === b.autoSendDelayMinSeconds &&
+    a.autoSendDelayMaxSeconds === b.autoSendDelayMaxSeconds &&
     a.bookingProcessId === b.bookingProcessId &&
     a.aiPersonaId === b.aiPersonaId
   )
@@ -92,6 +97,8 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       leadCount: c.leadCount,
       responseMode: c.responseMode,
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold ?? 0.9,
+      autoSendDelayMinSeconds: c.autoSendDelayMinSeconds ?? 180,
+      autoSendDelayMaxSeconds: c.autoSendDelayMaxSeconds ?? 420,
       bookingProcessId: c.bookingProcessId,
       bookingProcessName: c.bookingProcessName,
       aiPersonaId: c.aiPersonaId,
@@ -164,7 +171,9 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
     // Check what changed
     const responseModeChanged =
       row.responseMode !== baseline.responseMode ||
-      Math.abs((row.autoSendConfidenceThreshold ?? 0) - (baseline.autoSendConfidenceThreshold ?? 0)) >= 0.00001
+      Math.abs((row.autoSendConfidenceThreshold ?? 0) - (baseline.autoSendConfidenceThreshold ?? 0)) >= 0.00001 ||
+      row.autoSendDelayMinSeconds !== baseline.autoSendDelayMinSeconds ||
+      row.autoSendDelayMaxSeconds !== baseline.autoSendDelayMaxSeconds
     const bookingProcessChanged = row.bookingProcessId !== baseline.bookingProcessId
     const personaChanged = row.aiPersonaId !== baseline.aiPersonaId
 
@@ -175,6 +184,8 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       const res = await updateEmailCampaignConfig(row.id, {
         responseMode: row.responseMode,
         autoSendConfidenceThreshold: clamp01(row.autoSendConfidenceThreshold),
+        autoSendDelayMinSeconds: row.autoSendDelayMinSeconds,
+        autoSendDelayMaxSeconds: row.autoSendDelayMaxSeconds,
       })
 
       if (!res.success || !res.data) {
@@ -185,6 +196,8 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
 
       nextRow.responseMode = res.data.responseMode
       nextRow.autoSendConfidenceThreshold = res.data.autoSendConfidenceThreshold
+      nextRow.autoSendDelayMinSeconds = res.data.autoSendDelayMinSeconds
+      nextRow.autoSendDelayMaxSeconds = res.data.autoSendDelayMaxSeconds
     }
 
     // Save booking process if changed
@@ -286,6 +299,12 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                 </TableHead>
                 <TableHead>
                   <div className="flex items-center gap-1.5">
+                    <Timer className="h-4 w-4" />
+                    <span>Delay</span>
+                  </div>
+                </TableHead>
+                <TableHead>
+                  <div className="flex items-center gap-1.5">
                     <Clock className="h-4 w-4" />
                     <span>Booking Process</span>
                   </div>
@@ -365,6 +384,57 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                         </div>
                         <Label className="text-xs text-muted-foreground">
                           {thresholdDisabled ? "Enable AI auto‑send to edit." : "Higher = fewer auto‑sends, more reviews."}
+                        </Label>
+                      </div>
+                    </TableCell>
+                    <TableCell className="min-w-[160px]">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={0}
+                            max={60}
+                            step={1}
+                            className="w-16"
+                            value={Math.round(row.autoSendDelayMinSeconds / 60)}
+                            disabled={thresholdDisabled}
+                            onChange={(e) => {
+                              const minutes = Math.max(0, Math.min(60, Number(e.target.value) || 0))
+                              const seconds = minutes * 60
+                              updateRow(row.id, {
+                                autoSendDelayMinSeconds: seconds,
+                                autoSendDelayMaxSeconds: Math.max(seconds, row.autoSendDelayMaxSeconds),
+                              })
+                            }}
+                          />
+                          <span className="text-muted-foreground">–</span>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={0}
+                            max={60}
+                            step={1}
+                            className="w-16"
+                            value={Math.round(row.autoSendDelayMaxSeconds / 60)}
+                            disabled={thresholdDisabled}
+                            onChange={(e) => {
+                              const minutes = Math.max(0, Math.min(60, Number(e.target.value) || 0))
+                              const seconds = minutes * 60
+                              updateRow(row.id, {
+                                autoSendDelayMaxSeconds: seconds,
+                                autoSendDelayMinSeconds: Math.min(seconds, row.autoSendDelayMinSeconds),
+                              })
+                            }}
+                          />
+                          <span className="text-xs text-muted-foreground">min</span>
+                        </div>
+                        <Label className="text-xs text-muted-foreground">
+                          {thresholdDisabled
+                            ? "Enable AI auto‑send to edit."
+                            : row.autoSendDelayMinSeconds === 0 && row.autoSendDelayMaxSeconds === 0
+                              ? "Sends immediately (0 delay)."
+                              : `Waits ${Math.round(row.autoSendDelayMinSeconds / 60)}–${Math.round(row.autoSendDelayMaxSeconds / 60)} min before send.`}
                         </Label>
                       </div>
                     </TableCell>

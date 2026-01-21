@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useLayoutEffect, useCallback } from "react"
 import {
   Mail,
   MessageSquare,
@@ -30,6 +30,10 @@ import {
   Target,
   Star,
   AlertTriangle,
+  Pencil,
+  RotateCcw,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -88,10 +92,26 @@ import {
 import {
   getAiObservabilitySummary,
   getAiPromptTemplates,
+  getPromptOverrides,
+  savePromptOverride,
+  resetPromptOverride,
+  getPromptSnippetOverrides,
+  savePromptSnippetOverride,
+  resetPromptSnippetOverride,
+  getSnippetRegistry,
   type AiObservabilityWindow,
   type AiPromptTemplatePublic,
   type ObservabilitySummary,
+  type PromptOverrideRecord,
+  type PromptSnippetOverrideRecord,
+  type SnippetRegistryEntry,
 } from "@/actions/ai-observability-actions"
+import {
+  listAiPersonas,
+  getAiPersona,
+  type AiPersonaSummary,
+  type AiPersonaData,
+} from "@/actions/ai-persona-actions"
 import {
   fetchGHLCalendarsForWorkspace,
   fetchGHLUsersForWorkspace,
@@ -285,6 +305,51 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [aiPromptsOpen, setAiPromptsOpen] = useState(false)
   const [aiPromptTemplates, setAiPromptTemplates] = useState<AiPromptTemplatePublic[] | null>(null)
   const [aiPromptsLoading, setAiPromptsLoading] = useState(false)
+  // Prompt override editing state (Phase 47)
+  const [promptOverrides, setPromptOverrides] = useState<Map<string, string>>(new Map())
+  const [editingPrompt, setEditingPrompt] = useState<{
+    promptKey: string
+    role: string
+    index: number
+  } | null>(null)
+  const [editContent, setEditContent] = useState("")
+  const [savingOverride, setSavingOverride] = useState(false)
+  // Snippet override state (Phase 47f)
+  const [snippetOverrides, setSnippetOverrides] = useState<Map<string, string>>(new Map())
+  const [expandedSnippets, setExpandedSnippets] = useState<Set<string>>(new Set())
+  const [editingSnippet, setEditingSnippet] = useState<string | null>(null)
+  const [snippetEditContent, setSnippetEditContent] = useState("")
+  const [savingSnippet, setSavingSnippet] = useState(false)
+  // Variables tab state (Phase 47h)
+  const [promptModalTab, setPromptModalTab] = useState<"prompts" | "variables">("prompts")
+  const [snippetRegistry, setSnippetRegistry] = useState<SnippetRegistryEntry[] | null>(null)
+  // Persona context state (Phase 47j)
+  const [personaList, setPersonaList] = useState<AiPersonaSummary[] | null>(null)
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string | null>(null)
+  const [selectedPersonaDetails, setSelectedPersonaDetails] = useState<AiPersonaData | null>(null)
+  const [personaLoading, setPersonaLoading] = useState(false)
+
+  const resetAiPromptModalState = useCallback(() => {
+    setAiPromptTemplates(null)
+    setPromptOverrides(new Map())
+    setEditingPrompt(null)
+    setEditContent("")
+    setSnippetOverrides(new Map())
+    setExpandedSnippets(new Set())
+    setEditingSnippet(null)
+    setSnippetEditContent("")
+    setPromptModalTab("prompts")
+    setSnippetRegistry(null)
+    setPersonaList(null)
+    setSelectedPersonaId(null)
+    setSelectedPersonaDetails(null)
+    setAiPromptsLoading(false)
+  }, [])
+
+  // Prevent prompt editor state from leaking across workspaces (Phase 47 follow-up)
+  useLayoutEffect(() => {
+    resetAiPromptModalState()
+  }, [activeWorkspace, resetAiPromptModalState])
 
   // Load settings when workspace changes
   useEffect(() => {
@@ -545,13 +610,50 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
     let cancelled = false
     setAiPromptsLoading(true)
-    getAiPromptTemplates(activeWorkspace)
-      .then((result) => {
+
+    // Load templates, overrides, snippet overrides, registry, and personas in parallel
+    Promise.all([
+      getAiPromptTemplates(activeWorkspace),
+      getPromptOverrides(activeWorkspace),
+      getPromptSnippetOverrides(activeWorkspace),
+      getSnippetRegistry(activeWorkspace),
+      listAiPersonas(activeWorkspace),
+    ])
+      .then(([templatesRes, overridesRes, snippetsRes, registryRes, personasRes]) => {
         if (cancelled) return
-        if (result.success && result.templates) {
-          setAiPromptTemplates(result.templates)
+        if (templatesRes.success && templatesRes.templates) {
+          setAiPromptTemplates(templatesRes.templates)
         } else {
-          toast.error("Failed to load prompts", { description: result.error || "Unknown error" })
+          toast.error("Failed to load prompts", { description: templatesRes.error || "Unknown error" })
+        }
+        // Build override map: "promptKey:role:index" -> content
+        if (overridesRes.success && overridesRes.overrides) {
+          const map = new Map<string, string>()
+          for (const o of overridesRes.overrides) {
+            map.set(`${o.promptKey}:${o.role}:${o.index}`, o.content)
+          }
+          setPromptOverrides(map)
+        }
+        // Build snippet override map: "snippetKey" -> content
+        if (snippetsRes.success && snippetsRes.overrides) {
+          const map = new Map<string, string>()
+          for (const s of snippetsRes.overrides) {
+            map.set(s.snippetKey, s.content)
+          }
+          setSnippetOverrides(map)
+        }
+        // Load snippet registry for Variables tab
+        if (registryRes.success && registryRes.entries) {
+          setSnippetRegistry(registryRes.entries)
+        }
+        // Load persona list (Phase 47j)
+        if (personasRes.success && personasRes.data) {
+          setPersonaList(personasRes.data)
+          // Auto-select default persona
+          const defaultPersona = personasRes.data.find(p => p.isDefault)
+          if (defaultPersona) {
+            setSelectedPersonaId(defaultPersona.id)
+          }
         }
       })
       .catch((err) => {
@@ -567,6 +669,37 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       cancelled = true
     }
   }, [aiPromptsOpen, activeWorkspace, aiPromptTemplates])
+
+  // Load persona details when selected persona changes (Phase 47j)
+  useEffect(() => {
+    if (!selectedPersonaId) {
+      setSelectedPersonaDetails(null)
+      return
+    }
+
+    let cancelled = false
+    setPersonaLoading(true)
+
+    getAiPersona(selectedPersonaId)
+      .then((res) => {
+        if (cancelled) return
+        if (res.success && res.data) {
+          setSelectedPersonaDetails(res.data)
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        setSelectedPersonaDetails(null)
+      })
+      .finally(() => {
+        if (cancelled) return
+        setPersonaLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedPersonaId])
 
   // Load GHL calendars and users for booking config
   const loadGHLData = async (clientId: string) => {
@@ -3093,58 +3226,645 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </CardContent>
                 </Card>
 
-                <Dialog open={aiPromptsOpen} onOpenChange={setAiPromptsOpen}>
-                  <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+                <Dialog open={aiPromptsOpen} onOpenChange={(open) => {
+                  setAiPromptsOpen(open)
+                  if (!open) {
+                    resetAiPromptModalState()
+                  }
+                }}>
+                  <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
                       <DialogTitle>Backend Prompts</DialogTitle>
                       <DialogDescription>
-                        Template-only view (system / assistant / user). No lead data is shown.
+                        View and customize AI prompt templates and variables. Changes apply to this workspace only.
                       </DialogDescription>
                     </DialogHeader>
+
+                    {/* Tab navigation (Phase 47h) */}
+                    <div className="flex gap-2 border-b">
+                      <button
+                        type="button"
+                        className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                          promptModalTab === "prompts"
+                            ? "border-primary text-primary"
+                            : "border-transparent text-muted-foreground hover:text-foreground"
+                        }`}
+                        onClick={() => setPromptModalTab("prompts")}
+                      >
+                        Prompts
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                          promptModalTab === "variables"
+                            ? "border-primary text-primary"
+                            : "border-transparent text-muted-foreground hover:text-foreground"
+                        }`}
+                        onClick={() => setPromptModalTab("variables")}
+                      >
+                        Variables
+                      </button>
+                    </div>
 
                     {aiPromptsLoading ? (
                       <div className="flex items-center justify-center py-10">
                         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                       </div>
-                    ) : aiPromptTemplates && aiPromptTemplates.length > 0 ? (
-                      <Accordion type="single" collapsible className="w-full">
-                        {aiPromptTemplates.map((t) => (
-                          <AccordionItem key={t.key} value={t.key}>
-                            <AccordionTrigger>
-                              <div className="flex flex-col text-left">
-                                <span className="font-medium">{t.name}</span>
-                                <span className="text-xs text-muted-foreground">
-                                  {t.featureId} · {t.model} · {t.apiType}
-                                </span>
+                    ) : promptModalTab === "variables" ? (
+                      /* Variables Tab Content (Phase 47h + 47j) */
+                      <div className="space-y-6 py-4">
+                        {/* Persona Context Selector (Phase 47j) */}
+                        <div className="border rounded-lg p-4 space-y-3 bg-muted/30">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="font-medium text-sm">AI Persona Context</p>
+                              <p className="text-xs text-muted-foreground">
+                                Drafts use these persona fields: tone, greeting, signature, goals.
+                              </p>
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setAiPromptsOpen(false)
+                                onTabChange?.("ai")
+                              }}
+                            >
+                              Edit in AI Personality
+                            </Button>
+                          </div>
+                          {personaList && personaList.length > 0 && (
+                            <div className="flex items-center gap-3">
+                              <Label className="text-xs">Preview persona:</Label>
+                              <Select
+                                value={selectedPersonaId || ""}
+                                onValueChange={(v) => setSelectedPersonaId(v)}
+                              >
+                                <SelectTrigger className="w-[250px]">
+                                  <SelectValue placeholder="Select persona..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {personaList.map((p) => (
+                                    <SelectItem key={p.id} value={p.id}>
+                                      {p.name} {p.isDefault && "(Default)"}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          )}
+                          {personaLoading ? (
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              Loading persona details...
+                            </div>
+                          ) : selectedPersonaDetails ? (
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div>
+                                <span className="text-muted-foreground">Name:</span>{" "}
+                                <span className="font-medium">{selectedPersonaDetails.personaName || "-"}</span>
                               </div>
-                            </AccordionTrigger>
-                            <AccordionContent className="space-y-4">
-                              {t.description ? (
-                                <p className="text-sm text-muted-foreground">{t.description}</p>
-                              ) : null}
+                              <div>
+                                <span className="text-muted-foreground">Tone:</span>{" "}
+                                <span className="font-medium">{selectedPersonaDetails.tone}</span>
+                              </div>
+                              <div className="col-span-2">
+                                <span className="text-muted-foreground">Greeting:</span>{" "}
+                                <span className="font-mono text-xs">{selectedPersonaDetails.greeting || "-"}</span>
+                              </div>
+                              <div className="col-span-2">
+                                <span className="text-muted-foreground">Signature:</span>{" "}
+                                <span className="font-mono text-xs">{selectedPersonaDetails.signature || "-"}</span>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
 
-                              {(["system", "assistant", "user"] as const).map((role) => {
-                                const parts = t.messages.filter((m) => m.role === role)
-                                if (parts.length === 0) return null
-                                return (
-                                  <div key={role} className="space-y-2">
-                                    <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                      {role}
-                                    </p>
-                                    {parts.map((p, i) => (
-                                      <div
-                                        key={`${t.key}:${role}:${i}`}
-                                        className="rounded-lg border bg-muted/30 p-3 text-xs whitespace-pre-wrap"
-                                      >
-                                        {p.content}
-                                      </div>
-                                    ))}
+                        <Separator />
+
+                        <p className="text-sm text-muted-foreground">
+                          Configure global variables used in AI prompt templates.
+                        </p>
+                        {snippetRegistry && snippetRegistry.length > 0 ? (
+                          <div className="space-y-4">
+                            {snippetRegistry.map((entry) => (
+                              <div key={entry.key} className="border rounded-lg p-4 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <div>
+                                    <p className="font-medium text-sm">{entry.label}</p>
+                                    <p className="text-xs text-muted-foreground">{entry.description}</p>
                                   </div>
-                                )
-                              })}
-                            </AccordionContent>
-                          </AccordionItem>
-                        ))}
+                                  {entry.currentValue !== null && (
+                                    <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
+                                      Customized
+                                    </Badge>
+                                  )}
+                                </div>
+
+                                {editingSnippet === entry.key ? (
+                                  <div className="space-y-2">
+                                    {entry.type === "number" ? (
+                                      <Input
+                                        type="number"
+                                        value={snippetEditContent}
+                                        onChange={(e) => setSnippetEditContent(e.target.value)}
+                                        className="font-mono"
+                                      />
+                                    ) : (
+                                      <Textarea
+                                        value={snippetEditContent}
+                                        onChange={(e) => setSnippetEditContent(e.target.value)}
+                                        className={`font-mono text-xs ${
+                                          entry.type === "list" || entry.type === "text" || entry.type === "template"
+                                            ? "min-h-[150px]"
+                                            : "min-h-[100px]"
+                                        }`}
+                                        placeholder={entry.type === "list" ? "One item per line..." : undefined}
+                                      />
+                                    )}
+                                    {entry.placeholders && entry.placeholders.length > 0 && (
+                                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                        <span>Placeholders:</span>
+                                        {entry.placeholders.map((p) => (
+                                          <code key={p} className="bg-muted px-1 rounded">{p}</code>
+                                        ))}
+                                      </div>
+                                    )}
+                                    <div className="flex justify-end gap-2">
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                          setEditingSnippet(null)
+                                          setSnippetEditContent("")
+                                        }}
+                                      >
+                                        Cancel
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        disabled={savingSnippet || !activeWorkspace}
+                                        onClick={async () => {
+                                          if (!activeWorkspace) return
+                                          setSavingSnippet(true)
+                                          const result = await savePromptSnippetOverride(
+                                            activeWorkspace,
+                                            entry.key,
+                                            snippetEditContent
+                                          )
+                                          if (result.success) {
+                                            setSnippetOverrides((prev) => {
+                                              const next = new Map(prev)
+                                              next.set(entry.key, snippetEditContent)
+                                              return next
+                                            })
+                                            // Update registry
+                                            setSnippetRegistry((prev) =>
+                                              prev?.map((e) =>
+                                                e.key === entry.key
+                                                  ? { ...e, currentValue: snippetEditContent }
+                                                  : e
+                                              ) ?? null
+                                            )
+                                            setEditingSnippet(null)
+                                            setSnippetEditContent("")
+                                            toast.success("Variable saved", {
+                                              description: `${entry.label} has been updated.`,
+                                            })
+                                          } else {
+                                            toast.error("Error", {
+                                              description: result.error || "Failed to save variable",
+                                            })
+                                          }
+                                          setSavingSnippet(false)
+                                        }}
+                                      >
+                                        {savingSnippet ? (
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : (
+                                          "Save"
+                                        )}
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    <div className="rounded border bg-muted/20 p-2 text-xs max-h-[80px] overflow-y-auto">
+                                      <div className="text-muted-foreground whitespace-pre-wrap font-mono">
+                                        {entry.currentValue ?? entry.defaultValue}
+                                      </div>
+                                    </div>
+                                    {isWorkspaceAdmin && activeWorkspace && (
+                                      <div className="flex items-center gap-1">
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => {
+                                            setEditingSnippet(entry.key)
+                                            setSnippetEditContent(entry.currentValue ?? entry.defaultValue)
+                                          }}
+                                        >
+                                          <Pencil className="h-3 w-3 mr-1" />
+                                          Edit
+                                        </Button>
+                                        {entry.currentValue !== null && (
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={async () => {
+                                              if (!activeWorkspace) return
+                                              const result = await resetPromptSnippetOverride(
+                                                activeWorkspace,
+                                                entry.key
+                                              )
+                                              if (result.success) {
+                                                setSnippetOverrides((prev) => {
+                                                  const next = new Map(prev)
+                                                  next.delete(entry.key)
+                                                  return next
+                                                })
+                                                setSnippetRegistry((prev) =>
+                                                  prev?.map((e) =>
+                                                    e.key === entry.key
+                                                      ? { ...e, currentValue: null }
+                                                      : e
+                                                  ) ?? null
+                                                )
+                                                toast.success("Reset to default", {
+                                                  description: `${entry.label} restored to default.`,
+                                                })
+                                              } else {
+                                                toast.error("Error", {
+                                                  description: result.error || "Failed to reset variable",
+                                                })
+                                              }
+                                            }}
+                                          >
+                                            <RotateCcw className="h-3 w-3 mr-1" />
+                                            Reset
+                                          </Button>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-sm text-muted-foreground">No variables available.</div>
+                        )}
+                      </div>
+                    ) : aiPromptTemplates && aiPromptTemplates.length > 0 ? (
+                      /* Prompts Tab Content */
+                      <Accordion type="single" collapsible className="w-full">
+                        {aiPromptTemplates.map((t) => {
+                          // Check if this prompt has any overrides
+                          const hasAnyOverride = Array.from(promptOverrides.keys()).some(
+                            (key) => key.startsWith(`${t.key}:`)
+                          )
+                          return (
+                            <AccordionItem key={t.key} value={t.key}>
+                              <AccordionTrigger>
+                                <div className="flex flex-col text-left">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-medium">{t.name}</span>
+                                    {hasAnyOverride && (
+                                      <Badge variant="secondary" className="text-xs">
+                                        Modified
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <span className="text-xs text-muted-foreground">
+                                    {t.featureId} · {t.model} · {t.apiType}
+                                  </span>
+                                </div>
+                              </AccordionTrigger>
+                              <AccordionContent className="space-y-4">
+                                {t.description ? (
+                                  <p className="text-sm text-muted-foreground">{t.description}</p>
+                                ) : null}
+
+                                {(["system", "assistant", "user"] as const).map((role) => {
+                                  const parts = t.messages.filter((m) => m.role === role)
+                                  if (parts.length === 0) return null
+                                  return (
+                                    <div key={role} className="space-y-2">
+                                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                        {role}
+                                      </p>
+                                      {parts.map((p, i) => {
+                                        const overrideKey = `${t.key}:${role}:${i}`
+                                        const hasOverride = promptOverrides.has(overrideKey)
+                                        const displayContent = hasOverride
+                                          ? promptOverrides.get(overrideKey)!
+                                          : p.content
+                                        const isEditing =
+                                          editingPrompt?.promptKey === t.key &&
+                                          editingPrompt?.role === role &&
+                                          editingPrompt?.index === i
+
+                                        return (
+                                          <div key={overrideKey} className="space-y-2">
+                                            <div className="flex items-center justify-between">
+                                              <div className="flex items-center gap-2">
+                                                {hasOverride && (
+                                                  <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
+                                                    Customized
+                                                  </Badge>
+                                                )}
+                                              </div>
+                                              <div className="flex items-center gap-1">
+                                                {!isEditing && isWorkspaceAdmin && activeWorkspace && (
+                                                  <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => {
+                                                      setEditingPrompt({ promptKey: t.key, role, index: i })
+                                                      setEditContent(displayContent)
+                                                    }}
+                                                  >
+                                                    <Pencil className="h-3 w-3" />
+                                                  </Button>
+                                                )}
+                                                {hasOverride && !isEditing && isWorkspaceAdmin && activeWorkspace && (
+                                                  <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={async () => {
+                                                      if (!activeWorkspace) return
+                                                      const result = await resetPromptOverride(
+                                                        activeWorkspace,
+                                                        t.key,
+                                                        role,
+                                                        i
+                                                      )
+                                                      if (result.success) {
+                                                        setPromptOverrides((prev) => {
+                                                          const next = new Map(prev)
+                                                          next.delete(overrideKey)
+                                                          return next
+                                                        })
+                                                        toast.success("Reset to default", {
+                                                          description: "Prompt restored to original content.",
+                                                        })
+                                                      } else {
+                                                        toast.error("Error", {
+                                                          description: result.error || "Failed to reset prompt",
+                                                        })
+                                                      }
+                                                    }}
+                                                    title="Reset to default"
+                                                  >
+                                                    <RotateCcw className="h-3 w-3" />
+                                                  </Button>
+                                                )}
+                                              </div>
+                                            </div>
+
+                                            {isEditing ? (
+                                              <div className="space-y-2">
+                                                <Textarea
+                                                  value={editContent}
+                                                  onChange={(e) => setEditContent(e.target.value)}
+                                                  className="min-h-[200px] font-mono text-xs"
+                                                />
+                                                <div className="flex justify-end gap-2">
+                                                  <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => {
+                                                      setEditingPrompt(null)
+                                                      setEditContent("")
+                                                    }}
+                                                  >
+                                                    Cancel
+                                                  </Button>
+                                                  <Button
+                                                    size="sm"
+                                                    disabled={savingOverride || !activeWorkspace}
+                                                    onClick={async () => {
+                                                      if (!activeWorkspace) return
+                                                      setSavingOverride(true)
+                                                      const result = await savePromptOverride(activeWorkspace, {
+                                                        promptKey: t.key,
+                                                        role: role as "system" | "assistant" | "user",
+                                                        index: i,
+                                                        content: editContent,
+                                                      })
+                                                      if (result.success) {
+                                                        setPromptOverrides((prev) => {
+                                                          const next = new Map(prev)
+                                                          next.set(overrideKey, editContent)
+                                                          return next
+                                                        })
+                                                        setEditingPrompt(null)
+                                                        setEditContent("")
+                                                        toast.success("Prompt saved", {
+                                                          description: "Your changes have been saved.",
+                                                        })
+                                                      } else {
+                                                        toast.error("Error", {
+                                                          description: result.error || "Failed to save prompt",
+                                                        })
+                                                      }
+                                                      setSavingOverride(false)
+                                                    }}
+                                                  >
+                                                    {savingOverride ? (
+                                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                                    ) : (
+                                                      "Save"
+                                                    )}
+                                                  </Button>
+                                                </div>
+                                              </div>
+                                            ) : (
+                                              <div className="rounded-lg border bg-muted/30 p-3 text-xs whitespace-pre-wrap">
+                                                {displayContent}
+                                              </div>
+                                            )}
+
+                                            {/* Nested Snippet Editor (Phase 47f) */}
+                                            {/* Show snippet editor if this message contains {forbiddenTerms} placeholder */}
+                                            {displayContent.includes("{forbiddenTerms}") && (
+                                              <div className="mt-2 ml-4 border-l-2 border-muted-foreground/20 pl-3">
+                                                <button
+                                                  type="button"
+                                                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                                                  onClick={() => {
+                                                    setExpandedSnippets((prev) => {
+                                                      const next = new Set(prev)
+                                                      const key = `${t.key}:forbiddenTerms`
+                                                      if (next.has(key)) {
+                                                        next.delete(key)
+                                                      } else {
+                                                        next.add(key)
+                                                      }
+                                                      return next
+                                                    })
+                                                  }}
+                                                >
+                                                  {expandedSnippets.has(`${t.key}:forbiddenTerms`) ? (
+                                                    <ChevronDown className="h-3 w-3" />
+                                                  ) : (
+                                                    <ChevronRight className="h-3 w-3" />
+                                                  )}
+                                                  <span className="font-mono">{"{forbiddenTerms}"}</span>
+                                                  {snippetOverrides.has("forbiddenTerms") && (
+                                                    <Badge variant="outline" className="text-[10px] h-4 ml-1 text-amber-600 border-amber-300">
+                                                      Customized
+                                                    </Badge>
+                                                  )}
+                                                </button>
+
+                                                {expandedSnippets.has(`${t.key}:forbiddenTerms`) && (
+                                                  <div className="mt-2 space-y-2">
+                                                    {editingSnippet === "forbiddenTerms" ? (
+                                                      <div className="space-y-2">
+                                                        <Textarea
+                                                          value={snippetEditContent}
+                                                          onChange={(e) => setSnippetEditContent(e.target.value)}
+                                                          className="min-h-[150px] font-mono text-xs"
+                                                          placeholder="One term per line..."
+                                                        />
+                                                        <div className="flex justify-end gap-2">
+                                                          <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            onClick={() => {
+                                                              setEditingSnippet(null)
+                                                              setSnippetEditContent("")
+                                                            }}
+                                                          >
+                                                            Cancel
+                                                          </Button>
+                                                          <Button
+                                                            size="sm"
+                                                            disabled={savingSnippet || !activeWorkspace}
+                                                            onClick={async () => {
+                                                              if (!activeWorkspace) return
+                                                              setSavingSnippet(true)
+                                                              const result = await savePromptSnippetOverride(
+                                                                activeWorkspace,
+                                                                "forbiddenTerms",
+                                                                snippetEditContent
+                                                              )
+                                                              if (result.success) {
+                                                                setSnippetOverrides((prev) => {
+                                                                  const next = new Map(prev)
+                                                                  next.set("forbiddenTerms", snippetEditContent)
+                                                                  return next
+                                                                })
+                                                                setSnippetRegistry((prev) =>
+                                                                  prev?.map((e) =>
+                                                                    e.key === "forbiddenTerms"
+                                                                      ? { ...e, currentValue: snippetEditContent }
+                                                                      : e
+                                                                  ) ?? null
+                                                                )
+                                                                setEditingSnippet(null)
+                                                                setSnippetEditContent("")
+                                                                toast.success("Snippet saved", {
+                                                                  description: "Forbidden terms updated.",
+                                                                })
+                                                              } else {
+                                                                toast.error("Error", {
+                                                                  description: result.error || "Failed to save snippet",
+                                                                })
+                                                              }
+                                                              setSavingSnippet(false)
+                                                            }}
+                                                          >
+                                                            {savingSnippet ? (
+                                                              <Loader2 className="h-4 w-4 animate-spin" />
+                                                            ) : (
+                                                              "Save"
+                                                            )}
+                                                          </Button>
+                                                        </div>
+                                                      </div>
+                                                    ) : (
+                                                      <div className="space-y-2">
+                                                        <div className="rounded border bg-muted/20 p-2 text-xs max-h-[100px] overflow-y-auto">
+                                                          <div className="text-muted-foreground whitespace-pre-wrap">
+                                                            {snippetOverrides.get("forbiddenTerms") ||
+                                                              snippetRegistry?.find((e) => e.key === "forbiddenTerms")?.defaultValue ||
+                                                              "Default forbidden terms not loaded."}
+                                                          </div>
+                                                        </div>
+                                                        {isWorkspaceAdmin && activeWorkspace && (
+                                                          <div className="flex items-center gap-1">
+                                                            <Button
+                                                              variant="ghost"
+                                                              size="sm"
+                                                              onClick={() => {
+                                                                setEditingSnippet("forbiddenTerms")
+                                                                setSnippetEditContent(
+                                                                  snippetOverrides.get("forbiddenTerms") ||
+                                                                    snippetRegistry?.find((e) => e.key === "forbiddenTerms")?.defaultValue ||
+                                                                    ""
+                                                                )
+                                                              }}
+                                                            >
+                                                              <Pencil className="h-3 w-3 mr-1" />
+                                                              Edit
+                                                            </Button>
+                                                            {snippetOverrides.has("forbiddenTerms") && (
+                                                              <Button
+                                                                variant="ghost"
+                                                                size="sm"
+                                                                onClick={async () => {
+                                                                  if (!activeWorkspace) return
+                                                                  const result = await resetPromptSnippetOverride(
+                                                                    activeWorkspace,
+                                                                    "forbiddenTerms"
+                                                                  )
+                                                                  if (result.success) {
+                                                                    setSnippetOverrides((prev) => {
+                                                                      const next = new Map(prev)
+                                                                      next.delete("forbiddenTerms")
+                                                                      return next
+                                                                    })
+                                                                    setSnippetRegistry((prev) =>
+                                                                      prev?.map((e) =>
+                                                                        e.key === "forbiddenTerms"
+                                                                          ? { ...e, currentValue: null }
+                                                                          : e
+                                                                      ) ?? null
+                                                                    )
+                                                                    toast.success("Reset to default", {
+                                                                      description: "Forbidden terms restored to default.",
+                                                                    })
+                                                                  } else {
+                                                                    toast.error("Error", {
+                                                                      description: result.error || "Failed to reset snippet",
+                                                                    })
+                                                                  }
+                                                                }}
+                                                              >
+                                                                <RotateCcw className="h-3 w-3 mr-1" />
+                                                                Reset
+                                                              </Button>
+                                                            )}
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  )
+                                })}
+                              </AccordionContent>
+                            </AccordionItem>
+                          )
+                        })}
                       </Accordion>
                     ) : (
                       <div className="text-sm text-muted-foreground">No prompt templates available.</div>

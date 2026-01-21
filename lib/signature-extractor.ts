@@ -5,7 +5,7 @@
  */
 
 import "@/lib/server-dns";
-import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { extractFirstCompleteJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
@@ -47,7 +47,10 @@ export async function extractContactFromSignature(
     return defaultResult;
   }
 
-  const promptTemplate = getAIPromptTemplate("signature.extract.v1");
+  // Use override-aware prompt lookup (Phase 47i)
+  const overrideResult = await getPromptWithOverrides("signature.extract.v1", meta.clientId);
+  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("signature.extract.v1");
+  const overrideVersion = overrideResult?.overrideVersion ?? null;
   const instructionsTemplate =
     promptTemplate?.messages.find((m) => m.role === "system")?.content ||
     "Extract contact info from the signature and return JSON.";
@@ -98,7 +101,7 @@ ${emailBody.slice(0, 5000)}`;
           leadId: meta.leadId,
           featureId: promptTemplate?.featureId || "signature.extract",
           promptKey:
-            (promptTemplate?.key || "signature.extract.v1") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
+            (promptTemplate?.key || "signature.extract.v1") + (overrideVersion ? `.${overrideVersion}` : "") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
           params: {
             model: "gpt-5-nano",
             instructions: instructionsForModel,

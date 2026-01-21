@@ -58,16 +58,49 @@ Extend the “Backend Prompts” dialog in Settings → AI Dashboard so admins c
 
 ## Output
 
-- Updated “Backend Prompts” dialog with:
-  - message-level editing (existing Phase 47d behavior)
-  - nested snippet editor (forbidden terms MVP)
-  - effective preview rendering
+**Completed:**
+
+1. **Added imports:**
+   - `getPromptSnippetOverrides`, `savePromptSnippetOverride`, `resetPromptSnippetOverride`
+   - `PromptSnippetOverrideRecord` type
+   - `ChevronDown`, `ChevronRight` icons
+
+2. **Added state variables:**
+   - `snippetOverrides: Map<string, string>` — loaded from server
+   - `expandedSnippets: Set<string>` — tracks which snippets are expanded
+   - `editingSnippet: string | null` — which snippet is being edited
+   - `snippetEditContent: string` — edit textarea content
+   - `savingSnippet: boolean` — save in progress
+
+3. **Updated data loading:**
+   - Modal now loads prompt templates, message overrides, AND snippet overrides in parallel
+   - Builds `snippetOverrides` map from server response
+
+4. **Added nested snippet editor UI:**
+   - Detects `{forbiddenTerms}` placeholder in message content
+   - Shows expandable section with chevron toggle
+   - Displays "Customized" badge if snippet has override
+   - Collapsed: shows snippet key and badge
+   - Expanded: shows current value (override or default preview)
+   - Edit mode: textarea for editing, Save/Cancel buttons
+   - Reset button to restore to default
+
+5. **State cleanup on dialog close:**
+   - Clears `editingSnippet`, `snippetEditContent`, `expandedSnippets`
+
+**Verification:**
+- `npm run lint` — passed
+- `npm run build` — passed
+
+**File modified:** `components/dashboard/settings-view.tsx`
 
 ## Handoff
 
-Back to root Phase 47 verification:
-- `npm run lint`
-- `npm run build`
-- Manual smoke test:
-  - edit forbidden terms snippet → generate an email draft → confirm the new forbidden terms are reflected in runtime prompt behavior
+Phase 47g will expand the editable variables system to include:
+- Email length bounds (min/max characters)
+- Email archetypes configuration
 
+## Review Notes
+
+- Evidence: `components/dashboard/settings-view.tsx` caches `aiPromptTemplates` and does not reset it on workspace change or modal close; the load effect short-circuits on `if (aiPromptTemplates) return`.
+- Gap: the “avoid leaking overrides between workspaces” requirement is not met yet; see `docs/planning/phase-47/review.md`.

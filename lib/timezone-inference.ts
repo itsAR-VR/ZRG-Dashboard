@@ -1,5 +1,5 @@
 import "@/lib/server-dns";
-import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { prisma } from "@/lib/prisma";
@@ -183,7 +183,10 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
   }
 
   try {
-    const promptTemplate = getAIPromptTemplate("timezone.infer.v1");
+    // Use override-aware prompt lookup (Phase 47i)
+    const overrideResult = await getPromptWithOverrides("timezone.infer.v1", lead.clientId);
+    const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("timezone.infer.v1");
+    const overrideVersion = overrideResult?.overrideVersion ?? null;
     const instructionsTemplate =
       promptTemplate?.messages.find((m) => m.role === "system")?.content ||
       "Infer the lead's IANA timezone. Output only JSON.";
@@ -220,7 +223,7 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
         leadId,
         featureId: promptTemplate?.featureId || "timezone.infer",
         promptKey:
-          (promptTemplate?.key || "timezone.infer.v1") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
+          (promptTemplate?.key || "timezone.infer.v1") + (overrideVersion ? `.${overrideVersion}` : "") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
         params: {
           model: "gpt-5-nano",
           reasoning: { effort: "low" },

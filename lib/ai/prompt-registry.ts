@@ -1,5 +1,7 @@
 import "server-only";
 
+import { createHash } from "crypto";
+import { prisma } from "@/lib/prisma";
 import { SENTIMENT_CLASSIFY_V1_SYSTEM, SENTIMENT_CLASSIFY_V1_USER_TEMPLATE } from "@/lib/ai/prompts/sentiment-classify-v1";
 
 export type PromptRole = "system" | "assistant" | "user";
@@ -179,6 +181,9 @@ About Our Business:
 Reference Information:
 {knowledgeContext}
 
+Qualification Questions (only when appropriate):
+{qualificationQuestions}
+
 Available times (use verbatim if proposing times):
 {availability}
 
@@ -207,6 +212,9 @@ About Our Business:
 
 Reference Information:
 {knowledgeContext}
+
+Qualification Questions (only when appropriate):
+{qualificationQuestions}
 
 Available times (use verbatim if proposing times):
 {availability}
@@ -982,4 +990,181 @@ Return ONLY valid JSON with this exact structure:
 
 export function getAIPromptTemplate(key: string): AIPromptTemplate | null {
   return listAIPromptTemplates().find((t) => t.key === key) || null;
+}
+
+// =============================================================================
+// Override System (Phase 47)
+// =============================================================================
+
+/**
+ * Compute a stable SHA-256 hash of a string (server-only).
+ * Used to fingerprint prompt message content for drift detection.
+ */
+export function hashPromptContent(content: string): string {
+  return createHash("sha256").update(content).digest("hex").slice(0, 16);
+}
+
+/**
+ * Compute the base content hash for a specific message in a prompt template.
+ * Used when saving overrides to detect drift.
+ * Returns null if the message doesn't exist.
+ */
+export function computePromptMessageBaseHash(params: {
+  promptKey: string;
+  role: PromptRole;
+  index: number;
+}): string | null {
+  const { promptKey, role, index } = params;
+  const template = getAIPromptTemplate(promptKey);
+  if (!template) return null;
+
+  // Find the Nth message with this role
+  let roleIndex = 0;
+  for (const msg of template.messages) {
+    if (msg.role === role) {
+      if (roleIndex === index) {
+        return hashPromptContent(msg.content);
+      }
+      roleIndex++;
+    }
+  }
+  return null; // Index out of bounds for this role
+}
+
+/**
+ * Check if a workspace has any overrides for a specific prompt.
+ */
+export async function hasPromptOverrides(
+  promptKey: string,
+  clientId: string
+): Promise<boolean> {
+  const count = await prisma.promptOverride.count({
+    where: { clientId, promptKey },
+  });
+  return count > 0;
+}
+
+/**
+ * Get all prompt override info for a workspace (for UI display).
+ * Returns a map of promptKey -> Set of "${role}:${index}" keys that have overrides.
+ */
+export async function getPromptOverrideMap(
+  clientId: string
+): Promise<Map<string, Set<string>>> {
+  const overrides = await prisma.promptOverride.findMany({
+    where: { clientId },
+    select: {
+      promptKey: true,
+      role: true,
+      index: true,
+    },
+  });
+
+  const map = new Map<string, Set<string>>();
+  for (const o of overrides) {
+    if (!map.has(o.promptKey)) {
+      map.set(o.promptKey, new Set());
+    }
+    map.get(o.promptKey)!.add(`${o.role}:${o.index}`);
+  }
+  return map;
+}
+
+/**
+ * Get a prompt template with workspace-specific overrides applied.
+ * Falls back to code defaults for any messages without overrides.
+ *
+ * Also returns an "overrideVersion" suffix for telemetry tracking.
+ *
+ * @param promptKey - The prompt template key (e.g., "sentiment.classify.v1")
+ * @param clientId - The workspace/client ID
+ * @returns The template with overrides applied, or null if base template doesn't exist
+ */
+export async function getPromptWithOverrides(
+  promptKey: string,
+  clientId: string
+): Promise<{
+  template: AIPromptTemplate;
+  overrideVersion: string | null;
+  hasOverrides: boolean;
+} | null> {
+  // Get base template from code
+  const base = getAIPromptTemplate(promptKey);
+  if (!base) return null;
+
+  // Fetch overrides for this workspace + prompt
+  const overrides = await prisma.promptOverride.findMany({
+    where: { clientId, promptKey },
+    orderBy: { updatedAt: "desc" },
+  });
+
+  if (overrides.length === 0) {
+    return {
+      template: base,
+      overrideVersion: null,
+      hasOverrides: false,
+    };
+  }
+
+  // Build override lookup map: `${role}:${index}` -> { content, baseContentHash }
+  const overrideMap = new Map<
+    string,
+    { content: string; baseContentHash: string; updatedAt: Date }
+  >();
+  for (const o of overrides) {
+    overrideMap.set(`${o.role}:${o.index}`, {
+      content: o.content,
+      baseContentHash: o.baseContentHash,
+      updatedAt: o.updatedAt,
+    });
+  }
+
+  // Track which overrides were actually applied (for version suffix)
+  let appliedCount = 0;
+  let newestAppliedUpdatedAt: Date | null = null;
+
+  // Apply overrides to messages (only if base content still matches)
+  const messages: typeof base.messages = [];
+  const roleCounts = new Map<string, number>();
+
+  for (const msg of base.messages) {
+    const roleIndex = roleCounts.get(msg.role) ?? 0;
+    roleCounts.set(msg.role, roleIndex + 1);
+
+    const key = `${msg.role}:${roleIndex}`;
+    const override = overrideMap.get(key);
+
+    if (!override) {
+      messages.push(msg);
+      continue;
+    }
+
+    // Prevent index drift: only apply if the base message content hash matches
+    const currentBaseHash = hashPromptContent(msg.content);
+    if (currentBaseHash !== override.baseContentHash) {
+      // Hash mismatch - base template changed, ignore this override
+      messages.push(msg);
+      continue;
+    }
+
+    appliedCount++;
+    if (!newestAppliedUpdatedAt || override.updatedAt > newestAppliedUpdatedAt) {
+      newestAppliedUpdatedAt = override.updatedAt;
+    }
+
+    messages.push({ ...msg, content: override.content });
+  }
+
+  // Generate stable override version suffix for telemetry
+  // Format: ovr_<shortTimestamp> (to distinguish from default)
+  const overrideVersion =
+    appliedCount > 0 && newestAppliedUpdatedAt
+      ? `ovr_${newestAppliedUpdatedAt.toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
+      : null;
+
+  return {
+    template: { ...base, messages },
+    overrideVersion,
+    hasOverrides: appliedCount > 0,
+  };
 }

@@ -1,5 +1,5 @@
 import "@/lib/server-dns";
-import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
@@ -64,7 +64,10 @@ export async function decideShouldAutoReply(opts: {
     return { shouldReply: false, reason: "OPENAI_API_KEY not configured" };
   }
 
-  const promptTemplate = getAIPromptTemplate("auto_reply_gate.decide.v1");
+  // Use override-aware prompt lookup (Phase 47i)
+  const overrideResult = await getPromptWithOverrides("auto_reply_gate.decide.v1", opts.clientId);
+  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("auto_reply_gate.decide.v1");
+  const overrideVersion = overrideResult?.overrideVersion ?? null;
   const system =
     promptTemplate?.messages.find((m) => m.role === "system")?.content ||
     `You decide whether an inbound reply warrants sending a reply back.
@@ -130,7 +133,7 @@ Output MUST be valid JSON:
         leadId: opts.leadId,
         featureId: promptTemplate?.featureId || "auto_reply_gate.decide",
         promptKey:
-          (promptTemplate?.key || "auto_reply_gate.decide.v1") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
+          (promptTemplate?.key || "auto_reply_gate.decide.v1") + (overrideVersion ? `.${overrideVersion}` : "") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
         params: {
           model,
           reasoning: { effort: "low" },

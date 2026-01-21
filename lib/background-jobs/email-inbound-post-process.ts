@@ -43,6 +43,7 @@ import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getPublicAppUrl } from "@/lib/app-url";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { maybeAssignLead } from "@/lib/lead-assignment";
+import { scheduleDelayedAutoSend, getCampaignDelayConfig, validateDelayedAutoSend } from "@/lib/background-jobs/delayed-auto-send";
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   for (const dateStr of dateStrs) {
@@ -948,11 +949,43 @@ export async function runEmailInboundPostProcessJob(opts: {
           });
 
           if (evaluation.safeToSend && evaluation.confidence >= autoSendThreshold) {
-            const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
-            if (sendResult.success) {
-              autoReplySent = true;
+            // Phase 47l: Check for delay configuration
+            const delayConfig = lead.emailCampaign?.id ? await getCampaignDelayConfig(lead.emailCampaign.id) : null;
+
+            if (delayConfig && (delayConfig.delayMinSeconds > 0 || delayConfig.delayMaxSeconds > 0)) {
+              // Schedule delayed send
+              const scheduleResult = await scheduleDelayedAutoSend({
+                clientId: client.id,
+                leadId: lead.id,
+                triggerMessageId: message.id,
+                draftId,
+                delayMinSeconds: delayConfig.delayMinSeconds,
+                delayMaxSeconds: delayConfig.delayMaxSeconds,
+                inboundSentAt: message.sentAt ?? new Date(),
+              });
+
+              if (scheduleResult.scheduled) {
+                console.log(`[Auto-Send] Scheduled delayed send for draft ${draftId}, runAt: ${scheduleResult.runAt?.toISOString()}`);
+              } else {
+                console.log(`[Auto-Send] Delayed send not scheduled: ${scheduleResult.skipReason}`);
+              }
             } else {
-              console.error(`[Auto-Send] Failed to send draft ${draftId}: ${sendResult.error}`);
+              // Immediate send (no delay configured)
+              const validation = await validateDelayedAutoSend({
+                leadId: lead.id,
+                triggerMessageId: message.id,
+                draftId,
+              });
+              if (!validation.proceed) {
+                console.log(`[Auto-Send] Skipping immediate send for draft ${draftId}: ${validation.reason || "unknown_reason"}`);
+              } else {
+                const sendResult = await approveAndSendDraftSystem(draftId, { sentBy: "ai" });
+                if (sendResult.success) {
+                  autoReplySent = true;
+                } else {
+                  console.error(`[Auto-Send] Failed to send draft ${draftId}: ${sendResult.error}`);
+                }
+              }
             }
           } else {
             const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";

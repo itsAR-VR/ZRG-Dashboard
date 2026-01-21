@@ -18,6 +18,9 @@ interface EmailCampaignData {
   leadCount: number;
   responseMode: CampaignResponseMode;
   autoSendConfidenceThreshold: number;
+  // Phase 47l: Auto-send delay window
+  autoSendDelayMinSeconds: number;
+  autoSendDelayMaxSeconds: number;
   bookingProcessId: string | null;
   bookingProcessName: string | null;
   // AI Persona assignment (Phase 39)
@@ -62,6 +65,8 @@ export async function getEmailCampaigns(clientId?: string): Promise<{
       leadCount: c._count.leads,
       responseMode: c.responseMode,
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold,
+      autoSendDelayMinSeconds: c.autoSendDelayMinSeconds,
+      autoSendDelayMaxSeconds: c.autoSendDelayMaxSeconds,
       bookingProcessId: c.bookingProcess?.id ?? null,
       bookingProcessName: c.bookingProcess?.name ?? null,
       aiPersonaId: c.aiPersona?.id ?? null,
@@ -83,12 +88,32 @@ function clamp01(value: number): number {
   return value;
 }
 
+/**
+ * Clamp delay seconds to sane bounds: 0..3600 (0-60 minutes)
+ */
+function clampDelaySeconds(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value <= 0) return 0;
+  if (value >= 3600) return 3600;
+  return Math.floor(value);
+}
+
 export async function updateEmailCampaignConfig(
   emailCampaignId: string,
-  opts: { responseMode?: CampaignResponseMode; autoSendConfidenceThreshold?: number }
+  opts: {
+    responseMode?: CampaignResponseMode;
+    autoSendConfidenceThreshold?: number;
+    autoSendDelayMinSeconds?: number;
+    autoSendDelayMaxSeconds?: number;
+  }
 ): Promise<{
   success: boolean;
-  data?: { responseMode: CampaignResponseMode; autoSendConfidenceThreshold: number };
+  data?: {
+    responseMode: CampaignResponseMode;
+    autoSendConfidenceThreshold: number;
+    autoSendDelayMinSeconds: number;
+    autoSendDelayMaxSeconds: number;
+  };
   error?: string;
 }> {
   try {
@@ -103,6 +128,8 @@ export async function updateEmailCampaignConfig(
     const data: {
       responseMode?: CampaignResponseMode;
       autoSendConfidenceThreshold?: number;
+      autoSendDelayMinSeconds?: number;
+      autoSendDelayMaxSeconds?: number;
     } = {};
 
     if (opts.responseMode) data.responseMode = opts.responseMode;
@@ -112,10 +139,39 @@ export async function updateEmailCampaignConfig(
       data.autoSendConfidenceThreshold = normalized;
     }
 
+    // Phase 47l: Handle delay settings
+    if (opts.autoSendDelayMinSeconds !== undefined || opts.autoSendDelayMaxSeconds !== undefined) {
+      // Get current values to apply validation
+      const current = await prisma.emailCampaign.findUnique({
+        where: { id: emailCampaignId },
+        select: { autoSendDelayMinSeconds: true, autoSendDelayMaxSeconds: true },
+      });
+
+      let minSec = opts.autoSendDelayMinSeconds !== undefined
+        ? clampDelaySeconds(opts.autoSendDelayMinSeconds)
+        : (current?.autoSendDelayMinSeconds ?? 180);
+      let maxSec = opts.autoSendDelayMaxSeconds !== undefined
+        ? clampDelaySeconds(opts.autoSendDelayMaxSeconds)
+        : (current?.autoSendDelayMaxSeconds ?? 420);
+
+      // Ensure max >= min
+      if (maxSec < minSec) {
+        maxSec = minSec;
+      }
+
+      data.autoSendDelayMinSeconds = minSec;
+      data.autoSendDelayMaxSeconds = maxSec;
+    }
+
     const updated = await prisma.emailCampaign.update({
       where: { id: emailCampaignId },
       data,
-      select: { responseMode: true, autoSendConfidenceThreshold: true },
+      select: {
+        responseMode: true,
+        autoSendConfidenceThreshold: true,
+        autoSendDelayMinSeconds: true,
+        autoSendDelayMaxSeconds: true,
+      },
     });
 
     revalidatePath("/");
@@ -125,6 +181,8 @@ export async function updateEmailCampaignConfig(
       data: {
         responseMode: updated.responseMode,
         autoSendConfidenceThreshold: updated.autoSendConfidenceThreshold,
+        autoSendDelayMinSeconds: updated.autoSendDelayMinSeconds,
+        autoSendDelayMaxSeconds: updated.autoSendDelayMaxSeconds,
       },
     };
   } catch (error) {

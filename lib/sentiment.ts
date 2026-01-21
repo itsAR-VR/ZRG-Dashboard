@@ -1,7 +1,7 @@
 import "server-only";
 
 import "@/lib/server-dns";
-import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
@@ -385,7 +385,10 @@ export async function analyzeInboundEmailReply(opts: {
   if (!process.env.OPENAI_API_KEY) return null;
 
   const maxRetries = opts.maxRetries ?? 2;
-  const promptTemplate = getAIPromptTemplate("sentiment.email_inbox_analyze.v1");
+  // Use override-aware prompt lookup (Phase 47i)
+  const overrideResult = await getPromptWithOverrides("sentiment.email_inbox_analyze.v1", opts.clientId);
+  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("sentiment.email_inbox_analyze.v1");
+  const overrideVersion = overrideResult?.overrideVersion ?? null;
   const systemPrompt =
     promptTemplate?.messages.find((m) => m.role === "system")?.content || EMAIL_INBOX_MANAGER_SYSTEM;
 
@@ -556,7 +559,7 @@ export async function analyzeInboundEmailReply(opts: {
         clientId: opts.clientId,
         leadId: opts.leadId,
         featureId: promptTemplate?.featureId || "sentiment.email_inbox_analyze",
-        promptKey: (promptTemplate?.key || "sentiment.email_inbox_analyze.v1") + (attempt === 1 ? "" : `.retry${attempt}`),
+        promptKey: (promptTemplate?.key || "sentiment.email_inbox_analyze.v1") + (overrideVersion ? `.${overrideVersion}` : "") + (attempt === 1 ? "" : `.retry${attempt}`),
         params: {
           model,
           instructions: systemPrompt,
@@ -695,7 +698,10 @@ export async function classifySentiment(
     return "Out of Office";
   }
 
-  const promptTemplate = getAIPromptTemplate("sentiment.classify.v1");
+  // Use override-aware prompt lookup (Phase 47i)
+  const overrideResult = await getPromptWithOverrides("sentiment.classify.v1", opts.clientId);
+  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("sentiment.classify.v1");
+  const overrideVersion = overrideResult?.overrideVersion ?? null;
   const systemPrompt =
     promptTemplate?.messages.find((m) => m.role === "system")?.content ||
     "You are an expert inbox manager. Classify the reply into ONE category and return only JSON {\"classification\": \"...\"}.";
@@ -730,7 +736,7 @@ export async function classifySentiment(
         clientId: opts.clientId,
         leadId: opts.leadId,
         featureId: promptTemplate?.featureId || "sentiment.classify",
-        promptKey: promptTemplate?.key || "sentiment.classify.v1",
+        promptKey: (promptTemplate?.key || "sentiment.classify.v1") + (overrideVersion ? `.${overrideVersion}` : ""),
         params: {
           model,
           instructions: systemPrompt,

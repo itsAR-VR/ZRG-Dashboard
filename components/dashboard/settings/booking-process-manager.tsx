@@ -167,6 +167,7 @@ export function BookingProcessManager({
       setFormMaxWaves(result.data.maxWavesBeforeEscalation);
       setFormStages(
         result.data.stages.map((s) => ({
+          id: s.id,
           stageNumber: s.stageNumber,
           includeBookingLink: s.includeBookingLink,
           linkType: s.linkType,

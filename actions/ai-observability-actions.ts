@@ -2,7 +2,12 @@
 
 import { prisma } from "@/lib/prisma";
 import { requireClientAdminAccess } from "@/lib/workspace-access";
-import { listAIPromptTemplates } from "@/lib/ai/prompt-registry";
+import {
+  listAIPromptTemplates,
+  computePromptMessageBaseHash,
+  type PromptRole,
+} from "@/lib/ai/prompt-registry";
+import { SNIPPET_DEFAULTS } from "@/lib/ai/prompt-snippets";
 import { estimateCostUsd } from "@/lib/ai/pricing";
 import { pruneOldAIInteractionsMaybe } from "@/lib/ai/retention";
 
@@ -70,6 +75,25 @@ export type ErrorSampleGroup = {
   model: string;
   errors: number;
   samples: ErrorSample[];
+};
+
+// =============================================================================
+// Prompt Override Types (Phase 47)
+// =============================================================================
+
+export type PromptOverrideInput = {
+  promptKey: string;
+  role: PromptRole;
+  index: number;
+  content: string;
+};
+
+export type PromptOverrideRecord = {
+  promptKey: string;
+  role: string;
+  index: number;
+  content: string;
+  baseContentHash: string;
 };
 
 export type ObservabilitySummary = {
@@ -442,5 +466,377 @@ export async function getAiObservabilitySummary(
     return { success: true, data };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : "Failed to load AI metrics" };
+  }
+}
+
+// =============================================================================
+// Prompt Override CRUD (Phase 47)
+// =============================================================================
+
+/**
+ * Save a prompt override for a workspace.
+ * Creates or updates the override, storing a baseContentHash for drift detection.
+ */
+export async function savePromptOverride(
+  clientId: string,
+  override: PromptOverrideInput
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    // Compute baseContentHash from the current registry template (prevents index drift)
+    const baseContentHash = computePromptMessageBaseHash({
+      promptKey: override.promptKey,
+      role: override.role,
+      index: override.index,
+    });
+
+    if (!baseContentHash) {
+      return {
+        success: false,
+        error: `Invalid prompt message: ${override.promptKey} ${override.role}[${override.index}] does not exist`,
+      };
+    }
+
+    await prisma.promptOverride.upsert({
+      where: {
+        clientId_promptKey_role_index: {
+          clientId,
+          promptKey: override.promptKey,
+          role: override.role,
+          index: override.index,
+        },
+      },
+      create: {
+        clientId,
+        promptKey: override.promptKey,
+        role: override.role,
+        index: override.index,
+        baseContentHash,
+        content: override.content,
+      },
+      update: {
+        baseContentHash,
+        content: override.content,
+      },
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error("[savePromptOverride] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to save override",
+    };
+  }
+}
+
+/**
+ * Reset a specific prompt message to default (delete override).
+ */
+export async function resetPromptOverride(
+  clientId: string,
+  promptKey: string,
+  role: string,
+  index: number
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    await prisma.promptOverride.deleteMany({
+      where: { clientId, promptKey, role, index },
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error("[resetPromptOverride] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to reset override",
+    };
+  }
+}
+
+/**
+ * Reset all overrides for a prompt (restore entire prompt to defaults).
+ */
+export async function resetAllPromptOverrides(
+  clientId: string,
+  promptKey: string
+): Promise<{ success: boolean; deletedCount?: number; error?: string }> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    const result = await prisma.promptOverride.deleteMany({
+      where: { clientId, promptKey },
+    });
+
+    return { success: true, deletedCount: result.count };
+  } catch (error) {
+    console.error("[resetAllPromptOverrides] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to reset overrides",
+    };
+  }
+}
+
+/**
+ * Get all overrides for a workspace (for displaying in UI).
+ */
+export async function getPromptOverrides(clientId: string): Promise<{
+  success: boolean;
+  overrides?: PromptOverrideRecord[];
+  error?: string;
+}> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    const overrides = await prisma.promptOverride.findMany({
+      where: { clientId },
+      select: {
+        promptKey: true,
+        role: true,
+        index: true,
+        baseContentHash: true,
+        content: true,
+      },
+    });
+
+    return { success: true, overrides };
+  } catch (error) {
+    console.error("[getPromptOverrides] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to load overrides",
+    };
+  }
+}
+
+// =============================================================================
+// Prompt Snippet Override CRUD (Phase 47e)
+// =============================================================================
+
+export type PromptSnippetOverrideRecord = {
+  snippetKey: string;
+  content: string;
+  updatedAt: string;
+};
+
+/**
+ * Get all snippet overrides for a workspace.
+ */
+export async function getPromptSnippetOverrides(clientId: string): Promise<{
+  success: boolean;
+  overrides?: PromptSnippetOverrideRecord[];
+  error?: string;
+}> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    const overrides = await prisma.promptSnippetOverride.findMany({
+      where: { clientId },
+      select: {
+        snippetKey: true,
+        content: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      success: true,
+      overrides: overrides.map((o) => ({
+        snippetKey: o.snippetKey,
+        content: o.content,
+        updatedAt: o.updatedAt.toISOString(),
+      })),
+    };
+  } catch (error) {
+    console.error("[getPromptSnippetOverrides] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to load snippet overrides",
+    };
+  }
+}
+
+/**
+ * Save a snippet override for a workspace (upsert).
+ */
+export async function savePromptSnippetOverride(
+  clientId: string,
+  snippetKey: string,
+  content: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    await prisma.promptSnippetOverride.upsert({
+      where: { clientId_snippetKey: { clientId, snippetKey } },
+      create: { clientId, snippetKey, content },
+      update: { content },
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error("[savePromptSnippetOverride] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to save snippet override",
+    };
+  }
+}
+
+/**
+ * Reset a snippet override to default (delete).
+ */
+export async function resetPromptSnippetOverride(
+  clientId: string,
+  snippetKey: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    await prisma.promptSnippetOverride.deleteMany({
+      where: { clientId, snippetKey },
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error("[resetPromptSnippetOverride] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to reset snippet override",
+    };
+  }
+}
+
+// =============================================================================
+// Snippet Registry for UI (Phase 47h)
+// =============================================================================
+
+export type SnippetRegistryEntry = {
+  key: string;
+  label: string;
+  description: string;
+  type: "text" | "list" | "number" | "template";
+  defaultValue: string;
+  currentValue: string | null; // null means using default
+  placeholders?: string[]; // for template type
+};
+
+/**
+ * Get the full snippet registry with current override values for UI display.
+ */
+export async function getSnippetRegistry(clientId: string): Promise<{
+  success: boolean;
+  entries?: SnippetRegistryEntry[];
+  error?: string;
+}> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    const buildRegistryMeta = (
+      snippetKey: string
+    ): Omit<SnippetRegistryEntry, "key" | "defaultValue" | "currentValue"> => {
+      if (snippetKey === "forbiddenTerms") {
+        return {
+          label: "Forbidden Terms",
+          description: "Words/phrases to avoid in AI-generated email content (one per line).",
+          type: "list",
+        };
+      }
+
+      if (snippetKey === "emailLengthMinChars") {
+        return {
+          label: "Email Min Characters",
+          description: "Minimum character count for generated emails.",
+          type: "number",
+        };
+      }
+
+      if (snippetKey === "emailLengthMaxChars") {
+        return {
+          label: "Email Max Characters",
+          description: "Maximum character count for generated emails.",
+          type: "number",
+        };
+      }
+
+      if (snippetKey === "emailLengthRulesTemplate") {
+        return {
+          label: "Email Length Instructions",
+          description: "Template for the length rules instruction block.",
+          type: "template",
+          placeholders: ["{minChars}", "{maxChars}"],
+        };
+      }
+
+      const archetypeMatch = snippetKey.match(/^emailArchetype\.(.+)\.instructions$/);
+      if (archetypeMatch) {
+        const archetypeId = archetypeMatch[1] || "";
+        const archetypePrefix = archetypeId.split("_")[0] || archetypeId;
+        const humanized = archetypeId.replace(/^A\d+_/, "").replace(/_/g, " ").trim();
+        return {
+          label: `Email Archetype ${archetypePrefix}`,
+          description: humanized ? `Structure instructions (${humanized}).` : "Structure instructions.",
+          type: "text",
+        };
+      }
+
+      return {
+        label: snippetKey,
+        description: "Prompt snippet value.",
+        type: "text",
+      };
+    };
+
+    const sortKey = (snippetKey: string): [number, number, string] => {
+      if (snippetKey === "forbiddenTerms") return [0, 0, snippetKey];
+      if (snippetKey === "emailLengthMinChars") return [1, 0, snippetKey];
+      if (snippetKey === "emailLengthMaxChars") return [1, 1, snippetKey];
+      if (snippetKey === "emailLengthRulesTemplate") return [1, 2, snippetKey];
+
+      const archetypeMatch = snippetKey.match(/^emailArchetype\.(.+)\.instructions$/);
+      if (archetypeMatch) {
+        const archetypeId = archetypeMatch[1] || "";
+        const numberMatch = archetypeId.match(/^A(\d+)_/);
+        const n = numberMatch ? Number.parseInt(numberMatch[1], 10) : 999;
+        return [2, Number.isFinite(n) ? n : 999, snippetKey];
+      }
+
+      return [9, 0, snippetKey];
+    };
+
+    // Fetch current overrides
+    const overrides = await prisma.promptSnippetOverride.findMany({
+      where: { clientId },
+      select: { snippetKey: true, content: true },
+    });
+    const overrideMap = new Map(overrides.map((o) => [o.snippetKey, o.content]));
+
+    // Build entries with current values
+    const keys = Object.keys(SNIPPET_DEFAULTS).sort((a, b) => {
+      const aa = sortKey(a);
+      const bb = sortKey(b);
+      if (aa[0] !== bb[0]) return aa[0] - bb[0];
+      if (aa[1] !== bb[1]) return aa[1] - bb[1];
+      return aa[2].localeCompare(bb[2]);
+    });
+
+    const entries: SnippetRegistryEntry[] = keys.map((key) => ({
+      key,
+      ...buildRegistryMeta(key),
+      defaultValue: SNIPPET_DEFAULTS[key] ?? "",
+      currentValue: overrideMap.get(key) ?? null,
+    }));
+
+    return { success: true, entries };
+  } catch (error) {
+    console.error("[getSnippetRegistry] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to load snippet registry",
+    };
   }
 }
