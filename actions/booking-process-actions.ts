@@ -230,7 +230,7 @@ export async function updateBookingProcess(
     await requireClientAdminAccess(existing.clientId);
 
     // Validate name uniqueness if changing
-    if (data.name && data.name !== existing.name) {
+    if (data.name !== undefined && data.name !== existing.name) {
       const duplicate = await prisma.bookingProcess.findFirst({
         where: {
           clientId: existing.clientId,
@@ -272,7 +272,7 @@ export async function updateBookingProcess(
       const updatedProcess = await tx.bookingProcess.update({
         where: { id },
         data: {
-          ...(data.name && { name: data.name }),
+          ...(data.name !== undefined && { name: data.name }),
           ...(data.description !== undefined && { description: data.description }),
           ...(data.maxWavesBeforeEscalation !== undefined && {
             maxWavesBeforeEscalation: data.maxWavesBeforeEscalation,
