@@ -95,15 +95,18 @@ export async function POST(request: NextRequest, context: { params: Promise<{ cl
 
   const rawBody = await request.text();
 
+  // Signature verification: Calendly only provides signing keys for OAuth apps, not Personal Access Tokens.
+  // When no signing key is available, we accept the webhook but log a warning.
   const signingKey = client.calendlyWebhookSigningKey || process.env.CALENDLY_WEBHOOK_SIGNING_KEY || null;
-  if (!signingKey) {
-    console.error("[Calendly Webhook] No signing key configured; rejecting webhook for client", clientId);
-    return NextResponse.json({ error: "Webhook signing key not configured" }, { status: 503 });
-  }
-
-  const verified = verifyCalendlyWebhookSignature({ signingKey, headers: request.headers, rawBody });
-  if (!verified.ok) {
-    return NextResponse.json({ error: "Unauthorized", reason: verified.reason }, { status: 401 });
+  if (signingKey) {
+    const verified = verifyCalendlyWebhookSignature({ signingKey, headers: request.headers, rawBody });
+    if (!verified.ok) {
+      return NextResponse.json({ error: "Unauthorized", reason: verified.reason }, { status: 401 });
+    }
+  } else {
+    // No signing key available - accept webhook but log warning
+    // This is expected for clients using Personal Access Tokens instead of OAuth
+    console.warn("[Calendly Webhook] No signing key configured for client", clientId, "- accepting webhook without signature verification");
   }
 
   let parsed: CalendlyWebhookEnvelope | null = null;
