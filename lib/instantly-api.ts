@@ -68,9 +68,26 @@ export async function sendInstantlyReply(
     eaccount: string;
     subject: string | null;
     body: string;
+    cc?: string[];   // Optional CC recipients
+    bcc?: string[];  // Optional BCC recipients
   }
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    // Build payload with optional CC/BCC as comma-separated lists (Instantly API v2 format)
+    const payload: Record<string, unknown> = {
+      reply_to_uuid: opts.replyToUuid,
+      eaccount: opts.eaccount,
+      subject: opts.subject ?? undefined,
+      body: opts.body,
+    };
+
+    if (opts.cc?.length) {
+      payload.cc_address_email_list = opts.cc.join(",");
+    }
+    if (opts.bcc?.length) {
+      payload.bcc_address_email_list = opts.bcc.join(",");
+    }
+
     const response = await fetch("https://api.instantly.ai/api/v2/emails/reply", {
       method: "POST",
       headers: {
@@ -78,12 +95,7 @@ export async function sendInstantlyReply(
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        reply_to_uuid: opts.replyToUuid,
-        eaccount: opts.eaccount,
-        subject: opts.subject ?? undefined,
-        body: opts.body,
-      }),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {

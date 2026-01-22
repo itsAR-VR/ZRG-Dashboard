@@ -617,6 +617,12 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           rawText: msg.rawText || undefined,
           cc: msg.cc,
           bcc: msg.bcc,
+          // Phase 50: Email participant metadata
+          fromEmail: msg.fromEmail || undefined,
+          fromName: msg.fromName ?? null,
+          toEmail: msg.toEmail || undefined,
+          toName: msg.toName ?? null,
+          emailBisonReplyId: msg.emailBisonReplyId || undefined,
           channel: (msg.channel || "sms") as Channel,
           direction: msg.direction as "inbound" | "outbound",
           timestamp: msg.sentAt, // Use sentAt for actual message time

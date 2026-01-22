@@ -7,15 +7,72 @@ import { Bot, User, UserCircle } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useState } from "react"
 import { safeLinkifiedHtmlFromText } from "@/lib/safe-html"
+import { formatEmailParticipant } from "@/lib/email-participants"
 
 interface ChatMessageProps {
   message: Message
   leadName?: string
+  leadEmail?: string
   userName?: string
   userAvatar?: string | null
 }
 
-export function ChatMessage({ message, leadName, userName = "You", userAvatar }: ChatMessageProps) {
+// Phase 50: Email participant header for displaying From/To/CC on email messages
+interface EmailParticipantHeaderProps {
+  message: Message
+  leadName?: string
+  leadEmail?: string
+  isInbound: boolean
+}
+
+function EmailParticipantHeader({
+  message,
+  leadName,
+  leadEmail,
+  isInbound,
+}: EmailParticipantHeaderProps) {
+  // Only show for email channel
+  if (message.channel !== "email") return null
+
+  // Determine From/To based on direction
+  const from = isInbound
+    ? formatEmailParticipant(message.fromEmail || leadEmail || "Unknown", message.fromName || leadName)
+    : formatEmailParticipant(message.fromEmail || "You", message.fromName)
+
+  const to = isInbound
+    ? formatEmailParticipant(message.toEmail || "You", message.toName)
+    : formatEmailParticipant(message.toEmail || leadEmail || "Unknown", message.toName || leadName)
+
+  const ccList = message.cc || []
+  const bccList = message.bcc || []
+
+  return (
+    <div className="text-xs text-muted-foreground space-y-0.5 mb-2 pb-2 border-b border-border/50">
+      <div>
+        <span className="font-medium text-foreground/70">From:</span>{" "}
+        <span>{from}</span>
+      </div>
+      <div>
+        <span className="font-medium text-foreground/70">To:</span>{" "}
+        <span>{to}</span>
+      </div>
+      {ccList.length > 0 && (
+        <div>
+          <span className="font-medium text-foreground/70">CC:</span>{" "}
+          <span>{ccList.join(", ")}</span>
+        </div>
+      )}
+      {bccList.length > 0 && (
+        <div>
+          <span className="font-medium text-foreground/70">BCC:</span>{" "}
+          <span>{bccList.join(", ")}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export function ChatMessage({ message, leadName, leadEmail, userName = "You", userAvatar }: ChatMessageProps) {
   // Map sender types
   const isLead = message.sender === "lead"
   const isHuman = message.sender === "human"
@@ -79,6 +136,13 @@ export function ChatMessage({ message, leadName, userName = "You", userAvatar }:
           <span className="text-xs text-muted-foreground/60">{format(message.timestamp, "MMM d, h:mm a")}</span>
         </div>
         <div className={cn("rounded-lg px-4 py-2.5 space-y-1", config.bubbleClass)}>
+          {/* Phase 50: Email participant header */}
+          <EmailParticipantHeader
+            message={message}
+            leadName={leadName}
+            leadEmail={leadEmail}
+            isInbound={isLead}
+          />
           {isEmail && message.subject && (
             <p className="text-xs font-semibold text-foreground">Subject: {message.subject}</p>
           )}

@@ -96,10 +96,14 @@ async function validateWithEmailGuard(email: string) {
   }
 }
 
+/**
+ * Send an email reply for an AI draft.
+ * Phase 50: Added optional CC parameter for custom CC recipients.
+ */
 export async function sendEmailReply(
   draftId: string,
   editedContent?: string,
-  opts: { sentBy?: OutboundSentBy | null; sentByUserId?: string | null } = {}
+  opts: { sentBy?: OutboundSentBy | null; sentByUserId?: string | null; cc?: string[] } = {}
 ): Promise<SendEmailResult> {
   try {
     const draft = await prisma.aIDraft.findUnique({
@@ -274,7 +278,9 @@ export async function sendEmailReply(
         : [];
 
       // Convert CC/BCC string arrays to EmailBisonRecipient format
-      const ccEmails = latestInboundEmail?.cc?.map((address) => ({ name: null, email_address: address })) || [];
+      // Use custom CC if provided, otherwise fall back to latest inbound email CC
+      const ccEmails = (opts.cc?.length ? opts.cc : (latestInboundEmail?.cc || []))
+        .map((address) => ({ name: null, email_address: address }));
       const bccEmails = latestInboundEmail?.bcc?.map((address) => ({ name: null, email_address: address })) || [];
 
       let senderEmailId = lead.senderAccountId;
@@ -370,7 +376,8 @@ export async function sendEmailReply(
         return { success: false, error: "SmartLead thread handle is invalid or missing" };
       }
 
-      const cc = (latestInboundEmail?.cc || []).filter(Boolean);
+      // Use custom CC if provided, otherwise fall back to latest inbound email CC
+      const cc = (opts.cc?.length ? opts.cc : (latestInboundEmail?.cc || [])).filter(Boolean);
       const bcc = (latestInboundEmail?.bcc || []).filter(Boolean);
 
       const sendResult = await sendSmartLeadReplyToThread(client.smartLeadApiKey, {
@@ -395,11 +402,17 @@ export async function sendEmailReply(
         return { success: false, error: "Instantly thread handle is invalid or missing" };
       }
 
+      // Use custom CC if provided, otherwise fall back to latest inbound email CC
+      const instantlyCc = opts.cc?.length ? opts.cc : (latestInboundEmail?.cc || []);
+      const instantlyBcc = latestInboundEmail?.bcc || [];
+
       const sendResult = await sendInstantlyReply(client.instantlyApiKey, {
         replyToUuid: instantlyHandle.replyToUuid,
         eaccount: instantlyHandle.eaccount,
         subject,
         body: messageContent,
+        cc: instantlyCc.length > 0 ? instantlyCc : undefined,
+        bcc: instantlyBcc.length > 0 ? instantlyBcc : undefined,
       });
 
       if (!sendResult.success) {
@@ -409,12 +422,15 @@ export async function sendEmailReply(
       return { success: false, error: "No supported email provider is configured for this workspace" };
     }
 
+    // Determine actual CC used for the outbound message
+    const actualCcUsed = opts.cc?.length ? opts.cc : (latestInboundEmail?.cc || []);
+
     const message = await prisma.message.create({
       data: {
         body: messageContent,
         subject,
         channel: "email",
-        cc: latestInboundEmail?.cc || [],
+        cc: actualCcUsed,
         bcc: latestInboundEmail?.bcc || [],
         direction: "outbound",
         leadId: lead.id,
@@ -422,6 +438,11 @@ export async function sendEmailReply(
         sentBy: opts.sentBy || undefined,
         sentByUserId: opts.sentByUserId || undefined,
         aiDraftId: draftId,
+        // Email participant metadata for outbound message
+        toEmail: lead.email || undefined,
+        toName: lead.firstName || lead.lastName
+          ? [lead.firstName, lead.lastName].filter(Boolean).join(" ")
+          : undefined,
       },
     });
 
@@ -470,7 +491,7 @@ export async function sendEmailReply(
 export async function sendEmailReplyForLead(
   leadId: string,
   messageContent: string,
-  opts: { sentBy?: OutboundSentBy | null; sentByUserId?: string | null } = {}
+  opts: { sentBy?: OutboundSentBy | null; sentByUserId?: string | null; cc?: string[] } = {}
 ): Promise<SendEmailResult> {
   try {
     const lead = await prisma.lead.findUnique({
@@ -613,7 +634,9 @@ export async function sendEmailReplyForLead(
         : [];
 
       // Convert CC/BCC string arrays to EmailBisonRecipient format
-      const ccEmails = latestInboundEmail?.cc?.map((address) => ({ name: null, email_address: address })) || [];
+      // Use custom CC if provided, otherwise fall back to latest inbound email CC
+      const ccEmails = (opts.cc?.length ? opts.cc : (latestInboundEmail?.cc || []))
+        .map((address) => ({ name: null, email_address: address }));
       const bccEmails = latestInboundEmail?.bcc?.map((address) => ({ name: null, email_address: address })) || [];
 
       let senderEmailId = lead.senderAccountId;
@@ -704,7 +727,8 @@ export async function sendEmailReplyForLead(
       const handle = smartLeadHandle ?? decodeSmartLeadReplyHandle(replyKey);
       if (!handle) return { success: false, error: "SmartLead thread handle is invalid or missing" };
 
-      const cc = (latestInboundEmail?.cc || []).filter(Boolean);
+      // Use custom CC if provided, otherwise fall back to latest inbound email CC
+      const cc = (opts.cc?.length ? opts.cc : (latestInboundEmail?.cc || [])).filter(Boolean);
       const bcc = (latestInboundEmail?.bcc || []).filter(Boolean);
 
       const sendResult = await sendSmartLeadReplyToThread(client.smartLeadApiKey, {
@@ -728,11 +752,17 @@ export async function sendEmailReplyForLead(
       const handle = instantlyHandle ?? decodeInstantlyReplyHandle(replyKey);
       if (!handle) return { success: false, error: "Instantly thread handle is invalid or missing" };
 
+      // Use custom CC if provided, otherwise fall back to latest inbound email CC
+      const instantlyCc = opts.cc?.length ? opts.cc : (latestInboundEmail?.cc || []);
+      const instantlyBcc = latestInboundEmail?.bcc || [];
+
       const sendResult = await sendInstantlyReply(client.instantlyApiKey, {
         replyToUuid: handle.replyToUuid,
         eaccount: handle.eaccount,
         subject,
         body: messageContent,
+        cc: instantlyCc.length > 0 ? instantlyCc : undefined,
+        bcc: instantlyBcc.length > 0 ? instantlyBcc : undefined,
       });
 
       if (!sendResult.success) {
@@ -742,18 +772,26 @@ export async function sendEmailReplyForLead(
       return { success: false, error: "No supported email provider is configured for this workspace" };
     }
 
+    // Determine actual CC used for the outbound message
+    const actualCcUsed = opts.cc?.length ? opts.cc : (latestInboundEmail?.cc || []);
+
     const message = await prisma.message.create({
       data: {
         body: messageContent,
         subject,
         channel: "email",
-        cc: latestInboundEmail?.cc || [],
+        cc: actualCcUsed,
         bcc: latestInboundEmail?.bcc || [],
         direction: "outbound",
         leadId: lead.id,
         sentAt: new Date(),
         sentBy: opts.sentBy || undefined,
         sentByUserId: opts.sentByUserId || undefined,
+        // Email participant metadata for outbound message
+        toEmail: lead.email || undefined,
+        toName: lead.firstName || lead.lastName
+          ? [lead.firstName, lead.lastName].filter(Boolean).join(" ")
+          : undefined,
       },
     });
 

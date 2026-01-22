@@ -646,6 +646,11 @@ model Message {
   subject   String?           // Email subject line
   cc        String[] @default([])
   bcc       String[] @default([])
+  // Email participant metadata (Phase 50)
+  fromEmail    String?  // Sender email address
+  fromName     String?  // Sender display name
+  toEmail      String?  // Primary recipient email address
+  toName       String?  // Primary recipient display name
   // Status
   isRead    Boolean  @default(false)
   direction String   // 'inbound' or 'outbound'

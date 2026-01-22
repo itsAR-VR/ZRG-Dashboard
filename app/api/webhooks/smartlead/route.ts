@@ -219,6 +219,11 @@ export async function POST(request: NextRequest) {
             subject,
             cc,
             bcc: [],
+            // Phase 50: Email participant metadata
+            fromEmail: replyFromEmail,
+            fromName: normalizeOptionalString(payload.sl_lead_name),
+            toEmail: normalizeOptionalString(payload.to_email),
+            toName: null,
             isRead: false,
             direction: "inbound",
             leadId: lead.id,
@@ -318,6 +323,11 @@ export async function POST(request: NextRequest) {
             subject,
             cc: [],
             bcc: [],
+            // Phase 50: Email participant metadata (outbound campaign)
+            fromEmail: normalizeOptionalString(payload.from_email),
+            fromName: null,
+            toEmail: normalizeOptionalString(payload.to_email) ?? leadEmail,
+            toName: normalizeOptionalString(payload.sl_lead_name),
             isRead: true,
             direction: "outbound",
             leadId: leadResult.lead.id,

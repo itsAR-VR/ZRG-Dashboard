@@ -73,6 +73,13 @@ export interface Message {
   rawText?: string
   cc?: string[]
   bcc?: string[]
+  // Phase 50: Email participant metadata
+  fromEmail?: string
+  fromName?: string | null
+  toEmail?: string
+  toName?: string | null
+  // Provider detection (for UI warnings, e.g., Instantly CC limitation)
+  emailBisonReplyId?: string
   channel: Channel
   direction?: "inbound" | "outbound"
   isRead?: boolean

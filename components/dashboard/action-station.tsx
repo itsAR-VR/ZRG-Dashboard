@@ -7,9 +7,11 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Calendar, ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, Moon } from "lucide-react"
+import { Calendar, ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, Moon, Plus } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { sendMessage, sendEmailMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
+import { validateEmail, formatEmailParticipant } from "@/lib/email-participants"
+import { Input } from "@/components/ui/input"
 import { getCalendarLinkForLead } from "@/actions/settings-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
@@ -45,6 +47,108 @@ const CHANNEL_LABELS = {
   linkedin: "LinkedIn",
 } as const;
 
+// Phase 50: Email recipient editor for CC management
+interface EmailRecipientEditorProps {
+  toEmail: string
+  toName?: string | null
+  ccList: string[]
+  onCcChange: (cc: string[]) => void
+  ccInput: string
+  onCcInputChange: (value: string) => void
+  disabled?: boolean
+}
+
+function EmailRecipientEditor({
+  toEmail,
+  toName,
+  ccList,
+  onCcChange,
+  ccInput,
+  onCcInputChange,
+  disabled = false,
+}: EmailRecipientEditorProps) {
+  const handleAddCc = () => {
+    const trimmed = ccInput.trim().toLowerCase()
+    if (trimmed && validateEmail(trimmed) && !ccList.some(e => e.toLowerCase() === trimmed)) {
+      onCcChange([...ccList, trimmed])
+      onCcInputChange("")
+    }
+  }
+
+  const handleRemoveCc = (email: string) => {
+    onCcChange(ccList.filter(e => e.toLowerCase() !== email.toLowerCase()))
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      handleAddCc()
+    }
+  }
+
+  return (
+    <div className="text-xs border rounded-md p-3 mb-3 bg-muted/30 space-y-2">
+      {/* To field (read-only) */}
+      <div className="flex items-center gap-2">
+        <span className="font-medium text-muted-foreground w-8">To:</span>
+        <Badge variant="secondary" className="font-normal">
+          {formatEmailParticipant(toEmail, toName)}
+        </Badge>
+      </div>
+
+      {/* CC field (editable) */}
+      <div className="flex items-start gap-2">
+        <span className="font-medium text-muted-foreground w-8 pt-1">CC:</span>
+        <div className="flex-1 flex flex-wrap gap-1.5 items-center">
+          {ccList.map((email) => (
+            <Badge
+              key={email}
+              variant="outline"
+              className="font-normal pr-1 gap-1"
+            >
+              {email}
+              {!disabled && (
+                <button
+                  onClick={() => handleRemoveCc(email)}
+                  className="hover:bg-destructive/20 rounded-full p-0.5"
+                  type="button"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </Badge>
+          ))}
+          {!disabled && (
+            <div className="flex items-center gap-1">
+              <Input
+                type="email"
+                placeholder="Add CC..."
+                value={ccInput}
+                onChange={(e) => onCcInputChange(e.target.value)}
+                onKeyDown={handleKeyDown}
+                className="h-6 w-32 text-xs"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleAddCc}
+                disabled={!ccInput.trim() || !validateEmail(ccInput.trim())}
+                className="h-6 w-6 p-0"
+              >
+                <Plus className="h-3 w-3" />
+              </Button>
+            </div>
+          )}
+          {ccList.length === 0 && disabled && (
+            <span className="text-muted-foreground">None</span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function ActionStation({ 
   conversation, 
   onToggleCrm, 
@@ -70,6 +174,9 @@ export function ActionStation({
   const [linkedInStatus, setLinkedInStatus] = useState<LinkedInStatusResult | null>(null)
   const [isLoadingLinkedInStatus, setIsLoadingLinkedInStatus] = useState(false)
   const [connectionNote, setConnectionNote] = useState("")
+  // Phase 50: CC recipient editing state
+  const [ccRecipients, setCcRecipients] = useState<string[]>([])
+  const [ccInput, setCcInput] = useState("")
   const { user } = useUser()
   
   // Determine current channel type
@@ -109,6 +216,24 @@ export function ActionStation({
       setActiveChannel(channels[0])
     }
   }, [conversation?.id, conversation?.primaryChannel, channels])
+
+  // Phase 50: Initialize CC recipients from latest inbound email when channel/conversation changes
+  useEffect(() => {
+    if (activeChannel === "email" && conversation?.messages) {
+      const latestInbound = conversation.messages
+        .filter(m => m.direction === "inbound" && m.channel === "email")
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]
+
+      if (latestInbound?.cc?.length) {
+        setCcRecipients(latestInbound.cc)
+      } else {
+        setCcRecipients([])
+      }
+    } else {
+      setCcRecipients([])
+    }
+    setCcInput("")
+  }, [conversation?.id, activeChannel, conversation?.messages])
 
   // Scroll to bottom only on initial load or when user sends a message
   // NOT during background polling updates to preserve scroll position
@@ -220,7 +345,8 @@ export function ActionStation({
       }
     } else if (isEmail) {
       // Manual email reply (no AI draft required)
-      result = await sendEmailMessage(conversation.id, composeMessage)
+      // Phase 50: Pass CC recipients to send action
+      result = await sendEmailMessage(conversation.id, composeMessage, { cc: ccRecipients })
       if (result.success) {
         toast.success("Email sent!")
       }
@@ -257,8 +383,9 @@ export function ActionStation({
     setIsSending(true)
     
     // If we have a real AI draft, approve it
+    // Phase 50: Pass CC recipients to draft approval for email channel
     if (drafts.length > 0) {
-      const result = await approveAndSendDraft(drafts[0].id, composeMessage)
+      const result = await approveAndSendDraft(drafts[0].id, composeMessage, isEmail ? { cc: ccRecipients } : undefined)
       if (result.success) {
         toast.success("Draft approved and sent!")
         setComposeMessage("")
@@ -623,6 +750,7 @@ export function ActionStation({
               key={message.id}
               message={message}
               leadName={lead.name}
+              leadEmail={lead.email}
               userName={user?.fullName || "You"}
               userAvatar={user?.avatarUrl}
             />
@@ -662,6 +790,19 @@ export function ActionStation({
               Compose with AI
             </Button>
           </div>
+        )}
+
+        {/* Phase 50: Email Recipient Editor - shown when email channel is active */}
+        {isEmail && lead?.email && (
+          <EmailRecipientEditor
+            toEmail={lead.email}
+            toName={lead.name}
+            ccList={ccRecipients}
+            onCcChange={setCcRecipients}
+            ccInput={ccInput}
+            onCcInputChange={setCcInput}
+            disabled={isSending}
+          />
         )}
 
         {/* Connection Note Field - shown when LinkedIn is active and not connected */}

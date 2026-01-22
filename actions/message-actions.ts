@@ -897,16 +897,22 @@ export async function sendMessage(
 /**
  * Send an email reply for a lead (no AI draft required).
  * This is the UI-safe wrapper that enforces lead access.
+ * Phase 50: Added optional CC parameter for custom CC recipients.
  */
 export async function sendEmailMessage(
   leadId: string,
-  message: string
+  message: string,
+  options?: { cc?: string[] }
 ): Promise<SendMessageResult> {
   return withAiTelemetrySourceIfUnset("action:message.send_email", async () => {
     try {
       const user = await requireAuthUser();
       await requireLeadAccess(leadId);
-      const result = await sendEmailReplyForLead(leadId, message, { sentBy: "setter", sentByUserId: user.id });
+      const result = await sendEmailReplyForLead(leadId, message, {
+        sentBy: "setter",
+        sentByUserId: user.id,
+        cc: options?.cc,
+      });
       if (!result.success) {
         return { success: false, error: result.error || "Failed to send email reply" };
       }
@@ -1090,9 +1096,13 @@ export async function getPendingDrafts(leadId: string, channel?: "sms" | "email"
  * @param draftId - The draft ID
  * @param editedContent - Optional edited content (uses original if not provided)
  */
+/**
+ * System-level draft approval and send.
+ * Phase 50: Added optional CC parameter for email drafts.
+ */
 export async function approveAndSendDraftSystem(
   draftId: string,
-  opts: { sentBy: "ai" | "setter"; sentByUserId?: string | null; editedContent?: string } = { sentBy: "setter" }
+  opts: { sentBy: "ai" | "setter"; sentByUserId?: string | null; editedContent?: string; cc?: string[] } = { sentBy: "setter" }
 ): Promise<SendMessageResult> {
   try {
     const draft = await prisma.aIDraft.findUnique({
@@ -1115,10 +1125,12 @@ export async function approveAndSendDraftSystem(
     }
 
     // Email drafts: use dedicated sender (keeps existing behavior)
+    // Phase 50: Pass CC to sendEmailReply
     if (draft.channel === "email") {
       const result = await sendEmailReply(draftId, opts.editedContent, {
         sentBy: opts.sentBy,
         sentByUserId: opts.sentByUserId,
+        cc: opts.cc,
       });
       if (!result.success) return { success: false, error: result.error || "Failed to send email reply" };
       return { success: true, messageId: result.messageId };
@@ -1185,9 +1197,14 @@ export async function approveAndSendDraftSystem(
   }
 }
 
+/**
+ * Approve and send an AI draft from the UI.
+ * Phase 50: Added optional CC parameter for email drafts.
+ */
 export async function approveAndSendDraft(
   draftId: string,
-  editedContent?: string
+  editedContent?: string,
+  options?: { cc?: string[] }
 ): Promise<SendMessageResult> {
   try {
     const user = await requireAuthUser();
@@ -1221,7 +1238,12 @@ export async function approveAndSendDraft(
     }
 
     if (draft.channel === "email") {
-      return await approveAndSendDraftSystem(draftId, { sentBy: "setter", sentByUserId: user.id, editedContent });
+      return await approveAndSendDraftSystem(draftId, {
+        sentBy: "setter",
+        sentByUserId: user.id,
+        editedContent,
+        cc: options?.cc,
+      });
     }
 
     if (draft.channel === "linkedin") {
