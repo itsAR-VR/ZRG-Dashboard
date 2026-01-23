@@ -1676,6 +1676,9 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
             archetype = { ...defaultArchetype, instructions: effectiveArchetypeInstructions };
           }
 
+          // At this point archetype is guaranteed to be set
+          const resolvedArchetype = archetype;
+
 	        const generationInstructions = buildEmailDraftGenerationInstructions({
 	          aiName,
 	          aiTone,
@@ -1685,7 +1688,7 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
 	          ourCompanyName: companyName,
 	          sentimentTag,
 	          strategy,
-	          archetype,
+	          archetype: resolvedArchetype,
 	          forbiddenTerms: effectiveForbiddenTerms, // Phase 47e
 	        }) + emailLengthRules;
 
@@ -1716,7 +1719,7 @@ Write the email response now, following the strategy and structure archetype.
 	          0,
 	          Number.parseInt(process.env.OPENAI_EMAIL_GENERATION_TOKEN_INCREMENT || "2000", 10) || 2000
 	        );
-	        const generationBasePromptKey = `draft.generate.email.generation.v1.arch_${archetype.id}`;
+	        const generationBasePromptKey = `draft.generate.email.generation.v1.arch_${resolvedArchetype.id}`;
 	        const generationBaseMaxOutputTokens = Math.max(800, generationBudget.maxOutputTokens);
 	        const clientIdForAi = lead.clientId;
 
@@ -1877,6 +1880,9 @@ Write the email response now, following the strategy and structure archetype.
           archetype = { ...fallbackBaseArchetype, instructions: effectiveArchetypeInstructions };
         }
 
+        // At this point archetype is guaranteed to be set
+        const fallbackArchetype = archetype;
+
 	        let fallbackSystemPrompt = buildEmailPrompt({
 	          aiName,
 	          aiTone,
@@ -1892,7 +1898,7 @@ Write the email response now, following the strategy and structure archetype.
 	          knowledgeContext,
 	          companyName,
 	          targetResult,
-	        }) + emailLengthRules + `\n\nSTRUCTURE REQUIREMENT: "${archetype.name}"\n${archetype.instructions}`;
+	        }) + emailLengthRules + `\n\nSTRUCTURE REQUIREMENT: "${fallbackArchetype.name}"\n${fallbackArchetype.instructions}`;
 
         // Append booking process instructions if available (Phase 36)
         if (bookingProcessInstructions) {
@@ -1929,7 +1935,7 @@ Generate an appropriate email response following the guidelines and structure ar
           preferApiCount,
         });
 
-	        const fallbackBasePromptKey = `draft.generate.email.v1.fallback.arch_${archetype.id}`;
+	        const fallbackBasePromptKey = `draft.generate.email.v1.fallback.arch_${fallbackArchetype.id}`;
 	        const fallbackMaxAttempts = Math.max(
 	          1,
 	          Math.min(4, Number.parseInt(process.env.OPENAI_EMAIL_FALLBACK_MAX_ATTEMPTS || "2", 10) || 2)
