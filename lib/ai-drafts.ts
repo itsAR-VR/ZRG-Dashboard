@@ -98,10 +98,6 @@ function getEmailDraftCharBoundsFromEnv(): { minChars: number; maxChars: number 
   return { minChars, maxChars };
 }
 
-function buildEmailLengthRules(bounds: { minChars: number; maxChars: number }): string {
-  return `\n\nLENGTH REQUIREMENTS (STRICT):\n- Output must be between ${bounds.minChars} and ${bounds.maxChars} characters (including spaces).\n- Do not mention character counts.\n- If you would exceed ${bounds.maxChars}, shorten the email while keeping the core intent + CTA.\n- If you are under ${bounds.minChars}, add 1–2 short, useful sentences (no fluff).`;
-}
-
 function getEmailLengthStatus(
   content: string,
   bounds: { minChars: number; maxChars: number }
@@ -1351,6 +1347,7 @@ export async function generateResponseDraft(
     let draftContent: string | null = null;
     let response: any = null;
     let emailVerifierForbiddenTerms: string[] | null = null;
+    let emailLengthBoundsForClamp: { minChars: number; maxChars: number } | null = null;
 
     // ---------------------------------------------------------------------------
     // Email: Two-Step Pipeline (Phase 30)
@@ -1365,6 +1362,7 @@ export async function generateResponseDraft(
         buildEffectiveEmailLengthRules(lead.clientId),
       ]);
       emailVerifierForbiddenTerms = effectiveForbiddenTerms;
+      emailLengthBoundsForClamp = emailLengthBounds;
 
       // Coerce model/reasoning from workspace settings
       const draftModel = coerceDraftGenerationModel(settings?.draftGenerationModel);
@@ -1705,7 +1703,7 @@ Write the email response now, following the strategy and structure archetype.
 	                model: draftModel,
 	                instructions: generationInstructions,
 	                input: [{ role: "user" as const, content: generationInput }],
-	                temperature: 0.95, // High temperature for variation
+	                temperature: 0.8, // Balanced variation with better instruction adherence
 	                // No reasoning for generation step - just output text
 	                max_output_tokens: attemptMaxOutputTokens,
 	              },
@@ -1852,7 +1850,7 @@ Generate an appropriate email response following the guidelines and structure ar
                 model: draftModel,
                 instructions: fallbackSystemPrompt,
                 input: fallbackInputMessages,
-                temperature: 0.95,
+                temperature: 0.8, // Balanced variation with better instruction adherence
                 reasoning: { effort: strategyReasoningApi },
                 max_output_tokens: attemptMaxOutputTokens,
               },
@@ -2255,7 +2253,7 @@ Generate an appropriate ${channel} response following the guidelines above.
 	    draftContent = sanitizeDraftContent(draftContent, leadId, channel);
 
 	    if (channel === "email") {
-	      const bounds = getEmailDraftCharBoundsFromEnv();
+	      const bounds = emailLengthBoundsForClamp ?? getEmailDraftCharBoundsFromEnv();
 	      const status = getEmailLengthStatus(draftContent, bounds);
 	      if (status === "too_long") {
 	        console.warn(`[AI Drafts] Email draft exceeded max chars (${bounds.maxChars}); clamping`, {
