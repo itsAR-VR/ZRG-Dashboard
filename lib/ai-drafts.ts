@@ -25,6 +25,9 @@ import {
   coerceDraftGenerationReasoningEffort,
   buildArchetypeSeed,
   selectArchetypeFromSeed,
+  getArchetypeById,
+  buildArchetypeSelectionGuide,
+  EMAIL_DRAFT_STRUCTURE_ARCHETYPES,
   type EmailDraftArchetype,
 } from "@/lib/ai-drafts/config";
 import { enforceCanonicalBookingLink, replaceEmDashesWithCommaSpace } from "@/lib/ai-drafts/step3-verifier";
@@ -96,10 +99,6 @@ function getEmailDraftCharBoundsFromEnv(): { minChars: number; maxChars: number 
   }
 
   return { minChars, maxChars };
-}
-
-function buildEmailLengthRules(bounds: { minChars: number; maxChars: number }): string {
-  return `\n\nLENGTH REQUIREMENTS (STRICT):\n- Output must be between ${bounds.minChars} and ${bounds.maxChars} characters (including spaces).\n- Do not mention character counts.\n- If you would exceed ${bounds.maxChars}, shorten the email while keeping the core intent + CTA.\n- If you are under ${bounds.minChars}, add 1–2 short, useful sentences (no fluff).`;
 }
 
 function getEmailLengthStatus(
@@ -728,8 +727,13 @@ const EMAIL_DRAFT_STRATEGY_JSON_SCHEMA = {
       items: { type: "string", maxLength: 160 },
       description: "Any specific topics, tones, or approaches to avoid based on conversation context",
     },
+    recommended_archetype_id: {
+      type: ["string", "null"],
+      maxLength: 50,
+      description: "The archetype ID that best fits this lead/context (e.g., 'A4_direct_scheduling_first'). Set to null if archetype was pre-selected.",
+    },
   },
-  required: ["personalization_points", "intent_summary", "should_offer_times", "times_to_offer", "outline", "must_avoid"],
+  required: ["personalization_points", "intent_summary", "should_offer_times", "times_to_offer", "outline", "must_avoid", "recommended_archetype_id"],
   additionalProperties: false,
 };
 
@@ -782,6 +786,8 @@ interface EmailDraftStrategy {
   times_to_offer: string[] | null;
   outline: string[];
   must_avoid: string[];
+  /** AI-recommended archetype ID based on context analysis (null when archetype pre-selected) */
+  recommended_archetype_id: string | null;
 }
 
 type StrategyParseStatus = "complete" | "incomplete" | "none" | "invalid";
@@ -793,6 +799,10 @@ type ParsedStrategyResult =
 /**
  * Build the Step 1 (Strategy) system instructions.
  * Analyzes lead context and outputs a structured strategy JSON.
+ *
+ * When shouldSelectArchetype is true (initial drafts), the AI analyzes context
+ * and recommends the best-fit archetype using psychology principles.
+ * When false (regeneration), the archetype is pre-selected and AI plans around it.
  */
 function buildEmailDraftStrategyInstructions(opts: {
   aiName: string;
@@ -814,7 +824,10 @@ function buildEmailDraftStrategyInstructions(opts: {
   qualificationQuestions: string[];
   knowledgeContext: string;
   availability: string[];
-  archetype: EmailDraftArchetype;
+  /** Pre-selected archetype (for regeneration) or null (for AI selection) */
+  archetype: EmailDraftArchetype | null;
+  /** When true, AI should select the best archetype based on context */
+  shouldSelectArchetype: boolean;
 }): string {
   const leadContext = [
     opts.firstName && `First Name: ${opts.firstName}`,
@@ -840,6 +853,25 @@ function buildEmailDraftStrategyInstructions(opts: {
     ? `\nREFERENCE INFORMATION:\n${opts.knowledgeContext}`
     : "";
 
+  // Build archetype section based on whether AI should select or use pre-selected
+  let archetypeSection: string;
+  let archetypeTask: string;
+
+  if (opts.shouldSelectArchetype) {
+    // AI should analyze context and select the best archetype
+    archetypeSection = buildArchetypeSelectionGuide();
+    archetypeTask = `6. Select the best email structure archetype (recommended_archetype_id) - analyze the lead's communication style, sentiment, and context to pick the archetype that will resonate most effectively using the psychology principles above`;
+  } else if (opts.archetype) {
+    // Archetype is pre-selected (regeneration case)
+    archetypeSection = `TARGET STRUCTURE ARCHETYPE: "${opts.archetype.name}"
+${opts.archetype.instructions}`;
+    archetypeTask = `Note: Archetype is pre-selected. Set recommended_archetype_id to null in your response.`;
+  } else {
+    // Fallback - shouldn't happen but handle gracefully
+    archetypeSection = "";
+    archetypeTask = `Note: Set recommended_archetype_id to null.`;
+  }
+
   return `You are analyzing a sales conversation to create a personalized response strategy.
 
 CONTEXT:
@@ -855,8 +887,7 @@ ${opts.serviceDescription ? `OUR OFFER:\n${opts.serviceDescription}\n` : ""}
 ${opts.aiGoals ? `GOALS/STRATEGY:\n${opts.aiGoals}\n` : ""}
 ${qualificationSection}${knowledgeSection}${availabilitySection}
 
-TARGET STRUCTURE ARCHETYPE: "${opts.archetype.name}"
-${opts.archetype.instructions}
+${archetypeSection}
 
 TASK:
 Analyze this lead and conversation to produce a strategy for writing a personalized email response.
@@ -864,8 +895,9 @@ Output a JSON object with your analysis. Focus on:
 1. What makes this lead unique (personalization_points)
 2. What the response should achieve (intent_summary)
 3. Whether to offer scheduling times (should_offer_times, times_to_offer)
-4. The email structure (outline) - aligned with the archetype above
+4. The email structure (outline) - aligned with ${opts.shouldSelectArchetype ? "your selected archetype" : "the archetype above"}
 5. What to avoid (must_avoid)
+${archetypeTask}
 
 Be specific and actionable. The strategy will be used to generate the actual email.`;
 }
@@ -965,10 +997,16 @@ function parseStrategyJson(text: string | null | undefined): ParsedStrategyResul
     const times_to_offer = parsed.times_to_offer;
     const outline = parsed.outline;
     const must_avoid = parsed.must_avoid;
+    const recommended_archetype_id = parsed.recommended_archetype_id;
 
     const timesToOfferOk =
       times_to_offer === null ||
       (Array.isArray(times_to_offer) && times_to_offer.every((t) => typeof t === "string"));
+
+    const archetypeIdOk =
+      recommended_archetype_id === null ||
+      recommended_archetype_id === undefined ||
+      typeof recommended_archetype_id === "string";
 
     if (
       Array.isArray(personalization_points) &&
@@ -979,7 +1017,8 @@ function parseStrategyJson(text: string | null | undefined): ParsedStrategyResul
       Array.isArray(outline) &&
       outline.every((o) => typeof o === "string") &&
       Array.isArray(must_avoid) &&
-      must_avoid.every((m) => typeof m === "string")
+      must_avoid.every((m) => typeof m === "string") &&
+      archetypeIdOk
     ) {
       return {
         status: "complete",
@@ -990,6 +1029,7 @@ function parseStrategyJson(text: string | null | undefined): ParsedStrategyResul
           times_to_offer: times_to_offer as string[] | null,
           outline,
           must_avoid,
+          recommended_archetype_id: typeof recommended_archetype_id === "string" ? recommended_archetype_id : null,
         },
       };
     }
@@ -1351,6 +1391,7 @@ export async function generateResponseDraft(
     let draftContent: string | null = null;
     let response: any = null;
     let emailVerifierForbiddenTerms: string[] | null = null;
+    let emailLengthBoundsForClamp: { minChars: number; maxChars: number } | null = null;
 
     // ---------------------------------------------------------------------------
     // Email: Two-Step Pipeline (Phase 30)
@@ -1365,6 +1406,7 @@ export async function generateResponseDraft(
         buildEffectiveEmailLengthRules(lead.clientId),
       ]);
       emailVerifierForbiddenTerms = effectiveForbiddenTerms;
+      emailLengthBoundsForClamp = emailLengthBounds;
 
       // Coerce model/reasoning from workspace settings
       const draftModel = coerceDraftGenerationModel(settings?.draftGenerationModel);
@@ -1373,20 +1415,30 @@ export async function generateResponseDraft(
         storedValue: settings?.draftGenerationReasoningEffort,
       });
 
-      // Select archetype deterministically
-      const archetypeSeed = buildArchetypeSeed({
-        leadId,
-        triggerMessageId,
-        draftRequestStartedAtMs,
-      });
-      const baseArchetype = selectArchetypeFromSeed(archetypeSeed);
+      // Archetype selection strategy:
+      // - Initial drafts (triggerMessageId present): AI analyzes context and selects best archetype
+      // - Regeneration (no triggerMessageId): Random archetype selection for variety
+      const isInitialDraft = !!triggerMessageId;
+      const shouldSelectArchetype = isInitialDraft;
 
-      // Apply archetype instructions override if present (Phase 47g)
-      const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
-        baseArchetype.id,
-        lead.clientId
-      );
-      const archetype = { ...baseArchetype, instructions: effectiveArchetypeInstructions };
+      // For regeneration, pre-select archetype randomly using timestamp seed
+      let preSelectedArchetype: EmailDraftArchetype | null = null;
+      if (!shouldSelectArchetype) {
+        const archetypeSeed = buildArchetypeSeed({
+          leadId,
+          triggerMessageId: null,
+          draftRequestStartedAtMs,
+        });
+        const baseArchetype = selectArchetypeFromSeed(archetypeSeed);
+        const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
+          baseArchetype.id,
+          lead.clientId
+        );
+        preSelectedArchetype = { ...baseArchetype, instructions: effectiveArchetypeInstructions };
+      }
+
+      // Track the final archetype (will be set after strategy for initial drafts)
+      let archetype: EmailDraftArchetype | null = preSelectedArchetype;
 
 	      // Split timeout: ~40% for strategy, ~60% for generation
 	      const strategyTimeoutMs = Math.max(3000, Math.floor(timeoutMs * 0.4));
@@ -1443,7 +1495,8 @@ export async function generateResponseDraft(
         qualificationQuestions,
         knowledgeContext,
         availability,
-        archetype,
+        archetype: preSelectedArchetype,
+        shouldSelectArchetype,
       });
 
       // Append booking process instructions if available (Phase 36)
@@ -1478,7 +1531,9 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
         Number.parseInt(process.env.OPENAI_EMAIL_STRATEGY_TOKEN_INCREMENT || "1500", 10) || 1500
       );
 
-      const strategyBasePromptKey = `draft.generate.email.strategy.v1.arch_${archetype.id}`;
+      const strategyBasePromptKey = shouldSelectArchetype
+        ? `draft.generate.email.strategy.v1.ai_select`
+        : `draft.generate.email.strategy.v1.arch_${archetype?.id || "unknown"}`;
       const strategyStartMs = Date.now();
 
       for (let attempt = 1; attempt <= strategyMaxAttempts; attempt++) {
@@ -1526,6 +1581,28 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
 
           if (parseResult.status === "complete") {
             strategy = parseResult.strategy;
+
+            // If AI selected an archetype, resolve it and apply workspace overrides
+            if (shouldSelectArchetype && strategy.recommended_archetype_id) {
+              const aiSelectedArchetype = getArchetypeById(strategy.recommended_archetype_id);
+              if (aiSelectedArchetype) {
+                const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
+                  aiSelectedArchetype.id,
+                  lead.clientId
+                );
+                archetype = { ...aiSelectedArchetype, instructions: effectiveArchetypeInstructions };
+                console.log(`[AI Drafts] AI selected archetype: ${archetype.id} (${archetype.name})`);
+              } else {
+                // Fallback to default if AI returned invalid ID
+                console.warn(`[AI Drafts] AI returned invalid archetype ID: ${strategy.recommended_archetype_id}, using default`);
+                const defaultArchetype = EMAIL_DRAFT_STRUCTURE_ARCHETYPES[0];
+                const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
+                  defaultArchetype.id,
+                  lead.clientId
+                );
+                archetype = { ...defaultArchetype, instructions: effectiveArchetypeInstructions };
+              }
+            }
             break;
           }
 
@@ -1586,8 +1663,22 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
         }
       }
 
-	      // Step 2: Generation (if strategy succeeded)
+	      // Step 2: Generation (if strategy succeeded and archetype is resolved)
 	      if (strategy) {
+          // Ensure archetype is set (fallback if AI selection failed or wasn't requested)
+          if (!archetype) {
+            console.warn("[AI Drafts] No archetype set after strategy, using default");
+            const defaultArchetype = EMAIL_DRAFT_STRUCTURE_ARCHETYPES[0];
+            const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
+              defaultArchetype.id,
+              lead.clientId
+            );
+            archetype = { ...defaultArchetype, instructions: effectiveArchetypeInstructions };
+          }
+
+          // At this point archetype is guaranteed to be set
+          const resolvedArchetype = archetype;
+
 	        const generationInstructions = buildEmailDraftGenerationInstructions({
 	          aiName,
 	          aiTone,
@@ -1597,7 +1688,7 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
 	          ourCompanyName: companyName,
 	          sentimentTag,
 	          strategy,
-	          archetype,
+	          archetype: resolvedArchetype,
 	          forbiddenTerms: effectiveForbiddenTerms, // Phase 47e
 	        }) + emailLengthRules;
 
@@ -1628,7 +1719,7 @@ Write the email response now, following the strategy and structure archetype.
 	          0,
 	          Number.parseInt(process.env.OPENAI_EMAIL_GENERATION_TOKEN_INCREMENT || "2000", 10) || 2000
 	        );
-	        const generationBasePromptKey = `draft.generate.email.generation.v1.arch_${archetype.id}`;
+	        const generationBasePromptKey = `draft.generate.email.generation.v1.arch_${resolvedArchetype.id}`;
 	        const generationBaseMaxOutputTokens = Math.max(800, generationBudget.maxOutputTokens);
 	        const clientIdForAi = lead.clientId;
 
@@ -1705,7 +1796,7 @@ Write the email response now, following the strategy and structure archetype.
 	                model: draftModel,
 	                instructions: generationInstructions,
 	                input: [{ role: "user" as const, content: generationInput }],
-	                temperature: 0.95, // High temperature for variation
+	                temperature: 0.8, // Balanced variation with better instruction adherence
 	                // No reasoning for generation step - just output text
 	                max_output_tokens: attemptMaxOutputTokens,
 	              },
@@ -1778,6 +1869,20 @@ Write the email response now, following the strategy and structure archetype.
       if (!draftContent) {
         console.log("[AI Drafts] Two-step failed, falling back to single-step with archetype");
 
+        // Ensure archetype is set for fallback
+        if (!archetype) {
+          const fallbackArchetypeSeed = buildArchetypeSeed({ leadId, triggerMessageId: null, draftRequestStartedAtMs });
+          const fallbackBaseArchetype = selectArchetypeFromSeed(fallbackArchetypeSeed);
+          const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
+            fallbackBaseArchetype.id,
+            lead.clientId
+          );
+          archetype = { ...fallbackBaseArchetype, instructions: effectiveArchetypeInstructions };
+        }
+
+        // At this point archetype is guaranteed to be set
+        const fallbackArchetype = archetype;
+
 	        let fallbackSystemPrompt = buildEmailPrompt({
 	          aiName,
 	          aiTone,
@@ -1793,7 +1898,7 @@ Write the email response now, following the strategy and structure archetype.
 	          knowledgeContext,
 	          companyName,
 	          targetResult,
-	        }) + emailLengthRules + `\n\nSTRUCTURE REQUIREMENT: "${archetype.name}"\n${archetype.instructions}`;
+	        }) + emailLengthRules + `\n\nSTRUCTURE REQUIREMENT: "${fallbackArchetype.name}"\n${fallbackArchetype.instructions}`;
 
         // Append booking process instructions if available (Phase 36)
         if (bookingProcessInstructions) {
@@ -1830,7 +1935,7 @@ Generate an appropriate email response following the guidelines and structure ar
           preferApiCount,
         });
 
-	        const fallbackBasePromptKey = `draft.generate.email.v1.fallback.arch_${archetype.id}`;
+	        const fallbackBasePromptKey = `draft.generate.email.v1.fallback.arch_${fallbackArchetype.id}`;
 	        const fallbackMaxAttempts = Math.max(
 	          1,
 	          Math.min(4, Number.parseInt(process.env.OPENAI_EMAIL_FALLBACK_MAX_ATTEMPTS || "2", 10) || 2)
@@ -1852,7 +1957,7 @@ Generate an appropriate email response following the guidelines and structure ar
                 model: draftModel,
                 instructions: fallbackSystemPrompt,
                 input: fallbackInputMessages,
-                temperature: 0.95,
+                temperature: 0.8, // Balanced variation with better instruction adherence
                 reasoning: { effort: strategyReasoningApi },
                 max_output_tokens: attemptMaxOutputTokens,
               },
@@ -2255,7 +2360,7 @@ Generate an appropriate ${channel} response following the guidelines above.
 	    draftContent = sanitizeDraftContent(draftContent, leadId, channel);
 
 	    if (channel === "email") {
-	      const bounds = getEmailDraftCharBoundsFromEnv();
+	      const bounds = emailLengthBoundsForClamp ?? getEmailDraftCharBoundsFromEnv();
 	      const status = getEmailLengthStatus(draftContent, bounds);
 	      if (status === "too_long") {
 	        console.warn(`[AI Drafts] Email draft exceeded max chars (${bounds.maxChars}); clamping`, {
