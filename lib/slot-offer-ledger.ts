@@ -46,30 +46,35 @@ export async function incrementWorkspaceSlotOffersBatch(opts: {
   offeredAt?: Date;
 }): Promise<void> {
   const offeredAt = opts.offeredAt ?? new Date();
-  const slotDates = opts.slotUtcIsoList
-    .map(parseUtcIsoToDate)
-    .filter((d): d is Date => !!d);
+  const slotDates = Array.from(
+    new Set(
+      opts.slotUtcIsoList
+        .map(parseUtcIsoToDate)
+        .filter((d): d is Date => !!d)
+        .map((d) => d.toISOString())
+    )
+  ).map((iso) => new Date(iso));
 
   if (slotDates.length === 0) return;
 
   try {
-    await prisma.$transaction(
-      slotDates.map((slotUtc) =>
-        prisma.workspaceOfferedSlot.upsert({
-          where: { clientId_slotUtc: { clientId: opts.clientId, slotUtc } },
-          update: {
-            offeredCount: { increment: 1 },
-            lastOfferedAt: offeredAt,
-          },
-          create: {
-            clientId: opts.clientId,
-            slotUtc,
-            offeredCount: 1,
-            lastOfferedAt: offeredAt,
-          },
-        })
-      )
-    );
+    // Avoid interactive/batched transactions here; this ledger is best-effort and should not
+    // contend with hot-path DB work. Sequential upserts keep the operation short and resilient.
+    for (const slotUtc of slotDates) {
+      await prisma.workspaceOfferedSlot.upsert({
+        where: { clientId_slotUtc: { clientId: opts.clientId, slotUtc } },
+        update: {
+          offeredCount: { increment: 1 },
+          lastOfferedAt: offeredAt,
+        },
+        create: {
+          clientId: opts.clientId,
+          slotUtc,
+          offeredCount: 1,
+          lastOfferedAt: offeredAt,
+        },
+      });
+    }
   } catch (error) {
     console.warn("[slot-offer-ledger] Failed to increment offer counts:", error);
   }

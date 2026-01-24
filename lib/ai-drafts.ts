@@ -1,5 +1,6 @@
 import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
-import { runResponse, runResponseWithInteraction, markAiInteractionError } from "@/lib/ai/openai-telemetry";
+import { markAiInteractionError } from "@/lib/ai/openai-telemetry";
+import { runStructuredJsonPrompt, runTextPrompt } from "@/lib/ai/prompt-runner";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import {
   getEffectiveForbiddenTerms,
@@ -7,12 +8,6 @@ import {
   buildEffectiveEmailLengthRules,
   getEffectiveArchetypeInstructions,
 } from "@/lib/ai/prompt-snippets";
-import {
-  extractFirstCompleteJsonObjectFromText,
-  getFirstRefusal,
-  getTrimmedOutputText,
-  summarizeResponseForTelemetry,
-} from "@/lib/ai/response-utils";
 import { prisma } from "@/lib/prisma";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
@@ -255,80 +250,84 @@ async function runEmailDraftVerificationStep3(opts: {
     }));
 
   const verifierModel = "gpt-5-mini";
-  const verifierReasoningEffort = "medium" as const;
+  const verifierReasoningEffort = "low" as const;
+  const shouldLogVerifierDetails = process.env.LOG_SLOW_PATHS === "1";
 
   let interactionId: string | null = null;
 
   try {
-    const { response, interactionId: iid } = await runResponseWithInteraction({
+    const promptKeyForTelemetry = (promptTemplate.key || promptKey) + (overrideVersion ? `.${overrideVersion}` : "");
+    const result = await runStructuredJsonPrompt<EmailDraftVerificationStep3>({
+      pattern: "structured_json",
       clientId: opts.clientId,
       leadId: opts.leadId,
       featureId: promptTemplate.featureId || "draft.verify.email.step3",
-      promptKey: (promptTemplate.key || promptKey) + (overrideVersion ? `.${overrideVersion}` : ""),
-      params: {
-        model: verifierModel,
-        instructions,
-        input: inputMessages,
-        temperature: 0,
-        reasoning: { effort: verifierReasoningEffort },
-        text: {
-          format: {
-            type: "json_schema",
-            name: "email_draft_verification_step3",
-            strict: true,
-            schema: EMAIL_DRAFT_VERIFY_STEP3_JSON_SCHEMA,
-          },
-        },
-        max_output_tokens: 1400,
+      promptKey,
+      model: verifierModel,
+      reasoningEffort: verifierReasoningEffort,
+      temperature: 0,
+      systemFallback: instructions,
+      input: inputMessages,
+      schemaName: "email_draft_verification_step3",
+      strict: true,
+      schema: EMAIL_DRAFT_VERIFY_STEP3_JSON_SCHEMA,
+      attempts: [1400],
+      budget: { min: 1400, max: 1400 },
+      timeoutMs: Math.max(2500, opts.timeoutMs),
+      maxRetries: 0,
+      resolved: {
+        system: instructions,
+        featureId: promptTemplate.featureId || "draft.verify.email.step3",
+        promptKeyForTelemetry,
       },
-      requestOptions: {
-        timeout: Math.max(2500, opts.timeoutMs),
-        maxRetries: 0,
+      validate: (value) => {
+        if (!value || typeof value !== "object") return { success: false, error: "Expected object" };
+        const anyValue = value as any;
+        if (typeof anyValue.finalDraft !== "string") return { success: false, error: "Missing finalDraft" };
+        if (typeof anyValue.changed !== "boolean") return { success: false, error: "Missing changed" };
+        if (!Array.isArray(anyValue.violationsDetected)) return { success: false, error: "Missing violationsDetected" };
+        if (!Array.isArray(anyValue.changes)) return { success: false, error: "Missing changes" };
+        return { success: true, data: anyValue as EmailDraftVerificationStep3 };
       },
     });
 
-    interactionId = iid;
+    interactionId = result.telemetry.interactionId;
 
-    if (isMaxOutputTokensIncomplete(response)) {
-      const details = summarizeResponseForTelemetry(response);
-      console.warn(`[AI Drafts] Step 3 verifier hit max_output_tokens; discarding output`, {
-        leadId: opts.leadId,
-        details: details || null,
-      });
-      if (interactionId) {
-        await markAiInteractionError(interactionId, `email_step3_truncated${details ? ` (${details})` : ""}`);
+    if (!result.success) {
+      if (shouldLogVerifierDetails) {
+        console.warn(`[AI Drafts] Step 3 verifier failed; discarding output`, {
+          leadId: opts.leadId,
+          category: result.error.category,
+          message: result.error.message,
+        });
       }
+
+      if (interactionId) {
+        const kind =
+          result.error.category === "incomplete_output"
+            ? "email_step3_truncated"
+            : result.error.category === "parse_error" || result.error.category === "schema_violation"
+              ? "email_step3_invalid_json"
+              : "email_step3_error";
+        await markAiInteractionError(interactionId, `${kind}: ${result.error.message.slice(0, 500)}`);
+      }
+
       return null;
     }
 
-    const text = getTrimmedOutputText(response)?.trim() || "";
-    const extracted = extractFirstCompleteJsonObjectFromText(text);
-    const jsonText = extracted.status === "none" ? text : extracted.json;
-    if (!jsonText || !jsonText.trim()) return null;
-
-    let parsed: EmailDraftVerificationStep3 | null = null;
-    try {
-      parsed = JSON.parse(jsonText) as EmailDraftVerificationStep3;
-    } catch {
-      // ignore
-    }
-
-    if (!parsed || typeof parsed.finalDraft !== "string") {
-      if (interactionId) {
-        await markAiInteractionError(interactionId, "email_step3_invalid_json");
-      }
-      return null;
-    }
+    const parsed = result.data;
 
     const finalDraft = parsed.finalDraft.trim();
     if (!finalDraft) return null;
 
     if (isLikelyRewrite(opts.draft, finalDraft)) {
-      console.warn(`[AI Drafts] Step 3 verifier produced a likely rewrite; discarding output`, {
-        leadId: opts.leadId,
-        beforeLen: opts.draft.trim().length,
-        afterLen: finalDraft.length,
-      });
+      if (shouldLogVerifierDetails) {
+        console.warn(`[AI Drafts] Step 3 verifier produced a likely rewrite; discarding output`, {
+          leadId: opts.leadId,
+          beforeLen: opts.draft.trim().length,
+          afterLen: finalDraft.length,
+        });
+      }
       if (interactionId) {
         await markAiInteractionError(interactionId, "email_step3_rewrite_guardrail");
       }
@@ -336,19 +335,23 @@ async function runEmailDraftVerificationStep3(opts: {
     }
 
     if (parsed.changed || parsed.violationsDetected.length || parsed.changes.length) {
-      console.log(`[AI Drafts] Step 3 verifier applied changes`, {
-        leadId: opts.leadId,
-        changed: parsed.changed,
-        violationsDetected: parsed.violationsDetected.slice(0, 8),
-        changes: parsed.changes.slice(0, 8),
-      });
+      if (shouldLogVerifierDetails) {
+        console.log(`[AI Drafts] Step 3 verifier applied changes`, {
+          leadId: opts.leadId,
+          changed: parsed.changed,
+          violationsDetected: parsed.violationsDetected.slice(0, 8),
+          changes: parsed.changes.slice(0, 8),
+        });
+      }
     }
 
     return finalDraft;
   } catch (error) {
-    console.error("[AI Drafts] Step 3 verifier failed:", error);
+    const message = error instanceof Error ? error.message : String(error);
+    if (shouldLogVerifierDetails) {
+      console.warn("[AI Drafts] Step 3 verifier failed:", message);
+    }
     if (interactionId) {
-      const message = error instanceof Error ? error.message : String(error);
       await markAiInteractionError(interactionId, `email_step3_error: ${message.slice(0, 200)}`);
     }
     return null;
@@ -790,12 +793,6 @@ interface EmailDraftStrategy {
   recommended_archetype_id: string | null;
 }
 
-type StrategyParseStatus = "complete" | "incomplete" | "none" | "invalid";
-
-type ParsedStrategyResult =
-  | { status: "complete"; strategy: EmailDraftStrategy }
-  | { status: Exclude<StrategyParseStatus, "complete">; strategy: null; rawSample?: string };
-
 /**
  * Build the Step 1 (Strategy) system instructions.
  * Analyzes lead context and outputs a structured strategy JSON.
@@ -971,73 +968,6 @@ ${forbiddenTerms}
 ${opts.signature ? `SIGNATURE (include at end):\n${opts.signature}` : ""}
 
 Write the email now, following the strategy and archetype structure exactly.`;
-}
-
-/**
- * Attempt to parse strategy JSON from response text.
- */
-function parseStrategyJson(text: string | null | undefined): ParsedStrategyResult {
-  if (!text) return { status: "none", strategy: null };
-
-  const extracted = extractFirstCompleteJsonObjectFromText(text);
-  if (extracted.status === "incomplete") {
-    return { status: "incomplete", strategy: null, rawSample: text.slice(0, 500) };
-  }
-
-  if (extracted.status === "none" || !extracted.json) {
-    return { status: "none", strategy: null, rawSample: text.slice(0, 500) };
-  }
-
-  try {
-    const parsed = JSON.parse(extracted.json) as Partial<EmailDraftStrategy>;
-
-    const personalization_points = parsed.personalization_points;
-    const intent_summary = parsed.intent_summary;
-    const should_offer_times = parsed.should_offer_times;
-    const times_to_offer = parsed.times_to_offer;
-    const outline = parsed.outline;
-    const must_avoid = parsed.must_avoid;
-    const recommended_archetype_id = parsed.recommended_archetype_id;
-
-    const timesToOfferOk =
-      times_to_offer === null ||
-      (Array.isArray(times_to_offer) && times_to_offer.every((t) => typeof t === "string"));
-
-    const archetypeIdOk =
-      recommended_archetype_id === null ||
-      recommended_archetype_id === undefined ||
-      typeof recommended_archetype_id === "string";
-
-    if (
-      Array.isArray(personalization_points) &&
-      personalization_points.every((p) => typeof p === "string") &&
-      typeof intent_summary === "string" &&
-      typeof should_offer_times === "boolean" &&
-      timesToOfferOk &&
-      Array.isArray(outline) &&
-      outline.every((o) => typeof o === "string") &&
-      Array.isArray(must_avoid) &&
-      must_avoid.every((m) => typeof m === "string") &&
-      archetypeIdOk
-    ) {
-      return {
-        status: "complete",
-        strategy: {
-          personalization_points,
-          intent_summary,
-          should_offer_times,
-          times_to_offer: times_to_offer as string[] | null,
-          outline,
-          must_avoid,
-          recommended_archetype_id: typeof recommended_archetype_id === "string" ? recommended_archetype_id : null,
-        },
-      };
-    }
-
-    return { status: "invalid", strategy: null, rawSample: extracted.json.slice(0, 500) };
-  } catch {
-    return { status: "invalid", strategy: null, rawSample: extracted.json.slice(0, 500) };
-  }
 }
 
 function buildDeterministicFallbackDraft(opts: {
@@ -1386,10 +1316,9 @@ export async function generateResponseDraft(
 	    const maxOutputTokensCap = Math.max(
 	      1500,
 	      Number.parseInt(process.env.OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP || "12000", 10) || 12_000
-	    );
+    );
 
     let draftContent: string | null = null;
-    let response: any = null;
     let emailVerifierForbiddenTerms: string[] | null = null;
     let emailLengthBoundsForClamp: { minChars: number; maxChars: number } | null = null;
 
@@ -1447,33 +1376,6 @@ export async function generateResponseDraft(
       // Step 1: Strategy
       let strategy: EmailDraftStrategy | null = null;
       let strategyInteractionId: string | null = null;
-
-      function isRetryableEmailStrategyError(error: unknown): boolean {
-        if (!(error instanceof Error)) return false;
-
-        const status = (error as unknown as { status?: unknown }).status;
-        if (typeof status === "number") {
-          if ([429, 500, 502, 503, 504].includes(status)) return true;
-        }
-
-        const message = error.message.toLowerCase();
-        return (
-          message.includes("429") ||
-          message.includes("rate") ||
-          message.includes("timeout") ||
-          message.includes("timed out") ||
-          message.includes("connection error") ||
-          message.includes("socket hang up") ||
-          message.includes("econnreset") ||
-          message.includes("etimedout") ||
-          message.includes("eai_again") ||
-          message.includes("enotfound") ||
-          message.includes("503") ||
-          message.includes("502") ||
-          message.includes("504") ||
-          message.includes("500")
-        );
-      }
 
       let strategyInstructions = buildEmailDraftStrategyInstructions({
         aiName,
@@ -1547,120 +1449,95 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
           strategyBaseMaxOutputTokens + (attempt - 1) * strategyTokenIncrement
         );
 
-        try {
-          const { response: strategyResponse, interactionId } = await runResponseWithInteraction({
-            clientId: lead.clientId,
-            leadId,
+        const attemptPromptKey = attempt === 1 ? strategyBasePromptKey : `${strategyBasePromptKey}.retry${attempt}`;
+        const strategyResult = await runStructuredJsonPrompt<EmailDraftStrategy>({
+          pattern: "structured_json",
+          clientId: lead.clientId,
+          leadId,
+          featureId: "draft.generate.email.strategy",
+          promptKey: attemptPromptKey,
+          model: draftModel,
+          reasoningEffort:
+            strategyReasoningApi === "none" ? undefined : strategyReasoningApi === "xhigh" ? "high" : strategyReasoningApi,
+          systemFallback: strategyInstructions,
+          input: [{ role: "user" as const, content: strategyInput }],
+          schemaName: "email_draft_strategy",
+          strict: true,
+          schema: EMAIL_DRAFT_STRATEGY_JSON_SCHEMA,
+          attempts: [attemptMaxTokens],
+          budget: { min: attemptMaxTokens, max: attemptMaxTokens },
+          timeoutMs: attemptTimeoutMs,
+          maxRetries: 0,
+          resolved: {
+            system: strategyInstructions,
             featureId: "draft.generate.email.strategy",
-            promptKey: attempt === 1 ? strategyBasePromptKey : `${strategyBasePromptKey}.retry${attempt}`,
-            params: {
-              model: draftModel,
-              instructions: strategyInstructions,
-              input: [{ role: "user" as const, content: strategyInput }],
-              reasoning: { effort: strategyReasoningApi },
-              text: {
-                format: {
-                  type: "json_schema",
-                  name: "email_draft_strategy",
-                  strict: true,
-                  schema: EMAIL_DRAFT_STRATEGY_JSON_SCHEMA,
-                },
-              },
-              max_output_tokens: attemptMaxTokens,
-            },
-            requestOptions: {
-              timeout: attemptTimeoutMs,
-              maxRetries: 0,
-            },
-          });
+            promptKeyForTelemetry: attemptPromptKey,
+          },
+        });
 
-          strategyInteractionId = interactionId;
+        strategyInteractionId = strategyResult.telemetry.interactionId;
 
-          const strategyText = getTrimmedOutputText(strategyResponse)?.trim();
-          const parseResult = parseStrategyJson(strategyText);
+        if (strategyResult.success) {
+          strategy = strategyResult.data;
 
-          if (parseResult.status === "complete") {
-            strategy = parseResult.strategy;
-
-            // If AI selected an archetype, resolve it and apply workspace overrides
-            if (shouldSelectArchetype && strategy.recommended_archetype_id) {
-              const aiSelectedArchetype = getArchetypeById(strategy.recommended_archetype_id);
-              if (aiSelectedArchetype) {
-                const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
-                  aiSelectedArchetype.id,
-                  lead.clientId
-                );
-                archetype = { ...aiSelectedArchetype, instructions: effectiveArchetypeInstructions };
-                console.log(`[AI Drafts] AI selected archetype: ${archetype.id} (${archetype.name})`);
-              } else {
-                // Fallback to default if AI returned invalid ID
-                console.warn(`[AI Drafts] AI returned invalid archetype ID: ${strategy.recommended_archetype_id}, using default`);
-                const defaultArchetype = EMAIL_DRAFT_STRUCTURE_ARCHETYPES[0];
-                const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
-                  defaultArchetype.id,
-                  lead.clientId
-                );
-                archetype = { ...defaultArchetype, instructions: effectiveArchetypeInstructions };
-              }
+          // If AI selected an archetype, resolve it and apply workspace overrides
+          if (shouldSelectArchetype && strategy.recommended_archetype_id) {
+            const aiSelectedArchetype = getArchetypeById(strategy.recommended_archetype_id);
+            if (aiSelectedArchetype) {
+              const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
+                aiSelectedArchetype.id,
+                lead.clientId
+              );
+              archetype = { ...aiSelectedArchetype, instructions: effectiveArchetypeInstructions };
+              console.log(`[AI Drafts] AI selected archetype: ${archetype.id} (${archetype.name})`);
+            } else {
+              // Fallback to default if AI returned invalid ID
+              console.warn(`[AI Drafts] AI returned invalid archetype ID: ${strategy.recommended_archetype_id}, using default`);
+              const defaultArchetype = EMAIL_DRAFT_STRUCTURE_ARCHETYPES[0];
+              const { instructions: effectiveArchetypeInstructions } = await getEffectiveArchetypeInstructions(
+                defaultArchetype.id,
+                lead.clientId
+              );
+              archetype = { ...defaultArchetype, instructions: effectiveArchetypeInstructions };
             }
-            break;
           }
 
-          const incompleteReason = strategyResponse?.incomplete_details?.reason;
-          const incompleteSuffix = incompleteReason ? ` incomplete=${String(incompleteReason)}` : "";
-
-          if (attempt < strategyMaxAttempts) {
-            console.warn(
-              `[AI Drafts] Strategy JSON parse ${parseResult.status} (attempt ${attempt}/${strategyMaxAttempts})${incompleteSuffix}; retrying`
-            );
-            continue;
-          }
-
-          if (strategyInteractionId) {
-            const details = summarizeResponseForTelemetry(strategyResponse);
-            const kind =
-              parseResult.status === "incomplete" || incompleteReason === "max_output_tokens"
-                ? "strategy_truncated"
-                : parseResult.status === "none"
-                  ? "strategy_empty"
-                  : "strategy_invalid";
-
-            const sample = parseResult.rawSample
-              ? ` | sample=${parseResult.rawSample.replace(/\s+/g, " ").slice(0, 500)}`
-              : "";
-
-            await markAiInteractionError(
-              strategyInteractionId,
-              `${kind}: status=${parseResult.status} attempt=${attempt}/${strategyMaxAttempts} max_output_tokens=${attemptMaxTokens}${incompleteSuffix}${details ? ` (${details})` : ""}${sample}`
-            );
-
-            console.error("[AI Drafts] Strategy step failed; falling back to single-step.", {
-              leadId,
-              interactionId: strategyInteractionId,
-              kind,
-              status: parseResult.status,
-              attempt,
-              maxAttempts: strategyMaxAttempts,
-              maxOutputTokens: attemptMaxTokens,
-              incompleteReason: incompleteReason || null,
-              details: details || null,
-            });
-          }
-        } catch (error) {
-          const retryable = isRetryableEmailStrategyError(error);
-
-          if (retryable && attempt < strategyMaxAttempts) {
-            console.warn(
-              `[AI Drafts] Strategy attempt ${attempt}/${strategyMaxAttempts} retryable error: ${error instanceof Error ? error.message : String(error)}`
-            );
-            const status = (error as unknown as { status?: unknown }).status;
-            if (status === 429) await new Promise((r) => setTimeout(r, 250));
-            continue;
-          }
-
-          console.error(`[AI Drafts] Step 1 (Strategy) attempt ${attempt} failed:`, error);
           break;
         }
+
+        if (strategyResult.error.category === "rate_limit") {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+
+        if (attempt < strategyMaxAttempts) {
+          console.warn(`[AI Drafts] Strategy step failed (attempt ${attempt}/${strategyMaxAttempts}); retrying`, {
+            leadId,
+            category: strategyResult.error.category,
+          });
+          continue;
+        }
+
+        if (strategyInteractionId) {
+          const sample = (strategyResult.error.raw || strategyResult.rawOutput || "")
+            .replace(/\s+/g, " ")
+            .slice(0, 500);
+          const sampleSuffix = sample ? ` | sample=${sample}` : "";
+          await markAiInteractionError(
+            strategyInteractionId,
+            `strategy_failed: category=${strategyResult.error.category} attempt=${attempt}/${strategyMaxAttempts} max_output_tokens=${attemptMaxTokens}${sampleSuffix}`
+          );
+
+          console.error("[AI Drafts] Strategy step failed; falling back to single-step.", {
+            leadId,
+            interactionId: strategyInteractionId,
+            category: strategyResult.error.category,
+            attempt,
+            maxAttempts: strategyMaxAttempts,
+            maxOutputTokens: attemptMaxTokens,
+          });
+        }
+
+        break;
       }
 
 	      // Step 2: Generation (if strategy succeeded and archetype is resolved)
@@ -1723,7 +1600,7 @@ Write the email response now, following the strategy and structure archetype.
 	        const generationBaseMaxOutputTokens = Math.max(800, generationBudget.maxOutputTokens);
 	        const clientIdForAi = lead.clientId;
 
-	        async function rewriteEmailDraftToLength(
+	          async function rewriteEmailDraftToLength(
 	          originalDraft: string,
 	          reason: "too_short" | "too_long",
 	          attempt: number
@@ -1743,37 +1620,45 @@ Write the email response now, following the strategy and structure archetype.
 	            emailLengthRules;
 
 		          try {
-		            const rewriteResponse = await runResponse({
-		              clientId: clientIdForAi,
-		              leadId,
-		              featureId: "draft.generate.email.length_rewrite",
-		              promptKey: `${generationBasePromptKey}.len_${reason}.rewrite${attempt}`,
-	              params: {
-	                model: draftModel,
-	                instructions: rewriteInstructions,
-	                input: [
-	                  {
-	                    role: "user" as const,
-	                    content: `<draft>\n${originalDraft}\n</draft>`,
-	                  },
-	                ],
-	                temperature: 0.2,
-	                max_output_tokens: Math.min(maxOutputTokensCap, 2000 + (attempt - 1) * 1000),
-	              },
-	              requestOptions: {
-	                timeout: generationTimeoutMs,
-	                maxRetries: 0,
-	              },
-	            });
+                const rewritePromptKey = `${generationBasePromptKey}.len_${reason}.rewrite${attempt}`;
+		            const rewriteResult = await runTextPrompt({
+                  pattern: "text",
+                  clientId: clientIdForAi,
+                  leadId,
+                  featureId: "draft.generate.email.length_rewrite",
+                  promptKey: rewritePromptKey,
+                  model: draftModel,
+                  systemFallback: rewriteInstructions,
+                  input: [
+                    {
+                      role: "user" as const,
+                      content: `<draft>\n${originalDraft}\n</draft>`,
+                    },
+                  ],
+                  temperature: 0.2,
+                  maxOutputTokens: Math.min(maxOutputTokensCap, 2000 + (attempt - 1) * 1000),
+                  timeoutMs: generationTimeoutMs,
+                  maxRetries: 0,
+                  resolved: {
+                    system: rewriteInstructions,
+                    featureId: "draft.generate.email.length_rewrite",
+                    promptKeyForTelemetry: rewritePromptKey,
+                  },
+                });
 
-	            if (isMaxOutputTokensIncomplete(rewriteResponse)) {
+                if (!rewriteResult.success && rewriteResult.error.category === "incomplete_output") {
 	              console.warn(
 	                `[AI Drafts] Email length rewrite hit max_output_tokens (attempt ${attempt}); discarding partial rewrite`
 	              );
 	              return null;
 	            }
 
-	            return getTrimmedOutputText(rewriteResponse)?.trim() || null;
+                if (!rewriteResult.success) {
+                  console.error("[AI Drafts] Email length rewrite failed:", rewriteResult.error.message);
+                  return null;
+                }
+
+	            return rewriteResult.data.trim() || null;
 	          } catch (error) {
 	            console.error("[AI Drafts] Email length rewrite failed:", error);
 	            return null;
@@ -1787,44 +1672,56 @@ Write the email response now, following the strategy and structure archetype.
 	          );
 
 	          try {
-	            const generationResponse = await runResponse({
-	              clientId: lead.clientId,
-	              leadId,
-	              featureId: "draft.generate.email.generation",
-	              promptKey: attempt === 1 ? generationBasePromptKey : `${generationBasePromptKey}.retry${attempt}`,
-	              params: {
-	                model: draftModel,
-	                instructions: generationInstructions,
-	                input: [{ role: "user" as const, content: generationInput }],
-	                temperature: 0.8, // Balanced variation with better instruction adherence
-	                // No reasoning for generation step - just output text
-	                max_output_tokens: attemptMaxOutputTokens,
-	              },
-	              requestOptions: {
-	                timeout: generationTimeoutMs,
-	                maxRetries: 0,
-	              },
-	            });
+              const generationPromptKey = attempt === 1 ? generationBasePromptKey : `${generationBasePromptKey}.retry${attempt}`;
+	            const generationResult = await runTextPrompt({
+                pattern: "text",
+                clientId: lead.clientId,
+                leadId,
+                featureId: "draft.generate.email.generation",
+                promptKey: generationPromptKey,
+                model: draftModel,
+                systemFallback: generationInstructions,
+                input: [{ role: "user" as const, content: generationInput }],
+                temperature: 0.8, // Balanced variation with better instruction adherence
+                // No reasoning for generation step - just output text
+                maxOutputTokens: attemptMaxOutputTokens,
+                timeoutMs: generationTimeoutMs,
+                maxRetries: 0,
+                resolved: {
+                  system: generationInstructions,
+                  featureId: "draft.generate.email.generation",
+                  promptKeyForTelemetry: generationPromptKey,
+                },
+              });
 
-	            response = generationResponse;
+              if (!generationResult.success) {
+                if (
+                  generationResult.error.category === "incomplete_output" &&
+                  generationResult.error.message.includes("max_output_tokens") &&
+                  attempt < generationMaxAttempts
+                ) {
+                  console.warn(
+                    `[AI Drafts] Email generation hit max_output_tokens with partial output (attempt ${attempt}/${generationMaxAttempts}); retrying`
+                  );
+                  continue;
+                }
 
-	            const text = getTrimmedOutputText(generationResponse)?.trim() || null;
-	            if (!text) {
-	              if (attempt < generationMaxAttempts && isMaxOutputTokensIncomplete(generationResponse)) {
-	                console.warn(
-	                  `[AI Drafts] Email generation ran out of tokens (attempt ${attempt}/${generationMaxAttempts}); retrying`
-	                );
-	                continue;
-	              }
-	              break;
-	            }
+                if (generationResult.error.category === "incomplete_output") {
+                  console.warn(
+                    `[AI Drafts] Email generation produced empty output (attempt ${attempt}/${generationMaxAttempts}); stopping`
+                  );
+                  break;
+                }
 
-	            if (isMaxOutputTokensIncomplete(generationResponse)) {
-	              console.warn(
-	                `[AI Drafts] Email generation hit max_output_tokens with partial output (attempt ${attempt}/${generationMaxAttempts}); retrying`
-	              );
-	              continue;
-	            }
+                console.error(
+                  `[AI Drafts] Step 2 (Generation) failed (attempt ${attempt}):`,
+                  generationResult.error.message
+                );
+                continue;
+              }
+
+	            const text = generationResult.data.trim() || null;
+              if (!text) break;
 
 	            const issues = detectDraftIssues(text);
 	            if ((issues.hasTruncatedUrl || issues.hasPlaceholders) && attempt < generationMaxAttempts) {
@@ -1947,98 +1844,112 @@ Generate an appropriate email response following the guidelines and structure ar
 	            Math.max(800, fallbackBudget.maxOutputTokens) + (attempt - 1) * 2000
 	          );
 
-	          try {
-	            const { response: fallbackResponse, interactionId } = await runResponseWithInteraction({
+            const attemptPromptKey = attempt === 1 ? fallbackBasePromptKey : `${fallbackBasePromptKey}.retry${attempt}`;
+            const fallbackResult = await runTextPrompt({
+              pattern: "text",
               clientId: lead.clientId,
               leadId,
               featureId: "draft.generate.email",
-              promptKey: attempt === 1 ? fallbackBasePromptKey : `${fallbackBasePromptKey}.retry${attempt}`,
-              params: {
-                model: draftModel,
-                instructions: fallbackSystemPrompt,
-                input: fallbackInputMessages,
-                temperature: 0.8, // Balanced variation with better instruction adherence
-                reasoning: { effort: strategyReasoningApi },
-                max_output_tokens: attemptMaxOutputTokens,
+              promptKey: attemptPromptKey,
+              model: draftModel,
+              reasoningEffort:
+                strategyReasoningApi === "none"
+                  ? undefined
+                  : strategyReasoningApi === "xhigh"
+                    ? "high"
+                    : strategyReasoningApi,
+              systemFallback: fallbackSystemPrompt,
+              input: fallbackInputMessages,
+              temperature: 0.8, // Balanced variation with better instruction adherence
+              maxOutputTokens: attemptMaxOutputTokens,
+              timeoutMs: timeoutMs,
+              maxRetries: 0,
+              resolved: {
+                system: fallbackSystemPrompt,
+                featureId: "draft.generate.email",
+                promptKeyForTelemetry: attemptPromptKey,
               },
-              requestOptions: {
-                timeout: timeoutMs,
-                maxRetries: 0,
-	              },
-	            });
+            });
 
-	            const text = getTrimmedOutputText(fallbackResponse)?.trim() || null;
+            const interactionId = fallbackResult.telemetry.interactionId;
 
-	            // Don't persist partial output; retry with a higher budget (or fall back deterministically).
-	            if (isMaxOutputTokensIncomplete(fallbackResponse)) {
-	              const details = summarizeResponseForTelemetry(fallbackResponse);
-	              console.warn(
-	                `[AI Drafts] Email single-step fallback hit max_output_tokens (attempt ${attempt}/${fallbackMaxAttempts}); retrying${details ? ` (${details})` : ""}`
-	              );
+            if (!fallbackResult.success) {
+              if (fallbackResult.error.category === "rate_limit") {
+                await new Promise((r) => setTimeout(r, 250));
+              }
 
-	              if (attempt === fallbackMaxAttempts && interactionId) {
-	                await markAiInteractionError(
-	                  interactionId,
-	                  `email_fallback_truncated: attempt=${attempt}/${fallbackMaxAttempts} max_output_tokens=${attemptMaxOutputTokens}${details ? ` (${details})` : ""}`
-	                );
-	              }
+              // Don't persist partial output; retry with a higher budget (or fall back deterministically).
+              if (
+                fallbackResult.error.category === "incomplete_output" &&
+                fallbackResult.error.message.includes("max_output_tokens")
+              ) {
+                console.warn(
+                  `[AI Drafts] Email single-step fallback hit max_output_tokens (attempt ${attempt}/${fallbackMaxAttempts}); retrying`
+                );
 
-	              if (attempt < fallbackMaxAttempts) continue;
-	              break;
-	            }
+                if (attempt === fallbackMaxAttempts && interactionId) {
+                  await markAiInteractionError(
+                    interactionId,
+                    `email_fallback_truncated: attempt=${attempt}/${fallbackMaxAttempts} max_output_tokens=${attemptMaxOutputTokens}`
+                  );
+                }
 
-	            if (text) {
-	              const issues = detectDraftIssues(text);
-	              if ((issues.hasPlaceholders || issues.hasTruncatedUrl) && attempt < fallbackMaxAttempts) {
-	                console.warn(
-	                  `[AI Drafts] Email single-step fallback produced suspicious output (placeholders=${issues.hasPlaceholders} truncatedUrl=${issues.hasTruncatedUrl}) (attempt ${attempt}/${fallbackMaxAttempts}); retrying`
-	                );
-	                continue;
-	              }
+                if (attempt < fallbackMaxAttempts) continue;
+                break;
+              }
 
-	              const lengthStatus = getEmailLengthStatus(text, emailLengthBounds);
-	              const candidate =
-	                lengthStatus === "too_long" ? text.trim().slice(0, emailLengthBounds.maxChars).trimEnd() : text;
+              if (fallbackResult.error.category === "incomplete_output") {
+                console.warn(
+                  `[AI Drafts] Email single-step fallback produced empty output (attempt ${attempt}/${fallbackMaxAttempts}); retrying`
+                );
 
-	              draftContent = candidate;
-	              response = fallbackResponse;
-	              break;
-	            }
+                if (attempt === fallbackMaxAttempts && interactionId) {
+                  await markAiInteractionError(
+                    interactionId,
+                    `email_fallback_empty: attempt=${attempt}/${fallbackMaxAttempts} max_output_tokens=${attemptMaxOutputTokens}`
+                  );
+                  console.error("[AI Drafts] Email single-step fallback exhausted attempts (empty output).", {
+                    leadId,
+                    interactionId,
+                    attempt,
+                    maxAttempts: fallbackMaxAttempts,
+                    maxOutputTokens: attemptMaxOutputTokens,
+                  });
+                  break;
+                }
 
-	            const details = summarizeResponseForTelemetry(fallbackResponse);
-	            console.warn(
-	              `[AI Drafts] Email single-step fallback produced empty output (attempt ${attempt}/${fallbackMaxAttempts})${details ? ` (${details})` : ""}`
-	            );
+                continue;
+              }
 
-            if (attempt === fallbackMaxAttempts && interactionId) {
-              await markAiInteractionError(
-                interactionId,
-                `email_fallback_empty: attempt=${attempt}/${fallbackMaxAttempts} max_output_tokens=${attemptMaxOutputTokens}${details ? ` (${details})` : ""}`
-              );
-              console.error("[AI Drafts] Email single-step fallback exhausted attempts (empty output).", {
-                leadId,
-                interactionId,
-                attempt,
-                maxAttempts: fallbackMaxAttempts,
-                maxOutputTokens: attemptMaxOutputTokens,
-                details: details || null,
-              });
-            }
-          } catch (error) {
-            const retryable = isRetryableEmailStrategyError(error);
-            if (retryable && attempt < fallbackMaxAttempts) {
-              console.warn(
-                `[AI Drafts] Email single-step fallback retryable error (attempt ${attempt}/${fallbackMaxAttempts}): ${error instanceof Error ? error.message : String(error)}`
-              );
-              const status = (error as unknown as { status?: unknown }).status;
-              if (status === 429) await new Promise((r) => setTimeout(r, 250));
-              continue;
+              if (fallbackResult.error.retryable && attempt < fallbackMaxAttempts) {
+                console.warn(
+                  `[AI Drafts] Email single-step fallback retryable error (attempt ${attempt}/${fallbackMaxAttempts}): ${fallbackResult.error.message}`
+                );
+                continue;
+              }
+
+              console.error(`[AI Drafts] Email single-step fallback failed (attempt ${attempt}):`, fallbackResult.error.message);
+              break;
             }
 
-            console.error(`[AI Drafts] Email single-step fallback failed (attempt ${attempt}):`, error);
-            break;
-          }
-        }
+            const text = fallbackResult.data.trim() || null;
+            if (text) {
+              const issues = detectDraftIssues(text);
+              if ((issues.hasPlaceholders || issues.hasTruncatedUrl) && attempt < fallbackMaxAttempts) {
+                console.warn(
+                  `[AI Drafts] Email single-step fallback produced suspicious output (placeholders=${issues.hasPlaceholders} truncatedUrl=${issues.hasTruncatedUrl}) (attempt ${attempt}/${fallbackMaxAttempts}); retrying`
+                );
+                continue;
+              }
+
+              const lengthStatus = getEmailLengthStatus(text, emailLengthBounds);
+              const candidate =
+                lengthStatus === "too_long" ? text.trim().slice(0, emailLengthBounds.maxChars).trimEnd() : text;
+
+              draftContent = candidate;
+              break;
+            }
+	        }
       }
     }
     // ---------------------------------------------------------------------------
@@ -2168,34 +2079,42 @@ Generate an appropriate ${channel} response following the guidelines above.
         preferApiCount,
       });
 
-      try {
-        response = await runResponse({
-          clientId: lead.clientId,
-          leadId,
+      const promptKeyForTelemetry = (promptTemplate?.key || promptKey) + (overrideVersion ? `.${overrideVersion}` : "");
+      const primaryResult = await runTextPrompt({
+        pattern: "text",
+        clientId: lead.clientId,
+        leadId,
+        featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
+        promptKey: promptTemplate?.key || promptKey,
+        model: primaryModel,
+        reasoningEffort,
+        systemFallback: instructions,
+        input: inputMessages,
+        verbosity: "low",
+        maxOutputTokens: budget.maxOutputTokens,
+        timeoutMs: timeoutMs,
+        maxRetries: 0,
+        resolved: {
+          system: instructions,
           featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-          promptKey: (promptTemplate?.key || promptKey) + (overrideVersion ? `.${overrideVersion}` : ""),
-          params: {
-            model: primaryModel,
-            instructions,
-            input: inputMessages,
-            text: { verbosity: "low" },
-            reasoning: { effort: reasoningEffort },
-            max_output_tokens: budget.maxOutputTokens,
-          },
-          requestOptions: {
-            timeout: timeoutMs,
-            maxRetries: 0,
-          },
-        });
-      } catch (error) {
-        console.error("[AI Drafts] Primary SMS/LinkedIn generation failed:", error);
-      }
+          promptKeyForTelemetry,
+        },
+      });
 
-	      draftContent = response ? (getTrimmedOutputText(response)?.trim() || null) : null;
+      if (primaryResult.success) {
+        draftContent = primaryResult.data.trim() || null;
+      } else {
+        console.error("[AI Drafts] Primary SMS/LinkedIn generation failed:", primaryResult.error.message);
+      }
 
 	      // If OpenAI reports we hit max_output_tokens, do NOT persist partial output (it can truncate URLs).
 	      // Retry with a higher output budget.
-	      if (response && isMaxOutputTokensIncomplete(response)) {
+	      if (
+          !draftContent &&
+          !primaryResult.success &&
+          primaryResult.error.category === "incomplete_output" &&
+          primaryResult.error.message.includes("max_output_tokens")
+        ) {
 	        console.warn(
 	          `[AI Drafts] ${channel} draft hit max_output_tokens; retrying with more headroom (may have run out during reasoning if output is empty)`
 	        );
@@ -2209,44 +2128,39 @@ Generate an appropriate ${channel} response following the guidelines above.
 
 	        for (let attempt = 1; attempt <= retryBudgets.length; attempt++) {
 	          const retryMaxOutputTokens = retryBudgets[attempt - 1];
-	          try {
-	            const retry = await runResponse({
-	              clientId: lead.clientId,
-	              leadId,
-	              featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-	              promptKey: `${promptTemplate?.key || promptKey}${overrideVersion ? `.${overrideVersion}` : ""}.retry_more_tokens${attempt}`,
-	              params: {
-	                model: primaryModel,
-	                instructions,
-	                input: inputMessages,
-	                text: { verbosity: "low" },
-	                // Reduce reasoning budget on retry to avoid spending output tokens on hidden reasoning.
-	                reasoning: { effort: "low" },
-	                max_output_tokens: retryMaxOutputTokens,
-	              },
-	              requestOptions: {
-	                timeout: timeoutMs,
-	                maxRetries: 0,
-	              },
-	            });
+            const retryPromptKeyForTelemetry = `${promptKeyForTelemetry}.retry_more_tokens${attempt}`;
+            const retryResult = await runTextPrompt({
+              pattern: "text",
+              clientId: lead.clientId,
+              leadId,
+              featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
+              promptKey: promptTemplate?.key || promptKey,
+              model: primaryModel,
+              reasoningEffort: "low",
+              systemFallback: instructions,
+              input: inputMessages,
+              verbosity: "low",
+              maxOutputTokens: retryMaxOutputTokens,
+              timeoutMs: timeoutMs,
+              maxRetries: 0,
+              resolved: {
+                system: instructions,
+                featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
+                promptKeyForTelemetry: retryPromptKeyForTelemetry,
+              },
+            });
 
-	            const retryText = getTrimmedOutputText(retry)?.trim() || null;
-	            if (!retryText) {
-	              response = retry;
-	              continue;
-	            }
+            if (!retryResult.success) {
+              console.error(
+                `[AI Drafts] Retry after max_output_tokens failed (attempt ${attempt}):`,
+                retryResult.error.message
+              );
+              continue;
+            }
 
-	            if (isMaxOutputTokensIncomplete(retry)) {
-	              response = retry;
-	              continue;
-	            }
-
-	            draftContent = retryText;
-	            response = retry;
-	            break;
-	          } catch (error) {
-	            console.error(`[AI Drafts] Retry after max_output_tokens failed (attempt ${attempt}):`, error);
-	          }
+            draftContent = retryResult.data.trim() || null;
+            if (!draftContent) continue;
+            break;
 	        }
 	      }
 
@@ -2266,61 +2180,56 @@ Generate an appropriate ${channel} response following the guidelines above.
           preferApiCount,
         });
 
-	        try {
-	          const fallback = await runResponse({
+          const fallbackPromptKeyForTelemetry = `${promptKeyForTelemetry}.fallback`;
+          const fallbackResult = await runTextPrompt({
+            pattern: "text",
             clientId: lead.clientId,
             leadId,
             featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-            promptKey: `${promptTemplate?.key || promptKey}.fallback`,
-            params: {
-              model: primaryModel,
-              instructions,
-              input: inputMessages,
-              text: { verbosity: "low" },
-              reasoning: { effort: reasoningEffort },
-              max_output_tokens: fallbackBudget.maxOutputTokens,
+            promptKey: promptTemplate?.key || promptKey,
+            model: primaryModel,
+            reasoningEffort,
+            systemFallback: instructions,
+            input: inputMessages,
+            verbosity: "low",
+            maxOutputTokens: fallbackBudget.maxOutputTokens,
+            timeoutMs: timeoutMs,
+            maxRetries: 0,
+            resolved: {
+              system: instructions,
+              featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
+              promptKeyForTelemetry: fallbackPromptKeyForTelemetry,
             },
-            requestOptions: {
-              timeout: timeoutMs,
-              maxRetries: 0,
-            },
-	          });
+          });
 
-	          const fallbackText = getTrimmedOutputText(fallback)?.trim() || null;
-	          if (!fallbackText || isMaxOutputTokensIncomplete(fallback)) {
-	            response = fallback;
-	          } else {
-	            draftContent = fallbackText;
-	            response = fallback;
-	          }
-	        } catch (error) {
-	          console.error("[AI Drafts] SMS/LinkedIn fallback failed:", error);
-	        }
-	      }
+          if (!fallbackResult.success) {
+            console.error("[AI Drafts] SMS/LinkedIn fallback failed:", fallbackResult.error.message);
+          } else {
+            const fallbackText = fallbackResult.data.trim() || null;
+            if (fallbackText) {
+              draftContent = fallbackText;
+            }
+          }
+	    }
     }
 
-	    if (!draftContent) {
-	      const refusal = response ? getFirstRefusal(response) : null;
-	      const details = response ? summarizeResponseForTelemetry(response) : null;
-
+    if (!draftContent) {
       console.error("[AI Drafts] OpenAI draft generation failed; using deterministic fallback draft.", {
         leadId,
         channel,
         sentimentTag,
-        refusal: refusal ? refusal.slice(0, 200) : null,
-        details: details || null,
       });
 
-	      draftContent = buildDeterministicFallbackDraft({
-	        channel,
-	        aiName,
-	        aiGreeting,
-	        firstName,
-	        signature: aiSignature || null,
-	        sentimentTag,
-	        availability,
-	      });
-	    }
+      draftContent = buildDeterministicFallbackDraft({
+        channel,
+        aiName,
+        aiGreeting,
+        firstName,
+        signature: aiSignature || null,
+        sentimentTag,
+        availability,
+      });
+    }
 
       if (channel === "email" && draftContent) {
         let bookingLink: string | null = null;
@@ -2328,6 +2237,12 @@ Generate an appropriate ${channel} response following the guidelines above.
           bookingLink = await getBookingLink(lead.clientId, settings);
         } catch (error) {
           console.error("[AI Drafts] Failed to resolve canonical booking link:", error);
+        }
+
+        // Prevent verifier truncations by keeping the draft within our configured bounds.
+        const preBounds = emailLengthBoundsForClamp ?? getEmailDraftCharBoundsFromEnv();
+        if (draftContent.trim().length > preBounds.maxChars) {
+          draftContent = draftContent.trim().slice(0, preBounds.maxChars).trimEnd();
         }
 
         try {
@@ -2357,24 +2272,24 @@ Generate an appropriate ${channel} response following the guidelines above.
         draftContent = replaceEmDashesWithCommaSpace(draftContent);
       }
 
-	    draftContent = sanitizeDraftContent(draftContent, leadId, channel);
+    draftContent = sanitizeDraftContent(draftContent, leadId, channel);
 
-	    if (channel === "email") {
-	      const bounds = emailLengthBoundsForClamp ?? getEmailDraftCharBoundsFromEnv();
-	      const status = getEmailLengthStatus(draftContent, bounds);
-	      if (status === "too_long") {
-	        console.warn(`[AI Drafts] Email draft exceeded max chars (${bounds.maxChars}); clamping`, {
-	          leadId,
-	          length: draftContent.trim().length,
-	        });
-	        draftContent = draftContent.trim().slice(0, bounds.maxChars).trimEnd();
-	      }
-	    }
+    if (channel === "email") {
+      const bounds = emailLengthBoundsForClamp ?? getEmailDraftCharBoundsFromEnv();
+      const status = getEmailLengthStatus(draftContent, bounds);
+      if (status === "too_long") {
+        console.warn(`[AI Drafts] Email draft exceeded max chars (${bounds.maxChars}); clamping`, {
+          leadId,
+          length: draftContent.trim().length,
+        });
+        draftContent = draftContent.trim().slice(0, bounds.maxChars).trimEnd();
+      }
+    }
 
-	    try {
-	      const draft = await prisma.aIDraft.create({
-	        data: {
-	          leadId,
+    try {
+      const draft = await prisma.aIDraft.create({
+        data: {
+          leadId,
           triggerMessageId: triggerMessageId || undefined,
           content: draftContent,
           status: "pending",

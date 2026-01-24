@@ -1,7 +1,6 @@
 import "server-only";
 
-import { runResponse } from "@/lib/ai/openai-telemetry";
-import { getTrimmedOutputText } from "@/lib/ai/response-utils";
+import { runTextPrompt } from "@/lib/ai/prompt-runner";
 
 function isImageMimeType(mimeType: string): boolean {
   const m = (mimeType || "").toLowerCase();
@@ -37,31 +36,24 @@ async function summarizeTextToKnowledgeNotes(opts: {
   const prompt = buildKnowledgeNotesPrompt({ sourceLabel: opts.sourceLabel });
   const inputText = opts.text.length > 120_000 ? `${opts.text.slice(0, 120_000)}\n\n[TRUNCATED]` : opts.text;
 
-  const resp = await runResponse({
+  const result = await runTextPrompt({
+    pattern: "text",
     clientId: opts.clientId,
     featureId: "knowledge_assets.summarize_text",
     promptKey: "knowledge_assets.summarize_text.v1",
-    params: {
-      model: "gpt-5-mini",
-      reasoning: { effort: "low" },
-      input: [
-        {
-          role: "user",
-          content: [
-            { type: "input_text", text: prompt },
-            { type: "input_text", text: inputText },
-          ],
-        },
-      ],
-      max_output_tokens: 2200,
-    },
-    requestOptions: {
-      timeout: Math.max(10_000, Number.parseInt(process.env.OPENAI_OCR_TIMEOUT_MS || "120000", 10) || 120_000),
-      maxRetries: 0,
-    },
+    model: "gpt-5-mini",
+    reasoningEffort: "low",
+    systemFallback: prompt,
+    input: [{ role: "user" as const, content: inputText }],
+    maxOutputTokens: 2200,
+    timeoutMs: Math.max(10_000, Number.parseInt(process.env.OPENAI_OCR_TIMEOUT_MS || "120000", 10) || 120_000),
+    maxRetries: 0,
   });
 
-  return (getTrimmedOutputText(resp) || "").trim();
+  if (!result.success) {
+    throw new Error(result.error.message);
+  }
+  return result.data.trim();
 }
 
 export async function extractKnowledgeNotesFromText(opts: {
@@ -95,69 +87,69 @@ export async function extractKnowledgeNotesFromFile(opts: {
   // PDF: send as input_file (supports scanned PDFs: text + page images).
   if (mimeType === "application/pdf") {
     const base64 = opts.bytes.toString("base64");
-    const resp = await runResponse({
+    const result = await runTextPrompt({
+      pattern: "text",
       clientId: opts.clientId,
       featureId: "knowledge_assets.ocr_pdf",
       promptKey: "knowledge_assets.ocr_pdf.v1",
-      params: {
-        model: "gpt-5-mini",
-        reasoning: { effort: "low" },
-        input: [
-          {
-            role: "user",
-            content: [
-              { type: "input_text", text: buildKnowledgeNotesPrompt({ sourceLabel }) },
-              {
-                type: "input_file",
-                filename: opts.filename || "document.pdf",
-                file_data: `data:${mimeType};base64,${base64}`,
-              },
-            ],
-          },
-        ],
-        max_output_tokens: 2200,
-      },
-      requestOptions: {
-        timeout: Math.max(10_000, Number.parseInt(process.env.OPENAI_OCR_TIMEOUT_MS || "180000", 10) || 180_000),
-        maxRetries: 0,
-      },
+      model: "gpt-5-mini",
+      reasoningEffort: "low",
+      systemFallback: buildKnowledgeNotesPrompt({ sourceLabel }),
+      input: [
+        {
+          role: "user" as const,
+          content: [
+            {
+              type: "input_file",
+              filename: opts.filename || "document.pdf",
+              file_data: `data:${mimeType};base64,${base64}`,
+            },
+          ],
+        },
+      ],
+      maxOutputTokens: 2200,
+      timeoutMs: Math.max(10_000, Number.parseInt(process.env.OPENAI_OCR_TIMEOUT_MS || "180000", 10) || 180_000),
+      maxRetries: 0,
     });
 
-    return (getTrimmedOutputText(resp) || "").trim();
+    if (!result.success) {
+      throw new Error(result.error.message);
+    }
+    return result.data.trim();
   }
 
   // Images: OCR via vision input_image base64.
   if (isImageMimeType(mimeType)) {
     const base64 = opts.bytes.toString("base64");
-    const resp = await runResponse({
+    const result = await runTextPrompt({
+      pattern: "text",
       clientId: opts.clientId,
       featureId: "knowledge_assets.ocr_image",
       promptKey: "knowledge_assets.ocr_image.v1",
-      params: {
-        model: "gpt-5-mini",
-        reasoning: { effort: "low" },
-        input: [
-          {
-            role: "user",
-            content: [
-              { type: "input_text", text: buildKnowledgeNotesPrompt({ sourceLabel }) },
-              {
-                type: "input_image",
-                detail: "auto",
-                image_url: `data:${mimeType};base64,${base64}`,
-              },
-            ],
-          },
-        ],
-        max_output_tokens: 2200,
-      },
-      requestOptions: {
-        timeout: Math.max(10_000, Number.parseInt(process.env.OPENAI_OCR_TIMEOUT_MS || "120000", 10) || 120_000),
-        maxRetries: 0,
-      },
+      model: "gpt-5-mini",
+      reasoningEffort: "low",
+      systemFallback: buildKnowledgeNotesPrompt({ sourceLabel }),
+      input: [
+        {
+          role: "user" as const,
+          content: [
+            {
+              type: "input_image",
+              detail: "auto",
+              image_url: `data:${mimeType};base64,${base64}`,
+            },
+          ],
+        },
+      ],
+      maxOutputTokens: 2200,
+      timeoutMs: Math.max(10_000, Number.parseInt(process.env.OPENAI_OCR_TIMEOUT_MS || "120000", 10) || 120_000),
+      maxRetries: 0,
     });
 
-    return (getTrimmedOutputText(resp) || "").trim();
+    if (!result.success) {
+      throw new Error(result.error.message);
+    }
+    return result.data.trim();
   }
 
   // As a fallback, treat bytes as UTF-8 text and summarize.

@@ -1840,12 +1840,92 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
     return NextResponse.json({ error: "Missing scheduled_email.id" }, { status: 400 });
   }
 
+  const inboxxiaScheduledEmailId = String(scheduledEmail.id);
+
+  // Phase 53: high-volume EMAIL_SENT events can arrive in bursts and must not do heavy DB work on the request path.
+  // When enabled, we enqueue the event to a durable queue and return immediately.
+  const asyncEnabled =
+    process.env.INBOXXIA_EMAIL_SENT_ASYNC === "1" ||
+    process.env.INBOXXIA_EMAIL_SENT_ASYNC === "true" ||
+    process.env.INBOXXIA_EMAIL_SENT_ASYNC === "yes";
+
+  if (asyncEnabled) {
+    const workspaceId = payload.event?.workspace_id;
+    const workspaceIdStr = workspaceId !== undefined && workspaceId !== null ? String(workspaceId).trim() : null;
+    const dedupeKey = `inboxxia:EMAIL_SENT:${inboxxiaScheduledEmailId}`;
+
+    try {
+      await prisma.webhookEvent.upsert({
+        where: { dedupeKey },
+        update: {
+          status: "PENDING",
+          runAt: new Date(),
+          lockedAt: null,
+          lockedBy: null,
+          startedAt: null,
+          finishedAt: null,
+          lastError: null,
+          provider: "INBOXXIA",
+          eventType: "EMAIL_SENT",
+          workspaceId: workspaceIdStr,
+          workspaceName: payload.event?.workspace_name || payload.event?.name || null,
+          campaignId: data?.campaign?.id ? String(data.campaign.id) : null,
+          campaignName: data?.campaign?.name || null,
+          emailBisonLeadId: data?.lead?.id ? String(data.lead.id) : null,
+          leadEmail: data?.lead?.email ?? null,
+          leadFirstName: data?.lead?.first_name ?? null,
+          leadLastName: data?.lead?.last_name ?? null,
+          senderEmailId: data?.sender_email?.id ? String(data.sender_email.id) : null,
+          senderEmail: data?.sender_email?.email ?? null,
+          senderName: data?.sender_email?.name ?? null,
+          scheduledEmailId: inboxxiaScheduledEmailId,
+          emailSubject: scheduledEmail.email_subject ?? null,
+          emailBodyHtml: scheduledEmail.email_body ?? null,
+          emailStatus: scheduledEmail.status ?? null,
+          emailSentAt: scheduledEmail.sent_at ? parseDate(scheduledEmail.sent_at) : null,
+        },
+        create: {
+          provider: "INBOXXIA",
+          eventType: "EMAIL_SENT",
+          dedupeKey,
+          status: "PENDING",
+          runAt: new Date(),
+          workspaceId: workspaceIdStr,
+          workspaceName: payload.event?.workspace_name || payload.event?.name || null,
+          campaignId: data?.campaign?.id ? String(data.campaign.id) : null,
+          campaignName: data?.campaign?.name || null,
+          emailBisonLeadId: data?.lead?.id ? String(data.lead.id) : null,
+          leadEmail: data?.lead?.email ?? null,
+          leadFirstName: data?.lead?.first_name ?? null,
+          leadLastName: data?.lead?.last_name ?? null,
+          senderEmailId: data?.sender_email?.id ? String(data.sender_email.id) : null,
+          senderEmail: data?.sender_email?.email ?? null,
+          senderName: data?.sender_email?.name ?? null,
+          scheduledEmailId: inboxxiaScheduledEmailId,
+          emailSubject: scheduledEmail.email_subject ?? null,
+          emailBodyHtml: scheduledEmail.email_body ?? null,
+          emailStatus: scheduledEmail.status ?? null,
+          emailSentAt: scheduledEmail.sent_at ? parseDate(scheduledEmail.sent_at) : null,
+        },
+      });
+    } catch (error) {
+      console.error("[Email Webhook] Failed to enqueue EMAIL_SENT webhook event:", error);
+      return NextResponse.json({ error: "Failed to enqueue EMAIL_SENT webhook event" }, { status: 500 });
+    }
+
+    return NextResponse.json({
+      success: true,
+      queued: true,
+      eventType: "EMAIL_SENT",
+      scheduledEmailId: inboxxiaScheduledEmailId,
+      dedupeKey,
+    });
+  }
+
   const client = await findClient(request, payload);
   if (!client) {
     return NextResponse.json({ error: "Client not found for webhook" }, { status: 404 });
   }
-
-  const inboxxiaScheduledEmailId = String(scheduledEmail.id);
 
   // Deduplication check
   const existingMessage = await prisma.message.findUnique({

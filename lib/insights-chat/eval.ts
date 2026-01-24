@@ -1,9 +1,7 @@
 import "server-only";
 
 import "@/lib/server-dns";
-import { runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
-import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
+import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { z } from "zod";
 import type { InsightsChatModel } from "@/lib/insights-chat/config";
 
@@ -80,94 +78,82 @@ export async function evaluateInsightsAnswer(opts: {
   };
 
   const input = [{ role: "user" as const, content: JSON.stringify(payload, null, 2) }];
-  const budget = await computeAdaptiveMaxOutputTokens({
-    model: opts.model,
-    instructions: JUDGE_SYSTEM,
-    input,
-    min: 450,
-    max: 1400,
-    overheadTokens: 300,
-    outputScale: 0.2,
-    preferApiCount: true,
-  });
 
-  const { response } = await runResponseWithInteraction({
+  const result = await runStructuredJsonPrompt<InsightsAnswerEvaluation>({
+    pattern: "structured_json",
     clientId: opts.clientId,
     featureId: "insights.answer_judge",
     promptKey: "insights.answer_judge.v1",
-    params: {
-      model: opts.model,
-      reasoning: { effort: "low" },
-      max_output_tokens: budget.maxOutputTokens,
-      instructions: JUDGE_SYSTEM,
-      text: {
-        verbosity: "low",
-        format: {
-          type: "json_schema",
-          name: "insights_answer_eval",
-          strict: true,
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              groundedness: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  score: { type: "number" },
-                  evidence: { type: "array", items: { type: "string" } },
-                },
-                required: ["score", "evidence"],
-              },
-              usefulness: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  score: { type: "number" },
-                  evidence: { type: "array", items: { type: "string" } },
-                },
-                required: ["score", "evidence"],
-              },
-              clarity: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  score: { type: "number" },
-                  evidence: { type: "array", items: { type: "string" } },
-                },
-                required: ["score", "evidence"],
-              },
-              risks: { type: "array", items: { type: "string" } },
-              overall: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  score: { type: "number" },
-                  confidence: { type: "number" },
-                },
-                required: ["score", "confidence"],
-              },
-            },
-            required: ["groundedness", "usefulness", "clarity", "risks", "overall"],
+    model: opts.model,
+    reasoningEffort: "low",
+    systemFallback: JUDGE_SYSTEM,
+    input,
+    schemaName: "insights_answer_eval",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        groundedness: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            score: { type: "number" },
+            evidence: { type: "array", items: { type: "string" } },
           },
+          required: ["score", "evidence"],
+        },
+        usefulness: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            score: { type: "number" },
+            evidence: { type: "array", items: { type: "string" } },
+          },
+          required: ["score", "evidence"],
+        },
+        clarity: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            score: { type: "number" },
+            evidence: { type: "array", items: { type: "string" } },
+          },
+          required: ["score", "evidence"],
+        },
+        risks: { type: "array", items: { type: "string" } },
+        overall: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            score: { type: "number" },
+            confidence: { type: "number" },
+          },
+          required: ["score", "confidence"],
         },
       },
-      input,
+      required: ["groundedness", "usefulness", "clarity", "risks", "overall"],
     },
-    requestOptions: {
-      timeout: Math.max(8_000, Number.parseInt(process.env.OPENAI_INSIGHTS_EVAL_TIMEOUT_MS || "45000", 10) || 45_000),
+    budget: {
+      min: 450,
+      max: 1400,
+      overheadTokens: 300,
+      outputScale: 0.2,
+      preferApiCount: true,
+    },
+    timeoutMs: Math.max(8_000, Number.parseInt(process.env.OPENAI_INSIGHTS_EVAL_TIMEOUT_MS || "45000", 10) || 45_000),
+    validate: (value) => {
+      const validated = InsightsAnswerEvalSchema.safeParse(value);
+      if (!validated.success) {
+        return { success: false, error: validated.error.message };
+      }
+      return { success: true, data: validated.data };
     },
   });
 
-  const text = getTrimmedOutputText(response);
-  if (!text) {
-    const details = summarizeResponseForTelemetry(response);
-    throw new Error(`Empty output_text${details ? ` (${details})` : ""}`);
+  if (!result.success) {
+    throw new Error(result.error.message);
   }
 
-  const parsed = JSON.parse(extractJsonObjectFromText(text));
-  const validated = InsightsAnswerEvalSchema.safeParse(parsed);
-  if (!validated.success) throw new Error(`Eval schema mismatch: ${validated.error.message}`);
-
-  return validated.data;
+  return result.data;
 }

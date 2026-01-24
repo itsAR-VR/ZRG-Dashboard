@@ -27,3 +27,10 @@ export function isSupabaseInvalidOrMissingSessionError(error: unknown): boolean 
   );
 }
 
+export function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const anyError = error as { name?: unknown; code?: unknown };
+  if (anyError.name === "AbortError") return true;
+  if (anyError.code === "UND_ERR_ABORTED") return true;
+  return false;
+}

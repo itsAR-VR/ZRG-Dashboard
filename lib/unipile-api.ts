@@ -31,6 +31,11 @@ export interface ConnectionCheckResult {
   hasOpenProfile: boolean;
   linkedinMemberId?: string;
   publicIdentifier?: string;
+  error?: string;
+  httpStatus?: number;
+  unipileErrorType?: string;
+  isDisconnectedAccount?: boolean;
+  isUnreachableRecipient?: boolean;
 }
 
 export interface SendResult {
@@ -41,6 +46,8 @@ export interface SendResult {
   error?: string;
   /** True if the error indicates the Unipile account is disconnected */
   isDisconnectedAccount?: boolean;
+  /** True if the error indicates the LinkedIn recipient cannot be reached */
+  isUnreachableRecipient?: boolean;
 }
 
 export interface InMailBalanceResult {
@@ -55,6 +62,7 @@ export interface InMailBalanceResult {
  */
 export interface UnipileErrorInfo {
   isDisconnectedAccount: boolean;
+  isUnreachableRecipient: boolean;
   detail: string;
   type?: string;
 }
@@ -68,23 +76,36 @@ export function parseUnipileErrorResponse(responseText: string, status: number):
     const parsed = JSON.parse(responseText);
     const type = parsed.type || "";
     const detail = parsed.detail || parsed.message || parsed.title || responseText;
+    const detailLower = String(detail || "").toLowerCase();
 
     // Detect disconnected account: type="errors/disconnected_account" OR (401 + related keywords)
     const isDisconnectedAccount =
       type === "errors/disconnected_account" ||
       (status === 401 &&
-        (detail.toLowerCase().includes("disconnected") ||
-          detail.toLowerCase().includes("reconnect")));
+        (detailLower.includes("disconnected") ||
+          detailLower.includes("reconnect")));
 
-    return { isDisconnectedAccount, detail, type };
+    const isUnreachableRecipient =
+      type === "errors/recipient_cannot_be_reached" ||
+      (status === 422 &&
+        (detailLower.includes("recipient cannot be reached") ||
+          (detailLower.includes("recipient") && detailLower.includes("cannot be reached"))));
+
+    return { isDisconnectedAccount, isUnreachableRecipient, detail, type };
   } catch {
     // Not JSON, check for keywords in raw text
+    const lower = responseText.toLowerCase();
     const isDisconnectedAccount =
       status === 401 &&
       (responseText.toLowerCase().includes("disconnected") ||
         responseText.toLowerCase().includes("reconnect"));
 
-    return { isDisconnectedAccount, detail: responseText, type: undefined };
+    const isUnreachableRecipient =
+      status === 422 &&
+      (lower.includes("recipient cannot be reached") ||
+        (lower.includes("recipient") && lower.includes("cannot be reached")));
+
+    return { isDisconnectedAccount, isUnreachableRecipient, detail: responseText, type: undefined };
   }
 }
 
@@ -180,12 +201,13 @@ export async function checkLinkedInConnection(
   const publicIdentifier = extractLinkedInPublicIdentifier(linkedinUrl);
 
   if (!publicIdentifier) {
-    console.error("[Unipile] Could not extract public identifier from URL:", linkedinUrl);
+    console.warn("[Unipile] Could not extract public identifier from URL");
     return {
       status: "NOT_CONNECTED",
       canSendDM: false,
       canSendInMail: false,
       hasOpenProfile: false,
+      error: "Could not extract LinkedIn public identifier from URL",
     };
   }
 
@@ -193,16 +215,14 @@ export async function checkLinkedInConnection(
     // Unipile API: GET /api/v1/users/{identifier}?account_id=...
     const url = `${getBaseUrl()}/users/${encodeURIComponent(publicIdentifier)}?account_id=${encodeURIComponent(accountId)}`;
 
-    console.log(`[Unipile] Checking connection status for: ${publicIdentifier}`);
-
     const response = await fetch(url, {
       method: "GET",
       headers: getHeaders(),
     });
 
     if (!response.ok) {
-      const error = await response.text();
-      console.error(`[Unipile] Connection check failed (${response.status}):`, error);
+      const errorText = await response.text();
+      const errorInfo = parseUnipileErrorResponse(errorText, response.status);
 
       // If user not found or error, assume not connected
       return {
@@ -211,6 +231,11 @@ export async function checkLinkedInConnection(
         canSendInMail: false,
         hasOpenProfile: false,
         publicIdentifier,
+        error: errorInfo.detail,
+        httpStatus: response.status,
+        unipileErrorType: errorInfo.type,
+        isDisconnectedAccount: errorInfo.isDisconnectedAccount,
+        isUnreachableRecipient: errorInfo.isUnreachableRecipient,
       };
     }
 
@@ -233,8 +258,6 @@ export async function checkLinkedInConnection(
       status = "PENDING";
     }
 
-    console.log(`[Unipile] Connection status for ${publicIdentifier}: ${status}, hasOpenProfile: ${hasOpenProfile}`);
-
     return {
       status,
       canSendDM: isConnected,
@@ -244,13 +267,14 @@ export async function checkLinkedInConnection(
       publicIdentifier,
     };
   } catch (error) {
-    console.error("[Unipile] Connection check error:", error);
+    console.warn("[Unipile] Connection check error:", error instanceof Error ? error.message : error);
     return {
       status: "NOT_CONNECTED",
       canSendDM: false,
       canSendInMail: false,
       hasOpenProfile: false,
       publicIdentifier,
+      error: error instanceof Error ? error.message : "Unknown error",
     };
   }
 }
@@ -278,7 +302,9 @@ export async function sendLinkedInDM(
     if (!providerId) {
       return {
         success: false,
-        error: "Could not resolve LinkedIn member ID for messaging",
+        error: connectionResult.error || "Could not resolve LinkedIn member ID for messaging",
+        isDisconnectedAccount: connectionResult.isDisconnectedAccount,
+        isUnreachableRecipient: connectionResult.isUnreachableRecipient,
       };
     }
   }
@@ -298,11 +324,15 @@ export async function sendLinkedInDM(
     if (!response.ok) {
       const errorText = await response.text();
       const errorInfo = parseUnipileErrorResponse(errorText, response.status);
-      console.error(`[Unipile] DM send failed (${response.status}):`, errorText);
+      console.warn(`[Unipile] DM send failed (${response.status})`, {
+        type: errorInfo.type ?? null,
+        detail: String(errorInfo.detail || "").slice(0, 240),
+      });
       return {
         success: false,
         error: `Failed to send DM (${response.status}): ${errorInfo.detail}`,
         isDisconnectedAccount: errorInfo.isDisconnectedAccount,
+        isUnreachableRecipient: errorInfo.isUnreachableRecipient,
       };
     }
 
@@ -348,7 +378,9 @@ export async function sendLinkedInInMail(
     if (!providerId) {
       return {
         success: false,
-        error: "Could not resolve LinkedIn member ID for InMail",
+        error: connectionResult.error || "Could not resolve LinkedIn member ID for InMail",
+        isDisconnectedAccount: connectionResult.isDisconnectedAccount,
+        isUnreachableRecipient: connectionResult.isUnreachableRecipient,
       };
     }
   }
@@ -372,7 +404,10 @@ export async function sendLinkedInInMail(
     if (!response.ok) {
       const errorText = await response.text();
       const errorInfo = parseUnipileErrorResponse(errorText, response.status);
-      console.error(`[Unipile] InMail send failed (${response.status}):`, errorText);
+      console.warn(`[Unipile] InMail send failed (${response.status})`, {
+        type: errorInfo.type ?? null,
+        detail: String(errorInfo.detail || "").slice(0, 240),
+      });
 
       // Check if failure is due to no credits
       if (errorText.includes("credit") || errorText.includes("balance") || response.status === 402) {
@@ -386,6 +421,7 @@ export async function sendLinkedInInMail(
         success: false,
         error: `Failed to send InMail (${response.status}): ${errorInfo.detail}`,
         isDisconnectedAccount: errorInfo.isDisconnectedAccount,
+        isUnreachableRecipient: errorInfo.isUnreachableRecipient,
       };
     }
 
@@ -430,7 +466,9 @@ export async function sendLinkedInConnectionRequest(
     if (!providerId) {
       return {
         success: false,
-        error: "Could not resolve LinkedIn member ID for connection request",
+        error: connectionResult.error || "Could not resolve LinkedIn member ID for connection request",
+        isDisconnectedAccount: connectionResult.isDisconnectedAccount,
+        isUnreachableRecipient: connectionResult.isUnreachableRecipient,
       };
     }
   }
@@ -450,11 +488,15 @@ export async function sendLinkedInConnectionRequest(
     if (!response.ok) {
       const errorText = await response.text();
       const errorInfo = parseUnipileErrorResponse(errorText, response.status);
-      console.error(`[Unipile] Connection request failed (${response.status}):`, errorText);
+      console.warn(`[Unipile] Connection request failed (${response.status})`, {
+        type: errorInfo.type ?? null,
+        detail: String(errorInfo.detail || "").slice(0, 240),
+      });
       return {
         success: false,
         error: `Failed to send connection request (${response.status}): ${errorInfo.detail}`,
         isDisconnectedAccount: errorInfo.isDisconnectedAccount,
+        isUnreachableRecipient: errorInfo.isUnreachableRecipient,
       };
     }
 
@@ -537,7 +579,9 @@ export async function sendLinkedInMessageWithWaterfall(
   if (!memberId) {
     return {
       success: false,
-      error: "Could not resolve LinkedIn member ID",
+      error: connectionStatus.error || "Could not resolve LinkedIn member ID",
+      isDisconnectedAccount: connectionStatus.isDisconnectedAccount,
+      isUnreachableRecipient: connectionStatus.isUnreachableRecipient,
       attemptedMethods: ["connection_check_failed"],
     };
   }

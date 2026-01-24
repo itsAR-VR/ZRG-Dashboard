@@ -3,9 +3,8 @@ import "server-only";
 import "@/lib/server-dns";
 import { BackgroundJobType } from "@prisma/client";
 import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
-import { runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
+import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { extractFirstCompleteJsonObjectFromText, getTrimmedOutputText } from "@/lib/ai/response-utils";
 import { buildSentimentTranscriptFromMessages } from "@/lib/sentiment";
 
 // ============================================================================
@@ -221,160 +220,66 @@ export async function scoreLeadFromConversation(
     required: ["fitScore", "intentScore", "overallScore", "reasoning"],
   } as const;
 
-  function isRetryableLeadScoringError(error: unknown): boolean {
-    if (!(error instanceof Error)) return false;
+  const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_LEAD_SCORING_TIMEOUT_MS || "20000", 10) || 20_000);
+  const attempts = Array.from({ length: Math.max(1, maxRetries) }, (_, attemptIndex) =>
+    Math.min(baseBudget.maxOutputTokens + attemptIndex * 250, 1500)
+  );
 
-    // OpenAI SDK errors typically expose `status` for HTTP errors.
-    const status = (error as unknown as { status?: unknown }).status;
-    if (typeof status === "number") {
-      // Retry typical transient statuses.
-      if ([429, 500, 502, 503, 504].includes(status)) return true;
+  const result = await runStructuredJsonPrompt<LeadScore>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    featureId: "lead_scoring.score",
+    promptKey: "lead_scoring.score.v1",
+    model,
+    reasoningEffort: "low",
+    systemFallback: LEAD_SCORING_SYSTEM_PROMPT,
+    input: [{ role: "user", content: userPrompt }] as const,
+    schemaName: "lead_score",
+    strict: true,
+    schema,
+    attempts,
+    budget: {
+      min: 400,
+      max: 1000,
+    },
+    timeoutMs: timeoutMs + Math.max(0, maxRetries - 1) * 5_000,
+    maxRetries: 0,
+    validate: (value) => {
+      const anyValue = value as any;
+      if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not an object" };
+      const fitScore = anyValue.fitScore;
+      const intentScore = anyValue.intentScore;
+      const overallScore = anyValue.overallScore;
+      const reasoning = anyValue.reasoning;
+      if (typeof fitScore !== "number" || typeof intentScore !== "number" || typeof overallScore !== "number") {
+        return { success: false, error: "scores must be numbers" };
+      }
+      if (typeof reasoning !== "string") {
+        return { success: false, error: "reasoning must be string" };
+      }
+      return { success: true, data: { fitScore, intentScore, overallScore, reasoning } };
+    },
+  });
+
+  if (!result.success) {
+    const parseLike = result.error.category === "parse_error" || result.error.category === "schema_violation" || result.error.category === "incomplete_output";
+    if (parseLike) {
+      return null;
     }
 
-    const anyErr = error as unknown as { code?: unknown; cause?: unknown };
-    const code = typeof anyErr.code === "string" ? anyErr.code : null;
-    const causeCode =
-      anyErr.cause && typeof anyErr.cause === "object" && "code" in anyErr.cause
-        ? (anyErr.cause as { code?: unknown }).code
-        : null;
-    if (code === "UND_ERR_BODY_TIMEOUT" || code === "UND_ERR_HEADERS_TIMEOUT") return true;
-    if (causeCode === "UND_ERR_BODY_TIMEOUT" || causeCode === "UND_ERR_HEADERS_TIMEOUT") return true;
-
-    if (error instanceof SyntaxError) return true; // Often caused by truncated/incomplete JSON output.
-
-    const message = error.message.toLowerCase();
-    return (
-      message.includes("429") ||
-      message.includes("rate") ||
-      message.includes("timeout") ||
-      message.includes("timed out") ||
-      message.includes("connection error") ||
-      message.includes("socket hang up") ||
-      message.includes("econnreset") ||
-      message.includes("etimedout") ||
-      message.includes("eai_again") ||
-      message.includes("enotfound") ||
-      message.includes("503") ||
-      message.includes("502") ||
-      message.includes("504") ||
-      message.includes("500")
-    );
+    const err = new Error(result.error.message);
+    (err as unknown as { retryable?: boolean }).retryable = Boolean(result.error.retryable);
+    throw err;
   }
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const timeoutMs = Math.max(
-        5_000,
-        Number.parseInt(process.env.OPENAI_LEAD_SCORING_TIMEOUT_MS || "20000", 10) || 20_000
-      );
-      const attemptTimeoutMs = timeoutMs + (attempt - 1) * 5_000;
-
-      const { response } = await runResponseWithInteraction({
-        clientId: opts.clientId,
-        leadId: opts.leadId,
-        featureId: "lead_scoring.score",
-        promptKey: `lead_scoring.score.v1${attempt === 1 ? "" : `.retry${attempt}`}`,
-        params: {
-          model,
-          instructions: LEAD_SCORING_SYSTEM_PROMPT,
-          input: [{ role: "user", content: userPrompt }] as const,
-          reasoning: { effort: "low" },
-          max_output_tokens: Math.min(baseBudget.maxOutputTokens + (attempt - 1) * 250, 1500),
-          text: {
-            verbosity: "low",
-            format: {
-              type: "json_schema",
-              name: "lead_score",
-              strict: true,
-              schema,
-            },
-          },
-        },
-        requestOptions: {
-          timeout: attemptTimeoutMs,
-          maxRetries: 0,
-        },
-      });
-
-      const raw = getTrimmedOutputText(response) || "";
-      if (!raw) {
-        if (attempt < maxRetries) continue;
-        return null;
-      }
-
-      const extracted = extractFirstCompleteJsonObjectFromText(raw);
-
-      // If JSON is incomplete (truncated), retry with more tokens
-      if (extracted.status === "incomplete") {
-        console.warn(
-          `[Lead Scoring] Lead ${opts.leadId} got incomplete JSON (attempt ${attempt}/${maxRetries}), retrying with more tokens`
-        );
-        if (attempt < maxRetries) continue;
-        return null;
-      }
-
-      if (extracted.status === "none" || !extracted.json) {
-        if (attempt < maxRetries) continue;
-        return null;
-      }
-
-      const parsed = JSON.parse(extracted.json) as {
-        fitScore?: number;
-        intentScore?: number;
-        overallScore?: number;
-        reasoning?: string;
-      };
-
-      // Validate scores are in range
-      const fitScore = parsed.fitScore;
-      const intentScore = parsed.intentScore;
-      const overallScore = parsed.overallScore;
-      const reasoning = parsed.reasoning;
-
-      if (
-        typeof fitScore !== "number" ||
-        typeof intentScore !== "number" ||
-        typeof overallScore !== "number" ||
-        typeof reasoning !== "string"
-      ) {
-        if (attempt < maxRetries) continue;
-        return null;
-      }
-
-      // Clamp scores to valid range (1-4) just in case
-      const clamp = (n: number) => Math.max(1, Math.min(4, Math.round(n)));
-
-      return {
-        fitScore: clamp(fitScore),
-        intentScore: clamp(intentScore),
-        overallScore: clamp(overallScore),
-        reasoning: reasoning.slice(0, 500), // Cap reasoning length
-      };
-    } catch (error) {
-      const isRetryable = isRetryableLeadScoringError(error);
-      const isParseError = error instanceof SyntaxError;
-
-      if (isRetryable && attempt < maxRetries) {
-        console.warn(
-          `[Lead Scoring] Lead ${opts.leadId} retryable error (attempt ${attempt}/${maxRetries}): ${error instanceof Error ? error.message : error}`
-        );
-        await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
-        continue;
-      }
-
-      // Parsing/truncation issues should not trigger BackgroundJob retries; treat as "no score".
-      if (isParseError) {
-        console.warn(`[Lead Scoring] Lead ${opts.leadId} failed to parse score JSON after ${maxRetries} attempts`);
-        return null;
-      }
-
-      const err = error instanceof Error ? error : new Error(String(error));
-      (err as unknown as { retryable?: boolean }).retryable = isRetryable;
-      throw err;
-    }
-  }
-
-  return null;
+  const clamp = (n: number) => Math.max(1, Math.min(4, Math.round(n)));
+  return {
+    fitScore: clamp(result.data.fitScore),
+    intentScore: clamp(result.data.intentScore),
+    overallScore: clamp(result.data.overallScore),
+    reasoning: String(result.data.reasoning || "").slice(0, 500),
+  };
 }
 
 // ============================================================================

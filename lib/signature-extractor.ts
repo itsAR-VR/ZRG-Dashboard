@@ -5,10 +5,8 @@
  */
 
 import "@/lib/server-dns";
-import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
-import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
-import { extractFirstCompleteJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
-import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
+import { runStructuredJsonPrompt, runTextPrompt } from "@/lib/ai/prompt-runner";
+import { extractFirstCompleteJsonObjectFromText } from "@/lib/ai/response-utils";
 import { normalizeLinkedInUrl } from "./linkedin-utils";
 import { toStoredPhone } from "./phone-utils";
 
@@ -47,197 +45,133 @@ export async function extractContactFromSignature(
     return defaultResult;
   }
 
-  // Use override-aware prompt lookup (Phase 47i)
-  const overrideResult = await getPromptWithOverrides("signature.extract.v1", meta.clientId);
-  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("signature.extract.v1");
-  const overrideVersion = overrideResult?.overrideVersion ?? null;
-  const instructionsTemplate =
-    promptTemplate?.messages.find((m) => m.role === "system")?.content ||
-    "Extract contact info from the signature and return JSON.";
-  const instructions = instructionsTemplate
-    .replaceAll("{leadName}", leadName)
-    .replaceAll("{leadEmail}", leadEmail);
-  const instructionsForModel =
-    instructions +
-    "\n\nReturn ONLY valid JSON (no markdown fences, no extra text). Keep it short.";
+  const systemFallback = "Extract contact info from the signature and return JSON.";
 
   try {
-    // GPT-5-nano for signature extraction using Responses API
-    // Use low reasoning effort to ensure we get a textual JSON output within the token budget.
     const signatureInput = `Email from: ${leadEmail}
 Expected lead name: ${leadName}
 
 Email body:
 ${emailBody.slice(0, 5000)}`;
 
-    const budget = await computeAdaptiveMaxOutputTokens({
+    const structured = await runStructuredJsonPrompt<{
+      isFromLead: boolean;
+      phone: string | null;
+      linkedinUrl: string | null;
+      confidence: "high" | "medium" | "low";
+      reasoning?: string;
+    }>({
+      pattern: "structured_json",
+      clientId: meta.clientId,
+      leadId: meta.leadId,
+      featureId: "signature.extract",
+      promptKey: "signature.extract.v1",
       model: "gpt-5-nano",
-      instructions: instructionsForModel,
+      reasoningEffort: "minimal",
+      systemFallback,
+      templateVars: { leadName, leadEmail },
       input: signatureInput,
-      min: 500,
-      max: 1200,
-      overheadTokens: 256,
-      outputScale: 0.2,
-      preferApiCount: true,
+      schemaName: "signature_extraction",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          isFromLead: { type: "boolean" },
+          phone: { type: ["string", "null"] },
+          linkedinUrl: { type: ["string", "null"] },
+          confidence: { type: "string", enum: ["high", "medium", "low"] },
+          reasoning: { type: ["string", "null"] },
+        },
+        required: ["isFromLead", "phone", "linkedinUrl", "confidence"],
+      },
+      budget: {
+        min: 500,
+        max: 1200,
+        retryMax: 2400,
+        retryMinBaseTokens: 700,
+        retryExtraTokens: 600,
+        overheadTokens: 256,
+        outputScale: 0.2,
+        preferApiCount: true,
+      },
+      validate: (value) => {
+        const anyValue = value as any;
+        if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not an object" };
+        if (typeof anyValue.isFromLead !== "boolean") return { success: false, error: "isFromLead must be boolean" };
+        if (!(typeof anyValue.phone === "string" || anyValue.phone === null)) return { success: false, error: "phone must be string|null" };
+        if (!(typeof anyValue.linkedinUrl === "string" || anyValue.linkedinUrl === null)) return { success: false, error: "linkedinUrl must be string|null" };
+        if (!["high", "medium", "low"].includes(anyValue.confidence)) return { success: false, error: "confidence invalid" };
+        return {
+          success: true,
+          data: {
+            isFromLead: anyValue.isFromLead,
+            phone: anyValue.phone,
+            linkedinUrl: anyValue.linkedinUrl,
+            confidence: anyValue.confidence,
+            ...(typeof anyValue.reasoning === "string" ? { reasoning: anyValue.reasoning } : {}),
+          },
+        };
+      },
     });
 
-    // `max_output_tokens` includes reasoning tokens; retry with extra headroom to avoid
-    // truncated/incomplete JSON bodies.
-    const attempts = [
-      budget.maxOutputTokens,
-      Math.min(Math.max(budget.maxOutputTokens, 700) + 600, 2400),
-    ];
+    let parsed = structured.success ? structured.data : null;
 
-    let lastInteractionId: string | null = null;
-    let lastErrorMessage: string | null = null;
+    if (!parsed && !structured.success) {
+      const msg = structured.error.message.toLowerCase();
+      const looksLikeSchemaUnsupported =
+        msg.includes("json_schema") ||
+        msg.includes("response_format") ||
+        msg.includes("structured") ||
+        msg.includes("text.format") ||
+        msg.includes("invalid schema");
 
-    for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
-      let response: Awaited<ReturnType<typeof runResponseWithInteraction>>["response"];
-      let interactionId: string | null = null;
-
-      try {
-        const result = await runResponseWithInteraction({
-          clientId: meta.clientId,
-          leadId: meta.leadId,
-          featureId: promptTemplate?.featureId || "signature.extract",
-          promptKey:
-            (promptTemplate?.key || "signature.extract.v1") + (overrideVersion ? `.${overrideVersion}` : "") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
-          params: {
-            model: "gpt-5-nano",
-            instructions: instructionsForModel,
-            text: {
-              verbosity: "low",
-              format: {
-                type: "json_schema",
-                name: "signature_extraction",
-                strict: true,
-                schema: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    isFromLead: { type: "boolean" },
-                    phone: { type: ["string", "null"] },
-                    linkedinUrl: { type: ["string", "null"] },
-                    confidence: { type: "string", enum: ["high", "medium", "low"] },
-                  },
-                  required: ["isFromLead", "phone", "linkedinUrl", "confidence"],
-                },
-              },
-            },
-            input: signatureInput,
-            reasoning: { effort: "minimal" },
-            max_output_tokens: attempts[attemptIndex],
-          },
-        });
-        response = result.response;
-        interactionId = result.interactionId;
-      } catch (error) {
-        // Fallback: if Structured Outputs are unsupported/rejected, retry without json_schema.
-        const msg = error instanceof Error ? error.message : String(error);
-        const lower = msg.toLowerCase();
-        const looksLikeSchemaUnsupported =
-          lower.includes("json_schema") ||
-          lower.includes("response_format") ||
-          lower.includes("structured") ||
-          lower.includes("text.format") ||
-          lower.includes("invalid schema");
-
-        if (!looksLikeSchemaUnsupported) {
-          throw error;
-        }
-
+      if (looksLikeSchemaUnsupported) {
         console.warn("[SignatureExtractor] Structured output rejected, retrying without json_schema");
-
-        const fallback = await runResponseWithInteraction({
+        const fallback = await runTextPrompt({
+          pattern: "text",
           clientId: meta.clientId,
           leadId: meta.leadId,
-          featureId: promptTemplate?.featureId || "signature.extract",
-          promptKey: `${promptTemplate?.key || "signature.extract.v1"}.fallback`,
-          params: {
-            model: "gpt-5-nano",
-            instructions: instructionsForModel,
-            text: { verbosity: "low" },
-            input: signatureInput,
-            reasoning: { effort: "minimal" },
-            max_output_tokens: attempts[attemptIndex],
-          },
+          featureId: "signature.extract",
+          promptKey: "signature.extract.v1",
+          model: "gpt-5-nano",
+          reasoningEffort: "minimal",
+          systemFallback,
+          templateVars: { leadName, leadEmail },
+          input: signatureInput,
+          maxOutputTokens: 2400,
         });
 
-        response = fallback.response;
-        interactionId = fallback.interactionId;
-      }
-
-      lastInteractionId = interactionId;
-
-      const content = getTrimmedOutputText(response);
-      if (!content) {
-        const details = summarizeResponseForTelemetry(response);
-        lastErrorMessage = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
-        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < attempts.length - 1) {
-          continue;
+        if (fallback.success) {
+          const extracted = extractFirstCompleteJsonObjectFromText(fallback.data);
+          if (extracted.status === "complete") {
+            try {
+              parsed = JSON.parse(extracted.json) as typeof parsed;
+            } catch {
+              parsed = null;
+            }
+          }
         }
-        break;
       }
-
-      let parsed: {
-        isFromLead: boolean;
-        phone: string | null;
-        linkedinUrl: string | null;
-        confidence: "high" | "medium" | "low";
-        reasoning?: string;
-      };
-
-      try {
-        const extracted = extractFirstCompleteJsonObjectFromText(content);
-        if (extracted.status === "none") {
-          throw new Error("no_json_object_found");
-        }
-        if (extracted.status === "incomplete") {
-          throw new Error("incomplete_json_object");
-        }
-        parsed = JSON.parse(extracted.json);
-      } catch (parseError) {
-        const details = summarizeResponseForTelemetry(response);
-        const message = parseError instanceof Error ? parseError.message : "unknown";
-        lastErrorMessage = `Post-process error: failed to parse JSON (${message})${details ? ` (${details})` : ""}`;
-
-        const shouldRetry =
-          attemptIndex < attempts.length - 1 &&
-          (message === "incomplete_json_object" || response.incomplete_details?.reason === "max_output_tokens");
-
-        if (shouldRetry) {
-          continue;
-        }
-        break;
-      }
-
-      if (typeof parsed?.isFromLead !== "boolean" || !["high", "medium", "low"].includes(parsed?.confidence)) {
-        lastErrorMessage = "Post-process error: invalid JSON shape for signature extraction";
-        break;
-      }
-
-      const result: SignatureExtractionResult = {
-        isFromLead: parsed.isFromLead ? "yes" : "no",
-        phone: parsed.phone ? toStoredPhone(parsed.phone) : null,
-        linkedinUrl: parsed.linkedinUrl ? normalizeLinkedInUrl(parsed.linkedinUrl) : null,
-        confidence: parsed.confidence,
-        reasoning: parsed.reasoning,
-      };
-
-      console.log(
-        `[SignatureExtractor] Result: isFromLead=${result.isFromLead}, confidence=${result.confidence}, hasPhone=${Boolean(
-          result.phone
-        )}, hasLinkedIn=${Boolean(result.linkedinUrl)}`
-      );
-
-      return result;
     }
 
-    if (lastInteractionId && lastErrorMessage) {
-      await markAiInteractionError(lastInteractionId, lastErrorMessage);
+    if (!parsed || typeof parsed.isFromLead !== "boolean" || !["high", "medium", "low"].includes(parsed.confidence)) {
+      return defaultResult;
     }
 
-    return defaultResult;
+    const result: SignatureExtractionResult = {
+      isFromLead: parsed.isFromLead ? "yes" : "no",
+      phone: parsed.phone ? toStoredPhone(parsed.phone) : null,
+      linkedinUrl: parsed.linkedinUrl ? normalizeLinkedInUrl(parsed.linkedinUrl) : null,
+      confidence: parsed.confidence,
+      reasoning: parsed.reasoning,
+    };
+
+    console.log(
+      `[SignatureExtractor] Result: isFromLead=${result.isFromLead}, confidence=${result.confidence}, hasPhone=${Boolean(result.phone)}, hasLinkedIn=${Boolean(result.linkedinUrl)}`
+    );
+
+    return result;
   } catch (error) {
     console.error("[SignatureExtractor] AI extraction failed:", error);
     return defaultResult;

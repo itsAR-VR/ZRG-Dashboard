@@ -11,6 +11,8 @@ const SCHEDULING_LINK_PLACEHOLDER_REGEX = /\[(?:calendly|calendar|booking|schedu
 // Avoid capturing trailing punctuation (common in sentences like "... here: <url>.").
 const SCHEDULING_LINK_URL_REGEX =
   /\bhttps?:\/\/(?:www\.)?(?:calendly\.com|cal\.com)\/[^\s)<>\]]*[^\s)<>\].,!?]/gi;
+const GHL_WIDGET_BOOKING_URL_REGEX =
+  /\bhttps?:\/\/[^\s)<>\]]*\/widget\/booking(?:s)?\/[^\s)<>\]]*[^\s)<>\].,!?]/gi;
 
 export function enforceCanonicalBookingLink(draft: string, canonicalBookingLink: string | null): string {
   const trimmedCanonical = (canonicalBookingLink || "").trim();
@@ -24,6 +26,10 @@ export function enforceCanonicalBookingLink(draft: string, canonicalBookingLink:
 
   if (SCHEDULING_LINK_URL_REGEX.test(result)) {
     result = result.replace(SCHEDULING_LINK_URL_REGEX, hasCanonical ? trimmedCanonical : "");
+  }
+
+  if (GHL_WIDGET_BOOKING_URL_REGEX.test(result)) {
+    result = result.replace(GHL_WIDGET_BOOKING_URL_REGEX, hasCanonical ? trimmedCanonical : "");
   }
 
   return result;

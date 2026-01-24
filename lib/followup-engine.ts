@@ -1,8 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequence-actions";
-import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
-import { runResponse } from "@/lib/ai/openai-telemetry";
-import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
+import { runStructuredJsonPrompt, runTextPrompt } from "@/lib/ai/prompt-runner";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
 import { updateUnipileConnectionHealth } from "@/lib/workspace-integration-health";
 import { sendSmsSystem } from "@/lib/system-sender";
@@ -644,10 +642,12 @@ export async function executeFollowUpStep(
           phone: true,
           linkedinUrl: true,
           linkedinId: true,
+          linkedinUnreachableAt: true,
+          linkedinUnreachableReason: true,
           enrichmentStatus: true,
           enrichmentLastRetry: true,
           updatedAt: true,
-          client: { select: { unipileAccountId: true } },
+          client: { select: { unipileAccountId: true, unipileConnectionStatus: true } },
         },
       });
 
@@ -711,6 +711,40 @@ export async function executeFollowUpStep(
         };
       }
 
+      const shouldHealthGateUnipile = process.env.UNIPILE_HEALTH_GATE === "1";
+
+      if (shouldHealthGateUnipile && currentLead.linkedinUnreachableAt) {
+        await prisma.followUpInstance.update({
+          where: { id: instanceId },
+          data: {
+            status: "paused",
+            pausedReason: "linkedin_unreachable",
+          },
+        });
+
+        return {
+          success: true,
+          action: "skipped",
+          message: `Sequence paused - LinkedIn recipient cannot be reached (${currentLead.linkedinUnreachableReason || "unknown"})`,
+        };
+      }
+
+      if (shouldHealthGateUnipile && currentLead.client?.unipileConnectionStatus === "DISCONNECTED") {
+        await prisma.followUpInstance.update({
+          where: { id: instanceId },
+          data: {
+            status: "paused",
+            pausedReason: "unipile_disconnected",
+          },
+        });
+
+        return {
+          success: true,
+          action: "skipped",
+          message: "Sequence paused - LinkedIn integration disconnected. Reconnect Unipile to resume.",
+        };
+      }
+
       const accountId = currentLead.client?.unipileAccountId;
       if (!accountId) {
         return {
@@ -757,6 +791,50 @@ export async function executeFollowUpStep(
               isDisconnected: true,
               errorDetail: dmResult.error,
             }).catch((err) => console.error("[FollowUp] Failed to update Unipile health:", err));
+
+            if (shouldHealthGateUnipile) {
+              await prisma.followUpInstance.update({
+                where: { id: instanceId },
+                data: {
+                  status: "paused",
+                  pausedReason: "unipile_disconnected",
+                },
+              });
+
+              return {
+                success: true,
+                action: "skipped",
+                message: "Sequence paused - LinkedIn integration disconnected. Reconnect Unipile to resume.",
+              };
+            }
+          }
+
+          if (dmResult.isUnreachableRecipient) {
+            await prisma.lead
+              .update({
+                where: { id: lead.id },
+                data: {
+                  linkedinUnreachableAt: new Date(),
+                  linkedinUnreachableReason: dmResult.error || "Recipient cannot be reached",
+                },
+              })
+              .catch(() => undefined);
+
+            if (shouldHealthGateUnipile) {
+              await prisma.followUpInstance.update({
+                where: { id: instanceId },
+                data: {
+                  status: "paused",
+                  pausedReason: "linkedin_unreachable",
+                },
+              });
+
+              return {
+                success: true,
+                action: "skipped",
+                message: "Sequence paused - LinkedIn recipient cannot be reached. Manual intervention required.",
+              };
+            }
           }
           return { success: false, action: "error", error: dmResult.error || "Failed to send LinkedIn DM" };
         }
@@ -778,7 +856,7 @@ export async function executeFollowUpStep(
             sentAt,
           },
         });
-        await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt });
+        await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", source: "zrg", sentAt });
 
         if (offeredSlots.length > 0) {
           await prisma.lead.update({
@@ -827,6 +905,50 @@ export async function executeFollowUpStep(
             isDisconnected: true,
             errorDetail: inviteResult.error,
           }).catch((err) => console.error("[FollowUp] Failed to update Unipile health:", err));
+
+          if (shouldHealthGateUnipile) {
+            await prisma.followUpInstance.update({
+              where: { id: instanceId },
+              data: {
+                status: "paused",
+                pausedReason: "unipile_disconnected",
+              },
+            });
+
+            return {
+              success: true,
+              action: "skipped",
+              message: "Sequence paused - LinkedIn integration disconnected. Reconnect Unipile to resume.",
+            };
+          }
+        }
+
+        if (inviteResult.isUnreachableRecipient) {
+          await prisma.lead
+            .update({
+              where: { id: lead.id },
+              data: {
+                linkedinUnreachableAt: new Date(),
+                linkedinUnreachableReason: inviteResult.error || "Recipient cannot be reached",
+              },
+            })
+            .catch(() => undefined);
+
+          if (shouldHealthGateUnipile) {
+            await prisma.followUpInstance.update({
+              where: { id: instanceId },
+              data: {
+                status: "paused",
+                pausedReason: "linkedin_unreachable",
+              },
+            });
+
+            return {
+              success: true,
+              action: "skipped",
+              message: "Sequence paused - LinkedIn recipient cannot be reached. Manual intervention required.",
+            };
+          }
         }
         return {
           success: false,
@@ -852,7 +974,7 @@ export async function executeFollowUpStep(
           sentAt,
         },
       });
-      await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt });
+      await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", source: "zrg", sentAt });
 
       if (offeredSlots.length > 0) {
         await prisma.lead.update({
@@ -1783,43 +1905,29 @@ export async function parseAcceptedTimeFromMessage(
       .map((slot, i) => `${i + 1}. ${slot.label} (${slot.datetime})`)
       .join("\n");
 
-    // Use override-aware prompt lookup (Phase 47i)
-    const overrideResult = await getPromptWithOverrides("followup.parse_accepted_time.v1", meta.clientId);
-    const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("followup.parse_accepted_time.v1");
-    const overrideVersion = overrideResult?.overrideVersion ?? null;
-    const systemTemplate =
-      promptTemplate?.messages.find((m) => m.role === "system")?.content ||
-      "Match the message to one of the provided slots; reply with a slot number or NONE.";
-    const systemPrompt = systemTemplate.replaceAll("{slotContext}", slotContext);
-
     const model = "gpt-5-mini";
-    const budget = await computeAdaptiveMaxOutputTokens({
-      model,
-      instructions: systemPrompt,
-      input: message,
-      min: 96,
-      max: 400,
-      overheadTokens: 128,
-      outputScale: 0.1,
-      preferApiCount: true,
-    });
-
-    // GPT-5-mini with minimal reasoning effort for time parsing using Responses API
-    const response = await runResponse({
+    const result = await runTextPrompt({
+      pattern: "text",
       clientId: meta.clientId,
       leadId: meta.leadId,
-      featureId: promptTemplate?.featureId || "followup.parse_accepted_time",
-      promptKey: (promptTemplate?.key || "followup.parse_accepted_time.v1") + (overrideVersion ? `.${overrideVersion}` : ""),
-      params: {
-        model,
-        instructions: systemPrompt,
-        input: message,
-        reasoning: { effort: "low" },
-        max_output_tokens: budget.maxOutputTokens,
+      promptKey: "followup.parse_accepted_time.v1",
+      model,
+      reasoningEffort: "low",
+      systemFallback: "Match the message to one of the provided slots; reply with a slot number or NONE.\n\n{slotContext}",
+      templateVars: { slotContext },
+      input: message,
+      budget: {
+        min: 96,
+        max: 400,
+        overheadTokens: 128,
+        outputScale: 0.1,
+        preferApiCount: true,
       },
     });
 
-    const aiResponse = response.output_text?.trim();
+    if (!result.success) return null;
+
+    const aiResponse = result.data.trim();
 
     if (!aiResponse || aiResponse === "NONE") {
       return null;
@@ -1837,6 +1945,117 @@ export async function parseAcceptedTimeFromMessage(
   }
 }
 
+type ProposedTimesParseResult = {
+  proposedStartTimesUtc: string[];
+  confidence: number;
+  needsTimezoneClarification: boolean;
+};
+
+function normalizeUtcIsoOrNull(value: string): string | null {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+export async function parseProposedTimesFromMessage(
+  message: string,
+  meta: {
+    clientId: string;
+    leadId?: string | null;
+    nowUtcIso: string;
+    leadTimezone: string | null;
+  }
+): Promise<ProposedTimesParseResult | null> {
+  const messageTrimmed = (message || "").trim();
+  if (!messageTrimmed) return null;
+
+  const nowUtcIso = normalizeUtcIsoOrNull(meta.nowUtcIso) || new Date().toISOString();
+  const leadTimezone = (meta.leadTimezone || "").trim();
+  const tzForPrompt = leadTimezone || "UNKNOWN";
+
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      proposed_start_times_utc: { type: "array", items: { type: "string" } },
+      confidence: { type: "number" },
+      needs_timezone_clarification: { type: "boolean" },
+    },
+    required: ["proposed_start_times_utc", "confidence", "needs_timezone_clarification"],
+  } as const;
+
+  const validate = (value: unknown): { success: true; data: ProposedTimesParseResult } | { success: false; error: string } => {
+    if (!value || typeof value !== "object") return { success: false, error: "not_an_object" };
+    const record = value as Record<string, unknown>;
+
+    const proposedRaw = record.proposed_start_times_utc;
+    const confidenceRaw = record.confidence;
+    const needsTzRaw = record.needs_timezone_clarification;
+
+    if (!Array.isArray(proposedRaw)) return { success: false, error: "proposed_start_times_utc_not_array" };
+    if (typeof confidenceRaw !== "number" || !Number.isFinite(confidenceRaw)) {
+      return { success: false, error: "confidence_not_number" };
+    }
+    if (typeof needsTzRaw !== "boolean") return { success: false, error: "needs_timezone_clarification_not_boolean" };
+
+    const normalized = proposedRaw
+      .map((t) => (typeof t === "string" ? normalizeUtcIsoOrNull(t) : null))
+      .filter((t): t is string => !!t);
+    const deduped = Array.from(new Set(normalized)).sort().slice(0, 3);
+
+    const confidence = Math.max(0, Math.min(1, confidenceRaw));
+
+    return {
+      success: true,
+      data: {
+        proposedStartTimesUtc: deduped,
+        confidence,
+        needsTimezoneClarification: needsTzRaw,
+      },
+    };
+  };
+
+  const model = "gpt-5-mini";
+  const result = await runStructuredJsonPrompt<ProposedTimesParseResult>({
+    pattern: "structured_json",
+    clientId: meta.clientId,
+    leadId: meta.leadId,
+    promptKey: "followup.parse_proposed_times.v1",
+    featureId: "followup.parse_proposed_times",
+    model,
+    reasoningEffort: "low",
+    systemFallback: `You extract proposed meeting start times from a message and output UTC ISO datetimes.
+
+Context:
+- now_utc: {{nowUtcIso}}
+- lead_timezone: {{leadTimezone}} (IANA timezone or UNKNOWN)
+
+Rules:
+- Only output proposed_start_times_utc when the message clearly proposes a specific date + time to meet.
+- Use lead_timezone to interpret dates/times. If lead_timezone is UNKNOWN and the message does not include an explicit timezone, set needs_timezone_clarification=true and output an empty list.
+- If times are vague (e.g., "tomorrow morning", "next week", "sometime Tuesday"), output an empty list and set confidence <= 0.5.
+- Output at most 3 start times, sorted ascending, deduped.
+
+Output JSON.`,
+    templateVars: { nowUtcIso, leadTimezone: tzForPrompt },
+    input: messageTrimmed,
+    schemaName: "proposed_times",
+    schema,
+    budget: {
+      min: 256,
+      max: 800,
+      retryMax: 1400,
+      overheadTokens: 192,
+      outputScale: 0.15,
+      preferApiCount: true,
+    },
+    validate,
+  });
+
+  if (!result.success) return null;
+  return result.data;
+}
+
 /**
  * Detect "meeting accepted" intent from a message
  * Returns true if the message indicates acceptance of a meeting time
@@ -1851,43 +2070,28 @@ export async function detectMeetingAcceptedIntent(
     // Validate OpenAI API key is configured
     if (!process.env.OPENAI_API_KEY) return false;
 
-    // Use override-aware prompt lookup (Phase 47i)
-    const overrideResult = await getPromptWithOverrides("followup.detect_meeting_accept_intent.v1", meta.clientId);
-    const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("followup.detect_meeting_accept_intent.v1");
-    const overrideVersion = overrideResult?.overrideVersion ?? null;
-    const systemPrompt =
-      promptTemplate?.messages.find((m) => m.role === "system")?.content ||
-      "Determine if the message indicates acceptance. Reply YES or NO.";
-
     const model = "gpt-5-mini";
-    const budget = await computeAdaptiveMaxOutputTokens({
-      model,
-      instructions: systemPrompt,
-      input: message,
-      min: 64,
-      max: 256,
-      overheadTokens: 96,
-      outputScale: 0.1,
-      preferApiCount: true,
-    });
-
-    // GPT-5-mini with minimal reasoning effort for intent detection using Responses API
-    const response = await runResponse({
+    const result = await runTextPrompt({
+      pattern: "text",
       clientId: meta.clientId,
       leadId: meta.leadId,
-      featureId: promptTemplate?.featureId || "followup.detect_meeting_accept_intent",
-      promptKey: (promptTemplate?.key || "followup.detect_meeting_accept_intent.v1") + (overrideVersion ? `.${overrideVersion}` : ""),
-      params: {
-        model,
-        instructions: systemPrompt,
-        input: message,
-        reasoning: { effort: "low" },
-        max_output_tokens: budget.maxOutputTokens,
+      promptKey: "followup.detect_meeting_accept_intent.v1",
+      model,
+      reasoningEffort: "low",
+      systemFallback: "Determine if the message indicates acceptance. Reply YES or NO.",
+      input: message,
+      budget: {
+        min: 64,
+        max: 256,
+        overheadTokens: 96,
+        outputScale: 0.1,
+        preferApiCount: true,
       },
     });
 
-    const result = response.output_text?.trim()?.toUpperCase();
-    return result === "YES";
+    if (!result.success) return false;
+
+    return result.data.trim().toUpperCase() === "YES";
   } catch {
     return false;
   }
@@ -1899,7 +2103,8 @@ export async function detectMeetingAcceptedIntent(
  */
 export async function processMessageForAutoBooking(
   leadId: string,
-  messageBody: string
+  messageBody: string,
+  meta?: { channel?: "sms" | "email" | "linkedin" }
 ): Promise<{
   booked: boolean;
   appointmentId?: string;
@@ -1949,7 +2154,24 @@ export async function processMessageForAutoBooking(
         select: { id: true, phone: true, email: true, linkedinUrl: true, sentimentTag: true },
       });
 
-      const type = lead?.phone ? "sms" : lead?.email ? "email" : lead?.linkedinUrl ? "linkedin" : "call";
+      const preferred = meta?.channel;
+      const preferredSendable =
+        preferred === "sms"
+          ? Boolean(lead?.phone)
+          : preferred === "email"
+            ? Boolean(lead?.email)
+            : preferred === "linkedin"
+              ? Boolean(lead?.linkedinUrl)
+              : false;
+      const type = preferredSendable
+        ? preferred!
+        : lead?.phone
+          ? "sms"
+          : lead?.email
+            ? "email"
+            : lead?.linkedinUrl
+              ? "linkedin"
+              : "call";
       const options = offeredSlots.slice(0, 2);
       const suggestion =
         options.length === 2

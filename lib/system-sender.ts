@@ -212,7 +212,7 @@ export async function sendSmsSystem(
       throw error;
     }
 
-    await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt: ghlDateAdded });
+    await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", source: "zrg", sentAt: ghlDateAdded });
 
     await prisma.lead.update({
       where: { id: leadId },

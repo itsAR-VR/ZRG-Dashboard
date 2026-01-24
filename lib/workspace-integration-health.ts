@@ -71,16 +71,19 @@ export async function updateUnipileConnectionHealth(opts: UpdateUnipileHealthOpt
       console.log(`[Unipile Health] Skipping notification for ${clientId} - already notified within 24h`);
     }
   } else {
-    // Mark as connected (clear disconnected state)
-    await prisma.client.update({
-      where: { id: clientId },
+    // Mark as connected (clear disconnected state) only when we need to.
+    const updated = await prisma.client.updateMany({
+      where: { id: clientId, unipileConnectionStatus: { not: "CONNECTED" } },
       data: {
         unipileConnectionStatus: "CONNECTED",
         unipileDisconnectedAt: null,
         // Keep last error fields for debugging context
       },
     });
-    console.log(`[Unipile Health] Workspace ${clientId} reconnected`);
+
+    if (updated.count > 0) {
+      console.log(`[Unipile Health] Workspace ${clientId} reconnected`);
+    }
   }
 }
 

@@ -164,7 +164,18 @@ export async function syncSmsConversationHistorySystem(
           error: "Cannot sync SMS: Lead was created from email only (no GHL contact ID)",
         };
       }
-      return { success: false, error: "Lead has no GHL contact ID" };
+
+      // Common/expected for email-only leads. Treat as a no-op instead of a failure
+      // to avoid noisy warnings and pointless retries.
+      return {
+        success: true,
+        importedCount: 0,
+        healedCount: 0,
+        totalMessages: smsMessageCount,
+        skippedDuplicates: 0,
+        reclassifiedSentiment: false,
+        leadUpdated: false,
+      };
     }
 
     if (!isValidGhlContactId(lead.ghlContactId)) {

@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { isSupabaseAuthError, isSupabaseInvalidOrMissingSessionError } from "@/lib/supabase/error-utils";
+import { isAbortError, isSupabaseAuthError, isSupabaseInvalidOrMissingSessionError } from "@/lib/supabase/error-utils";
 
 function getDefaultSupabaseStorageKey(): string | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -116,6 +116,10 @@ export async function updateSession(request: NextRequest) {
     }
   } catch (error) {
     // refresh_token_not_found and similar session errors are expected when cookies are stale/missing.
+    // AbortError is expected when our middleware timeout triggers.
+    if (isAbortError(error)) {
+      return supabaseResponse;
+    }
     if (!isSupabaseInvalidOrMissingSessionError(error)) {
       console.warn(
         "[middleware] supabase.auth.getUser threw:",
@@ -142,7 +146,6 @@ export async function updateSession(request: NextRequest) {
 
   return supabaseResponse;
 }
-
 
 
 

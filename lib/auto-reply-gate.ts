@@ -1,8 +1,5 @@
 import "@/lib/server-dns";
-import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
-import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
-import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
+import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { isOptOutText } from "@/lib/sentiment";
 
 export type AutoReplyDecision = {
@@ -64,13 +61,7 @@ export async function decideShouldAutoReply(opts: {
     return { shouldReply: false, reason: "OPENAI_API_KEY not configured" };
   }
 
-  // Use override-aware prompt lookup (Phase 47i)
-  const overrideResult = await getPromptWithOverrides("auto_reply_gate.decide.v1", opts.clientId);
-  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("auto_reply_gate.decide.v1");
-  const overrideVersion = overrideResult?.overrideVersion ?? null;
-  const system =
-    promptTemplate?.messages.find((m) => m.role === "system")?.content ||
-    `You decide whether an inbound reply warrants sending a reply back.
+  const systemFallback = `You decide whether an inbound reply warrants sending a reply back.
 
 Output MUST be valid JSON:
 {
@@ -100,117 +91,74 @@ Output MUST be valid JSON:
     2
   );
 
-  try {
-    const model = "gpt-5-mini";
-    const input = [{ role: "user" as const, content: user }];
-    const baseBudget = await computeAdaptiveMaxOutputTokens({
-      model,
-      instructions: system,
-      input,
+  const timeoutMs = Math.max(
+    5_000,
+    Number.parseInt(process.env.OPENAI_AUTO_REPLY_TIMEOUT_MS || "25000", 10) || 25_000
+  );
+
+  const result = await runStructuredJsonPrompt<{ should_reply: boolean; reason: string; follow_up_time: string | null }>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    featureId: "auto_reply_gate.decide",
+    promptKey: "auto_reply_gate.decide.v1",
+    model: "gpt-5-mini",
+    reasoningEffort: "low",
+    systemFallback,
+    input: [{ role: "user" as const, content: user }],
+    schemaName: "auto_reply_gate",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        should_reply: { type: "boolean" },
+        reason: { type: "string" },
+        follow_up_time: { type: ["string", "null"] },
+      },
+      required: ["should_reply", "reason", "follow_up_time"],
+    },
+    budget: {
       min: 256,
       max: 900,
+      retryMax: 1600,
       overheadTokens: 256,
       outputScale: 0.2,
       preferApiCount: true,
-    });
-
-    const attempts = [
-      baseBudget.maxOutputTokens,
-      Math.min(Math.max(baseBudget.maxOutputTokens, 512) + 400, 1600),
-    ];
-
-    let lastInteractionId: string | null = null;
-    let lastErrorMessage: string | null = null;
-
-    for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
-      const timeoutMs = Math.max(
-        5_000,
-        Number.parseInt(process.env.OPENAI_AUTO_REPLY_TIMEOUT_MS || "25000", 10) || 25_000
-      );
-
-      const { response, interactionId } = await runResponseWithInteraction({
-        clientId: opts.clientId,
-        leadId: opts.leadId,
-        featureId: promptTemplate?.featureId || "auto_reply_gate.decide",
-        promptKey:
-          (promptTemplate?.key || "auto_reply_gate.decide.v1") + (overrideVersion ? `.${overrideVersion}` : "") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
-        params: {
-          model,
-          reasoning: { effort: "low" },
-          max_output_tokens: attempts[attemptIndex],
-          instructions: system,
-          text: {
-            verbosity: "low",
-            format: {
-              type: "json_schema",
-              name: "auto_reply_gate",
-              strict: true,
-              schema: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  should_reply: { type: "boolean" },
-                  reason: { type: "string" },
-                  follow_up_time: { type: ["string", "null"] },
-                },
-                required: ["should_reply", "reason", "follow_up_time"],
-              },
-            },
-          },
-          input,
-        },
-        requestOptions: {
-          timeout: timeoutMs,
-          // Retries are handled explicitly by this loop.
-          maxRetries: 0,
-        },
-      });
-
-      lastInteractionId = interactionId;
-
-      const text = getTrimmedOutputText(response);
-      if (!text) {
-        const details = summarizeResponseForTelemetry(response);
-        lastErrorMessage = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
-        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < attempts.length - 1) {
-          continue;
-        }
-        break;
+    },
+    timeoutMs,
+    maxRetries: 0,
+    validate: (value) => {
+      const anyValue = value as any;
+      if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not an object" };
+      if (typeof anyValue.should_reply !== "boolean") return { success: false, error: "should_reply must be boolean" };
+      if (typeof anyValue.reason !== "string") return { success: false, error: "reason must be string" };
+      const followUpTime = anyValue.follow_up_time;
+      if (!(typeof followUpTime === "string" || followUpTime === null)) {
+        return { success: false, error: "follow_up_time must be string|null" };
       }
-
-      let parsed: { should_reply: boolean; reason: string; follow_up_time?: string | null };
-      try {
-        parsed = JSON.parse(extractJsonObjectFromText(text)) as {
-          should_reply: boolean;
-          reason: string;
-          follow_up_time?: string | null;
-        };
-      } catch (parseError) {
-        const details = summarizeResponseForTelemetry(response);
-        lastErrorMessage = `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})${
-          details ? ` (${details})` : ""
-        }`;
-
-        if (attemptIndex < attempts.length - 1) {
-          continue;
-        }
-        break;
-      }
-
       return {
-        shouldReply: Boolean(parsed.should_reply),
-        reason: String(parsed.reason || "").slice(0, 240) || "No reason provided",
-        ...(parsed.follow_up_time ? { followUpTime: parsed.follow_up_time } : {}),
+        success: true,
+        data: {
+          should_reply: anyValue.should_reply,
+          reason: anyValue.reason,
+          follow_up_time: followUpTime,
+        },
       };
-    }
+    },
+  });
 
-    if (lastInteractionId && lastErrorMessage) {
-      await markAiInteractionError(lastInteractionId, lastErrorMessage);
+  if (!result.success) {
+    if (result.error.category === "timeout" || result.error.category === "rate_limit" || result.error.category === "api_error") {
+      console.error("[AutoReplyGate] Decision failed:", result.error.message);
+      return { shouldReply: false, reason: "Decision error" };
     }
-
     return { shouldReply: false, reason: "No decision returned" };
-  } catch (error) {
-    console.error("[AutoReplyGate] Decision failed:", error);
-    return { shouldReply: false, reason: "Decision error" };
   }
+
+  return {
+    shouldReply: Boolean(result.data.should_reply),
+    reason: String(result.data.reason || "").slice(0, 240) || "No reason provided",
+    ...(result.data.follow_up_time ? { followUpTime: result.data.follow_up_time } : {}),
+  };
 }

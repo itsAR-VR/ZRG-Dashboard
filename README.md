@@ -268,12 +268,18 @@ model Message {
 | `DIRECT_URL` | Direct DB connection (port 5432) used for Prisma CLI (`db push`, migrations) |
 | `SLACK_WEBHOOK_URL` | (Optional) Slack notifications for meetings booked |
 | `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |
+| `INBOXXIA_EMAIL_SENT_ASYNC` | (Optional) Enqueue Inboxxia `EMAIL_SENT` webhook events to the `WebhookEvent` queue for burst resilience (Phase 53) (default off) |
+| `WEBHOOK_EVENT_CRON_LIMIT` | (Optional) Max `WebhookEvent` rows processed per cron tick (default `25`, max `200`) |
+| `WEBHOOK_EVENT_CRON_TIME_BUDGET_MS` | (Optional) Time budget for `WebhookEvent` processing per cron tick (default `45000`) |
+| `WEBHOOK_EVENT_STALE_LOCK_MS` | (Optional) Stale lock TTL for `WebhookEvent` rows (default `600000`) |
 | `WORKSPACE_PROVISIONING_SECRET` | Secret for admin workspace provisioning endpoints (e.g. `/api/admin/workspaces`, `/api/admin/workspaces/bootstrap`) (generate with `openssl rand -hex 32`) |
 | `ADMIN_ACTIONS_SECRET` | (Optional) Shared secret for admin endpoints (fallback if provisioning secret is unset) |
 | `SUPABASE_MIDDLEWARE_TIMEOUT_MS` | (Optional) Abort timeout for Supabase auth refresh in middleware (default `8000`) |
 | `UNIPILE_DSN` | Unipile base DSN (e.g. `https://apiXX.unipile.com:PORT`) |
 | `UNIPILE_API_KEY` | Unipile API key |
+| `UNIPILE_HEALTH_GATE` | (Optional) Enable Unipile health gating (auto-pauses LinkedIn follow-ups on disconnected accounts / unreachable recipients) (Phase 53) (default off) |
 | `EMAIL_GUARD_API_KEY` | (Optional) EmailGuard API key for email validation before sending |
+| `LOG_SLOW_PATHS` | (Optional) Enable extra slow-path logging for draft verification / AI flows (default off) |
 | `GHL_DEFAULT_COUNTRY_CALLING_CODE` | (Optional) Default calling code for phone normalization (commonly `1`) |
 | `GHL_REQUESTS_PER_10S` | (Optional) Throttle cap for GHL API requests per 10s window (default `90`, documented burst is `100`) |
 | `GHL_MAX_429_RETRIES` | (Optional) Max retries when GHL returns `429` with `Retry-After` (default `3`) |

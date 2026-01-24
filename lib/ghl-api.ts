@@ -34,6 +34,24 @@ function isLikelyGhlContactId(value: string): boolean {
   return /^[A-Za-z0-9]{15,64}$/.test((value || "").trim());
 }
 
+function extractGhlUpsertContactId(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+
+  if (typeof record.contactId === "string") return record.contactId;
+
+  const contact = record.contact;
+  if (contact && typeof contact === "object") {
+    const contactRecord = contact as Record<string, unknown>;
+    if (typeof contactRecord.id === "string") return contactRecord.id;
+    if (typeof contactRecord.contactId === "string") return contactRecord.contactId;
+  }
+
+  if (typeof record.id === "string") return record.id;
+
+  return null;
+}
+
 function tryParseJson<T>(value: string): T | null {
   try {
     return JSON.parse(value) as T;
@@ -774,11 +792,30 @@ export async function upsertGHLContact(
   params: UpsertContactParams,
   privateKey: string
 ): Promise<GHLApiResponse<{ contactId: string }>> {
-  return ghlRequest<{ contactId: string }>("/contacts/upsert", privateKey, {
-    method: "POST",
-    body: JSON.stringify(params),
-    headers: { Version: GHL_CONTACTS_API_VERSION },
-  }, params.locationId);
+  const result = await ghlRequest<unknown>(
+    "/contacts/upsert",
+    privateKey,
+    {
+      method: "POST",
+      body: JSON.stringify(params),
+      headers: { Version: GHL_CONTACTS_API_VERSION },
+    },
+    params.locationId
+  );
+
+  if (!result.success) {
+    return result as GHLApiResponse<{ contactId: string }>;
+  }
+
+  const contactId = extractGhlUpsertContactId(result.data);
+  if (!contactId) {
+    return {
+      success: false,
+      error: "GHL contact upsert returned an unexpected response (missing contact ID)",
+    };
+  }
+
+  return { ...result, data: { contactId } };
 }
 
 /**

@@ -809,7 +809,9 @@ export async function runEmailInboundPostProcessJob(opts: {
   }
 
   // Auto-booking: only books when the lead clearly accepts one of the offered slots.
-  const autoBook = inboundText ? await processMessageForAutoBooking(lead.id, inboundText) : { booked: false as const };
+  const autoBook = inboundText
+    ? await processMessageForAutoBooking(lead.id, inboundText, { channel: "email" })
+    : { booked: false as const };
 
   // Enrichment sequence.
   const fullEmailBody = message.rawText || message.rawHtml || inboundText || "";

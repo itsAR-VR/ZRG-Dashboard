@@ -3,9 +3,9 @@ import "server-only";
 import "@/lib/server-dns";
 import { prisma } from "@/lib/prisma";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
+import { markAiInteractionError } from "@/lib/ai/openai-telemetry";
+import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
-import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { z } from "zod";
 import type { ConversationInsightOutcome } from "@prisma/client";
 import type { ConversationInsight } from "@/lib/insights-chat/thread-extractor";
@@ -29,10 +29,6 @@ const PackSynthesisSchema = z.object({
 });
 
 export type InsightContextPackSynthesis = z.infer<typeof PackSynthesisSchema>;
-
-function safeJsonParse<T>(text: string): T {
-  return JSON.parse(extractJsonObjectFromText(text)) as T;
-}
 
 function getInsightsMaxRetries(): number {
   const parsed = Number.parseInt(process.env.OPENAI_INSIGHTS_MAX_RETRIES || "5", 10);
@@ -118,39 +114,33 @@ async function runStructuredJson<T>(opts: {
   maxOutputTokens: number;
   timeoutMs: number;
 }): Promise<{ parsed: T; interactionId: string | null }> {
-  const { response, interactionId } = await runResponseWithInteraction({
+  const result = await runStructuredJsonPrompt<T>({
+    pattern: "structured_json",
     clientId: opts.clientId,
     featureId: opts.featureId,
     promptKey: opts.promptKey,
-    params: {
-      model: opts.model,
-      reasoning: { effort: opts.reasoningEffort },
-      max_output_tokens: opts.maxOutputTokens,
-      instructions: opts.instructions,
-      text: {
-        verbosity: "low",
-        format: {
-          type: "json_schema",
-          name: "insights_json",
-          strict: true,
-          schema: opts.jsonSchema,
-        },
-      },
-      input: opts.input,
+    model: opts.model,
+    reasoningEffort:
+      opts.reasoningEffort === "none" ? undefined : opts.reasoningEffort === "xhigh" ? "high" : opts.reasoningEffort,
+    systemFallback: opts.instructions,
+    input: opts.input,
+    schemaName: "insights_json",
+    strict: true,
+    schema: opts.jsonSchema,
+    attempts: [opts.maxOutputTokens],
+    budget: {
+      min: Math.max(1, Math.trunc(opts.maxOutputTokens)),
+      max: Math.max(1, Math.trunc(opts.maxOutputTokens)),
     },
-    requestOptions: {
-      timeout: opts.timeoutMs,
-      maxRetries: getInsightsMaxRetries(),
-    },
+    timeoutMs: opts.timeoutMs,
+    maxRetries: getInsightsMaxRetries(),
   });
 
-  const text = getTrimmedOutputText(response);
-  if (!text) {
-    const details = summarizeResponseForTelemetry(response);
-    throw new Error(`Empty output_text${details ? ` (${details})` : ""}`);
+  if (!result.success) {
+    throw new Error(result.error.message);
   }
 
-  return { parsed: safeJsonParse<T>(text), interactionId };
+  return { parsed: result.data, interactionId: result.telemetry.interactionId };
 }
 
 export async function synthesizeInsightContextPack(opts: {

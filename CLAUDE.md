@@ -72,12 +72,13 @@ lib/                # Core domain logic
   auto-send/        # Auto-send orchestration (executeAutoSend)
   auto-send-evaluator.ts # AI auto-send confidence evaluator (campaign mode)
   followup-engine.ts # Multi-step sequence execution (cron-driven)
+  inbound-post-process/ # Shared inbound post-process pipeline kernel + adapters
   availability-*.ts  # Calendar availability caching, formatting, distribution
   ghl-api.ts        # GoHighLevel API client with rate limiting
   emailbison-api.ts # Inboxxia/EmailBison API client
   unipile-api.ts    # LinkedIn/Unipile API client
   lead-matching.ts  # Cross-channel lead deduplication (email OR phone)
-  ai/               # AI observability, prompt templates
+  ai/               # AI observability, prompt templates, unified prompt runner
 
 components/
   dashboard/        # Feature components (inbox, crm, settings)

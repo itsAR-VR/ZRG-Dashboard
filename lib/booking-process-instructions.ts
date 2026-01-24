@@ -183,7 +183,7 @@ async function buildStageInstructions(
   // Parse per-stage template overrides (Phase 47k)
   const templates = (stage.instructionTemplates as BookingStageTemplates | null) ?? null;
 
-  // Booking link
+  const bookingLinkInstructions: string[] = [];
   if (stage.includeBookingLink) {
     const bookingLink = await getBookingLink(clientId, workspaceSettings);
 
@@ -191,22 +191,22 @@ async function buildStageInstructions(
       // SMS/LinkedIn always use plain URL (no true hyperlink support)
       if (channel === "sms" || channel === "linkedin" || stage.linkType === "PLAIN_URL") {
         const template = getEffectiveTemplate("bookingLinkPlainTemplate", templates);
-        instructions.push(renderTemplate(template, { bookingLink }));
+        bookingLinkInstructions.push(renderTemplate(template, { bookingLink }));
       } else {
         const template = getEffectiveTemplate("bookingLinkHyperlinkTemplate", templates);
-        instructions.push(renderTemplate(template, { bookingLink }));
+        bookingLinkInstructions.push(renderTemplate(template, { bookingLink }));
       }
     } else {
       // Explicitly prevent placeholder link hallucinations when no booking link is configured.
       const template = getEffectiveTemplate("noBookingLinkTemplate", templates);
-      instructions.push(template);
+      bookingLinkInstructions.push(template);
       console.warn(
         `[BookingProcess] Stage ${stage.stageNumber} requests booking link but none configured for client ${clientId}`
       );
     }
   }
 
-  // Suggested times
+  const suggestedTimesInstructions: string[] = [];
   if (stage.includeSuggestedTimes) {
     const numTimes = stage.numberOfTimesToSuggest || 3;
 
@@ -214,14 +214,14 @@ async function buildStageInstructions(
       const timesToOffer = availableSlots.slice(0, numTimes);
       const timesBullets = timesToOffer.map((t) => `  - ${t}`).join("\n");
       const template = getEffectiveTemplate("suggestedTimesWithSlotsTemplate", templates);
-      instructions.push(renderTemplate(template, { numTimes: timesToOffer.length, timesBullets }));
+      suggestedTimesInstructions.push(renderTemplate(template, { numTimes: timesToOffer.length, timesBullets }));
     } else {
       const template = getEffectiveTemplate("suggestedTimesNoSlotsTemplate", templates);
-      instructions.push(renderTemplate(template, { numTimes }));
+      suggestedTimesInstructions.push(renderTemplate(template, { numTimes }));
     }
   }
 
-  // Qualifying questions
+  const questionInstructions: string[] = [];
   if (stage.includeQualifyingQuestions) {
     const { questions, selectedRequiredIds } = await getQualifyingQuestionsForStage(
       stage,
@@ -234,17 +234,17 @@ async function buildStageInstructions(
     if (questions.length > 0) {
       if (questions.length === 1) {
         const template = getEffectiveTemplate("qualifyingQuestionOneTemplate", templates);
-        instructions.push(renderTemplate(template, { question: questions[0] }));
+        questionInstructions.push(renderTemplate(template, { question: questions[0] }));
       } else {
         const questionsBullets = questions.map((q) => `  - ${q}`).join("\n");
         const template = getEffectiveTemplate("qualifyingQuestionManyTemplate", templates);
-        instructions.push(renderTemplate(template, { questionsBullets }));
+        questionInstructions.push(renderTemplate(template, { questionsBullets }));
       }
 
       // SMS paraphrase hint
       if (channel === "sms") {
         const template = getEffectiveTemplate("smsParaphraseHintTemplate", templates);
-        instructions.push(template);
+        questionInstructions.push(template);
       }
 
       // Store selected required question IDs for analytics attribution
@@ -256,6 +256,25 @@ async function buildStageInstructions(
         }).catch(() => undefined);
       }
     }
+  }
+
+  const orderKey =
+    stage.instructionOrder ??
+    (stage.includeSuggestedTimes
+      ? "TIMES_FIRST"
+      : "QUESTIONS_FIRST");
+
+  const order: Array<"questions" | "times" | "link"> =
+    orderKey === "TIMES_FIRST"
+      ? ["times", "questions", "link"]
+      : orderKey === "LINK_FIRST"
+        ? ["link", "questions", "times"]
+        : ["questions", "times", "link"];
+
+  for (const section of order) {
+    if (section === "questions") instructions.push(...questionInstructions);
+    if (section === "times") instructions.push(...suggestedTimesInstructions);
+    if (section === "link") instructions.push(...bookingLinkInstructions);
   }
 
   // Timezone ask

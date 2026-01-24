@@ -23,6 +23,7 @@ import {
   type LinkedInConnectionStatus,
   type InMailBalanceResult,
 } from "@/lib/unipile-api";
+import { updateUnipileConnectionHealth } from "@/lib/workspace-integration-health";
 import { recordOutboundForBookingProgress } from "@/lib/booking-progress";
 import { coerceSmsDraftPartsOrThrow } from "@/lib/sms-multipart";
 import { BackgroundJobType } from "@prisma/client";
@@ -1000,12 +1001,37 @@ export async function sendLinkedInMessage(
     );
 
     if (!result.success) {
+      if (result.isDisconnectedAccount) {
+        await updateUnipileConnectionHealth({
+          clientId: lead.client.id,
+          isDisconnected: true,
+          errorDetail: result.error,
+        }).catch((err) => console.error("[sendLinkedInMessage] Failed to update Unipile health:", err));
+      }
+
+      if (result.isUnreachableRecipient && process.env.UNIPILE_HEALTH_GATE === "1") {
+        await prisma.lead
+          .update({
+            where: { id: lead.id },
+            data: {
+              linkedinUnreachableAt: new Date(),
+              linkedinUnreachableReason: result.error || "Recipient cannot be reached",
+            },
+          })
+          .catch(() => undefined);
+      }
+
       return {
         success: false,
         error: result.error,
         attemptedMethods: result.attemptedMethods,
       };
     }
+
+    await updateUnipileConnectionHealth({
+      clientId: lead.client.id,
+      isDisconnected: false,
+    }).catch(() => undefined);
 
     // Save the outbound message to our database
     const savedMessage = await prisma.message.create({
@@ -1022,7 +1048,7 @@ export async function sendLinkedInMessage(
       },
     });
 
-    await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", sentAt: savedMessage.sentAt });
+    await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", source: "zrg", sentAt: savedMessage.sentAt });
 
     // Update the lead's updatedAt timestamp
     await prisma.lead.update({
@@ -1068,7 +1094,6 @@ export async function sendLinkedInMessage(
 export async function getPendingDrafts(leadId: string, channel?: "sms" | "email" | "linkedin") {
   try {
     await requireLeadAccess(leadId);
-    console.log("[getPendingDrafts] Fetching drafts for leadId:", leadId);
 
     const drafts = await prisma.aIDraft.findMany({
       where: {
@@ -1081,10 +1106,13 @@ export async function getPendingDrafts(leadId: string, channel?: "sms" | "email"
       },
     });
 
-    console.log("[getPendingDrafts] Found drafts:", drafts.length, drafts.map(d => ({ id: d.id, status: d.status })));
-
     return { success: true, data: drafts };
   } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message === "Not authenticated" || message === "Unauthorized") {
+      return { success: false, error: "Unauthorized" };
+    }
+
     console.error("[getPendingDrafts] Failed to get drafts:", error);
     return { success: false, error: "Failed to get drafts" };
   }
@@ -1859,6 +1887,7 @@ export async function checkLinkedInStatus(leadId: string): Promise<LinkedInStatu
       include: {
         client: {
           select: {
+            id: true,
             unipileAccountId: true,
           },
         },
@@ -1891,6 +1920,19 @@ export async function checkLinkedInStatus(leadId: string): Promise<LinkedInStatu
       checkInMailBalance(accountId),
     ]);
 
+    if (connectionResult.isDisconnectedAccount) {
+      await updateUnipileConnectionHealth({
+        clientId: lead.client.id,
+        isDisconnected: true,
+        errorDetail: connectionResult.error,
+      }).catch((err) => console.error("[checkLinkedInStatus] Failed to update Unipile health:", err));
+    } else if (!connectionResult.error) {
+      await updateUnipileConnectionHealth({
+        clientId: lead.client.id,
+        isDisconnected: false,
+      }).catch(() => undefined);
+    }
+
     return {
       success: true,
       connectionStatus: connectionResult.status,
@@ -1900,6 +1942,11 @@ export async function checkLinkedInStatus(leadId: string): Promise<LinkedInStatu
       inMailBalance,
     };
   } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message === "Not authenticated" || message === "Unauthorized") {
+      return { ...defaultResult, error: "Unauthorized" };
+    }
+
     console.error("[checkLinkedInStatus] Failed:", error);
     return {
       ...defaultResult,

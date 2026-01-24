@@ -1,0 +1,389 @@
+import "server-only";
+
+import { prisma } from "@/lib/prisma";
+import {
+  analyzeInboundEmailReply,
+  buildSentimentTranscriptFromMessages,
+  classifySentiment,
+  detectBounce,
+  isOptOutText,
+  isPositiveSentiment,
+  SENTIMENT_TO_STATUS,
+  type SentimentTag,
+} from "@/lib/sentiment";
+import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
+import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
+import { executeAutoSend } from "@/lib/auto-send";
+import {
+  pauseFollowUpsOnReply,
+  pauseFollowUpsUntil,
+  processMessageForAutoBooking,
+  resumeAwaitingEnrichmentFollowUpsForLead,
+} from "@/lib/followup-engine";
+import { ensureLeadTimezone } from "@/lib/timezone-inference";
+import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
+import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
+import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
+import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
+import { maybeAssignLead } from "@/lib/lead-assignment";
+import type { InboundPostProcessParams, InboundPostProcessResult, InboundPostProcessPipelineStage } from "@/lib/inbound-post-process/types";
+
+function mapInboxClassificationToSentimentTag(classification: string): SentimentTag {
+  switch (classification) {
+    case "Meeting Booked":
+      return "Meeting Booked";
+    case "Meeting Requested":
+      return "Meeting Requested";
+    case "Call Requested":
+      return "Call Requested";
+    case "Information Requested":
+      return "Information Requested";
+    case "Follow Up":
+      return "Follow Up";
+    case "Not Interested":
+      return "Not Interested";
+    case "Automated Reply":
+      return "Automated Reply";
+    case "Out Of Office":
+      return "Out of Office";
+    case "Blacklist":
+      return "Blacklist";
+    default:
+      return "Neutral";
+  }
+}
+
+async function applyAutoFollowUpPolicyOnInboundEmail(opts: { clientId: string; leadId: string; sentimentTag: string | null }) {
+  if (!isPositiveSentiment(opts.sentimentTag)) {
+    await prisma.lead.updateMany({
+      where: { id: opts.leadId, enrichmentStatus: "pending" },
+      data: { enrichmentStatus: "not_needed" },
+    });
+    return;
+  }
+
+  const settings = await prisma.workspaceSettings.findUnique({
+    where: { clientId: opts.clientId },
+    select: { autoFollowUpsOnReply: true },
+  });
+  if (!settings?.autoFollowUpsOnReply) return;
+
+  await prisma.lead.updateMany({
+    where: { id: opts.leadId, autoFollowUpEnabled: false },
+    data: { autoFollowUpEnabled: true },
+  });
+}
+
+export async function runInboundPostProcessPipeline(params: InboundPostProcessParams): Promise<InboundPostProcessResult> {
+  const stageLogs: InboundPostProcessPipelineStage[] = [];
+  const prefix = params.adapter.logPrefix;
+
+  const pushStage = (stage: InboundPostProcessPipelineStage) => {
+    stageLogs.push(stage);
+  };
+
+  console.log(prefix, "Starting for message", params.messageId);
+
+  pushStage("load");
+  const message = await prisma.message.findUnique({
+    where: { id: params.messageId },
+    include: {
+      lead: {
+        include: {
+          client: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          emailCampaign: {
+            select: {
+              id: true,
+              name: true,
+              bisonCampaignId: true,
+              responseMode: true,
+              autoSendConfidenceThreshold: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!message) {
+    console.error(prefix, "Message not found:", params.messageId);
+    return { stageLogs };
+  }
+
+  if (!message.lead) {
+    console.error(prefix, "Lead not found for message:", params.messageId);
+    return { stageLogs };
+  }
+
+  const lead = message.lead;
+  const client = lead.client;
+  const emailCampaign = lead.emailCampaign;
+
+  if (message.direction === "outbound") {
+    console.log(prefix, "Skipping outbound message");
+    return { stageLogs };
+  }
+
+  const messageBody = message.body || "";
+  const rawText = message.rawText || messageBody;
+  const subject = message.subject || null;
+  const messageSentAt = message.sentAt || new Date();
+
+  pushStage("build_transcript");
+  const contextMessages = await prisma.message.findMany({
+    where: { leadId: lead.id },
+    orderBy: { sentAt: "desc" },
+    take: 40,
+    select: { sentAt: true, channel: true, direction: true, body: true, subject: true },
+  });
+
+  const transcript = buildSentimentTranscriptFromMessages([
+    ...contextMessages.reverse(),
+    { sentAt: messageSentAt, channel: "email", direction: "inbound", body: messageBody, subject },
+  ]);
+
+  pushStage("classify_sentiment");
+  const previousSentiment = lead.sentimentTag;
+
+  const inboundCombinedForSafety = `Subject: ${subject ?? ""} | ${messageBody}`;
+  const mustBlacklist =
+    isOptOutText(inboundCombinedForSafety) ||
+    detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
+
+  let sentimentTag: SentimentTag;
+  if (mustBlacklist) {
+    sentimentTag = "Blacklist";
+  } else {
+    const analysis = await analyzeInboundEmailReply({
+      clientId: client.id,
+      leadId: lead.id,
+      clientName: client.name,
+      lead: {
+        first_name: lead.firstName ?? null,
+        last_name: lead.lastName ?? null,
+        email: lead.email ?? null,
+        time_received: messageSentAt.toISOString(),
+      },
+      subject,
+      body_text: rawText,
+      provider_cleaned_text: messageBody,
+      entire_conversation_thread_html: null,
+      automated_reply: null,
+      conversation_transcript: transcript,
+    });
+
+    if (analysis) {
+      sentimentTag = mapInboxClassificationToSentimentTag(analysis.classification);
+    } else {
+      sentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
+    }
+  }
+
+  const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
+
+  pushStage("update_lead");
+  await prisma.lead.update({
+    where: { id: lead.id },
+    data: { sentimentTag, status: leadStatus },
+  });
+
+  console.log(prefix, "Sentiment:", sentimentTag, "Status:", leadStatus);
+
+  pushStage("maybe_assign_lead");
+  await maybeAssignLead({
+    leadId: lead.id,
+    clientId: client.id,
+    sentimentTag,
+  });
+
+  pushStage("apply_auto_followup_policy");
+  await applyAutoFollowUpPolicyOnInboundEmail({ clientId: client.id, leadId: lead.id, sentimentTag });
+
+  pushStage("auto_start_meeting_requested");
+  await autoStartMeetingRequestedSequenceIfEligible({
+    leadId: lead.id,
+    previousSentiment,
+    newSentiment: sentimentTag,
+  });
+
+  pushStage("pause_followups_on_reply");
+  await pauseFollowUpsOnReply(lead.id);
+
+  pushStage("snooze_detection");
+  const inboundText = messageBody.trim();
+  const snoozeKeywordHit =
+    /\b(after|until|from)\b/i.test(inboundText) && /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
+
+  if (snoozeKeywordHit) {
+    const tzResult = await ensureLeadTimezone(lead.id);
+    const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
+      messageText: inboundText,
+      timeZone: tzResult.timezone || "UTC",
+    });
+
+    if (snoozedUntilUtc && confidence >= 0.95) {
+      await prisma.lead.update({ where: { id: lead.id }, data: { snoozedUntil: snoozedUntilUtc } });
+      await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
+      console.log(prefix, "Snoozed until", snoozedUntilUtc.toISOString());
+    }
+  }
+
+  pushStage("auto_booking");
+  const autoBook = await processMessageForAutoBooking(lead.id, inboundText, { channel: "email" });
+  if (autoBook.booked) {
+    console.log(prefix, "Auto-booked appointment:", autoBook.appointmentId);
+  }
+
+  pushStage("reject_pending_drafts");
+  if (sentimentTag === "Blacklist" || sentimentTag === "Automated Reply") {
+    await prisma.aIDraft.updateMany({
+      where: { leadId: lead.id, status: "pending" },
+      data: { status: "rejected" },
+    });
+  }
+
+  pushStage("ghl_contact_sync");
+  if (isPositiveSentiment(sentimentTag)) {
+    ensureGhlContactIdForLead(lead.id, { allowCreateWithoutPhone: true })
+      .then((res) => {
+        if (!res.success) console.log("[GHL Contact] Lead", lead.id, res.error || "failed");
+      })
+      .catch(() => undefined);
+    syncGhlContactPhoneForLead(lead.id).catch(() => undefined);
+  }
+
+  pushStage("resume_enrichment_followups");
+  resumeAwaitingEnrichmentFollowUpsForLead(lead.id).catch(() => undefined);
+
+  pushStage("draft_generation");
+  if (!autoBook.booked && shouldGenerateDraft(sentimentTag, lead.email)) {
+    console.log(prefix, "Generating draft for message", message.id);
+
+    const webhookDraftTimeoutMs = Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
+
+    const draftResult = await generateResponseDraft(
+      lead.id,
+      `Subject: ${subject ?? ""}\n\n${messageBody}`,
+      sentimentTag,
+      "email",
+      { timeoutMs: webhookDraftTimeoutMs, triggerMessageId: message.id }
+    );
+
+    if (draftResult.success) {
+      const draftId = draftResult.draftId;
+      if (!draftId) {
+        console.log(prefix, "Draft created:", draftId, "(no auto-send)");
+      } else {
+        const autoSendResult = await executeAutoSend({
+          clientId: client.id,
+          leadId: lead.id,
+          triggerMessageId: message.id,
+          draftId,
+          draftContent: draftResult.content || "",
+          channel: "email",
+          latestInbound: messageBody,
+          subject,
+          conversationHistory: transcript,
+          sentimentTag,
+          messageSentAt,
+          automatedReply: null,
+          leadFirstName: lead.firstName,
+          leadLastName: lead.lastName,
+          leadEmail: lead.email,
+          emailCampaign,
+          autoReplyEnabled: lead.autoReplyEnabled,
+          validateImmediateSend: true,
+          includeDraftPreviewInSlack: false,
+        });
+
+        if (
+          autoSendResult.mode === "AI_AUTO_SEND" &&
+          typeof autoSendResult.telemetry.confidence === "number" &&
+          typeof autoSendResult.telemetry.threshold === "number" &&
+          autoSendResult.telemetry.confidence >= autoSendResult.telemetry.threshold
+        ) {
+          console.log(prefix, "Auto-send approved for draft", draftId, "confidence", autoSendResult.telemetry.confidence.toFixed(2));
+        }
+
+        if (
+          autoSendResult.mode === "DISABLED" ||
+          (autoSendResult.outcome.action === "skip" && autoSendResult.outcome.reason === "missing_draft_content")
+        ) {
+          console.log(prefix, "Draft created:", draftId, "(no auto-send)");
+        } else {
+          switch (autoSendResult.outcome.action) {
+            case "send_delayed": {
+              console.log(prefix, "Scheduled delayed send for draft", draftId, "runAt:", autoSendResult.outcome.runAt.toISOString());
+              break;
+            }
+            case "send_immediate": {
+              console.log(prefix, "Sent message:", autoSendResult.outcome.messageId);
+              break;
+            }
+            case "needs_review": {
+              if (!autoSendResult.outcome.slackDm.sent) {
+                console.error(
+                  "[Slack DM] Failed to notify Jon for draft",
+                  draftId,
+                  autoSendResult.outcome.slackDm.error || "unknown error"
+                );
+              }
+              console.log(prefix, "Auto-send blocked:", autoSendResult.outcome.reason);
+              break;
+            }
+            case "skip": {
+              if (autoSendResult.telemetry.delayedScheduleSkipReason) {
+                console.log(prefix, "Delayed send not scheduled:", autoSendResult.telemetry.delayedScheduleSkipReason);
+              } else if (autoSendResult.telemetry.immediateValidationSkipReason) {
+                console.log(prefix, "Skipping immediate auto-send for draft", draftId, autoSendResult.telemetry.immediateValidationSkipReason);
+              } else if (autoSendResult.mode === "LEGACY_AUTO_REPLY") {
+                const legacyReason = autoSendResult.outcome.reason.replace(/^legacy_auto_reply_skip:/, "");
+                console.log(prefix, "Skipped auto-send for lead", lead.id, legacyReason);
+              }
+              break;
+            }
+            case "error": {
+              if (autoSendResult.mode === "AI_AUTO_SEND") {
+                console.error(prefix, "Auto-send failed:", autoSendResult.outcome.error);
+              } else {
+                console.error(prefix, "Failed to send draft:", autoSendResult.outcome.error);
+              }
+              break;
+            }
+          }
+        }
+      }
+    } else {
+      console.error(prefix, "Failed to generate AI draft:", draftResult.error);
+    }
+  } else {
+    console.log(prefix, "Skipping draft generation (sentiment:", sentimentTag, "auto-booked:", autoBook.booked, ")");
+  }
+
+  pushStage("bump_rollups");
+  await bumpLeadMessageRollup({
+    leadId: lead.id,
+    direction: "inbound",
+    sentAt: messageSentAt,
+  });
+
+  pushStage("enqueue_lead_scoring");
+  try {
+    await enqueueLeadScoringJob({
+      clientId: client.id,
+      leadId: lead.id,
+      messageId: message.id,
+    });
+  } catch (error) {
+    console.error(prefix, "Failed to enqueue lead scoring job for lead", lead.id, error);
+  }
+
+  console.log(prefix, "Completed for message", params.messageId);
+  return { stageLogs };
+}
+

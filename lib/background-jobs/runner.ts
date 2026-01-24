@@ -12,6 +12,7 @@ import { runSmartLeadInboundPostProcessJob } from "@/lib/background-jobs/smartle
 import { runInstantlyInboundPostProcessJob } from "@/lib/background-jobs/instantly-inbound-post-process";
 import { runConversationSyncJob } from "@/lib/background-jobs/conversation-sync";
 import { runAiAutoSendDelayedJob } from "@/lib/background-jobs/ai-auto-send-delayed";
+import { processWebhookEvents } from "@/lib/webhook-events/runner";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value || "", 10);
@@ -39,6 +40,15 @@ function computeRetryBackoffMs(attempt: number): number {
 }
 
 export async function processBackgroundJobs(): Promise<{
+  webhookEvents?: {
+    releasedStale: number;
+    processed: number;
+    succeeded: number;
+    failed: number;
+    retried: number;
+    skipped: number;
+    remaining: number;
+  };
   releasedStale: number;
   processed: number;
   succeeded: number;
@@ -50,6 +60,12 @@ export async function processBackgroundJobs(): Promise<{
   const startedAtMs = Date.now();
   const deadlineMs = startedAtMs + getCronTimeBudgetMs();
   const invocationId = crypto.randomUUID();
+
+  // Phase 53: drain bursty webhook events first (bounded), then process background jobs.
+  const webhookEvents = await processWebhookEvents({ invocationId }).catch((error) => {
+    console.error("[Cron] Webhook event processing failed:", error);
+    return undefined;
+  });
 
   const staleCutoff = new Date(Date.now() - getStaleLockMs());
   const released = await prisma.backgroundJob.updateMany({
@@ -255,6 +271,7 @@ export async function processBackgroundJobs(): Promise<{
   });
 
   return {
+    webhookEvents,
     releasedStale: released.count,
     processed,
     succeeded,

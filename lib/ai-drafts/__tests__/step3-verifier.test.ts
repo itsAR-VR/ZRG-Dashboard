@@ -28,3 +28,16 @@ test("enforceCanonicalBookingLink replaces wrong calendly link with canonical", 
   const output = enforceCanonicalBookingLink(input, canonical);
   assert.equal(output, `Book here: ${canonical}`);
 });
+
+test("enforceCanonicalBookingLink replaces GHL widget booking link with canonical", () => {
+  const canonical = "https://book.example.com/widget/booking/abc123?foo=bar";
+  const input = "Book here: https://old-domain.example/widget/bookings/xyz987?utm=1.";
+  const output = enforceCanonicalBookingLink(input, canonical);
+  assert.equal(output, `Book here: ${canonical}.`);
+});
+
+test("enforceCanonicalBookingLink removes booking widget links when canonical is missing", () => {
+  const input = "Book here: https://old-domain.example/widget/booking/xyz987.";
+  const output = enforceCanonicalBookingLink(input, null);
+  assert.equal(output, "Book here: .");
+});

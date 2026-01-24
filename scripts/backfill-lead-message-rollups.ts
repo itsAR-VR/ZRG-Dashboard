@@ -2,12 +2,15 @@
  * Backfill Lead message rollup fields used by the inbox filters:
  * - Lead.lastInboundAt
  * - Lead.lastOutboundAt
+ * - Lead.lastZrgOutboundAt
  * - Lead.lastMessageAt
  * - Lead.lastMessageDirection
  *
  * Run with:
- * - npx tsx scripts/backfill-lead-message-rollups.ts
- * - npx tsx scripts/backfill-lead-message-rollups.ts --clientId <workspaceId>
+ * - node --import tsx scripts/backfill-lead-message-rollups.ts
+ * - node --import tsx scripts/backfill-lead-message-rollups.ts --clientId <workspaceId>
+ * - (alt) npx tsx scripts/backfill-lead-message-rollups.ts
+ * - (alt) npx tsx scripts/backfill-lead-message-rollups.ts --clientId <workspaceId>
  *
  * Notes:
  * - Safe to re-run (idempotent).
@@ -20,10 +23,13 @@ dotenv.config({ path: ".env" });
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 
-const connectionString = process.env.DATABASE_URL;
+const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+const connectionSource = process.env.DIRECT_URL ? "DIRECT_URL" : "DATABASE_URL";
 if (!connectionString) {
-  throw new Error("DATABASE_URL is required");
+  throw new Error("DIRECT_URL or DATABASE_URL is required");
 }
+
+console.log(`[Rollups] Using ${connectionSource} for backfill connection`);
 
 const adapter = new PrismaPg({ connectionString });
 const prisma = new PrismaClient({ adapter });
@@ -63,6 +69,10 @@ async function main() {
     ? `FROM "Message" m ${clientFilterSql} AND m.direction = 'outbound'`
     : `FROM "Message" m WHERE m.direction = 'outbound'`;
 
+  const zrgOutboundCte = clientFilterSql
+    ? `FROM "Message" m ${clientFilterSql} AND m.direction = 'outbound' AND m.source = 'zrg'`
+    : `FROM "Message" m WHERE m.direction = 'outbound' AND m.source = 'zrg'`;
+
   const lastMessageFrom = clientFilterSql
     ? `FROM "Message" m ${clientFilterSql}`
     : `FROM "Message" m`;
@@ -94,6 +104,20 @@ WHERE l.id = outbound."leadId";
 `);
 
   console.log(`[Rollups] lastOutboundAt updated rows: ${updatedOutbound}`);
+
+  const updatedZrgOutbound = await prisma.$executeRawUnsafe(`
+WITH outbound AS (
+  SELECT m."leadId" AS "leadId", MAX(m."sentAt") AS "sentAt"
+  ${zrgOutboundCte}
+  GROUP BY m."leadId"
+)
+UPDATE "Lead" l
+SET "lastZrgOutboundAt" = outbound."sentAt"
+FROM outbound
+WHERE l.id = outbound."leadId";
+`);
+
+  console.log(`[Rollups] lastZrgOutboundAt updated rows: ${updatedZrgOutbound}`);
 
   const updatedLastMessage = await prisma.$executeRawUnsafe(`
 WITH last_message AS (

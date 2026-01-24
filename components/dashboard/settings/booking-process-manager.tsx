@@ -74,6 +74,7 @@ import {
   updateBookingProcess,
   deleteBookingProcess,
   duplicateBookingProcess,
+  createBookingProcessesFromTemplates,
   type BookingProcessSummary,
   type BookingProcessWithStages,
   type BookingProcessStageInput,
@@ -89,6 +90,14 @@ interface BookingProcessManagerProps {
   qualificationQuestions?: Array<{ id: string; question: string; required?: boolean }>;
 }
 
+const DEFAULT_TEMPLATE_NAMES = new Set<string>([
+  "Link + Qualification (No Times)",
+  "Initial Email Times (EmailBison availability_slot)",
+  "Lead Proposes Times (Auto-Book When Clear)",
+  "Call Requested (Create Call Task)",
+  "Lead Provided Calendar Link (Escalate or Schedule)",
+]);
+
 // Default stage for new stages
 const defaultStage: BookingProcessStageInput = {
   stageNumber: 1,
@@ -99,6 +108,7 @@ const defaultStage: BookingProcessStageInput = {
   includeQualifyingQuestions: false,
   qualificationQuestionIds: [],
   includeTimezoneAsk: false,
+  instructionOrder: null,
   applyToEmail: true,
   applyToSms: true,
   applyToLinkedin: true,
@@ -114,6 +124,7 @@ export function BookingProcessManager({
   const [isCreating, setIsCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<BookingProcessSummary | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [selectedTemplateNames, setSelectedTemplateNames] = useState<string[]>([]);
 
   // Form state for create/edit
   const [formName, setFormName] = useState("");
@@ -176,6 +187,7 @@ export function BookingProcessManager({
           includeQualifyingQuestions: s.includeQualifyingQuestions,
           qualificationQuestionIds: s.qualificationQuestionIds,
           includeTimezoneAsk: s.includeTimezoneAsk,
+          instructionOrder: s.instructionOrder ?? null,
           applyToEmail: s.applyToEmail,
           applyToSms: s.applyToSms,
           applyToLinkedin: s.applyToLinkedin,
@@ -281,8 +293,44 @@ export function BookingProcessManager({
     setFormMaxWaves(5);
     setFormStages([...template.stages]);
     setShowTemplates(false);
+    setSelectedTemplateNames([]);
     setIsCreating(true);
     setEditingProcess(null);
+  };
+
+  const toggleTemplateSelection = (templateName: string) => {
+    setSelectedTemplateNames((prev) =>
+      prev.includes(templateName) ? prev.filter((n) => n !== templateName) : [...prev, templateName]
+    );
+  };
+
+  const handleCreateSelectedTemplates = async () => {
+    if (!activeWorkspace) return;
+    if (selectedTemplateNames.length === 0) {
+      toast.error("Select at least one template");
+      return;
+    }
+
+    const res = await createBookingProcessesFromTemplates(activeWorkspace, selectedTemplateNames);
+    if (!res.success) {
+      toast.error(res.error || "Failed to create templates");
+      return;
+    }
+
+    const createdCount = res.createdNames?.length ?? 0;
+    const skippedCount = res.skippedNames?.length ?? 0;
+    toast.success(
+      createdCount === 0
+        ? "No new booking processes created"
+        : `Created ${createdCount} booking process${createdCount === 1 ? "" : "es"}`
+    );
+    if (skippedCount > 0) {
+      toast.message(`Skipped ${skippedCount} (already exists or missing)`);
+    }
+
+    setShowTemplates(false);
+    setSelectedTemplateNames([]);
+    loadProcesses();
   };
 
   // Stage management
@@ -416,32 +464,78 @@ export function BookingProcessManager({
             <DialogHeader>
               <DialogTitle>Booking Process Templates</DialogTitle>
               <DialogDescription>
-                Choose a template to get started quickly
+                Select one or more templates to create default booking processes in this workspace.
               </DialogDescription>
             </DialogHeader>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setSelectedTemplateNames(BOOKING_PROCESS_TEMPLATES.map((t) => t.name))}
+              >
+                Select all
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setSelectedTemplateNames(BOOKING_PROCESS_TEMPLATES.filter((t) => DEFAULT_TEMPLATE_NAMES.has(t.name)).map((t) => t.name))}
+              >
+                Select defaults
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setSelectedTemplateNames([])}>
+                Clear
+              </Button>
+            </div>
             <div className="space-y-3 max-h-[400px] overflow-y-auto">
               {BOOKING_PROCESS_TEMPLATES.map((template) => (
                 <div
                   key={template.name}
-                  className="p-4 border rounded-lg hover:bg-muted/50 cursor-pointer"
-                  onClick={() => handleCreateFromTemplate(template)}
+                  className="p-4 border rounded-lg hover:bg-muted/50"
                 >
-                  <div className="font-medium">{template.name}</div>
-                  <div className="text-sm text-muted-foreground mt-1">
-                    {template.description}
-                  </div>
-                  <div className="flex items-center gap-2 mt-2">
-                    <Badge variant="secondary">{template.stages.length} stages</Badge>
-                    {template.stages[0].includeBookingLink && (
-                      <Badge variant="outline">Link in Stage 1</Badge>
-                    )}
-                    {template.stages[0].includeSuggestedTimes && (
-                      <Badge variant="outline">Times in Stage 1</Badge>
-                    )}
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      checked={selectedTemplateNames.includes(template.name)}
+                      onCheckedChange={() => toggleTemplateSelection(template.name)}
+                      className="mt-1"
+                    />
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="font-medium">{template.name}</div>
+                        <Button type="button" variant="ghost" size="sm" onClick={() => handleCreateFromTemplate(template)}>
+                          Customize
+                        </Button>
+                      </div>
+                      <div className="text-sm text-muted-foreground mt-1">
+                        {template.description}
+                      </div>
+                      <div className="flex items-center gap-2 mt-2">
+                        <Badge variant="secondary">{template.stages.length} stages</Badge>
+                        {template.stages[0].includeBookingLink && (
+                          <Badge variant="outline">Link in Stage 1</Badge>
+                        )}
+                        {template.stages[0].includeSuggestedTimes && (
+                          <Badge variant="outline">Times in Stage 1</Badge>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))}
             </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setShowTemplates(false)}>
+                Close
+              </Button>
+              <Button
+                type="button"
+                onClick={handleCreateSelectedTemplates}
+                disabled={!activeWorkspace || selectedTemplateNames.length === 0}
+              >
+                Create selected ({selectedTemplateNames.length})
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
 
@@ -826,6 +920,37 @@ function StageEditor({
                 </p>
               </div>
             )}
+          </div>
+
+          {/* Instruction Order */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+              <Label className="text-sm">Instruction Order</Label>
+            </div>
+            <div className="ml-6 space-y-2">
+              <Select
+                value={stage.instructionOrder ?? "__AUTO__"}
+                onValueChange={(value) =>
+                  onUpdate({
+                    instructionOrder: value === "__AUTO__" ? null : (value as BookingProcessStageInput["instructionOrder"]),
+                  })
+                }
+              >
+                <SelectTrigger className="w-[260px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__AUTO__">Auto (recommended)</SelectItem>
+                  <SelectItem value="QUESTIONS_FIRST">Questions first</SelectItem>
+                  <SelectItem value="TIMES_FIRST">Times first</SelectItem>
+                  <SelectItem value="LINK_FIRST">Link first</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Controls ordering when multiple elements are enabled (questions / suggested times / booking link).
+              </p>
+            </div>
           </div>
 
           {/* Timezone Ask */}

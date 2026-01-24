@@ -104,9 +104,27 @@ enum BackgroundJobStatus {
   FAILED
 }
 
+// Webhook event queue (Phase 53): lightweight ingestion queue to absorb bursty providers.
+enum WebhookProvider {
+  INBOXXIA
+}
+
+enum WebhookEventStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
 enum BookingProcessLinkType {
   PLAIN_URL
   HYPERLINKED_TEXT
+}
+
+enum BookingStageInstructionOrder {
+  QUESTIONS_FIRST
+  TIMES_FIRST
+  LINK_FIRST
 }
 
 // Stores GHL API Keys per sub-account for multi-tenancy
@@ -304,6 +322,8 @@ model Lead {
   emailBisonLeadId String?   // Inboxxia/EmailBison lead ID (for Email)
   linkedinId       String?   // Unipile LinkedIn member ID (populated after connection)
   linkedinUrl      String?   // LinkedIn profile URL (normalized format)
+  linkedinUnreachableAt DateTime? // When Unipile reports the recipient cannot be reached (Phase 53)
+  linkedinUnreachableReason String? @db.Text
   // Contact information
   firstName    String?
   lastName     String?
@@ -328,6 +348,7 @@ model Lead {
   // Message rollups (for inbox "fresh attention" vs "previously required attention")
   lastInboundAt  DateTime?   // Most recent inbound message timestamp
   lastOutboundAt DateTime?   // Most recent outbound message timestamp
+  lastZrgOutboundAt DateTime? // Most recent outbound message timestamp where Message.source = "zrg" (Phase 53)
   lastMessageAt DateTime?    // Most recent message timestamp (any direction)
   lastMessageDirection String? // 'inbound' | 'outbound' (derived from most recent message)
   snoozedUntil DateTime?     // When snoozed, hide from inbox until this date
@@ -404,8 +425,11 @@ model Lead {
   @@index([preferredCalendarLinkId])
   @@index([lastInboundAt(sort: Desc)])
   @@index([lastOutboundAt(sort: Desc)])
+  @@index([lastZrgOutboundAt(sort: Desc)])
   @@index([lastMessageAt(sort: Desc)])
   @@index([lastMessageDirection])
+  @@index([clientId, lastInboundAt(sort: Desc)])
+  @@index([clientId, assignedToUserId, lastInboundAt(sort: Desc)])
   
   // Composite indexes for CRM/Inbox cursor pagination and filtering
   @@index([clientId, status])                    // CRM status filter
@@ -676,6 +700,7 @@ model Message {
   @@index([channel])         // For filtering messages by channel
   @@index([sentByUserId])    // For per-setter response time aggregation
   @@index([aiDraftId])       // For finding all messages from a draft
+  @@index([leadId, direction, source, sentAt(sort: Desc)])
 }
 
 // Follow-up tasks for leads (individual scheduled tasks)
@@ -760,6 +785,53 @@ model BackgroundJob {
   @@index([leadId])
   @@index([messageId])
   @@index([draftId])
+}
+
+// Phase 53: durable queue for bursty webhook events (e.g., Inboxxia EMAIL_SENT).
+// This avoids doing lead/campaign upserts and follow-up triggers on the request path.
+model WebhookEvent {
+  id        String @id @default(uuid())
+  provider  WebhookProvider
+  eventType String
+  dedupeKey String @unique
+
+  status      WebhookEventStatus @default(PENDING)
+  runAt       DateTime @default(now())
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(8)
+  lockedAt    DateTime?
+  lockedBy    String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  lastError   String?  @db.Text
+
+  // Normalized payload fields (primarily Inboxxia/EmailBison today).
+  workspaceId     String?
+  workspaceName   String?
+  campaignId      String?
+  campaignName    String?
+  emailBisonLeadId String?
+  leadEmail       String?
+  leadFirstName   String?
+  leadLastName    String?
+  senderEmailId   String?
+  senderEmail     String?
+  senderName      String?
+  scheduledEmailId String?
+  emailSubject    String?
+  emailBodyHtml   String? @db.Text
+  emailStatus     String?
+  emailSentAt     DateTime?
+
+  raw Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, runAt])
+  @@index([provider, eventType])
+  @@index([workspaceId])
+  @@index([scheduledEmailId])
 }
 
 // AI usage telemetry (admin-only observability)
@@ -1145,6 +1217,7 @@ model BookingProcessStage {
   includeQualifyingQuestions Boolean @default(false)
   qualificationQuestionIds  String[] @default([])  // IDs from WorkspaceSettings.qualificationQuestions
   includeTimezoneAsk        Boolean @default(false)
+  instructionOrder          BookingStageInstructionOrder?
 
   // Channel applicability (which channels this stage applies to)
   applyToEmail    Boolean @default(true)

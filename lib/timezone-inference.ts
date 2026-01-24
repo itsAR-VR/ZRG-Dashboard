@@ -1,7 +1,5 @@
 import "@/lib/server-dns";
-import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
-import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
-import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
+import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { prisma } from "@/lib/prisma";
 
 const CONFIDENCE_THRESHOLD = 0.95;
@@ -183,18 +181,7 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
   }
 
   try {
-    // Use override-aware prompt lookup (Phase 47i)
-    const overrideResult = await getPromptWithOverrides("timezone.infer.v1", lead.clientId);
-    const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("timezone.infer.v1");
-    const overrideVersion = overrideResult?.overrideVersion ?? null;
-    const instructionsTemplate =
-      promptTemplate?.messages.find((m) => m.role === "system")?.content ||
-      "Infer the lead's IANA timezone. Output only JSON.";
-    const instructions = instructionsTemplate.replaceAll(
-      "{confidenceThreshold}",
-      String(CONFIDENCE_THRESHOLD)
-    );
-
+    const systemFallback = "Infer the lead's IANA timezone. Output only JSON.";
     const input = JSON.stringify(
       {
         companyState: lead.companyState,
@@ -208,87 +195,54 @@ export async function ensureLeadTimezone(leadId: string): Promise<{
       2
     );
 
-    // `max_output_tokens` includes reasoning tokens; keep headroom and retry once
-    // if we receive an empty/truncated JSON body.
-    const attempts: Array<{ maxOutputTokens: number }> = [{ maxOutputTokens: 240 }, { maxOutputTokens: 480 }];
-
-    let parsed: { timezone: string | null; confidence: number } | null = null;
-    let lastResponse: Awaited<ReturnType<typeof runResponseWithInteraction>>["response"] | null = null;
-    let lastInteractionId: string | null = null;
-    let lastErrorMessage: string | null = null;
-
-    for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
-      const { response, interactionId } = await runResponseWithInteraction({
-        clientId: lead.clientId,
-        leadId,
-        featureId: promptTemplate?.featureId || "timezone.infer",
-        promptKey:
-          (promptTemplate?.key || "timezone.infer.v1") + (overrideVersion ? `.${overrideVersion}` : "") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
-        params: {
-          model: "gpt-5-nano",
-          reasoning: { effort: "low" },
-          max_output_tokens: attempts[attemptIndex].maxOutputTokens,
-          instructions,
-          text: {
-            verbosity: "low",
-            format: {
-              type: "json_schema",
-              name: "timezone_inference",
-              strict: true,
-              schema: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  timezone: { type: ["string", "null"] },
-                  confidence: { type: "number", minimum: 0, maximum: 1 },
-                },
-                required: ["timezone", "confidence"],
-              },
-            },
-          },
-          input,
+    const result = await runStructuredJsonPrompt<{ timezone: string | null; confidence: number }>({
+      pattern: "structured_json",
+      clientId: lead.clientId,
+      leadId,
+      featureId: "timezone.infer",
+      promptKey: "timezone.infer.v1",
+      model: "gpt-5-nano",
+      reasoningEffort: "low",
+      systemFallback,
+      templateVars: { confidenceThreshold: String(CONFIDENCE_THRESHOLD) },
+      input,
+      schemaName: "timezone_inference",
+      strict: true,
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          timezone: { type: ["string", "null"] },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
         },
-      });
+        required: ["timezone", "confidence"],
+      },
+      budget: {
+        min: 240,
+        max: 240,
+        retryMax: 480,
+        overheadTokens: 96,
+        outputScale: 0.2,
+        preferApiCount: true,
+      },
+      validate: (value) => {
+        const anyValue = value as any;
+        if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not an object" };
+        const timezone = anyValue.timezone;
+        const confidence = anyValue.confidence;
+        if (!(typeof timezone === "string" || timezone === null)) return { success: false, error: "timezone must be string|null" };
+        if (typeof confidence !== "number" || !Number.isFinite(confidence)) return { success: false, error: "confidence must be number" };
+        return { success: true, data: { timezone, confidence } };
+      },
+    });
 
-      lastResponse = response;
-      lastInteractionId = interactionId;
-
-      const text = getTrimmedOutputText(response);
-      if (!text) {
-        const details = summarizeResponseForTelemetry(response);
-        lastErrorMessage = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
-        // If the model was cut off, a retry with more headroom often succeeds.
-        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < attempts.length - 1) {
-          continue;
-        }
-        break;
-      }
-
-      try {
-        parsed = JSON.parse(extractJsonObjectFromText(text)) as { timezone: string | null; confidence: number };
-        break;
-      } catch (parseError) {
-        const details = summarizeResponseForTelemetry(response);
-        lastErrorMessage = `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})${
-          details ? ` (${details})` : ""
-        }`;
-
-        if (attemptIndex < attempts.length - 1) {
-          continue;
-        }
-      }
-    }
-
-    if (!parsed) {
-      if (lastInteractionId && lastErrorMessage) {
-        await markAiInteractionError(lastInteractionId, lastErrorMessage);
-      }
+    if (!result.success) {
       const fallback = lead.client.settings?.timezone || null;
       return { timezone: fallback, source: "workspace_fallback" };
     }
 
-    const tz = parsed?.timezone;
-    const conf = typeof parsed?.confidence === "number" ? parsed.confidence : 0;
+    const tz = result.data.timezone;
+    const conf = result.data.confidence;
 
     if (tz && conf >= CONFIDENCE_THRESHOLD && isValidIanaTimezone(tz)) {
       await prisma.lead.update({

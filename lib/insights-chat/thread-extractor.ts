@@ -3,9 +3,7 @@ import "server-only";
 import "@/lib/server-dns";
 import { prisma } from "@/lib/prisma";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
-import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
-import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
+import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { z } from "zod";
 import type { ConversationInsightOutcome } from "@prisma/client";
 import { formatLeadTranscript, type ClassifiedTranscriptMessage } from "@/lib/insights-chat/transcript";
@@ -194,10 +192,6 @@ function splitIntoChunks(text: string, opts: { chunkSize: number; overlap: numbe
   return chunks;
 }
 
-function safeJsonParse<T>(text: string): T {
-  return JSON.parse(extractJsonObjectFromText(text)) as T;
-}
-
 function getChunkCompressionConcurrency(): number {
   const parsed = Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_CHUNK_CONCURRENCY || "3", 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return 3;
@@ -229,56 +223,6 @@ async function mapWithConcurrency<TItem, TResult>(
 
   await Promise.all(workers);
   return results;
-}
-
-async function runStructuredJson<T>(opts: {
-  clientId: string;
-  leadId: string;
-  featureId: string;
-  promptKey: string;
-  model: InsightsChatModel;
-  reasoningEffort: OpenAIReasoningEffort;
-  instructions: string;
-  input: Array<{ role: "user"; content: string }>;
-  jsonSchema: Record<string, unknown>;
-  maxOutputTokens: number;
-  timeoutMs: number;
-  maxRetries?: number;
-}): Promise<{ parsed: T; interactionId: string | null }> {
-  const { response, interactionId } = await runResponseWithInteraction({
-    clientId: opts.clientId,
-    leadId: opts.leadId,
-    featureId: opts.featureId,
-    promptKey: opts.promptKey,
-    params: {
-      model: opts.model,
-      reasoning: { effort: opts.reasoningEffort },
-      max_output_tokens: opts.maxOutputTokens,
-      instructions: opts.instructions,
-      text: {
-        verbosity: "low",
-        format: {
-          type: "json_schema",
-          name: "insights_json",
-          strict: true,
-          schema: opts.jsonSchema,
-        },
-      },
-      input: opts.input,
-    },
-    requestOptions: {
-      timeout: opts.timeoutMs,
-      maxRetries: opts.maxRetries,
-    },
-  });
-
-  const text = getTrimmedOutputText(response);
-  if (!text) {
-    const details = summarizeResponseForTelemetry(response);
-    throw new Error(`Empty output_text${details ? ` (${details})` : ""}`);
-  }
-
-  return { parsed: safeJsonParse<T>(text), interactionId };
 }
 
 export async function extractConversationInsightForLead(opts: {
@@ -371,27 +315,20 @@ export async function extractConversationInsightForLead(opts: {
         2
       );
 
-      const baseBudget = await computeAdaptiveMaxOutputTokens({
-        model: opts.model,
-        instructions: compressSystem,
-        input: [{ role: "user", content: chunkInput }],
-        min: 220,
-        max: 700,
-        overheadTokens: 200,
-        outputScale: 0.18,
-        preferApiCount: true,
-      });
-
-      const { parsed } = await runStructuredJson<ThreadChunkCompression>({
+      const result = await runStructuredJsonPrompt<ThreadChunkCompression>({
+        pattern: "structured_json",
         clientId: opts.clientId,
         leadId: opts.leadId,
         featureId: compressPrompt?.featureId || "insights.thread_compress",
         promptKey: compressPrompt?.key || "insights.thread_compress.v1",
         model: opts.model,
-        reasoningEffort: opts.reasoningEffort,
-        instructions: compressSystem,
-        input: [{ role: "user", content: chunkInput }],
-        jsonSchema: {
+        reasoningEffort:
+          opts.reasoningEffort === "none" ? undefined : opts.reasoningEffort === "xhigh" ? "high" : opts.reasoningEffort,
+        systemFallback: compressSystem,
+        input: [{ role: "user" as const, content: chunkInput }],
+        schemaName: "insights_thread_chunk_compress",
+        strict: true,
+        schema: {
           type: "object",
           additionalProperties: false,
           properties: {
@@ -401,16 +338,28 @@ export async function extractConversationInsightForLead(opts: {
           },
           required: ["key_events", "key_phrases", "notable_quotes"],
         },
-        maxOutputTokens: baseBudget.maxOutputTokens,
+        budget: {
+          min: 220,
+          max: 700,
+          overheadTokens: 200,
+          outputScale: 0.18,
+          preferApiCount: true,
+        },
         timeoutMs,
         maxRetries,
+        validate: (value) => {
+          const validated = ChunkCompressionSchema.safeParse(value);
+          if (!validated.success) {
+            return { success: false, error: validated.error.message };
+          }
+          return { success: true, data: validated.data };
+        },
       });
 
-      const validated = ChunkCompressionSchema.safeParse(parsed);
-      if (!validated.success) {
-        throw new Error(`Chunk compression schema mismatch: ${validated.error.message}`);
+      if (!result.success) {
+        throw new Error(result.error.message);
       }
-      return validated.data;
+      return result.data;
     });
 
     transcriptForModel = compressed
@@ -443,137 +392,123 @@ export async function extractConversationInsightForLead(opts: {
     2
   );
 
-  // Increase budget for v2 schema (includes follow_up + follow_up_effectiveness)
-  const baseBudget = await computeAdaptiveMaxOutputTokens({
-    model: opts.model,
-    instructions: extractSystem,
-    input: [{ role: "user", content: extractInput }],
-    min: 800,
-    max: 2400,
-    overheadTokens: 520,
-    outputScale: 0.25,
-    preferApiCount: true,
-  });
-
-  const attempts = [baseBudget.maxOutputTokens, Math.min(baseBudget.maxOutputTokens + 900, 3200)];
-  let lastInteractionId: string | null = null;
-  let lastErrorMessage: string | null = null;
-
-  for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
-    const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_TIMEOUT_MS || "90000", 10) || 90_000);
-    const maxRetries = getInsightsMaxRetries();
-
-    try {
-      // Build the v2 JSON schema with follow-up fields
-      const jsonSchema = {
+  // Build the v2 JSON schema with follow-up fields
+  const jsonSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      schema_version: { type: "string", enum: [CONVERSATION_INSIGHT_SCHEMA_VERSION] },
+      summary: { type: "string" },
+      key_events: { type: "array", items: { type: "string" } },
+      what_worked: { type: "array", items: { type: "string" } },
+      what_failed: { type: "array", items: { type: "string" } },
+      key_phrases: { type: "array", items: { type: "string" } },
+      evidence_quotes: { type: "array", items: { type: "string" } },
+      recommended_tests: { type: "array", items: { type: "string" } },
+      // Follow-up analysis (Phase 29b)
+      follow_up: {
         type: "object",
         additionalProperties: false,
         properties: {
-          schema_version: { type: "string", enum: [CONVERSATION_INSIGHT_SCHEMA_VERSION] },
-          summary: { type: "string" },
-          key_events: { type: "array", items: { type: "string" } },
           what_worked: { type: "array", items: { type: "string" } },
           what_failed: { type: "array", items: { type: "string" } },
           key_phrases: { type: "array", items: { type: "string" } },
-          evidence_quotes: { type: "array", items: { type: "string" } },
-          recommended_tests: { type: "array", items: { type: "string" } },
-          // Follow-up analysis (Phase 29b)
-          follow_up: {
+          tone_observations: { type: "array", items: { type: "string" } },
+          objection_responses: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                objection_type: {
+                  type: "string",
+                  enum: ["pricing", "timing", "authority", "need", "trust", "competitor", "none"],
+                },
+                agent_response: { type: "string" },
+                outcome: { type: "string", enum: ["positive", "negative", "neutral"] },
+              },
+              required: ["objection_type", "agent_response", "outcome"],
+            },
+          },
+        },
+        required: ["what_worked", "what_failed", "key_phrases", "tone_observations", "objection_responses"],
+      },
+      // Follow-up effectiveness (nullable if no follow-up exists)
+      follow_up_effectiveness: {
+        anyOf: [
+          {
             type: "object",
             additionalProperties: false,
             properties: {
-              what_worked: { type: "array", items: { type: "string" } },
-              what_failed: { type: "array", items: { type: "string" } },
-              key_phrases: { type: "array", items: { type: "string" } },
-              tone_observations: { type: "array", items: { type: "string" } },
-              objection_responses: {
-                type: "array",
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    objection_type: {
-                      type: "string",
-                      enum: ["pricing", "timing", "authority", "need", "trust", "competitor", "none"],
-                    },
-                    agent_response: { type: "string" },
-                    outcome: { type: "string", enum: ["positive", "negative", "neutral"] },
-                  },
-                  required: ["objection_type", "agent_response", "outcome"],
-                },
-              },
+              score: { type: "number" },
+              converted_after_objection: { type: "boolean" },
+              notes: { type: "array", items: { type: "string" } },
             },
-            required: ["what_worked", "what_failed", "key_phrases", "tone_observations", "objection_responses"],
+            required: ["score", "converted_after_objection", "notes"],
           },
-          // Follow-up effectiveness (nullable if no follow-up exists)
-          follow_up_effectiveness: {
-            anyOf: [
-              {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  score: { type: "number" },
-                  converted_after_objection: { type: "boolean" },
-                  notes: { type: "array", items: { type: "string" } },
-                },
-                required: ["score", "converted_after_objection", "notes"],
-              },
-              { type: "null" },
-            ],
-          },
-        },
-        required: [
-          "schema_version",
-          "summary",
-          "key_events",
-          "what_worked",
-          "what_failed",
-          "key_phrases",
-          "evidence_quotes",
-          "recommended_tests",
-          "follow_up",
-          "follow_up_effectiveness",
+          { type: "null" },
         ],
-      };
+      },
+    },
+    required: [
+      "schema_version",
+      "summary",
+      "key_events",
+      "what_worked",
+      "what_failed",
+      "key_phrases",
+      "evidence_quotes",
+      "recommended_tests",
+      "follow_up",
+      "follow_up_effectiveness",
+    ],
+  };
 
-      const { parsed, interactionId } = await runStructuredJson<ConversationInsight>({
-        clientId: opts.clientId,
-        leadId: opts.leadId,
-        featureId: extractPrompt?.featureId || "insights.thread_extract",
-        promptKey:
-          (extractPrompt?.key || "insights.thread_extract.v2") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
-        model: opts.model,
-        reasoningEffort: opts.reasoningEffort,
-        instructions: extractSystem,
-        input: [{ role: "user", content: extractInput }],
-        jsonSchema,
-        maxOutputTokens: attempts[attemptIndex],
-        timeoutMs,
-        maxRetries,
-      });
+  const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_INSIGHTS_THREAD_TIMEOUT_MS || "90000", 10) || 90_000);
+  const maxRetries = getInsightsMaxRetries();
 
-      lastInteractionId = interactionId;
-
-      const validated = ConversationInsightSchema.safeParse(parsed);
+  const result = await runStructuredJsonPrompt<ConversationInsight>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    featureId: extractPrompt?.featureId || "insights.thread_extract",
+    promptKey: extractPrompt?.key || "insights.thread_extract.v2",
+    model: opts.model,
+    reasoningEffort:
+      opts.reasoningEffort === "none" ? undefined : opts.reasoningEffort === "xhigh" ? "high" : opts.reasoningEffort,
+    systemFallback: extractSystem,
+    input: [{ role: "user" as const, content: extractInput }],
+    schemaName: "insights_thread_extract",
+    strict: true,
+    schema: jsonSchema,
+    budget: {
+      min: 800,
+      max: 2400,
+      retryMax: 3200,
+      retryExtraTokens: 900,
+      overheadTokens: 520,
+      outputScale: 0.25,
+      preferApiCount: true,
+    },
+    timeoutMs,
+    maxRetries,
+    validate: (value) => {
+      const validated = ConversationInsightSchema.safeParse(value);
       if (!validated.success) {
-        throw new Error(`Conversation insight schema mismatch: ${validated.error.message}`);
+        return { success: false, error: validated.error.message };
       }
+      return { success: true, data: validated.data };
+    },
+  });
 
-      return {
-        insight: validated.data,
-        sourceMessageCount,
-        sourceLastMessageAt,
-        interactionId,
-      };
-    } catch (error) {
-      lastErrorMessage = error instanceof Error ? error.message : "Unknown error";
-      if (attemptIndex < attempts.length - 1) continue;
-    }
+  if (!result.success) {
+    throw new Error(result.error.message);
   }
 
-  if (lastInteractionId && lastErrorMessage) {
-    await markAiInteractionError(lastInteractionId, lastErrorMessage);
-  }
-
-  throw new Error(lastErrorMessage || "Failed to extract conversation insight");
+  return {
+    insight: result.data,
+    sourceMessageCount,
+    sourceLastMessageAt,
+    interactionId: result.telemetry.interactionId,
+  };
 }

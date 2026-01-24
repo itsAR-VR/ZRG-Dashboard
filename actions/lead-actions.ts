@@ -415,89 +415,180 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       ? Prisma.sql`and l."assignedToUserId" = ${scope.userId}`
       : Prisma.sql``;
 
-    const [replyCounts, total, blacklisted, needsRepair] = await Promise.all([
-      prisma.$queryRaw<
+    const isMissingLastZrgOutboundAt = (error: unknown): boolean => {
+      if (!error || typeof error !== "object") return false;
+      const anyError = error as { code?: unknown; message?: unknown };
+      if (anyError.code === "P2022") return true; // Column does not exist (during staged rollouts).
+      return typeof anyError.message === "string" && anyError.message.includes("lastZrgOutboundAt");
+    };
+
+    const runCountsUsingLeadRollups = async (): Promise<{
+      allResponses: number;
+      requiresAttention: number;
+      previouslyRequiredAttention: number;
+      awaitingReply: number;
+      needsRepair: number;
+      total: number;
+    }> => {
+      const rows = await prisma.$queryRaw<
         Array<{
+          totalNonBlacklisted: number;
+          blacklisted: number;
+          needsRepair: number;
           allResponses: number;
           requiresAttention: number;
           previouslyRequiredAttention: number;
         }>
       >(Prisma.sql`
-        with reply_leads as (
-          select
-            l.id,
-            l."status",
-            l."sentimentTag",
-            l."lastInboundAt"
-          from "Lead" l
-          where l."clientId" in (${Prisma.join(scope.clientIds)})
-            and (l."snoozedUntil" is null or l."snoozedUntil" <= ${now})
-            and l."lastInboundAt" is not null
-            ${setterSqlClause}
-        ),
-        zrg_outbound as (
-          select
-            m."leadId",
-            max(m."sentAt") as last_zrg_outbound
-          from "Message" m
-          where m.direction = 'outbound'
-            and m.source = 'zrg'
-            and m."leadId" in (select id from reply_leads)
-          group by m."leadId"
-        )
         select
           count(*) filter (
-            where rl."lastInboundAt" > coalesce(z.last_zrg_outbound, to_timestamp(0))
+            where l."status" not in ('blacklisted', 'unqualified')
+          )::int as "totalNonBlacklisted",
+          count(*) filter (
+            where l."status" = 'blacklisted'
+          )::int as "blacklisted",
+          count(*) filter (
+            where l."status" = 'needs_repair'
+          )::int as "needsRepair",
+          count(*) filter (
+            where l."lastInboundAt" is not null
+              and l."lastInboundAt" > coalesce(l."lastZrgOutboundAt", l."lastOutboundAt", to_timestamp(0))
           )::int as "allResponses",
           count(*) filter (
-            where rl."sentimentTag" in (${Prisma.join(attentionTags)})
-              and rl."status" not in ('blacklisted', 'unqualified')
-              and rl."lastInboundAt" > coalesce(z.last_zrg_outbound, to_timestamp(0))
+            where l."lastInboundAt" is not null
+              and l."sentimentTag" in (${Prisma.join(attentionTags)})
+              and l."status" not in ('blacklisted', 'unqualified')
+              and l."lastInboundAt" > coalesce(l."lastZrgOutboundAt", l."lastOutboundAt", to_timestamp(0))
           )::int as "requiresAttention",
           count(*) filter (
-            where rl."sentimentTag" in (${Prisma.join(attentionTags)})
-              and rl."status" not in ('blacklisted', 'unqualified')
-              and coalesce(z.last_zrg_outbound, to_timestamp(0)) >= rl."lastInboundAt"
+            where l."lastInboundAt" is not null
+              and l."sentimentTag" in (${Prisma.join(attentionTags)})
+              and l."status" not in ('blacklisted', 'unqualified')
+              and coalesce(l."lastZrgOutboundAt", l."lastOutboundAt", to_timestamp(0)) >= l."lastInboundAt"
           )::int as "previouslyRequiredAttention"
-        from reply_leads rl
-        left join zrg_outbound z on z."leadId" = rl.id
-      `),
-      // Total leads (excluding blacklisted)
-      prisma.lead.count({
-        where: {
-          ...clientFilter,
-          ...snoozeFilter,
-          status: { notIn: ["blacklisted", "unqualified"] },
-        },
-      }),
-      // Count blacklisted separately for debugging
-      prisma.lead.count({
-        where: {
-          ...clientFilter,
-          ...snoozeFilter,
-          status: "blacklisted",
-        },
-      }),
-      // Count leads that need repair (failed EmailBison lead creation)
-      prisma.lead.count({
-        where: {
-          ...clientFilter,
-          ...snoozeFilter,
-          status: "needs_repair",
-        },
-      }),
-    ]);
+        from "Lead" l
+        where l."clientId" in (${Prisma.join(scope.clientIds)})
+          and (l."snoozedUntil" is null or l."snoozedUntil" <= ${now})
+          ${setterSqlClause}
+      `);
 
-    const openCounts = replyCounts[0] ?? { allResponses: 0, requiresAttention: 0, previouslyRequiredAttention: 0 };
+      const row = rows[0] ?? {
+        totalNonBlacklisted: 0,
+        blacklisted: 0,
+        needsRepair: 0,
+        allResponses: 0,
+        requiresAttention: 0,
+        previouslyRequiredAttention: 0,
+      };
 
-    return {
-      allResponses: openCounts.allResponses,
-      requiresAttention: openCounts.requiresAttention,
-      previouslyRequiredAttention: openCounts.previouslyRequiredAttention,
-      awaitingReply: Math.max(0, total - openCounts.requiresAttention),
-      needsRepair,
-      total: total + blacklisted, // Include blacklisted in total for reference
+      return {
+        allResponses: row.allResponses,
+        requiresAttention: row.requiresAttention,
+        previouslyRequiredAttention: row.previouslyRequiredAttention,
+        awaitingReply: Math.max(0, row.totalNonBlacklisted - row.requiresAttention),
+        needsRepair: row.needsRepair,
+        total: row.totalNonBlacklisted + row.blacklisted,
+      };
     };
+
+    const runLegacyCounts = async (): Promise<{
+      allResponses: number;
+      requiresAttention: number;
+      previouslyRequiredAttention: number;
+      awaitingReply: number;
+      needsRepair: number;
+      total: number;
+    }> => {
+      const [replyCounts, totalNonBlacklisted, blacklisted, needsRepair] = await Promise.all([
+        prisma.$queryRaw<
+          Array<{
+            allResponses: number;
+            requiresAttention: number;
+            previouslyRequiredAttention: number;
+          }>
+        >(Prisma.sql`
+          with reply_leads as (
+            select
+              l.id,
+              l."status",
+              l."sentimentTag",
+              l."lastInboundAt"
+            from "Lead" l
+            where l."clientId" in (${Prisma.join(scope.clientIds)})
+              and (l."snoozedUntil" is null or l."snoozedUntil" <= ${now})
+              and l."lastInboundAt" is not null
+              ${setterSqlClause}
+          ),
+          zrg_outbound as (
+            select
+              m."leadId",
+              max(m."sentAt") as last_zrg_outbound
+            from "Message" m
+            where m.direction = 'outbound'
+              and m.source = 'zrg'
+              and m."leadId" in (select id from reply_leads)
+            group by m."leadId"
+          )
+          select
+            count(*) filter (
+              where rl."lastInboundAt" > coalesce(z.last_zrg_outbound, to_timestamp(0))
+            )::int as "allResponses",
+            count(*) filter (
+              where rl."sentimentTag" in (${Prisma.join(attentionTags)})
+                and rl."status" not in ('blacklisted', 'unqualified')
+                and rl."lastInboundAt" > coalesce(z.last_zrg_outbound, to_timestamp(0))
+            )::int as "requiresAttention",
+            count(*) filter (
+              where rl."sentimentTag" in (${Prisma.join(attentionTags)})
+                and rl."status" not in ('blacklisted', 'unqualified')
+                and coalesce(z.last_zrg_outbound, to_timestamp(0)) >= rl."lastInboundAt"
+            )::int as "previouslyRequiredAttention"
+          from reply_leads rl
+          left join zrg_outbound z on z."leadId" = rl.id
+        `),
+        prisma.lead.count({
+          where: {
+            ...clientFilter,
+            ...snoozeFilter,
+            status: { notIn: ["blacklisted", "unqualified"] },
+          },
+        }),
+        prisma.lead.count({
+          where: {
+            ...clientFilter,
+            ...snoozeFilter,
+            status: "blacklisted",
+          },
+        }),
+        prisma.lead.count({
+          where: {
+            ...clientFilter,
+            ...snoozeFilter,
+            status: "needs_repair",
+          },
+        }),
+      ]);
+
+      const openCounts = replyCounts[0] ?? { allResponses: 0, requiresAttention: 0, previouslyRequiredAttention: 0 };
+
+      return {
+        allResponses: openCounts.allResponses,
+        requiresAttention: openCounts.requiresAttention,
+        previouslyRequiredAttention: openCounts.previouslyRequiredAttention,
+        awaitingReply: Math.max(0, totalNonBlacklisted - openCounts.requiresAttention),
+        needsRepair,
+        total: totalNonBlacklisted + blacklisted,
+      };
+    };
+
+    try {
+      return await runCountsUsingLeadRollups();
+    } catch (error) {
+      if (isMissingLastZrgOutboundAt(error)) {
+        return await runLegacyCounts();
+      }
+      throw error;
+    }
   } catch (error) {
     // Auth/authorization issues are expected in some states (signed-out, stale workspace selection).
     // Avoid noisy error logs and return a safe empty-state.

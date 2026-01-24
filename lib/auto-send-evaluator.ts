@@ -1,8 +1,5 @@
 import "@/lib/server-dns";
-import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
-import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
-import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
+import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { isOptOutText } from "@/lib/sentiment";
 
 export type AutoSendEvaluation = {
@@ -97,13 +94,7 @@ export async function evaluateAutoSend(opts: {
         ? opts.replyReceivedAt.toISOString()
         : "";
 
-  // Use override-aware prompt lookup (Phase 47i)
-  const overrideResult = await getPromptWithOverrides("auto_send.evaluate.v1", opts.clientId);
-  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("auto_send.evaluate.v1");
-  const overrideVersion = overrideResult?.overrideVersion ?? null;
-  const system =
-    promptTemplate?.messages.find((m) => m.role === "system")?.content ||
-    `Return ONLY valid JSON:
+  const systemFallback = `Return ONLY valid JSON:
 {
   "safe_to_send": true|false,
   "requires_human_review": true|false,
@@ -126,135 +117,94 @@ export async function evaluateAutoSend(opts: {
     2
   );
 
-  try {
-    const model = "gpt-5-mini";
-    const input = [{ role: "user" as const, content: user }];
+  const timeoutMs = Math.max(
+    5_000,
+    Number.parseInt(process.env.OPENAI_AUTO_SEND_EVALUATOR_TIMEOUT_MS || "20000", 10) || 20_000
+  );
 
-    const baseBudget = await computeAdaptiveMaxOutputTokens({
-      model,
-      instructions: system,
-      input,
+  const result = await runStructuredJsonPrompt<{
+    safe_to_send: boolean;
+    requires_human_review: boolean;
+    confidence: number;
+    reason: string;
+  }>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    featureId: "auto_send.evaluate",
+    promptKey: "auto_send.evaluate.v1",
+    model: "gpt-5-mini",
+    reasoningEffort: "low",
+    systemFallback,
+    input: [{ role: "user" as const, content: user }],
+    schemaName: "auto_send_evaluator",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        safe_to_send: { type: "boolean" },
+        requires_human_review: { type: "boolean" },
+        confidence: { type: "number" },
+        reason: { type: "string" },
+      },
+      required: ["safe_to_send", "requires_human_review", "confidence", "reason"],
+    },
+    budget: {
       min: 256,
       max: 900,
+      retryMax: 1600,
       overheadTokens: 256,
       outputScale: 0.18,
       preferApiCount: true,
-    });
-
-    const attempts = [
-      baseBudget.maxOutputTokens,
-      Math.min(Math.max(baseBudget.maxOutputTokens, 512) + 400, 1600),
-    ];
-
-    let lastInteractionId: string | null = null;
-    let lastErrorMessage: string | null = null;
-
-    for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
-      const timeoutMs = Math.max(
-        5_000,
-        Number.parseInt(process.env.OPENAI_AUTO_SEND_EVALUATOR_TIMEOUT_MS || "20000", 10) || 20_000
-      );
-
-      const { response, interactionId } = await runResponseWithInteraction({
-        clientId: opts.clientId,
-        leadId: opts.leadId,
-        featureId: promptTemplate?.featureId || "auto_send.evaluate",
-        promptKey:
-          (promptTemplate?.key || "auto_send.evaluate.v1") + (overrideVersion ? `.${overrideVersion}` : "") + (attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`),
-        params: {
-          model,
-          reasoning: { effort: "low" },
-          max_output_tokens: attempts[attemptIndex],
-          instructions: system,
-          text: {
-            verbosity: "low",
-            format: {
-              type: "json_schema",
-              name: "auto_send_evaluator",
-              strict: true,
-              schema: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  safe_to_send: { type: "boolean" },
-                  requires_human_review: { type: "boolean" },
-                  confidence: { type: "number" },
-                  reason: { type: "string" },
-                },
-                required: ["safe_to_send", "requires_human_review", "confidence", "reason"],
-              },
-            },
-          },
-          input,
-        },
-        requestOptions: {
-          timeout: timeoutMs,
-          maxRetries: 0,
-        },
-      });
-
-      lastInteractionId = interactionId;
-
-      const text = getTrimmedOutputText(response);
-      if (!text) {
-        const details = summarizeResponseForTelemetry(response);
-        lastErrorMessage = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
-        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < attempts.length - 1) {
-          continue;
-        }
-        break;
-      }
-
-      let parsed: {
-        safe_to_send: boolean;
-        requires_human_review: boolean;
-        confidence: number;
-        reason: string;
-      };
-      try {
-        parsed = JSON.parse(extractJsonObjectFromText(text)) as typeof parsed;
-      } catch (parseError) {
-        const details = summarizeResponseForTelemetry(response);
-        lastErrorMessage = `Post-process error: failed to parse JSON (${parseError instanceof Error ? parseError.message : "unknown"})${
-          details ? ` (${details})` : ""
-        }`;
-
-        if (attemptIndex < attempts.length - 1) {
-          continue;
-        }
-        break;
-      }
-
-      const confidence = clamp01(Number(parsed.confidence));
-      const safeToSend = Boolean(parsed.safe_to_send) && confidence >= 0.01;
-      const requiresHumanReview = Boolean(parsed.requires_human_review) || !safeToSend;
-
+    },
+    timeoutMs,
+    maxRetries: 0,
+    validate: (value) => {
+      const anyValue = value as any;
+      if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not an object" };
+      if (typeof anyValue.safe_to_send !== "boolean") return { success: false, error: "safe_to_send must be boolean" };
+      if (typeof anyValue.requires_human_review !== "boolean") return { success: false, error: "requires_human_review must be boolean" };
+      if (typeof anyValue.confidence !== "number" || !Number.isFinite(anyValue.confidence)) return { success: false, error: "confidence must be number" };
+      if (typeof anyValue.reason !== "string") return { success: false, error: "reason must be string" };
       return {
-        confidence,
-        safeToSend,
-        requiresHumanReview,
-        reason: String(parsed.reason || "").slice(0, 320) || "No reason provided",
+        success: true,
+        data: {
+          safe_to_send: anyValue.safe_to_send,
+          requires_human_review: anyValue.requires_human_review,
+          confidence: anyValue.confidence,
+          reason: anyValue.reason,
+        },
+      };
+    },
+  });
+
+  if (!result.success) {
+    if (result.error.category === "timeout" || result.error.category === "rate_limit" || result.error.category === "api_error") {
+      console.error("[AutoSendEvaluator] Failed:", result.error.message);
+      return {
+        confidence: 0,
+        safeToSend: false,
+        requiresHumanReview: true,
+        reason: "Evaluation error",
       };
     }
-
-    if (lastInteractionId && lastErrorMessage) {
-      await markAiInteractionError(lastInteractionId, lastErrorMessage);
-    }
-
     return {
       confidence: 0,
       safeToSend: false,
       requiresHumanReview: true,
       reason: "No evaluation returned",
     };
-  } catch (error) {
-    console.error("[AutoSendEvaluator] Failed:", error);
-    return {
-      confidence: 0,
-      safeToSend: false,
-      requiresHumanReview: true,
-      reason: "Evaluation error",
-    };
   }
-}
 
+  const confidence = clamp01(Number(result.data.confidence));
+  const safeToSend = Boolean(result.data.safe_to_send) && confidence >= 0.01;
+  const requiresHumanReview = Boolean(result.data.requires_human_review) || !safeToSend;
+
+  return {
+    confidence,
+    safeToSend,
+    requiresHumanReview,
+    reason: String(result.data.reason || "").slice(0, 320) || "No reason provided",
+  };
+}

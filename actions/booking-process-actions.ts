@@ -186,6 +186,7 @@ export async function createBookingProcess(data: {
             includeQualifyingQuestions: stage.includeQualifyingQuestions,
             qualificationQuestionIds: stage.qualificationQuestionIds,
             includeTimezoneAsk: stage.includeTimezoneAsk,
+            ...(stage.instructionOrder !== undefined && { instructionOrder: stage.instructionOrder }),
             applyToEmail: stage.applyToEmail,
             applyToSms: stage.applyToSms,
             applyToLinkedin: stage.applyToLinkedin,
@@ -302,6 +303,7 @@ export async function updateBookingProcess(
           includeQualifyingQuestions: stage.includeQualifyingQuestions,
           qualificationQuestionIds: stage.qualificationQuestionIds,
           includeTimezoneAsk: stage.includeTimezoneAsk,
+          ...(stage.instructionOrder !== undefined && { instructionOrder: stage.instructionOrder }),
           applyToEmail: stage.applyToEmail,
           applyToSms: stage.applyToSms,
           applyToLinkedin: stage.applyToLinkedin,
@@ -502,6 +504,7 @@ export async function duplicateBookingProcess(
             includeQualifyingQuestions: stage.includeQualifyingQuestions,
             qualificationQuestionIds: stage.qualificationQuestionIds,
             includeTimezoneAsk: stage.includeTimezoneAsk,
+            instructionOrder: stage.instructionOrder ?? undefined,
             applyToEmail: stage.applyToEmail,
             applyToSms: stage.applyToSms,
             applyToLinkedin: stage.applyToLinkedin,
@@ -541,6 +544,87 @@ export async function createBookingProcessFromTemplate(
     description: template.description,
     stages: template.stages,
   });
+}
+
+export async function createBookingProcessesFromTemplates(
+  clientId: string,
+  templateNames: string[]
+): Promise<{
+  success: boolean;
+  createdNames?: string[];
+  skippedNames?: string[];
+  error?: string;
+}> {
+  try {
+    await requireClientAdminAccess(clientId);
+
+    const requested = (templateNames || [])
+      .map((t) => (typeof t === "string" ? t.trim() : ""))
+      .filter(Boolean);
+    if (requested.length === 0) return { success: false, error: "No templates selected" };
+
+    const templatesByName = new Map(BOOKING_PROCESS_TEMPLATES.map((t) => [t.name, t]));
+    const resolved = requested.map((name) => ({ name, template: templatesByName.get(name) || null }));
+
+    const existing = await prisma.bookingProcess.findMany({
+      where: { clientId },
+      select: { name: true },
+    });
+    const existingNames = new Set(existing.map((p) => p.name));
+
+    const createdNames: string[] = [];
+    const skippedNames: string[] = [];
+
+    for (const item of resolved) {
+      const template = item.template;
+      if (!template) {
+        skippedNames.push(item.name);
+        continue;
+      }
+
+      if (existingNames.has(template.name)) {
+        skippedNames.push(template.name);
+        continue;
+      }
+
+      const process = await prisma.bookingProcess.create({
+        data: {
+          clientId,
+          name: template.name,
+          description: template.description,
+          maxWavesBeforeEscalation: 5,
+          stages: {
+            create: template.stages.map((stage) => ({
+              stageNumber: stage.stageNumber,
+              includeBookingLink: stage.includeBookingLink,
+              linkType: stage.linkType,
+              includeSuggestedTimes: stage.includeSuggestedTimes,
+              numberOfTimesToSuggest: stage.numberOfTimesToSuggest,
+              includeQualifyingQuestions: stage.includeQualifyingQuestions,
+              qualificationQuestionIds: stage.qualificationQuestionIds,
+              includeTimezoneAsk: stage.includeTimezoneAsk,
+              instructionOrder: stage.instructionOrder ?? undefined,
+              applyToEmail: stage.applyToEmail,
+              applyToSms: stage.applyToSms,
+              applyToLinkedin: stage.applyToLinkedin,
+            })),
+          },
+        },
+        select: { name: true },
+      });
+
+      createdNames.push(process.name);
+      existingNames.add(process.name);
+    }
+
+    return { success: true, createdNames, skippedNames };
+  } catch (error) {
+    console.error("[createBookingProcessesFromTemplates] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to create booking processes from templates",
+    };
+  }
 }
 
 // ----------------------------------------------------------------------------

@@ -2,9 +2,7 @@ import "server-only";
 
 import "@/lib/server-dns";
 import { getAIPromptTemplate } from "@/lib/ai/prompt-registry";
-import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
-import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
+import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { z } from "zod";
 import type { InsightsChatModel, OpenAIReasoningEffort } from "@/lib/insights-chat/config";
 import type { InsightThreadCitation, InsightThreadIndexItem } from "@/lib/insights-chat/citations";
@@ -25,10 +23,6 @@ type StructuredAnswer = z.infer<typeof AnswerSchema>;
 
 function safeString(value: string | null | undefined): string {
   return (value || "").trim();
-}
-
-function safeJsonParse<T>(text: string): T {
-  return JSON.parse(extractJsonObjectFromText(text)) as T;
 }
 
 function getInsightsMaxRetries(): number {
@@ -104,92 +98,67 @@ OUTPUT:
   };
 
   const input = [{ role: "user" as const, content: JSON.stringify(inputPayload, null, 2) }];
-
-  const budget = await computeAdaptiveMaxOutputTokens({
-    model: opts.model,
-    instructions: system,
-    input,
-    min: 700,
-    max: 2400,
-    overheadTokens: 520,
-    outputScale: 0.22,
-    preferApiCount: true,
-  });
-
-  const { response, interactionId } = await runResponseWithInteraction({
+  const result = await runStructuredJsonPrompt<StructuredAnswer>({
+    pattern: "structured_json",
     clientId: opts.clientId,
     featureId: prompt?.featureId || "insights.chat_answer",
     promptKey: prompt?.key || "insights.chat_answer.v3",
-    params: {
-      model: opts.model,
-      reasoning: { effort: opts.reasoningEffort },
-      max_output_tokens: budget.maxOutputTokens,
-      instructions: system,
-      text: {
-        verbosity: "medium",
-        format: {
-          type: "json_schema",
-          name: "insights_chat_answer",
-          strict: true,
-          schema: {
+    model: opts.model,
+    reasoningEffort:
+      opts.reasoningEffort === "none" ? undefined : opts.reasoningEffort === "xhigh" ? "high" : opts.reasoningEffort,
+    systemFallback: system,
+    input,
+    schemaName: "insights_chat_answer",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        answer_markdown: { type: "string" },
+        citations: {
+          type: "array",
+          items: {
             type: "object",
             additionalProperties: false,
             properties: {
-              answer_markdown: { type: "string" },
-              citations: {
-                type: "array",
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    ref: { type: "string" },
-                    note: { anyOf: [{ type: "string" }, { type: "null" }] },
-                  },
-                  required: ["ref", "note"],
-                },
-              },
+              ref: { type: "string" },
+              note: { anyOf: [{ type: "string" }, { type: "null" }] },
             },
-            required: ["answer_markdown", "citations"],
+            required: ["ref", "note"],
           },
         },
       },
-      input,
+      required: ["answer_markdown", "citations"],
     },
-    requestOptions: {
-      timeout: Math.max(8_000, Number.parseInt(process.env.OPENAI_INSIGHTS_ANSWER_TIMEOUT_MS || "90000", 10) || 90_000),
-      maxRetries: getInsightsMaxRetries(),
+    budget: {
+      min: 700,
+      max: 2400,
+      overheadTokens: 520,
+      outputScale: 0.22,
+      preferApiCount: true,
+    },
+    timeoutMs: Math.max(8_000, Number.parseInt(process.env.OPENAI_INSIGHTS_ANSWER_TIMEOUT_MS || "90000", 10) || 90_000),
+    maxRetries: getInsightsMaxRetries(),
+    validate: (value) => {
+      const validated = AnswerSchema.safeParse(value);
+      if (!validated.success) {
+        return { success: false, error: validated.error.message };
+      }
+      return { success: true, data: validated.data };
     },
   });
 
-  const text = getTrimmedOutputText(response);
-  if (!text) {
-    const details = summarizeResponseForTelemetry(response);
-    const msg = `Empty output_text${details ? ` (${details})` : ""}`;
-    if (interactionId) await markAiInteractionError(interactionId, msg);
-    throw new Error(msg);
+  if (!result.success) {
+    throw new Error(result.error.message);
   }
 
-  let parsed: StructuredAnswer;
-  try {
-    parsed = safeJsonParse<StructuredAnswer>(text);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : "Failed to parse JSON";
-    if (interactionId) await markAiInteractionError(interactionId, msg);
-    throw new Error(msg);
-  }
-
-  const validated = AnswerSchema.safeParse(parsed);
-  if (!validated.success) {
-    const msg = `Answer schema mismatch: ${validated.error.message}`;
-    if (interactionId) await markAiInteractionError(interactionId, msg);
-    throw new Error(msg);
-  }
+  const validated = result.data;
 
   const indexByRef = new Map((opts.threadIndex || []).map((t) => [t.ref.trim().toUpperCase(), t]));
   const citations: InsightThreadCitation[] = [];
   const used = new Set<string>();
 
-  for (const raw of validated.data.citations || []) {
+  for (const raw of validated.citations || []) {
     const ref = (raw.ref || "").trim().toUpperCase();
     if (!ref || used.has(ref)) continue;
     const idx = indexByRef.get(ref);
@@ -207,5 +176,5 @@ OUTPUT:
     });
   }
 
-  return { answer: validated.data.answer_markdown.trim(), citations, interactionId };
+  return { answer: validated.answer_markdown.trim(), citations, interactionId: result.telemetry.interactionId };
 }

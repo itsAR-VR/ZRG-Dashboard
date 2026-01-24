@@ -6,8 +6,9 @@ export async function bumpLeadMessageRollup(opts: {
   leadId: string;
   direction: "inbound" | "outbound";
   sentAt: Date;
+  source?: string | null;
 }): Promise<void> {
-  const { leadId, direction, sentAt } = opts;
+  const { leadId, direction, sentAt, source } = opts;
 
   await prisma.lead.updateMany({
     where: {
@@ -35,10 +36,20 @@ export async function bumpLeadMessageRollup(opts: {
     },
     data: { lastOutboundAt: sentAt },
   });
+
+  if (source === "zrg") {
+    await prisma.lead.updateMany({
+      where: {
+        id: leadId,
+        OR: [{ lastZrgOutboundAt: null }, { lastZrgOutboundAt: { lt: sentAt } }],
+      },
+      data: { lastZrgOutboundAt: sentAt },
+    });
+  }
 }
 
 export async function recomputeLeadMessageRollups(leadId: string): Promise<void> {
-  const [lastInbound, lastOutbound, lastMessage] = await Promise.all([
+  const [lastInbound, lastOutbound, lastZrgOutbound, lastMessage] = await Promise.all([
     prisma.message.findFirst({
       where: { leadId, direction: "inbound" },
       orderBy: { sentAt: "desc" },
@@ -46,6 +57,11 @@ export async function recomputeLeadMessageRollups(leadId: string): Promise<void>
     }),
     prisma.message.findFirst({
       where: { leadId, direction: "outbound" },
+      orderBy: { sentAt: "desc" },
+      select: { sentAt: true },
+    }),
+    prisma.message.findFirst({
+      where: { leadId, direction: "outbound", source: "zrg" },
       orderBy: { sentAt: "desc" },
       select: { sentAt: true },
     }),
@@ -61,6 +77,7 @@ export async function recomputeLeadMessageRollups(leadId: string): Promise<void>
     data: {
       lastInboundAt: lastInbound?.sentAt ?? null,
       lastOutboundAt: lastOutbound?.sentAt ?? null,
+      lastZrgOutboundAt: lastZrgOutbound?.sentAt ?? null,
       lastMessageAt: lastMessage?.sentAt ?? null,
       lastMessageDirection: (lastMessage?.direction as string | undefined) ?? null,
     },

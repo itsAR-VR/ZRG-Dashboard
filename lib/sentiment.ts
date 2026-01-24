@@ -1,10 +1,9 @@
 import "server-only";
 
 import "@/lib/server-dns";
-import { getAIPromptTemplate, getPromptWithOverrides } from "@/lib/ai/prompt-registry";
-import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
+import { resolvePromptTemplate, runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
+import { substituteTemplateVars } from "@/lib/ai/prompt-runner/template";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
-import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import {
   isPositiveSentiment,
   POSITIVE_SENTIMENTS,
@@ -385,12 +384,13 @@ export async function analyzeInboundEmailReply(opts: {
   if (!process.env.OPENAI_API_KEY) return null;
 
   const maxRetries = opts.maxRetries ?? 2;
-  // Use override-aware prompt lookup (Phase 47i)
-  const overrideResult = await getPromptWithOverrides("sentiment.email_inbox_analyze.v1", opts.clientId);
-  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("sentiment.email_inbox_analyze.v1");
-  const overrideVersion = overrideResult?.overrideVersion ?? null;
-  const systemPrompt =
-    promptTemplate?.messages.find((m) => m.role === "system")?.content || EMAIL_INBOX_MANAGER_SYSTEM;
+  const resolved = await resolvePromptTemplate({
+    promptKey: "sentiment.email_inbox_analyze.v1",
+    clientId: opts.clientId,
+    systemFallback: EMAIL_INBOX_MANAGER_SYSTEM,
+  });
+
+  const systemPrompt = resolved.system;
 
   const latestReplyGuess = extractLatestEmailReplyBlockPlaintextGuess({
     subject: opts.subject,
@@ -553,105 +553,83 @@ export async function analyzeInboundEmailReply(opts: {
     required: ["classification", "cleaned_response", "mobile_number", "direct_phone", "scheduling_link", "is_newsletter"],
   } as const;
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const { response, interactionId } = await runResponseWithInteraction({
-        clientId: opts.clientId,
-        leadId: opts.leadId,
-        featureId: promptTemplate?.featureId || "sentiment.email_inbox_analyze",
-        promptKey: (promptTemplate?.key || "sentiment.email_inbox_analyze.v1") + (overrideVersion ? `.${overrideVersion}` : "") + (attempt === 1 ? "" : `.retry${attempt}`),
-        params: {
-          model,
-          instructions: systemPrompt,
-          input: [{ role: "user", content: userPrompt }] as const,
-          // Structured output + big input: keep reasoning tight so we reliably
-          // get a JSON body instead of consuming the budget on reasoning tokens.
-          reasoning: { effort: "low" },
-          max_output_tokens: Math.min(baseBudget.maxOutputTokens + (attempt - 1) * 600, 4000),
-          text: {
-            verbosity: "low",
-            format: { type: "json_schema", name: "email_inbox_analysis", strict: true, schema },
-          },
-        },
-      });
+  const attempts = Array.from({ length: Math.max(1, maxRetries) }, (_, attemptIndex) =>
+    Math.min(baseBudget.maxOutputTokens + attemptIndex * 600, 4000)
+  );
 
-      const raw = getTrimmedOutputText(response) || "";
-      if (!raw) {
-        if (response.incomplete_details?.reason === "max_output_tokens" && attempt < maxRetries) continue;
-        if (attempt < maxRetries) continue;
-        if (interactionId) {
-          const details = summarizeResponseForTelemetry(response);
-          await markAiInteractionError(
-            interactionId,
-            `Post-process error: empty output_text${details ? ` (${details})` : ""}`
-          );
-        }
-        return null;
-      }
+  const result = await runStructuredJsonPrompt<EmailInboxAnalysis>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    promptKey: "sentiment.email_inbox_analyze.v1",
+    model,
+    reasoningEffort: "low",
+    systemFallback: EMAIL_INBOX_MANAGER_SYSTEM,
+    resolved: {
+      system: resolved.system,
+      featureId: resolved.featureId,
+      promptKeyForTelemetry: resolved.promptKeyForTelemetry,
+    },
+    input: [{ role: "user", content: userPrompt }] as const,
+    schemaName: "email_inbox_analysis",
+    strict: true,
+    schema,
+    attempts,
+    budget: {
+      min: 1200,
+      max: 2400,
+    },
+    validate: (value) => {
+      const anyValue = value as any;
+      if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not an object" };
+      if (typeof anyValue.classification !== "string") return { success: false, error: "classification must be string" };
+      if (typeof anyValue.cleaned_response !== "string") return { success: false, error: "cleaned_response must be string" };
+      if (typeof anyValue.is_newsletter !== "boolean") return { success: false, error: "is_newsletter must be boolean" };
 
-      const jsonText = extractJsonObjectFromText(raw);
-      const parsed = JSON.parse(jsonText) as {
-        classification?: EmailInboxClassification;
-        cleaned_response?: unknown;
-        is_newsletter?: unknown;
-        mobile_number?: unknown;
-        direct_phone?: unknown;
-        scheduling_link?: unknown;
-      };
-      if (
-        !parsed.classification ||
-        typeof parsed.cleaned_response !== "string" ||
-        typeof parsed.is_newsletter !== "boolean"
-      ) {
-        if (attempt < maxRetries) continue;
-        return null;
-      }
+      const allowed: EmailInboxClassification[] = [
+        "Meeting Booked",
+        "Meeting Requested",
+        "Call Requested",
+        "Information Requested",
+        "Follow Up",
+        "Not Interested",
+        "Automated Reply",
+        "Out Of Office",
+        "Blacklist",
+      ];
+      const classification = allowed.find((c) => c === anyValue.classification);
+      if (!classification) return { success: false, error: "invalid classification" };
 
-      const normalizeOptString = (value: unknown): string | undefined => {
-        if (typeof value !== "string") return undefined;
-        const trimmed = value.trim();
+      const normalizeOptString = (raw: unknown): string | undefined => {
+        if (typeof raw !== "string") return undefined;
+        const trimmed = raw.trim();
         return trimmed ? trimmed : undefined;
       };
 
-      const mobileNumber = normalizeOptString(parsed.mobile_number);
-      const directPhone = normalizeOptString(parsed.direct_phone);
-      const schedulingLink = normalizeOptString(parsed.scheduling_link);
+      const mobileNumber = normalizeOptString(anyValue.mobile_number);
+      const directPhone = normalizeOptString(anyValue.direct_phone);
+      const schedulingLink = normalizeOptString(anyValue.scheduling_link);
 
       return {
-        classification: parsed.classification,
-        cleaned_response: parsed.cleaned_response,
-        is_newsletter: parsed.is_newsletter,
-        ...(mobileNumber ? { mobile_number: mobileNumber } : {}),
-        ...(directPhone ? { direct_phone: directPhone } : {}),
-        ...(schedulingLink ? { scheduling_link: schedulingLink } : {}),
+        success: true,
+        data: {
+          classification,
+          cleaned_response: anyValue.cleaned_response,
+          is_newsletter: anyValue.is_newsletter,
+          ...(mobileNumber ? { mobile_number: mobileNumber } : {}),
+          ...(directPhone ? { direct_phone: directPhone } : {}),
+          ...(schedulingLink ? { scheduling_link: schedulingLink } : {}),
+        },
       };
-    } catch (error) {
-      const isRetryable =
-        error instanceof Error &&
-        (error.message.includes("500") ||
-          error.message.includes("503") ||
-          error.message.toLowerCase().includes("rate") ||
-          error.message.toLowerCase().includes("timeout"));
+    },
+  });
 
-      if (isRetryable && attempt < maxRetries) {
-        await new Promise((r) => setTimeout(r, Math.pow(2, attempt) * 1000));
-        continue;
-      }
-
-      return null;
-    }
-  }
-
-  return null;
+  return result.success ? result.data : null;
 }
 
 // ============================================================================
 // SENTIMENT CLASSIFICATION (PROMPT-ONLY)
 // ============================================================================
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export async function classifySentiment(
   transcript: string,
@@ -698,17 +676,19 @@ export async function classifySentiment(
     return "Out of Office";
   }
 
-  // Use override-aware prompt lookup (Phase 47i)
-  const overrideResult = await getPromptWithOverrides("sentiment.classify.v1", opts.clientId);
-  const promptTemplate = overrideResult?.template ?? getAIPromptTemplate("sentiment.classify.v1");
-  const overrideVersion = overrideResult?.overrideVersion ?? null;
-  const systemPrompt =
-    promptTemplate?.messages.find((m) => m.role === "system")?.content ||
-    "You are an expert inbox manager. Classify the reply into ONE category and return only JSON {\"classification\": \"...\"}.";
+  const resolved = await resolvePromptTemplate({
+    promptKey: "sentiment.classify.v1",
+    clientId: opts.clientId,
+    systemFallback:
+      "You are an expert inbox manager. Classify the reply into ONE category and return only JSON {\"classification\": \"...\"}.",
+  });
+
+  const systemPrompt = resolved.system;
 
   const safeTranscript = truncateVeryLargeText(transcript, 240_000);
+  const userTemplate = resolved.template?.messages.find((m) => m.role === "user")?.content || "";
   const userPrompt =
-    promptTemplate?.messages.find((m) => m.role === "user")?.content?.replace("{{transcript}}", safeTranscript) ||
+    (userTemplate ? substituteTemplateVars(userTemplate, { transcript: safeTranscript }) : "").trim() ||
     `Transcript (chronological; newest at the end):\n\n${safeTranscript}`;
 
   const enumTags = SENTIMENT_TAGS.filter((t) => t !== "New" && t !== "Snoozed");
@@ -725,90 +705,55 @@ export async function classifySentiment(
     preferApiCount: true,
   });
 
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const timeoutMs = Math.max(
-        5_000,
-        Number.parseInt(process.env.OPENAI_SENTIMENT_TIMEOUT_MS || "25000", 10) || 25_000
-      );
+  const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_SENTIMENT_TIMEOUT_MS || "25000", 10) || 25_000);
+  const attempts = Array.from({ length: Math.max(1, maxRetries) }, (_, attemptIndex) =>
+    Math.min(baseBudget.maxOutputTokens + attemptIndex * 400, 2000)
+  );
 
-      const { response, interactionId } = await runResponseWithInteraction({
-        clientId: opts.clientId,
-        leadId: opts.leadId,
-        featureId: promptTemplate?.featureId || "sentiment.classify",
-        promptKey: (promptTemplate?.key || "sentiment.classify.v1") + (overrideVersion ? `.${overrideVersion}` : ""),
-        params: {
-          model,
-          instructions: systemPrompt,
-          input: [{ role: "user", content: userPrompt }] as const,
-          // This is a short structured output; avoid spending the output budget on
-          // extra reasoning tokens.
-          reasoning: { effort: "low" },
-          // Scale `max_output_tokens` to input size (reasoning tokens count here).
-          max_output_tokens: Math.min(baseBudget.maxOutputTokens + (attempt - 1) * 400, 2000),
-          text: {
-            verbosity: "low",
-            format: {
-              type: "json_schema",
-              name: "sentiment_classification",
-              strict: true,
-              schema: {
-                type: "object",
-                additionalProperties: false,
-                properties: {
-                  classification: { type: "string", enum: enumTags },
-                },
-                required: ["classification"],
-              },
-            },
-          },
-        },
-        requestOptions: {
-          timeout: timeoutMs,
-          // Retries are handled explicitly in this function.
-          maxRetries: 0,
-        },
-      });
+  const result = await runStructuredJsonPrompt<{ classification: string }>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    promptKey: "sentiment.classify.v1",
+    model,
+    reasoningEffort: "low",
+    systemFallback: systemPrompt,
+    resolved: {
+      system: resolved.system,
+      featureId: resolved.featureId,
+      promptKeyForTelemetry: resolved.promptKeyForTelemetry,
+    },
+    input: [{ role: "user", content: userPrompt }] as const,
+    schemaName: "sentiment_classification",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        classification: { type: "string", enum: enumTags },
+      },
+      required: ["classification"],
+    },
+    attempts,
+    budget: {
+      min: 256,
+      max: 900,
+    },
+    timeoutMs,
+    maxRetries: 0,
+    validate: (value) => {
+      const anyValue = value as any;
+      if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not an object" };
+      if (typeof anyValue.classification !== "string") return { success: false, error: "classification must be string" };
+      return { success: true, data: { classification: anyValue.classification } };
+    },
+  });
 
-      const raw = getTrimmedOutputText(response) || "";
-      if (!raw) {
-        if (attempt < maxRetries) continue;
-        if (interactionId) {
-          const details = summarizeResponseForTelemetry(response);
-          await markAiInteractionError(
-            interactionId,
-            `Post-process error: empty output_text${details ? ` (${details})` : ""}`
-          );
-        }
-        return "Neutral";
-      }
-
-      const jsonText = extractJsonObjectFromText(raw);
-      const parsed = JSON.parse(jsonText) as { classification?: string };
-      const cleaned = String(parsed?.classification || "").trim();
-
-      const exact = enumTags.find((tag) => tag.toLowerCase() === cleaned.toLowerCase());
-      if (exact) return exact;
-
-      // If the model somehow deviated, fall back safely.
-      if (attempt < maxRetries) continue;
-      return "Neutral";
-    } catch (error) {
-      const isRetryable =
-        error instanceof Error &&
-        (error.message.includes("500") ||
-          error.message.includes("503") ||
-          error.message.toLowerCase().includes("rate") ||
-          error.message.toLowerCase().includes("timeout"));
-
-      if (isRetryable && attempt < maxRetries) {
-        await sleep(Math.pow(2, attempt) * 1000);
-        continue;
-      }
-
-      return "Neutral";
-    }
+  if (!result.success) {
+    return "Neutral";
   }
 
-  return "Neutral";
+  const cleaned = String(result.data.classification || "").trim();
+  const exact = enumTags.find((tag) => tag.toLowerCase() === cleaned.toLowerCase());
+  return exact ?? "Neutral";
 }

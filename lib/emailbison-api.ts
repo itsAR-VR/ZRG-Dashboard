@@ -4,6 +4,32 @@ export interface EmailBisonCampaign {
   status?: string;
 }
 
+export interface EmailBisonPaginationMeta {
+  current_page?: number | null;
+  last_page?: number | null;
+  per_page?: number | null;
+  total?: number | null;
+  [key: string]: unknown;
+}
+
+export interface EmailBisonPaginationLinks {
+  first?: string | null;
+  last?: string | null;
+  prev?: string | null;
+  next?: string | null;
+  [key: string]: unknown;
+}
+
+export interface EmailBisonCampaignLead {
+  id: number;
+  email?: string | null;
+  email_address?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
+  lead_campaign_data?: Array<{ emails_sent?: number | null; [key: string]: unknown }> | null;
+  [key: string]: unknown;
+}
+
 // Custom variable from EmailBison lead
 export interface EmailBisonCustomVariable {
   name: string;
@@ -79,6 +105,19 @@ export interface EmailBisonSentEmail {
   email_body?: string | null;
   status?: string | null;
   sent_at?: string | null;
+  scheduled_date_local?: string | null;
+  raw_message_id?: string | null;
+}
+
+export interface EmailBisonScheduledEmail {
+  id: number;
+  lead_id?: number;
+  sequence_step_id?: number;
+  email_subject?: string | null;
+  email_body?: string | null;
+  status?: string | null;
+  sent_at?: string | null;
+  scheduled_date?: string | null;
   scheduled_date_local?: string | null;
   raw_message_id?: string | null;
 }
@@ -494,6 +533,93 @@ export async function fetchEmailBisonCampaigns(
   }
 }
 
+export async function fetchEmailBisonCampaignLeadsPage(
+  apiKey: string,
+  bisonCampaignId: string,
+  page: number,
+  opts: EmailBisonRequestOptions = {}
+): Promise<{
+  success: boolean;
+  data?: EmailBisonCampaignLead[];
+  meta?: EmailBisonPaginationMeta;
+  links?: EmailBisonPaginationLinks;
+  error?: string;
+}> {
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const host = resolveEmailBisonBaseHost(opts.baseHost);
+  const pageNum = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+  const url = `${baseOrigin}/api/campaigns/${encodeURIComponent(bisonCampaignId)}/leads?page=${pageNum}`;
+
+  try {
+    const response = await emailBisonFetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamError =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        console.warn("[EmailBison] Campaign leads fetch auth failed:", {
+          status: response.status,
+          endpoint: "GET /api/campaigns/:id/leads",
+          host,
+          error: upstreamError ?? "Unknown error",
+        });
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamError, opts.baseHost) };
+      }
+
+      console.warn("[EmailBison] Campaign leads fetch failed:", {
+        status: response.status,
+        endpoint: "GET /api/campaigns/:id/leads",
+        host,
+        error: upstreamError ?? "Unknown error",
+      });
+      return {
+        success: false,
+        error: formatEmailBisonHttpError(response.status, "campaign leads fetch", upstreamError, opts.baseHost),
+      };
+    }
+
+    const { json: body, text } = await readJsonOrTextSafe(response);
+    if (!body) {
+      console.warn("[EmailBison] Campaign leads fetch succeeded but response was not JSON:", {
+        host,
+        endpoint: "GET /api/campaigns/:id/leads",
+        preview: typeof text === "string" ? truncateForLog(text) : null,
+      });
+      return { success: false, error: "EmailBison campaign leads fetch succeeded but returned an invalid response." };
+    }
+
+    const list: EmailBisonCampaignLead[] =
+      Array.isArray(body) ? body : Array.isArray(body?.data) ? body.data : Array.isArray(body?.leads) ? body.leads : [];
+
+    const meta: EmailBisonPaginationMeta | undefined =
+      body?.meta && typeof body.meta === "object"
+        ? (body.meta as EmailBisonPaginationMeta)
+        : body?.data?.meta && typeof body.data.meta === "object"
+          ? (body.data.meta as EmailBisonPaginationMeta)
+          : undefined;
+
+    const links: EmailBisonPaginationLinks | undefined =
+      body?.links && typeof body.links === "object"
+        ? (body.links as EmailBisonPaginationLinks)
+        : body?.data?.links && typeof body.data.links === "object"
+          ? (body.data.links as EmailBisonPaginationLinks)
+          : undefined;
+
+    return { success: true, data: list, meta, links };
+  } catch (error) {
+    console.error("[EmailBison] Failed to fetch campaign leads:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
 export async function sendEmailBisonReply(
   apiKey: string,
   replyId: string,
@@ -721,6 +847,145 @@ export async function fetchEmailBisonSentEmails(
       success: false,
       error: error instanceof Error ? error.message : "Unknown error",
     };
+  }
+}
+
+/**
+ * Fetch scheduled emails for a lead from EmailBison (pre-send queue).
+ * Used for "first touch availability" injection where we must respect the scheduled send time.
+ */
+export async function fetchEmailBisonScheduledEmails(
+  apiKey: string,
+  bisonLeadId: string,
+  opts: EmailBisonRequestOptions = {}
+): Promise<{ success: boolean; data?: EmailBisonScheduledEmail[]; error?: string }> {
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const host = resolveEmailBisonBaseHost(opts.baseHost);
+  const url = `${baseOrigin}/api/leads/${encodeURIComponent(bisonLeadId)}/scheduled-emails`;
+
+  console.log(`[EmailBison] Fetching scheduled emails for lead ${bisonLeadId}`);
+
+  try {
+    const response = await emailBisonFetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamMessage =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        console.warn("[EmailBison] Scheduled emails fetch auth failed:", {
+          status: response.status,
+          endpoint: "GET /api/leads/:id/scheduled-emails",
+          host,
+          error: upstreamMessage ?? "Unknown error",
+        });
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamMessage, opts.baseHost) };
+      }
+
+      console.warn("[EmailBison] Scheduled emails fetch failed:", {
+        status: response.status,
+        endpoint: "GET /api/leads/:id/scheduled-emails",
+        host,
+        error: upstreamMessage ?? "Unknown error",
+      });
+      return {
+        success: false,
+        error: formatEmailBisonHttpError(response.status, "scheduled-emails fetch", upstreamMessage, opts.baseHost),
+      };
+    }
+
+    const { json: data, text } = await readJsonOrTextSafe(response);
+    if (!data) {
+      console.warn("[EmailBison] Scheduled emails fetch succeeded but response was not JSON:", {
+        host,
+        endpoint: "GET /api/leads/:id/scheduled-emails",
+        preview: typeof text === "string" ? truncateForLog(text) : null,
+      });
+      return { success: false, error: "EmailBison scheduled emails fetch succeeded but returned an invalid response." };
+    }
+
+    const scheduledEmailsArray: EmailBisonScheduledEmail[] = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.scheduled_emails)
+          ? data.scheduled_emails
+          : Array.isArray(data?.scheduledEmails)
+            ? data.scheduledEmails
+            : [];
+
+    console.log(`[EmailBison] Found ${scheduledEmailsArray.length} scheduled emails for lead ${bisonLeadId}`);
+    return { success: true, data: scheduledEmailsArray };
+  } catch (error) {
+    console.error("[EmailBison] Failed to fetch scheduled emails:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+/**
+ * Patch a lead on EmailBison.
+ * Currently used for setting lead custom variables (e.g. availability slot sentences for first-touch emails).
+ */
+export async function patchEmailBisonLead(
+  apiKey: string,
+  bisonLeadId: string,
+  payload: { custom_variables?: EmailBisonCustomVariable[] },
+  opts: EmailBisonRequestOptions = {}
+): Promise<{ success: boolean; data?: any; error?: string }> {
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const host = resolveEmailBisonBaseHost(opts.baseHost);
+  const url = `${baseOrigin}/api/leads/${encodeURIComponent(bisonLeadId)}`;
+
+  try {
+    const response = await emailBisonFetch(url, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamMessage =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        console.warn("[EmailBison] Lead patch auth failed:", {
+          status: response.status,
+          endpoint: "PATCH /api/leads/:id",
+          host,
+          error: upstreamMessage ?? "Unknown error",
+        });
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamMessage, opts.baseHost) };
+      }
+
+      console.warn("[EmailBison] Lead patch failed:", {
+        status: response.status,
+        endpoint: "PATCH /api/leads/:id",
+        host,
+        error: upstreamMessage ?? "Unknown error",
+      });
+      return {
+        success: false,
+        error: formatEmailBisonHttpError(response.status, "lead patch", upstreamMessage, opts.baseHost),
+      };
+    }
+
+    const { json: body } = await readJsonOrTextSafe(response);
+    return { success: true, data: body };
+  } catch (error) {
+    console.error("[EmailBison] Failed to patch lead:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
   }
 }
 
