@@ -76,6 +76,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - [x] **Booking Modal (All Slots + Grid)** — “Book Meeting (GHL)” shows all available slots for the next 30 days in a scrollable grid and displays per-slot offered counts.
 - [x] **Snooze-by-Reply** — Messages like “call after Jan 13” set `Lead.snoozedUntil`, pause sequences until that date, and filter booking availability to start after the snooze cutoff.
 - [x] **Hardened Auto-Booking** — Only books when the lead clearly accepts one of the offered slots; ambiguous “yes/sounds good” routes to Follow-ups instead.
+- [x] **Lead Scheduler Link (Manual Review)** — Captures lead-provided scheduler links and creates a review task (with overlap suggestions when possible). See `docs/notes/booking-process-5.md`.
 - [x] **Warn-Only Calendar Mismatch** — If the calendar inferred from the Calendar Link differs from `ghlDefaultCalendarId`, UI warns but does not block booking.
 - [ ] **Meeting Completion Tracking (Deferred)** — Attendance/no-show signals are not tracked yet; for now we treat a provider-verified booking as “meeting completed” until completion tracking is implemented.
 
@@ -594,6 +595,10 @@ npm run dev
 - [x] Template Variables - {senderName}, {companyName}, {result}, {calendarLink}, {qualificationQuestion1/2}
 - [x] AI Persona Enhancements - Service description, qualification questions, knowledge assets for better AI context
 - [x] EmailGuard Integration - Email validation before sending
+- [x] **Notification Center** - Per-workspace realtime + daily digest alerts (Slack/email) on sentiment transitions with configurable per-sentiment rules
+- [x] **Call Requested Tasks** - Auto-creates follow-up tasks when lead requests a call with phone number
+- [x] **Lead Scheduler Link Capture** - Extracts and stores lead-provided Calendly/HubSpot/GHL links, creates manual review tasks with overlap suggestions
+- [x] **Per-Workspace Integrations** - Slack bot token + Resend API key stored per workspace (not global env)
 
 ### 🚧 In Progress / Next Up
 - [ ] **Channel-Aware Analytics** - Open/reply rates by channel, sentiment trends
@@ -601,6 +606,9 @@ npm run dev
 - [ ] **Lead Scoring** - AI-powered prioritization across channels
 - [ ] **Per-Sentiment/Status Draft Prompts** - Create more specific prompt templates per sentiment/status for higher-quality draft generation
 - [ ] **Multi-Channel Auto Follow-Ups + Auto-Booking** - Harden and expand automated follow-ups + booking flows across SMS/Email/LinkedIn to replace setters and increase booking rates
+- [ ] **Third-Party Scheduler Booking Automation** - Playwright/Fly.io browser automation to book on lead-provided Calendly/HubSpot/GHL scheduler links (Phase 52 follow-on)
+- [ ] **SMS Notification Delivery** - Wire actual SMS provider (Twilio/GHL) for Notification Center SMS alerts (currently config-only)
+- [ ] **Notification Center Tests** - Unit tests for rules normalization, realtime dedupe, daily digest aggregation
 
 ### 📋 Future Phases (see `lib/future-integrations.ts` for detailed specs)
 - [ ] **Phase V: AI Voice Caller** - Retell AI via SIP trunking for qualification calls and double-dial touchpoints

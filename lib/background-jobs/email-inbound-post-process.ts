@@ -39,6 +39,10 @@ import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { executeAutoSend } from "@/lib/auto-send";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { maybeAssignLead } from "@/lib/lead-assignment";
+import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
+import { ensureCallRequestedTask } from "@/lib/call-requested";
+import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
+import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   for (const dateStr of dateStrs) {
@@ -599,6 +603,7 @@ export async function runEmailInboundPostProcessJob(opts: {
   });
 
   if (!lead) throw new Error("Lead not found");
+  const previousSentiment = lead.sentimentTag;
 
   const emailBisonBaseHost = client.emailBisonBaseHost?.host ?? null;
 
@@ -660,6 +665,15 @@ export async function runEmailInboundPostProcessJob(opts: {
   }
 
   const inboundText = (message.body || "").trim();
+  const schedulerLink = extractSchedulerLinkFromText(message.rawText || message.rawHtml || inboundText);
+  if (schedulerLink) {
+    prisma.lead
+      .updateMany({
+        where: { id: lead.id, externalSchedulingLink: { not: schedulerLink } },
+        data: { externalSchedulingLink: schedulerLink, externalSchedulingLinkLastSeenAt: new Date() },
+      })
+      .catch(() => undefined);
+  }
 
   // AI SENTIMENT CLASSIFICATION (moved from webhook for faster response times)
   // Run full AI classification if the webhook used a placeholder ("Neutral").
@@ -779,6 +793,15 @@ export async function runEmailInboundPostProcessJob(opts: {
     }
   }
 
+  notifyOnLeadSentimentChange({
+    clientId: client.id,
+    leadId: lead.id,
+    previousSentimentTag: previousSentiment,
+    newSentimentTag: lead.sentimentTag,
+    messageId: message.id,
+    latestInboundText: inboundText,
+  }).catch(() => undefined);
+
   // Round-robin lead assignment (Phase 43)
   // Assign lead to next setter if sentiment is positive and not already assigned
   await maybeAssignLead({
@@ -863,6 +886,9 @@ export async function runEmailInboundPostProcessJob(opts: {
     leadEmail: lead.email || "",
     emailBody: fullEmailBody,
   });
+
+  await ensureCallRequestedTask({ leadId: lead.id, latestInboundText: inboundText }).catch(() => undefined);
+  await handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: inboundText }).catch(() => undefined);
 
   // If the lead is a positive reply, ensure they exist in GHL for SMS syncing.
   if (isPositiveSentiment(lead.sentimentTag)) {

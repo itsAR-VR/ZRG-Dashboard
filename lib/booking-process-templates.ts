@@ -111,7 +111,7 @@ export const BOOKING_PROCESS_TEMPLATES: TemplateBookingProcess[] = [
   {
     name: "Lead Provided Calendar Link (Escalate or Schedule)",
     description:
-      "When the lead asks to book via their own calendar link, attempt scheduling when supported; otherwise escalate.",
+      "When the lead asks to book via their own scheduler link, capture it and flag for manual review (automation is planned as a follow-on).",
     stages: [
       {
         stageNumber: 1,

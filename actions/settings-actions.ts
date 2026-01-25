@@ -47,6 +47,11 @@ export interface UserSettingsData {
   airtableMode: boolean;
   emailDigest: boolean;
   slackAlerts: boolean;
+  notificationEmails: string[];
+  notificationPhones: string[];
+  notificationSlackChannelIds: string[];
+  notificationSentimentRules: Record<string, unknown> | null;
+  notificationDailyDigestTime: string | null;
   timezone: string | null;
   workStartTime: string | null;
   workEndTime: string | null;
@@ -135,7 +140,12 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           airtableMode: false,
           emailDigest: true,
           slackAlerts: true,
-          timezone: "America/Los_Angeles",
+          notificationEmails: [],
+          notificationPhones: [],
+          notificationSlackChannelIds: [],
+          notificationSentimentRules: null,
+          notificationDailyDigestTime: "09:00",
+          timezone: "America/New_York",
           workStartTime: "09:00",
           workEndTime: "17:00",
           calendarSlotsToShow: 3,
@@ -182,6 +192,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           autoFollowUpsOnReply: false,
           emailDigest: true,
           slackAlerts: true,
+          timezone: "America/New_York",
           workStartTime: "09:00",
           workEndTime: "17:00",
         },
@@ -234,6 +245,14 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         airtableMode: settings.airtableMode,
         emailDigest: settings.emailDigest,
         slackAlerts: settings.slackAlerts,
+        notificationEmails: settings.notificationEmails ?? [],
+        notificationPhones: settings.notificationPhones ?? [],
+        notificationSlackChannelIds: settings.notificationSlackChannelIds ?? [],
+        notificationSentimentRules:
+          settings.notificationSentimentRules && typeof settings.notificationSentimentRules === "object"
+            ? (settings.notificationSentimentRules as Record<string, unknown>)
+            : null,
+        notificationDailyDigestTime: settings.notificationDailyDigestTime ?? "09:00",
         timezone: settings.timezone,
         workStartTime: settings.workStartTime,
         workEndTime: settings.workEndTime,
@@ -281,7 +300,13 @@ export async function updateUserSettings(
     const wantsDraftGenerationUpdate =
       data.draftGenerationModel !== undefined ||
       data.draftGenerationReasoningEffort !== undefined;
-    if (wantsInsightsUpdate || wantsDraftGenerationUpdate) {
+    const wantsNotificationUpdate =
+      data.notificationEmails !== undefined ||
+      data.notificationPhones !== undefined ||
+      data.notificationSlackChannelIds !== undefined ||
+      data.notificationSentimentRules !== undefined ||
+      data.notificationDailyDigestTime !== undefined;
+    if (wantsInsightsUpdate || wantsDraftGenerationUpdate || wantsNotificationUpdate) {
       await requireClientAdminAccess(clientId);
     }
 
@@ -314,6 +339,11 @@ export async function updateUserSettings(
         airtableMode: data.airtableMode,
         emailDigest: data.emailDigest,
         slackAlerts: data.slackAlerts,
+        notificationEmails: data.notificationEmails,
+        notificationPhones: data.notificationPhones,
+        notificationSlackChannelIds: data.notificationSlackChannelIds,
+        notificationSentimentRules: data.notificationSentimentRules as any,
+        notificationDailyDigestTime: data.notificationDailyDigestTime,
         timezone: data.timezone,
         workStartTime: data.workStartTime,
         workEndTime: data.workEndTime,
@@ -361,6 +391,11 @@ export async function updateUserSettings(
         airtableMode: data.airtableMode ?? false,
         emailDigest: data.emailDigest ?? true,
         slackAlerts: data.slackAlerts ?? true,
+        notificationEmails: data.notificationEmails ?? [],
+        notificationPhones: data.notificationPhones ?? [],
+        notificationSlackChannelIds: data.notificationSlackChannelIds ?? [],
+        notificationSentimentRules: (data.notificationSentimentRules as any) ?? undefined,
+        notificationDailyDigestTime: data.notificationDailyDigestTime ?? "09:00",
         timezone: data.timezone,
         workStartTime: data.workStartTime ?? "09:00",
         workEndTime: data.workEndTime ?? "17:00",

@@ -26,6 +26,10 @@ import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { maybeAssignLead } from "@/lib/lead-assignment";
+import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
+import { ensureCallRequestedTask } from "@/lib/call-requested";
+import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
+import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import type { InboundPostProcessParams, InboundPostProcessResult, InboundPostProcessPipelineStage } from "@/lib/inbound-post-process/types";
 
 function mapInboxClassificationToSentimentTag(classification: string): SentimentTag {
@@ -134,6 +138,16 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   const subject = message.subject || null;
   const messageSentAt = message.sentAt || new Date();
 
+  const schedulerLink = extractSchedulerLinkFromText(rawText);
+  if (schedulerLink) {
+    prisma.lead
+      .updateMany({
+        where: { id: lead.id, externalSchedulingLink: { not: schedulerLink } },
+        data: { externalSchedulingLink: schedulerLink, externalSchedulingLinkLastSeenAt: new Date() },
+      })
+      .catch(() => undefined);
+  }
+
   pushStage("build_transcript");
   const contextMessages = await prisma.message.findMany({
     where: { leadId: lead.id },
@@ -193,6 +207,21 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   });
 
   console.log(prefix, "Sentiment:", sentimentTag, "Status:", leadStatus);
+
+  notifyOnLeadSentimentChange({
+    clientId: client.id,
+    leadId: lead.id,
+    previousSentimentTag: previousSentiment,
+    newSentimentTag: sentimentTag,
+    messageId: message.id,
+    latestInboundText: messageBody,
+  }).catch(() => undefined);
+
+  if (sentimentTag === "Call Requested") {
+    ensureCallRequestedTask({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
+  }
+
+  handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
 
   pushStage("maybe_assign_lead");
   await maybeAssignLead({
@@ -386,4 +415,3 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   console.log(prefix, "Completed for message", params.messageId);
   return { stageLogs };
 }
-

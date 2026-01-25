@@ -143,6 +143,11 @@ model Client {
   smartLeadWebhookSecret String?
   instantlyApiKey       String?
   instantlyWebhookSecret String?
+  // Slack integration (workspace-level)
+  slackBotToken     String?
+  // Resend integration (workspace-level)
+  resendApiKey      String?
+  resendFromEmail   String?
   userId        String              // Supabase Auth user ID - ties workspace to user
   // LinkedIn/Unipile integration (per-workspace account)
   unipileAccountId        String?      // Unipile account ID for LinkedIn messaging
@@ -175,6 +180,8 @@ model Client {
   offeredSlots   WorkspaceOfferedSlot[]
   aiInteractions AIInteraction[]
   backgroundJobs BackgroundJob[]
+  notificationEvents NotificationEvent[]
+  notificationSendLogs NotificationSendLog[]
   insightChatSessions InsightChatSession[]
   insightContextPacks InsightContextPack[]
   insightChatUserPreferences InsightChatUserPreference[]
@@ -262,6 +269,11 @@ model WorkspaceSettings {
   // Notification Settings
   emailDigest          Boolean  @default(true)
   slackAlerts          Boolean  @default(true)
+  notificationEmails         String[] @default([])
+  notificationPhones         String[] @default([])
+  notificationSlackChannelIds String[] @default([]) // Slack conversation IDs (C*/G*)
+  notificationSentimentRules Json? // Sentiment -> { mode, destinations }
+  notificationDailyDigestTime String? @default("09:00") // Local time in workspace timezone (HH:mm)
   // Schedule Settings
   timezone             String?
   workStartTime        String?  @default("09:00")
@@ -396,10 +408,15 @@ model Lead {
   // Calendar preferences
   preferredCalendarLinkId String?        // Optional per-lead calendar override
   preferredCalendarLink   CalendarLink?  @relation(fields: [preferredCalendarLinkId], references: [id])
+  // Lead-provided scheduler link (Phase 52d)
+  externalSchedulingLink String? @db.Text
+  externalSchedulingLinkLastSeenAt DateTime?
   // Relations
   messages          Message[]
   backgroundJobs    BackgroundJob[]
   followUps         FollowUpTask[]
+  notificationEvents NotificationEvent[]
+  notificationSendLogs NotificationSendLog[]
   followUpInstances FollowUpInstance[]  // Active follow-up sequences for this lead
   reactivationEnrollments ReactivationEnrollment[]
   aiDrafts          AIDraft[]
@@ -727,6 +744,43 @@ model FollowUpTask {
   @@index([dueDate])
   @@index([status])
   @@index([instanceId])
+}
+
+// Notification events for digesting + auditing (Phase 52d)
+model NotificationEvent {
+  id        String   @id @default(uuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  kind      String   // 'sentiment'
+  sentimentTag String?
+  messageId  String?
+  dedupeKey String @unique
+  createdAt DateTime @default(now())
+
+  @@index([clientId, createdAt(sort: Desc)])
+  @@index([leadId, createdAt(sort: Desc)])
+  @@index([clientId, kind, createdAt(sort: Desc)])
+  @@index([clientId, sentimentTag, createdAt(sort: Desc)])
+}
+
+// Notification send log used for idempotent dedupe across destinations (Phase 52d)
+model NotificationSendLog {
+  id        String   @id @default(uuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leadId    String?
+  lead      Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  kind      String   // 'sentiment_realtime' | 'daily_digest'
+  sentimentTag String?
+  destination String // 'slack' | 'email' | 'sms'
+  dedupeKey String @unique
+  createdAt DateTime @default(now())
+
+  @@index([clientId, createdAt(sort: Desc)])
+  @@index([leadId, createdAt(sort: Desc)])
+  @@index([clientId, kind, createdAt(sort: Desc)])
 }
 
 // AI-generated draft messages pending approval

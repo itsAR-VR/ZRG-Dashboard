@@ -9,6 +9,7 @@ import { refreshAvailabilityCachesDue } from "@/lib/availability-cache";
 import { backfillNoResponseFollowUpsDueOnCron } from "@/lib/followup-backfill";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { retrySmsDndHeldLeads } from "@/lib/booking-sms-dnd-retry";
+import { processDailyNotificationDigestsDue } from "@/lib/notification-center";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
@@ -78,6 +79,10 @@ export async function GET(request: NextRequest) {
     const results = await processFollowUpsDue();
     console.log("[Cron] Follow-up processing complete:", results);
 
+    console.log("[Cron] Processing notification digests...");
+    const notificationDigests = await processDailyNotificationDigestsDue({ limit: 50 });
+    console.log("[Cron] Notification digests complete:", notificationDigests);
+
       return NextResponse.json({
         success: true,
         availability,
@@ -87,6 +92,7 @@ export async function GET(request: NextRequest) {
         smsDndRetry,
         backfill,
         results,
+        notificationDigests,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -169,6 +175,10 @@ export async function POST(request: NextRequest) {
     const results = await processFollowUpsDue();
     console.log("[Cron] Follow-up processing complete:", results);
 
+    console.log("[Cron] Processing notification digests (POST)...");
+    const notificationDigests = await processDailyNotificationDigestsDue({ limit: 50 });
+    console.log("[Cron] Notification digests complete:", notificationDigests);
+
       return NextResponse.json({
         success: true,
         availability,
@@ -178,6 +188,7 @@ export async function POST(request: NextRequest) {
         smsDndRetry,
         backfill,
         results,
+        notificationDigests,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {

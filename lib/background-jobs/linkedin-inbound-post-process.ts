@@ -12,6 +12,10 @@ import { toStoredPhone } from "@/lib/phone-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { maybeAssignLead } from "@/lib/lead-assignment";
+import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
+import { ensureCallRequestedTask } from "@/lib/call-requested";
+import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
+import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 
 export async function runLinkedInInboundPostProcessJob(params: {
   clientId: string;
@@ -60,6 +64,15 @@ export async function runLinkedInInboundPostProcessJob(params: {
 
   const messageBody = message.body || "";
   const messageSentAt = message.sentAt || new Date();
+  const schedulerLink = extractSchedulerLinkFromText(messageBody);
+  if (schedulerLink) {
+    prisma.lead
+      .updateMany({
+        where: { id: lead.id, externalSchedulingLink: { not: schedulerLink } },
+        data: { externalSchedulingLink: schedulerLink, externalSchedulingLinkLastSeenAt: new Date() },
+      })
+      .catch(() => undefined);
+  }
 
   // 1. Extract Contact Info from Message
   // LinkedIn messages may contain phone numbers in signature
@@ -184,6 +197,21 @@ export async function runLinkedInInboundPostProcessJob(params: {
 
   const newSentiment = updatedLead?.sentimentTag || lead.sentimentTag;
 
+  notifyOnLeadSentimentChange({
+    clientId: client.id,
+    leadId: lead.id,
+    previousSentimentTag: previousSentiment,
+    newSentimentTag: newSentiment,
+    messageId: message.id,
+    latestInboundText: messageBody,
+  }).catch(() => undefined);
+
+  if (newSentiment === "Call Requested") {
+    ensureCallRequestedTask({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
+  }
+
+  handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
+
   await autoStartMeetingRequestedSequenceIfEligible({
     leadId: lead.id,
     previousSentiment,
@@ -295,5 +323,3 @@ export async function runLinkedInInboundPostProcessJob(params: {
 
   console.log(`[LinkedIn Post-Process] Completed for message ${params.messageId}`);
 }
-
-

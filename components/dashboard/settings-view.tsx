@@ -3,6 +3,7 @@
 import { useState, useEffect, useLayoutEffect, useCallback } from "react"
 import {
   Mail,
+  Send,
   MessageSquare,
   Activity,
   DollarSign,
@@ -42,7 +43,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -55,6 +57,14 @@ import {
 } from "@/components/ui/dialog"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { IntegrationsManager } from "./settings/integrations-manager"
 import { AiCampaignAssignmentPanel } from "./settings/ai-campaign-assignment"
 import { BookingProcessManager } from "./settings/booking-process-manager"
@@ -63,6 +73,9 @@ import { AiPersonaManager } from "./settings/ai-persona-manager"
 import { BulkDraftRegenerationCard } from "./settings/bulk-draft-regeneration"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { getWorkspaceAdminStatus } from "@/actions/access-actions"
+import { getSlackBotTokenStatus, listSlackChannelsForWorkspace, updateSlackBotToken } from "@/actions/slack-integration-actions"
+import { getResendConfigStatus, updateResendConfig } from "@/actions/resend-integration-actions"
+import { SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared"
 import {
   getClientEmailBisonBaseHost,
   getEmailBisonBaseHosts,
@@ -263,7 +276,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   } | null>(null)
 
   const [availability, setAvailability] = useState({
-    timezone: "America/Los_Angeles",
+    timezone: "America/New_York",
     startTime: "09:00",
     endTime: "17:00",
   })
@@ -272,6 +285,91 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     emailDigest: true,
     slackAlerts: true,
   })
+
+  type NotificationMode = "off" | "realtime" | "daily"
+  type NotificationDestination = "slack" | "email" | "sms"
+  type SentimentNotificationRule = {
+    mode: NotificationMode
+    destinations: Record<NotificationDestination, boolean>
+  }
+  type SentimentNotificationRules = Record<SentimentTag, SentimentNotificationRule>
+
+  const buildDefaultNotificationRules = (): SentimentNotificationRules => {
+    return SENTIMENT_TAGS.reduce((acc, tag) => {
+      acc[tag] = {
+        mode: "off",
+        destinations: { slack: false, email: false, sms: false },
+      }
+      return acc
+    }, {} as SentimentNotificationRules)
+  }
+
+  const coerceNotificationRules = (raw: unknown): SentimentNotificationRules => {
+    const defaults = buildDefaultNotificationRules()
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return defaults
+
+    const out: SentimentNotificationRules = { ...defaults }
+    for (const [key, value] of Object.entries(raw)) {
+      if (!SENTIMENT_TAGS.includes(key as SentimentTag)) continue
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue
+
+      const modeRaw = (value as any).mode
+      const mode: NotificationMode = modeRaw === "realtime" || modeRaw === "daily" || modeRaw === "off" ? modeRaw : "off"
+
+      const destinationsRaw = (value as any).destinations
+      const destinations: Record<NotificationDestination, boolean> = {
+        slack: Boolean(destinationsRaw?.slack),
+        email: Boolean(destinationsRaw?.email),
+        sms: Boolean(destinationsRaw?.sms),
+      }
+
+      out[key as SentimentTag] = { mode, destinations }
+    }
+
+    return out
+  }
+
+  const [notificationCenter, setNotificationCenter] = useState<{
+    emails: string[]
+    phones: string[]
+    slackChannelIds: string[]
+    dailyDigestTime: string
+    sentimentRules: SentimentNotificationRules
+  }>({
+    emails: [],
+    phones: [],
+    slackChannelIds: [],
+    dailyDigestTime: "09:00",
+    sentimentRules: buildDefaultNotificationRules(),
+  })
+
+  const [newNotificationEmail, setNewNotificationEmail] = useState("")
+  const [newNotificationPhone, setNewNotificationPhone] = useState("")
+
+  // Slack integration (bot token + channel selector)
+  const [slackTokenStatus, setSlackTokenStatus] = useState<{
+    configured: boolean
+    masked: string | null
+  } | null>(null)
+  const [slackTokenDraft, setSlackTokenDraft] = useState("")
+  const [slackIntegrationError, setSlackIntegrationError] = useState<string | null>(null)
+  const [isSavingSlackToken, setIsSavingSlackToken] = useState(false)
+  const [slackChannels, setSlackChannels] = useState<
+    Array<{ id: string; name: string; is_private?: boolean; is_member?: boolean }>
+  >([])
+  const [isLoadingSlackChannels, setIsLoadingSlackChannels] = useState(false)
+  const [slackChannelToAdd, setSlackChannelToAdd] = useState("")
+
+  // Resend integration (per-workspace)
+  const [resendStatus, setResendStatus] = useState<{
+    configured: boolean
+    maskedApiKey: string | null
+    fromEmail: string | null
+  } | null>(null)
+  const [resendApiKeyDraft, setResendApiKeyDraft] = useState("")
+  const [resendFromEmailDraft, setResendFromEmailDraft] = useState("")
+  const [isSavingResend, setIsSavingResend] = useState(false)
+  const [resendIntegrationError, setResendIntegrationError] = useState<string | null>(null)
 
 	  const [automationRules, setAutomationRules] = useState({
 	    autoApproveMeetings: true,
@@ -361,6 +459,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       ])
 
       setIsWorkspaceAdmin(Boolean(adminStatus.success && adminStatus.isAdmin))
+      setSlackIntegrationError(null)
+      setSlackChannels([])
+      setSlackChannelToAdd("")
+      setResendIntegrationError(null)
+      setResendApiKeyDraft("")
+      setResendFromEmailDraft("")
       
       if (result.success && result.data) {
         setSettings(result.data)
@@ -391,13 +495,20 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           targetResult: result.data.targetResult || "",
         })
         setAvailability({
-          timezone: result.data.timezone || "America/Los_Angeles",
+          timezone: result.data.timezone || "America/New_York",
           startTime: result.data.workStartTime || "09:00",
           endTime: result.data.workEndTime || "17:00",
         })
         setNotifications({
           emailDigest: result.data.emailDigest,
           slackAlerts: result.data.slackAlerts,
+        })
+        setNotificationCenter({
+          emails: result.data.notificationEmails ?? [],
+          phones: result.data.notificationPhones ?? [],
+          slackChannelIds: result.data.notificationSlackChannelIds ?? [],
+          dailyDigestTime: result.data.notificationDailyDigestTime || "09:00",
+          sentimentRules: coerceNotificationRules(result.data.notificationSentimentRules),
         })
 	        setAutomationRules({
 	          autoApproveMeetings: result.data.autoApproveMeetings,
@@ -432,6 +543,36 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           calendlyEventTypeLink: result.data.calendlyEventTypeLink || "",
           calendlyEventTypeUri: result.data.calendlyEventTypeUri || "",
         })
+      }
+
+      if (activeWorkspace && adminStatus.success && adminStatus.isAdmin) {
+        const slack = await getSlackBotTokenStatus(activeWorkspace)
+        if (slack.success) {
+          setSlackTokenStatus({
+            configured: Boolean(slack.configured),
+            masked: slack.masked ?? null,
+          })
+        } else {
+          setSlackTokenStatus(null)
+        }
+      } else {
+        setSlackTokenStatus(null)
+      }
+
+      if (activeWorkspace && adminStatus.success && adminStatus.isAdmin) {
+        const resend = await getResendConfigStatus(activeWorkspace)
+        if (resend.success) {
+          setResendStatus({
+            configured: Boolean(resend.configured),
+            maskedApiKey: resend.maskedApiKey ?? null,
+            fromEmail: resend.fromEmail ?? null,
+          })
+          setResendFromEmailDraft(resend.fromEmail ?? "")
+        } else {
+          setResendStatus(null)
+        }
+      } else {
+        setResendStatus(null)
       }
 
       // Load calendar links
@@ -769,6 +910,179 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     }
   }
 
+  const addNotificationEmail = () => {
+    const normalized = newNotificationEmail.trim().toLowerCase()
+    if (!normalized) return
+    setNotificationCenter((prev) => {
+      const next = Array.from(new Set([...(prev.emails || []), normalized]))
+      return { ...prev, emails: next }
+    })
+    setNewNotificationEmail("")
+    handleChange()
+  }
+
+  const removeNotificationEmail = (email: string) => {
+    setNotificationCenter((prev) => ({ ...prev, emails: (prev.emails || []).filter((e) => e !== email) }))
+    handleChange()
+  }
+
+  const addNotificationPhone = () => {
+    const normalized = newNotificationPhone.trim()
+    if (!normalized) return
+    setNotificationCenter((prev) => {
+      const next = Array.from(new Set([...(prev.phones || []), normalized]))
+      return { ...prev, phones: next }
+    })
+    setNewNotificationPhone("")
+    handleChange()
+  }
+
+  const removeNotificationPhone = (phone: string) => {
+    setNotificationCenter((prev) => ({ ...prev, phones: (prev.phones || []).filter((p) => p !== phone) }))
+    handleChange()
+  }
+
+  const handleSaveSlackToken = async () => {
+    if (!activeWorkspace) return
+    setSlackIntegrationError(null)
+    setIsSavingSlackToken(true)
+    try {
+      const res = await updateSlackBotToken(activeWorkspace, slackTokenDraft || null)
+      if (!res.success) {
+        setSlackIntegrationError(res.error || "Failed to save Slack token")
+        return
+      }
+
+      setSlackTokenDraft("")
+      const status = await getSlackBotTokenStatus(activeWorkspace)
+      if (status.success) {
+        setSlackTokenStatus({ configured: Boolean(status.configured), masked: status.masked ?? null })
+      }
+      toast.success("Slack token saved")
+    } catch (e) {
+      setSlackIntegrationError(e instanceof Error ? e.message : "Failed to save Slack token")
+    } finally {
+      setIsSavingSlackToken(false)
+    }
+  }
+
+  const handleClearSlackToken = async () => {
+    if (!activeWorkspace) return
+    setSlackIntegrationError(null)
+    setIsSavingSlackToken(true)
+    try {
+      const res = await updateSlackBotToken(activeWorkspace, null)
+      if (!res.success) {
+        setSlackIntegrationError(res.error || "Failed to clear Slack token")
+        return
+      }
+      setSlackTokenDraft("")
+      setSlackTokenStatus({ configured: false, masked: null })
+      setSlackChannels([])
+      toast.success("Slack token cleared")
+    } catch (e) {
+      setSlackIntegrationError(e instanceof Error ? e.message : "Failed to clear Slack token")
+    } finally {
+      setIsSavingSlackToken(false)
+    }
+  }
+
+  const handleSaveResendConfig = async () => {
+    if (!activeWorkspace) return
+    setResendIntegrationError(null)
+    setIsSavingResend(true)
+    try {
+      const apiKey = resendApiKeyDraft.trim()
+      const fromEmail = resendFromEmailDraft.trim()
+
+      const res = await updateResendConfig(activeWorkspace, {
+        ...(apiKey ? { apiKey } : {}),
+        fromEmail: fromEmail || null,
+      })
+
+      if (!res.success) {
+        setResendIntegrationError(res.error || "Failed to save Resend config")
+        return
+      }
+
+      setResendApiKeyDraft("")
+      const status = await getResendConfigStatus(activeWorkspace)
+      if (status.success) {
+        setResendStatus({
+          configured: Boolean(status.configured),
+          maskedApiKey: status.maskedApiKey ?? null,
+          fromEmail: status.fromEmail ?? null,
+        })
+        setResendFromEmailDraft(status.fromEmail ?? "")
+      }
+
+      toast.success("Resend config saved")
+    } catch (e) {
+      setResendIntegrationError(e instanceof Error ? e.message : "Failed to save Resend config")
+    } finally {
+      setIsSavingResend(false)
+    }
+  }
+
+  const handleClearResendConfig = async () => {
+    if (!activeWorkspace) return
+    setResendIntegrationError(null)
+    setIsSavingResend(true)
+    try {
+      const res = await updateResendConfig(activeWorkspace, { apiKey: null, fromEmail: null })
+      if (!res.success) {
+        setResendIntegrationError(res.error || "Failed to clear Resend config")
+        return
+      }
+
+      setResendStatus({ configured: false, maskedApiKey: null, fromEmail: null })
+      setResendApiKeyDraft("")
+      setResendFromEmailDraft("")
+      toast.success("Resend config cleared")
+    } catch (e) {
+      setResendIntegrationError(e instanceof Error ? e.message : "Failed to clear Resend config")
+    } finally {
+      setIsSavingResend(false)
+    }
+  }
+
+  const handleLoadSlackChannels = async () => {
+    if (!activeWorkspace) return
+    setSlackIntegrationError(null)
+    setIsLoadingSlackChannels(true)
+    try {
+      const res = await listSlackChannelsForWorkspace(activeWorkspace)
+      if (!res.success) {
+        setSlackIntegrationError(res.error || "Failed to load Slack channels")
+        return
+      }
+      setSlackChannels(res.channels || [])
+    } catch (e) {
+      setSlackIntegrationError(e instanceof Error ? e.message : "Failed to load Slack channels")
+    } finally {
+      setIsLoadingSlackChannels(false)
+    }
+  }
+
+  const handleAddSlackChannel = () => {
+    const channelId = slackChannelToAdd.trim()
+    if (!channelId) return
+    setNotificationCenter((prev) => {
+      const next = Array.from(new Set([...(prev.slackChannelIds || []), channelId]))
+      return { ...prev, slackChannelIds: next }
+    })
+    setSlackChannelToAdd("")
+    handleChange()
+  }
+
+  const handleRemoveSlackChannel = (channelId: string) => {
+    setNotificationCenter((prev) => ({
+      ...prev,
+      slackChannelIds: (prev.slackChannelIds || []).filter((id) => id !== channelId),
+    }))
+    handleChange()
+  }
+
   // Track changes
   const handleChange = () => {
     setHasChanges(true)
@@ -826,6 +1140,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       // Draft generation settings (Phase 30)
       payload.draftGenerationModel = draftGenerationSettings.model
       payload.draftGenerationReasoningEffort = draftGenerationSettings.reasoningEffort
+      // Notification Center (Phase 52d)
+      payload.notificationEmails = notificationCenter.emails
+      payload.notificationPhones = notificationCenter.phones
+      payload.notificationSlackChannelIds = notificationCenter.slackChannelIds
+      payload.notificationSentimentRules = notificationCenter.sentimentRules as any
+      payload.notificationDailyDigestTime = notificationCenter.dailyDigestTime
     }
 
     const result = await updateUserSettings(activeWorkspace, payload)
@@ -878,7 +1198,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     }
   }
 
-  const getWorkspaceTimeZone = () => settings?.timezone || "America/Los_Angeles"
+  const getWorkspaceTimeZone = () => settings?.timezone || "America/New_York"
 
   const formatWorkspaceDateTime = (d: Date) => {
     return new Intl.DateTimeFormat("en-US", {
@@ -1420,10 +1740,25 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="America/Los_Angeles">Pacific Time (PT)</SelectItem>
-                      <SelectItem value="America/Denver">Mountain Time (MT)</SelectItem>
-                      <SelectItem value="America/Chicago">Central Time (CT)</SelectItem>
+                      <SelectItem value="UTC">UTC</SelectItem>
+                      <SelectSeparator />
                       <SelectItem value="America/New_York">Eastern Time (ET)</SelectItem>
+                      <SelectItem value="America/Chicago">Central Time (CT)</SelectItem>
+                      <SelectItem value="America/Denver">Mountain Time (MT)</SelectItem>
+                      <SelectItem value="America/Phoenix">Arizona (MST)</SelectItem>
+                      <SelectItem value="America/Los_Angeles">Pacific Time (PT)</SelectItem>
+                      <SelectSeparator />
+                      <SelectItem value="Europe/London">London (UK)</SelectItem>
+                      <SelectItem value="Europe/Dublin">Dublin (Ireland)</SelectItem>
+                      <SelectItem value="Europe/Paris">Paris (France)</SelectItem>
+                      <SelectItem value="Europe/Berlin">Berlin (Germany)</SelectItem>
+                      <SelectSeparator />
+                      <SelectItem value="Asia/Dubai">Dubai (UAE)</SelectItem>
+                      <SelectItem value="Asia/Kolkata">India (IST)</SelectItem>
+                      <SelectItem value="Asia/Singapore">Singapore</SelectItem>
+                      <SelectItem value="Asia/Tokyo">Tokyo (Japan)</SelectItem>
+                      <SelectSeparator />
+                      <SelectItem value="Australia/Sydney">Sydney (Australia)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1637,11 +1972,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </CardTitle>
                 <CardDescription>Configure how you receive alerts</CardDescription>
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="space-y-6">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p id="email-digest-label" className="font-medium">Email Digest</p>
-                    <p className="text-sm text-muted-foreground">Daily summary of activity</p>
+                    <p id="email-digest-label" className="font-medium">Daily Digests</p>
+                    <p className="text-sm text-muted-foreground">Send daily summaries for sentiments set to “Daily”</p>
                   </div>
                   <Switch
                     id="email-digest-switch"
@@ -1653,21 +1988,254 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     }}
                   />
                 </div>
-                <Separator />
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p id="slack-alerts-label" className="font-medium">Slack Alerts</p>
-                    <p className="text-sm text-muted-foreground">Real-time notifications in Slack</p>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label className="text-xs">Daily digest time (workspace timezone)</Label>
+                    <Input
+                      type="time"
+                      value={notificationCenter.dailyDigestTime}
+                      onChange={(e) => {
+                        setNotificationCenter({ ...notificationCenter, dailyDigestTime: e.target.value })
+                        handleChange()
+                      }}
+                      disabled={!isWorkspaceAdmin}
+                    />
+                    <p className="text-xs text-muted-foreground">Digests send within ~10 minutes of this time</p>
                   </div>
-                  <Switch
-                    id="slack-alerts-switch"
-                    aria-labelledby="slack-alerts-label"
-                    checked={notifications.slackAlerts}
-                    onCheckedChange={(v) => {
-                      setNotifications({ ...notifications, slackAlerts: v })
-                      handleChange()
-                    }}
-                  />
+                  <div className="flex items-center justify-between rounded-lg border p-3">
+                    <div>
+                      <p id="slack-alerts-label" className="font-medium">Slack Alerts</p>
+                      <p className="text-sm text-muted-foreground">Master switch for Slack notifications</p>
+                    </div>
+                    <Switch
+                      id="slack-alerts-switch"
+                      aria-labelledby="slack-alerts-label"
+                      checked={notifications.slackAlerts}
+                      onCheckedChange={(v) => {
+                        setNotifications({ ...notifications, slackAlerts: v })
+                        handleChange()
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {!isWorkspaceAdmin ? (
+                  <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+                    Only workspace admins can edit Notification Center recipients and sentiment rules.
+                  </div>
+                ) : null}
+
+                <div className="space-y-3">
+                  <div>
+                    <p className="font-medium">Notification emails</p>
+                    <p className="text-sm text-muted-foreground">Used for realtime email alerts and daily digests</p>
+                    <p className="text-xs text-muted-foreground">Delivery uses Resend (configure in Integrations).</p>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="name@company.com"
+                      value={newNotificationEmail}
+                      onChange={(e) => setNewNotificationEmail(e.target.value)}
+                      disabled={!isWorkspaceAdmin}
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={addNotificationEmail}
+                      disabled={!isWorkspaceAdmin || !newNotificationEmail.trim()}
+                    >
+                      Add
+                    </Button>
+                  </div>
+
+                  {notificationCenter.emails.length > 0 ? (
+                    <div className="space-y-2">
+                      {notificationCenter.emails.map((email) => (
+                        <div key={email} className="flex items-center justify-between rounded-lg border p-2">
+                          <p className="text-sm">{email}</p>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            onClick={() => removeNotificationEmail(email)}
+                            disabled={!isWorkspaceAdmin}
+                            aria-label="Remove notification email"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No notification emails configured</p>
+                  )}
+                </div>
+
+                <Separator />
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium">Notification phone numbers</p>
+                      <p className="text-sm text-muted-foreground">Phone/SMS notifications are coming soon</p>
+                    </div>
+                    <Badge variant="secondary" className="text-xs">
+                      Coming soon
+                    </Badge>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="+1 555 123 4567"
+                      value={newNotificationPhone}
+                      onChange={(e) => setNewNotificationPhone(e.target.value)}
+                      disabled={!isWorkspaceAdmin}
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={addNotificationPhone}
+                      disabled={!isWorkspaceAdmin || !newNotificationPhone.trim()}
+                    >
+                      Add
+                    </Button>
+                  </div>
+
+                  {notificationCenter.phones.length > 0 ? (
+                    <div className="space-y-2">
+                      {notificationCenter.phones.map((phone) => (
+                        <div key={phone} className="flex items-center justify-between rounded-lg border p-2">
+                          <p className="text-sm">{phone}</p>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            onClick={() => removeNotificationPhone(phone)}
+                            disabled={!isWorkspaceAdmin}
+                            aria-label="Remove notification phone"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No notification phone numbers configured</p>
+                  )}
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <div>
+                    <p className="font-medium">Sentiment triggers</p>
+                    <p className="text-sm text-muted-foreground">
+                      Realtime sends an alert per lead; Daily includes the sentiment in the daily digest.
+                    </p>
+                  </div>
+
+                  <div className="rounded-lg border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Sentiment</TableHead>
+                          <TableHead className="w-[140px]">Mode</TableHead>
+                          <TableHead>Destinations</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {SENTIMENT_TAGS.map((tag) => {
+                          const rule = notificationCenter.sentimentRules[tag]
+                          return (
+                            <TableRow key={tag}>
+                              <TableCell className="font-medium">{tag}</TableCell>
+                              <TableCell>
+                                <Select
+                                  value={rule.mode}
+                                  onValueChange={(v) => {
+                                    setNotificationCenter((prev) => ({
+                                      ...prev,
+                                      sentimentRules: {
+                                        ...prev.sentimentRules,
+                                        [tag]: { ...prev.sentimentRules[tag], mode: v as NotificationMode },
+                                      },
+                                    }))
+                                    handleChange()
+                                  }}
+                                  disabled={!isWorkspaceAdmin}
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="off">Off</SelectItem>
+                                    <SelectItem value="realtime">Realtime</SelectItem>
+                                    <SelectItem value="daily">Daily</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex flex-wrap items-center gap-4">
+                                  <div className="flex items-center gap-2">
+                                    <Checkbox
+                                      checked={rule.destinations.slack}
+                                      onCheckedChange={(v) => {
+                                        setNotificationCenter((prev) => ({
+                                          ...prev,
+                                          sentimentRules: {
+                                            ...prev.sentimentRules,
+                                            [tag]: {
+                                              ...prev.sentimentRules[tag],
+                                              destinations: {
+                                                ...prev.sentimentRules[tag].destinations,
+                                                slack: v === true,
+                                              },
+                                            },
+                                          },
+                                        }))
+                                        handleChange()
+                                      }}
+                                      disabled={!isWorkspaceAdmin}
+                                    />
+                                    <span className="text-xs text-muted-foreground">Slack</span>
+                                  </div>
+
+                                  <div className="flex items-center gap-2">
+                                    <Checkbox
+                                      checked={rule.destinations.email}
+                                      onCheckedChange={(v) => {
+                                        setNotificationCenter((prev) => ({
+                                          ...prev,
+                                          sentimentRules: {
+                                            ...prev.sentimentRules,
+                                            [tag]: {
+                                              ...prev.sentimentRules[tag],
+                                              destinations: {
+                                                ...prev.sentimentRules[tag].destinations,
+                                                email: v === true,
+                                              },
+                                            },
+                                          },
+                                        }))
+                                        handleChange()
+                                      }}
+                                      disabled={!isWorkspaceAdmin}
+                                    />
+                                    <span className="text-xs text-muted-foreground">Email</span>
+                                  </div>
+
+                                  <div className="flex items-center gap-2">
+                                    <Checkbox checked={false} disabled />
+                                    <span className="text-xs text-muted-foreground">Phone (soon)</span>
+                                  </div>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -1677,6 +2245,195 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           <TabsContent value="integrations" className="space-y-6">
             {/* GHL Workspaces - Dynamic Multi-Tenancy */}
             <IntegrationsManager onWorkspacesChange={onWorkspacesChange} />
+
+            {/* Slack (bot token + channel selector) */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <MessageSquare className="h-5 w-5" />
+                  Slack Notifications
+                </CardTitle>
+                <CardDescription>Send notifications to a selected Slack channel using a bot token</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {!activeWorkspace ? (
+                  <p className="text-sm text-muted-foreground">Select a workspace to configure Slack.</p>
+                ) : !isWorkspaceAdmin ? (
+                  <p className="text-sm text-muted-foreground">Only workspace admins can change Slack settings.</p>
+                ) : (
+                  <>
+                    {slackIntegrationError ? <div className="text-sm text-destructive">{slackIntegrationError}</div> : null}
+
+                    <div className="space-y-2">
+                      <Label>Slack Bot Token</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          type="password"
+                          placeholder={slackTokenStatus?.configured ? slackTokenStatus.masked || "Configured" : "xoxb-..."}
+                          value={slackTokenDraft}
+                          onChange={(e) => setSlackTokenDraft(e.target.value)}
+                        />
+                        <Button
+                          variant="outline"
+                          onClick={handleSaveSlackToken}
+                          disabled={isSavingSlackToken || !slackTokenDraft.trim()}
+                        >
+                          {isSavingSlackToken ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+                          Save
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          onClick={handleClearSlackToken}
+                          disabled={isSavingSlackToken || !slackTokenStatus?.configured}
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Required scopes: <code>chat:write</code>, <code>channels:read</code>, <code>groups:read</code>. The bot must be invited to private channels.
+                      </p>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>Notification channels</Label>
+                          <p className="text-xs text-muted-foreground">Selected channels receive Slack notifications</p>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleLoadSlackChannels}
+                          disabled={isLoadingSlackChannels || !slackTokenStatus?.configured}
+                        >
+                          {isLoadingSlackChannels ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+                          Refresh channels
+                        </Button>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <Select
+                          value={slackChannelToAdd}
+                          onValueChange={(v) => setSlackChannelToAdd(v)}
+                          disabled={!slackTokenStatus?.configured || isLoadingSlackChannels || slackChannels.length === 0}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder={slackChannels.length > 0 ? "Select a channel" : "Load channels first"} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {slackChannels.map((c) => (
+                              <SelectItem key={c.id} value={c.id}>
+                                {(c.is_private ? "🔒 " : "#") + c.name + (c.is_member === false ? " (invite bot)" : "")}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button variant="outline" onClick={handleAddSlackChannel} disabled={!slackChannelToAdd}>
+                          Add
+                        </Button>
+                      </div>
+
+                      {notificationCenter.slackChannelIds.length > 0 ? (
+                        <div className="space-y-2">
+                          {notificationCenter.slackChannelIds.map((id) => {
+                            const name = slackChannels.find((c) => c.id === id)?.name
+                            return (
+                              <div key={id} className="flex items-center justify-between rounded-lg border p-2">
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium truncate">{name ? `#${name}` : id}</p>
+                                  <p className="text-xs text-muted-foreground truncate">{id}</p>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                  onClick={() => handleRemoveSlackChannel(id)}
+                                  aria-label="Remove Slack channel"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            )
+                          })}
+                          <p className="text-xs text-muted-foreground">
+                            Channel selection is saved with the workspace settings (click “Save Changes”).
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">No Slack channels selected yet</p>
+                      )}
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Resend (per-workspace email notifications) */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Send className="h-5 w-5" />
+                  Resend (Email Notifications)
+                </CardTitle>
+                <CardDescription>Configure Resend credentials for Notification Center email alerts</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {!activeWorkspace ? (
+                  <p className="text-sm text-muted-foreground">Select a workspace to configure Resend.</p>
+                ) : !isWorkspaceAdmin ? (
+                  <p className="text-sm text-muted-foreground">Only workspace admins can change Resend settings.</p>
+                ) : (
+                  <>
+                    {resendIntegrationError ? <div className="text-sm text-destructive">{resendIntegrationError}</div> : null}
+
+                    <div className="space-y-2">
+                      <Label>Resend API Key</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          type="password"
+                          placeholder={resendStatus?.maskedApiKey || "re_..."}
+                          value={resendApiKeyDraft}
+                          onChange={(e) => setResendApiKeyDraft(e.target.value)}
+                        />
+                        <Button
+                          variant="outline"
+                          onClick={handleSaveResendConfig}
+                          disabled={isSavingResend || (!resendApiKeyDraft.trim() && resendFromEmailDraft.trim() === (resendStatus?.fromEmail ?? ""))}
+                        >
+                          {isSavingResend ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+                          Save
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          onClick={handleClearResendConfig}
+                          disabled={isSavingResend || (!resendStatus?.maskedApiKey && !resendStatus?.fromEmail)}
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Keep this secret. Resend email notifications require both an API key and a verified “From” email.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>From Email</Label>
+                      <Input
+                        type="email"
+                        placeholder="notifications@yourdomain.com"
+                        value={resendFromEmailDraft}
+                        onChange={(e) => setResendFromEmailDraft(e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        This must be a verified sender in Resend for the workspace’s white-label domain.
+                      </p>
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
 
             {/* EmailBison base host (per workspace) */}
             <Card>
@@ -3877,6 +4634,56 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
           {/* Booking Processes (Phase 36) */}
           <TabsContent value="booking" className="space-y-6">
+            <Card>
+              <CardHeader className="flex flex-row items-start justify-between space-y-0">
+                <div className="space-y-1">
+                  <CardTitle className="flex items-center gap-2">
+                    <AlertTriangle className="h-5 w-5" />
+                    Booking Notices
+                  </CardTitle>
+                  <CardDescription>Important reminders and known limitations</CardDescription>
+                </div>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm">
+                      Notices
+                      <ChevronDown className="h-4 w-4 ml-2" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-[420px]">
+                    <DropdownMenuLabel>Booking</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onSelect={(e) => e.preventDefault()}
+                      className="items-start gap-3 whitespace-normal"
+                    >
+                      <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-300" />
+                      <div className="min-w-0">
+                        <p className="font-medium">Process 5 (lead scheduler links) is manual-review for now</p>
+                        <p className="text-xs text-muted-foreground">
+                          When a lead asks you to book via their own Calendly/HubSpot/GHL/etc link, the system captures the link
+                          and creates a follow-up task for review (with overlap suggestions when possible).
+                        </p>
+                      </div>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={(e) => e.preventDefault()}
+                      className="items-start gap-3 whitespace-normal"
+                    >
+                      <Activity className="h-4 w-4 mt-0.5 text-blue-300" />
+                      <div className="min-w-0">
+                        <p className="font-medium">Third-party scheduler auto-booking is planned (browser automation)</p>
+                        <p className="text-xs text-muted-foreground">
+                          Future work may use Playwright + a long-running backend (Fly.io) to book across platforms when no public API
+                          is available. This will ship behind a warning flag.
+                        </p>
+                      </div>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </CardHeader>
+            </Card>
+
             <BookingProcessManager
               activeWorkspace={activeWorkspace}
               qualificationQuestions={qualificationQuestions}

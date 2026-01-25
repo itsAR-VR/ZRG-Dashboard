@@ -12,6 +12,10 @@ import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-auto
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { maybeAssignLead } from "@/lib/lead-assignment";
+import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
+import { ensureCallRequestedTask } from "@/lib/call-requested";
+import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
+import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 
 export async function runSmsInboundPostProcessJob(params: {
   clientId: string;
@@ -68,6 +72,15 @@ export async function runSmsInboundPostProcessJob(params: {
 
   const messageBody = message.body || "";
   const messageSentAt = message.sentAt || new Date();
+  const schedulerLink = extractSchedulerLinkFromText(messageBody);
+  if (schedulerLink) {
+    prisma.lead
+      .updateMany({
+        where: { id: lead.id, externalSchedulingLink: { not: schedulerLink } },
+        data: { externalSchedulingLink: schedulerLink, externalSchedulingLinkLastSeenAt: new Date() },
+      })
+      .catch(() => undefined);
+  }
 
   // 1. Timezone Inference
   // SMS messages may contain timezone hints like "I'm in PST"
@@ -218,6 +231,21 @@ export async function runSmsInboundPostProcessJob(params: {
   });
 
   const newSentiment = updatedLead?.sentimentTag || lead.sentimentTag;
+
+  notifyOnLeadSentimentChange({
+    clientId: client.id,
+    leadId: lead.id,
+    previousSentimentTag: previousSentiment,
+    newSentimentTag: newSentiment,
+    messageId: message.id,
+    latestInboundText: messageBody,
+  }).catch(() => undefined);
+
+  if (newSentiment === "Call Requested") {
+    ensureCallRequestedTask({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
+  }
+
+  handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
 
   await autoStartMeetingRequestedSequenceIfEligible({
     leadId: lead.id,
