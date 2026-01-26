@@ -6,6 +6,75 @@ const MEETING_REQUESTED_SEQUENCE_NAME = "Meeting Requested Day 1/2/5/7";
 const POST_BOOKING_SEQUENCE_NAME = "Post-Booking Qualification";
 const NO_RESPONSE_SEQUENCE_NAME = "No Response Day 2/5/7";
 
+function shouldTreatAsOutreachSequence(sequence: { name: string; triggerOn: string }): boolean {
+  // Response-driven sequences should NOT be reset/paused by generic outreach logic.
+  if (sequence.name === MEETING_REQUESTED_SEQUENCE_NAME) return false;
+  if (sequence.name === POST_BOOKING_SEQUENCE_NAME) return false;
+  if (sequence.triggerOn === "meeting_selected") return false;
+  return true;
+}
+
+async function resetActiveFollowUpInstanceScheduleOnOutboundTouch(params: {
+  instanceId: string;
+  sequenceId: string;
+  currentStep: number;
+  touchedAt: Date;
+  existingNextStepDue: Date | null;
+}): Promise<{ updated: boolean; nextStepDue?: Date }> {
+  const { instanceId, sequenceId, currentStep, touchedAt, existingNextStepDue } = params;
+
+  const nextStep = await prisma.followUpStep.findFirst({
+    where: { sequenceId, stepOrder: { gt: currentStep } },
+    orderBy: { stepOrder: "asc" },
+    select: { dayOffset: true },
+  });
+
+  // Sequence complete.
+  if (!nextStep) return { updated: false };
+
+  const currentStepMeta =
+    currentStep > 0
+      ? await prisma.followUpStep.findUnique({
+          where: { sequenceId_stepOrder: { sequenceId, stepOrder: currentStep } },
+          select: { dayOffset: true },
+        })
+      : null;
+
+  const currentOffset = currentStepMeta?.dayOffset ?? 0;
+  const dayDiff = Math.max(0, nextStep.dayOffset - currentOffset);
+  const candidateDue = new Date(touchedAt.getTime() + dayDiff * 24 * 60 * 60 * 1000);
+
+  // Never pull the next step earlier.
+  if (existingNextStepDue && existingNextStepDue > candidateDue) {
+    return { updated: false };
+  }
+
+  await prisma.followUpInstance.update({
+    where: { id: instanceId },
+    data: { nextStepDue: candidateDue },
+  });
+
+  return { updated: true, nextStepDue: candidateDue };
+}
+
+async function wasHumanOutboundAtApproxTime(params: { leadId: string; outboundAt: Date }): Promise<boolean> {
+  const windowMs = 5 * 60 * 1000;
+  const from = new Date(params.outboundAt.getTime() - windowMs);
+  const to = new Date(params.outboundAt.getTime() + windowMs);
+
+  const recentHumanOutbound = await prisma.message.findFirst({
+    where: {
+      leadId: params.leadId,
+      direction: "outbound",
+      sentAt: { gte: from, lte: to },
+      sentByUserId: { not: null },
+    },
+    select: { id: true },
+  });
+
+  return Boolean(recentHumanOutbound);
+}
+
 async function startSequenceInstance(leadId: string, sequenceId: string): Promise<void> {
   const sequence = await prisma.followUpSequence.findUnique({
     where: { id: sequenceId },
@@ -140,6 +209,8 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
   leadId: string;
   outboundAt?: Date;
 }): Promise<{ started: boolean; reason?: string }> {
+  const outboundAt = opts.outboundAt || new Date();
+
   const lead = await prisma.lead.findUnique({
     where: { id: opts.leadId },
     select: {
@@ -155,7 +226,15 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
       client: { select: { settings: { select: { followUpsPausedUntil: true, meetingBookingProvider: true } } } },
       followUpInstances: {
         where: { status: { in: ["active", "paused"] } },
-        select: { id: true, status: true, pausedReason: true, sequenceId: true, currentStep: true },
+        select: {
+          id: true,
+          status: true,
+          pausedReason: true,
+          sequenceId: true,
+          currentStep: true,
+          nextStepDue: true,
+          sequence: { select: { name: true, triggerOn: true } },
+        },
         take: 20,
       },
     },
@@ -173,7 +252,29 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
   if (isMeetingBooked(lead, { meetingBookingProvider: noResponseProvider })) return { started: false, reason: "already_booked" };
 
   const activeInstances = lead.followUpInstances.filter((i) => i.status === "active");
-  if (activeInstances.length > 0) return { started: false, reason: "instance_already_active" };
+  if (activeInstances.length > 0) {
+    // If a human just touched this lead, reset follow-up timing so cron doesn't overlap with manual nurturing.
+    const isHumanOutbound = await wasHumanOutboundAtApproxTime({ leadId: opts.leadId, outboundAt });
+    if (!isHumanOutbound) return { started: false, reason: "instance_already_active" };
+
+    const outreachInstances = activeInstances.filter((i) =>
+      shouldTreatAsOutreachSequence({ name: i.sequence.name, triggerOn: i.sequence.triggerOn })
+    );
+
+    let resetCount = 0;
+    for (const instance of outreachInstances) {
+      const res = await resetActiveFollowUpInstanceScheduleOnOutboundTouch({
+        instanceId: instance.id,
+        sequenceId: instance.sequenceId,
+        currentStep: instance.currentStep,
+        touchedAt: outboundAt,
+        existingNextStepDue: instance.nextStepDue ?? null,
+      });
+      if (res.updated) resetCount++;
+    }
+
+    return { started: false, reason: resetCount > 0 ? "active_instances_reset_on_human_outbound" : "instance_already_active" };
+  }
 
   const pausedInstances = lead.followUpInstances.filter((i) => i.status === "paused");
   const pausedReplied = pausedInstances.filter((i) => i.pausedReason === "lead_replied");
@@ -201,7 +302,7 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
       return { started: false, reason: "recent_inbound_activity" };
     }
 
-    const startAt = opts.outboundAt || new Date();
+    const startAt = outboundAt;
     let resumed = 0;
 
     for (const instance of pausedReplied) {

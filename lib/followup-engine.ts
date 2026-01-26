@@ -1032,37 +1032,8 @@ export async function executeFollowUpStep(
     // Generate message content
     const { content, subject, offeredSlots } = await generateFollowUpMessage(step, lead, settings);
 
-    const rawRequireApprovalAfterHumanOutboundDays = process.env.FOLLOWUPS_REQUIRE_APPROVAL_AFTER_HUMAN_OUTBOUND_DAYS;
-    const parsedRequireApprovalAfterHumanOutboundDays = rawRequireApprovalAfterHumanOutboundDays
-      ? Number.parseInt(rawRequireApprovalAfterHumanOutboundDays, 10)
-      : Number.NaN;
-    const requireApprovalAfterHumanOutboundDays = Math.max(
-      0,
-      Number.isFinite(parsedRequireApprovalAfterHumanOutboundDays) ? parsedRequireApprovalAfterHumanOutboundDays : 7
-    );
-    const enforceApprovalAfterHumanOutbound =
-      step.channel === "email" &&
-      requireApprovalAfterHumanOutboundDays > 0 &&
-      !step.requiresApproval;
-
-    let shouldForceApproval = false;
-    if (enforceApprovalAfterHumanOutbound) {
-      const cutoff = new Date(now.getTime() - requireApprovalAfterHumanOutboundDays * 24 * 60 * 60 * 1000);
-      const recentHumanOutbound = await prisma.message.findFirst({
-        where: {
-          leadId: lead.id,
-          direction: "outbound",
-          source: "zrg",
-          sentAt: { gte: cutoff },
-          sentByUserId: { not: null },
-        },
-        select: { id: true },
-      });
-      shouldForceApproval = Boolean(recentHumanOutbound);
-    }
-
     // Check if approval is required
-    if (step.requiresApproval || shouldForceApproval) {
+    if (step.requiresApproval) {
       // Create a pending task for approval
       await prisma.followUpTask.create({
         data: {
