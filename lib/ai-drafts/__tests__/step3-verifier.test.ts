@@ -36,6 +36,20 @@ test("enforceCanonicalBookingLink replaces GHL widget booking link with canonica
   assert.equal(output, `Book here: ${canonical}.`);
 });
 
+test("enforceCanonicalBookingLink does not replace arbitrary URLs by default", () => {
+  const canonical = "https://book.example.com/meeting";
+  const input = "See details: https://example.com/docs.";
+  const output = enforceCanonicalBookingLink(input, canonical);
+  assert.equal(output, input);
+});
+
+test("enforceCanonicalBookingLink replaces any http(s) URL when replaceAllUrls is set", () => {
+  const canonical = "https://book.example.com/meeting";
+  const input = "Links: https://example.com/docs and https://another.example/path.";
+  const output = enforceCanonicalBookingLink(input, canonical, { replaceAllUrls: true });
+  assert.equal(output, `Links: ${canonical} and ${canonical}.`);
+});
+
 test("enforceCanonicalBookingLink removes booking widget links when canonical is missing", () => {
   const input = "Book here: https://old-domain.example/widget/booking/xyz987.";
   const output = enforceCanonicalBookingLink(input, null);

@@ -37,11 +37,19 @@ export async function getBookingLink(
   clientId: string,
   settings: Pick<WorkspaceSettings, "meetingBookingProvider" | "calendlyEventTypeLink"> | null
 ): Promise<string | null> {
+  const resolved = await resolveBookingLink(clientId, settings);
+  return resolved.bookingLink;
+}
+
+export async function resolveBookingLink(
+  clientId: string,
+  settings: Pick<WorkspaceSettings, "meetingBookingProvider" | "calendlyEventTypeLink"> | null
+): Promise<{ bookingLink: string | null; hasPublicOverride: boolean }> {
   const provider = settings?.meetingBookingProvider ?? "GHL";
 
   if (provider === "CALENDLY") {
     const link = (settings?.calendlyEventTypeLink || "").trim();
-    return link || null;
+    return { bookingLink: link || null, hasPublicOverride: false };
   }
 
   const calendarLink = await prisma.calendarLink.findFirst({
@@ -49,10 +57,13 @@ export async function getBookingLink(
       clientId,
       isDefault: true,
     },
-    select: { url: true },
+    select: { url: true, publicUrl: true },
   });
 
+  const publicUrl = (calendarLink?.publicUrl || "").trim();
   const url = (calendarLink?.url || "").trim();
-  return url || null;
+  return {
+    bookingLink: publicUrl || url || null,
+    hasPublicOverride: Boolean(publicUrl),
+  };
 }
-

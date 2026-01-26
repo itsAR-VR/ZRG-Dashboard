@@ -90,6 +90,7 @@ export interface CalendarLinkData {
   id: string;
   name: string;
   url: string;
+  publicUrl: string | null;
   type: "calendly" | "hubspot" | "ghl" | "unknown";
   isDefault: boolean;
   createdAt: Date;
@@ -1278,6 +1279,7 @@ export async function getCalendarLinks(
       id: link.id,
       name: link.name,
       url: link.url,
+      publicUrl: link.publicUrl,
       type: link.type as CalendarLinkData["type"],
       isDefault: link.isDefault,
       createdAt: link.createdAt,
@@ -1304,13 +1306,13 @@ export async function getCalendarLinkForLead(
       where: { id: leadId },
       select: {
         id: true,
-        preferredCalendarLink: { select: { name: true, url: true } },
+        preferredCalendarLink: { select: { name: true, url: true, publicUrl: true } },
         client: {
           select: {
             calendarLinks: {
               where: { isDefault: true },
               take: 1,
-              select: { name: true, url: true },
+              select: { name: true, url: true, publicUrl: true },
             },
           },
         },
@@ -1320,9 +1322,12 @@ export async function getCalendarLinkForLead(
     if (!lead) return { success: false, error: "Lead not found" };
 
     const link = lead.preferredCalendarLink || lead.client.calendarLinks[0] || null;
-    if (!link?.url) return { success: false, error: "No calendar link configured" };
+    const publicUrl = (link?.publicUrl || "").trim();
+    const url = (link?.url || "").trim();
+    const resolvedUrl = publicUrl || url || null;
+    if (!resolvedUrl) return { success: false, error: "No calendar link configured" };
 
-    return { success: true, url: link.url, name: link.name || null };
+    return { success: true, url: resolvedUrl, name: link.name || null };
   } catch (error) {
     console.error("Failed to resolve calendar link for lead:", error);
     return { success: false, error: "Failed to resolve calendar link" };
@@ -1337,6 +1342,7 @@ export async function addCalendarLink(
   data: {
     name: string;
     url: string;
+    publicUrl?: string | null;
     setAsDefault?: boolean;
   }
 ): Promise<{ success: boolean; linkId?: string; error?: string }> {
@@ -1348,6 +1354,7 @@ export async function addCalendarLink(
 
     // Auto-detect calendar type
     const type = detectCalendarType(data.url);
+    const publicUrl = (data.publicUrl || "").trim() || null;
 
     // Check if this is the first link (make it default)
     const existingCount = await prisma.calendarLink.count({
@@ -1368,6 +1375,7 @@ export async function addCalendarLink(
         clientId,
         name: data.name,
         url: data.url,
+        publicUrl,
         type,
         isDefault: shouldBeDefault,
       },
@@ -1386,6 +1394,58 @@ export async function addCalendarLink(
   } catch (error) {
     console.error("Failed to add calendar link:", error);
     return { success: false, error: "Failed to add calendar link" };
+  }
+}
+
+/**
+ * Update an existing calendar link (name/url/publicUrl).
+ * Note: default selection is handled by setDefaultCalendarLink().
+ */
+export async function updateCalendarLink(
+  calendarLinkId: string,
+  data: {
+    name?: string;
+    url?: string;
+    publicUrl?: string | null;
+  }
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!calendarLinkId) return { success: false, error: "Missing calendarLinkId" };
+
+    const existing = await prisma.calendarLink.findUnique({
+      where: { id: calendarLinkId },
+      select: { id: true, clientId: true, url: true },
+    });
+    if (!existing) return { success: false, error: "Calendar link not found" };
+    await requireClientAccess(existing.clientId);
+
+    const nextUrl = data.url?.trim();
+    const nextType = nextUrl ? detectCalendarType(nextUrl) : undefined;
+    const nextPublicUrl =
+      data.publicUrl === undefined ? undefined : (data.publicUrl || "").trim() || null;
+
+    await prisma.calendarLink.update({
+      where: { id: calendarLinkId },
+      data: {
+        ...(data.name !== undefined ? { name: data.name } : {}),
+        ...(nextUrl !== undefined ? { url: nextUrl, type: nextType } : {}),
+        ...(nextPublicUrl !== undefined ? { publicUrl: nextPublicUrl } : {}),
+      },
+    });
+
+    // Ensure availability cache refreshes promptly after calendar link changes.
+    await prisma.workspaceAvailabilityCache
+      .updateMany({
+        where: { clientId: existing.clientId },
+        data: { staleAt: new Date(0) },
+      })
+      .catch(() => undefined);
+
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to update calendar link:", error);
+    return { success: false, error: "Failed to update calendar link" };
   }
 }
 

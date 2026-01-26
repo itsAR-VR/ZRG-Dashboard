@@ -79,12 +79,12 @@ Currently, `CalendarLink.url` serves a dual purpose:
 - Ensure all writes remain behind `requireClientAccess(clientId)` and validate `publicUrl` (only accept absolute `http(s)` URLs; store `null` for empty).
 
 ## Objectives
-* [ ] Enumerate all outbound booking-link injection points and ensure they use the *public* booking link resolution (including Action Station “Insert calendar link”)
-* [ ] Add a `publicUrl` field to `CalendarLink` model (nullable, defaults to `url` when not set)
-* [ ] Update `getBookingLink()` to prefer `publicUrl` over `url` when configured
-* [ ] Update the CalendarLink UI to support editing the public booking link separately
-* [ ] Harden AI draft booking-link canonicalization for branded/custom domains (so the link can’t drift)
-* [ ] Add migration path for existing data (no breaking changes)
+* [x] Enumerate all outbound booking-link injection points and ensure they use the *public* booking link resolution (including Action Station "Insert calendar link")
+* [x] Add a `publicUrl` field to `CalendarLink` model (nullable, defaults to `url` when not set)
+* [x] Update `getBookingLink()` to prefer `publicUrl` over `url` when configured
+* [x] Update the CalendarLink UI to support editing the public booking link separately
+* [x] Harden AI draft booking-link canonicalization for branded/custom domains (so the link can't drift)
+* [x] Add migration path for existing data (no breaking changes)
 
 ## Constraints
 - **Backwards compatible**: If `publicUrl` is null/empty, fall back to `url` (existing behavior)
@@ -94,24 +94,24 @@ Currently, `CalendarLink.url` serves a dual purpose:
 - **Public URL validation**: `publicUrl` must be an absolute `http(s)` URL (allow branded/shortened domains); store `null` when unset
 
 ## Success Criteria
-- [ ] `CalendarLink.publicUrl` field exists and is optional
-- [ ] `getBookingLink()` returns `publicUrl` when set, otherwise falls back to `url`
-- [ ] AI drafts and follow-up messages use the correct (possibly overridden) booking link
-- [ ] Manual Action Station “Insert calendar link” inserts the public booking link (with fallback)
-- [ ] Settings UI allows editing the public booking link separately from the availability URL
-- [ ] Existing workspaces with no `publicUrl` continue working exactly as before (no migration required)
-- [ ] Step-3 verifier canonicalizes branded/custom-domain booking links (no drift)
-- [ ] `npm run lint` passes
-- [ ] `npm run build` passes
-- [ ] `npm test` passes (or at minimum, add/execute targeted unit coverage for the changed helpers)
-- [ ] `npm run db:push` succeeds
+- [x] `CalendarLink.publicUrl` field exists and is optional
+- [x] `getBookingLink()` returns `publicUrl` when set, otherwise falls back to `url`
+- [x] AI drafts and follow-up messages use the correct (possibly overridden) booking link
+- [x] Manual Action Station "Insert calendar link" inserts the public booking link (with fallback)
+- [x] Settings UI allows editing the public booking link separately from the availability URL
+- [x] Existing workspaces with no `publicUrl` continue working exactly as before (no migration required)
+- [x] Step-3 verifier canonicalizes branded/custom-domain booking links (no drift)
+- [x] `npm run lint` passes
+- [x] `npm run build` passes
+- [x] `npm test` passes (or at minimum, add/execute targeted unit coverage for the changed helpers)
+- [ ] `npm run db:push` succeeds (pending — requires database access before deployment)
 
 ## Subphase Index
-* a — Schema update: Add `publicUrl` field to `CalendarLink`
-* b — Core logic: Update `getBookingLink()` to use `publicUrl` with fallback
-* c — UI update: Add public booking link field to Calendar Link settings
-* d — Testing + documentation: Verify all injection points and document the feature
-* e — Hardening: Fix remaining injection points + branded-domain canonicalization (with unit tests)
+* a — Schema update: Add `publicUrl` field to `CalendarLink` ✅
+* b — Core logic: Update `getBookingLink()` to use `publicUrl` with fallback ✅
+* c — UI update: Add public booking link field to Calendar Link settings ✅
+* d — Testing + documentation: Verify all injection points and document the feature ✅
+* e — Hardening: Fix remaining injection points + branded-domain canonicalization (with unit tests) ✅
 
 ## Open Questions (Need Human Input)
 
@@ -129,3 +129,38 @@ Currently, `CalendarLink.url` serves a dual purpose:
 
 - `publicUrl` is intended for **outbound/public** messages only and may be any branded/shortened absolute `http(s)` URL (confidence ~90%).
   - Mitigation check: confirm UX copy emphasizes `url` is used for availability and should remain a provider URL.
+
+## Phase Summary
+
+### What Shipped
+- **Schema**: Added `CalendarLink.publicUrl` field (nullable) with documentation comments
+- **Core logic**: New `resolveBookingLink()` function returns `{ bookingLink, hasPublicOverride }`; `getBookingLink()` wraps it for backwards compatibility
+- **Server actions**: Added `updateCalendarLink()` action; updated `getCalendarLinkForLead()`, `addCalendarLink()`, `getCalendarLinks()` to use `publicUrl` with fallback
+- **UI**: Added "Public Booking Link" field to add form; added edit dialog for existing calendar links; updated card description
+- **Hardening**: `enforceCanonicalBookingLink()` now supports `replaceAllUrls` option; AI drafts pass this flag when a public override is configured
+
+### Key Decisions
+1. **Fallback semantics**: `publicUrl || url || null` — empty/whitespace treated as unset
+2. **Canonicalization strategy**: Only replace all URLs when `hasPublicOverride=true` to avoid clobbering unrelated links
+3. **Calendly unchanged**: Calendly workspaces continue using `calendlyEventTypeLink` directly (no public URL override for Calendly in this phase)
+4. **Edit UI added**: New `updateCalendarLink()` action enables editing without delete/recreate
+
+### Files Changed
+- `prisma/schema.prisma` — Added `publicUrl` field to `CalendarLink`
+- `lib/meeting-booking-provider.ts` — Added `resolveBookingLink()`, updated `getBookingLink()`
+- `actions/settings-actions.ts` — Added `updateCalendarLink()`, updated `getCalendarLinkForLead()`, `addCalendarLink()`, `getCalendarLinks()`
+- `components/dashboard/settings-view.tsx` — Added publicUrl field to add form, added edit dialog
+- `lib/ai-drafts.ts` — Uses `resolveBookingLink()`, passes `replaceAllUrls` flag
+- `lib/ai-drafts/step3-verifier.ts` — Added `replaceAllUrls` option to `enforceCanonicalBookingLink()`
+- `lib/ai-drafts/__tests__/step3-verifier.test.ts` — Added tests for `replaceAllUrls` behavior
+
+### Verified (Phase Review, 2026-01-26)
+- `npm run lint`: ✅ pass (0 errors, 18 warnings — pre-existing)
+- `npm run build`: ✅ pass
+- `npm test`: ✅ pass (37 auto-send tests, 8 step3-verifier tests)
+- `npm run db:push`: ⏳ pending (requires database access before deployment)
+
+### Follow-ups
+1. Run `npm run db:push` before production deployment
+2. Manual smoke test: verify Action Station "Insert calendar link" in staging
+3. Future: Consider Calendly public URL override parity

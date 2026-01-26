@@ -13,8 +13,13 @@ const SCHEDULING_LINK_URL_REGEX =
   /\bhttps?:\/\/(?:www\.)?(?:calendly\.com|cal\.com)\/[^\s)<>\]]*[^\s)<>\].,!?]/gi;
 const GHL_WIDGET_BOOKING_URL_REGEX =
   /\bhttps?:\/\/[^\s)<>\]]*\/widget\/booking(?:s)?\/[^\s)<>\]]*[^\s)<>\].,!?]/gi;
+const ANY_HTTP_URL_REGEX = /\bhttps?:\/\/[^\s)<>\]]*[^\s)<>\].,!?]/gi;
 
-export function enforceCanonicalBookingLink(draft: string, canonicalBookingLink: string | null): string {
+export function enforceCanonicalBookingLink(
+  draft: string,
+  canonicalBookingLink: string | null,
+  opts?: { replaceAllUrls?: boolean }
+): string {
   const trimmedCanonical = (canonicalBookingLink || "").trim();
   const hasCanonical = Boolean(trimmedCanonical);
 
@@ -30,6 +35,10 @@ export function enforceCanonicalBookingLink(draft: string, canonicalBookingLink:
 
   if (GHL_WIDGET_BOOKING_URL_REGEX.test(result)) {
     result = result.replace(GHL_WIDGET_BOOKING_URL_REGEX, hasCanonical ? trimmedCanonical : "");
+  }
+
+  if (opts?.replaceAllUrls && hasCanonical && ANY_HTTP_URL_REGEX.test(result)) {
+    result = result.replace(ANY_HTTP_URL_REGEX, trimmedCanonical);
   }
 
   return result;

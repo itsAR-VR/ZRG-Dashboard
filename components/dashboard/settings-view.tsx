@@ -92,6 +92,7 @@ import {
 	  deleteKnowledgeAsset,
 	  getCalendarLinks,
 	  addCalendarLink,
+	  updateCalendarLink,
 	  deleteCalendarLink,
 	  setDefaultCalendarLink,
 	  setAirtableMode,
@@ -237,7 +238,16 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [calendarLinks, setCalendarLinks] = useState<CalendarLinkData[]>([])
   const [newCalendarName, setNewCalendarName] = useState("")
   const [newCalendarUrl, setNewCalendarUrl] = useState("")
+  const [newCalendarPublicUrl, setNewCalendarPublicUrl] = useState("")
   const [isAddingCalendar, setIsAddingCalendar] = useState(false)
+  const [calendarLinkEditOpen, setCalendarLinkEditOpen] = useState(false)
+  const [calendarLinkEditDraft, setCalendarLinkEditDraft] = useState<{
+    id: string
+    name: string
+    url: string
+    publicUrl: string
+  } | null>(null)
+  const [isUpdatingCalendarLink, setIsUpdatingCalendarLink] = useState(false)
 
   // Meeting Booking state (GHL or Calendly)
   const [meetingBooking, setMeetingBooking] = useState({
@@ -1418,6 +1428,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     const result = await addCalendarLink(activeWorkspace, {
       name: newCalendarName.trim(),
       url: newCalendarUrl.trim(),
+      publicUrl: newCalendarPublicUrl.trim() || null,
       setAsDefault: calendarLinks.length === 0,
     })
 
@@ -1466,12 +1477,98 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       }
       setNewCalendarName("")
       setNewCalendarUrl("")
+      setNewCalendarPublicUrl("")
       toast.success("Calendar link added")
     } else {
       toast.error(result.error || "Failed to add calendar link")
     }
     setIsAddingCalendar(false)
-  }, [activeWorkspace, newCalendarName, newCalendarUrl, calendarLinks.length, meetingBooking.meetingBookingProvider])
+  }, [activeWorkspace, newCalendarName, newCalendarPublicUrl, newCalendarUrl, calendarLinks.length, meetingBooking.meetingBookingProvider])
+
+  const handleOpenCalendarLinkEditor = useCallback((link: CalendarLinkData) => {
+    setCalendarLinkEditDraft({
+      id: link.id,
+      name: link.name,
+      url: link.url,
+      publicUrl: link.publicUrl || "",
+    })
+    setCalendarLinkEditOpen(true)
+  }, [])
+
+  const handleCloseCalendarLinkEditor = useCallback(() => {
+    setCalendarLinkEditOpen(false)
+    setCalendarLinkEditDraft(null)
+  }, [])
+
+  const handleUpdateCalendarLink = useCallback(async () => {
+    if (!activeWorkspace) {
+      toast.error("No workspace selected")
+      return
+    }
+    if (!calendarLinkEditDraft) return
+    if (!calendarLinkEditDraft.name.trim() || !calendarLinkEditDraft.url.trim()) {
+      toast.error("Please provide both name and availability URL")
+      return
+    }
+
+    setIsUpdatingCalendarLink(true)
+    const result = await updateCalendarLink(calendarLinkEditDraft.id, {
+      name: calendarLinkEditDraft.name.trim(),
+      url: calendarLinkEditDraft.url.trim(),
+      publicUrl: calendarLinkEditDraft.publicUrl.trim() || null,
+    })
+
+    if (result.success) {
+      const calendarResult = await getCalendarLinks(activeWorkspace)
+      if (calendarResult.success && calendarResult.data) {
+        setCalendarLinks(calendarResult.data)
+      }
+
+      if (meetingBooking.meetingBookingProvider === "ghl") {
+        try {
+          const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
+          if (mismatch.success) {
+            setCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+              calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendarMismatchInfo(null)
+          }
+        } catch (e) {
+          console.warn("Failed to refresh GHL mismatch info:", e)
+          setCalendarMismatchInfo(null)
+        }
+        setCalendlyCalendarMismatchInfo(null)
+      } else {
+        try {
+          const mismatch = await getCalendlyCalendarMismatchInfo(activeWorkspace)
+          if (mismatch.success) {
+            setCalendlyCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              calendlyEventTypeUuid: mismatch.calendlyEventTypeUuid ?? null,
+              calendarLinkCalendlyEventTypeUuid: mismatch.calendarLinkCalendlyEventTypeUuid ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendlyCalendarMismatchInfo(null)
+          }
+        } catch (e) {
+          console.warn("Failed to refresh Calendly mismatch info:", e)
+          setCalendlyCalendarMismatchInfo(null)
+        }
+        setCalendarMismatchInfo(null)
+      }
+
+      toast.success("Calendar link updated")
+      handleCloseCalendarLinkEditor()
+    } else {
+      toast.error(result.error || "Failed to update calendar link")
+    }
+    setIsUpdatingCalendarLink(false)
+  }, [activeWorkspace, calendarLinkEditDraft, handleCloseCalendarLinkEditor, meetingBooking.meetingBookingProvider])
 
   const handleDeleteCalendarLink = useCallback(async (linkId: string) => {
     if (!activeWorkspace) {
@@ -1866,7 +1963,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   Calendar Links
                 </CardTitle>
                 <CardDescription>
-                  Booking links used in follow-up messages as {"{calendarLink}"}. The default link is used for {"{availability}"} slots.
+                  Availability slots are fetched from the availability URL. Messages use the public booking link when set (otherwise the availability URL).
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -1888,8 +1985,16 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                             <Badge variant="secondary" className="text-xs capitalize">
                               {link.type}
                             </Badge>
+                            {link.publicUrl ? (
+                              <Badge variant="outline" className="text-xs">
+                                Public override
+                              </Badge>
+                            ) : null}
                           </div>
-                          <p className="text-xs text-muted-foreground truncate">{link.url}</p>
+                          <p className="text-xs text-muted-foreground truncate">Availability: {link.url}</p>
+                          {link.publicUrl ? (
+                            <p className="text-xs text-muted-foreground truncate">Public: {link.publicUrl}</p>
+                          ) : null}
                         </div>
                         <div className="flex items-center gap-1">
                           {!link.isDefault && (
@@ -1902,6 +2007,15 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                               Set Default
                             </Button>
                           )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                            onClick={() => handleOpenCalendarLinkEditor(link)}
+                            aria-label="Edit calendar link"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon"
@@ -1936,12 +2050,23 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-xs">URL</Label>
+                      <Label className="text-xs">Availability URL</Label>
                       <Input
                         placeholder="https://calendly.com/..."
                         value={newCalendarUrl}
                         onChange={(e) => setNewCalendarUrl(e.target.value)}
                       />
+                    </div>
+                    <div className="space-y-1.5 col-span-2">
+                      <Label className="text-xs">Public booking link (optional)</Label>
+                      <Input
+                        placeholder="https://book.yourdomain.com/..."
+                        value={newCalendarPublicUrl}
+                        onChange={(e) => setNewCalendarPublicUrl(e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        If set, this link is used everywhere we send a booking link to leads.
+                      </p>
                     </div>
                   </div>
                   <Button
@@ -1961,6 +2086,85 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     Supports Calendly, HubSpot Meetings, and GoHighLevel calendars
                   </p>
                 </div>
+
+                <Dialog
+                  open={calendarLinkEditOpen}
+                  onOpenChange={(open) => {
+                    if (!open) handleCloseCalendarLinkEditor()
+                    setCalendarLinkEditOpen(open)
+                  }}
+                >
+                  <DialogContent className="max-w-lg">
+                    <DialogHeader>
+                      <DialogTitle>Edit Calendar Link</DialogTitle>
+                      <DialogDescription>
+                        Update the availability URL (used for slot fetching) and the public booking link (used in messages).
+                      </DialogDescription>
+                    </DialogHeader>
+
+                    {calendarLinkEditDraft ? (
+                      <div className="space-y-4">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Name</Label>
+                          <Input
+                            value={calendarLinkEditDraft.name}
+                            onChange={(e) =>
+                              setCalendarLinkEditDraft((prev) => (prev ? { ...prev, name: e.target.value } : prev))
+                            }
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Availability URL</Label>
+                          <Input
+                            value={calendarLinkEditDraft.url}
+                            onChange={(e) =>
+                              setCalendarLinkEditDraft((prev) => (prev ? { ...prev, url: e.target.value } : prev))
+                            }
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <Label className="text-xs">Public booking link (optional)</Label>
+                          <Input
+                            value={calendarLinkEditDraft.publicUrl}
+                            onChange={(e) =>
+                              setCalendarLinkEditDraft((prev) =>
+                                prev ? { ...prev, publicUrl: e.target.value } : prev
+                              )
+                            }
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            If set, this link replaces any booking link URLs in AI drafts and follow-up messages.
+                          </p>
+                        </div>
+
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            variant="outline"
+                            onClick={handleCloseCalendarLinkEditor}
+                            disabled={isUpdatingCalendarLink}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            onClick={handleUpdateCalendarLink}
+                            disabled={
+                              isUpdatingCalendarLink ||
+                              !calendarLinkEditDraft.name.trim() ||
+                              !calendarLinkEditDraft.url.trim()
+                            }
+                          >
+                            {isUpdatingCalendarLink ? (
+                              <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                            ) : null}
+                            Save
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </DialogContent>
+                </Dialog>
               </CardContent>
             </Card>
 

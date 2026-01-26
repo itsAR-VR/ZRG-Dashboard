@@ -1168,7 +1168,8 @@ model CalendarLink {
   clientId   String
   client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   name       String              // Display name (e.g., "Sales Calendar", "Demo Calls")
-  url        String              // Full calendar URL (calendly.com/user/meeting)
+  url        String              // Backend: calendar URL used to fetch availability slots from provider APIs
+  publicUrl  String?             // Outbound: optional booking link sent to leads (falls back to url when unset)
   type       String              // 'calendly' | 'hubspot' | 'ghl' | 'unknown'
   isDefault  Boolean  @default(false)  // Default calendar for this workspace
   createdAt  DateTime @default(now())

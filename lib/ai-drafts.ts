@@ -27,7 +27,7 @@ import {
 } from "@/lib/ai-drafts/config";
 import { enforceCanonicalBookingLink, replaceEmDashesWithCommaSpace } from "@/lib/ai-drafts/step3-verifier";
 import { getBookingProcessInstructions } from "@/lib/booking-process-instructions";
-import { getBookingLink } from "@/lib/meeting-booking-provider";
+import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 
 type DraftChannel = "sms" | "email" | "linkedin";
 
@@ -2233,8 +2233,11 @@ Generate an appropriate ${channel} response following the guidelines above.
 
       if (channel === "email" && draftContent) {
         let bookingLink: string | null = null;
+        let hasPublicBookingLinkOverride = false;
         try {
-          bookingLink = await getBookingLink(lead.clientId, settings);
+          const resolved = await resolveBookingLink(lead.clientId, settings);
+          bookingLink = resolved.bookingLink;
+          hasPublicBookingLinkOverride = resolved.hasPublicOverride;
         } catch (error) {
           console.error("[AI Drafts] Failed to resolve canonical booking link:", error);
         }
@@ -2268,7 +2271,9 @@ Generate an appropriate ${channel} response following the guidelines above.
         }
 
         // Hard post-pass enforcement (even if verifier fails).
-        draftContent = enforceCanonicalBookingLink(draftContent, bookingLink);
+        draftContent = enforceCanonicalBookingLink(draftContent, bookingLink, {
+          replaceAllUrls: hasPublicBookingLinkOverride,
+        });
         draftContent = replaceEmDashesWithCommaSpace(draftContent);
       }
 
