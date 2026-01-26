@@ -815,7 +815,7 @@ function defaultNoResponseLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
       stepOrder: 1, // temporary; will be renumbered
       dayOffset: 2,
       channel: "linkedin",
-      messageTemplate: `Hi {firstName} — quick follow-up about {result}. Happy to share details if you're still exploring.`,
+      messageTemplate: `Hi {firstName}, quick follow-up about {result}. Happy to share details if you're still exploring.`,
       subject: null,
       condition: { type: "always" },
       requiresApproval: false,
@@ -826,7 +826,7 @@ function defaultNoResponseLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
       stepOrder: 1, // temporary; will be renumbered
       dayOffset: 5,
       channel: "linkedin",
-      messageTemplate: `Hey {firstName} — circling back. If helpful, I have {availability}. Or grab a time here: {calendarLink}`,
+      messageTemplate: `Hey {firstName}, circling back. If helpful, I have {availability}. Or grab a time here: {calendarLink}`,
       subject: null,
       condition: { type: "linkedin_connected" },
       requiresApproval: false,
@@ -837,7 +837,7 @@ function defaultNoResponseLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
       stepOrder: 1, // temporary; will be renumbered
       dayOffset: 7,
       channel: "linkedin",
-      messageTemplate: `Last touch, {firstName} — should I close the loop on this, or do you still want to chat about {result}?`,
+      messageTemplate: `Last touch, {firstName}, should I close the loop on this, or do you still want to chat about {result}?`,
       subject: null,
       condition: { type: "linkedin_connected" },
       requiresApproval: false,
@@ -853,7 +853,7 @@ function defaultMeetingRequestedLinkedInSteps(): Array<Omit<FollowUpStepData, "i
       stepOrder: 1, // temporary; will be renumbered
       dayOffset: 1,
       channel: "linkedin",
-      messageTemplate: `Hi {firstName} — thanks for reaching out. Happy to connect and share details about {result}.`,
+      messageTemplate: `Hi {firstName}, thanks for reaching out. Happy to connect and share details about {result}.`,
       subject: null,
       condition: { type: "always" },
       requiresApproval: false,
@@ -918,7 +918,7 @@ Looking forward to connecting.
       stepOrder: 2,
       dayOffset: 2,
       channel: "sms",
-      messageTemplate: `Hey {firstName} - when is a good time to give you a call?`,
+      messageTemplate: `Hey {firstName}, when is a good time to give you a call?`,
       subject: null,
       condition: { type: "phone_provided" },
       requiresApproval: false,
@@ -946,7 +946,7 @@ No problem if not but just let me know. I have {availability} and if it's easier
       stepOrder: 4,
       dayOffset: 5,
       channel: "sms",
-      messageTemplate: `Hey {firstName} - {senderName} from {companyName} again
+      messageTemplate: `Hey {firstName}, {senderName} from {companyName} again
 
 Just sent over an email about getting {result}
 
@@ -1023,7 +1023,7 @@ export async function createMeetingRequestedSequence(
       channel: "email",
       messageTemplate: `Hi {firstName},
 
-Great — happy to set up a quick call to talk through {result}.
+Great, happy to set up a quick call to talk through {result}.
 
 I have {availability}. If it’s easier, you can grab a time here: {calendarLink}
 
@@ -1038,7 +1038,7 @@ I have {availability}. If it’s easier, you can grab a time here: {calendarLink
       stepOrder: 2,
       dayOffset: 2,
       channel: "sms",
-      messageTemplate: `Hey {firstName} — want to lock in a quick call about {result}? Here’s my calendar: {calendarLink}`,
+      messageTemplate: `Hey {firstName}, want to lock in a quick call about {result}? Here’s my calendar: {calendarLink}`,
       subject: null,
       condition: { type: "phone_provided" },
       requiresApproval: false,
@@ -1051,7 +1051,7 @@ I have {availability}. If it’s easier, you can grab a time here: {calendarLink
       channel: "email",
       messageTemplate: `Hi {firstName},
 
-Just following up — still want to get a quick call scheduled?
+Just following up, still want to get a quick call scheduled?
 
 I have {availability} available. Calendar link here as well: {calendarLink}
 
@@ -1066,7 +1066,7 @@ I have {availability} available. Calendar link here as well: {calendarLink}
       stepOrder: 4,
       dayOffset: 7,
       channel: "sms",
-      messageTemplate: `Hey {firstName} — should I close the loop on this, or do you still want to chat about {result}?`,
+      messageTemplate: `Hey {firstName}, should I close the loop on this, or do you still want to chat about {result}?`,
       subject: null,
       condition: { type: "phone_provided" },
       requiresApproval: false,
@@ -1077,9 +1077,9 @@ I have {availability} available. Calendar link here as well: {calendarLink}
   const airtableMode = await isAirtableModeEnabled(clientId);
   const withOptionalLinkedIn = hasLinkedIn
     ? sortStepsForScheduling([...steps, ...defaultMeetingRequestedLinkedInSteps()]).map((s, idx) => ({
-        ...s,
-        stepOrder: idx + 1,
-      }))
+      ...s,
+      stepOrder: idx + 1,
+    }))
     : steps;
   const filteredSteps = airtableMode ? stripEmailSteps(withOptionalLinkedIn) : withOptionalLinkedIn;
   const description = hasLinkedIn
