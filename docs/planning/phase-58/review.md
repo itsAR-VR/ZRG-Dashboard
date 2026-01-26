@@ -49,7 +49,7 @@
 - `npm run build` — **pass** — 2026-01-26
 - `npm test` — **pass** (37 tests in auto-send suite) — 2026-01-26
 - `node --import tsx --test lib/ai-drafts/__tests__/step3-verifier.test.ts` — **pass** (8 tests) — 2026-01-26
-- `npm run db:push` — **not run** (requires database access; schema change adds nullable field, no data migration needed)
+- `npm run db:push` — **pass** (schema synced successfully) — 2026-01-26
 
 ### Notes
 - No breaking changes: `publicUrl` is nullable and all read paths fall back to `url` when unset

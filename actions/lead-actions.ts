@@ -708,6 +708,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           rawText: msg.rawText || undefined,
           cc: msg.cc,
           bcc: msg.bcc,
+          source: msg.source || undefined,
           // Phase 50: Email participant metadata
           fromEmail: msg.fromEmail || undefined,
           fromName: msg.fromName ?? null,

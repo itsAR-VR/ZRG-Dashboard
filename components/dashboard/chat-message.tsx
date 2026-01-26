@@ -3,7 +3,7 @@
 import { cn } from "@/lib/utils"
 import type { Message } from "@/lib/mock-data"
 import { format } from "date-fns"
-import { Bot, User, UserCircle } from "lucide-react"
+import { Bot, Mail, User, UserCircle } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { useState } from "react"
 import { safeLinkifiedHtmlFromText } from "@/lib/safe-html"
@@ -77,6 +77,7 @@ export function ChatMessage({ message, leadName, leadEmail, userName = "You", us
   const isLead = message.sender === "lead"
   const isHuman = message.sender === "human"
   const isAi = message.sender === "ai"
+  const isCampaign = message.source === "inboxxia_campaign"
   const isEmail = message.channel === "email" || !!message.subject
   const [showOriginal, setShowOriginal] = useState(false)
 
@@ -90,8 +91,8 @@ export function ChatMessage({ message, leadName, leadEmail, userName = "You", us
       }
     : isAi
       ? {
-          label: "AI",
-          icon: Bot,
+          label: isCampaign ? "Campaign" : "AI",
+          icon: isCampaign ? Mail : Bot,
           avatarClass: "bg-emerald-500/10 text-emerald-600",
           bubbleClass: "bg-emerald-500/10 border border-emerald-500/20",
           align: "right" as const,

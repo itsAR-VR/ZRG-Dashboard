@@ -73,6 +73,7 @@ export interface Message {
   rawText?: string
   cc?: string[]
   bcc?: string[]
+  source?: string
   // Phase 50: Email participant metadata
   fromEmail?: string
   fromName?: string | null

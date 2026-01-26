@@ -104,7 +104,7 @@ Currently, `CalendarLink.url` serves a dual purpose:
 - [x] `npm run lint` passes
 - [x] `npm run build` passes
 - [x] `npm test` passes (or at minimum, add/execute targeted unit coverage for the changed helpers)
-- [ ] `npm run db:push` succeeds (pending — requires database access before deployment)
+- [x] `npm run db:push` succeeds
 
 ## Subphase Index
 * a — Schema update: Add `publicUrl` field to `CalendarLink` ✅
@@ -158,7 +158,7 @@ Currently, `CalendarLink.url` serves a dual purpose:
 - `npm run lint`: ✅ pass (0 errors, 18 warnings — pre-existing)
 - `npm run build`: ✅ pass
 - `npm test`: ✅ pass (37 auto-send tests, 8 step3-verifier tests)
-- `npm run db:push`: ⏳ pending (requires database access before deployment)
+- `npm run db:push`: ✅ pass (schema synced)
 
 ### Follow-ups
 1. Run `npm run db:push` before production deployment
