@@ -701,12 +701,37 @@ export async function stopEmailBisonCampaignFutureEmailsForLeads(
         host,
         preview: typeof text === "string" ? truncateForLog(text) : null,
       });
-      return { success: true };
+      return {
+        success: false,
+        error: "EmailBison stop future emails returned an empty or invalid response.",
+      };
     }
 
-    const success = Boolean(body?.success ?? body?.data?.success ?? true);
-    const message = (body?.message ?? body?.data?.message) as string | undefined;
-    return { success, message };
+    const successRaw = body?.data?.success ?? body?.success;
+    const messageRaw = body?.data?.message ?? body?.message;
+    const message = typeof messageRaw === "string" ? messageRaw : undefined;
+
+    if (typeof successRaw !== "boolean") {
+      console.warn("[EmailBison] Stop future emails response missing success flag:", {
+        endpoint,
+        host,
+        hasBody: Boolean(body),
+        hasData: Boolean(body?.data),
+      });
+      return {
+        success: false,
+        error: "EmailBison stop future emails response was missing a success flag.",
+      };
+    }
+
+    if (!successRaw) {
+      return {
+        success: false,
+        error: message ? `EmailBison stop future emails reported failure: ${message}` : "EmailBison stop future emails reported failure.",
+      };
+    }
+
+    return { success: true, message };
   } catch (error) {
     console.error("[EmailBison] Failed to stop future emails:", error);
     return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
