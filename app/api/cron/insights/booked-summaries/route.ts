@@ -5,6 +5,9 @@ import { coerceInsightsChatModel, coerceInsightsChatReasoningEffort } from "@/li
 import { CONVERSATION_INSIGHT_SCHEMA_VERSION, extractConversationInsightForLead } from "@/lib/insights-chat/thread-extractor";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 
+// Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
+export const maxDuration = 800;
+
 function isAuthorized(request: NextRequest): boolean {
   const expectedSecret = process.env.CRON_SECRET;
   if (!expectedSecret) return false;

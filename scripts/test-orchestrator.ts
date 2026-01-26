@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
 
-const TEST_FILE = "lib/auto-send/__tests__/orchestrator.test.ts";
+const TEST_FILES = [
+  "lib/auto-send/__tests__/orchestrator.test.ts",
+  "lib/__tests__/ghl-appointment-response.test.ts",
+  "lib/__tests__/insights-thread-extractor-schema.test.ts",
+];
 
 async function main(): Promise<void> {
-  const args = ["--conditions=react-server", "--import", "tsx", "--test", TEST_FILE];
+  const args = ["--conditions=react-server", "--import", "tsx", "--test", ...TEST_FILES];
 
   const child = spawn(process.execPath, args, {
     stdio: "inherit",
@@ -27,4 +31,3 @@ main().catch((error) => {
   console.error("[test] Failed:", error);
   process.exit(1);
 });
-

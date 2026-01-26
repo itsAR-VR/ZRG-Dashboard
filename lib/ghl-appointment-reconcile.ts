@@ -308,6 +308,8 @@ export async function reconcileGHLAppointmentForLead(
 /**
  * Reconcile an existing GHL appointment by ID.
  * Used when we already have ghlAppointmentId and want to refresh its status.
+ *
+ * Phase 57b: Always advances appointmentLastCheckedAt to prevent retry storms.
  */
 export async function reconcileGHLAppointmentById(
   leadId: string,
@@ -315,6 +317,19 @@ export async function reconcileGHLAppointmentById(
   opts: GHLReconcileOptions = {}
 ): Promise<GHLReconcileResult> {
   const source = opts.source || APPOINTMENT_SOURCE.RECONCILE_CRON;
+
+  // Helper to advance watermark - prevents retry storms on persistent errors (Phase 57b)
+  const advanceWatermark = async () => {
+    if (opts.dryRun) return;
+    try {
+      await prisma.lead.update({
+        where: { id: leadId },
+        data: { appointmentLastCheckedAt: new Date() },
+      });
+    } catch {
+      // Ignore watermark update failures to not mask real errors
+    }
+  };
 
   try {
     const lead = await prisma.lead.findUnique({
@@ -336,10 +351,12 @@ export async function reconcileGHLAppointmentById(
     });
 
     if (!lead) {
+      await advanceWatermark(); // Still advance watermark to prevent retry
       return { leadId, status: "error", error: "Lead not found" };
     }
 
     if (!lead.client.ghlPrivateKey) {
+      await advanceWatermark();
       return { leadId, status: "skipped", error: "No GHL credentials configured" };
     }
 
@@ -351,12 +368,14 @@ export async function reconcileGHLAppointmentById(
 
     if (!appointmentResult.success) {
       // Appointment not found or error - might be deleted
-      console.warn(`[GHL Reconcile] Appointment ${appointmentId} not found for lead ${leadId}`);
+      console.warn(`[GHL Reconcile] Appointment ${appointmentId} not found for lead ${leadId}:`, appointmentResult.error);
+      await advanceWatermark(); // Advance watermark even on API errors
       return { leadId, status: "error", error: appointmentResult.error };
     }
 
     const appointment = appointmentResult.data;
     if (!appointment) {
+      await advanceWatermark();
       return { leadId, status: "no_appointments" };
     }
 
@@ -380,6 +399,7 @@ export async function reconcileGHLAppointmentById(
       });
     }
 
+    // Watermark is advanced as part of upsertAppointmentWithRollup for success case
     return {
       leadId,
       status: isCanceled ? "canceled" : "booked",
@@ -391,6 +411,7 @@ export async function reconcileGHLAppointmentById(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[GHL Reconcile] Error reconciling appointment ${appointmentId} for lead ${leadId}:`, message);
+    await advanceWatermark(); // Advance watermark even on exceptions
     return { leadId, status: "error", error: message };
   }
 }

@@ -446,7 +446,7 @@ OUTPUT JSON SCHEMA
     "objection_responses": [
       {
         "objection_type": "pricing"|"timing"|"authority"|"need"|"trust"|"competitor"|"none",
-        "agent_response": string,
+        "agent_response": string, // Keep concise, max 300 chars
         "outcome": "positive"|"negative"|"neutral"
       }
     ]

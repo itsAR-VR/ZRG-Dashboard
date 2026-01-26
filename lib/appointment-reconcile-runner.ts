@@ -32,6 +32,22 @@ const DEFAULT_WORKSPACE_LIMIT = 10;
 const DEFAULT_LEADS_PER_WORKSPACE = 50;
 const DEFAULT_STALE_DAYS = 7; // Re-check leads not checked in 7 days
 
+// Circuit breaker thresholds (Phase 57d)
+const DEFAULT_CIRCUIT_BREAKER_ERROR_RATE = 0.5; // 50% error rate triggers circuit breaker
+const DEFAULT_CIRCUIT_BREAKER_MIN_CHECKS = 5; // Don't trip on small batches
+
+function getCircuitBreakerErrorRate(): number {
+  const parsed = Number.parseFloat(process.env.RECONCILE_CIRCUIT_BREAKER_ERROR_RATE || "");
+  if (!Number.isFinite(parsed)) return DEFAULT_CIRCUIT_BREAKER_ERROR_RATE;
+  return Math.min(1, Math.max(0, parsed));
+}
+
+function getCircuitBreakerMinChecks(): number {
+  const parsed = Number.parseInt(process.env.RECONCILE_CIRCUIT_BREAKER_MIN_CHECKS || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_CIRCUIT_BREAKER_MIN_CHECKS;
+  return Math.max(1, Math.trunc(parsed));
+}
+
 export interface ReconcileRunnerOptions {
   /** Max workspaces to process per run */
   workspaceLimit?: number;
@@ -57,6 +73,8 @@ export interface ReconcileRunnerResult {
   noChange: number;
   skipped: number;
   errors: number;
+  /** Circuit breaker tripped when error rate exceeds threshold (Phase 57d) */
+  circuitBroken?: boolean;
   byProvider: {
     ghl: { checked: number; booked: number; canceled: number; errors: number };
     calendly: { checked: number; booked: number; canceled: number; errors: number };
@@ -320,6 +338,25 @@ export async function runAppointmentReconciliation(
       result.byProvider[providerKey].booked += wsResult.booked;
       result.byProvider[providerKey].canceled += wsResult.canceled;
       result.byProvider[providerKey].errors += wsResult.errors;
+
+      // Phase 57d: Circuit breaker — exit early if error rate is too high
+      const errorRate = result.errors / Math.max(1, result.leadsChecked);
+      const circuitBreakerRate = getCircuitBreakerErrorRate();
+      const circuitBreakerMinChecks = getCircuitBreakerMinChecks();
+      if (
+        result.leadsChecked >= circuitBreakerMinChecks &&
+        errorRate >= circuitBreakerRate
+      ) {
+        console.warn("[Reconcile Runner] Circuit breaker tripped", {
+          errorRate: (errorRate * 100).toFixed(1) + "%",
+          leadsChecked: result.leadsChecked,
+          errors: result.errors,
+          threshold: (circuitBreakerRate * 100) + "%",
+          minChecks: circuitBreakerMinChecks,
+        });
+        result.circuitBroken = true;
+        return result;
+      }
     } catch (error) {
       console.error(`[Reconcile Runner] Error processing workspace ${workspace.id}:`, error);
       result.errors++;

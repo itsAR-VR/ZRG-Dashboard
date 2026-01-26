@@ -55,7 +55,9 @@ export type ObjectionType = (typeof OBJECTION_TYPES)[number];
  */
 const ObjectionResponseSchema = z.object({
   objection_type: z.enum(OBJECTION_TYPES),
-  agent_response: z.string().max(300),
+  // Phase 57c: Use transform() to clamp rather than max() to fail
+  // This ensures overlong LLM responses are truncated, not rejected
+  agent_response: z.string().transform((val) => val.slice(0, 300)),
   outcome: z.enum(["positive", "negative", "neutral"]),
 });
 
@@ -107,6 +109,9 @@ export type ConversationInsight = z.infer<typeof ConversationInsightSchema>;
 export type FollowUpAnalysis = z.infer<typeof FollowUpAnalysisSchema>;
 export type FollowUpEffectiveness = z.infer<typeof FollowUpEffectivenessSchema>;
 export type ObjectionResponse = z.infer<typeof ObjectionResponseSchema>;
+
+// Export schema for testing (Phase 57c)
+export { ObjectionResponseSchema };
 
 // ============================================================================
 // Follow-Up Stats Computation (deterministic, no AI)
@@ -424,7 +429,7 @@ export async function extractConversationInsightForLead(opts: {
                   type: "string",
                   enum: ["pricing", "timing", "authority", "need", "trust", "competitor", "none"],
                 },
-                agent_response: { type: "string" },
+                agent_response: { type: "string", maxLength: 300 },
                 outcome: { type: "string", enum: ["positive", "negative", "neutral"] },
               },
               required: ["objection_type", "agent_response", "outcome"],

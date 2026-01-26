@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { runAppointmentReconciliation } from "@/lib/appointment-reconcile-runner";
 import { APPOINTMENT_SOURCE } from "@/lib/meeting-lifecycle";
 
+// Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
+export const maxDuration = 800;
+
 /**
  * GET /api/cron/appointment-reconcile
  *
@@ -61,9 +64,17 @@ export async function GET(request: NextRequest) {
 
     console.log("[Appointment Reconcile Cron] Completed:", result);
 
+    // Phase 57d: Add health indicator for monitoring/alerting
+    let health: "healthy" | "degraded" | "unhealthy" | "circuit_broken";
+    if (result.circuitBroken) health = "circuit_broken";
+    else if (result.errors === 0) health = "healthy";
+    else if (result.errors < 5) health = "degraded";
+    else health = "unhealthy";
+
     return NextResponse.json({
       success: true,
       ...result,
+      health,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {

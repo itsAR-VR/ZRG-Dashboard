@@ -391,28 +391,36 @@ export async function startFollowUpSequence(
       nextStepDue = pausedUntil;
     }
 
-    // Create or update instance
-    const instance = await prisma.followUpInstance.upsert({
-      where: {
-        leadId_sequenceId: { leadId, sequenceId },
-      },
-      update: {
-        status: "active",
-        currentStep: 0,
-        pausedReason: null,
-        startedAt: new Date(),
-        lastStepAt: null,
-        nextStepDue,
-        completedAt: null,
-      },
-      create: {
-        leadId,
-        sequenceId,
-        status: "active",
-        currentStep: 0,
-        nextStepDue,
-      },
-    });
+    // Create or update instance and ensure autoFollowUpEnabled is true
+    // Without this, the cron job won't process the instance (processFollowUpsDue filters on autoFollowUpEnabled)
+    const [instance] = await prisma.$transaction([
+      prisma.followUpInstance.upsert({
+        where: {
+          leadId_sequenceId: { leadId, sequenceId },
+        },
+        update: {
+          status: "active",
+          currentStep: 0,
+          pausedReason: null,
+          startedAt: new Date(),
+          lastStepAt: null,
+          nextStepDue,
+          completedAt: null,
+        },
+        create: {
+          leadId,
+          sequenceId,
+          status: "active",
+          currentStep: 0,
+          nextStepDue,
+        },
+      }),
+      // Enable autoFollowUpEnabled so the cron will process this instance
+      prisma.lead.update({
+        where: { id: leadId },
+        data: { autoFollowUpEnabled: true },
+      }),
+    ]);
 
     revalidatePath("/");
     return { success: true, instanceId: instance.id };

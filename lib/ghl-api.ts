@@ -910,6 +910,64 @@ export async function getGHLContactAppointments(
 }
 
 /**
+ * Normalizes GHL appointment API responses.
+ *
+ * The "Get Appointment by Event ID" endpoint returns:
+ *   { appointment: { id, ... }, traceId: "..." }
+ *
+ * This function unwraps the appointment and ensures required fields exist.
+ * Exported for testing.
+ */
+export function normalizeGhlAppointmentResponse(data: unknown): GHLAppointment | null {
+  if (!data || typeof data !== "object") return null;
+  const record = data as Record<string, unknown>;
+
+  // Unwrap the appointment wrapper (primary case)
+  // Also handle potential future shapes: event wrapper, or direct response
+  const candidate =
+    record.appointment ||
+    record.event ||
+    record;
+
+  if (!candidate || typeof candidate !== "object") return null;
+  const obj = candidate as Record<string, unknown>;
+
+  // Extract ID - the field is `id` in the actual response
+  const id = obj.id ?? obj.eventId ?? obj.appointmentId;
+  if (typeof id !== "string" || !id) return null;
+
+  const startTime = obj.startTime;
+  const endTime = obj.endTime;
+  if (typeof startTime !== "string" || !startTime) return null;
+  if (typeof endTime !== "string" || !endTime) return null;
+  if (Number.isNaN(Date.parse(startTime))) return null;
+  if (Number.isNaN(Date.parse(endTime))) return null;
+
+  const appointmentStatus =
+    typeof obj.appointmentStatus === "string"
+      ? obj.appointmentStatus
+      : typeof obj.status === "string"
+        ? obj.status
+        : "";
+
+  return {
+    id,
+    calendarId: String(obj.calendarId ?? ""),
+    locationId: String(obj.locationId ?? ""),
+    contactId: String(obj.contactId ?? ""),
+    title: String(obj.title ?? ""),
+    startTime,
+    endTime,
+    appointmentStatus,
+    assignedUserId: typeof obj.assignedUserId === "string" ? obj.assignedUserId : undefined,
+    notes: typeof obj.notes === "string" ? obj.notes : undefined,
+    address: typeof obj.address === "string" ? obj.address : undefined,
+    dateAdded: typeof obj.dateAdded === "string" ? obj.dateAdded : undefined,
+    dateUpdated: typeof obj.dateUpdated === "string" ? obj.dateUpdated : undefined,
+  };
+}
+
+/**
  * Get a single appointment by ID
  * Uses GET /calendars/events/appointments/{eventId}
  *
@@ -921,12 +979,30 @@ export async function getGHLAppointment(
   privateKey: string,
   opts?: { locationId?: string }
 ): Promise<GHLApiResponse<GHLAppointment>> {
-  return ghlRequest<GHLAppointment>(
+  const result = await ghlRequest<unknown>(
     `/calendars/events/appointments/${encodeURIComponent(eventId)}`,
     privateKey,
     {},
     opts?.locationId
   );
+
+  if (!result.success) return result as GHLApiResponse<GHLAppointment>;
+
+  const normalized = normalizeGhlAppointmentResponse(result.data);
+  if (!normalized) {
+    const keys = result.data && typeof result.data === "object" ? Object.keys(result.data as Record<string, unknown>) : null;
+    console.warn(`[GHL] Unexpected appointment response shape for eventId=${eventId}`, {
+      hasData: !!result.data,
+      dataType: typeof result.data,
+      keys: keys?.slice(0, 12) || null,
+    });
+    return {
+      success: false,
+      error: "GHL appointment response missing required fields",
+    };
+  }
+
+  return { success: true, data: normalized };
 }
 
 /**
