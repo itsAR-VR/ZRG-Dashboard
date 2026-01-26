@@ -181,7 +181,26 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
 
   // Policy: if a no-response instance is paused due to a lead reply, re-enable it on the next outbound touch.
   // This ensures we only auto-follow up when the latest touch is outbound (from us).
+  // BUT: If there's been recent inbound activity (within 48 hours), the conversation is "active"
+  // and a human is likely nurturing. Don't resume automated follow-ups to avoid spam/overlap.
   if (pausedReplied.length > 0 && pausedOther.length === 0) {
+    // Check for recent inbound activity - indicates active conversation
+    const recentActivityCutoffHours = 48;
+    const recentActivityCutoff = new Date(Date.now() - recentActivityCutoffHours * 60 * 60 * 1000);
+
+    const recentInbound = await prisma.message.findFirst({
+      where: {
+        leadId: opts.leadId,
+        direction: "inbound",
+        sentAt: { gte: recentActivityCutoff },
+      },
+      select: { id: true },
+    });
+
+    if (recentInbound) {
+      return { started: false, reason: "recent_inbound_activity" };
+    }
+
     const startAt = opts.outboundAt || new Date();
     let resumed = 0;
 

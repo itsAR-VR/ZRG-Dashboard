@@ -1032,8 +1032,37 @@ export async function executeFollowUpStep(
     // Generate message content
     const { content, subject, offeredSlots } = await generateFollowUpMessage(step, lead, settings);
 
+    const rawRequireApprovalAfterHumanOutboundDays = process.env.FOLLOWUPS_REQUIRE_APPROVAL_AFTER_HUMAN_OUTBOUND_DAYS;
+    const parsedRequireApprovalAfterHumanOutboundDays = rawRequireApprovalAfterHumanOutboundDays
+      ? Number.parseInt(rawRequireApprovalAfterHumanOutboundDays, 10)
+      : Number.NaN;
+    const requireApprovalAfterHumanOutboundDays = Math.max(
+      0,
+      Number.isFinite(parsedRequireApprovalAfterHumanOutboundDays) ? parsedRequireApprovalAfterHumanOutboundDays : 7
+    );
+    const enforceApprovalAfterHumanOutbound =
+      step.channel === "email" &&
+      requireApprovalAfterHumanOutboundDays > 0 &&
+      !step.requiresApproval;
+
+    let shouldForceApproval = false;
+    if (enforceApprovalAfterHumanOutbound) {
+      const cutoff = new Date(now.getTime() - requireApprovalAfterHumanOutboundDays * 24 * 60 * 60 * 1000);
+      const recentHumanOutbound = await prisma.message.findFirst({
+        where: {
+          leadId: lead.id,
+          direction: "outbound",
+          source: "zrg",
+          sentAt: { gte: cutoff },
+          sentByUserId: { not: null },
+        },
+        select: { id: true },
+      });
+      shouldForceApproval = Boolean(recentHumanOutbound);
+    }
+
     // Check if approval is required
-    if (step.requiresApproval) {
+    if (step.requiresApproval || shouldForceApproval) {
       // Create a pending task for approval
       await prisma.followUpTask.create({
         data: {
@@ -1254,6 +1283,19 @@ export async function executeFollowUpStep(
 // Batch Processing (called by cron)
 // =============================================================================
 
+const MEETING_REQUESTED_SEQUENCE_NAME = "Meeting Requested Day 1/2/5/7";
+const POST_BOOKING_SEQUENCE_NAME = "Post-Booking Qualification";
+
+function shouldPauseSequenceOnLeadReply(sequence: { name: string; triggerOn: string }): boolean {
+  // Response-driven sequences should continue even after a reply.
+  if (sequence.name === MEETING_REQUESTED_SEQUENCE_NAME) return false;
+  if (sequence.name === POST_BOOKING_SEQUENCE_NAME) return false;
+  if (sequence.triggerOn === "meeting_selected") return false;
+
+  // Default: treat sequences as "no-response style" and pause once the lead replies.
+  return true;
+}
+
 /**
  * Process all due follow-up instances
  * This should be called by an external cron service
@@ -1315,6 +1357,41 @@ export async function processFollowUpsDue(): Promise<{
 
     for (const instance of instances) {
       results.processed++;
+
+      // Safety: if the lead has replied since the latest outbound touch, pause the instance so we don't
+      // keep sending "outreach style" steps while the conversation is already active.
+      // Also check for recent inbound activity (within 48 hours) - indicates an active conversation
+      // where a human is likely nurturing. This prevents automated follow-ups from overlapping.
+      const leadHasRepliedSinceLatestOutbound =
+        instance.lead.lastMessageDirection === "inbound" ||
+        (instance.lead.lastInboundAt &&
+          instance.lead.lastOutboundAt &&
+          instance.lead.lastInboundAt > instance.lead.lastOutboundAt);
+
+      // Check for recent inbound within 48 hours - indicates active conversation
+      const recentActivityCutoffMs = 48 * 60 * 60 * 1000;
+      const hasRecentInbound =
+        instance.lead.lastInboundAt &&
+        now.getTime() - instance.lead.lastInboundAt.getTime() < recentActivityCutoffMs;
+
+      const shouldPauseForConversation =
+        shouldPauseSequenceOnLeadReply({
+          name: instance.sequence.name,
+          triggerOn: instance.sequence.triggerOn,
+        }) &&
+        (leadHasRepliedSinceLatestOutbound || hasRecentInbound);
+
+      if (shouldPauseForConversation) {
+        await prisma.followUpInstance.update({
+          where: { id: instance.id },
+          data: {
+            status: "paused",
+            pausedReason: "lead_replied",
+          },
+        });
+        results.skipped++;
+        continue;
+      }
 
       // Find the next step to execute
       const nextStep = instance.sequence.steps.find(
@@ -1459,13 +1536,19 @@ export async function processFollowUpsDue(): Promise<{
  */
 export async function pauseFollowUpsOnReply(leadId: string): Promise<void> {
   try {
-    // Only pause sequences that are meant to run when the lead has NOT replied.
-    // Meeting-requested and post-booking sequences are response-driven and should continue.
     const instances = await prisma.followUpInstance.findMany({
       where: {
         leadId,
         status: "active",
-        sequence: { triggerOn: "no_response" },
+        NOT: {
+          sequence: {
+            OR: [
+              { name: MEETING_REQUESTED_SEQUENCE_NAME },
+              { name: POST_BOOKING_SEQUENCE_NAME },
+              { triggerOn: "meeting_selected" },
+            ],
+          },
+        },
       },
       select: { id: true },
     });
