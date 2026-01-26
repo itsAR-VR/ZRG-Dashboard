@@ -6,6 +6,7 @@ import {
   fetchEmailBisonLead,
   fetchEmailBisonSentEmails,
   getCustomVariable,
+  stopEmailBisonCampaignFutureEmailsForLeads,
 } from "@/lib/emailbison-api";
 import {
   extractContactFromMessageContent,
@@ -656,6 +657,30 @@ export async function runEmailInboundPostProcessJob(opts: {
   }
 
   if (client.emailBisonApiKey && lead.emailBisonLeadId) {
+    // If the lead replied, stop any remaining outbound campaign emails for this lead in the originating campaign.
+    // This prevents campaign sequences from overlapping with manual/AI nurturing in ZRG.
+    const bisonCampaignId = (lead.emailCampaign?.bisonCampaignId || "").trim();
+    if (bisonCampaignId) {
+      const stopResult = await stopEmailBisonCampaignFutureEmailsForLeads(
+        client.emailBisonApiKey,
+        bisonCampaignId,
+        [lead.emailBisonLeadId],
+        { baseHost: emailBisonBaseHost }
+      ).catch((error) => ({
+        success: false as const,
+        error: error instanceof Error ? error.message : "Unknown error",
+      }));
+
+      if (!stopResult.success) {
+        console.warn("[EmailBison] Failed to stop future campaign emails for lead:", {
+          leadId: lead.id,
+          emailBisonLeadId: lead.emailBisonLeadId,
+          bisonCampaignId,
+          error: stopResult.error || "unknown_error",
+        });
+      }
+    }
+
     await backfillOutboundEmailMessagesIfMissing({
       leadId: lead.id,
       emailBisonLeadId: lead.emailBisonLeadId,

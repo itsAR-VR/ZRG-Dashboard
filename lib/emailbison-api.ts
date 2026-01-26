@@ -620,6 +620,99 @@ export async function fetchEmailBisonCampaignLeadsPage(
   }
 }
 
+function parseEmailBisonNumericId(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const normalized = Math.floor(value);
+    return normalized > 0 ? normalized : null;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+/**
+ * Stop future emails for selected leads in a given EmailBison campaign.
+ *
+ * Docs: POST /api/campaigns/{campaign_id}/leads/stop-future-emails
+ */
+export async function stopEmailBisonCampaignFutureEmailsForLeads(
+  apiKey: string,
+  bisonCampaignId: string,
+  leadIds: Array<string | number>,
+  opts: EmailBisonRequestOptions = {}
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  const baseOrigin = resolveEmailBisonBaseUrl(opts.baseHost);
+  const host = resolveEmailBisonBaseHost(opts.baseHost);
+  const url = `${baseOrigin}/api/campaigns/${encodeURIComponent(bisonCampaignId)}/leads/stop-future-emails`;
+  const endpoint = "POST /api/campaigns/:id/leads/stop-future-emails";
+
+  const parsedLeadIds = leadIds
+    .map((id) => parseEmailBisonNumericId(id))
+    .filter((id): id is number => id !== null);
+
+  if (parsedLeadIds.length === 0) {
+    return { success: false, error: "No valid EmailBison lead IDs provided." };
+  }
+
+  try {
+    const response = await emailBisonFetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ lead_ids: parsedLeadIds }),
+    });
+
+    if (!response.ok) {
+      const { json: body, text } = await readJsonOrTextSafe(response);
+      const upstreamMessage =
+        body?.error || body?.message || (typeof text === "string" ? truncateForLog(text) : null);
+
+      if (response.status === 401 || response.status === 403) {
+        console.warn("[EmailBison] Stop future emails auth failed:", {
+          status: response.status,
+          endpoint,
+          host,
+          error: upstreamMessage ?? "Unknown error",
+        });
+        return { success: false, error: formatEmailBisonAuthFailure(response.status, upstreamMessage, opts.baseHost) };
+      }
+
+      console.warn("[EmailBison] Stop future emails failed:", {
+        status: response.status,
+        endpoint,
+        host,
+        error: upstreamMessage ?? "Unknown error",
+      });
+      return {
+        success: false,
+        error: formatEmailBisonHttpError(response.status, "stop future emails", upstreamMessage, opts.baseHost),
+      };
+    }
+
+    const { json: body, text } = await readJsonOrTextSafe(response);
+    if (!body) {
+      console.warn("[EmailBison] Stop future emails succeeded but response was not JSON:", {
+        endpoint,
+        host,
+        preview: typeof text === "string" ? truncateForLog(text) : null,
+      });
+      return { success: true };
+    }
+
+    const success = Boolean(body?.success ?? body?.data?.success ?? true);
+    const message = (body?.message ?? body?.data?.message) as string | undefined;
+    return { success, message };
+  } catch (error) {
+    console.error("[EmailBison] Failed to stop future emails:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
 export async function sendEmailBisonReply(
   apiKey: string,
   replyId: string,
