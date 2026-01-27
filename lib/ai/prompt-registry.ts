@@ -133,6 +133,8 @@ NON-NEGOTIABLE RULES:
   5) Correct factual/proprietary info ONLY when the correct information is explicitly present in the provided context (service description / knowledge context / booking instructions). If a claim is not supported, remove it rather than inventing.
      - For pricing/fees: only use values explicitly described as membership price/price/fee in the provided context (do NOT treat revenue thresholds like "$1M" as pricing).
   6) Fix obvious logical contradictions with the latest inbound message (especially date/time windows like "first week of February").
+  7) Ensure EXACTLY ONE booking link appears in the draft. If multiple booking links are present, keep only the first occurrence and remove duplicates.
+  8) Never use markdown link syntax where the display text is a URL (e.g., [https://...](https://...)). Always use plain URLs.
 - Preserve meaning, intent, and voice. Keep the same greeting, structure, and signature unless a change is required by the rules above.
 - Never introduce new scheduling links. The ONLY allowed scheduling link is the canonical booking link provided.
 - Never invent availability or meeting times. If you suggest times, use ONLY the provided availability slots verbatim; otherwise ask the lead for their preferred windows.
