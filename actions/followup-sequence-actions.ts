@@ -178,6 +178,7 @@ export async function createFollowUpSequence(data: {
   description?: string;
   triggerOn?: "no_response" | "meeting_selected" | "manual";
   steps: Omit<FollowUpStepData, "id">[];
+  isActive?: boolean; // Phase 66: Added to support creating disabled sequences
 }): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
   try {
     await requireClientAdminAccess(data.clientId);
@@ -187,7 +188,7 @@ export async function createFollowUpSequence(data: {
         name: data.name,
         description: data.description,
         triggerOn: data.triggerOn || "no_response",
-        isActive: true,
+        isActive: data.isActive ?? true,
         steps: {
           create: data.steps.map((step) => ({
             stepOrder: step.stepOrder,
@@ -835,12 +836,12 @@ function defaultNoResponseLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
 
 function defaultMeetingRequestedLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
   return [
-    // DAY 1 - LinkedIn connection request (1 hour after email)
-    // Per canonical doc: "Automated trigger a linkedin connection (on Unipile, 1 hour delay)"
+    // DAY 1 - LinkedIn connection request (1 hour after setter's reply)
+    // Phase 66: Now relative to setter's first email reply (not a Day 0 auto-email)
     {
       stepOrder: 1, // temporary; will be renumbered
       dayOffset: 1,
-      minuteOffset: 60, // 1 hour after the day 0 email
+      minuteOffset: 60, // 1 hour after setter's reply
       channel: "linkedin",
       messageTemplate: `Hi {FIRST_NAME}, just wanted to connect on here too as well as over email`,
       subject: null,
@@ -880,8 +881,11 @@ function sortStepsForScheduling<T extends { dayOffset: number; minuteOffset?: nu
 }
 
 /**
- * Create the default "No Response" Day 2/5/7 follow-up sequence for a workspace
- * Triggered when lead doesn't respond to initial outreach
+ * Create the default "No Response" Day 2/5/7 follow-up sequence for a workspace.
+ *
+ * Phase 66: Created **disabled** by default. The No Response auto-start trigger has been deprecated
+ * (see autoStartNoResponseSequenceOnOutbound). This sequence is preserved for manual use or future
+ * reactivation, but won't auto-start on outbound touches.
  */
 export async function createDefaultSequence(
   clientId: string
@@ -986,40 +990,35 @@ Where should we go from here?`,
     return augmented.map((s, idx) => ({ ...s, stepOrder: idx + 1 }));
   })();
 
+  // Phase 66: Created disabled by default (No Response auto-start is deprecated)
   return createFollowUpSequence({
     clientId,
     name: DEFAULT_SEQUENCE_NAMES.noResponse,
-    description: "Triggered when lead doesn't respond: Day 2 (ask for phone), Day 5 (availability reminder), Day 7 (final check-in)",
+    description: "Triggered when lead doesn't respond: Day 2 (ask for phone), Day 5 (availability reminder), Day 7 (final check-in). NOTE: Auto-start disabled in Phase 66.",
     triggerOn: "no_response",
     steps,
+    isActive: false, // Phase 66: No Response auto-start is deprecated
   });
 }
 
 /**
- * Create the default "Meeting Requested" sequence for a workspace
- * Triggered when sentiment becomes "Meeting Requested" (auto-started by automation)
+ * Create the default "Meeting Requested" sequence for a workspace.
+ *
+ * Phase 66: Now triggered when setter sends their first email reply (not on sentiment change).
+ * The setter's manual reply IS the first touchpoint, so there's no Day 1 auto-email step.
  */
 export async function createMeetingRequestedSequence(
   clientId: string
 ): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
   await requireClientAdminAccess(clientId);
   const hasLinkedIn = await isLinkedInConfigured(clientId);
+
+  // Phase 66: Removed Day 1 auto-email step. The setter's manual reply is the first touchpoint.
+  // Day 1 now starts with SMS (+2 min after setter reply) and LinkedIn connect (+1 hour).
   const steps: Omit<FollowUpStepData, "id">[] = [
-    // DAY 1 - Email (meeting suggestion CTA)
+    // DAY 1 - SMS (2 minute delay after setter's reply)
     {
       stepOrder: 1,
-      dayOffset: 1,
-      minuteOffset: 0,
-      channel: "email",
-      messageTemplate: `Sounds good, does {time 1 day 1} or {time 2 day 2} work for you?`,
-      subject: "Scheduling a quick call",
-      condition: { type: "always" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
-    // DAY 1 - SMS (2 minute delay)
-    {
-      stepOrder: 2,
       dayOffset: 1,
       minuteOffset: 2,
       channel: "sms",
@@ -1031,7 +1030,7 @@ export async function createMeetingRequestedSequence(
     },
     // DAY 2 - Email
     {
-      stepOrder: 3,
+      stepOrder: 2,
       dayOffset: 2,
       minuteOffset: 0,
       channel: "email",
@@ -1043,7 +1042,7 @@ export async function createMeetingRequestedSequence(
     },
     // DAY 2 - SMS (only if phone provided)
     {
-      stepOrder: 4,
+      stepOrder: 3,
       dayOffset: 2,
       minuteOffset: 0,
       channel: "sms",
@@ -1055,7 +1054,7 @@ export async function createMeetingRequestedSequence(
     },
     // DAY 5 - Email
     {
-      stepOrder: 5,
+      stepOrder: 4,
       dayOffset: 5,
       minuteOffset: 0,
       channel: "email",
@@ -1071,7 +1070,7 @@ No problem if not but just let me know. I have {x day x time} and {y day y time}
     },
     // DAY 5 - SMS
     {
-      stepOrder: 6,
+      stepOrder: 5,
       dayOffset: 5,
       minuteOffset: 0,
       channel: "sms",
@@ -1089,7 +1088,7 @@ Here’s the link to choose a time to talk if those don’t work  {link}`,
     },
     // DAY 7 - Email
     {
-      stepOrder: 7,
+      stepOrder: 6,
       dayOffset: 7,
       minuteOffset: 0,
       channel: "email",
@@ -1103,7 +1102,7 @@ Where should we go from here?`,
     },
     // DAY 7 - SMS (only if phone provided)
     {
-      stepOrder: 8,
+      stepOrder: 7,
       dayOffset: 7,
       minuteOffset: 0,
       channel: "sms",
@@ -1125,9 +1124,11 @@ Where should we go from here?`,
     }))
     : steps;
   const filteredSteps = airtableMode ? stripEmailSteps(withOptionalLinkedIn) : withOptionalLinkedIn;
+
+  // Phase 66: Updated description to reflect setter-reply trigger
   const description = hasLinkedIn
-    ? 'Triggered when sentiment becomes "Meeting Requested": Day 1 (email + LinkedIn connect), Day 2 (SMS + LinkedIn DM if connected), Day 5 (reminder), Day 7 (final check-in)'
-    : 'Triggered when sentiment becomes "Meeting Requested": Day 1 (email), Day 2 (SMS if phone), Day 5 (reminder), Day 7 (final check-in)';
+    ? 'Triggered when setter sends first email reply: Day 1 (SMS + LinkedIn connect), Day 2 (Email + SMS + LinkedIn DM if connected), Day 5 (reminder), Day 7 (final check-in)'
+    : 'Triggered when setter sends first email reply: Day 1 (SMS), Day 2 (Email + SMS), Day 5 (reminder), Day 7 (final check-in)';
 
   return createFollowUpSequence({
     clientId,

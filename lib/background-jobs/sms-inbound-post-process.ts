@@ -8,7 +8,6 @@ import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBookin
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
-import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { maybeAssignLead } from "@/lib/lead-assignment";
@@ -247,11 +246,9 @@ export async function runSmsInboundPostProcessJob(params: {
 
   handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
 
-  await autoStartMeetingRequestedSequenceIfEligible({
-    leadId: lead.id,
-    previousSentiment,
-    newSentiment,
-  });
+  // Phase 66: Removed sentiment-based Meeting Requested auto-start.
+  // Meeting Requested is now triggered by setter email reply only
+  // (see autoStartMeetingRequestedSequenceOnSetterEmailReply in lib/followup-automation.ts)
 
   // 7. AI Draft Generation
   // Skip if auto-booked or sentiment doesn't need draft

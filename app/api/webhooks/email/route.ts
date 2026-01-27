@@ -11,7 +11,7 @@ import {
 } from "@/lib/sentiment";
 import { findOrCreateLead } from "@/lib/lead-matching";
 import { cleanEmailBody } from "@/lib/email-cleaning";
-import { autoStartMeetingRequestedSequenceIfEligible, autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
+import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { pauseFollowUpsOnReply } from "@/lib/followup-engine";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
@@ -638,11 +638,8 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     sentimentTag,
   });
 
-  await autoStartMeetingRequestedSequenceIfEligible({
-    leadId: lead.id,
-    previousSentiment,
-    newSentiment: sentimentTag,
-  });
+  // Phase 66: Removed sentiment-based Meeting Requested auto-start.
+  // Meeting Requested is now triggered by setter email reply only.
 
   // Any inbound message pauses no-response sequences (meeting-requested sequences continue).
   pauseFollowUpsOnReply(lead.id).catch((err) =>
@@ -723,11 +720,8 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     });
   }
 
-  await autoStartMeetingRequestedSequenceIfEligible({
-    leadId: lead.id,
-    previousSentiment,
-    newSentiment: sentimentTag,
-  });
+  // Phase 66: Removed sentiment-based Meeting Requested auto-start.
+  // Meeting Requested is now triggered by setter email reply only.
 
   if (leadStatus === "meeting-booked") {
     await triggerSlackNotification(
@@ -1010,11 +1004,8 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
       sentimentTag,
     });
 
-    await autoStartMeetingRequestedSequenceIfEligible({
-      leadId: existingMessage.leadId,
-      previousSentiment,
-      newSentiment: sentimentTag,
-    });
+    // Phase 66: Removed sentiment-based Meeting Requested auto-start.
+    // Meeting Requested is now triggered by setter email reply only.
 
     await enqueueEmailInboundPostProcessJob({
       clientId: existingMessage.lead?.clientId || client.id,
@@ -1136,11 +1127,8 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     sentimentTag,
   });
 
-  await autoStartMeetingRequestedSequenceIfEligible({
-    leadId: lead.id,
-    previousSentiment,
-    newSentiment: sentimentTag,
-  });
+  // Phase 66: Removed sentiment-based Meeting Requested auto-start.
+  // Meeting Requested is now triggered by setter email reply only.
 
   pauseFollowUpsOnReply(lead.id).catch((err) => console.error("[Email Webhook] Failed to pause follow-ups on reply:", err));
 
@@ -1691,11 +1679,8 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     sentimentTag,
   });
 
-  await autoStartMeetingRequestedSequenceIfEligible({
-    leadId: lead.id,
-    previousSentiment,
-    newSentiment: sentimentTag,
-  });
+  // Phase 66: Removed sentiment-based Meeting Requested auto-start.
+  // Meeting Requested is now triggered by setter email reply only.
 
   // Any inbound message pauses no-response sequences (meeting-requested sequences continue).
   pauseFollowUpsOnReply(lead.id).catch((err) =>

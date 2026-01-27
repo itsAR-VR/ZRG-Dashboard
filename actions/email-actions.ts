@@ -6,7 +6,10 @@ import { sendSmartLeadReplyToThread } from "@/lib/smartlead-api";
 import { sendInstantlyReply } from "@/lib/instantly-api";
 import { revalidatePath } from "next/cache";
 import { syncEmailConversationHistorySystem } from "@/lib/conversation-sync";
-import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
+import {
+  autoStartNoResponseSequenceOnOutbound,
+  autoStartMeetingRequestedSequenceOnSetterEmailReply,
+} from "@/lib/followup-automation";
 import { isOptOutText } from "@/lib/sentiment";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { emailBisonHtmlFromPlainText } from "@/lib/email-format";
@@ -418,6 +421,16 @@ async function sendEmailReplyInternal(params: {
 
   autoStartNoResponseSequenceOnOutbound({ leadId: lead.id, outboundAt: message.sentAt }).catch((err) => {
     console.error("[Email] Failed to auto-start no-response sequence:", err);
+  });
+
+  // Phase 66: Trigger Meeting Requested sequence when setter sends their first email reply
+  autoStartMeetingRequestedSequenceOnSetterEmailReply({
+    leadId: lead.id,
+    messageId: message.id,
+    outboundAt: message.sentAt,
+    sentByUserId: message.sentByUserId ?? null,
+  }).catch((err) => {
+    console.error("[Email] Failed to auto-start meeting-requested sequence on setter email reply:", err);
   });
 
   recordOutboundForBookingProgress({ leadId: lead.id, channel: "email" }).catch((err) => {

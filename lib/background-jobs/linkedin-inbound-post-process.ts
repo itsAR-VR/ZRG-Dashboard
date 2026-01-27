@@ -6,7 +6,6 @@ import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
-import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
 import { pauseFollowUpsOnReply, resumeAwaitingEnrichmentFollowUpsForLead } from "@/lib/followup-engine";
 import { toStoredPhone } from "@/lib/phone-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
@@ -212,11 +211,9 @@ export async function runLinkedInInboundPostProcessJob(params: {
 
   handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
 
-  await autoStartMeetingRequestedSequenceIfEligible({
-    leadId: lead.id,
-    previousSentiment,
-    newSentiment,
-  });
+  // Phase 66: Removed sentiment-based Meeting Requested auto-start.
+  // Meeting Requested is now triggered by setter email reply only
+  // (see autoStartMeetingRequestedSequenceOnSetterEmailReply in lib/followup-automation.ts)
 
   // 5. Clay Enrichment (if positive sentiment and missing phone)
   if (isPositiveSentiment(newSentiment) && updatedLead) {

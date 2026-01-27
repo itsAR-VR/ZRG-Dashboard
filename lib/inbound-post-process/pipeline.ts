@@ -12,7 +12,6 @@ import {
   type SentimentTag,
 } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
-import { autoStartMeetingRequestedSequenceIfEligible } from "@/lib/followup-automation";
 import { executeAutoSend } from "@/lib/auto-send";
 import {
   pauseFollowUpsOnReply,
@@ -233,12 +232,9 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   pushStage("apply_auto_followup_policy");
   await applyAutoFollowUpPolicyOnInboundEmail({ clientId: client.id, leadId: lead.id, sentimentTag });
 
-  pushStage("auto_start_meeting_requested");
-  await autoStartMeetingRequestedSequenceIfEligible({
-    leadId: lead.id,
-    previousSentiment,
-    newSentiment: sentimentTag,
-  });
+  // Phase 66: Removed sentiment-based Meeting Requested auto-start.
+  // Meeting Requested is now triggered by setter email reply only
+  // (see autoStartMeetingRequestedSequenceOnSetterEmailReply in lib/followup-automation.ts)
 
   pushStage("pause_followups_on_reply");
   await pauseFollowUpsOnReply(lead.id);
