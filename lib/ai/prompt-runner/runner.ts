@@ -133,10 +133,20 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
           },
           input: params.input,
         } satisfies OpenAI.Responses.ResponseCreateParamsNonStreaming,
-        requestOptions: {
-          timeout: params.timeoutMs,
-          maxRetries: typeof params.maxRetries === "number" ? params.maxRetries : undefined,
-        },
+        requestOptions: (() => {
+          const timeout =
+            typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
+              ? Math.trunc(params.timeoutMs)
+              : null;
+          const maxRetries =
+            typeof params.maxRetries === "number" && Number.isFinite(params.maxRetries)
+              ? Math.max(0, Math.trunc(params.maxRetries))
+              : null;
+          return {
+            ...(typeof timeout === "number" && timeout > 0 ? { timeout } : {}),
+            ...(typeof maxRetries === "number" ? { maxRetries } : {}),
+          };
+        })(),
       });
 
       lastInteractionId = interactionId;
@@ -341,10 +351,20 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
           ...(params.verbosity ? { text: { verbosity: params.verbosity } } : {}),
           input: params.input,
         } satisfies OpenAI.Responses.ResponseCreateParamsNonStreaming,
-        requestOptions: {
-          timeout: params.timeoutMs,
-          maxRetries: typeof params.maxRetries === "number" ? params.maxRetries : undefined,
-        },
+        requestOptions: (() => {
+          const timeout =
+            typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
+              ? Math.trunc(params.timeoutMs)
+              : null;
+          const maxRetries =
+            typeof params.maxRetries === "number" && Number.isFinite(params.maxRetries)
+              ? Math.max(0, Math.trunc(params.maxRetries))
+              : null;
+          return {
+            ...(typeof timeout === "number" && timeout > 0 ? { timeout } : {}),
+            ...(typeof maxRetries === "number" ? { maxRetries } : {}),
+          };
+        })(),
       });
 
       lastInteractionId = interactionId;
