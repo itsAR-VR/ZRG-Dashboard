@@ -5,7 +5,6 @@ import {
   resumeGhostedFollowUps,
   resumeSnoozedFollowUps,
 } from "@/lib/followup-engine";
-import { refreshAvailabilityCachesDue } from "@/lib/availability-cache";
 import { backfillNoResponseFollowUpsDueOnCron } from "@/lib/followup-backfill";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { retrySmsDndHeldLeads } from "@/lib/booking-sms-dnd-retry";
@@ -46,14 +45,8 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const availabilityLimit = Math.max(
-      1,
-      Number.parseInt(process.env.AVAILABILITY_CRON_LIMIT || "20", 10) || 20
-    );
-
-    console.log("[Cron] Refreshing availability caches...");
-    const availability = await refreshAvailabilityCachesDue({ limit: availabilityLimit });
-    console.log("[Cron] Availability refresh complete:", availability);
+    // Phase 61: Availability refresh is handled by the dedicated `/api/cron/availability` endpoint.
+    // Keep follow-ups cron focused on follow-up processing (and avoid double-refresh provider load).
 
     console.log("[Cron] Resuming snoozed follow-ups...");
     const snoozed = await resumeSnoozedFollowUps({ limit: 200 });
@@ -85,7 +78,6 @@ export async function GET(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        availability,
         snoozed,
         resumed,
         enrichmentResumed,
@@ -142,14 +134,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const availabilityLimit = Math.max(
-      1,
-      Number.parseInt(process.env.AVAILABILITY_CRON_LIMIT || "20", 10) || 20
-    );
-
-    console.log("[Cron] Refreshing availability caches (POST)...");
-    const availability = await refreshAvailabilityCachesDue({ limit: availabilityLimit });
-    console.log("[Cron] Availability refresh complete:", availability);
+    // Phase 61: Availability refresh is handled by the dedicated `/api/cron/availability` endpoint.
+    // Keep follow-ups cron focused on follow-up processing (and avoid double-refresh provider load).
 
     console.log("[Cron] Resuming snoozed follow-ups (POST)...");
     const snoozed = await resumeSnoozedFollowUps({ limit: 200 });
@@ -181,7 +167,6 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: true,
-        availability,
         snoozed,
         resumed,
         enrichmentResumed,

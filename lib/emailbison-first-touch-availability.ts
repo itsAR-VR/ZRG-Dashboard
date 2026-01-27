@@ -126,6 +126,25 @@ function buildAvailabilitySentence(labels: string[]): string | null {
   return `does ${cleaned[0]} or ${cleaned[1]} work for you?`;
 }
 
+function buildAvailabilitySentenceFromTemplate(opts: { labels: string[]; template?: string | null }): string | null {
+  const cleaned = opts.labels.map((l) => l.trim()).filter(Boolean);
+  if (cleaned.length === 0) return null;
+
+  const template = (opts.template || "").trim();
+  if (!template) return buildAvailabilitySentence(cleaned);
+
+  const option1 = cleaned[0] || "";
+  const option2 = cleaned[1] || option1;
+
+  const rendered = template
+    .replaceAll("{{option1}}", option1)
+    .replaceAll("{{option2}}", option2)
+    .replaceAll("{{time1}}", option1)
+    .replaceAll("{{time2}}", option2);
+
+  return rendered.trim() || null;
+}
+
 export async function previewEmailBisonAvailabilitySlotSentence(opts: {
   clientId: string;
   refreshIfStale?: boolean;
@@ -139,9 +158,23 @@ export async function previewEmailBisonAvailabilitySlotSentence(opts: {
   const now = new Date();
   const settings = await prisma.workspaceSettings.findUnique({
     where: { clientId: opts.clientId },
-    select: { timezone: true },
+    select: {
+      timezone: true,
+      emailBisonFirstTouchAvailabilitySlotEnabled: true,
+      emailBisonAvailabilitySlotTemplate: true,
+      emailBisonAvailabilitySlotIncludeWeekends: true,
+      emailBisonAvailabilitySlotCount: true,
+      emailBisonAvailabilitySlotPreferWithinDays: true,
+    },
   });
   const timeZone = settings?.timezone || "UTC";
+  const injectionEnabled = settings?.emailBisonFirstTouchAvailabilitySlotEnabled ?? true;
+  const includeWeekends = settings?.emailBisonAvailabilitySlotIncludeWeekends ?? false;
+  const preferWithinDaysRaw = settings?.emailBisonAvailabilitySlotPreferWithinDays ?? 5;
+  const preferWithinDays = Math.max(1, Math.min(30, preferWithinDaysRaw));
+  const slotCountRaw = settings?.emailBisonAvailabilitySlotCount ?? 2;
+  const slotCount = Math.max(1, Math.min(2, slotCountRaw));
+  const template = settings?.emailBisonAvailabilitySlotTemplate ?? null;
 
   const availability = await getWorkspaceAvailabilitySlotsUtc(opts.clientId, { refreshIfStale: opts.refreshIfStale ?? false });
   const slotsUtc = availability.slotsUtc;
@@ -155,19 +188,38 @@ export async function previewEmailBisonAvailabilitySlotSentence(opts: {
     };
   }
 
+  if (!injectionEnabled) {
+    return {
+      variableName: AVAILABILITY_SLOT_CUSTOM_VARIABLE_NAME,
+      sentence: null,
+      slotUtcIso: [],
+      slotLabels: [],
+      timeZone,
+    };
+  }
+
+  const weekdaySlots = slotsUtc.filter((iso) => {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return false;
+    const weekend = isWeekendInTimeZone(d, timeZone);
+    return weekend === null ? true : !weekend;
+  });
+  const pool = includeWeekends ? slotsUtc : (weekdaySlots.length > 0 ? weekdaySlots : slotsUtc);
+
   const rangeEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
   const offerCounts = await getWorkspaceSlotOfferCountsForRange(opts.clientId, now, rangeEnd).catch(() => new Map<string, number>());
   const selectedUtcIso = selectDistributedAvailabilitySlots({
-    slotsUtcIso: slotsUtc,
+    slotsUtcIso: pool,
     offeredCountBySlotUtcIso: offerCounts,
     timeZone,
+    preferWithinDays,
     now,
-  });
+  }).slice(0, slotCount);
 
   const slotLabels = selectedUtcIso
     .map((iso) => formatAvailabilityOptionLabel(iso, timeZone))
     .filter((label): label is string => Boolean(label));
-  const sentence = buildAvailabilitySentence(slotLabels);
+  const sentence = buildAvailabilitySentenceFromTemplate({ labels: slotLabels, template });
 
   return {
     variableName: AVAILABILITY_SLOT_CUSTOM_VARIABLE_NAME,
@@ -268,7 +320,17 @@ export async function processEmailBisonFirstTouchAvailabilitySlots(params?: {
       name: true,
       emailBisonApiKey: true,
       emailBisonBaseHost: { select: { host: true } },
-      settings: { select: { timezone: true, autoBookMeetings: true } },
+      settings: {
+        select: {
+          timezone: true,
+          autoBookMeetings: true,
+          emailBisonFirstTouchAvailabilitySlotEnabled: true,
+          emailBisonAvailabilitySlotTemplate: true,
+          emailBisonAvailabilitySlotIncludeWeekends: true,
+          emailBisonAvailabilitySlotCount: true,
+          emailBisonAvailabilitySlotPreferWithinDays: true,
+        },
+      },
     },
   });
 
@@ -282,6 +344,15 @@ export async function processEmailBisonFirstTouchAvailabilitySlots(params?: {
 
     const baseHost = client.emailBisonBaseHost?.host || null;
     const timeZone = client.settings?.timezone || "UTC";
+    const injectionEnabled = client.settings?.emailBisonFirstTouchAvailabilitySlotEnabled ?? true;
+    if (!injectionEnabled) continue;
+
+    const includeWeekends = client.settings?.emailBisonAvailabilitySlotIncludeWeekends ?? false;
+    const preferWithinDaysRaw = client.settings?.emailBisonAvailabilitySlotPreferWithinDays ?? 5;
+    const preferWithinDays = Math.max(1, Math.min(30, preferWithinDaysRaw));
+    const slotCountRaw = client.settings?.emailBisonAvailabilitySlotCount ?? 2;
+    const slotCount = Math.max(1, Math.min(2, slotCountRaw));
+    const template = client.settings?.emailBisonAvailabilitySlotTemplate ?? null;
 
     const campaigns = await prisma.emailCampaign.findMany({
       where: { clientId: client.id, bisonCampaignId: { not: "" } },
@@ -293,7 +364,8 @@ export async function processEmailBisonFirstTouchAvailabilitySlots(params?: {
     if (campaigns.length === 0) continue;
 
     // Cache availability + offer counts once per workspace for this run.
-    const availability = await getWorkspaceAvailabilitySlotsUtc(client.id, { refreshIfStale: true }).catch((e) => {
+    // Phase 61: rely on the dedicated availability cron for freshness (avoid provider fetches on this path).
+    const availability = await getWorkspaceAvailabilitySlotsUtc(client.id, { refreshIfStale: false }).catch((e) => {
       errors++;
       console.error("[EmailBison FirstTouch] Failed to load workspace availability:", {
         clientId: client.id,
@@ -430,7 +502,7 @@ export async function processEmailBisonFirstTouchAvailabilitySlots(params?: {
             return weekend === null ? true : !weekend;
           });
 
-          const pool = weekdaySlots.length > 0 ? weekdaySlots : availability.slotsUtc;
+          const pool = includeWeekends ? availability.slotsUtc : (weekdaySlots.length > 0 ? weekdaySlots : availability.slotsUtc);
 
           const selected = selectDistributedAvailabilitySlots({
             slotsUtcIso: pool,
@@ -438,14 +510,14 @@ export async function processEmailBisonFirstTouchAvailabilitySlots(params?: {
             timeZone,
             excludeUtcIso: exclude.size > 0 ? exclude : undefined,
             startAfterUtc,
-            preferWithinDays: 5,
+            preferWithinDays,
             now,
-          }).slice(0, 2);
+          }).slice(0, slotCount);
 
           if (selected.length === 0) continue;
 
           const labels = selected.map((iso) => formatAvailabilityOptionLabel(iso, timeZone) || iso);
-          const sentence = buildAvailabilitySentence(labels);
+          const sentence = buildAvailabilitySentenceFromTemplate({ labels, template });
           if (!sentence) continue;
 
           // Keep in-run offer counts updated to avoid collisions.

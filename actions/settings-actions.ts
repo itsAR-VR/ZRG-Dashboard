@@ -58,6 +58,12 @@ export interface UserSettingsData {
   // Calendar Settings
   calendarSlotsToShow: number | null;
   calendarLookAheadDays: number | null;
+  // EmailBison first-touch availability_slot injection controls (Phase 55/61)
+  emailBisonFirstTouchAvailabilitySlotEnabled: boolean;
+  emailBisonAvailabilitySlotTemplate: string | null;
+  emailBisonAvailabilitySlotIncludeWeekends: boolean;
+  emailBisonAvailabilitySlotCount: number;
+  emailBisonAvailabilitySlotPreferWithinDays: number;
   // GHL Meeting Booking Settings
   ghlDefaultCalendarId: string | null;
   ghlAssignedUserId: string | null;
@@ -151,6 +157,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           workEndTime: "17:00",
           calendarSlotsToShow: 3,
           calendarLookAheadDays: 28,
+          emailBisonFirstTouchAvailabilitySlotEnabled: true,
+          emailBisonAvailabilitySlotTemplate: null,
+          emailBisonAvailabilitySlotIncludeWeekends: false,
+          emailBisonAvailabilitySlotCount: 2,
+          emailBisonAvailabilitySlotPreferWithinDays: 5,
           ghlDefaultCalendarId: null,
           ghlAssignedUserId: null,
           autoBookMeetings: false,
@@ -259,6 +270,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         workEndTime: settings.workEndTime,
         calendarSlotsToShow: settings.calendarSlotsToShow,
         calendarLookAheadDays: settings.calendarLookAheadDays,
+        emailBisonFirstTouchAvailabilitySlotEnabled: settings.emailBisonFirstTouchAvailabilitySlotEnabled,
+        emailBisonAvailabilitySlotTemplate: settings.emailBisonAvailabilitySlotTemplate,
+        emailBisonAvailabilitySlotIncludeWeekends: settings.emailBisonAvailabilitySlotIncludeWeekends,
+        emailBisonAvailabilitySlotCount: settings.emailBisonAvailabilitySlotCount,
+        emailBisonAvailabilitySlotPreferWithinDays: settings.emailBisonAvailabilitySlotPreferWithinDays,
         ghlDefaultCalendarId: settings.ghlDefaultCalendarId,
         ghlAssignedUserId: settings.ghlAssignedUserId,
         autoBookMeetings: settings.autoBookMeetings,
@@ -307,7 +323,16 @@ export async function updateUserSettings(
       data.notificationSlackChannelIds !== undefined ||
       data.notificationSentimentRules !== undefined ||
       data.notificationDailyDigestTime !== undefined;
+    const wantsEmailBisonAvailabilitySlotUpdate =
+      data.emailBisonFirstTouchAvailabilitySlotEnabled !== undefined ||
+      data.emailBisonAvailabilitySlotTemplate !== undefined ||
+      data.emailBisonAvailabilitySlotIncludeWeekends !== undefined ||
+      data.emailBisonAvailabilitySlotCount !== undefined ||
+      data.emailBisonAvailabilitySlotPreferWithinDays !== undefined;
     if (wantsInsightsUpdate || wantsDraftGenerationUpdate || wantsNotificationUpdate) {
+      await requireClientAdminAccess(clientId);
+    }
+    if (wantsEmailBisonAvailabilitySlotUpdate) {
       await requireClientAdminAccess(clientId);
     }
 
@@ -350,6 +375,11 @@ export async function updateUserSettings(
         workEndTime: data.workEndTime,
         calendarSlotsToShow: data.calendarSlotsToShow,
         calendarLookAheadDays: data.calendarLookAheadDays,
+        emailBisonFirstTouchAvailabilitySlotEnabled: data.emailBisonFirstTouchAvailabilitySlotEnabled,
+        emailBisonAvailabilitySlotTemplate: data.emailBisonAvailabilitySlotTemplate,
+        emailBisonAvailabilitySlotIncludeWeekends: data.emailBisonAvailabilitySlotIncludeWeekends,
+        emailBisonAvailabilitySlotCount: data.emailBisonAvailabilitySlotCount,
+        emailBisonAvailabilitySlotPreferWithinDays: data.emailBisonAvailabilitySlotPreferWithinDays,
         ghlDefaultCalendarId: data.ghlDefaultCalendarId,
         ghlAssignedUserId: data.ghlAssignedUserId,
         autoBookMeetings: data.autoBookMeetings,
@@ -402,6 +432,11 @@ export async function updateUserSettings(
         workEndTime: data.workEndTime ?? "17:00",
         calendarSlotsToShow: data.calendarSlotsToShow ?? 3,
         calendarLookAheadDays: data.calendarLookAheadDays ?? 28,
+        emailBisonFirstTouchAvailabilitySlotEnabled: data.emailBisonFirstTouchAvailabilitySlotEnabled ?? true,
+        emailBisonAvailabilitySlotTemplate: data.emailBisonAvailabilitySlotTemplate ?? null,
+        emailBisonAvailabilitySlotIncludeWeekends: data.emailBisonAvailabilitySlotIncludeWeekends ?? false,
+        emailBisonAvailabilitySlotCount: data.emailBisonAvailabilitySlotCount ?? 2,
+        emailBisonAvailabilitySlotPreferWithinDays: data.emailBisonAvailabilitySlotPreferWithinDays ?? 5,
         ghlDefaultCalendarId: data.ghlDefaultCalendarId,
         ghlAssignedUserId: data.ghlAssignedUserId,
         autoBookMeetings: data.autoBookMeetings ?? false,

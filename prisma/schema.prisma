@@ -281,6 +281,12 @@ model WorkspaceSettings {
   // Calendar Settings
   calendarSlotsToShow    Int?     @default(3)   // Number of availability slots to show
   calendarLookAheadDays  Int?     @default(28)  // Days to look ahead for availability
+  // EmailBison first-touch availability_slot injection controls (Phase 55/61)
+  emailBisonFirstTouchAvailabilitySlotEnabled Boolean @default(true)
+  emailBisonAvailabilitySlotTemplate          String?  @db.Text
+  emailBisonAvailabilitySlotIncludeWeekends   Boolean @default(false)
+  emailBisonAvailabilitySlotCount             Int      @default(2)
+  emailBisonAvailabilitySlotPreferWithinDays  Int      @default(5)
   // GHL Meeting Booking Settings
   ghlDefaultCalendarId   String?              // Selected GHL calendar for booking appointments
   ghlAssignedUserId      String?              // Default team member assigned to appointments
