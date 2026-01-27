@@ -62,6 +62,7 @@ export interface ConversationData {
  */
 function mapSentimentToClassification(sentimentTag: string | null): string {
   const mapping: Record<string, string> = {
+    "Meeting Booked": "meeting-booked",
     "Meeting Requested": "meeting-requested",
     "Call Requested": "call-requested",
     "Not Interested": "not-interested",
@@ -81,6 +82,7 @@ function mapSentimentToClassification(sentimentTag: string | null): string {
  * Tags that can require action when a lead has an unreplied inbound message.
  */
 const ATTENTION_SENTIMENT_TAGS = [
+  "Meeting Booked",
   "Meeting Requested",
   "Call Requested",
   "Information Requested",
