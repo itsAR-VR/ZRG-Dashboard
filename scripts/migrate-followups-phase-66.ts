@@ -247,7 +247,15 @@ async function removeDay1EmailFromMeetingRequested(
       const priorSteps = Array.from(stepOrderMap.entries())
         .filter(([old]) => old < oldStep)
         .sort((a, b) => b[0] - a[0]);
-      newStep = priorSteps.length > 0 ? priorSteps[0][1] : 0;
+
+      if (priorSteps.length > 0) {
+        newStep = priorSteps[0][1];
+      } else {
+        // No prior steps exist - snap to the first retained step (mark it as "completed")
+        // This prevents the cron from re-executing what is now the first step
+        const retainedStepOrders = Array.from(stepOrderMap.values());
+        newStep = retainedStepOrders.length > 0 ? Math.min(...retainedStepOrders) : 0;
+      }
     }
 
     if (newStep !== oldStep) {
@@ -435,9 +443,11 @@ async function disableNoResponseAndMigrateInstances(
       const computedNextDue = new Date(inst.startedAt.getTime() + nextStepOffsetMs);
 
       // Safety: never pull nextStepDue earlier than existing value
-      if (safeNextStepDue && computedNextDue > safeNextStepDue) {
-        safeNextStepDue = computedNextDue;
-      } else if (!safeNextStepDue) {
+      // Always use the LATER of (existing nextStepDue, computed nextStepDue)
+      if (safeNextStepDue) {
+        const maxTime = Math.max(computedNextDue.getTime(), safeNextStepDue.getTime());
+        safeNextStepDue = new Date(maxTime);
+      } else {
         safeNextStepDue = computedNextDue;
       }
 
