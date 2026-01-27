@@ -83,6 +83,7 @@ import {
   setClientEmailBisonBaseHost,
   type EmailBisonBaseHostRow,
 } from "@/actions/emailbison-base-host-actions"
+import { previewEmailBisonAvailabilitySlotSentenceForWorkspace } from "@/actions/emailbison-availability-slot-actions"
 	import { 
 	  getUserSettings, 
 	  updateUserSettings, 
@@ -411,6 +412,24 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [emailBisonBaseHostSaving, setEmailBisonBaseHostSaving] = useState(false)
   const [emailBisonBaseHostError, setEmailBisonBaseHostError] = useState<string | null>(null)
 
+  // EmailBison first-touch availability_slot (per workspace)
+  const [emailBisonAvailabilitySlot, setEmailBisonAvailabilitySlot] = useState({
+    enabled: true,
+    includeWeekends: false,
+    count: 2,
+    preferWithinDays: 5,
+    template: "",
+  })
+  const [emailBisonAvailabilitySlotPreview, setEmailBisonAvailabilitySlotPreview] = useState<{
+    variableName: string
+    sentence: string | null
+    slotUtcIso: string[]
+    slotLabels: string[]
+    timeZone: string
+  } | null>(null)
+  const [emailBisonAvailabilitySlotPreviewLoading, setEmailBisonAvailabilitySlotPreviewLoading] = useState(false)
+  const [emailBisonAvailabilitySlotPreviewError, setEmailBisonAvailabilitySlotPreviewError] = useState<string | null>(null)
+
   const [aiPromptsOpen, setAiPromptsOpen] = useState(false)
   const [aiPromptTemplates, setAiPromptTemplates] = useState<AiPromptTemplatePublic[] | null>(null)
   const [aiPromptsLoading, setAiPromptsLoading] = useState(false)
@@ -476,6 +495,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       setResendIntegrationError(null)
       setResendApiKeyDraft("")
       setResendFromEmailDraft("")
+      setEmailBisonAvailabilitySlotPreview(null)
+      setEmailBisonAvailabilitySlotPreviewError(null)
       
       if (result.success && result.data) {
         setSettings(result.data)
@@ -553,6 +574,14 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           meetingTitle: result.data.meetingTitle || "Intro to {companyName}",
           calendlyEventTypeLink: result.data.calendlyEventTypeLink || "",
           calendlyEventTypeUri: result.data.calendlyEventTypeUri || "",
+        })
+
+        setEmailBisonAvailabilitySlot({
+          enabled: result.data.emailBisonFirstTouchAvailabilitySlotEnabled ?? true,
+          includeWeekends: result.data.emailBisonAvailabilitySlotIncludeWeekends ?? false,
+          count: result.data.emailBisonAvailabilitySlotCount ?? 2,
+          preferWithinDays: result.data.emailBisonAvailabilitySlotPreferWithinDays ?? 5,
+          template: result.data.emailBisonAvailabilitySlotTemplate || "",
         })
       }
 
@@ -714,6 +743,29 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       }
     } finally {
       setEmailBisonBaseHostSaving(false)
+    }
+  }
+
+  async function handlePreviewEmailBisonAvailabilitySlot() {
+    if (!activeWorkspace) {
+      toast.error("Select a workspace first")
+      return
+    }
+
+    setEmailBisonAvailabilitySlotPreview(null)
+    setEmailBisonAvailabilitySlotPreviewError(null)
+    setEmailBisonAvailabilitySlotPreviewLoading(true)
+    try {
+      const res = await previewEmailBisonAvailabilitySlotSentenceForWorkspace(activeWorkspace)
+      if (!res.success || !res.data) {
+        setEmailBisonAvailabilitySlotPreviewError(res.error || "Failed to preview availability_slot")
+        return
+      }
+      setEmailBisonAvailabilitySlotPreview(res.data)
+    } catch (e) {
+      setEmailBisonAvailabilitySlotPreviewError(e instanceof Error ? e.message : "Failed to preview availability_slot")
+    } finally {
+      setEmailBisonAvailabilitySlotPreviewLoading(false)
     }
   }
 
@@ -1157,6 +1209,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       payload.notificationSlackChannelIds = notificationCenter.slackChannelIds
       payload.notificationSentimentRules = notificationCenter.sentimentRules as any
       payload.notificationDailyDigestTime = notificationCenter.dailyDigestTime
+
+      // EmailBison first-touch availability_slot (Phase 55/61)
+      payload.emailBisonFirstTouchAvailabilitySlotEnabled = emailBisonAvailabilitySlot.enabled
+      payload.emailBisonAvailabilitySlotIncludeWeekends = emailBisonAvailabilitySlot.includeWeekends
+      payload.emailBisonAvailabilitySlotCount = emailBisonAvailabilitySlot.count
+      payload.emailBisonAvailabilitySlotPreferWithinDays = emailBisonAvailabilitySlot.preferWithinDays
+      payload.emailBisonAvailabilitySlotTemplate = toNullableText(emailBisonAvailabilitySlot.template)
     }
 
     const result = await updateUserSettings(activeWorkspace, payload)
@@ -2709,6 +2768,173 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       )}
                       Save
                     </Button>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* EmailBison first-touch availability_slot (per workspace) */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Mail className="h-5 w-5" />
+                  EmailBison First-Touch Times
+                </CardTitle>
+                <CardDescription>
+                  Controls the <code className="bg-background px-1 py-0.5 rounded">availability_slot</code> custom variable injected
+                  ~15 minutes before the first outbound EmailBison email.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {!activeWorkspace ? (
+                  <p className="text-sm text-muted-foreground">Select a workspace to configure EmailBison.</p>
+                ) : (
+                  <>
+                    {!isWorkspaceAdmin ? (
+                      <p className="text-sm text-muted-foreground">Only workspace admins can change these settings.</p>
+                    ) : null}
+
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <Label>Enable injection</Label>
+                        <p className="text-xs text-muted-foreground">
+                          When enabled, the system sets the EmailBison lead custom variable{" "}
+                          <code className="bg-background px-1 py-0.5 rounded">availability_slot</code>.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={emailBisonAvailabilitySlot.enabled}
+                        disabled={!isWorkspaceAdmin}
+                        onCheckedChange={(checked) => {
+                          setEmailBisonAvailabilitySlot((prev) => ({ ...prev, enabled: checked }))
+                          handleChange()
+                        }}
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                      <div className="space-y-2">
+                        <Label>Options to offer</Label>
+                        <Select
+                          value={String(emailBisonAvailabilitySlot.count)}
+                          onValueChange={(value) => {
+                            const parsed = Number.parseInt(value, 10)
+                            setEmailBisonAvailabilitySlot((prev) => ({
+                              ...prev,
+                              count: Number.isFinite(parsed) ? parsed : prev.count,
+                            }))
+                            handleChange()
+                          }}
+                        >
+                          <SelectTrigger disabled={!isWorkspaceAdmin}>
+                            <SelectValue placeholder="2" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="1">1 time</SelectItem>
+                            <SelectItem value="2">2 times</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Prefer within (days)</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={30}
+                          value={emailBisonAvailabilitySlot.preferWithinDays}
+                          disabled={!isWorkspaceAdmin}
+                          onChange={(e) => {
+                            const parsed = Number.parseInt(e.target.value || "", 10)
+                            setEmailBisonAvailabilitySlot((prev) => ({
+                              ...prev,
+                              preferWithinDays: Number.isFinite(parsed) ? parsed : prev.preferWithinDays,
+                            }))
+                            handleChange()
+                          }}
+                        />
+                      </div>
+
+                      <div className="flex items-start justify-between gap-4 rounded border px-3 py-2">
+                        <div className="space-y-1">
+                          <Label>Include weekends</Label>
+                          <p className="text-xs text-muted-foreground">Allow Saturday/Sunday options in the pool.</p>
+                        </div>
+                        <Switch
+                          checked={emailBisonAvailabilitySlot.includeWeekends}
+                          disabled={!isWorkspaceAdmin}
+                          onCheckedChange={(checked) => {
+                            setEmailBisonAvailabilitySlot((prev) => ({ ...prev, includeWeekends: checked }))
+                            handleChange()
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Sentence template (optional)</Label>
+                      <Textarea
+                        value={emailBisonAvailabilitySlot.template}
+                        disabled={!isWorkspaceAdmin}
+                        onChange={(e) => {
+                          setEmailBisonAvailabilitySlot((prev) => ({ ...prev, template: e.target.value }))
+                          handleChange()
+                        }}
+                        placeholder="does {{option1}} or {{option2}} work for you?"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Placeholders: <code className="bg-background px-1 py-0.5 rounded">&#123;&#123;option1&#125;&#125;</code>,{" "}
+                        <code className="bg-background px-1 py-0.5 rounded">&#123;&#123;option2&#125;&#125;</code>
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={handlePreviewEmailBisonAvailabilitySlot}
+                        disabled={emailBisonAvailabilitySlotPreviewLoading}
+                      >
+                        {emailBisonAvailabilitySlotPreviewLoading ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <Eye className="h-4 w-4 mr-2" />
+                        )}
+                        Preview current value
+                      </Button>
+                      <p className="text-xs text-muted-foreground">Uses cached availability (refreshed every minute).</p>
+                    </div>
+
+                    {emailBisonAvailabilitySlotPreviewError ? (
+                      <div className="text-sm text-destructive">{emailBisonAvailabilitySlotPreviewError}</div>
+                    ) : null}
+
+                    {emailBisonAvailabilitySlotPreview ? (
+                      <div className="rounded border p-3 space-y-2">
+                        <div className="text-xs text-muted-foreground">
+                          Variable:{" "}
+                          <code className="bg-background px-1 py-0.5 rounded">{emailBisonAvailabilitySlotPreview.variableName}</code>{" "}
+                          · Timezone:{" "}
+                          <code className="bg-background px-1 py-0.5 rounded">{emailBisonAvailabilitySlotPreview.timeZone}</code>
+                        </div>
+
+                        <div className="text-sm">
+                          {emailBisonAvailabilitySlotPreview.sentence ? (
+                            <span className="font-medium">{emailBisonAvailabilitySlotPreview.sentence}</span>
+                          ) : (
+                            <span className="text-muted-foreground">No value (disabled, missing cache, or no slots available).</span>
+                          )}
+                        </div>
+
+                        {emailBisonAvailabilitySlotPreview.slotLabels.length > 0 ? (
+                          <ul className="ml-4 list-disc text-xs text-muted-foreground">
+                            {emailBisonAvailabilitySlotPreview.slotLabels.map((label) => (
+                              <li key={label}>{label}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </>
                 )}
               </CardContent>
