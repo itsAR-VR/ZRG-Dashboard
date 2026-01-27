@@ -1,0 +1,121 @@
+"use server";
+
+import { prisma } from "@/lib/prisma";
+import { requireClientAccess, requireClientAdminAccess } from "@/lib/workspace-access";
+import {
+  processEmailBisonFirstTouchAvailabilitySlots,
+  previewEmailBisonAvailabilitySlotSentence,
+} from "@/lib/emailbison-first-touch-availability";
+import { EmailIntegrationProvider } from "@prisma/client";
+
+export type EmailBisonAvailabilitySlotFeatureStatus = {
+  clientId: string;
+  availabilitySlotVariableName: "availability_slot";
+  emailProvider: EmailIntegrationProvider | null;
+  hasEmailBisonApiKey: boolean;
+  emailBisonBaseHost: string | null;
+  campaignsSynced: number;
+  airtableMode: boolean;
+  timezone: string | null;
+  autoBookMeetings: boolean;
+};
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export async function getEmailBisonAvailabilitySlotFeatureStatus(clientId: string): Promise<{
+  success: boolean;
+  data?: EmailBisonAvailabilitySlotFeatureStatus;
+  error?: string;
+}> {
+  try {
+    if (!isNonEmptyString(clientId)) return { success: false, error: "Missing clientId" };
+    await requireClientAccess(clientId);
+
+    const client = await prisma.client.findUnique({
+      where: { id: clientId },
+      select: {
+        id: true,
+        emailProvider: true,
+        emailBisonApiKey: true,
+        emailBisonBaseHost: { select: { host: true } },
+        settings: { select: { airtableMode: true, timezone: true, autoBookMeetings: true } },
+      },
+    });
+
+    if (!client) return { success: false, error: "Workspace not found" };
+
+    const campaignsSynced = await prisma.emailCampaign.count({
+      where: { clientId: client.id, bisonCampaignId: { not: "" } },
+    });
+
+    return {
+      success: true,
+      data: {
+        clientId: client.id,
+        availabilitySlotVariableName: "availability_slot",
+        emailProvider: client.emailProvider ?? null,
+        hasEmailBisonApiKey: Boolean((client.emailBisonApiKey ?? "").trim()),
+        emailBisonBaseHost: client.emailBisonBaseHost?.host ?? null,
+        campaignsSynced,
+        airtableMode: client.settings?.airtableMode ?? false,
+        timezone: client.settings?.timezone ?? null,
+        autoBookMeetings: client.settings?.autoBookMeetings ?? false,
+      },
+    };
+  } catch (error) {
+    console.error("[EmailBison availability_slot] Failed to load feature status:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to load status" };
+  }
+}
+
+export async function generateEmailBisonAvailabilitySlotPreview(
+  clientId: string,
+  opts?: { refreshIfStale?: boolean }
+): Promise<{
+  success: boolean;
+  data?: Awaited<ReturnType<typeof previewEmailBisonAvailabilitySlotSentence>>;
+  error?: string;
+}> {
+  try {
+    if (!isNonEmptyString(clientId)) return { success: false, error: "Missing clientId" };
+    await requireClientAccess(clientId);
+
+    const result = await previewEmailBisonAvailabilitySlotSentence({
+      clientId,
+      refreshIfStale: opts?.refreshIfStale ?? false,
+    });
+
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("[EmailBison availability_slot] Failed to generate preview:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to generate preview" };
+  }
+}
+
+export async function runEmailBisonAvailabilitySlotDryRun(
+  clientId: string,
+  opts?: { timeBudgetMs?: number }
+): Promise<{
+  success: boolean;
+  data?: Awaited<ReturnType<typeof processEmailBisonFirstTouchAvailabilitySlots>>;
+  error?: string;
+}> {
+  try {
+    if (!isNonEmptyString(clientId)) return { success: false, error: "Missing clientId" };
+    await requireClientAdminAccess(clientId);
+
+    const result = await processEmailBisonFirstTouchAvailabilitySlots({
+      clientId,
+      dryRun: true,
+      timeBudgetMs: opts?.timeBudgetMs,
+    });
+
+    return { success: true, data: result };
+  } catch (error) {
+    console.error("[EmailBison availability_slot] Dry run failed:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Dry run failed" };
+  }
+}
+

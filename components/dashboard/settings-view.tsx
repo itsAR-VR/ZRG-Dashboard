@@ -69,6 +69,7 @@ import { IntegrationsManager } from "./settings/integrations-manager"
 import { AiCampaignAssignmentPanel } from "./settings/ai-campaign-assignment"
 import { BookingProcessManager } from "./settings/booking-process-manager"
 import { BookingProcessAnalytics } from "./settings/booking-process-analytics"
+import { BookingProcessReference } from "./settings/booking-process-reference"
 import { AiPersonaManager } from "./settings/ai-persona-manager"
 import { BulkDraftRegenerationCard } from "./settings/bulk-draft-regeneration"
 // Note: FollowUpSequenceManager moved to Follow-ups view
@@ -4887,6 +4888,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </DropdownMenu>
               </CardHeader>
             </Card>
+
+            {/* Booking Processes Reference (Phase 60) */}
+            <BookingProcessReference />
 
             <BookingProcessManager
               activeWorkspace={activeWorkspace}
