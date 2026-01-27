@@ -13,7 +13,8 @@
     "postinstall": "prisma generate",
     "migrate:appointments": "tsx scripts/migrate-appointments.ts",
     "db:push": "prisma db push",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "logs:check": "node --import tsx scripts/logs/assert-known-errors.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -58,6 +59,7 @@
     "date-fns": "latest",
     "embla-carousel-react": "8.5.1",
     "input-otp": "1.4.1",
+    "libphonenumber-js": "^1.12.35",
     "lucide-react": "^0.454.0",
     "mammoth": "^1.11.0",
     "next": "16.0.7",
@@ -94,8 +96,8 @@
     "postcss": "^8.5",
     "prisma": "^7.1.0",
     "tailwindcss": "^4.1.9",
-    "tw-animate-css": "1.3.3",
     "tsx": "^4.19.2",
+    "tw-animate-css": "1.3.3",
     "typescript": "^5"
   }
 }

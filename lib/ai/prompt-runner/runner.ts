@@ -289,7 +289,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
   const featureId = resolved.featureId;
   const promptKeyForTelemetry = resolved.promptKeyForTelemetry;
 
-  const maxOutputTokens =
+  const fallbackMaxOutputTokens =
     typeof params.maxOutputTokens === "number"
       ? Math.max(1, Math.trunc(params.maxOutputTokens))
       : params.budget
@@ -307,37 +307,74 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
           ).maxOutputTokens
         : 800;
 
-  try {
-    const { response, interactionId } = await runResponseWithInteraction({
-      clientId: params.clientId,
-      leadId: params.leadId,
-      source: params.source,
-      featureId: params.featureId || featureId,
-      promptKey: promptKeyForTelemetry,
-      params: {
-        model: params.model,
-        ...(typeof params.temperature === "number" && Number.isFinite(params.temperature) ? { temperature: params.temperature } : {}),
-        ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
-        max_output_tokens: maxOutputTokens,
-        instructions: system,
-        ...(params.verbosity ? { text: { verbosity: params.verbosity } } : {}),
-        input: params.input,
-      } satisfies OpenAI.Responses.ResponseCreateParamsNonStreaming,
-      requestOptions: {
-        timeout: params.timeoutMs,
-        maxRetries: typeof params.maxRetries === "number" ? params.maxRetries : undefined,
-      },
-    });
+  const attempts = Array.isArray(params.attempts) && params.attempts.length > 0
+    ? normalizeAttempts(params.attempts)
+    : [fallbackMaxOutputTokens];
 
-    const text = getTrimmedOutputText(response);
-    if (response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens") {
-      const details = summarizeResponseForTelemetry(response);
-      const msg = `Post-process error: hit max_output_tokens${details ? ` (${details})` : ""}`;
-      if (interactionId) await markAiInteractionError(interactionId, msg);
+  const retryOn = Array.isArray(params.retryOn) && params.retryOn.length
+    ? new Set(params.retryOn)
+    : new Set<PromptRunnerError["category"]>(["timeout", "rate_limit", "api_error"]);
+
+  let lastInteractionId: string | null = null;
+  let lastError: { category: "incomplete_output"; message: string; raw?: string } | null = null;
+  let lastRaw: string | null = null;
+
+  for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
+    const maxOutputTokens = attempts[attemptIndex]!;
+    const attemptSuffix = attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`;
+    const effort =
+      attemptIndex > 0 && params.retryReasoningEffort ? params.retryReasoningEffort : params.reasoningEffort;
+
+    try {
+      const { response, interactionId } = await runResponseWithInteraction({
+        clientId: params.clientId,
+        leadId: params.leadId,
+        source: params.source,
+        featureId: params.featureId || featureId,
+        promptKey: promptKeyForTelemetry + attemptSuffix,
+        params: {
+          model: params.model,
+          ...(typeof params.temperature === "number" && Number.isFinite(params.temperature) ? { temperature: params.temperature } : {}),
+          ...(effort ? { reasoning: { effort } } : {}),
+          max_output_tokens: maxOutputTokens,
+          instructions: system,
+          ...(params.verbosity ? { text: { verbosity: params.verbosity } } : {}),
+          input: params.input,
+        } satisfies OpenAI.Responses.ResponseCreateParamsNonStreaming,
+        requestOptions: {
+          timeout: params.timeoutMs,
+          maxRetries: typeof params.maxRetries === "number" ? params.maxRetries : undefined,
+        },
+      });
+
+      lastInteractionId = interactionId;
+
+      const text = getTrimmedOutputText(response);
+      if (response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens") {
+        const details = summarizeResponseForTelemetry(response);
+        const msg = `Post-process error: hit max_output_tokens${details ? ` (${details})` : ""}`;
+        lastError = { category: "incomplete_output", message: msg, ...(text ? { raw: text } : {}) };
+        if (attemptIndex < attempts.length - 1) {
+          continue;
+        }
+        break;
+      }
+      if (!text) {
+        const details = summarizeResponseForTelemetry(response);
+        const msg = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
+        lastError = { category: "incomplete_output", message: msg };
+        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < attempts.length - 1) {
+          continue;
+        }
+        break;
+      }
+
+      lastRaw = text;
+
       return {
-        success: false,
-        error: { category: "incomplete_output", message: msg, retryable: false, ...(text ? { raw: text } : {}) },
-        ...(text ? { rawOutput: text } : {}),
+        success: true,
+        data: text,
+        rawOutput: text,
         telemetry: buildTelemetryBase({
           traceId: params.traceId,
           parentSpanId: params.parentSpanId,
@@ -346,60 +383,54 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
           featureId: params.featureId || featureId,
           model: params.model,
           pattern: "text",
-          attemptCount: 1,
+          attemptCount: attemptIndex + 1,
         }),
       };
-    }
-    if (!text) {
-      const details = summarizeResponseForTelemetry(response);
-      const msg = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
-      if (interactionId) await markAiInteractionError(interactionId, msg);
+    } catch (error) {
+      const categorized = categorizePromptRunnerError(error);
+      if (categorized.retryable && retryOn.has(categorized.category) && attemptIndex < attempts.length - 1) {
+        continue;
+      }
+
       return {
         success: false,
-        error: { category: "incomplete_output", message: msg, retryable: false },
+        error: categorized,
         telemetry: buildTelemetryBase({
           traceId: params.traceId,
           parentSpanId: params.parentSpanId,
-          interactionId,
+          interactionId: null,
           promptKey: promptKeyForTelemetry,
           featureId: params.featureId || featureId,
           model: params.model,
           pattern: "text",
-          attemptCount: 1,
+          attemptCount: attemptIndex + 1,
         }),
       };
     }
-
-    return {
-      success: true,
-      data: text,
-      rawOutput: text,
-      telemetry: buildTelemetryBase({
-        traceId: params.traceId,
-        parentSpanId: params.parentSpanId,
-        interactionId,
-        promptKey: promptKeyForTelemetry,
-        featureId: params.featureId || featureId,
-        model: params.model,
-        pattern: "text",
-        attemptCount: 1,
-      }),
-    };
-  } catch (error) {
-    const categorized = categorizePromptRunnerError(error);
-    return {
-      success: false,
-      error: categorized,
-      telemetry: buildTelemetryBase({
-        traceId: params.traceId,
-        parentSpanId: params.parentSpanId,
-        interactionId: null,
-        promptKey: promptKeyForTelemetry,
-        featureId: params.featureId || featureId,
-        model: params.model,
-        pattern: "text",
-        attemptCount: 1,
-      }),
-    };
   }
+
+  if (lastInteractionId && lastError) {
+    await markAiInteractionError(lastInteractionId, lastError.message);
+  }
+
+  return {
+    success: false,
+    error: {
+      category: "incomplete_output",
+      message: lastError?.message ?? "Prompt runner failed",
+      retryable: false,
+      ...(lastError?.raw ? { raw: lastError.raw } : {}),
+    },
+    ...(lastRaw ? { rawOutput: lastRaw } : {}),
+    telemetry: buildTelemetryBase({
+      traceId: params.traceId,
+      parentSpanId: params.parentSpanId,
+      interactionId: lastInteractionId,
+      promptKey: promptKeyForTelemetry,
+      featureId: params.featureId || featureId,
+      model: params.model,
+      pattern: "text",
+      attemptCount: attempts.length,
+    }),
+  };
 }

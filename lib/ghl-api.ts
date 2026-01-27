@@ -22,7 +22,7 @@ interface GHLApiResponse<T> {
   data?: T;
   error?: string;
   statusCode?: number;
-  errorCode?: "sms_dnd";
+  errorCode?: "sms_dnd" | "missing_phone" | "invalid_country_code";
   errorMessage?: string;
 }
 
@@ -79,11 +79,25 @@ function isSmsDndErrorMessage(message: string): boolean {
   );
 }
 
-function parseGhlErrorPayload(errorText: string): { message?: string; errorCode?: "sms_dnd" } {
+function isMissingPhoneErrorMessage(message: string): boolean {
+  return (message || "").toLowerCase().includes("missing phone number");
+}
+
+function isInvalidCountryCallingCodeErrorMessage(message: string): boolean {
+  return (message || "").toLowerCase().includes("invalid country calling code");
+}
+
+function parseGhlErrorPayload(errorText: string): { message?: string; errorCode?: "sms_dnd" | "missing_phone" | "invalid_country_code" } {
   const parsed = tryParseJson<{ message?: unknown }>(errorText);
   const message = typeof parsed?.message === "string" ? parsed.message : undefined;
   const candidate = message || errorText;
-  const errorCode = isSmsDndErrorMessage(candidate) ? "sms_dnd" : undefined;
+  const errorCode = isSmsDndErrorMessage(candidate)
+    ? "sms_dnd"
+    : isMissingPhoneErrorMessage(candidate)
+      ? "missing_phone"
+      : isInvalidCountryCallingCodeErrorMessage(candidate)
+        ? "invalid_country_code"
+        : undefined;
   return { message, errorCode };
 }
 
@@ -289,9 +303,21 @@ async function ghlRequest<T>(
             continue;
           }
 
-          console.error(
-            `[GHL] API error ${response.status} ${method} ${endpoint}${safeMessage ? `: ${safeMessage}` : ""}`
-          );
+          const isExpectedClientIssue =
+            response.status >= 400 &&
+            response.status < 500 &&
+            (parsed.errorCode === "sms_dnd" ||
+              parsed.errorCode === "missing_phone" ||
+              parsed.errorCode === "invalid_country_code");
+
+          const logLine = `[GHL] API error ${response.status} ${method} ${endpoint}${safeMessage ? `: ${safeMessage}` : ""}`;
+          if (parsed.errorCode === "sms_dnd") {
+            console.log(logLine);
+          } else if (isExpectedClientIssue) {
+            console.warn(logLine);
+          } else {
+            console.error(logLine);
+          }
 
           return {
             success: false,
@@ -901,12 +927,41 @@ export async function getGHLContactAppointments(
   if (!isLikelyGhlContactId(contactId)) {
     return { success: false, error: "Invalid GHL contact ID", statusCode: 400 };
   }
-  return ghlRequest<{ events: GHLAppointment[] }>(
+
+  const result = await ghlRequest<unknown>(
     `/contacts/${encodeURIComponent(contactId)}/appointments`,
     privateKey,
     { headers: { Version: GHL_CONTACTS_API_VERSION } },
     opts?.locationId
   );
+
+  if (!result.success) return result as GHLApiResponse<{ events: GHLAppointment[] }>;
+
+  const record = result.data as any;
+  const rawEvents: unknown[] =
+    (Array.isArray(record?.events) && record.events) ||
+    (Array.isArray(record?.appointments) && record.appointments) ||
+    (Array.isArray(record?.data?.events) && record.data.events) ||
+    (Array.isArray(record?.data?.appointments) && record.data.appointments) ||
+    [];
+
+  const normalized: GHLAppointment[] = [];
+  let dropped = 0;
+  for (const item of rawEvents) {
+    const normalizedItem = normalizeGhlAppointmentResponse(item);
+    if (normalizedItem) normalized.push(normalizedItem);
+    else dropped++;
+  }
+
+  if (dropped > 0) {
+    console.warn("[GHL] Dropped invalid appointment items from contact appointments response", {
+      contactId,
+      kept: normalized.length,
+      dropped,
+    });
+  }
+
+  return { success: true, data: { events: normalized } };
 }
 
 /**

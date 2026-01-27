@@ -2,7 +2,9 @@ import { spawn } from "node:child_process";
 
 const TEST_FILES = [
   "lib/auto-send/__tests__/orchestrator.test.ts",
+  "lib/__tests__/calendly-invitee-questions.test.ts",
   "lib/__tests__/ghl-appointment-response.test.ts",
+  "lib/__tests__/phone-normalization.test.ts",
   "lib/__tests__/insights-thread-extractor-schema.test.ts",
   "lib/__tests__/emailbison-stop-future-emails.test.ts",
 ];

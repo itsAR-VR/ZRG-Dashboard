@@ -2,10 +2,11 @@
 
 import { prisma } from "@/lib/prisma";
 import { POSITIVE_SENTIMENTS } from "@/lib/sentiment-shared";
-import { resolveClientScope } from "@/lib/workspace-access";
-import { areBothWithinEstBusinessHours, formatDurationMs } from "@/lib/business-hours";
+import { requireAuthUser } from "@/lib/workspace-access";
+import { formatDurationMs } from "@/lib/business-hours";
 import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
-import type { MeetingBookingProvider, ClientMemberRole } from "@prisma/client";
+import { accessibleClientWhere, accessibleLeadWhere } from "@/lib/workspace-access-filters";
+import { Prisma, type ClientMemberRole, type MeetingBookingProvider } from "@prisma/client";
 
 // Simple in-memory cache for analytics with TTL (5 minutes)
 // Analytics data can be slightly stale without issues, and this dramatically reduces DB load
@@ -35,10 +36,13 @@ function maybeCleanupCache() {
  * Call this after significant data changes (e.g., new leads, messages, bookings).
  */
 export async function invalidateAnalyticsCache(clientId?: string | null) {
+  // Cache keys are user-scoped; safest invalidation is a full clear.
+  // This is a small in-memory cache per serverless instance.
+  analyticsCache.clear();
+
+  // Optional: keep an escape hatch for future targeted invalidation.
   if (clientId) {
-    analyticsCache.delete(clientId);
-  } else {
-    analyticsCache.clear();
+    void clientId;
   }
 }
 
@@ -104,6 +108,26 @@ export interface AnalyticsData {
   perSetterResponseTimes: SetterResponseTimeRow[];
 }
 
+function buildAccessibleLeadSqlWhere(opts: { userId: string; clientId?: string | null }): Prisma.Sql {
+  if (opts.clientId) {
+    return Prisma.sql`l."clientId" = ${opts.clientId}`;
+  }
+
+  return Prisma.sql`(
+    EXISTS (SELECT 1 FROM "Client" c WHERE c.id = l."clientId" AND c."userId" = ${opts.userId})
+    OR EXISTS (SELECT 1 FROM "ClientMember" cm WHERE cm."clientId" = l."clientId" AND cm."userId" = ${opts.userId})
+  )`;
+}
+
+function sqlIsWithinEstBusinessHours(tsSql: Prisma.Sql): Prisma.Sql {
+  // Weekdays (Mon-Fri) and hours 9:00-16:59 in America/New_York.
+  return Prisma.sql`(
+    EXTRACT(DOW FROM (${tsSql} AT TIME ZONE 'America/New_York')) BETWEEN 1 AND 5
+    AND EXTRACT(HOUR FROM (${tsSql} AT TIME ZONE 'America/New_York')) >= 9
+    AND EXTRACT(HOUR FROM (${tsSql} AT TIME ZONE 'America/New_York')) < 17
+  )`;
+}
+
 /**
  * Calculate response time metrics with business hours filtering (9am-5pm EST, weekdays only).
  *
@@ -117,103 +141,104 @@ export interface AnalyticsData {
  * @param clientId - Optional workspace ID to filter by
  * @returns ResponseTimeMetrics with setter and client response time data
  */
-async function calculateResponseTimeMetrics(clientId?: string | null): Promise<ResponseTimeMetrics> {
+async function calculateResponseTimeMetricsSql(opts: { userId: string; clientId?: string | null }): Promise<ResponseTimeMetrics> {
   const defaultMetrics: ResponseTimeMetrics = {
     setterResponseTime: { avgMs: 0, formatted: "N/A", sampleCount: 0 },
     clientResponseTime: { avgMs: 0, formatted: "N/A", sampleCount: 0 },
   };
 
   try {
-    const scope = await resolveClientScope(clientId);
-    if (scope.clientIds.length === 0) return defaultMetrics;
-
-    // Get recent messages (last 30 days for performance)
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    // Get all leads with their messages ordered by actual message time
-    const leads = await prisma.lead.findMany({
-      where: { clientId: { in: scope.clientIds } },
-      include: {
-        messages: {
-          where: { sentAt: { gte: thirtyDaysAgo } },
-          orderBy: { sentAt: "asc" },
-          select: {
-            direction: true,
-            channel: true,
-            sentAt: true,
-          },
-        },
+    const accessibleWhere = buildAccessibleLeadSqlWhere({ userId: opts.userId, clientId: opts.clientId });
+    const bh1 = sqlIsWithinEstBusinessHours(Prisma.sql`sent_at`);
+    const bh2 = sqlIsWithinEstBusinessHours(Prisma.sql`next_sent_at`);
+
+    const rows = await prisma.$queryRaw<
+      Array<{
+        setter_avg_ms: number | null;
+        setter_count: bigint;
+        client_avg_ms: number | null;
+        client_count: bigint;
+      }>
+    >`
+      WITH ordered AS (
+        SELECT
+          m."sentAt" AS sent_at,
+          m.direction AS direction,
+          m.channel AS channel,
+          LEAD(m."sentAt") OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_sent_at,
+          LEAD(m.direction) OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_direction
+        FROM "Message" m
+        INNER JOIN "Lead" l ON l.id = m."leadId"
+        WHERE m."sentAt" >= ${thirtyDaysAgo}
+          AND ${accessibleWhere}
+      )
+      SELECT
+        AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)::double precision
+          FILTER (
+            WHERE
+              next_sent_at IS NOT NULL
+              AND next_sent_at > sent_at
+              AND next_sent_at <= sent_at + INTERVAL '7 days'
+              AND direction = 'inbound'
+              AND next_direction = 'outbound'
+              AND ${bh1}
+              AND ${bh2}
+          ) AS setter_avg_ms,
+        COUNT(*) FILTER (
+          WHERE
+            next_sent_at IS NOT NULL
+            AND next_sent_at > sent_at
+            AND next_sent_at <= sent_at + INTERVAL '7 days'
+            AND direction = 'inbound'
+            AND next_direction = 'outbound'
+            AND ${bh1}
+            AND ${bh2}
+        )::bigint AS setter_count,
+        AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)::double precision
+          FILTER (
+            WHERE
+              next_sent_at IS NOT NULL
+              AND next_sent_at > sent_at
+              AND next_sent_at <= sent_at + INTERVAL '7 days'
+              AND direction = 'outbound'
+              AND next_direction = 'inbound'
+              AND ${bh1}
+              AND ${bh2}
+          ) AS client_avg_ms,
+        COUNT(*) FILTER (
+          WHERE
+            next_sent_at IS NOT NULL
+            AND next_sent_at > sent_at
+            AND next_sent_at <= sent_at + INTERVAL '7 days'
+            AND direction = 'outbound'
+            AND next_direction = 'inbound'
+            AND ${bh1}
+            AND ${bh2}
+        )::bigint AS client_count
+      FROM ordered
+    `;
+
+    const row = rows[0];
+    if (!row) return defaultMetrics;
+
+    const setterAvgMs = typeof row.setter_avg_ms === "number" && Number.isFinite(row.setter_avg_ms) ? row.setter_avg_ms : null;
+    const clientAvgMs = typeof row.client_avg_ms === "number" && Number.isFinite(row.client_avg_ms) ? row.client_avg_ms : null;
+
+    return {
+      setterResponseTime: {
+        avgMs: setterAvgMs ?? 0,
+        formatted: setterAvgMs != null ? formatDurationMs(setterAvgMs) : "N/A",
+        sampleCount: row.setter_count == null ? 0 : Number(row.setter_count),
       },
-    });
-
-    const setterResponseTimes: number[] = [];
-    const clientResponseTimes: number[] = [];
-
-    const MAX_RESPONSE_TIME_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-
-    // For each lead, find response times within the same channel
-    for (const lead of leads) {
-      const messages = lead.messages;
-
-      for (let i = 0; i < messages.length - 1; i++) {
-        const current = messages[i];
-        const next = messages[i + 1];
-
-        // Only pair messages within the same channel
-        if (current.channel !== next.channel) {
-          continue;
-        }
-
-        const currentTime = new Date(current.sentAt);
-        const nextTime = new Date(next.sentAt);
-        const responseTimeMs = nextTime.getTime() - currentTime.getTime();
-
-        // Skip if response time is negative or exceeds 7 days
-        if (responseTimeMs <= 0 || responseTimeMs > MAX_RESPONSE_TIME_MS) {
-          continue;
-        }
-
-        // Only count if BOTH timestamps are within business hours (9am-5pm EST, weekdays)
-        if (!areBothWithinEstBusinessHours(currentTime, nextTime)) {
-          continue;
-        }
-
-        // Setter response: inbound -> outbound (client sends, we reply)
-        if (current.direction === "inbound" && next.direction === "outbound") {
-          setterResponseTimes.push(responseTimeMs);
-        }
-
-        // Client response: outbound -> inbound (we send, client replies)
-        if (current.direction === "outbound" && next.direction === "inbound") {
-          clientResponseTimes.push(responseTimeMs);
-        }
-      }
-    }
-
-    // Calculate setter response time average
-    let setterResponseTime = defaultMetrics.setterResponseTime;
-    if (setterResponseTimes.length > 0) {
-      const avgMs = setterResponseTimes.reduce((sum, t) => sum + t, 0) / setterResponseTimes.length;
-      setterResponseTime = {
-        avgMs,
-        formatted: formatDurationMs(avgMs),
-        sampleCount: setterResponseTimes.length,
-      };
-    }
-
-    // Calculate client response time average
-    let clientResponseTime = defaultMetrics.clientResponseTime;
-    if (clientResponseTimes.length > 0) {
-      const avgMs = clientResponseTimes.reduce((sum, t) => sum + t, 0) / clientResponseTimes.length;
-      clientResponseTime = {
-        avgMs,
-        formatted: formatDurationMs(avgMs),
-        sampleCount: clientResponseTimes.length,
-      };
-    }
-
-    return { setterResponseTime, clientResponseTime };
+      clientResponseTime: {
+        avgMs: clientAvgMs ?? 0,
+        formatted: clientAvgMs != null ? formatDurationMs(clientAvgMs) : "N/A",
+        sampleCount: row.client_count == null ? 0 : Number(row.client_count),
+      },
+    };
   } catch (error) {
     console.error("Error calculating response time metrics:", error);
     return defaultMetrics;
@@ -227,86 +252,65 @@ async function calculateResponseTimeMetrics(clientId?: string | null): Promise<R
  * @param clientId - Required workspace ID to filter by (per-setter only makes sense per workspace)
  * @returns Array of SetterResponseTimeRow sorted by response count (most active first)
  */
-async function calculatePerSetterResponseTimes(clientId: string): Promise<SetterResponseTimeRow[]> {
+async function calculatePerSetterResponseTimesSql(opts: { userId: string; clientId: string }): Promise<SetterResponseTimeRow[]> {
   try {
-    // Get recent messages (last 30 days for performance)
+    // Ensure caller has access to the workspace (server-side guard; avoids cross-user cache poisoning).
+    const canAccess = await prisma.client.findFirst({
+      where: { id: opts.clientId, ...accessibleClientWhere(opts.userId) },
+      select: { id: true },
+    });
+    if (!canAccess) return [];
+
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    // Get all leads with their messages for this workspace
-    const leads = await prisma.lead.findMany({
-      where: { clientId },
-      include: {
-        messages: {
-          where: { sentAt: { gte: thirtyDaysAgo } },
-          orderBy: { sentAt: "asc" },
-          select: {
-            direction: true,
-            channel: true,
-            sentAt: true,
-            sentByUserId: true,
-          },
-        },
-      },
-    });
+    const bh1 = sqlIsWithinEstBusinessHours(Prisma.sql`sent_at`);
+    const bh2 = sqlIsWithinEstBusinessHours(Prisma.sql`next_sent_at`);
 
-    // Aggregate response times by userId
-    const responseTimesByUser = new Map<string, number[]>();
-    const MAX_RESPONSE_TIME_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const rawRows = await prisma.$queryRaw<
+      Array<{
+        user_id: string;
+        avg_ms: number;
+        response_count: bigint;
+      }>
+    >`
+      WITH ordered AS (
+        SELECT
+          m."sentAt" AS sent_at,
+          m.direction AS direction,
+          m.channel AS channel,
+          LEAD(m."sentAt") OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_sent_at,
+          LEAD(m.direction) OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_direction,
+          LEAD(m."sentByUserId") OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_sent_by_user_id
+        FROM "Message" m
+        INNER JOIN "Lead" l ON l.id = m."leadId"
+        WHERE m."sentAt" >= ${thirtyDaysAgo}
+          AND l."clientId" = ${opts.clientId}
+      )
+      SELECT
+        next_sent_by_user_id::text AS user_id,
+        AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)::double precision AS avg_ms,
+        COUNT(*)::bigint AS response_count
+      FROM ordered
+      WHERE
+        next_sent_at IS NOT NULL
+        AND next_sent_at > sent_at
+        AND next_sent_at <= sent_at + INTERVAL '7 days'
+        AND direction = 'inbound'
+        AND next_direction = 'outbound'
+        AND next_sent_by_user_id IS NOT NULL
+        AND ${bh1}
+        AND ${bh2}
+      GROUP BY next_sent_by_user_id
+      ORDER BY response_count DESC
+    `;
 
-    for (const lead of leads) {
-      const messages = lead.messages;
+    if (rawRows.length === 0) return [];
 
-      for (let i = 0; i < messages.length - 1; i++) {
-        const current = messages[i];
-        const next = messages[i + 1];
-
-        // Only pair messages within the same channel
-        if (current.channel !== next.channel) {
-          continue;
-        }
-
-        // Only count setter responses (inbound -> outbound with sentByUserId)
-        if (current.direction !== "inbound" || next.direction !== "outbound") {
-          continue;
-        }
-
-        // Skip if no userId attribution (AI or system sent)
-        if (!next.sentByUserId) {
-          continue;
-        }
-
-        const currentTime = new Date(current.sentAt);
-        const nextTime = new Date(next.sentAt);
-        const responseTimeMs = nextTime.getTime() - currentTime.getTime();
-
-        // Skip if response time is negative or exceeds 7 days
-        if (responseTimeMs <= 0 || responseTimeMs > MAX_RESPONSE_TIME_MS) {
-          continue;
-        }
-
-        // Only count if BOTH timestamps are within business hours
-        if (!areBothWithinEstBusinessHours(currentTime, nextTime)) {
-          continue;
-        }
-
-        const userId = next.sentByUserId;
-        const existing = responseTimesByUser.get(userId) || [];
-        existing.push(responseTimeMs);
-        responseTimesByUser.set(userId, existing);
-      }
-    }
-
-    // No response times found
-    if (responseTimesByUser.size === 0) {
-      return [];
-    }
-
-    // Get ClientMember info for the users
-    const userIds = Array.from(responseTimesByUser.keys());
+    const userIds = rawRows.map((r) => r.user_id).filter(Boolean);
     const members = await prisma.clientMember.findMany({
       where: {
-        clientId,
+        clientId: opts.clientId,
         userId: { in: userIds },
       },
       select: {
@@ -321,25 +325,24 @@ async function calculatePerSetterResponseTimes(clientId: string): Promise<Setter
     const emailByUserId = await getSupabaseUserEmailsByIds(userIds);
 
     // Build result rows
-    const rows: SetterResponseTimeRow[] = [];
-    for (const [userId, times] of responseTimesByUser.entries()) {
-      const avgMs = times.reduce((sum, t) => sum + t, 0) / times.length;
-      const member = memberByUserId.get(userId);
+    const resultRows: SetterResponseTimeRow[] = [];
+    for (const row of rawRows) {
+      const avgMs = Number(row.avg_ms);
+      const count = row.response_count == null ? 0 : Number(row.response_count);
+      if (!Number.isFinite(avgMs) || count <= 0) continue;
 
-      rows.push({
-        userId,
-        email: emailByUserId.get(userId) ?? null,
+      const member = memberByUserId.get(row.user_id);
+      resultRows.push({
+        userId: row.user_id,
+        email: emailByUserId.get(row.user_id) ?? null,
         role: member?.role ?? null,
         avgResponseTimeMs: avgMs,
         avgResponseTimeFormatted: formatDurationMs(avgMs),
-        responseCount: times.length,
+        responseCount: count,
       });
     }
 
-    // Sort by response count (most active first)
-    rows.sort((a, b) => b.responseCount - a.responseCount);
-
-    return rows;
+    return resultRows;
   } catch (error) {
     console.error("Error calculating per-setter response times:", error);
     return [];
@@ -361,11 +364,24 @@ export async function getAnalytics(
   error?: string;
 }> {
   try {
+    const user = await requireAuthUser();
+
+    // Enforce authorization (and avoid cache leakage) before serving any cached data.
+    if (clientId) {
+      const canAccess = await prisma.client.findFirst({
+        where: { id: clientId, ...accessibleClientWhere(user.id) },
+        select: { id: true },
+      });
+      if (!canAccess) {
+        return { success: false, error: "Unauthorized" };
+      }
+    }
+
     // Cleanup stale cache entries periodically
     maybeCleanupCache();
 
-    // Check cache first (using clientId or "all" as cache key)
-    const cacheKey = clientId || "__all__";
+    // Cache is user-scoped to avoid cross-user data leakage.
+    const cacheKey = `${user.id}:${clientId || "__all__"}`;
     const now = Date.now();
 
     if (!opts?.forceRefresh) {
@@ -375,8 +391,14 @@ export async function getAnalytics(
       }
     }
 
-    const scope = await resolveClientScope(clientId);
-    if (scope.clientIds.length === 0) {
+    const leadWhere = clientId ? { clientId } : accessibleLeadWhere(user.id);
+
+    // If global scope yields no accessible leads, return zeros.
+    const anyAccessibleLead = await prisma.lead.findFirst({
+      where: leadWhere,
+      select: { id: true },
+    });
+    if (!anyAccessibleLead) {
       return {
         success: true,
         data: {
@@ -400,17 +422,15 @@ export async function getAnalytics(
       };
     }
 
-    const clientFilter = { clientId: { in: scope.clientIds } };
-
     // Get total leads
     const totalLeads = await prisma.lead.count({
-      where: clientFilter,
+      where: leadWhere,
     });
 
     // Outbound leads contacted (best-effort from DB only; outbound SMS from GHL automations isn't ingested yet)
     const outboundLeadsContacted = await prisma.lead.count({
       where: {
-        ...clientFilter,
+        ...leadWhere,
         messages: {
           some: {
             direction: "outbound",
@@ -420,7 +440,7 @@ export async function getAnalytics(
     });
 
     const respondedLeadFilter = {
-      ...clientFilter,
+      ...leadWhere,
       messages: {
         some: {
           direction: "inbound",
@@ -441,7 +461,7 @@ export async function getAnalytics(
     // Meetings booked = leads with a booked appointment (created by our system)
     const meetingsBooked = await prisma.lead.count({
       where: {
-        ...clientFilter,
+        ...leadWhere,
         OR: [
           { appointmentBookedAt: { not: null } },
           { ghlAppointmentId: { not: null } },
@@ -477,7 +497,7 @@ export async function getAnalytics(
     // Get status breakdown
     const statusCounts = await prisma.lead.groupBy({
       by: ["status"],
-      where: clientFilter,
+      where: leadWhere,
       _count: {
         status: true,
       },
@@ -507,7 +527,7 @@ export async function getAnalytics(
         COUNT(*) as count
       FROM "Message" m
       INNER JOIN "Lead" l ON m."leadId" = l.id
-      WHERE l."clientId" = ANY(${scope.clientIds})
+      WHERE ${buildAccessibleLeadSqlWhere({ userId: user.id, clientId })}
         AND m."sentAt" >= ${sevenDaysAgo}
       GROUP BY DATE_TRUNC('day', m."sentAt"), m.direction
       ORDER BY day_date ASC
@@ -547,43 +567,45 @@ export async function getAnalytics(
     }
 
     // Get top clients - use _count instead of loading all leads for efficiency
-    const [clientsWithCounts, meetingCounts] = await Promise.all([
-      // Get clients with lead counts using Prisma _count
-      prisma.client.findMany({
-        where: { id: { in: scope.clientIds } },
-        select: {
-          id: true,
-          name: true,
-          _count: { select: { leads: true } },
-        },
+    const [leadCountsByClient, meetingCountsByClient] = await Promise.all([
+      prisma.lead.groupBy({
+        by: ["clientId"],
+        where: leadWhere,
+        _count: { id: true },
+        orderBy: { _count: { id: "desc" } },
+        take: 5,
       }),
-      // Get meeting counts per client using raw SQL for efficiency
-      prisma.$queryRaw<Array<{ client_id: string; meeting_count: bigint }>>`
-        SELECT "clientId" as client_id, COUNT(*) as meeting_count
-        FROM "Lead"
-        WHERE "clientId" = ANY(${scope.clientIds})
-          AND (
-            "appointmentBookedAt" IS NOT NULL
-            OR "ghlAppointmentId" IS NOT NULL
-            OR "calendlyInviteeUri" IS NOT NULL
-            OR "calendlyScheduledEventUri" IS NOT NULL
-          )
-        GROUP BY "clientId"
-      `,
+      prisma.lead.groupBy({
+        by: ["clientId"],
+        where: {
+          ...leadWhere,
+          OR: [
+            { appointmentBookedAt: { not: null } },
+            { ghlAppointmentId: { not: null } },
+            { calendlyInviteeUri: { not: null } },
+            { calendlyScheduledEventUri: { not: null } },
+          ],
+        },
+        _count: { id: true },
+      }),
     ]);
 
-    const meetingCountByClient = new Map(
-      meetingCounts.map((m) => [m.client_id, Number(m.meeting_count)])
-    );
+    const topClientIds = leadCountsByClient.map((r) => r.clientId);
+    const clients = topClientIds.length
+      ? await prisma.client.findMany({
+          where: { id: { in: topClientIds } },
+          select: { id: true, name: true },
+        })
+      : [];
 
-    const topClients = clientsWithCounts
-      .map((client) => ({
-        name: client.name,
-        leads: client._count.leads,
-        meetings: meetingCountByClient.get(client.id) || 0,
-      }))
-      .sort((a, b) => b.leads - a.leads)
-      .slice(0, 5);
+    const clientNameById = new Map(clients.map((c) => [c.id, c.name]));
+    const meetingCountByClient = new Map(meetingCountsByClient.map((r) => [r.clientId, r._count.id]));
+
+    const topClients = leadCountsByClient.map((row) => ({
+      name: clientNameById.get(row.clientId) ?? "Unknown",
+      leads: row._count.id,
+      meetings: meetingCountByClient.get(row.clientId) ?? 0,
+    }));
 
     // SMS sub-client breakdown inside a workspace (Lead.smsCampaignId)
     const smsSubClients: AnalyticsData["smsSubClients"] = [];
@@ -665,11 +687,11 @@ export async function getAnalytics(
     }
 
     // Calculate response time metrics (setter and client, business hours only)
-    const responseTimeMetrics = await calculateResponseTimeMetrics(clientId);
+    const responseTimeMetrics = await calculateResponseTimeMetricsSql({ userId: user.id, clientId });
 
     // Calculate per-setter response times (only when a specific workspace is selected)
     const perSetterResponseTimes = clientId
-      ? await calculatePerSetterResponseTimes(clientId)
+      ? await calculatePerSetterResponseTimesSql({ userId: user.id, clientId })
       : [];
 
     const analyticsData: AnalyticsData = {
@@ -810,34 +832,25 @@ export async function getEmailCampaignAnalytics(opts?: {
   error?: string;
 }> {
   try {
-    const scope = await resolveClientScope(opts?.clientId ?? null);
-    if (scope.clientIds.length === 0) {
-      const now = new Date();
-      const from = new Date(now);
-      from.setDate(from.getDate() - 7);
-      return {
-        success: true,
-        data: {
-          campaigns: [],
-          weeklyReport: {
-            range: { from: from.toISOString(), to: now.toISOString() },
-            topCampaignsByBookingRate: [],
-            bottomCampaignsByBookingRate: [],
-            highPositiveLowBooking: [],
-            sentimentBreakdown: [],
-            bookingRateByIndustry: [],
-            bookingRateByHeadcountBucket: [],
-          },
-        },
-      };
-    }
+    const user = await requireAuthUser();
 
     const now = new Date();
     const to = opts?.to ? new Date(opts.to) : now;
     const from = opts?.from ? new Date(opts.from) : new Date(new Date(to).setDate(to.getDate() - 7));
 
+    if (opts?.clientId) {
+      const canAccess = await prisma.client.findFirst({
+        where: { id: opts.clientId, ...accessibleClientWhere(user.id) },
+        select: { id: true },
+      });
+      if (!canAccess) return { success: false, error: "Unauthorized" };
+    }
+
     const campaigns = await prisma.emailCampaign.findMany({
-      where: { clientId: { in: scope.clientIds } },
+      where: {
+        ...(opts?.clientId ? { clientId: opts.clientId } : {}),
+        client: accessibleClientWhere(user.id),
+      },
       select: {
         id: true,
         bisonCampaignId: true,
@@ -880,7 +893,8 @@ export async function getEmailCampaignAnalytics(opts?: {
 
     const leads = await prisma.lead.findMany({
       where: {
-        clientId: { in: scope.clientIds },
+        ...accessibleLeadWhere(user.id),
+        ...(opts?.clientId ? { clientId: opts.clientId } : {}),
         emailCampaignId: { in: campaignIds },
         OR: [
           { lastInboundAt: { gte: from, lt: to } },
@@ -1119,8 +1133,12 @@ export async function getSetterFunnelAnalytics(
   clientId: string
 ): Promise<{ success: true; data: SetterFunnelStats[] } | { success: false; error: string }> {
   try {
-    const scope = await resolveClientScope(clientId);
-    if (!scope.clientIds.includes(clientId)) {
+    const user = await requireAuthUser();
+    const canAccess = await prisma.client.findFirst({
+      where: { id: clientId, ...accessibleClientWhere(user.id) },
+      select: { id: true },
+    });
+    if (!canAccess) {
       return { success: false, error: "Unauthorized" };
     }
 

@@ -10,6 +10,23 @@ function stripInternationalPrefix00(digits: string): string {
   return digits;
 }
 
+function isLikelyNanpWithCountryCode(digits: string): boolean {
+  // Basic NANP validation: +1 followed by a 10-digit national number where both
+  // area code and central office code start with digits 2–9.
+  // This prevents incorrectly promoting non-NANP 11-digit national numbers to `+...`.
+  if (digits.length !== 11) return false;
+  if (!digits.startsWith("1")) return false;
+
+  const national = digits.slice(1);
+  const areaCode = national.slice(0, 3);
+  const centralOffice = national.slice(3, 6);
+
+  if (!/^[2-9]\d{2}$/.test(areaCode)) return false;
+  if (!/^[2-9]\d{2}$/.test(centralOffice)) return false;
+
+  return true;
+}
+
 /**
  * Storage format for phones in our DB:
  * - Prefer E.164 (`+` + digits) when a country calling code is present/likely.
@@ -27,9 +44,12 @@ export function toStoredPhone(phone: string | null | undefined): string | null {
   if (normalized.startsWith("0")) return normalized;
 
   const looksExplicitInternational = raw.startsWith("+") || raw.startsWith("00");
-  const looksLikeIncludesCountryCode = normalized.length > 10;
+  // Without an explicit '+'/00 prefix, do not assume a country calling code is present just because
+  // the digit count is > 10. Many countries have 11-digit national numbers (e.g., with trunk/cell prefixes),
+  // and incorrectly prepending '+' creates invalid country calling codes (e.g., `+11...`).
+  const looksLikeNanpWithCountryCode = isLikelyNanpWithCountryCode(normalized);
 
-  if (looksExplicitInternational || looksLikeIncludesCountryCode) {
+  if (looksExplicitInternational || looksLikeNanpWithCountryCode) {
     return `+${normalized}`;
   }
 

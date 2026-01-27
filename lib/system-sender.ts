@@ -3,7 +3,7 @@ import { sendSMS, updateGHLContact } from "@/lib/ghl-api";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
-import { toGhlPhoneBestEffort } from "@/lib/phone-utils";
+import { resolvePhoneE164ForGhl } from "@/lib/phone-normalization";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { recordOutboundForBookingProgress, handleSmsDndForBookingProgress } from "@/lib/booking-progress";
 
@@ -62,6 +62,7 @@ export async function sendSmsSystem(
           select: {
             ghlPrivateKey: true,
             ghlLocationId: true,
+            settings: { select: { timezone: true } },
           },
         },
       },
@@ -118,10 +119,21 @@ export async function sendSmsSystem(
     // If we have a phone in our DB, try to patch it onto the contact and retry once.
     if (!result.success && (result.error || "").toLowerCase().includes("missing phone number")) {
       const defaultCountryCallingCode = (process.env.GHL_DEFAULT_COUNTRY_CALLING_CODE || "1").trim();
-      const phoneForGhl = toGhlPhoneBestEffort(lead.phone, { defaultCountryCallingCode });
+      const phoneResolution = await resolvePhoneE164ForGhl({
+        clientId: lead.clientId,
+        leadId,
+        phone: lead.phone,
+        leadTimezone: lead.timezone,
+        workspaceTimezone: lead.client.settings?.timezone ?? null,
+        companyState: lead.companyState,
+        email: lead.email,
+        companyWebsite: lead.companyWebsite,
+        defaultCountryCallingCode,
+      });
+      const phoneForGhl = phoneResolution.ok ? phoneResolution.e164 : null;
 
-	      const patchAttempt = async (phone: string) =>
-	        updateGHLContact(
+      const patchAttempt = async (phone: string) =>
+        updateGHLContact(
           ghlContactId,
           {
             firstName: lead.firstName || undefined,

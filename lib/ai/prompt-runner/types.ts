@@ -84,6 +84,9 @@ export type TextPromptParams = PromptRunnerBaseParams & {
   input: OpenAI.Responses.ResponseCreateParamsNonStreaming["input"];
   budget?: PromptBudgetParams;
   maxOutputTokens?: number;
+  attempts?: number[];
+  retryOn?: AIErrorCategory[];
+  retryReasoningEffort?: PromptRunnerBaseParams["reasoningEffort"];
   verbosity?: "low" | "medium" | "high";
 };
 

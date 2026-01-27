@@ -25,6 +25,15 @@ function hasSupabaseAuthCookie(request: NextRequest): boolean {
     .some(({ name }) => name === baseName || name.startsWith(`${baseName}.`));
 }
 
+function getSupabaseAuthCookieNames(request: NextRequest): string[] {
+  const baseName = getDefaultSupabaseStorageKey();
+  if (!baseName) return [];
+  return request.cookies
+    .getAll()
+    .map(({ name }) => name)
+    .filter((name) => name === baseName || name.startsWith(`${baseName}.`));
+}
+
 export async function updateSession(request: NextRequest) {
   // Middleware runs for every request matched by `middleware.ts`. Avoid doing network work
   // for API routes (webhooks/cron), which can be hot paths and don't need browser session refresh.
@@ -53,6 +62,23 @@ export async function updateSession(request: NextRequest) {
 
     return supabaseResponse;
   }
+
+  // If we detect stale/invalid auth cookies, clear them on whichever response we ultimately return.
+  const authCookieNamesToClear = new Set<string>();
+  const markSupabaseAuthCookiesForClearing = () => {
+    for (const name of getSupabaseAuthCookieNames(request)) {
+      authCookieNamesToClear.add(name);
+      // Also clear from the in-flight request cookie jar to avoid further refresh attempts in this request.
+      request.cookies.set(name, "");
+    }
+  };
+  const applySupabaseAuthCookieClears = (response: NextResponse): NextResponse => {
+    if (authCookieNamesToClear.size === 0) return response;
+    for (const name of authCookieNamesToClear) {
+      response.cookies.set(name, "", { path: "/", maxAge: 0, expires: new Date(0) });
+    }
+    return response;
+  };
 
   const timeoutMs = Math.max(
     500,
@@ -104,12 +130,15 @@ export async function updateSession(request: NextRequest) {
 
     // Treat auth failures as a signed-out state; only fail-open on non-auth unexpected errors.
     if (error) {
+      if (isSupabaseInvalidOrMissingSessionError(error)) {
+        markSupabaseAuthCookiesForClearing();
+      }
       if (!isSupabaseAuthError(error)) {
         console.warn(
           "[middleware] supabase.auth.getUser error:",
           error instanceof Error ? error.message : error
         );
-        return supabaseResponse;
+        return applySupabaseAuthCookieClears(supabaseResponse);
       }
     } else {
       user = data.user;
@@ -118,15 +147,17 @@ export async function updateSession(request: NextRequest) {
     // refresh_token_not_found and similar session errors are expected when cookies are stale/missing.
     // AbortError is expected when our middleware timeout triggers.
     if (isAbortError(error)) {
-      return supabaseResponse;
+      return applySupabaseAuthCookieClears(supabaseResponse);
     }
-    if (!isSupabaseInvalidOrMissingSessionError(error)) {
+    if (isSupabaseInvalidOrMissingSessionError(error)) {
+      markSupabaseAuthCookiesForClearing();
+    } else {
       console.warn(
         "[middleware] supabase.auth.getUser threw:",
         error instanceof Error ? error.message : error
       );
       // Fail open at the middleware layer (no redirects). Server-side auth checks still apply.
-      return supabaseResponse;
+      return applySupabaseAuthCookieClears(supabaseResponse);
     }
   }
 
@@ -134,18 +165,17 @@ export async function updateSession(request: NextRequest) {
     // No user, redirect to login
     const url = request.nextUrl.clone();
     url.pathname = "/auth/login";
-    return NextResponse.redirect(url);
+    return applySupabaseAuthCookieClears(NextResponse.redirect(url));
   }
 
   if (user && isAuthPage && !isAuthCallbackRoute && !isResetPasswordRoute) {
     // User is logged in but trying to access auth pages, redirect to home
     const url = request.nextUrl.clone();
     url.pathname = "/";
-    return NextResponse.redirect(url);
+    return applySupabaseAuthCookieClears(NextResponse.redirect(url));
   }
 
-  return supabaseResponse;
+  return applySupabaseAuthCookieClears(supabaseResponse);
 }
-
 
 

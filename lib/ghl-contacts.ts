@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { searchGHLContactsAdvanced, updateGHLContact, upsertGHLContact, type GHLContact } from "@/lib/ghl-api";
 import { normalizeEmail } from "@/lib/lead-matching";
-import { normalizePhoneDigits, toGhlPhone, toGhlPhoneBestEffort, toStoredPhone } from "@/lib/phone-utils";
+import { resolvePhoneE164ForGhl } from "@/lib/phone-normalization";
+import { normalizePhoneDigits, toStoredPhone } from "@/lib/phone-utils";
 
 export interface EnsureGhlContactIdResult {
   success: boolean;
@@ -41,6 +42,7 @@ export async function resolveGhlContactIdForLead(leadId: string): Promise<Resolv
     where: { id: leadId },
     select: {
       id: true,
+      clientId: true,
       firstName: true,
       lastName: true,
       email: true,
@@ -134,12 +136,14 @@ export async function ensureGhlContactIdForLead(
     where: { id: leadId },
     select: {
       id: true,
+      clientId: true,
       firstName: true,
       lastName: true,
       email: true,
       phone: true,
       companyName: true,
       companyWebsite: true,
+      companyState: true,
       timezone: true,
       enrichmentStatus: true,
       ghlContactId: true,
@@ -147,6 +151,7 @@ export async function ensureGhlContactIdForLead(
         select: {
           ghlLocationId: true,
           ghlPrivateKey: true,
+          settings: { select: { timezone: true } },
         },
       },
     },
@@ -163,8 +168,18 @@ export async function ensureGhlContactIdForLead(
 
   const emailNormalized = normalizeEmail(lead.email);
   const defaultCountryCallingCode = (process.env.GHL_DEFAULT_COUNTRY_CALLING_CODE || "1").trim();
-  const phoneForGhl =
-    toGhlPhone(lead.phone) || toGhlPhoneBestEffort(lead.phone, { defaultCountryCallingCode });
+  const phoneResolution = await resolvePhoneE164ForGhl({
+    clientId: lead.clientId,
+    leadId,
+    phone: lead.phone,
+    leadTimezone: lead.timezone,
+    workspaceTimezone: lead.client.settings?.timezone ?? null,
+    companyState: lead.companyState,
+    email: lead.email,
+    companyWebsite: lead.companyWebsite,
+    defaultCountryCallingCode,
+  });
+  const phoneForGhl = phoneResolution.ok ? phoneResolution.e164 : null;
   const phoneNormalized = phoneForGhl ? normalizePhoneDigits(phoneForGhl) : normalizePhoneDigits(lead.phone);
 
   if (!emailNormalized && !phoneNormalized) {
@@ -255,11 +270,11 @@ export async function ensureGhlContactIdForLead(
   }
 
   // 2) Upsert contact (create/update based on location configuration)
-  if (opts.requirePhone && !phoneNormalized) {
+  if (opts.requirePhone && !phoneForGhl) {
     return { success: false, error: "No phone available to create new GHL contact" };
   }
 
-  if (!phoneNormalized && !opts.allowCreateWithoutPhone) {
+  if (!phoneForGhl && !opts.allowCreateWithoutPhone) {
     return { success: false, error: "No phone available to create new GHL contact" };
   }
 
@@ -310,18 +325,21 @@ export async function syncGhlContactPhoneForLead(
       where: { id: leadId },
       select: {
         id: true,
+        clientId: true,
         firstName: true,
         lastName: true,
         email: true,
         phone: true,
         companyName: true,
         companyWebsite: true,
+        companyState: true,
         timezone: true,
         ghlContactId: true,
         client: {
           select: {
             ghlPrivateKey: true,
             ghlLocationId: true,
+            settings: { select: { timezone: true } },
           },
         },
       },
@@ -336,11 +354,18 @@ export async function syncGhlContactPhoneForLead(
       (process.env.GHL_DEFAULT_COUNTRY_CALLING_CODE || "").trim() ||
       "1";
 
-    const phoneForGhl =
-      // Prefer strict E.164 when possible.
-      toGhlPhone(lead.phone) ||
-      // Best-effort: allow falling back to a workspace default country code (commonly +1).
-      toGhlPhoneBestEffort(lead.phone, { defaultCountryCallingCode });
+    const phoneResolution = await resolvePhoneE164ForGhl({
+      clientId: lead.clientId,
+      leadId,
+      phone: lead.phone,
+      leadTimezone: lead.timezone,
+      workspaceTimezone: lead.client.settings?.timezone ?? null,
+      companyState: lead.companyState,
+      email: lead.email,
+      companyWebsite: lead.companyWebsite,
+      defaultCountryCallingCode,
+    });
+    const phoneForGhl = phoneResolution.ok ? phoneResolution.e164 : null;
 
     if (!phoneForGhl) {
       return { success: false, error: "No usable phone number available to sync to GHL contact" };

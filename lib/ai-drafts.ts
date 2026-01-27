@@ -1863,7 +1863,7 @@ Generate an appropriate email response following the guidelines and structure ar
               temperature: 0.8, // Balanced variation with better instruction adherence
               maxOutputTokens: attemptMaxOutputTokens,
               timeoutMs: timeoutMs,
-              maxRetries: 0,
+              maxRetries: 1,
               resolved: {
                 system: fallbackSystemPrompt,
                 featureId: "draft.generate.email",
@@ -1908,7 +1908,7 @@ Generate an appropriate email response following the guidelines and structure ar
                     interactionId,
                     `email_fallback_empty: attempt=${attempt}/${fallbackMaxAttempts} max_output_tokens=${attemptMaxOutputTokens}`
                   );
-                  console.error("[AI Drafts] Email single-step fallback exhausted attempts (empty output).", {
+                  console.warn("[AI Drafts] Email single-step fallback exhausted attempts (empty output).", {
                     leadId,
                     interactionId,
                     attempt,
@@ -1928,7 +1928,7 @@ Generate an appropriate email response following the guidelines and structure ar
                 continue;
               }
 
-              console.error(`[AI Drafts] Email single-step fallback failed (attempt ${attempt}):`, fallbackResult.error.message);
+              console.warn(`[AI Drafts] Email single-step fallback failed (attempt ${attempt}):`, fallbackResult.error.message);
               break;
             }
 
@@ -2063,7 +2063,7 @@ Generate an appropriate ${channel} response following the guidelines above.
             ];
 
 	      const primaryModel = "gpt-5-mini";
-	      const reasoningEffort = "medium" as const;
+	      const reasoningEffort = "low" as const;
 
 	      const primaryBudgetMin = 320 * tokenBudgetMultiplier;
 	      const primaryBudgetMax = 1600 * tokenBudgetMultiplier;
@@ -2080,6 +2080,13 @@ Generate an appropriate ${channel} response following the guidelines above.
       });
 
       const promptKeyForTelemetry = (promptTemplate?.key || promptKey) + (overrideVersion ? `.${overrideVersion}` : "");
+      const base = Math.max(800, budget.maxOutputTokens);
+      const primaryAttempts = [
+        Math.min(maxOutputTokensCap, base),
+        Math.min(maxOutputTokensCap, Math.max(base + 1500, Math.floor(base * 2))),
+        Math.min(maxOutputTokensCap, Math.max(base + 3500, Math.floor(base * 3))),
+      ];
+
       const primaryResult = await runTextPrompt({
         pattern: "text",
         clientId: lead.clientId,
@@ -2088,10 +2095,11 @@ Generate an appropriate ${channel} response following the guidelines above.
         promptKey: promptTemplate?.key || promptKey,
         model: primaryModel,
         reasoningEffort,
+        retryReasoningEffort: "minimal",
         systemFallback: instructions,
         input: inputMessages,
         verbosity: "low",
-        maxOutputTokens: budget.maxOutputTokens,
+        attempts: primaryAttempts,
         timeoutMs: timeoutMs,
         maxRetries: 0,
         resolved: {
@@ -2103,66 +2111,7 @@ Generate an appropriate ${channel} response following the guidelines above.
 
       if (primaryResult.success) {
         draftContent = primaryResult.data.trim() || null;
-      } else {
-        console.error("[AI Drafts] Primary SMS/LinkedIn generation failed:", primaryResult.error.message);
       }
-
-	      // If OpenAI reports we hit max_output_tokens, do NOT persist partial output (it can truncate URLs).
-	      // Retry with a higher output budget.
-	      if (
-          !draftContent &&
-          !primaryResult.success &&
-          primaryResult.error.category === "incomplete_output" &&
-          primaryResult.error.message.includes("max_output_tokens")
-        ) {
-	        console.warn(
-	          `[AI Drafts] ${channel} draft hit max_output_tokens; retrying with more headroom (may have run out during reasoning if output is empty)`
-	        );
-	        draftContent = null;
-
-	        const base = Math.max(800, budget.maxOutputTokens);
-	        const retryBudgets = [
-	          Math.min(maxOutputTokensCap, Math.max(base + 1500, Math.floor(base * 2))),
-	          Math.min(maxOutputTokensCap, Math.max(base + 3500, Math.floor(base * 3))),
-	        ];
-
-	        for (let attempt = 1; attempt <= retryBudgets.length; attempt++) {
-	          const retryMaxOutputTokens = retryBudgets[attempt - 1];
-            const retryPromptKeyForTelemetry = `${promptKeyForTelemetry}.retry_more_tokens${attempt}`;
-            const retryResult = await runTextPrompt({
-              pattern: "text",
-              clientId: lead.clientId,
-              leadId,
-              featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-              promptKey: promptTemplate?.key || promptKey,
-              model: primaryModel,
-              reasoningEffort: "low",
-              systemFallback: instructions,
-              input: inputMessages,
-              verbosity: "low",
-              maxOutputTokens: retryMaxOutputTokens,
-              timeoutMs: timeoutMs,
-              maxRetries: 0,
-              resolved: {
-                system: instructions,
-                featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
-                promptKeyForTelemetry: retryPromptKeyForTelemetry,
-              },
-            });
-
-            if (!retryResult.success) {
-              console.error(
-                `[AI Drafts] Retry after max_output_tokens failed (attempt ${attempt}):`,
-                retryResult.error.message
-              );
-              continue;
-            }
-
-            draftContent = retryResult.data.trim() || null;
-            if (!draftContent) continue;
-            break;
-	        }
-	      }
 
       // Fallback: same model, spend more tokens
 	      if (!draftContent) {
@@ -2189,10 +2138,17 @@ Generate an appropriate ${channel} response following the guidelines above.
             promptKey: promptTemplate?.key || promptKey,
             model: primaryModel,
             reasoningEffort,
+            retryReasoningEffort: "minimal",
             systemFallback: instructions,
             input: inputMessages,
             verbosity: "low",
-            maxOutputTokens: fallbackBudget.maxOutputTokens,
+            attempts: [
+              Math.min(maxOutputTokensCap, Math.max(800, fallbackBudget.maxOutputTokens)),
+              Math.min(
+                maxOutputTokensCap,
+                Math.max(Math.max(800, fallbackBudget.maxOutputTokens) + 1500, Math.floor(Math.max(800, fallbackBudget.maxOutputTokens) * 2))
+              ),
+            ],
             timeoutMs: timeoutMs,
             maxRetries: 0,
             resolved: {
@@ -2203,7 +2159,7 @@ Generate an appropriate ${channel} response following the guidelines above.
           });
 
           if (!fallbackResult.success) {
-            console.error("[AI Drafts] SMS/LinkedIn fallback failed:", fallbackResult.error.message);
+            console.warn(`[AI Drafts] ${channel} generation failed after retries:`, fallbackResult.error.message);
           } else {
             const fallbackText = fallbackResult.data.trim() || null;
             if (fallbackText) {
@@ -2214,7 +2170,7 @@ Generate an appropriate ${channel} response following the guidelines above.
     }
 
     if (!draftContent) {
-      console.error("[AI Drafts] OpenAI draft generation failed; using deterministic fallback draft.", {
+      console.warn("[AI Drafts] OpenAI draft generation failed; using deterministic fallback draft.", {
         leadId,
         channel,
         sentimentTag,

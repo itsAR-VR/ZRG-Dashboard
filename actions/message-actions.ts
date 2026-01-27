@@ -10,7 +10,6 @@ import { ensureGhlContactIdForLead, resolveGhlContactIdForLead } from "@/lib/ghl
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
 import { sendSmsSystem } from "@/lib/system-sender";
-import { toGhlPhoneBestEffort } from "@/lib/phone-utils";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { syncEmailConversationHistorySystem, syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { getAccessibleClientIdsForUser, requireAuthUser, requireClientAdminAccess } from "@/lib/workspace-access";
