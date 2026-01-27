@@ -126,6 +126,58 @@ function buildAvailabilitySentence(labels: string[]): string | null {
   return `does ${cleaned[0]} or ${cleaned[1]} work for you?`;
 }
 
+export async function previewEmailBisonAvailabilitySlotSentence(opts: {
+  clientId: string;
+  refreshIfStale?: boolean;
+}): Promise<{
+  variableName: string;
+  sentence: string | null;
+  slotUtcIso: string[];
+  slotLabels: string[];
+  timeZone: string;
+}> {
+  const now = new Date();
+  const settings = await prisma.workspaceSettings.findUnique({
+    where: { clientId: opts.clientId },
+    select: { timezone: true },
+  });
+  const timeZone = settings?.timezone || "UTC";
+
+  const availability = await getWorkspaceAvailabilitySlotsUtc(opts.clientId, { refreshIfStale: opts.refreshIfStale ?? false });
+  const slotsUtc = availability.slotsUtc;
+  if (slotsUtc.length === 0) {
+    return {
+      variableName: AVAILABILITY_SLOT_CUSTOM_VARIABLE_NAME,
+      sentence: null,
+      slotUtcIso: [],
+      slotLabels: [],
+      timeZone,
+    };
+  }
+
+  const rangeEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const offerCounts = await getWorkspaceSlotOfferCountsForRange(opts.clientId, now, rangeEnd).catch(() => new Map<string, number>());
+  const selectedUtcIso = selectDistributedAvailabilitySlots({
+    slotsUtcIso: slotsUtc,
+    offeredCountBySlotUtcIso: offerCounts,
+    timeZone,
+    now,
+  });
+
+  const slotLabels = selectedUtcIso
+    .map((iso) => formatAvailabilityOptionLabel(iso, timeZone))
+    .filter((label): label is string => Boolean(label));
+  const sentence = buildAvailabilitySentence(slotLabels);
+
+  return {
+    variableName: AVAILABILITY_SLOT_CUSTOM_VARIABLE_NAME,
+    sentence,
+    slotUtcIso: selectedUtcIso,
+    slotLabels,
+    timeZone,
+  };
+}
+
 function upsertCustomVariable(
   existing: EmailBisonCustomVariable[] | undefined,
   update: EmailBisonCustomVariable

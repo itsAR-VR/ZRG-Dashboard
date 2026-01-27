@@ -33,6 +33,7 @@ next-env.d.ts
 ZRG Dashboard Logs*.json
 logs_result.csv
 logs_result.json
+rollback-sequence-messaging-*.json
 .env*.local
 .rerun-sentiment-neutral-or-new.state.json
 .rerun-sentiment-neutral-or-new.state.json.bak.*

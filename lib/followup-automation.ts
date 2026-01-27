@@ -1,6 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { isMeetingBooked } from "@/lib/meeting-booking-provider";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
+import { computeStepDeltaMs, computeStepOffsetMs } from "@/lib/followup-schedule";
+
+// =============================================================================
+// Constants
+// =============================================================================
 
 const MEETING_REQUESTED_SEQUENCE_NAME = "Meeting Requested Day 1/2/5/7";
 const POST_BOOKING_SEQUENCE_NAME = "Post-Booking Qualification";
@@ -26,7 +31,7 @@ async function resetActiveFollowUpInstanceScheduleOnOutboundTouch(params: {
   const nextStep = await prisma.followUpStep.findFirst({
     where: { sequenceId, stepOrder: { gt: currentStep } },
     orderBy: { stepOrder: "asc" },
-    select: { dayOffset: true },
+    select: { dayOffset: true, minuteOffset: true },
   });
 
   // Sequence complete.
@@ -36,13 +41,13 @@ async function resetActiveFollowUpInstanceScheduleOnOutboundTouch(params: {
     currentStep > 0
       ? await prisma.followUpStep.findUnique({
           where: { sequenceId_stepOrder: { sequenceId, stepOrder: currentStep } },
-          select: { dayOffset: true },
+          select: { dayOffset: true, minuteOffset: true },
         })
       : null;
 
-  const currentOffset = currentStepMeta?.dayOffset ?? 0;
-  const dayDiff = Math.max(0, nextStep.dayOffset - currentOffset);
-  const candidateDue = new Date(touchedAt.getTime() + dayDiff * 24 * 60 * 60 * 1000);
+  const currentStepTiming = currentStepMeta ?? { dayOffset: 0, minuteOffset: 0 };
+  const deltaMs = computeStepDeltaMs(currentStepTiming, nextStep);
+  const candidateDue = new Date(touchedAt.getTime() + deltaMs);
 
   // Never pull the next step earlier.
   if (existingNextStepDue && existingNextStepDue > candidateDue) {
@@ -87,7 +92,7 @@ async function startSequenceInstance(leadId: string, sequenceId: string): Promis
 
   const firstStep = sequence.steps[0];
   const nextStepDue = firstStep
-    ? new Date(Date.now() + firstStep.dayOffset * 24 * 60 * 60 * 1000)
+    ? new Date(Date.now() + computeStepOffsetMs(firstStep))
     : null;
 
   await prisma.followUpInstance.upsert({
@@ -309,7 +314,7 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
       const nextStep = await prisma.followUpStep.findFirst({
         where: { sequenceId: instance.sequenceId, stepOrder: { gt: instance.currentStep } },
         orderBy: { stepOrder: "asc" },
-        select: { dayOffset: true },
+        select: { dayOffset: true, minuteOffset: true },
       });
 
       // If the sequence is already complete, mark it completed so a fresh instance can be started on this outbound.
@@ -330,14 +335,14 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
         instance.currentStep > 0
           ? await prisma.followUpStep.findUnique({
               where: { sequenceId_stepOrder: { sequenceId: instance.sequenceId, stepOrder: instance.currentStep } },
-              select: { dayOffset: true },
+              select: { dayOffset: true, minuteOffset: true },
             })
           : null;
 
       // When resuming, schedule relative to this outbound touch while preserving the spacing between steps.
-      const currentOffset = currentStepMeta?.dayOffset ?? 0;
-      const dayDiff = Math.max(0, nextStep.dayOffset - currentOffset);
-      const nextStepDue = new Date(startAt.getTime() + dayDiff * 24 * 60 * 60 * 1000);
+      const currentStepTiming = currentStepMeta ?? { dayOffset: 0, minuteOffset: 0 };
+      const deltaMs = computeStepDeltaMs(currentStepTiming, nextStep);
+      const nextStepDue = new Date(startAt.getTime() + deltaMs);
       await prisma.followUpInstance.update({
         where: { id: instance.id },
         data: {
@@ -396,12 +401,12 @@ export async function autoStartNoResponseSequenceOnOutbound(opts: {
   const firstStep = await prisma.followUpStep.findFirst({
     where: { sequenceId: sequence.id },
     orderBy: { stepOrder: "asc" },
-    select: { dayOffset: true },
+    select: { dayOffset: true, minuteOffset: true },
   });
 
   const startAt = opts.outboundAt || new Date();
   const nextStepDue = firstStep
-    ? new Date(startAt.getTime() + firstStep.dayOffset * 24 * 60 * 60 * 1000)
+    ? new Date(startAt.getTime() + computeStepOffsetMs(firstStep))
     : null;
 
   await prisma.followUpInstance.create({

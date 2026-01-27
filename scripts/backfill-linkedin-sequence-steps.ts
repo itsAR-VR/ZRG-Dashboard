@@ -27,6 +27,7 @@ type StepCondition = { type: "phone_provided" | "linkedin_connected" | "no_respo
 
 type NewStep = {
   dayOffset: number;
+  minuteOffset?: number;
   channel: "linkedin";
   messageTemplate: string;
   subject: null;
@@ -45,7 +46,7 @@ function getArg(flag: string): string | null {
   return process.argv[idx + 1] || null;
 }
 
-function sortStepsForScheduling<T extends { dayOffset: number; channel: string }>(steps: T[]): T[] {
+function sortStepsForScheduling<T extends { dayOffset: number; minuteOffset?: number; channel: string }>(steps: T[]): T[] {
   const priority: Record<string, number> = {
     email: 1,
     sms: 2,
@@ -55,34 +56,21 @@ function sortStepsForScheduling<T extends { dayOffset: number; channel: string }
   return [...steps].sort((a, b) => {
     const dayDiff = a.dayOffset - b.dayOffset;
     if (dayDiff !== 0) return dayDiff;
+    const minDiff = (a.minuteOffset ?? 0) - (b.minuteOffset ?? 0);
+    if (minDiff !== 0) return minDiff;
     return (priority[a.channel] ?? 999) - (priority[b.channel] ?? 999);
   });
 }
 
 function defaultNoResponseLinkedInSteps(): NewStep[] {
+  // Per canonical doc: Day 2 LinkedIn follow-up only if connected
+  // "Check to see whether they have connected on LinkedIn yet - follow up on there if so"
   return [
     {
       dayOffset: 2,
+      minuteOffset: 0,
       channel: "linkedin",
-      messageTemplate: `Hi {firstName} — quick follow-up about {result}. Happy to share details if you're still exploring.`,
-      subject: null,
-      condition: { type: "always" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
-    {
-      dayOffset: 5,
-      channel: "linkedin",
-      messageTemplate: `Hey {firstName} — circling back. If helpful, I have {availability}. Or grab a time here: {calendarLink}`,
-      subject: null,
-      condition: { type: "linkedin_connected" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
-    {
-      dayOffset: 7,
-      channel: "linkedin",
-      messageTemplate: `Last touch, {firstName} — should I close the loop on this, or do you still want to chat about {result}?`,
+      messageTemplate: `Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?`,
       subject: null,
       condition: { type: "linkedin_connected" },
       requiresApproval: false,
@@ -92,11 +80,14 @@ function defaultNoResponseLinkedInSteps(): NewStep[] {
 }
 
 function defaultMeetingRequestedLinkedInSteps(): NewStep[] {
+  // Per canonical doc: Day 1 LinkedIn connection request (1 hour after email)
+  // "Automated trigger a linkedin connection (on Unipile, 1 hour delay)"
   return [
     {
       dayOffset: 1,
+      minuteOffset: 60, // 1 hour after the day 0 email
       channel: "linkedin",
-      messageTemplate: `Hi {firstName} — thanks for reaching out. Happy to connect and share details about {result}.`,
+      messageTemplate: `Hi {FIRST_NAME}, just wanted to connect on here too as well as over email`,
       subject: null,
       condition: { type: "always" },
       requiresApproval: false,
@@ -104,8 +95,9 @@ function defaultMeetingRequestedLinkedInSteps(): NewStep[] {
     },
     {
       dayOffset: 2,
+      minuteOffset: 0,
       channel: "linkedin",
-      messageTemplate: `Thanks for connecting, {firstName}. If you’d like, here’s my calendar to grab a quick call: {calendarLink}`,
+      messageTemplate: `Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?`,
       subject: null,
       condition: { type: "linkedin_connected" },
       requiresApproval: false,
@@ -181,6 +173,7 @@ async function main() {
             id: s.id,
             oldStepOrder: s.stepOrder,
             dayOffset: s.dayOffset,
+            minuteOffset: s.minuteOffset ?? 0,
             channel: s.channel,
             messageTemplate: s.messageTemplate,
             subject: s.subject,
@@ -191,6 +184,7 @@ async function main() {
           ...toCreate.map((s) => ({
             kind: "new" as const,
             dayOffset: s.dayOffset,
+            minuteOffset: s.minuteOffset ?? 0,
             channel: s.channel,
             messageTemplate: s.messageTemplate,
             subject: s.subject,
@@ -222,17 +216,19 @@ async function main() {
 
         const createdIds: string[] = [];
         for (let i = 0; i < createdInDesired.length; i++) {
+          const step = createdInDesired[i]!;
           const created = await tx.followUpStep.create({
             data: {
               sequenceId: sequence.id,
               stepOrder: 2000 + i,
-              dayOffset: createdInDesired[i]!.dayOffset,
-              channel: createdInDesired[i]!.channel,
-              messageTemplate: createdInDesired[i]!.messageTemplate,
-              subject: createdInDesired[i]!.subject,
-              condition: createdInDesired[i]!.condition,
-              requiresApproval: createdInDesired[i]!.requiresApproval,
-              fallbackStepId: createdInDesired[i]!.fallbackStepId,
+              dayOffset: step.dayOffset,
+              minuteOffset: step.minuteOffset ?? 0,
+              channel: step.channel,
+              messageTemplate: step.messageTemplate,
+              subject: step.subject,
+              condition: step.condition,
+              requiresApproval: step.requiresApproval,
+              fallbackStepId: step.fallbackStepId,
             },
             select: { id: true },
           });

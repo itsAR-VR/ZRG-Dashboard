@@ -998,7 +998,8 @@ model FollowUpStep {
   sequenceId       String
   sequence         FollowUpSequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
   stepOrder        Int               // Order within the sequence (1, 2, 3...)
-  dayOffset        Int               // Days after sequence start (0 = same day, 2 = Day 2, etc.)
+  dayOffset        Int               // Day number in the sequence (1 = Day 1, 2 = Day 2, etc.). Backward compatible: 0 treated as Day 1.
+  minuteOffset     Int      @default(0) // Minutes after dayOffset boundary (e.g., 2 = +2 min, 60 = +1 hour)
   channel          String            // 'email' | 'sms' | 'linkedin' | 'ai_voice'
   messageTemplate  String?  @db.Text // Template with {variables} like {firstName}, {company}
   subject          String?           // For email subject lines

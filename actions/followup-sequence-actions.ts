@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
 import { ensureDefaultSequencesIncludeLinkedInStepsForClient } from "@/lib/followup-sequence-linkedin";
+import { computeStepDeltaMs, computeStepOffsetMs } from "@/lib/followup-schedule";
 
 async function requireFollowUpInstanceAccess(instanceId: string): Promise<void> {
   const scope = await resolveClientScope(null);
@@ -23,6 +24,7 @@ export interface FollowUpStepData {
   id?: string;
   stepOrder: number;
   dayOffset: number;
+  minuteOffset?: number; // Minutes after dayOffset boundary (e.g., 2 = +2 min, 60 = +1 hour)
   channel: "email" | "sms" | "linkedin" | "ai_voice";
   messageTemplate: string | null;
   subject: string | null;
@@ -97,6 +99,7 @@ export async function getFollowUpSequences(
         id: step.id,
         stepOrder: step.stepOrder,
         dayOffset: step.dayOffset,
+        minuteOffset: step.minuteOffset,
         channel: step.channel as FollowUpStepData["channel"],
         messageTemplate: step.messageTemplate,
         subject: step.subject,
@@ -147,6 +150,7 @@ export async function getFollowUpSequence(
         id: step.id,
         stepOrder: step.stepOrder,
         dayOffset: step.dayOffset,
+        minuteOffset: step.minuteOffset,
         channel: step.channel as FollowUpStepData["channel"],
         messageTemplate: step.messageTemplate,
         subject: step.subject,
@@ -188,6 +192,7 @@ export async function createFollowUpSequence(data: {
           create: data.steps.map((step) => ({
             stepOrder: step.stepOrder,
             dayOffset: step.dayOffset,
+            minuteOffset: step.minuteOffset ?? 0,
             channel: step.channel,
             messageTemplate: step.messageTemplate,
             subject: step.subject,
@@ -247,6 +252,7 @@ export async function updateFollowUpSequence(
             create: data.steps.map((step) => ({
               stepOrder: step.stepOrder,
               dayOffset: step.dayOffset,
+              minuteOffset: step.minuteOffset ?? 0,
               channel: step.channel,
               messageTemplate: step.messageTemplate,
               subject: step.subject,
@@ -377,7 +383,7 @@ export async function startFollowUpSequence(
     // Calculate first step due date
     const firstStep = sequence.steps[0];
     let nextStepDue = firstStep
-      ? new Date(Date.now() + firstStep.dayOffset * 24 * 60 * 60 * 1000)
+      ? new Date(Date.now() + computeStepOffsetMs(firstStep))
       : null;
 
     // Manual starts are allowed while paused, but the first execution should not occur until after the pause.
@@ -480,13 +486,12 @@ export async function resumeFollowUpInstance(
       return { success: false, error: "Instance not found" };
     }
 
-    // Calculate next step due date
+    // Resume with existing nextStepDue if it's still in the future; otherwise run ASAP.
     const nextStep = instance.sequence.steps.find(
       (s) => s.stepOrder > instance.currentStep
     );
-    const nextStepDue = nextStep
-      ? new Date(Date.now() + nextStep.dayOffset * 24 * 60 * 60 * 1000)
-      : null;
+    const now = new Date();
+    const nextStepDue = nextStep ? (instance.nextStepDue && instance.nextStepDue > now ? instance.nextStepDue : now) : null;
 
     await prisma.followUpInstance.update({
       where: { id: instanceId },
@@ -689,6 +694,7 @@ export async function getDueFollowUpInstances(): Promise<{
             id: nextStep.id,
             stepOrder: nextStep.stepOrder,
             dayOffset: nextStep.dayOffset,
+            minuteOffset: nextStep.minuteOffset,
             channel: nextStep.channel as FollowUpStepData["channel"],
             messageTemplate: nextStep.messageTemplate,
             subject: nextStep.subject,
@@ -756,9 +762,10 @@ export async function advanceFollowUpInstance(
       return { success: true, completed: true };
     }
 
-    // Calculate next step due date based on day offset difference
-    const dayDiff = nextStep.dayOffset - (currentStep?.dayOffset || 0);
-    const nextStepDue = new Date(Date.now() + dayDiff * 24 * 60 * 60 * 1000);
+    const currentTiming = { dayOffset: currentStep?.dayOffset ?? 0, minuteOffset: currentStep?.minuteOffset ?? 0 };
+    const nextTiming = { dayOffset: nextStep.dayOffset, minuteOffset: nextStep.minuteOffset ?? 0 };
+    const deltaMs = computeStepDeltaMs(currentTiming, nextTiming);
+    const nextStepDue = new Date(Date.now() + deltaMs);
 
     await prisma.followUpInstance.update({
       where: { id: instanceId },
@@ -810,34 +817,14 @@ async function isLinkedInConfigured(clientId: string): Promise<boolean> {
 
 function defaultNoResponseLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
   return [
-    // DAY 2 - LinkedIn connection request (note)
+    // DAY 2 - LinkedIn follow-up (only if connected)
+    // Per canonical doc: "Check to see whether they have connected on LinkedIn yet - follow up on there if so"
     {
       stepOrder: 1, // temporary; will be renumbered
       dayOffset: 2,
+      minuteOffset: 0,
       channel: "linkedin",
-      messageTemplate: `Hi {firstName}, quick follow-up about {result}. Happy to share details if you're still exploring.`,
-      subject: null,
-      condition: { type: "always" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
-    // DAY 5 - LinkedIn DM (only once connected)
-    {
-      stepOrder: 1, // temporary; will be renumbered
-      dayOffset: 5,
-      channel: "linkedin",
-      messageTemplate: `Hey {firstName}, circling back. If helpful, I have {availability}. Or grab a time here: {calendarLink}`,
-      subject: null,
-      condition: { type: "linkedin_connected" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
-    // DAY 7 - Final LinkedIn DM (only once connected)
-    {
-      stepOrder: 1, // temporary; will be renumbered
-      dayOffset: 7,
-      channel: "linkedin",
-      messageTemplate: `Last touch, {firstName}, should I close the loop on this, or do you still want to chat about {result}?`,
+      messageTemplate: `Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?`,
       subject: null,
       condition: { type: "linkedin_connected" },
       requiresApproval: false,
@@ -848,23 +835,26 @@ function defaultNoResponseLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
 
 function defaultMeetingRequestedLinkedInSteps(): Array<Omit<FollowUpStepData, "id">> {
   return [
-    // DAY 1 - LinkedIn connection request (note)
+    // DAY 1 - LinkedIn connection request (1 hour after email)
+    // Per canonical doc: "Automated trigger a linkedin connection (on Unipile, 1 hour delay)"
     {
       stepOrder: 1, // temporary; will be renumbered
       dayOffset: 1,
+      minuteOffset: 60, // 1 hour after the day 0 email
       channel: "linkedin",
-      messageTemplate: `Hi {firstName}, thanks for reaching out. Happy to connect and share details about {result}.`,
+      messageTemplate: `Hi {FIRST_NAME}, just wanted to connect on here too as well as over email`,
       subject: null,
       condition: { type: "always" },
       requiresApproval: false,
       fallbackStepId: null,
     },
-    // DAY 2 - LinkedIn DM after connection accepted
+    // DAY 2 - Follow up on LinkedIn if connected
     {
       stepOrder: 1, // temporary; will be renumbered
       dayOffset: 2,
+      minuteOffset: 0,
       channel: "linkedin",
-      messageTemplate: `Thanks for connecting, {firstName}. If you’d like, here’s my calendar to grab a quick call: {calendarLink}`,
+      messageTemplate: `Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?`,
       subject: null,
       condition: { type: "linkedin_connected" },
       requiresApproval: false,
@@ -873,7 +863,7 @@ function defaultMeetingRequestedLinkedInSteps(): Array<Omit<FollowUpStepData, "i
   ];
 }
 
-function sortStepsForScheduling<T extends { dayOffset: number; channel: string }>(steps: T[]): T[] {
+function sortStepsForScheduling<T extends { dayOffset: number; minuteOffset?: number; channel: string }>(steps: T[]): T[] {
   const priority: Record<string, number> = {
     email: 1,
     sms: 2,
@@ -883,6 +873,8 @@ function sortStepsForScheduling<T extends { dayOffset: number; channel: string }
   return [...steps].sort((a, b) => {
     const dayDiff = a.dayOffset - b.dayOffset;
     if (dayDiff !== 0) return dayDiff;
+    const minDiff = (a.minuteOffset ?? 0) - (b.minuteOffset ?? 0);
+    if (minDiff !== 0) return minDiff;
     return (priority[a.channel] ?? 999) - (priority[b.channel] ?? 999);
   });
 }
@@ -897,17 +889,13 @@ export async function createDefaultSequence(
   await requireClientAdminAccess(clientId);
   const noResponseSteps: Omit<FollowUpStepData, "id">[] = [
     // DAY 2 - Ask for phone number
+    // Per canonical doc: "Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?"
     {
       stepOrder: 1,
       dayOffset: 2,
+      minuteOffset: 0,
       channel: "email",
-      messageTemplate: `Hi {firstName},
-
-Could I get the best number to reach you on so we can give you a call?
-
-Looking forward to connecting.
-
-{senderName}`,
+      messageTemplate: `Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?`,
       subject: "Quick question",
       condition: { type: "always" },
       requiresApproval: false,
@@ -917,8 +905,9 @@ Looking forward to connecting.
     {
       stepOrder: 2,
       dayOffset: 2,
+      minuteOffset: 0,
       channel: "sms",
-      messageTemplate: `Hey {firstName}, when is a good time to give you a call?`,
+      messageTemplate: `Hey {FIRST_NAME}, when is a good time to give you a call?`,
       subject: null,
       condition: { type: "phone_provided" },
       requiresApproval: false,
@@ -928,14 +917,13 @@ Looking forward to connecting.
     {
       stepOrder: 3,
       dayOffset: 5,
+      minuteOffset: 0,
       channel: "email",
-      messageTemplate: `Hi {firstName}, just had time to get back to you.
+      messageTemplate: `Hi {FIRST_NAME}, just had time to get back to you.
 
-I'm currently reviewing the slots I have left for new clients and just wanted to give you a fair shot in case you were still interested in {result}.
+I’m currently reviewing the slots I have left for new clients and just wanted to give you a fair shot in case you were still interested in {achieving result}. 
 
-No problem if not but just let me know. I have {availability} and if it's easier here's my calendar link for you to choose a time that works for you: {calendarLink}
-
-{senderName}`,
+No problem if not but just let me know. I have {x day x time} and {y day y time} and if it’s easier here’s my calendar link for you to choose a time that works for you: {link}`,
       subject: "Re: Quick question",
       condition: { type: "always" },
       requiresApproval: false,
@@ -945,14 +933,15 @@ No problem if not but just let me know. I have {availability} and if it's easier
     {
       stepOrder: 4,
       dayOffset: 5,
+      minuteOffset: 0,
       channel: "sms",
-      messageTemplate: `Hey {firstName}, {senderName} from {companyName} again
+      messageTemplate: `Hey {FIRST_NAME} - {name} from {company} again
 
-Just sent over an email about getting {result}
+Just sent over an email about getting {result} 
 
-I have {availability} for you
+I have {x day x time} and {y day y time} for you
 
-Here's the link to choose a time to talk if those don't work: {calendarLink}`,
+Here’s the link to choose a time to talk if those don’t work  {link}`,
       subject: null,
       condition: { type: "phone_provided" },
       requiresApproval: false,
@@ -962,12 +951,11 @@ Here's the link to choose a time to talk if those don't work: {calendarLink}`,
     {
       stepOrder: 5,
       dayOffset: 7,
+      minuteOffset: 0,
       channel: "email",
-      messageTemplate: `Hey {firstName}, tried to reach you a few times but didn't hear back...
+      messageTemplate: `Hey {{contact.first_name}}, tried to reach you a few times but didn’t hear back….
 
-Where should we go from here?
-
-{senderName}`,
+Where should we go from here?`,
       subject: "Re: Quick question",
       condition: { type: "always" },
       requiresApproval: false,
@@ -977,8 +965,9 @@ Where should we go from here?
     {
       stepOrder: 6,
       dayOffset: 7,
+      minuteOffset: 0,
       channel: "sms",
-      messageTemplate: `Hey {firstName}, tried to reach you a few times but didn't hear back...
+      messageTemplate: `Hey {{contact.first_name}}, tried to reach you a few times but didn’t hear back….
 
 Where should we go from here?`,
       subject: null,
@@ -1016,57 +1005,111 @@ export async function createMeetingRequestedSequence(
   await requireClientAdminAccess(clientId);
   const hasLinkedIn = await isLinkedInConfigured(clientId);
   const steps: Omit<FollowUpStepData, "id">[] = [
-    // DAY 1 - Email: confirm and offer calendar
+    // DAY 1 - Email (meeting suggestion CTA)
     {
       stepOrder: 1,
       dayOffset: 1,
+      minuteOffset: 0,
       channel: "email",
-      messageTemplate: `Hi {firstName},
-
-Great, happy to set up a quick call to talk through {result}.
-
-I have {availability}. If it’s easier, you can grab a time here: {calendarLink}
-
-{senderName}`,
+      messageTemplate: `Sounds good, does {time 1 day 1} or {time 2 day 2} work for you?`,
       subject: "Scheduling a quick call",
       condition: { type: "always" },
       requiresApproval: false,
       fallbackStepId: null,
     },
-    // DAY 2 - SMS nudge (only if phone provided)
+    // DAY 1 - SMS (2 minute delay)
     {
       stepOrder: 2,
-      dayOffset: 2,
+      dayOffset: 1,
+      minuteOffset: 2,
       channel: "sms",
-      messageTemplate: `Hey {firstName}, want to lock in a quick call about {result}? Here’s my calendar: {calendarLink}`,
+      messageTemplate: `Hi {FIRST_NAME}, it’s {name} from {company}, I just sent over an email but wanted to drop a text too incase it went to spam - here’s the link {link}`,
       subject: null,
       condition: { type: "phone_provided" },
       requiresApproval: false,
       fallbackStepId: null,
     },
-    // DAY 5 - Email reminder with availability
+    // DAY 2 - Email
     {
       stepOrder: 3,
-      dayOffset: 5,
+      dayOffset: 2,
+      minuteOffset: 0,
       channel: "email",
-      messageTemplate: `Hi {firstName},
-
-Just following up, still want to get a quick call scheduled?
-
-I have {availability} available. Calendar link here as well: {calendarLink}
-
-{senderName}`,
+      messageTemplate: `Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?`,
       subject: "Re: Scheduling a quick call",
       condition: { type: "always" },
       requiresApproval: false,
       fallbackStepId: null,
     },
-    // DAY 7 - Final SMS check-in (only if phone provided)
+    // DAY 2 - SMS (only if phone provided)
     {
       stepOrder: 4,
-      dayOffset: 7,
+      dayOffset: 2,
+      minuteOffset: 0,
       channel: "sms",
-      messageTemplate: `Hey {firstName}, should I close the loop on this, or do you still want to chat about {result}?`,
+      messageTemplate: `Hey {FIRST_NAME}, when is a good time to give you a call?`,
+      subject: null,
+      condition: { type: "phone_provided" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 5 - Email
+    {
+      stepOrder: 5,
+      dayOffset: 5,
+      minuteOffset: 0,
+      channel: "email",
+      messageTemplate: `Hi {FIRST_NAME}, just had time to get back to you.
+
+I’m currently reviewing the slots I have left for new clients and just wanted to give you a fair shot in case you were still interested in {achieving result}. 
+
+No problem if not but just let me know. I have {x day x time} and {y day y time} and if it’s easier here’s my calendar link for you to choose a time that works for you: {link}`,
+      subject: "Re: Scheduling a quick call",
+      condition: { type: "always" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 5 - SMS
+    {
+      stepOrder: 6,
+      dayOffset: 5,
+      minuteOffset: 0,
+      channel: "sms",
+      messageTemplate: `Hey {FIRST_NAME} - {name} from {company} again
+
+Just sent over an email about getting {result} 
+
+I have {x day x time} and {y day y time} for you
+
+Here’s the link to choose a time to talk if those don’t work  {link}`,
+      subject: null,
+      condition: { type: "phone_provided" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 7 - Email
+    {
+      stepOrder: 7,
+      dayOffset: 7,
+      minuteOffset: 0,
+      channel: "email",
+      messageTemplate: `Hey {{contact.first_name}}, tried to reach you a few times but didn’t hear back….
+
+Where should we go from here?`,
+      subject: "Re: Scheduling a quick call",
+      condition: { type: "always" },
+      requiresApproval: false,
+      fallbackStepId: null,
+    },
+    // DAY 7 - SMS (only if phone provided)
+    {
+      stepOrder: 8,
+      dayOffset: 7,
+      minuteOffset: 0,
+      channel: "sms",
+      messageTemplate: `Hey {{contact.first_name}}, tried to reach you a few times but didn’t hear back….
+
+Where should we go from here?`,
       subject: null,
       condition: { type: "phone_provided" },
       requiresApproval: false,
@@ -1121,17 +1164,15 @@ export async function createPostBookingSequence(
   await requireClientAdminAccess(clientId);
   const postBookingSteps: Omit<FollowUpStepData, "id">[] = [
     // DAY 0 - Booking confirmation + qualification questions
+    // Per canonical doc
     {
       stepOrder: 1,
       dayOffset: 0,
+      minuteOffset: 0,
       channel: "email",
-      messageTemplate: `Great, I've booked you in and you should get a reminder to your email.
+      messageTemplate: `Great I’ve booked you in and you should get a reminder to your email.
 
-Before the call would you be able to let me know {qualificationQuestion1} and {qualificationQuestion2} just so I'm able to prepare properly for the call.
-
-Looking forward to speaking with you!
-
-{senderName}`,
+Before the call would you be able to let me know {qualification question 1} and {qualification question 2} just so I’m able to prepare properly for the call.`,
       subject: "You're booked in!",
       condition: { type: "always" },
       requiresApproval: false,

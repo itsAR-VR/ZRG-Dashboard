@@ -9,6 +9,7 @@ type StepCondition = { type: "phone_provided" | "linkedin_connected" | "no_respo
 
 type NewLinkedInStep = {
   dayOffset: number;
+  minuteOffset?: number;
   channel: "linkedin";
   messageTemplate: string;
   subject: null;
@@ -17,7 +18,7 @@ type NewLinkedInStep = {
   fallbackStepId: null;
 };
 
-function sortStepsForScheduling<T extends { dayOffset: number; channel: string }>(steps: T[]): T[] {
+function sortStepsForScheduling<T extends { dayOffset: number; minuteOffset?: number; channel: string }>(steps: T[]): T[] {
   const priority: Record<string, number> = {
     email: 1,
     sms: 2,
@@ -27,34 +28,21 @@ function sortStepsForScheduling<T extends { dayOffset: number; channel: string }
   return [...steps].sort((a, b) => {
     const dayDiff = a.dayOffset - b.dayOffset;
     if (dayDiff !== 0) return dayDiff;
+    const minDiff = (a.minuteOffset ?? 0) - (b.minuteOffset ?? 0);
+    if (minDiff !== 0) return minDiff;
     return (priority[a.channel] ?? 999) - (priority[b.channel] ?? 999);
   });
 }
 
 function defaultNoResponseLinkedInSteps(): NewLinkedInStep[] {
   return [
+    // DAY 2 - LinkedIn follow-up (only if connected)
+    // Per canonical doc: "Check to see whether they have connected on LinkedIn yet - follow up on there if so"
     {
       dayOffset: 2,
+      minuteOffset: 0,
       channel: "linkedin",
-      messageTemplate: `Hi {firstName} — quick follow-up about {result}. Happy to share details if you're still exploring.`,
-      subject: null,
-      condition: { type: "always" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
-    {
-      dayOffset: 5,
-      channel: "linkedin",
-      messageTemplate: `Hey {firstName} — circling back. If helpful, I have {availability}. Or grab a time here: {calendarLink}`,
-      subject: null,
-      condition: { type: "linkedin_connected" },
-      requiresApproval: false,
-      fallbackStepId: null,
-    },
-    {
-      dayOffset: 7,
-      channel: "linkedin",
-      messageTemplate: `Last touch, {firstName} — should I close the loop on this, or do you still want to chat about {result}?`,
+      messageTemplate: `Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?`,
       subject: null,
       condition: { type: "linkedin_connected" },
       requiresApproval: false,
@@ -65,19 +53,24 @@ function defaultNoResponseLinkedInSteps(): NewLinkedInStep[] {
 
 function defaultMeetingRequestedLinkedInSteps(): NewLinkedInStep[] {
   return [
+    // DAY 1 - LinkedIn connection request (1 hour after email)
+    // Per canonical doc: "Automated trigger a linkedin connection (on Unipile, 1 hour delay)"
     {
       dayOffset: 1,
+      minuteOffset: 60, // 1 hour after the day 0 email
       channel: "linkedin",
-      messageTemplate: `Hi {firstName} — thanks for reaching out. Happy to connect and share details about {result}.`,
+      messageTemplate: `Hi {FIRST_NAME}, just wanted to connect on here too as well as over email`,
       subject: null,
       condition: { type: "always" },
       requiresApproval: false,
       fallbackStepId: null,
     },
+    // DAY 2 - Follow up on LinkedIn if connected
     {
       dayOffset: 2,
+      minuteOffset: 0,
       channel: "linkedin",
-      messageTemplate: `Thanks for connecting, {firstName}. If you’d like, here’s my calendar to grab a quick call: {calendarLink}`,
+      messageTemplate: `Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?`,
       subject: null,
       condition: { type: "linkedin_connected" },
       requiresApproval: false,
@@ -121,6 +114,7 @@ export async function ensureDefaultSequencesIncludeLinkedInStepsForClient(opts: 
           id: s.id,
           oldStepOrder: s.stepOrder,
           dayOffset: s.dayOffset,
+          minuteOffset: s.minuteOffset ?? 0,
           channel: s.channel,
           messageTemplate: s.messageTemplate,
           subject: s.subject,
@@ -131,6 +125,7 @@ export async function ensureDefaultSequencesIncludeLinkedInStepsForClient(opts: 
         ...toCreate.map((s) => ({
           kind: "new" as const,
           dayOffset: s.dayOffset,
+          minuteOffset: s.minuteOffset ?? 0,
           channel: s.channel,
           messageTemplate: s.messageTemplate,
           subject: s.subject,
@@ -167,6 +162,7 @@ export async function ensureDefaultSequencesIncludeLinkedInStepsForClient(opts: 
             sequenceId: sequence.id,
             stepOrder: 2000 + i,
             dayOffset: createdInDesired[i]!.dayOffset,
+            minuteOffset: createdInDesired[i]!.minuteOffset ?? 0,
             channel: createdInDesired[i]!.channel,
             messageTemplate: createdInDesired[i]!.messageTemplate,
             subject: createdInDesired[i]!.subject,

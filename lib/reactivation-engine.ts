@@ -10,6 +10,7 @@ import { emailBisonHtmlFromPlainText } from "@/lib/email-format";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { searchGHLContactsAdvanced } from "@/lib/ghl-api";
 import { pickReactivationAnchorFromReplies } from "@/lib/reactivation-anchor";
+import { computeStepOffsetMs } from "@/lib/followup-schedule";
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   for (const dateStr of dateStrs) {
@@ -689,7 +690,7 @@ async function startFollowUpSequenceInstance(leadId: string, sequenceId: string)
   if (!sequence?.isActive) return;
 
   const firstStep = sequence.steps[0];
-  const nextStepDue = firstStep ? new Date(Date.now() + firstStep.dayOffset * 24 * 60 * 60 * 1000) : null;
+  const nextStepDue = firstStep ? new Date(Date.now() + computeStepOffsetMs(firstStep)) : null;
 
   await prisma.followUpInstance.upsert({
     where: { leadId_sequenceId: { leadId, sequenceId } },

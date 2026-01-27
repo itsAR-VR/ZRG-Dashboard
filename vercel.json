@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/cron/followups",
-      "schedule": "*/10 * * * *"
+      "schedule": "* * * * *"
     },
     {
       "path": "/api/cron/reactivations",

@@ -11,6 +11,7 @@ import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
 import { selectDistributedAvailabilitySlots } from "@/lib/availability-distribution";
 import { getWorkspaceSlotOfferCountsForRange, incrementWorkspaceSlotOffersBatch } from "@/lib/slot-offer-ledger";
+import { computeStepDeltaMs } from "@/lib/followup-schedule";
 import {
   shouldAutoBook,
   bookMeetingForLead,
@@ -336,6 +337,13 @@ function parseQualificationQuestions(json: string | null): Array<{ id: string; q
  * Generate a follow-up message from template
  * Supports variables: {firstName}, {lastName}, {email}, {phone}, {availability},
  * {senderName}, {companyName}, {result}, {calendarLink}, {qualificationQuestion1}, {qualificationQuestion2}
+ *
+ * Canonical follow-up copy also uses aliases:
+ * - {FIRST_NAME}, {{contact.first_name}}
+ * - {name}, {company}, {link}
+ * - {achieving result}
+ * - {qualification question 1}, {qualification question 2}
+ * - Slot placeholders: {time 1 day 1}, {time 2 day 2}, {x day x time}, {y day y time}
  */
 export async function generateFollowUpMessage(
   step: FollowUpStepData,
@@ -353,12 +361,21 @@ export async function generateFollowUpMessage(
   const offeredAtIso = new Date().toISOString();
   const offeredAt = new Date(offeredAtIso);
 
-  const needsAvailability =
-    (step.messageTemplate || "").includes("{availability}") ||
-    (step.subject || "").includes("{availability}");
+  const availabilityTokens = [
+    "{availability}",
+    "{time 1 day 1}",
+    "{time 2 day 2}",
+    "{x day x time}",
+    "{y day y time}",
+  ];
+  const needsAvailability = availabilityTokens.some(
+    (token) => (step.messageTemplate || "").includes(token) || (step.subject || "").includes(token)
+  );
 
   let availabilityText = "";
   let offeredSlots: OfferedSlot[] = [];
+  let slotOption1 = "[time option 1]";
+  let slotOption2 = "[time option 2]";
 
   if (needsAvailability) {
     try {
@@ -408,6 +425,8 @@ export async function generateFollowUpMessage(
 
         if (formatted.length > 0) {
           availabilityText = formatted.map((s) => s.label).join(" or ");
+          slotOption1 = formatted[0]!.label;
+          slotOption2 = formatted[1]?.label ?? formatted[0]!.label;
           offeredSlots = formatted.map((s) => ({
             datetime: s.datetime,
             label: s.label,
@@ -416,14 +435,20 @@ export async function generateFollowUpMessage(
         } else {
           availabilityText = "a couple openings over the next few days";
           offeredSlots = [];
+          slotOption1 = "a couple openings over the next few days";
+          slotOption2 = "a couple openings over the next few days";
         }
       } else {
         availabilityText = "a couple openings over the next few days";
+        slotOption1 = "a couple openings over the next few days";
+        slotOption2 = "a couple openings over the next few days";
       }
     } catch (error) {
       console.error("[FollowUp] Failed to load availability:", error);
       availabilityText = "a couple openings over the next few days";
       offeredSlots = [];
+      slotOption1 = "a couple openings over the next few days";
+      slotOption2 = "a couple openings over the next few days";
     }
   }
 
@@ -434,19 +459,33 @@ export async function generateFollowUpMessage(
     return template
       // Lead variables
       .replace(/\{firstName\}/g, lead.firstName || "there")
+      .replace(/\{FIRST_NAME\}/g, lead.firstName || "there")
+      .replace(/\{FIRST\\_NAME\}/g, lead.firstName || "there")
+      .replace(/\{\{contact\.first_name\}\}/g, lead.firstName || "there")
+      .replace(/\{\{contact\.first\\_name\}\}/g, lead.firstName || "there")
       .replace(/\{lastName\}/g, lead.lastName || "")
       .replace(/\{email\}/g, lead.email || "")
       .replace(/\{phone\}/g, lead.phone || "")
       // Workspace/company variables
       .replace(/\{senderName\}/g, settings?.aiPersonaName || "")
+      .replace(/\{name\}/g, settings?.aiPersonaName || "")
       .replace(/\{companyName\}/g, settings?.companyName || "")
+      .replace(/\{company\}/g, settings?.companyName || "")
       .replace(/\{result\}/g, settings?.targetResult || "achieving your goals")
+      .replace(/\{achieving result\}/g, settings?.targetResult || "achieving your goals")
       // Calendar/availability variables
       .replace(/\{availability\}/g, availabilityText)
       .replace(/\{calendarLink\}/g, bookingLink || "[calendar link]")
+      .replace(/\{link\}/g, bookingLink || "[calendar link]")
+      .replace(/\{time 1 day 1\}/g, slotOption1)
+      .replace(/\{time 2 day 2\}/g, slotOption2)
+      .replace(/\{x day x time\}/g, slotOption1)
+      .replace(/\{y day y time\}/g, slotOption2)
       // Qualification questions
       .replace(/\{qualificationQuestion1\}/g, question1)
-      .replace(/\{qualificationQuestion2\}/g, question2);
+      .replace(/\{qualificationQuestion2\}/g, question2)
+      .replace(/\{qualification question 1\}/g, question1)
+      .replace(/\{qualification question 2\}/g, question2);
   };
 
   const content = replaceVariables(step.messageTemplate);
@@ -1429,8 +1468,8 @@ export async function processFollowUpsDue(): Promise<{
 
             if (nextNextStep) {
               // Calculate next due date
-              const dayDiff = nextNextStep.dayOffset - nextStep.dayOffset;
-              const nextDue = new Date(Date.now() + dayDiff * 24 * 60 * 60 * 1000);
+              const deltaMs = computeStepDeltaMs(nextStep, nextNextStep);
+              const nextDue = new Date(Date.now() + deltaMs);
 
               await prisma.followUpInstance.update({
                 where: { id: instance.id },
@@ -1463,8 +1502,8 @@ export async function processFollowUpsDue(): Promise<{
             );
 
             if (nextNextStep) {
-              const dayDiff = nextNextStep.dayOffset - nextStep.dayOffset;
-              const nextDue = new Date(Date.now() + dayDiff * 24 * 60 * 60 * 1000);
+              const deltaMs = computeStepDeltaMs(nextStep, nextNextStep);
+              const nextDue = new Date(Date.now() + deltaMs);
 
               await prisma.followUpInstance.update({
                 where: { id: instance.id },
@@ -1793,8 +1832,8 @@ export async function resumeAwaitingEnrichmentFollowUps(opts?: {
         const nextNextStep = instance.sequence.steps.find((s) => s.stepOrder > nextStep.stepOrder);
 
         if (nextNextStep) {
-          const dayDiff = nextNextStep.dayOffset - nextStep.dayOffset;
-          const nextDue = new Date(Date.now() + dayDiff * 24 * 60 * 60 * 1000);
+          const deltaMs = computeStepDeltaMs(nextStep, nextNextStep);
+          const nextDue = new Date(Date.now() + deltaMs);
           await prisma.followUpInstance.update({
             where: { id: instance.id },
             data: {
@@ -1890,8 +1929,8 @@ export async function resumeAwaitingEnrichmentFollowUpsForLead(
         const nextNextStep = instance.sequence.steps.find((s) => s.stepOrder > nextStep.stepOrder);
 
         if (nextNextStep) {
-          const dayDiff = nextNextStep.dayOffset - nextStep.dayOffset;
-          const nextDue = new Date(Date.now() + dayDiff * 24 * 60 * 60 * 1000);
+          const deltaMs = computeStepDeltaMs(nextStep, nextNextStep);
+          const nextDue = new Date(Date.now() + deltaMs);
           await prisma.followUpInstance.update({
             where: { id: instance.id },
             data: {
