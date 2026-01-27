@@ -255,12 +255,15 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [meetingBooking, setMeetingBooking] = useState({
     meetingBookingProvider: "ghl" as "ghl" | "calendly",
     ghlDefaultCalendarId: "",
+    ghlDirectBookCalendarId: "",
     ghlAssignedUserId: "",
     autoBookMeetings: false,
     meetingDurationMinutes: 30,
     meetingTitle: "Intro to {companyName}",
     calendlyEventTypeLink: "",
     calendlyEventTypeUri: "",
+    calendlyDirectBookEventTypeLink: "",
+    calendlyDirectBookEventTypeUri: "",
   })
   const [ghlCalendars, setGhlCalendars] = useState<GHLCalendar[]>([])
   const [ghlUsers, setGhlUsers] = useState<GHLUser[]>([])
@@ -568,12 +571,15 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         setMeetingBooking({
           meetingBookingProvider: result.data.meetingBookingProvider || "ghl",
           ghlDefaultCalendarId: result.data.ghlDefaultCalendarId || "",
+          ghlDirectBookCalendarId: result.data.ghlDirectBookCalendarId || "",
           ghlAssignedUserId: result.data.ghlAssignedUserId || "",
           autoBookMeetings: result.data.autoBookMeetings,
           meetingDurationMinutes: result.data.meetingDurationMinutes,
           meetingTitle: result.data.meetingTitle || "Intro to {companyName}",
           calendlyEventTypeLink: result.data.calendlyEventTypeLink || "",
           calendlyEventTypeUri: result.data.calendlyEventTypeUri || "",
+          calendlyDirectBookEventTypeLink: result.data.calendlyDirectBookEventTypeLink || "",
+          calendlyDirectBookEventTypeUri: result.data.calendlyDirectBookEventTypeUri || "",
         })
 
         setEmailBisonAvailabilitySlot({
@@ -1185,6 +1191,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       workEndTime: availability.endTime,
       // GHL Meeting Booking settings
       ghlDefaultCalendarId: meetingBooking.ghlDefaultCalendarId || null,
+      ghlDirectBookCalendarId: meetingBooking.ghlDirectBookCalendarId || null,
       ghlAssignedUserId: meetingBooking.ghlAssignedUserId || null,
       autoBookMeetings: meetingBooking.autoBookMeetings,
       meetingDurationMinutes: meetingBooking.meetingDurationMinutes,
@@ -1192,6 +1199,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       meetingBookingProvider: meetingBooking.meetingBookingProvider,
       calendlyEventTypeLink: toNullableText(meetingBooking.calendlyEventTypeLink),
       calendlyEventTypeUri: toNullableText(meetingBooking.calendlyEventTypeUri),
+      calendlyDirectBookEventTypeLink: toNullableText(meetingBooking.calendlyDirectBookEventTypeLink),
+      calendlyDirectBookEventTypeUri: toNullableText(meetingBooking.calendlyDirectBookEventTypeUri),
     }
 
     if (isWorkspaceAdmin) {
@@ -3128,6 +3137,33 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                           )}
                         </div>
 
+                        <div className="space-y-2">
+                          <Label>Direct Book Calendar (No Questions)</Label>
+                          <Select
+                            value={meetingBooking.ghlDirectBookCalendarId}
+                            onValueChange={(v) => {
+                              setMeetingBooking((prev) => ({ ...prev, ghlDirectBookCalendarId: v }))
+                              handleChange()
+                            }}
+                            disabled={ghlCalendars.length === 0}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Same as default" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="">Same as default</SelectItem>
+                              {ghlCalendars.map((cal) => (
+                                <SelectItem key={cal.id} value={cal.id}>
+                                  {cal.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            Used when the lead hasn’t answered qualification questions (optional).
+                          </p>
+                        </div>
+
                         {/* Assigned User */}
                         <div className="space-y-2">
                           <Label>Assigned Team Member</Label>
@@ -3310,7 +3346,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     </div>
 
                     <div className="space-y-2">
-                      <Label>Calendly Event Type Link</Label>
+                      <Label>Calendly Event Type Link (With Questions)</Label>
                       <Input
                         placeholder="https://calendly.com/yourname/intro-call"
                         value={meetingBooking.calendlyEventTypeLink}
@@ -3390,6 +3426,36 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       />
                       <p className="text-xs text-muted-foreground">
                         Optional. If provided, this is used directly for scheduling.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Calendly Event Type Link (Direct Book - No Questions)</Label>
+                      <Input
+                        placeholder="https://calendly.com/yourname/intro-call"
+                        value={meetingBooking.calendlyDirectBookEventTypeLink}
+                        onChange={(e) => {
+                          setMeetingBooking((prev) => ({ ...prev, calendlyDirectBookEventTypeLink: e.target.value }))
+                          handleChange()
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Used when the lead hasn’t answered qualification questions. Falls back to the “with questions” event type if it has no required questions.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Direct Book Event Type URI (advanced)</Label>
+                      <Input
+                        placeholder="https://api.calendly.com/event_types/..."
+                        value={meetingBooking.calendlyDirectBookEventTypeUri}
+                        onChange={(e) => {
+                          setMeetingBooking((prev) => ({ ...prev, calendlyDirectBookEventTypeUri: e.target.value }))
+                          handleChange()
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Optional. If provided, this is used directly for direct booking (no questions).
                       </p>
                     </div>
 

@@ -289,6 +289,7 @@ model WorkspaceSettings {
   emailBisonAvailabilitySlotPreferWithinDays  Int      @default(5)
   // GHL Meeting Booking Settings
   ghlDefaultCalendarId   String?              // Selected GHL calendar for booking appointments
+  ghlDirectBookCalendarId String?             // Optional: separate GHL calendar without qualification questions (Phase 62)
   ghlAssignedUserId      String?              // Default team member assigned to appointments
   autoBookMeetings       Boolean  @default(false)  // Workspace-level auto-book toggle
   meetingDurationMinutes Int      @default(30)     // Default meeting duration in minutes
@@ -296,6 +297,8 @@ model WorkspaceSettings {
   meetingBookingProvider MeetingBookingProvider @default(GHL)
   calendlyEventTypeLink  String?              // Public Calendly link for the event type (calendly.com/...)
   calendlyEventTypeUri   String?              // API URI for the event type (https://api.calendly.com/event_types/...)
+  calendlyDirectBookEventTypeLink String?      // Calendly event type link without qualification questions (Phase 62)
+  calendlyDirectBookEventTypeUri  String?      // API URI for the direct-book event type (Phase 62)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
   // Relations
@@ -388,6 +391,8 @@ model Lead {
   // Meeting booking settings
   autoBookMeetingsEnabled Boolean   @default(true)   // Lead-level auto-book toggle
   offeredSlots            String?   @db.Text         // JSON array of offered time slots
+  qualificationAnswers        Json?                  // Extracted qualification answers (Phase 62)
+  qualificationAnswersExtractedAt DateTime?           // When answers were last extracted (Phase 62)
   bookedSlot              String?                    // ISO datetime of booked slot (for filtering availability)
   ghlAppointmentId        String?                    // GHL appointment ID after booking
   calendlyInviteeUri          String? @unique        // Calendly invitee resource URI after booking

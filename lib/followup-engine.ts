@@ -16,6 +16,7 @@ import {
   shouldAutoBook,
   bookMeetingForLead,
   getOfferedSlots,
+  storeOfferedSlots,
   type OfferedSlot,
 } from "@/lib/booking";
 import { sendSlackNotification } from "@/lib/slack-notifications";
@@ -2219,35 +2220,16 @@ export async function processMessageForAutoBooking(
       return { booked: false };
     }
 
-    // Detect if the message indicates meeting acceptance
-    const isMeetingAccepted = await detectMeetingAcceptedIntent(messageBody, {
-      clientId: leadMeta.clientId,
-      leadId: leadMeta.id,
-    });
-    if (!isMeetingAccepted) {
-      return { booked: false };
-    }
-
     // Get offered slots for this lead
     const offeredSlots = await getOfferedSlots(leadId);
-    if (offeredSlots.length === 0) {
-      return { booked: false, error: "No offered slots found for lead" };
-    }
+    const preferred = meta?.channel;
 
-    // Parse which slot they accepted
-    const acceptedSlot = await parseAcceptedTimeFromMessage(messageBody, offeredSlots, {
-      clientId: leadMeta.clientId,
-      leadId: leadMeta.id,
-    });
-    if (!acceptedSlot) {
-      // Ambiguous acceptance (e.g., "yes/sounds good") — do NOT auto-book.
-      // Create a follow-up task with a suggested clarification message.
+    const pickTaskType = async (): Promise<"sms" | "email" | "linkedin" | "call"> => {
       const lead = await prisma.lead.findUnique({
         where: { id: leadId },
-        select: { id: true, phone: true, email: true, linkedinUrl: true, sentimentTag: true },
+        select: { phone: true, email: true, linkedinUrl: true },
       });
 
-      const preferred = meta?.channel;
       const preferredSendable =
         preferred === "sms"
           ? Boolean(lead?.phone)
@@ -2256,20 +2238,183 @@ export async function processMessageForAutoBooking(
             : preferred === "linkedin"
               ? Boolean(lead?.linkedinUrl)
               : false;
-      const type = preferredSendable
-        ? preferred!
-        : lead?.phone
-          ? "sms"
-          : lead?.email
-            ? "email"
-            : lead?.linkedinUrl
-              ? "linkedin"
-              : "call";
-      const options = offeredSlots.slice(0, 2);
+
+      if (preferredSendable) return preferred!;
+      if (lead?.phone) return "sms";
+      if (lead?.email) return "email";
+      if (lead?.linkedinUrl) return "linkedin";
+      return "call";
+    };
+
+    // Scenario 1/2: lead accepts one of the offered slots.
+    if (offeredSlots.length > 0) {
+      // Detect if the message indicates meeting acceptance
+      const isMeetingAccepted = await detectMeetingAcceptedIntent(messageBody, {
+        clientId: leadMeta.clientId,
+        leadId: leadMeta.id,
+      });
+      if (!isMeetingAccepted) {
+        return { booked: false };
+      }
+
+      // Parse which slot they accepted
+      const acceptedSlot = await parseAcceptedTimeFromMessage(messageBody, offeredSlots, {
+        clientId: leadMeta.clientId,
+        leadId: leadMeta.id,
+      });
+      if (!acceptedSlot) {
+        // Ambiguous acceptance (e.g., "yes/sounds good") — do NOT auto-book.
+        // Create a follow-up task with a suggested clarification message.
+        const lead = await prisma.lead.findUnique({
+          where: { id: leadId },
+          select: { id: true, sentimentTag: true },
+        });
+
+        const type = await pickTaskType();
+        const options = offeredSlots.slice(0, 2);
+        const suggestion =
+          options.length === 2
+            ? `Which works better for you: (1) ${options[0]!.label} or (2) ${options[1]!.label}?`
+            : `Which of these works best for you: ${offeredSlots.map((s) => s.label).join(" or ")}?`;
+
+        await prisma.followUpTask.create({
+          data: {
+            leadId,
+            type,
+            dueDate: new Date(),
+            status: "pending",
+            suggestedMessage: suggestion,
+          },
+        });
+
+        // Surface in Follow-ups tab
+        if (lead?.sentimentTag !== "Blacklist") {
+          await prisma.lead.update({
+            where: { id: leadId },
+            data: { sentimentTag: "Follow Up" },
+          });
+        }
+
+        return { booked: false };
+      }
+
+      // Book the accepted slot
+      const bookingResult = await bookMeetingForLead(leadId, acceptedSlot.datetime);
+      if (bookingResult.success) {
+        // Send Slack notification for auto-booking
+        await sendAutoBookingSlackNotification(leadId, acceptedSlot);
+
+        return {
+          booked: true,
+          appointmentId: bookingResult.appointmentId,
+        };
+      }
+
+      return { booked: false, error: bookingResult.error };
+    }
+
+    // Scenario 3: no offered slots; lead proposes their own time.
+    const messageTrimmed = (messageBody || "").trim();
+    const looksLikeTimeProposal =
+      /\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(day)?\b/i.test(messageTrimmed) ||
+      /\b(tomorrow|today|next week|next)\b/i.test(messageTrimmed) ||
+      /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i.test(messageTrimmed) ||
+      /\b\d{1,2}\/\d{1,2}\b/.test(messageTrimmed) ||
+      /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(messageTrimmed);
+
+    if (!looksLikeTimeProposal) {
+      return { booked: false };
+    }
+
+    const tzResult = await ensureLeadTimezone(leadId);
+
+    const proposed = await parseProposedTimesFromMessage(messageTrimmed, {
+      clientId: leadMeta.clientId,
+      leadId: leadMeta.id,
+      nowUtcIso: new Date().toISOString(),
+      leadTimezone: tzResult.timezone || null,
+    });
+
+    if (!proposed) {
+      return { booked: false };
+    }
+
+    if (proposed.needsTimezoneClarification) {
+      const type = await pickTaskType();
+      await prisma.followUpTask.create({
+        data: {
+          leadId,
+          type,
+          dueDate: new Date(),
+          status: "pending",
+          suggestedMessage: "What timezone are you in for that time?",
+        },
+      });
+      return { booked: false };
+    }
+
+    if (proposed.proposedStartTimesUtc.length === 0) {
+      return { booked: false };
+    }
+
+    const availability = await getWorkspaceAvailabilitySlotsUtc(leadMeta.clientId, { refreshIfStale: true });
+    const availabilitySet = new Set(availability.slotsUtc);
+
+    const match = proposed.proposedStartTimesUtc.find((iso) => availabilitySet.has(iso)) ?? null;
+
+    const HIGH_CONFIDENCE_THRESHOLD = 0.9;
+
+    if (match && proposed.confidence >= HIGH_CONFIDENCE_THRESHOLD) {
+      const bookingResult = await bookMeetingForLead(leadId, match);
+      if (bookingResult.success) {
+        return { booked: true, appointmentId: bookingResult.appointmentId };
+      }
+      return { booked: false, error: bookingResult.error };
+    }
+
+    // Not safe to auto-book (low confidence or no matching availability). Offer alternatives.
+    const type = await pickTaskType();
+    const timeZone = tzResult.timezone || "UTC";
+    const mode = tzResult.source === "workspace_fallback" ? "explicit_tz" : "your_time";
+
+    const anchor = new Date();
+    const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const offerCounts = await getWorkspaceSlotOfferCountsForRange(leadMeta.clientId, anchor, rangeEnd);
+
+    const selectedUtcIso = selectDistributedAvailabilitySlots({
+      slotsUtcIso: availability.slotsUtc,
+      offeredCountBySlotUtcIso: offerCounts,
+      timeZone,
+      preferWithinDays: 5,
+      now: anchor,
+    });
+
+    const formatted = formatAvailabilitySlots({
+      slotsUtcIso: selectedUtcIso,
+      timeZone,
+      mode,
+      limit: Math.max(2, selectedUtcIso.length),
+    });
+
+    if (formatted.length > 0) {
+      const offeredAtIso = new Date().toISOString();
+      const offered = formatted.slice(0, 2).map((s) => ({
+        datetime: s.datetime,
+        label: s.label,
+        offeredAt: offeredAtIso,
+      }));
+
+      await storeOfferedSlots(leadId, offered);
+      incrementWorkspaceSlotOffersBatch({
+        clientId: leadMeta.clientId,
+        slotUtcIsoList: offered.map((s) => s.datetime),
+        offeredAt: new Date(offeredAtIso),
+      }).catch(() => undefined);
+
       const suggestion =
-        options.length === 2
-          ? `Which works better for you: (1) ${options[0]!.label} or (2) ${options[1]!.label}?`
-          : `Which of these works best for you: ${offeredSlots.map((s) => s.label).join(" or ")}?`;
+        offered.length === 2
+          ? `I don’t have that exact time available — does (1) ${offered[0]!.label} or (2) ${offered[1]!.label} work instead?`
+          : `I don’t have that exact time available — does ${offered[0]!.label} work instead?`;
 
       await prisma.followUpTask.create({
         data: {
@@ -2280,31 +2425,19 @@ export async function processMessageForAutoBooking(
           suggestedMessage: suggestion,
         },
       });
-
-      // Surface in Follow-ups tab
-      if (lead?.sentimentTag !== "Blacklist") {
-        await prisma.lead.update({
-          where: { id: leadId },
-          data: { sentimentTag: "Follow Up" },
-        });
-      }
-
-      return { booked: false };
+    } else {
+      await prisma.followUpTask.create({
+        data: {
+          leadId,
+          type,
+          dueDate: new Date(),
+          status: "pending",
+          suggestedMessage: "The lead proposed a time, but no availability match was found. Please propose alternative times.",
+        },
+      });
     }
 
-    // Book the accepted slot
-    const bookingResult = await bookMeetingForLead(leadId, acceptedSlot.datetime);
-    if (bookingResult.success) {
-      // Send Slack notification for auto-booking
-      await sendAutoBookingSlackNotification(leadId, acceptedSlot);
-
-      return {
-        booked: true,
-        appointmentId: bookingResult.appointmentId,
-      };
-    }
-
-    return { booked: false, error: bookingResult.error };
+    return { booked: false };
   } catch (error) {
     console.error("Failed to process message for auto-booking:", error);
     return {

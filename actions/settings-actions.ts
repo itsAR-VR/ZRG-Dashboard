@@ -66,6 +66,7 @@ export interface UserSettingsData {
   emailBisonAvailabilitySlotPreferWithinDays: number;
   // GHL Meeting Booking Settings
   ghlDefaultCalendarId: string | null;
+  ghlDirectBookCalendarId: string | null;
   ghlAssignedUserId: string | null;
   autoBookMeetings: boolean;
   meetingDurationMinutes: number;
@@ -73,6 +74,8 @@ export interface UserSettingsData {
   meetingBookingProvider: "ghl" | "calendly";
   calendlyEventTypeLink: string | null;
   calendlyEventTypeUri: string | null;
+  calendlyDirectBookEventTypeLink: string | null;
+  calendlyDirectBookEventTypeUri: string | null;
 }
 
 export interface KnowledgeAssetData {
@@ -163,6 +166,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           emailBisonAvailabilitySlotCount: 2,
           emailBisonAvailabilitySlotPreferWithinDays: 5,
           ghlDefaultCalendarId: null,
+          ghlDirectBookCalendarId: null,
           ghlAssignedUserId: null,
           autoBookMeetings: false,
           meetingDurationMinutes: 30,
@@ -170,6 +174,8 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           meetingBookingProvider: "ghl",
           calendlyEventTypeLink: null,
           calendlyEventTypeUri: null,
+          calendlyDirectBookEventTypeLink: null,
+          calendlyDirectBookEventTypeUri: null,
         },
         knowledgeAssets: [],
       };
@@ -276,6 +282,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         emailBisonAvailabilitySlotCount: settings.emailBisonAvailabilitySlotCount,
         emailBisonAvailabilitySlotPreferWithinDays: settings.emailBisonAvailabilitySlotPreferWithinDays,
         ghlDefaultCalendarId: settings.ghlDefaultCalendarId,
+        ghlDirectBookCalendarId: settings.ghlDirectBookCalendarId,
         ghlAssignedUserId: settings.ghlAssignedUserId,
         autoBookMeetings: settings.autoBookMeetings,
         meetingDurationMinutes: settings.meetingDurationMinutes,
@@ -284,6 +291,8 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           settings.meetingBookingProvider === MeetingBookingProvider.CALENDLY ? "calendly" : "ghl",
         calendlyEventTypeLink: settings.calendlyEventTypeLink,
         calendlyEventTypeUri: settings.calendlyEventTypeUri,
+        calendlyDirectBookEventTypeLink: settings.calendlyDirectBookEventTypeLink,
+        calendlyDirectBookEventTypeUri: settings.calendlyDirectBookEventTypeUri,
       },
       knowledgeAssets,
     };
@@ -381,6 +390,7 @@ export async function updateUserSettings(
         emailBisonAvailabilitySlotCount: data.emailBisonAvailabilitySlotCount,
         emailBisonAvailabilitySlotPreferWithinDays: data.emailBisonAvailabilitySlotPreferWithinDays,
         ghlDefaultCalendarId: data.ghlDefaultCalendarId,
+        ghlDirectBookCalendarId: data.ghlDirectBookCalendarId,
         ghlAssignedUserId: data.ghlAssignedUserId,
         autoBookMeetings: data.autoBookMeetings,
         meetingDurationMinutes: data.meetingDurationMinutes,
@@ -393,6 +403,8 @@ export async function updateUserSettings(
               : undefined,
         calendlyEventTypeLink: data.calendlyEventTypeLink,
         calendlyEventTypeUri: data.calendlyEventTypeUri,
+        calendlyDirectBookEventTypeLink: data.calendlyDirectBookEventTypeLink,
+        calendlyDirectBookEventTypeUri: data.calendlyDirectBookEventTypeUri,
       },
       create: {
         clientId,
@@ -438,6 +450,7 @@ export async function updateUserSettings(
         emailBisonAvailabilitySlotCount: data.emailBisonAvailabilitySlotCount ?? 2,
         emailBisonAvailabilitySlotPreferWithinDays: data.emailBisonAvailabilitySlotPreferWithinDays ?? 5,
         ghlDefaultCalendarId: data.ghlDefaultCalendarId,
+        ghlDirectBookCalendarId: data.ghlDirectBookCalendarId,
         ghlAssignedUserId: data.ghlAssignedUserId,
         autoBookMeetings: data.autoBookMeetings ?? false,
         meetingDurationMinutes: data.meetingDurationMinutes ?? 30,
@@ -446,6 +459,8 @@ export async function updateUserSettings(
           data.meetingBookingProvider === "calendly" ? MeetingBookingProvider.CALENDLY : MeetingBookingProvider.GHL,
         calendlyEventTypeLink: data.calendlyEventTypeLink,
         calendlyEventTypeUri: data.calendlyEventTypeUri,
+        calendlyDirectBookEventTypeLink: data.calendlyDirectBookEventTypeLink,
+        calendlyDirectBookEventTypeUri: data.calendlyDirectBookEventTypeUri,
       },
     });
 

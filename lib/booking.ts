@@ -3,9 +3,14 @@ import { autoStartPostBookingSequenceIfEligible } from "@/lib/followup-automatio
 import { createGHLAppointment, getGHLContact, type GHLAppointment } from "@/lib/ghl-api";
 import { getWorkspaceAvailabilityCache } from "@/lib/availability-cache";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
-import { createCalendlyInvitee } from "@/lib/calendly-api";
+import { createCalendlyInvitee, getCalendlyEventType } from "@/lib/calendly-api";
 import { resolveCalendlyEventTypeUuidFromLink, toCalendlyEventTypeUri } from "@/lib/calendly-link";
 import { upsertAppointmentWithRollup } from "@/lib/appointment-upsert";
+import {
+  ensureLeadQualificationAnswersExtracted,
+  getLeadQualificationAnswerState,
+  getWorkspaceQualificationQuestions,
+} from "@/lib/qualification-answer-extraction";
 import { AppointmentStatus, AppointmentSource } from "@prisma/client";
 
 export interface BookingResult {
@@ -126,9 +131,22 @@ export async function bookMeetingForLead(
   if (!lead) return { success: false, error: "Lead not found" };
 
   const provider = lead.client.settings?.meetingBookingProvider === "CALENDLY" ? "calendly" : "ghl";
-  return provider === "calendly"
-    ? bookMeetingOnCalendly(leadId, selectedSlot)
-    : bookMeetingOnGHL(leadId, selectedSlot, opts?.calendarIdOverride);
+  if (provider === "calendly") {
+    return bookMeetingOnCalendly(leadId, selectedSlot);
+  }
+
+  // If qualification answers are incomplete and a dedicated "no questions" calendar is configured,
+  // prefer it to avoid booking failures when questions are required.
+  const calendarIdOverride = opts?.calendarIdOverride;
+  if (calendarIdOverride) {
+    return bookMeetingOnGHL(leadId, selectedSlot, calendarIdOverride);
+  }
+
+  const state = await getLeadQualificationAnswerState({ leadId, clientId: lead.client.id });
+  const directBookCalendarId = lead.client.settings?.ghlDirectBookCalendarId?.trim() || "";
+  const override = !state.hasAllRequiredAnswers && directBookCalendarId ? directBookCalendarId : undefined;
+
+  return bookMeetingOnGHL(leadId, selectedSlot, override);
 }
 
 export async function bookMeetingOnGHL(
@@ -310,6 +328,13 @@ export async function bookMeetingOnGHL(
   }
 }
 
+function normalizeQuestionKey(text: string): string {
+  return (text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
 export async function bookMeetingOnCalendly(leadId: string, selectedSlot: string): Promise<BookingResult> {
   try {
     const lead = await prisma.lead.findUnique({
@@ -340,30 +365,128 @@ export async function bookMeetingOnCalendly(leadId: string, selectedSlot: string
     const client = lead.client;
     const settings = client.settings;
 
-    if (!client.calendlyAccessToken) {
+    const calendlyAccessToken = client.calendlyAccessToken;
+    if (!calendlyAccessToken) {
       return { success: false, error: "Calendly access token not configured for this workspace" };
     }
 
     const startTimeIso = new Date(selectedSlot).toISOString();
 
-    let eventTypeUri = (settings?.calendlyEventTypeUri || "").trim();
-    if (!eventTypeUri) {
+    // Ensure qualification answers are extracted before picking an event type.
+    const answerState = await ensureLeadQualificationAnswersExtracted({
+      leadId,
+      clientId: client.id,
+      confidenceThreshold: 0.7,
+      timeoutMs: 10_000,
+    });
+
+    const questions = await getWorkspaceQualificationQuestions(client.id);
+
+    let questionsEventTypeUri = (settings?.calendlyEventTypeUri || "").trim();
+    if (!questionsEventTypeUri) {
       const link = (settings?.calendlyEventTypeLink || "").trim();
-      if (!link) {
-        return { success: false, error: "No Calendly event type configured" };
+      if (link) {
+        const resolved = await resolveCalendlyEventTypeUuidFromLink(link);
+        if (resolved?.uuid) {
+          questionsEventTypeUri = toCalendlyEventTypeUri(resolved.uuid);
+          await prisma.workspaceSettings.update({
+            where: { clientId: client.id },
+            data: { calendlyEventTypeUri: questionsEventTypeUri },
+          });
+        }
       }
+    }
 
-      const resolved = await resolveCalendlyEventTypeUuidFromLink(link);
-      if (!resolved?.uuid) {
-        return { success: false, error: "Failed to resolve Calendly event type from link" };
+    let directBookEventTypeUri = (settings?.calendlyDirectBookEventTypeUri || "").trim();
+    if (!directBookEventTypeUri) {
+      const link = (settings?.calendlyDirectBookEventTypeLink || "").trim();
+      if (link) {
+        const resolved = await resolveCalendlyEventTypeUuidFromLink(link);
+        if (resolved?.uuid) {
+          directBookEventTypeUri = toCalendlyEventTypeUri(resolved.uuid);
+          await prisma.workspaceSettings.update({
+            where: { clientId: client.id },
+            data: { calendlyDirectBookEventTypeUri: directBookEventTypeUri },
+          });
+        }
       }
+    }
 
-      eventTypeUri = toCalendlyEventTypeUri(resolved.uuid);
+    if (!questionsEventTypeUri && !directBookEventTypeUri) {
+      return { success: false, error: "No Calendly event type configured" };
+    }
 
-      await prisma.workspaceSettings.update({
-        where: { clientId: client.id },
-        data: { calendlyEventTypeUri: eventTypeUri },
-      });
+    const tryQuestionsEnabled = answerState.hasAllRequiredAnswers && !!questionsEventTypeUri;
+
+    type CalendlyQuestionsAndAnswers = Array<{ question: string; answer: string; position: number }>;
+
+    let selectedEventTypeUri = "";
+    let questionsAndAnswers: CalendlyQuestionsAndAnswers | undefined = undefined;
+    let questionsEventTypeDetails:
+      | (Awaited<ReturnType<typeof getCalendlyEventType>> & { success: true })
+      | null = null;
+
+    const loadQuestionsEventType = async () => {
+      if (!questionsEventTypeUri) return null;
+      if (questionsEventTypeDetails) return questionsEventTypeDetails;
+      const res = await getCalendlyEventType(calendlyAccessToken, questionsEventTypeUri);
+      questionsEventTypeDetails = res.success ? (res as any) : null;
+      return questionsEventTypeDetails;
+    };
+
+    if (tryQuestionsEnabled && questionsEventTypeUri) {
+      const eventType = await loadQuestionsEventType();
+      if (eventType) {
+        const positionByQuestionId = new Map<string, { question: string; position: number }>();
+        const workspaceByNormalizedText = new Map<string, string>();
+        for (const q of questions) {
+          workspaceByNormalizedText.set(normalizeQuestionKey(q.question), q.id);
+        }
+
+        for (const cq of eventType.data.custom_questions) {
+          const normalized = normalizeQuestionKey(cq.name);
+          const questionId = workspaceByNormalizedText.get(normalized);
+          if (!questionId) continue;
+          positionByQuestionId.set(questionId, { question: cq.name, position: cq.position });
+        }
+
+        const requiredIds = questions.filter((q) => q.required).map((q) => q.id);
+        const missingPosition = requiredIds.filter((id) => !positionByQuestionId.has(id));
+        if (missingPosition.length === 0) {
+          const built = requiredIds
+            .map((id) => {
+              const entry = answerState.answers[id];
+              const pos = positionByQuestionId.get(id);
+              if (!entry?.answer || !pos) return null;
+              return { question: pos.question, answer: entry.answer, position: pos.position };
+            })
+            .filter((qa): qa is { question: string; answer: string; position: number } => !!qa);
+
+          if (built.length === requiredIds.length) {
+            selectedEventTypeUri = questionsEventTypeUri;
+            questionsAndAnswers = built;
+          }
+        }
+      }
+    }
+
+    if (!selectedEventTypeUri) {
+      // Direct-book path: prefer explicit direct-book event type, otherwise only fall back to
+      // the questions-enabled event type if it doesn't have required custom questions.
+      if (directBookEventTypeUri) {
+        selectedEventTypeUri = directBookEventTypeUri;
+      } else if (questionsEventTypeUri) {
+        const eventType = await loadQuestionsEventType();
+        const hasRequiredQuestions = !!eventType?.data.custom_questions?.some((q) => q.required);
+        if (hasRequiredQuestions) {
+          return {
+            success: false,
+            error:
+              "Calendly booking requires qualification questions, but the direct-book (no questions) event type is not configured.",
+          };
+        }
+        selectedEventTypeUri = questionsEventTypeUri;
+      }
     }
 
 	    let inviteeEmail = lead.email?.trim() || "";
@@ -383,15 +506,28 @@ export async function bookMeetingOnCalendly(leadId: string, selectedSlot: string
     const inviteeName = [lead.firstName, lead.lastName].filter(Boolean).join(" ").trim() || "Lead";
     const inviteeTz = lead.timezone || settings?.timezone || "UTC";
 
-    const invitee = await createCalendlyInvitee(client.calendlyAccessToken, {
-      eventTypeUri,
+    let invitee = await createCalendlyInvitee(calendlyAccessToken, {
+      eventTypeUri: selectedEventTypeUri,
       startTimeIso,
       invitee: {
         email: inviteeEmail,
         name: inviteeName,
         timezone: inviteeTz,
       },
+      questionsAndAnswers,
     });
+
+    if (!invitee.success && tryQuestionsEnabled && directBookEventTypeUri) {
+      invitee = await createCalendlyInvitee(calendlyAccessToken, {
+        eventTypeUri: directBookEventTypeUri,
+        startTimeIso,
+        invitee: {
+          email: inviteeEmail,
+          name: inviteeName,
+          timezone: inviteeTz,
+        },
+      });
+    }
 
     if (!invitee.success) {
       return { success: false, error: invitee.error || "Failed to create Calendly invitee" };

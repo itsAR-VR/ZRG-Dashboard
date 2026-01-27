@@ -170,6 +170,11 @@ export async function createCalendlyInvitee(
       name: string;
       timezone?: string;
     };
+    questionsAndAnswers?: Array<{
+      question: string;
+      answer: string;
+      position: number;
+    }>;
   }
 ): Promise<
   CalendlyApiResult<{
@@ -177,6 +182,16 @@ export async function createCalendlyInvitee(
     scheduledEventUri: string | null;
   }>
 > {
+  const questionsAndAnswers = Array.isArray(params.questionsAndAnswers)
+    ? params.questionsAndAnswers
+        .map((qa) => ({
+          question: typeof qa.question === "string" ? qa.question.trim() : "",
+          answer: typeof qa.answer === "string" ? qa.answer.trim() : "",
+          position: Number.isFinite(qa.position) ? Math.max(0, Math.trunc(qa.position)) : 0,
+        }))
+        .filter((qa) => qa.question && qa.answer)
+    : [];
+
   const res = await calendlyRequest<{ resource?: any }>(accessToken, "/invitees", {
     method: "POST",
     body: JSON.stringify({
@@ -187,6 +202,7 @@ export async function createCalendlyInvitee(
         name: params.invitee.name,
         timezone: params.invitee.timezone,
       },
+      ...(questionsAndAnswers.length > 0 ? { questions_and_answers: questionsAndAnswers } : {}),
     }),
   });
   if (!res.success) return res;
@@ -206,6 +222,65 @@ export async function createCalendlyInvitee(
         : null;
 
   return { success: true, data: { inviteeUri, scheduledEventUri } };
+}
+
+export type CalendlyEventTypeCustomQuestion = {
+  name: string;
+  type?: string | null;
+  position: number;
+  enabled?: boolean | null;
+  required?: boolean | null;
+};
+
+export type CalendlyEventType = {
+  uri: string;
+  name?: string | null;
+  scheduling_url?: string | null;
+  custom_questions: CalendlyEventTypeCustomQuestion[];
+};
+
+function toCustomQuestions(raw: unknown): CalendlyEventTypeCustomQuestion[] {
+  if (!Array.isArray(raw)) return [];
+
+  const result: CalendlyEventTypeCustomQuestion[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    const position = typeof record.position === "number" && Number.isFinite(record.position) ? Math.trunc(record.position) : null;
+    if (!name || position === null) continue;
+    result.push({
+      name,
+      type: typeof record.type === "string" ? record.type : null,
+      position,
+      enabled: typeof record.enabled === "boolean" ? record.enabled : null,
+      required: typeof record.required === "boolean" ? record.required : null,
+    });
+  }
+  return result;
+}
+
+export async function getCalendlyEventType(
+  accessToken: string,
+  eventTypeUri: string
+): Promise<CalendlyApiResult<CalendlyEventType>> {
+  const res = await calendlyRequest<{ resource?: any }>(accessToken, eventTypeUri);
+  if (!res.success) return res;
+
+  const resource = res.data?.resource;
+  const uri = resource && typeof resource === "object" && typeof resource.uri === "string" ? resource.uri : null;
+  if (!uri) return { success: false, error: "Calendly event type response missing resource.uri" };
+
+  return {
+    success: true,
+    data: {
+      uri,
+      name: resource && typeof resource === "object" && typeof resource.name === "string" ? resource.name : null,
+      scheduling_url:
+        resource && typeof resource === "object" && typeof resource.scheduling_url === "string" ? resource.scheduling_url : null,
+      custom_questions: toCustomQuestions(resource && typeof resource === "object" ? resource.custom_questions : null),
+    },
+  };
 }
 
 // =============================================================================
