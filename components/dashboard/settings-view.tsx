@@ -148,6 +148,7 @@ import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
 
 const EMAILBISON_BASE_HOST_DEFAULT_VALUE = "__DEFAULT__"
+const GHL_SAME_AS_DEFAULT_CALENDAR = "__SAME_AS_DEFAULT__"
 
 interface SettingsViewProps {
   activeWorkspace?: string | null
@@ -3140,9 +3141,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                         <div className="space-y-2">
                           <Label>Direct Book Calendar (No Questions)</Label>
                           <Select
-                            value={meetingBooking.ghlDirectBookCalendarId}
+                            value={meetingBooking.ghlDirectBookCalendarId || GHL_SAME_AS_DEFAULT_CALENDAR}
                             onValueChange={(v) => {
-                              setMeetingBooking((prev) => ({ ...prev, ghlDirectBookCalendarId: v }))
+                              setMeetingBooking((prev) => ({
+                                ...prev,
+                                ghlDirectBookCalendarId: v === GHL_SAME_AS_DEFAULT_CALENDAR ? "" : v,
+                              }))
                               handleChange()
                             }}
                             disabled={ghlCalendars.length === 0}
@@ -3151,7 +3155,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                               <SelectValue placeholder="Same as default" />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="">Same as default</SelectItem>
+                              <SelectItem value={GHL_SAME_AS_DEFAULT_CALENDAR}>Same as default</SelectItem>
                               {ghlCalendars.map((cal) => (
                                 <SelectItem key={cal.id} value={cal.id}>
                                   {cal.name}
