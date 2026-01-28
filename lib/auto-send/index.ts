@@ -1,2 +1,2 @@
-export { determineAutoSendMode, executeAutoSend } from "./orchestrator";
+export { determineAutoSendMode, executeAutoSend, isAutoSendGloballyDisabled } from "./orchestrator";
 export * from "./types";

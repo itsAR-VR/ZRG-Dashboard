@@ -45,3 +45,35 @@ The working tree contains uncommitted changes across availability caching, booki
 * c — AI auto-send + auto-book readiness and tests
 * d — Schema + migration rollout (preflight, canary, rollback)
 * e — Docs, red-team review, and release checklist
+
+## Artifacts Created
+
+- ✅ `docs/planning/phase-67/a/inventory.md` – file-to-phase map of uncommitted work
+- ✅ `docs/planning/phase-67/b/inventory.md` – error signature analysis (most already fixed in Phase 63)
+- ✅ `docs/planning/phase-67/c/smoke.md` – AI auto-send + auto-book test checklist
+- ✅ `docs/planning/phase-67/d/db-preflight.md` – SQL checks (confirmed already applied)
+- ✅ `docs/planning/phase-67/release-checklist.md` – deployment gate summary
+
+## Completion Status
+
+| Subphase | Status | Key Deliverable |
+|----------|--------|-----------------|
+| 67a | ✅ Complete | Uncommitted changes inventory |
+| 67b | ✅ Complete | Error log hardening (analytics warn) |
+| 67c | ✅ Complete | Auto-send kill-switch + smoke tests |
+| 67d | ✅ Complete | DB preflight verified (already applied) |
+| 67e | ✅ Complete | Release checklist |
+
+## Changes Made
+
+1. **`actions/analytics-actions.ts`**: Changed response time metrics error → warn (recoverable failure)
+2. **`lib/auto-send/orchestrator.ts`**: Added `isAutoSendGloballyDisabled()` kill-switch with `AUTO_SEND_DISABLED=1` env var
+3. **`lib/auto-send/index.ts`**: Exported kill-switch function
+
+## Ready for Deploy
+
+All pre-deploy gates pass:
+- `npm run lint` ✅ (0 errors)
+- `npm run build` ✅ (passes)
+
+Follow `release-checklist.md` for deployment procedure.

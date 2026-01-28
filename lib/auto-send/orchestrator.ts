@@ -13,7 +13,20 @@ import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import type { AutoSendContext, AutoSendMode, AutoSendResult } from "./types";
 import { AUTO_SEND_CONSTANTS } from "./types";
 
+/**
+ * Check for global kill-switch. Set `AUTO_SEND_DISABLED=1` to disable all auto-send globally.
+ * This is an emergency lever to stop all automated sending without a deployment.
+ */
+export function isAutoSendGloballyDisabled(): boolean {
+  return process.env.AUTO_SEND_DISABLED === "1";
+}
+
 export function determineAutoSendMode(context: AutoSendContext): AutoSendMode {
+  // Global kill-switch takes precedence over all other logic
+  if (isAutoSendGloballyDisabled()) {
+    return "DISABLED";
+  }
+
   if (context.emailCampaign && context.emailCampaign.responseMode === "AI_AUTO_SEND") {
     return "AI_AUTO_SEND";
   }
@@ -303,9 +316,13 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
 
     const mode = determineAutoSendMode(context);
     if (mode === "DISABLED") {
+      // Distinguish between global kill-switch and per-context disabled
+      const reason = isAutoSendGloballyDisabled()
+        ? "globally_disabled_via_env"
+        : "auto_send_disabled";
       const result: AutoSendResult = {
         mode,
-        outcome: { action: "skip", reason: "auto_send_disabled" },
+        outcome: { action: "skip", reason },
         telemetry: { path: "disabled" },
       };
       if (debug) {

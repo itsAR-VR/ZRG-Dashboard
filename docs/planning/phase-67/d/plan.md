@@ -31,8 +31,22 @@ Safely apply schema changes (AvailabilitySource + dual caches) and run the Phase
    - Confirm follow-ups cron schedule supports the new timing expectations.
 
 ## Output
-- `docs/planning/phase-67/d/db-preflight.md` with SQL checks + results.
-- Rollback artifact for dedupe (if required) and for follow-up migration.
+
+**Completed:** Created `docs/planning/phase-67/d/db-preflight.md`
+
+### Key Finding: Already Applied
+
+All schema changes anticipated in Phase 67d were already applied in earlier phases:
+
+1. **AvailabilitySource enum** — Added in Phase 62j, already in production
+2. **Dual availability cache** — `@@unique([clientId, availabilitySource])` already enforced
+3. **Slot ledger constraints** — `@@unique([clientId, availabilitySource, slotUtc])` already enforced
+4. **Phase 66 migration** — Applied in commits `d110f1c`, `c7e3bdf`, `1efb2a4`
+
+### No Additional Work Required
+
+The cron and cache systems already support dual sources. No schema push or migration needed for Phase 67d.
 
 ## Handoff
-Phase 67e completes documentation, red-team review, and final release checklist.
+
+**→ Phase 67e:** All technical work is complete. Proceed with documentation and release checklist.

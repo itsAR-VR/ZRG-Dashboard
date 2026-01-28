@@ -240,7 +240,8 @@ async function calculateResponseTimeMetricsSql(opts: { userId: string; clientId?
       },
     };
   } catch (error) {
-    console.error("Error calculating response time metrics:", error);
+    // Recoverable: returns default metrics. Log at warn level to avoid false-positive alerts.
+    console.warn("Error calculating response time metrics:", error);
     return defaultMetrics;
   }
 }
