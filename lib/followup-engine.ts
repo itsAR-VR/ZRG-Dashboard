@@ -23,6 +23,9 @@ import { sendSlackNotification } from "@/lib/slack-notifications";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { getBookingLink } from "@/lib/meeting-booking-provider";
+import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
+import type { AvailabilitySource } from "@prisma/client";
+import { selectBookingTargetForLead } from "@/lib/booking-target-selector";
 
 // =============================================================================
 // Types
@@ -380,7 +383,16 @@ export async function generateFollowUpMessage(
 
   if (needsAvailability) {
     try {
-      const availability = await getWorkspaceAvailabilitySlotsUtc(lead.clientId, { refreshIfStale: true });
+      const answerState = await getLeadQualificationAnswerState({ leadId: lead.id, clientId: lead.clientId });
+      const requestedAvailabilitySource: AvailabilitySource =
+        answerState.requiredQuestionIds.length > 0 && !answerState.hasAllRequiredAnswers
+          ? "DIRECT_BOOK"
+          : "DEFAULT";
+
+      const availability = await getWorkspaceAvailabilitySlotsUtc(lead.clientId, {
+        refreshIfStale: true,
+        availabilitySource: requestedAvailabilitySource,
+      });
       const slotsUtc = availability.slotsUtc;
 
       if (slotsUtc.length > 0) {
@@ -405,7 +417,9 @@ export async function generateFollowUpMessage(
         const startAfterUtc = lead.snoozedUntil && lead.snoozedUntil > offeredAt ? lead.snoozedUntil : null;
         const anchor = startAfterUtc && startAfterUtc > offeredAt ? startAfterUtc : offeredAt;
         const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
-        const offerCounts = await getWorkspaceSlotOfferCountsForRange(lead.clientId, anchor, rangeEnd);
+        const offerCounts = await getWorkspaceSlotOfferCountsForRange(lead.clientId, anchor, rangeEnd, {
+          availabilitySource: availability.availabilitySource,
+        });
 
         const selectedUtcIso = selectDistributedAvailabilitySlots({
           slotsUtcIso: slotsUtc,
@@ -432,6 +446,7 @@ export async function generateFollowUpMessage(
             datetime: s.datetime,
             label: s.label,
             offeredAt: offeredAtIso,
+            availabilitySource: availability.availabilitySource,
           }));
         } else {
           availabilityText = "a couple openings over the next few days";
@@ -909,6 +924,8 @@ export async function executeFollowUpStep(
             clientId: lead.clientId,
             slotUtcIsoList: offeredSlots.map((s) => s.datetime),
             offeredAt: Number.isNaN(offeredAt.getTime()) ? new Date() : offeredAt,
+            availabilitySource:
+              offeredSlots[0]?.availabilitySource === "DIRECT_BOOK" ? "DIRECT_BOOK" : "DEFAULT",
           });
         }
 
@@ -1027,6 +1044,8 @@ export async function executeFollowUpStep(
           clientId: lead.clientId,
           slotUtcIsoList: offeredSlots.map((s) => s.datetime),
           offeredAt: Number.isNaN(offeredAt.getTime()) ? new Date() : offeredAt,
+          availabilitySource:
+            offeredSlots[0]?.availabilitySource === "DIRECT_BOOK" ? "DIRECT_BOOK" : "DEFAULT",
         });
       }
 
@@ -1164,6 +1183,8 @@ export async function executeFollowUpStep(
           clientId: lead.clientId,
           slotUtcIsoList: offeredSlots.map((s) => s.datetime),
           offeredAt: Number.isNaN(offeredAt.getTime()) ? new Date() : offeredAt,
+          availabilitySource:
+            offeredSlots[0]?.availabilitySource === "DIRECT_BOOK" ? "DIRECT_BOOK" : "DEFAULT",
         });
       }
 
@@ -1257,6 +1278,8 @@ export async function executeFollowUpStep(
           clientId: lead.clientId,
           slotUtcIsoList: offeredSlots.map((s) => s.datetime),
           offeredAt: Number.isNaN(offeredAt.getTime()) ? new Date() : offeredAt,
+          availabilitySource:
+            offeredSlots[0]?.availabilitySource === "DIRECT_BOOK" ? "DIRECT_BOOK" : "DEFAULT",
         });
       }
 
@@ -2299,7 +2322,9 @@ export async function processMessageForAutoBooking(
       }
 
       // Book the accepted slot
-      const bookingResult = await bookMeetingForLead(leadId, acceptedSlot.datetime);
+      const bookingResult = await bookMeetingForLead(leadId, acceptedSlot.datetime, {
+        availabilitySource: acceptedSlot.availabilitySource,
+      });
       if (bookingResult.success) {
         // Send Slack notification for auto-booking
         await sendAutoBookingSlackNotification(leadId, acceptedSlot);
@@ -2357,7 +2382,17 @@ export async function processMessageForAutoBooking(
       return { booked: false };
     }
 
-    const availability = await getWorkspaceAvailabilitySlotsUtc(leadMeta.clientId, { refreshIfStale: true });
+    const bookingTarget = await selectBookingTargetForLead({
+      clientId: leadMeta.clientId,
+      leadId: leadMeta.id,
+    });
+    const requestedAvailabilitySource: AvailabilitySource =
+      bookingTarget.target === "no_questions" ? "DIRECT_BOOK" : "DEFAULT";
+
+    const availability = await getWorkspaceAvailabilitySlotsUtc(leadMeta.clientId, {
+      refreshIfStale: true,
+      availabilitySource: requestedAvailabilitySource,
+    });
     const availabilitySet = new Set(availability.slotsUtc);
 
     const match = proposed.proposedStartTimesUtc.find((iso) => availabilitySet.has(iso)) ?? null;
@@ -2365,7 +2400,9 @@ export async function processMessageForAutoBooking(
     const HIGH_CONFIDENCE_THRESHOLD = 0.9;
 
     if (match && proposed.confidence >= HIGH_CONFIDENCE_THRESHOLD) {
-      const bookingResult = await bookMeetingForLead(leadId, match);
+      const bookingResult = await bookMeetingForLead(leadId, match, {
+        availabilitySource: availability.availabilitySource,
+      });
       if (bookingResult.success) {
         return { booked: true, appointmentId: bookingResult.appointmentId };
       }
@@ -2379,7 +2416,9 @@ export async function processMessageForAutoBooking(
 
     const anchor = new Date();
     const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
-    const offerCounts = await getWorkspaceSlotOfferCountsForRange(leadMeta.clientId, anchor, rangeEnd);
+    const offerCounts = await getWorkspaceSlotOfferCountsForRange(leadMeta.clientId, anchor, rangeEnd, {
+      availabilitySource: availability.availabilitySource,
+    });
 
     const selectedUtcIso = selectDistributedAvailabilitySlots({
       slotsUtcIso: availability.slotsUtc,
@@ -2402,6 +2441,7 @@ export async function processMessageForAutoBooking(
         datetime: s.datetime,
         label: s.label,
         offeredAt: offeredAtIso,
+        availabilitySource: availability.availabilitySource,
       }));
 
       await storeOfferedSlots(leadId, offered);
@@ -2409,6 +2449,7 @@ export async function processMessageForAutoBooking(
         clientId: leadMeta.clientId,
         slotUtcIsoList: offered.map((s) => s.datetime),
         offeredAt: new Date(offeredAtIso),
+        availabilitySource: availability.availabilitySource,
       }).catch(() => undefined);
 
       const suggestion =

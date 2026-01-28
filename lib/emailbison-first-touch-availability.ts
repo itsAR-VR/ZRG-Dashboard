@@ -176,7 +176,10 @@ export async function previewEmailBisonAvailabilitySlotSentence(opts: {
   const slotCount = Math.max(1, Math.min(2, slotCountRaw));
   const template = settings?.emailBisonAvailabilitySlotTemplate ?? null;
 
-  const availability = await getWorkspaceAvailabilitySlotsUtc(opts.clientId, { refreshIfStale: opts.refreshIfStale ?? false });
+  const availability = await getWorkspaceAvailabilitySlotsUtc(opts.clientId, {
+    refreshIfStale: opts.refreshIfStale ?? false,
+    availabilitySource: "DIRECT_BOOK",
+  });
   const slotsUtc = availability.slotsUtc;
   if (slotsUtc.length === 0) {
     return {
@@ -207,7 +210,9 @@ export async function previewEmailBisonAvailabilitySlotSentence(opts: {
   const pool = includeWeekends ? slotsUtc : (weekdaySlots.length > 0 ? weekdaySlots : slotsUtc);
 
   const rangeEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-  const offerCounts = await getWorkspaceSlotOfferCountsForRange(opts.clientId, now, rangeEnd).catch(() => new Map<string, number>());
+  const offerCounts = await getWorkspaceSlotOfferCountsForRange(opts.clientId, now, rangeEnd, {
+    availabilitySource: availability.availabilitySource,
+  }).catch(() => new Map<string, number>());
   const selectedUtcIso = selectDistributedAvailabilitySlots({
     slotsUtcIso: pool,
     offeredCountBySlotUtcIso: offerCounts,
@@ -365,7 +370,10 @@ export async function processEmailBisonFirstTouchAvailabilitySlots(params?: {
 
     // Cache availability + offer counts once per workspace for this run.
     // Phase 61: rely on the dedicated availability cron for freshness (avoid provider fetches on this path).
-    const availability = await getWorkspaceAvailabilitySlotsUtc(client.id, { refreshIfStale: false }).catch((e) => {
+    const availability = await getWorkspaceAvailabilitySlotsUtc(client.id, {
+      refreshIfStale: false,
+      availabilitySource: "DIRECT_BOOK",
+    }).catch((e) => {
       errors++;
       console.error("[EmailBison FirstTouch] Failed to load workspace availability:", {
         clientId: client.id,
@@ -376,7 +384,9 @@ export async function processEmailBisonFirstTouchAvailabilitySlots(params?: {
     if (!availability || availability.slotsUtc.length === 0) continue;
 
     const rangeEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-    const offerCounts = await getWorkspaceSlotOfferCountsForRange(client.id, now, rangeEnd).catch((e) => {
+    const offerCounts = await getWorkspaceSlotOfferCountsForRange(client.id, now, rangeEnd, {
+      availabilitySource: availability.availabilitySource,
+    }).catch((e) => {
       errors++;
       console.error("[EmailBison FirstTouch] Failed to load offer counts:", {
         clientId: client.id,
@@ -533,6 +543,7 @@ export async function processEmailBisonFirstTouchAvailabilitySlots(params?: {
                 datetime: iso,
                 label: labels[idx] || iso,
                 offeredAt: offeredAtIso,
+                availabilitySource: availability.availabilitySource,
               }))
             );
 
@@ -545,6 +556,7 @@ export async function processEmailBisonFirstTouchAvailabilitySlots(params?: {
               clientId: client.id,
               slotUtcIsoList: selected,
               offeredAt: now,
+              availabilitySource: availability.availabilitySource,
             }).catch(() => undefined);
 
             const nextCustomVars = upsertCustomVariable(leadDetails.data.custom_variables, {

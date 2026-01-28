@@ -1,5 +1,6 @@
 import "@/lib/server-dns";
 import { prisma } from "@/lib/prisma";
+import type { AvailabilitySource } from "@prisma/client";
 import {
   detectCalendarType,
   fetchCalendlyAvailabilityWithMeta,
@@ -52,6 +53,63 @@ function normalizeCalendarUrl(input: string): string {
   return trimmed;
 }
 
+function normalizeAvailabilitySourceForClient(opts: {
+  requested: AvailabilitySource;
+  settings:
+    | {
+        meetingBookingProvider?: "GHL" | "CALENDLY" | null;
+        calendlyEventTypeLink?: string | null;
+        calendlyDirectBookEventTypeLink?: string | null;
+        ghlDefaultCalendarId?: string | null;
+        ghlDirectBookCalendarId?: string | null;
+      }
+    | null
+    | undefined;
+}): AvailabilitySource {
+  if (opts.requested !== "DIRECT_BOOK") return "DEFAULT";
+
+  const provider = opts.settings?.meetingBookingProvider ?? "GHL";
+
+  if (provider === "CALENDLY") {
+    const linkA = (opts.settings?.calendlyEventTypeLink || "").trim();
+    const linkB = (opts.settings?.calendlyDirectBookEventTypeLink || "").trim();
+    if (!linkB) return "DEFAULT";
+    if (linkA && linkB === linkA) return "DEFAULT";
+    return "DIRECT_BOOK";
+  }
+
+  const defaultCalendarId = (opts.settings?.ghlDefaultCalendarId || "").trim();
+  const directBookCalendarId = (opts.settings?.ghlDirectBookCalendarId || "").trim();
+  if (!directBookCalendarId) return "DEFAULT";
+  if (defaultCalendarId && directBookCalendarId === defaultCalendarId) return "DEFAULT";
+  return "DIRECT_BOOK";
+}
+
+function resolveAvailabilityUrl(opts: {
+  calendarLinkUrl: string;
+  settings:
+    | {
+        meetingBookingProvider?: "GHL" | "CALENDLY" | null;
+        calendlyEventTypeLink?: string | null;
+        calendlyDirectBookEventTypeLink?: string | null;
+      }
+    | null
+    | undefined;
+  availabilitySource: AvailabilitySource;
+}): string {
+  const baseUrl = normalizeCalendarUrl(opts.calendarLinkUrl);
+  if (!baseUrl) return "";
+
+  if (opts.settings?.meetingBookingProvider !== "CALENDLY") {
+    return baseUrl;
+  }
+
+  const linkA = normalizeCalendarUrl((opts.settings?.calendlyEventTypeLink || "").trim());
+  const linkB = normalizeCalendarUrl((opts.settings?.calendlyDirectBookEventTypeLink || "").trim());
+
+  return opts.availabilitySource === "DIRECT_BOOK" ? linkB || linkA || baseUrl : linkA || baseUrl;
+}
+
 function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
 }
@@ -69,15 +127,18 @@ export type AvailabilityCacheMeta = {
   calendlyAvailabilityTimezone?: string | null;
 };
 
-export async function refreshWorkspaceAvailabilityCache(clientId: string): Promise<{
-  success: boolean;
-  error?: string;
-}> {
+export async function refreshWorkspaceAvailabilityCache(
+  clientId: string,
+  opts?: { availabilitySource?: AvailabilitySource }
+): Promise<{ success: boolean; error?: string; availabilitySource: AvailabilitySource }> {
   const now = new Date();
   const cacheTtlMs = getCacheTtlMs();
+  const requestedAvailabilitySource: AvailabilitySource =
+    opts?.availabilitySource === "DIRECT_BOOK" ? "DIRECT_BOOK" : "DEFAULT";
+  let availabilitySource: AvailabilitySource = requestedAvailabilitySource;
 
   try {
-    const [calendarLink, settings, existingCache] = await Promise.all([
+    const [calendarLink, settings] = await Promise.all([
       prisma.calendarLink.findFirst({
         where: { clientId, isDefault: true },
         select: { id: true, url: true, type: true },
@@ -88,16 +149,24 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
           meetingDurationMinutes: true,
           meetingBookingProvider: true,
           ghlDefaultCalendarId: true,
+          ghlDirectBookCalendarId: true,
           calendlyEventTypeLink: true,
+          calendlyDirectBookEventTypeLink: true,
         },
       }),
-      prisma.workspaceAvailabilityCache
-        .findUnique({
-          where: { clientId },
-          select: { calendarLinkId: true, calendarUrl: true, providerMeta: true },
-        })
-        .catch(() => null),
     ]);
+
+    availabilitySource = normalizeAvailabilitySourceForClient({
+      requested: requestedAvailabilitySource,
+      settings,
+    });
+
+    const existingCache = await prisma.workspaceAvailabilityCache
+      .findUnique({
+        where: { clientId_availabilitySource: { clientId, availabilitySource } },
+        select: { calendarLinkId: true, calendarUrl: true, providerMeta: true },
+      })
+      .catch(() => null);
 
     if (!calendarLink) {
       // No default link configured; store an explicit empty cache entry so callers
@@ -106,7 +175,7 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
 
       await prisma.workspaceAvailabilityCache
         .upsert({
-          where: { clientId },
+          where: { clientId_availabilitySource: { clientId, availabilitySource } },
           update: {
             calendarLinkId: null,
             calendarType: "unknown",
@@ -122,6 +191,7 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
           },
           create: {
             clientId,
+            availabilitySource,
             calendarLinkId: null,
             calendarType: "unknown",
             calendarUrl: "",
@@ -137,7 +207,53 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
         })
         .catch(() => undefined);
 
-      return { success: false, error };
+      return { success: false, error, availabilitySource };
+    }
+
+    let calendarUrl = resolveAvailabilityUrl({
+      calendarLinkUrl: calendarLink.url,
+      settings,
+      availabilitySource,
+    });
+
+    if (!calendarUrl) {
+      const error = "No default calendar link configured";
+
+      await prisma.workspaceAvailabilityCache
+        .upsert({
+          where: { clientId_availabilitySource: { clientId, availabilitySource } },
+          update: {
+            calendarLinkId: calendarLink.id,
+            calendarType: "unknown",
+            calendarUrl: "",
+            slotDurationMinutes: REQUIRED_DURATION_MINUTES,
+            rangeStart: now,
+            rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+            slotsUtc: [],
+            providerMeta: {},
+            fetchedAt: now,
+            staleAt: new Date(now.getTime() + UNCONFIGURED_BACKOFF_MS),
+            lastError: error,
+          },
+          create: {
+            clientId,
+            availabilitySource,
+            calendarLinkId: calendarLink.id,
+            calendarType: "unknown",
+            calendarUrl: "",
+            slotDurationMinutes: REQUIRED_DURATION_MINUTES,
+            rangeStart: now,
+            rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+            slotsUtc: [],
+            providerMeta: {},
+            fetchedAt: now,
+            staleAt: new Date(now.getTime() + UNCONFIGURED_BACKOFF_MS),
+            lastError: error,
+          },
+        })
+        .catch(() => undefined);
+
+      return { success: false, error, availabilitySource };
     }
 
     const meetingDuration = settings?.meetingDurationMinutes ?? REQUIRED_DURATION_MINUTES;
@@ -145,42 +261,43 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
       const error = `Unsupported meeting duration (${meetingDuration}m). Set Meeting Duration to ${REQUIRED_DURATION_MINUTES} minutes to use live availability.`;
 
       await prisma.workspaceAvailabilityCache.upsert({
-        where: { clientId },
+        where: { clientId_availabilitySource: { clientId, availabilitySource } },
         update: {
           calendarLinkId: calendarLink.id,
-          calendarType: calendarLink.type,
-          calendarUrl: calendarLink.url,
+          calendarType: detectCalendarType(calendarUrl),
+          calendarUrl,
           slotDurationMinutes: meetingDuration,
           rangeStart: now,
-        rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
-        slotsUtc: [],
-        providerMeta: {},
-        fetchedAt: now,
-        staleAt: new Date(now.getTime() + UNSUPPORTED_DURATION_BACKOFF_MS),
+          rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+          slotsUtc: [],
+          providerMeta: {},
+          fetchedAt: now,
+          staleAt: new Date(now.getTime() + UNSUPPORTED_DURATION_BACKOFF_MS),
           lastError: error,
         },
         create: {
           clientId,
+          availabilitySource,
           calendarLinkId: calendarLink.id,
-          calendarType: calendarLink.type,
-          calendarUrl: calendarLink.url,
+          calendarType: detectCalendarType(calendarUrl),
+          calendarUrl,
           slotDurationMinutes: meetingDuration,
           rangeStart: now,
-        rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
-        slotsUtc: [],
-        providerMeta: {},
-        fetchedAt: now,
-        staleAt: new Date(now.getTime() + UNSUPPORTED_DURATION_BACKOFF_MS),
+          rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
+          slotsUtc: [],
+          providerMeta: {},
+          fetchedAt: now,
+          staleAt: new Date(now.getTime() + UNSUPPORTED_DURATION_BACKOFF_MS),
           lastError: error,
         },
       });
 
-      return { success: false, error };
+      return { success: false, error, availabilitySource };
     }
 
-    const normalizedUrl = normalizeCalendarUrl(calendarLink.url);
-    const detectedType = detectCalendarType(normalizedUrl);
-    const calendarType = (calendarLink.type === "unknown" ? detectedType : (calendarLink.type as CalendarType)) || detectedType;
+    const detectedType = detectCalendarType(calendarUrl);
+    const calendarType =
+      (calendarLink.type === "unknown" ? detectedType : (calendarLink.type as CalendarType)) || detectedType;
 
     let rawSlots: AvailabilitySlot[] = [];
     const providerMeta: AvailabilityCacheMeta = {};
@@ -189,14 +306,14 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
     const cachedMeta =
       existingCache &&
       existingCache.calendarLinkId === calendarLink.id &&
-      existingCache.calendarUrl === calendarLink.url &&
+      normalizeCalendarUrl(existingCache.calendarUrl) === calendarUrl &&
       existingCache.providerMeta &&
       typeof existingCache.providerMeta === "object"
         ? (existingCache.providerMeta as AvailabilityCacheMeta)
         : null;
 
     if (calendarType === "calendly") {
-      const calendly = await fetchCalendlyAvailabilityWithMeta(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS, {
+      const calendly = await fetchCalendlyAvailabilityWithMeta(calendarUrl, DEFAULT_LOOKAHEAD_DAYS, {
         eventTypeUuid: cachedMeta?.calendlyEventTypeUuid ?? null,
         availabilityTimezone: cachedMeta?.calendlyAvailabilityTimezone ?? null,
       });
@@ -204,8 +321,11 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
       providerMeta.calendlyEventTypeUuid = calendly.eventTypeUuid;
       providerMeta.calendlyAvailabilityTimezone = calendly.availabilityTimezone;
 
-      const fallbackLink = (settings?.calendlyEventTypeLink || "").trim();
-      if (rawSlots.length === 0 && fallbackLink && fallbackLink !== calendarLink.url) {
+      const fallbackLink =
+        availabilitySource === "DIRECT_BOOK"
+          ? normalizeCalendarUrl((settings?.calendlyDirectBookEventTypeLink || "").trim())
+          : normalizeCalendarUrl((settings?.calendlyEventTypeLink || "").trim());
+      if (rawSlots.length === 0 && fallbackLink && fallbackLink !== calendarUrl) {
         const fallback = await fetchCalendlyAvailabilityWithMeta(fallbackLink, DEFAULT_LOOKAHEAD_DAYS, {
           eventTypeUuid: cachedMeta?.calendlyEventTypeUuid ?? null,
           availabilityTimezone: cachedMeta?.calendlyAvailabilityTimezone ?? null,
@@ -216,41 +336,44 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
           providerMeta.calendlyEventTypeUuid = fallback.eventTypeUuid;
           providerMeta.calendlyAvailabilityTimezone = fallback.availabilityTimezone;
           providerMeta.resolvedUrl = fallbackLink;
-          lastError = "Default calendar link failed; used Calendly auto-book link fallback.";
+          calendarUrl = fallbackLink;
         }
       }
     } else if (calendarType === "hubspot") {
-      rawSlots = await fetchHubSpotAvailability(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS);
+      rawSlots = await fetchHubSpotAvailability(calendarUrl, DEFAULT_LOOKAHEAD_DAYS);
     } else if (calendarType === "ghl") {
-      const calendarIdHint = cachedMeta?.ghlCalendarId || settings?.ghlDefaultCalendarId || null;
-      const ghl = await fetchGHLAvailabilityWithMeta(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS, { calendarIdHint });
+      const desiredCalendarId =
+        availabilitySource === "DIRECT_BOOK"
+          ? settings?.ghlDirectBookCalendarId || null
+          : settings?.ghlDefaultCalendarId || null;
+      const calendarIdHint = cachedMeta?.ghlCalendarId || desiredCalendarId || null;
+      const ghl = await fetchGHLAvailabilityWithMeta(calendarUrl, DEFAULT_LOOKAHEAD_DAYS, { calendarIdHint });
       rawSlots = ghl.slots;
       providerMeta.ghlCalendarId = ghl.calendarId;
       providerMeta.resolvedUrl = ghl.resolvedUrl;
       if (!rawSlots.length && ghl.error) lastError = ghl.error;
 
-      if (!rawSlots.length && settings?.ghlDefaultCalendarId && settings.ghlDefaultCalendarId !== ghl.calendarId) {
-        const fallback = await fetchGHLAvailabilityWithMeta(normalizedUrl, DEFAULT_LOOKAHEAD_DAYS, {
-          calendarIdHint: settings.ghlDefaultCalendarId,
+      if (!rawSlots.length && desiredCalendarId && desiredCalendarId !== ghl.calendarId) {
+        const fallback = await fetchGHLAvailabilityWithMeta(calendarUrl, DEFAULT_LOOKAHEAD_DAYS, {
+          calendarIdHint: desiredCalendarId,
         });
 
         if (fallback.slots.length > 0) {
           rawSlots = fallback.slots;
           providerMeta.ghlCalendarId = fallback.calendarId;
           providerMeta.resolvedUrl = fallback.resolvedUrl;
-          lastError = "Default calendar link failed; used GHL auto-book calendar fallback.";
         } else if (fallback.error && !lastError) {
           lastError = fallback.error;
         }
       }
     } else {
-      const error = `Unsupported calendar link. Supported: Calendly, HubSpot, or GoHighLevel. URL: ${normalizedUrl || "(empty)"}`;
+      const error = `Unsupported calendar link. Supported: Calendly, HubSpot, or GoHighLevel. URL: ${calendarUrl || "(empty)"}`;
       await prisma.workspaceAvailabilityCache.upsert({
-        where: { clientId },
+        where: { clientId_availabilitySource: { clientId, availabilitySource } },
         update: {
           calendarLinkId: calendarLink.id,
           calendarType: calendarType,
-          calendarUrl: calendarLink.url,
+          calendarUrl,
           slotDurationMinutes: REQUIRED_DURATION_MINUTES,
           rangeStart: now,
           rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
@@ -262,9 +385,10 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
         },
         create: {
           clientId,
+          availabilitySource,
           calendarLinkId: calendarLink.id,
           calendarType: calendarType,
-          calendarUrl: calendarLink.url,
+          calendarUrl,
           slotDurationMinutes: REQUIRED_DURATION_MINUTES,
           rangeStart: now,
           rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
@@ -275,18 +399,18 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
           lastError: error,
         },
       });
-      return { success: false, error };
+      return { success: false, error, availabilitySource };
     }
 
     rawSlots.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
     const slotsUtc = dedupeSortedIso(rawSlots.map((s) => s.startTime.toISOString()));
 
     await prisma.workspaceAvailabilityCache.upsert({
-      where: { clientId },
+      where: { clientId_availabilitySource: { clientId, availabilitySource } },
       update: {
         calendarLinkId: calendarLink.id,
         calendarType: calendarType,
-        calendarUrl: calendarLink.url,
+        calendarUrl,
         slotDurationMinutes: REQUIRED_DURATION_MINUTES,
         rangeStart: now,
         rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
@@ -294,13 +418,14 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
         providerMeta: providerMeta as any,
         fetchedAt: now,
         staleAt: new Date(now.getTime() + cacheTtlMs),
-        lastError: rawSlots.length === 0 ? lastError || "No availability slots found" : lastError,
+        lastError: rawSlots.length === 0 ? lastError || "No availability slots found" : null,
       },
       create: {
         clientId,
+        availabilitySource,
         calendarLinkId: calendarLink.id,
         calendarType: calendarType,
-        calendarUrl: calendarLink.url,
+        calendarUrl,
         slotDurationMinutes: REQUIRED_DURATION_MINUTES,
         rangeStart: now,
         rangeEnd: addDays(now, DEFAULT_LOOKAHEAD_DAYS),
@@ -308,16 +433,16 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
         providerMeta: providerMeta as any,
         fetchedAt: now,
         staleAt: new Date(now.getTime() + cacheTtlMs),
-        lastError: rawSlots.length === 0 ? lastError || "No availability slots found" : lastError,
+        lastError: rawSlots.length === 0 ? lastError || "No availability slots found" : null,
       },
     });
 
-    return { success: true };
+    return { success: true, availabilitySource };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     await prisma.workspaceAvailabilityCache
       .upsert({
-        where: { clientId },
+        where: { clientId_availabilitySource: { clientId, availabilitySource } },
         update: {
           fetchedAt: now,
           staleAt: new Date(now.getTime() + cacheTtlMs),
@@ -325,6 +450,7 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
         },
         create: {
           clientId,
+          availabilitySource,
           calendarType: "unknown",
           calendarUrl: "",
           slotDurationMinutes: REQUIRED_DURATION_MINUTES,
@@ -338,11 +464,14 @@ export async function refreshWorkspaceAvailabilityCache(clientId: string): Promi
       })
       .catch(() => undefined);
 
-    return { success: false, error: message };
+    return { success: false, error: message, availabilitySource };
   }
 }
 
-export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { refreshIfStale?: boolean }): Promise<{
+export async function getWorkspaceAvailabilityCache(
+  clientId: string,
+  opts?: { refreshIfStale?: boolean; availabilitySource?: AvailabilitySource }
+): Promise<{
   slotsUtc: string[];
   calendarType: CalendarType | "unknown";
   calendarUrl: string;
@@ -350,12 +479,42 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
   fetchedAt: Date;
   staleAt: Date;
   lastError: string | null;
+  availabilitySource: AvailabilitySource;
 }> {
   const now = new Date();
   const refreshIfStale = opts?.refreshIfStale ?? true;
+  const requestedAvailabilitySource: AvailabilitySource =
+    opts?.availabilitySource === "DIRECT_BOOK" ? "DIRECT_BOOK" : "DEFAULT";
+
+  const shouldLoadSettings = refreshIfStale || requestedAvailabilitySource === "DIRECT_BOOK";
+
+  const [defaultLink, settings] = shouldLoadSettings
+    ? await Promise.all([
+        prisma.calendarLink.findFirst({
+          where: { clientId, isDefault: true },
+          select: { id: true, url: true },
+        }),
+        prisma.workspaceSettings.findUnique({
+          where: { clientId },
+          select: {
+            meetingDurationMinutes: true,
+            meetingBookingProvider: true,
+            calendlyEventTypeLink: true,
+            calendlyDirectBookEventTypeLink: true,
+            ghlDefaultCalendarId: true,
+            ghlDirectBookCalendarId: true,
+          },
+        }),
+      ])
+    : [null, null];
+
+  const availabilitySource = normalizeAvailabilitySourceForClient({
+    requested: requestedAvailabilitySource,
+    settings,
+  });
 
   let cache = await prisma.workspaceAvailabilityCache.findUnique({
-    where: { clientId },
+    where: { clientId_availabilitySource: { clientId, availabilitySource } },
     select: {
       calendarLinkId: true,
       calendarType: true,
@@ -369,25 +528,21 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
     },
   });
 
-  const [defaultLink, settings] = refreshIfStale
-    ? await Promise.all([
-        prisma.calendarLink.findFirst({
-          where: { clientId, isDefault: true },
-          select: { id: true, url: true },
-        }),
-        prisma.workspaceSettings.findUnique({
-          where: { clientId },
-          select: { meetingDurationMinutes: true },
-        }),
-      ])
-    : [null, null];
+  const expectedUrl =
+    defaultLink?.url
+      ? resolveAvailabilityUrl({
+          calendarLinkUrl: defaultLink.url,
+          settings,
+          availabilitySource,
+        })
+      : "";
 
-  const defaultUrl = defaultLink?.url ? normalizeCalendarUrl(defaultLink.url) : "";
   const cachedUrl = cache?.calendarUrl ? normalizeCalendarUrl(cache.calendarUrl) : "";
   const defaultChanged =
-    !!defaultLink && !!cache && (cache.calendarLinkId !== defaultLink.id || cachedUrl !== defaultUrl);
+    !!defaultLink && !!cache && (cache.calendarLinkId !== defaultLink.id || cachedUrl !== expectedUrl);
 
-  const currentDuration = settings?.meetingDurationMinutes ?? REQUIRED_DURATION_MINUTES;
+  const currentDuration =
+    typeof settings?.meetingDurationMinutes === "number" ? settings.meetingDurationMinutes : REQUIRED_DURATION_MINUTES;
   const durationChanged = !!cache && cache.slotDurationMinutes !== currentDuration;
 
   const existingMeta = (cache?.providerMeta || {}) as AvailabilityCacheMeta;
@@ -400,9 +555,11 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
 
   if (!cache) {
     if (refreshIfStale) {
-      const refresh = await refreshWorkspaceAvailabilityCache(clientId);
+      const refresh = await refreshWorkspaceAvailabilityCache(clientId, {
+        availabilitySource: requestedAvailabilitySource,
+      });
       const refreshed = await prisma.workspaceAvailabilityCache.findUnique({
-        where: { clientId },
+        where: { clientId_availabilitySource: { clientId, availabilitySource } },
         select: {
           calendarLinkId: true,
           calendarType: true,
@@ -427,6 +584,7 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
           fetchedAt: now,
           staleAt: now,
           lastError: refresh.error,
+          availabilitySource,
         };
       }
     } else {
@@ -438,12 +596,13 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
         fetchedAt: now,
         staleAt: now,
         lastError: "Availability cache not found",
+        availabilitySource,
       };
     }
   } else if (refreshIfStale && (cache.staleAt <= now || defaultChanged || durationChanged || metaMissing)) {
-    await refreshWorkspaceAvailabilityCache(clientId);
+    await refreshWorkspaceAvailabilityCache(clientId, { availabilitySource: requestedAvailabilitySource });
     const refreshed = await prisma.workspaceAvailabilityCache.findUnique({
-      where: { clientId },
+      where: { clientId_availabilitySource: { clientId, availabilitySource } },
       select: {
         calendarLinkId: true,
         calendarType: true,
@@ -471,15 +630,20 @@ export async function getWorkspaceAvailabilityCache(clientId: string, opts?: { r
     fetchedAt: cache?.fetchedAt || now,
     staleAt: cache?.staleAt || now,
     lastError: cache?.lastError ?? null,
+    availabilitySource,
   };
 }
 
-export async function getWorkspaceAvailabilitySlotsUtc(clientId: string, opts?: { refreshIfStale?: boolean }): Promise<{
+export async function getWorkspaceAvailabilitySlotsUtc(
+  clientId: string,
+  opts?: { refreshIfStale?: boolean; availabilitySource?: AvailabilitySource }
+): Promise<{
   slotsUtc: string[];
   calendarType: CalendarType | "unknown";
   calendarUrl: string;
   providerMeta: AvailabilityCacheMeta;
   lastError: string | null;
+  availabilitySource: AvailabilitySource;
 }> {
   const now = new Date();
   const cache = await getWorkspaceAvailabilityCache(clientId, opts);
@@ -516,6 +680,7 @@ export async function getWorkspaceAvailabilitySlotsUtc(clientId: string, opts?: 
     calendarUrl: cache.calendarUrl,
     providerMeta: cache.providerMeta,
     lastError: cache.lastError,
+    availabilitySource: cache.availabilitySource,
   };
 }
 
@@ -525,15 +690,18 @@ export async function refreshAvailabilityCachesDue(opts?: {
   concurrency?: number;
   mode?: "due" | "all";
   invocationId?: string;
+  availabilitySource?: AvailabilitySource;
 }): Promise<{
   invocationId: string | null;
   mode: "due" | "all";
+  availabilitySource: AvailabilitySource;
   checked: number;
   attempted: number;
   refreshed: number;
   skippedNoDefault: number;
   skippedUnsupportedDuration: number;
   skippedBackoff: number;
+  skippedNotConfigured: number;
   errors: string[];
   finishedWithinBudget: boolean;
   metrics: {
@@ -550,19 +718,33 @@ export async function refreshAvailabilityCachesDue(opts?: {
   const now = new Date();
   const mode = opts?.mode ?? "due";
   const invocationId = opts?.invocationId ?? null;
+  const availabilitySource: AvailabilitySource =
+    opts?.availabilitySource === "DIRECT_BOOK" ? "DIRECT_BOOK" : "DEFAULT";
+
+  const isEligibleClient = (settings: Parameters<typeof normalizeAvailabilitySourceForClient>[0]["settings"]): boolean => {
+    if (availabilitySource !== "DIRECT_BOOK") return true;
+    return (
+      normalizeAvailabilitySourceForClient({
+        requested: "DIRECT_BOOK",
+        settings,
+      }) === "DIRECT_BOOK"
+    );
+  };
 
   const one = await prisma.workspaceAvailabilityCache
     .findFirst({
-      where: { lastError: null },
+      where: { availabilitySource, lastError: null },
       orderBy: { rangeStart: "asc" },
       select: { clientId: true, rangeStart: true },
     })
     .catch(() => null);
 
   const [totalCaches, dueCaches, erroringCaches] = await Promise.all([
-    prisma.workspaceAvailabilityCache.count().catch(() => 0),
-    prisma.workspaceAvailabilityCache.count({ where: { staleAt: { lte: now } } }).catch(() => 0),
-    prisma.workspaceAvailabilityCache.count({ where: { lastError: { not: null } } }).catch(() => 0),
+    prisma.workspaceAvailabilityCache.count({ where: { availabilitySource } }).catch(() => 0),
+    prisma.workspaceAvailabilityCache
+      .count({ where: { availabilitySource, staleAt: { lte: now } } })
+      .catch(() => 0),
+    prisma.workspaceAvailabilityCache.count({ where: { availabilitySource, lastError: { not: null } } }).catch(() => 0),
   ]);
 
   const oldestSuccessfulRangeStartAgeMinutes = one?.rangeStart
@@ -577,7 +759,17 @@ export async function refreshAvailabilityCachesDue(opts?: {
       select: {
         id: true,
         userId: true,
-        availabilityCache: {
+        settings: {
+          select: {
+            meetingBookingProvider: true,
+            calendlyEventTypeLink: true,
+            calendlyDirectBookEventTypeLink: true,
+            ghlDefaultCalendarId: true,
+            ghlDirectBookCalendarId: true,
+          },
+        },
+        availabilityCaches: {
+          where: { availabilitySource },
           select: {
             staleAt: true,
             lastError: true,
@@ -586,40 +778,92 @@ export async function refreshAvailabilityCachesDue(opts?: {
       },
     });
 
-    candidates = clients.map((c) => ({
-      clientId: c.id,
-      userId: c.userId ?? null,
-      staleAt: c.availabilityCache?.staleAt ?? null,
-      lastError: c.availabilityCache?.lastError ?? null,
-    }));
+    candidates = clients
+      .filter((c) => isEligibleClient(c.settings))
+      .map((c) => {
+        const cache = c.availabilityCaches[0] ?? null;
+        return {
+          clientId: c.id,
+          userId: c.userId ?? null,
+          staleAt: cache?.staleAt ?? null,
+          lastError: cache?.lastError ?? null,
+        };
+      });
   } else {
     const limit = Math.max(1, opts?.limit ?? 50);
+    const takeMultiplier = availabilitySource === "DIRECT_BOOK" ? 3 : 1;
+    const take = Math.min(500, limit * takeMultiplier);
 
     const stale = await prisma.workspaceAvailabilityCache.findMany({
-      where: { staleAt: { lte: now } },
-      select: { clientId: true, staleAt: true, lastError: true, client: { select: { userId: true } } },
+      where: { availabilitySource, staleAt: { lte: now } },
+      select: {
+        clientId: true,
+        staleAt: true,
+        lastError: true,
+        client: {
+          select: {
+            userId: true,
+            settings: {
+              select: {
+                meetingBookingProvider: true,
+                calendlyEventTypeLink: true,
+                calendlyDirectBookEventTypeLink: true,
+                ghlDefaultCalendarId: true,
+                ghlDirectBookCalendarId: true,
+              },
+            },
+          },
+        },
+      },
       orderBy: { staleAt: "asc" },
-      take: limit,
+      take,
     });
 
     const missing = await prisma.client.findMany({
       where: {
         calendarLinks: { some: { isDefault: true } },
-        availabilityCache: { is: null },
+        availabilityCaches: { none: { availabilitySource } },
       },
-      select: { id: true, userId: true },
-      take: Math.max(0, limit - stale.length),
+      select: {
+        id: true,
+        userId: true,
+        settings: {
+          select: {
+            meetingBookingProvider: true,
+            calendlyEventTypeLink: true,
+            calendlyDirectBookEventTypeLink: true,
+            ghlDefaultCalendarId: true,
+            ghlDirectBookCalendarId: true,
+          },
+        },
+      },
+      take: Math.min(500, Math.max(0, (limit - stale.length) * (availabilitySource === "DIRECT_BOOK" ? 3 : 1))),
       orderBy: { createdAt: "asc" },
     });
 
+    const staleEligible =
+      availabilitySource === "DIRECT_BOOK"
+        ? stale.filter((c) => isEligibleClient(c.client.settings))
+        : stale;
+
+    const selectedStale = staleEligible.slice(0, limit);
+    const remaining = Math.max(0, limit - selectedStale.length);
+
+    const missingEligible =
+      availabilitySource === "DIRECT_BOOK"
+        ? missing.filter((c) => isEligibleClient(c.settings))
+        : missing;
+
+    const selectedMissing = missingEligible.slice(0, remaining);
+
     candidates = [
-      ...stale.map((c) => ({
+      ...selectedStale.map((c) => ({
         clientId: c.clientId,
         userId: c.client.userId ?? null,
         staleAt: c.staleAt ?? null,
         lastError: c.lastError ?? null,
       })),
-      ...missing.map((c) => ({
+      ...selectedMissing.map((c) => ({
         clientId: c.id,
         userId: c.userId ?? null,
         staleAt: null,
@@ -678,6 +922,7 @@ export async function refreshAvailabilityCachesDue(opts?: {
   let skippedNoDefault = 0;
   let skippedUnsupportedDuration = 0;
   let skippedBackoff = 0;
+  let skippedNotConfigured = 0;
 
   let idx = 0;
   const workers = Array.from({ length: concurrency }, async () => {
@@ -694,7 +939,12 @@ export async function refreshAvailabilityCachesDue(opts?: {
 
       attempted++;
 
-      const result = await refreshWorkspaceAvailabilityCache(current.clientId);
+      const result = await refreshWorkspaceAvailabilityCache(current.clientId, { availabilitySource });
+      if (availabilitySource === "DIRECT_BOOK" && result.availabilitySource !== "DIRECT_BOOK") {
+        skippedNotConfigured++;
+        continue;
+      }
+
       if (result.success) {
         refreshed++;
         continue;
@@ -721,12 +971,14 @@ export async function refreshAvailabilityCachesDue(opts?: {
   return {
     invocationId,
     mode,
+    availabilitySource,
     checked: queue.length,
     attempted,
     refreshed,
     skippedNoDefault,
     skippedUnsupportedDuration,
     skippedBackoff,
+    skippedNotConfigured,
     errors,
     finishedWithinBudget: Date.now() <= deadlineMs,
     metrics: {

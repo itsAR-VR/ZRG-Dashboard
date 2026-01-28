@@ -11,7 +11,7 @@ import {
   getLeadQualificationAnswerState,
   getWorkspaceQualificationQuestions,
 } from "@/lib/qualification-answer-extraction";
-import { AppointmentStatus, AppointmentSource } from "@prisma/client";
+import { AppointmentStatus, AppointmentSource, type AvailabilitySource } from "@prisma/client";
 
 export interface BookingResult {
   success: boolean;
@@ -26,6 +26,7 @@ export interface OfferedSlot {
   datetime: string; // ISO format
   label: string; // Human-readable (e.g., "3pm EST on Thursday")
   offeredAt: string; // When this slot was offered
+  availabilitySource?: AvailabilitySource;
 }
 
 export async function storeOfferedSlots(
@@ -122,7 +123,7 @@ export async function shouldAutoBook(leadId: string): Promise<{
 export async function bookMeetingForLead(
   leadId: string,
   selectedSlot: string,
-  opts?: { calendarIdOverride?: string }
+  opts?: { calendarIdOverride?: string; availabilitySource?: AvailabilitySource }
 ): Promise<BookingResult> {
   const lead = await prisma.lead.findUnique({
     where: { id: leadId },
@@ -132,27 +133,35 @@ export async function bookMeetingForLead(
 
   const provider = lead.client.settings?.meetingBookingProvider === "CALENDLY" ? "calendly" : "ghl";
   if (provider === "calendly") {
-    return bookMeetingOnCalendly(leadId, selectedSlot);
+    return bookMeetingOnCalendly(leadId, selectedSlot, { availabilitySource: opts?.availabilitySource });
   }
 
   // If qualification answers are incomplete and a dedicated "no questions" calendar is configured,
   // prefer it to avoid booking failures when questions are required.
   const calendarIdOverride = opts?.calendarIdOverride;
   if (calendarIdOverride) {
-    return bookMeetingOnGHL(leadId, selectedSlot, calendarIdOverride);
+    return bookMeetingOnGHL(leadId, selectedSlot, calendarIdOverride, { availabilitySource: opts?.availabilitySource });
   }
 
   const state = await getLeadQualificationAnswerState({ leadId, clientId: lead.client.id });
   const directBookCalendarId = lead.client.settings?.ghlDirectBookCalendarId?.trim() || "";
-  const override = !state.hasAllRequiredAnswers && directBookCalendarId ? directBookCalendarId : undefined;
+  const override =
+    opts?.availabilitySource === "DIRECT_BOOK"
+      ? directBookCalendarId || undefined
+      : opts?.availabilitySource === "DEFAULT"
+        ? undefined
+        : !state.hasAllRequiredAnswers && directBookCalendarId
+          ? directBookCalendarId
+          : undefined;
 
-  return bookMeetingOnGHL(leadId, selectedSlot, override);
+  return bookMeetingOnGHL(leadId, selectedSlot, override, { availabilitySource: opts?.availabilitySource });
 }
 
 export async function bookMeetingOnGHL(
   leadId: string,
   selectedSlot: string,
-  calendarIdOverride?: string
+  calendarIdOverride?: string,
+  opts?: { availabilitySource?: AvailabilitySource }
 ): Promise<BookingResult> {
   try {
     const lead = await prisma.lead.findUnique({
@@ -200,7 +209,19 @@ export async function bookMeetingOnGHL(
     const ghlContactId = ensureContact.ghlContactId;
 
     try {
-      const cache = await getWorkspaceAvailabilityCache(client.id, { refreshIfStale: true });
+      const cacheAvailabilitySource: AvailabilitySource =
+        opts?.availabilitySource === "DIRECT_BOOK"
+          ? "DIRECT_BOOK"
+          : opts?.availabilitySource === "DEFAULT"
+            ? "DEFAULT"
+            : calendarIdOverride && settings?.ghlDirectBookCalendarId && calendarIdOverride === settings.ghlDirectBookCalendarId
+              ? "DIRECT_BOOK"
+              : "DEFAULT";
+
+      const cache = await getWorkspaceAvailabilityCache(client.id, {
+        refreshIfStale: true,
+        availabilitySource: cacheAvailabilitySource,
+      });
       const availabilityCalendarId =
         cache?.calendarType === "ghl" ? cache.providerMeta?.ghlCalendarId || null : null;
 
@@ -335,7 +356,11 @@ function normalizeQuestionKey(text: string): string {
     .replace(/\s+/g, " ");
 }
 
-export async function bookMeetingOnCalendly(leadId: string, selectedSlot: string): Promise<BookingResult> {
+export async function bookMeetingOnCalendly(
+  leadId: string,
+  selectedSlot: string,
+  opts?: { availabilitySource?: AvailabilitySource }
+): Promise<BookingResult> {
   try {
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
@@ -416,7 +441,10 @@ export async function bookMeetingOnCalendly(leadId: string, selectedSlot: string
       return { success: false, error: "No Calendly event type configured" };
     }
 
-    const tryQuestionsEnabled = answerState.hasAllRequiredAnswers && !!questionsEventTypeUri;
+    const tryQuestionsEnabled =
+      opts?.availabilitySource === "DIRECT_BOOK"
+        ? false
+        : answerState.hasAllRequiredAnswers && !!questionsEventTypeUri;
 
     type CalendlyQuestionsAndAnswers = Array<{ question: string; answer: string; position: number }>;
 

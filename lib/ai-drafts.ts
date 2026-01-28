@@ -28,6 +28,8 @@ import {
 import { enforceCanonicalBookingLink, replaceEmDashesWithCommaSpace } from "@/lib/ai-drafts/step3-verifier";
 import { getBookingProcessInstructions } from "@/lib/booking-process-instructions";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
+import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
+import type { AvailabilitySource } from "@prisma/client";
 
 type DraftChannel = "sms" | "email" | "linkedin";
 
@@ -1183,7 +1185,16 @@ export async function generateResponseDraft(
 
     if (shouldConsiderScheduling && lead?.clientId) {
       try {
-        const slots = await getWorkspaceAvailabilitySlotsUtc(lead.clientId, { refreshIfStale: true });
+        const answerState = await getLeadQualificationAnswerState({ leadId, clientId: lead.clientId });
+        const requestedAvailabilitySource: AvailabilitySource =
+          answerState.requiredQuestionIds.length > 0 && !answerState.hasAllRequiredAnswers
+            ? "DIRECT_BOOK"
+            : "DEFAULT";
+
+        const slots = await getWorkspaceAvailabilitySlotsUtc(lead.clientId, {
+          refreshIfStale: true,
+          availabilitySource: requestedAvailabilitySource,
+        });
         if (slots.slotsUtc.length > 0) {
           const offeredAtIso = new Date().toISOString();
           const offeredAt = new Date(offeredAtIso);
@@ -1212,7 +1223,9 @@ export async function generateResponseDraft(
 
           const anchor = startAfterUtc && startAfterUtc > offeredAt ? startAfterUtc : offeredAt;
           const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
-          const offerCounts = await getWorkspaceSlotOfferCountsForRange(lead.clientId, anchor, rangeEnd);
+          const offerCounts = await getWorkspaceSlotOfferCountsForRange(lead.clientId, anchor, rangeEnd, {
+            availabilitySource: slots.availabilitySource,
+          });
 
           const selectedUtcIso = selectDistributedAvailabilitySlots({
             slotsUtcIso: slots.slotsUtc,
@@ -1242,6 +1255,7 @@ export async function generateResponseDraft(
                     datetime: s.datetime,
                     label: s.label,
                     offeredAt: offeredAtIso,
+                    availabilitySource: slots.availabilitySource,
                   }))
                 ),
               },
@@ -1251,6 +1265,7 @@ export async function generateResponseDraft(
               clientId: lead.clientId,
               slotUtcIsoList: formatted.map((s) => s.datetime),
               offeredAt,
+              availabilitySource: slots.availabilitySource,
             });
           }
         }

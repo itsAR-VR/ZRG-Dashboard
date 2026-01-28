@@ -52,21 +52,45 @@ export async function GET(request: NextRequest) {
 
     try {
       const timeBudgetMsParam = request.nextUrl.searchParams.get("timeBudgetMs");
-      const timeBudgetMs = timeBudgetMsParam ? Number.parseInt(timeBudgetMsParam, 10) : undefined;
+      const fromQuery = timeBudgetMsParam ? Number.parseInt(timeBudgetMsParam, 10) : null;
+      const fromEnv = process.env.AVAILABILITY_CRON_TIME_BUDGET_MS
+        ? Number.parseInt(process.env.AVAILABILITY_CRON_TIME_BUDGET_MS, 10)
+        : null;
+      const overallBudgetMs = Number.isFinite(fromQuery)
+        ? Math.max(10_000, Math.min(55_000, fromQuery as number))
+        : Number.isFinite(fromEnv)
+          ? Math.max(10_000, Math.min(55_000, fromEnv as number))
+          : 55_000;
 
       const concurrencyParam = request.nextUrl.searchParams.get("concurrency");
       const concurrency = concurrencyParam ? Number.parseInt(concurrencyParam, 10) : undefined;
 
-      const result = await refreshAvailabilityCachesDue({
+      const defaultBudgetMs = Math.max(10_000, Math.floor(overallBudgetMs * 0.75));
+      const directBudgetMs = Math.max(0, overallBudgetMs - defaultBudgetMs);
+
+      const defaultResult = await refreshAvailabilityCachesDue({
         mode: "all",
-        timeBudgetMs,
+        timeBudgetMs: defaultBudgetMs,
         concurrency,
         invocationId,
+        availabilitySource: "DEFAULT",
       });
+
+      const directBookResult =
+        directBudgetMs >= 10_000
+          ? await refreshAvailabilityCachesDue({
+              mode: "all",
+              timeBudgetMs: directBudgetMs,
+              concurrency,
+              invocationId,
+              availabilitySource: "DIRECT_BOOK",
+            })
+          : null;
 
       return NextResponse.json({
         success: true,
-        ...result,
+        default: defaultResult,
+        directBook: directBookResult,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
@@ -88,4 +112,3 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   return GET(request);
 }
-

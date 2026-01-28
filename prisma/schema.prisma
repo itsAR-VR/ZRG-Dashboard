@@ -20,6 +20,11 @@ enum MeetingBookingProvider {
   CALENDLY
 }
 
+enum AvailabilitySource {
+  DEFAULT
+  DIRECT_BOOK
+}
+
 enum AppointmentStatus {
   CONFIRMED
   CANCELED
@@ -176,7 +181,7 @@ model Client {
   settings      WorkspaceSettings?  // One-to-one relation with settings
   followUpSequences FollowUpSequence[]  // Follow-up sequence templates
   calendarLinks CalendarLink[]      // Multiple calendar links for availability
-  availabilityCache WorkspaceAvailabilityCache?
+  availabilityCaches WorkspaceAvailabilityCache[]
   offeredSlots   WorkspaceOfferedSlot[]
   aiInteractions AIInteraction[]
   backgroundJobs BackgroundJob[]
@@ -1198,8 +1203,9 @@ model CalendarLink {
 // Refreshed by cron every 10 minutes (and on-demand when stale).
 model WorkspaceAvailabilityCache {
   id                  String      @id @default(uuid())
-  clientId            String      @unique
+  clientId            String
   client              Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  availabilitySource  AvailabilitySource @default(DEFAULT)
   calendarLinkId      String?
   calendarLink        CalendarLink? @relation(fields: [calendarLinkId], references: [id], onDelete: SetNull)
   calendarType        String      // 'calendly' | 'hubspot' | 'ghl' | 'unknown'
@@ -1215,6 +1221,7 @@ model WorkspaceAvailabilityCache {
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
 
+  @@unique([clientId, availabilitySource])
   @@index([clientId])
   @@index([staleAt])
   @@index([calendarLinkId])
@@ -1226,16 +1233,17 @@ model WorkspaceOfferedSlot {
   id            String   @id @default(uuid())
   clientId      String
   client        Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  availabilitySource AvailabilitySource @default(DEFAULT)
   slotUtc       DateTime
   offeredCount  Int      @default(0)
   lastOfferedAt DateTime @default(now())
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  @@unique([clientId, slotUtc])
+  @@unique([clientId, availabilitySource, slotUtc])
   @@index([clientId])
   @@index([slotUtc])
-  @@index([clientId, slotUtc])
+  @@index([clientId, availabilitySource, slotUtc])
 }
 
 // =============================================================================

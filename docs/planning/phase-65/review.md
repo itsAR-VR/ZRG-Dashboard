@@ -72,5 +72,15 @@
 - Overlap hotspot: `lib/ai/prompt-runner/runner.ts` is also referenced by Phase 63; `npm run build` passing indicates the combined state typechecks and bundles.
 - Phase 66 plan references Phase 65 overlap, but its plan text indicates no code overlap with prompt runner changes.
 
-## Next Steps (to fully close the phase)
+## Re-verification (2026-01-28)
+
+### Quality gates (combined working tree)
+- `npm run lint` — ✅ pass (0 errors, 18 warnings)
+- `npm run build` — ✅ pass
+- `npm test` — ✅ pass
+
+### Notes
+- Earlier build failures tied to an uncommitted `AvailabilitySource` reference have been resolved by Phase 62j (introduces `AvailabilitySource` in `prisma/schema.prisma` and updates call sites).
+
+## Next Steps (to fully close Phase 65)
 - Deploy and run the SQL query in `docs/planning/phase-65/plan.md` to confirm `"timeout must be an integer"` errors drop to 0.

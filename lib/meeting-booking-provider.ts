@@ -48,8 +48,23 @@ export async function resolveBookingLink(
   const provider = settings?.meetingBookingProvider ?? "GHL";
 
   if (provider === "CALENDLY") {
-    const link = (settings?.calendlyEventTypeLink || "").trim();
-    return { bookingLink: link || null, hasPublicOverride: false };
+    const calendarLink = await prisma.calendarLink.findFirst({
+      where: {
+        clientId,
+        isDefault: true,
+      },
+      select: { url: true, publicUrl: true },
+    });
+
+    const publicUrl = (calendarLink?.publicUrl || "").trim();
+    if (publicUrl) {
+      return { bookingLink: publicUrl, hasPublicOverride: true };
+    }
+
+    const settingsLink = (settings?.calendlyEventTypeLink || "").trim();
+    const url = (calendarLink?.url || "").trim();
+
+    return { bookingLink: settingsLink || url || null, hasPublicOverride: false };
   }
 
   const calendarLink = await prisma.calendarLink.findFirst({

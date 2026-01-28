@@ -1,5 +1,6 @@
 import "@/lib/server-dns";
 import { prisma } from "@/lib/prisma";
+import type { AvailabilitySource } from "@prisma/client";
 
 function parseUtcIsoToDate(iso: string): Date | null {
   const d = new Date(iso);
@@ -14,12 +15,17 @@ function parseUtcIsoToDate(iso: string): Date | null {
 export async function getWorkspaceSlotOfferCountsForRange(
   clientId: string,
   rangeStart: Date,
-  rangeEnd: Date
+  rangeEnd: Date,
+  opts?: { availabilitySource?: AvailabilitySource }
 ): Promise<Map<string, number>> {
+  const availabilitySource: AvailabilitySource =
+    opts?.availabilitySource === "DIRECT_BOOK" ? "DIRECT_BOOK" : "DEFAULT";
+
   try {
     const rows = await prisma.workspaceOfferedSlot.findMany({
       where: {
         clientId,
+        availabilitySource,
         slotUtc: { gte: rangeStart, lte: rangeEnd },
       },
       select: { slotUtc: true, offeredCount: true },
@@ -44,8 +50,11 @@ export async function incrementWorkspaceSlotOffersBatch(opts: {
   clientId: string;
   slotUtcIsoList: string[];
   offeredAt?: Date;
+  availabilitySource?: AvailabilitySource;
 }): Promise<void> {
   const offeredAt = opts.offeredAt ?? new Date();
+  const availabilitySource: AvailabilitySource =
+    opts.availabilitySource === "DIRECT_BOOK" ? "DIRECT_BOOK" : "DEFAULT";
   const slotDates = Array.from(
     new Set(
       opts.slotUtcIsoList
@@ -62,13 +71,20 @@ export async function incrementWorkspaceSlotOffersBatch(opts: {
     // contend with hot-path DB work. Sequential upserts keep the operation short and resilient.
     for (const slotUtc of slotDates) {
       await prisma.workspaceOfferedSlot.upsert({
-        where: { clientId_slotUtc: { clientId: opts.clientId, slotUtc } },
+        where: {
+          clientId_availabilitySource_slotUtc: {
+            clientId: opts.clientId,
+            availabilitySource,
+            slotUtc,
+          },
+        },
         update: {
           offeredCount: { increment: 1 },
           lastOfferedAt: offeredAt,
         },
         create: {
           clientId: opts.clientId,
+          availabilitySource,
           slotUtc,
           offeredCount: 1,
           lastOfferedAt: offeredAt,
@@ -84,10 +100,12 @@ export async function incrementWorkspaceSlotOffers(opts: {
   clientId: string;
   slotUtcIso: string;
   offeredAt?: Date;
+  availabilitySource?: AvailabilitySource;
 }): Promise<void> {
   return incrementWorkspaceSlotOffersBatch({
     clientId: opts.clientId,
     slotUtcIsoList: [opts.slotUtcIso],
     offeredAt: opts.offeredAt,
+    availabilitySource: opts.availabilitySource,
   });
 }

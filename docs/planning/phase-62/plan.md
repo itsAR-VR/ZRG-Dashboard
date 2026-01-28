@@ -24,6 +24,19 @@ Enable direct booking (we book them, they don't self-schedule) for all scenarios
 
 **Question Mapping:** Calendly/GHL have the **same questions** as ZRG's `WorkspaceSettings.qualificationQuestions`. This allows direct mapping without separate configuration.
 
+## Clarification (2026-01-27)
+
+For Calendly workspaces, we explicitly support **two Calendly event types** (same token / same team):
+
+- **Link A (With Qualification Questions)**:
+  - Used for **sending** the booking link in outbound messaging (AI drafts / follow-ups).
+    - Outbound “send link” should be the **branded/public override** link when configured (expected: default `CalendarLink.publicUrl`), while the raw event-type link/URI remains the canonical booking target for API booking + mismatch tooling.
+  - Used for **direct/API booking** only when qualification answers exist and are complete (we pass answers through).
+- **Link B (No Qualification Questions)**:
+  - Used for **direct/API booking** when qualification answers are missing (we skip qualification fields).
+
+This means `Lead.preferredCalendarLinkId` is **not** the mechanism for picking A vs B; selection is driven by an AI + deterministic gating step at booking time (see Phase 62j).
+
 ## Concurrent Phases
 
 | Phase | Status | Overlap | Coordination |
@@ -64,6 +77,8 @@ Enable direct booking (we book them, they don't self-schedule) for all scenarios
 * [x] Update booking logic to route based on **required-answer completeness** (not just “any answer”)
 * [x] Update Calendly API to pass `questions_and_answers` when available
 * [x] Update Settings UI with dual booking link configuration
+* [x] Add an AI “booking target selector” step (A vs B) so booking link selection isn’t inferred from lead calendar overrides (matches latest product intent)
+* [x] Add dual availability-source support (A/B) so offered slots and booking targets cannot drift
 * [ ] Ensure all three scenarios result in successful direct booking (end-to-end QA) — pending live smoke tests against real Calendly/GHL accounts
 
 ## Constraints
@@ -76,9 +91,13 @@ Enable direct booking (we book them, they don't self-schedule) for all scenarios
 - Backward compatible: workspaces without direct-book link fall back to single-link behavior
 
 ## Decisions (Locked)
+- Scope: Link A / Link B configuration is **client-scoped** (stored on `WorkspaceSettings` keyed by `clientId = Client.id`). It is **not** shared across multiple clients, even if multiple clients belong to the same “white-label workspace” / owner user. (locked 2026-01-27)
 - Scenario 3 availability matching: **exact slot match only** (no tolerance window).
 - Scenario 3 auto-book confidence threshold: `>= 0.9` (with deterministic gates).
 - Qualification answer extraction confidence threshold: `>= 0.7` (used for routing + Calendly payload construction).
+- Availability caches are stored per client **and** per source (`DEFAULT` vs `DIRECT_BOOK`) using a composite unique key `(clientId, availabilitySource)` (Phase 62j locked 2026-01-27).
+- Slot offer distribution counts are stored per client **and** per source using `(clientId, availabilitySource, slotUtc)` to prevent A/B mixing (Phase 62j locked 2026-01-27).
+- `Lead.offeredSlots` remains JSON text, but each slot record will include `availabilitySource` for mismatch-safe booking (Phase 62j locked 2026-01-27).
 
 ## Success Criteria
 - [ ] Lead with **all required** qualification answers → books using questions-enabled link with answers passed (implemented in `lib/booking.ts`; needs live Calendly smoke test)
@@ -87,9 +106,11 @@ Enable direct booking (we book them, they don't self-schedule) for all scenarios
 - [ ] Lead proposing their own time (no prior questions) → books using direct-book link (implemented in `lib/followup-engine.ts`; needs live smoke test)
 - [x] Calendly invitee payload includes `questions_and_answers` with `position` (unit test)
 - [ ] Settings UI allows configuring both booking links per provider (implemented; needs UI smoke test + persistence verification)
+- [x] Availability slots are sourced from the same booking target (A or B) that we will use to book (implemented via `AvailabilitySource`; needs live smoke test)
+- [x] AI booking target selector returns a valid choice (A or B) with bounded tokens/timeouts and safe fallbacks when incomplete (implemented; needs live smoke test)
 - [x] `npm run lint` passes
 - [x] `npm run build` passes
-- [x] `npm run db:push` completes successfully
+- [x] `npm run db:push` completes successfully (ran with `-- --accept-data-loss` after verifying no duplicates for new unique constraints)
 - [x] `npm test` passes
 
 ## Subphase Index
@@ -102,6 +123,7 @@ Enable direct booking (we book them, they don't self-schedule) for all scenarios
 * g — Hardening: required-answer completeness + ensure extraction runs before booking across all entrypoints
 * h — Scenario 3: lead-proposed time auto-booking (no offered slots) + safety fallbacks
 * i — Plan Updates: Calendly docs confirmed (position required) + Scenario 3 auto-book decision + JSON schema choice
+* j — Availability + AI Selector: dual availability sources + AI booking target selection (A vs B)
 
 ## Repo Reality Check (RED TEAM)
 
@@ -193,21 +215,33 @@ Enable direct booking (we book them, they don't self-schedule) for all scenarios
 - **Integration (62f):** Wired extraction into booking flow to run before link selection.
 - **Hardening (62g-h):** Ensured required-answer completeness gates booking, Scenario 3 lead-proposed times use direct-book link with availability intersection gating.
 - **Plan Updates (62i):** Confirmed Calendly `questions_and_answers` schema requires `position`, locked decision to use Json? for storage.
+- **Availability + AI Selector (62j):** Added `AvailabilitySource` and dual availability caches (`DEFAULT`/`DIRECT_BOOK`) so offered slots and booking targets cannot drift. Added AI booking-target selection (A vs B) with deterministic fallbacks.
+- **Outbound Send Link Override:** `lib/meeting-booking-provider.ts:resolveBookingLink()` now uses the default `CalendarLink.publicUrl` when configured for Calendly (branded/public outbound link), otherwise falls back to the raw event-type link.
 
 ### Key Decisions
 1. **"All required answered" gating:** Questions-enabled booking only when ALL required answers are complete with confidence ≥0.7
 2. **Position mapping:** Calendly `custom_questions[].position` fetched via event type API and mapped by normalized question text
 3. **Graceful degradation:** Retry with direct-book link if questions-enabled fails; explicit error if no fallback available
+4. **Offer/booking consistency:** Offered slots include `availabilitySource` and booking uses the same source to avoid A/B drift
 
 ### Artifacts
 - `lib/qualification-answer-extraction.ts` — NEW module
+- `lib/booking-target-selector.ts` — NEW module
+- `lib/meeting-booking-provider.ts` — Calendly branded/public outbound booking link override
 - `lib/__tests__/calendly-invitee-questions.test.ts` — Unit tests for Calendly Q&A
 - Schema fields: `Lead.qualificationAnswers`, `WorkspaceSettings.calendlyDirectBookEventTypeLink/Uri`, `ghlDirectBookCalendarId`
+- Schema additions: `AvailabilitySource`, `WorkspaceAvailabilityCache.availabilitySource`, `WorkspaceOfferedSlot.availabilitySource`
+- `lib/availability-cache.ts` — Dual-source availability cache support
+- `lib/slot-offer-ledger.ts` — Source-aware offer counts
+- `app/api/cron/availability/route.ts` — Refresh both sources
 
-### Verification (2026-01-27)
+### Verification (2026-01-28)
 - `npm run lint`: ✅ pass (warnings only, no errors)
 - `npm run build`: ✅ pass
-- `npm run db:push`: ✅ pass ("already in sync")
+- DB de-dupe check (pre-constraint): ✅ no duplicates found for:
+  - `WorkspaceAvailabilityCache(clientId)`
+  - `WorkspaceOfferedSlot(clientId, slotUtc)`
+- `npm run db:push -- --accept-data-loss`: ✅ pass (unique constraints applied)
 - `npm test`: ✅ pass (51 tests)
 
 ### Follow-up Items (Optional)

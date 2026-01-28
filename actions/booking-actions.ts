@@ -19,7 +19,7 @@ import { getWorkspaceSlotOfferCountsForRange } from "@/lib/slot-offer-ledger";
 import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById } from "@/lib/workspace-access";
 import { resolveCalendlyEventTypeUuidFromLink } from "@/lib/calendly-link";
-import { AppointmentStatus, type MeetingBookingProvider, type AppointmentSource } from "@prisma/client";
+import { AppointmentStatus, type AvailabilitySource, type MeetingBookingProvider, type AppointmentSource } from "@prisma/client";
 
 // Re-export types for use in components
 export type { GHLCalendar, GHLUser, GHLAppointment };
@@ -39,6 +39,7 @@ export interface OfferedSlot {
     datetime: string;  // ISO format
     label: string;     // Human-readable (e.g., "3pm EST on Thursday")
     offeredAt: string; // When this slot was offered
+    availabilitySource?: AvailabilitySource;
 }
 
 export interface BookingAvailabilitySlot {
