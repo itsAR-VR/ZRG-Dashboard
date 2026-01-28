@@ -1007,14 +1007,19 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                             {instance.status}
                           </Badge>
                         </div>
-                        <div className="flex items-center justify-between text-xs text-muted-foreground">
-                          <span>Step {instance.currentStep + 1}/{instance.totalSteps}</span>
-                          {instance.nextStepDue && instance.status === "active" && (
-                            <span>Next: {new Date(instance.nextStepDue).toLocaleDateString()}</span>
-                          )}
-                          {instance.pausedReason === "lead_replied" && (
-                            <span className="text-amber-500">Paused: Lead replied</span>
-                          )}
+                        <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+                          <div className="flex items-center justify-between">
+                            <span>Step {instance.currentStep + 1}/{instance.totalSteps}</span>
+                            <span>Started: {new Date(instance.startedAt).toLocaleDateString()}</span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            {instance.nextStepDue && instance.status === "active" && (
+                              <span>Next: {new Date(instance.nextStepDue).toLocaleDateString()}</span>
+                            )}
+                            {instance.pausedReason === "lead_replied" && (
+                              <span className="text-amber-500">Paused: Lead replied</span>
+                            )}
+                          </div>
                         </div>
                         {/* Progress bar */}
                         <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">

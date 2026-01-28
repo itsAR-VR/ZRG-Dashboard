@@ -19,6 +19,8 @@ import {
   Play,
   Pause,
   Copy,
+  Info,
+  HelpCircle,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -79,6 +81,35 @@ const TRIGGER_OPTIONS = [
   { value: "meeting_selected", label: "After meeting selected" },
   { value: "manual", label: "Manual trigger only" },
 ];
+
+// Built-in sequences have trigger behavior controlled by code, not the triggerOn field.
+// This map provides accurate display labels for these sequences.
+const BUILT_IN_TRIGGER_OVERRIDES: Record<string, { label: string; tooltip: string }> = {
+  "Meeting Requested Day 1/2/5/7": {
+    label: "On setter email reply",
+    tooltip: "Starts automatically when you send your first email reply to this lead",
+  },
+  "No Response Day 2/5/7": {
+    label: "Backfill only",
+    tooltip: "Auto-start disabled. Only applies via manual backfill for positive leads who stopped responding.",
+  },
+};
+
+/**
+ * Resolves the display label for a sequence's trigger.
+ * Built-in sequences use overrides; custom sequences use the triggerOn field.
+ */
+function getTriggerDisplay(
+  sequenceName: string,
+  triggerOn: string
+): { label: string; tooltip?: string; isBuiltIn: boolean } {
+  const override = BUILT_IN_TRIGGER_OVERRIDES[sequenceName];
+  if (override) {
+    return { label: override.label, tooltip: override.tooltip, isBuiltIn: true };
+  }
+  const defaultLabel = TRIGGER_OPTIONS.find((t) => t.value === triggerOn)?.label || triggerOn;
+  return { label: defaultLabel, isBuiltIn: false };
+}
 
 const CONDITION_OPTIONS = [
   { value: "always", label: "Always run" },
@@ -363,6 +394,38 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
         </div>
       </div>
 
+      {/* Help Section */}
+      <Collapsible>
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" size="sm" className="w-full justify-start text-muted-foreground hover:text-foreground">
+            <HelpCircle className="h-4 w-4 mr-2" />
+            How do follow-up sequences work?
+            <ChevronDown className="h-4 w-4 ml-auto" />
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <Card className="mt-2 border-dashed">
+            <CardContent className="pt-4 text-sm space-y-3">
+              <div>
+                <h5 className="font-medium mb-1">Trigger Types</h5>
+                <ul className="text-muted-foreground space-y-1 ml-4 list-disc">
+                  <li><strong>On setter email reply</strong>: &quot;Meeting Requested&quot; sequence starts automatically when you send your first email reply to a lead</li>
+                  <li><strong>After meeting selected</strong>: &quot;Post-Booking&quot; sequence starts when a meeting is booked</li>
+                  <li><strong>Backfill only</strong>: &quot;No Response&quot; sequence is disabled for auto-start; only runs via manual backfill</li>
+                  <li><strong>Manual trigger</strong>: Custom sequences you start from the CRM drawer</li>
+                </ul>
+              </div>
+              <div>
+                <h5 className="font-medium mb-1">Viewing Active Sequences</h5>
+                <p className="text-muted-foreground">
+                  Open the CRM drawer for any lead to see their active follow-up instances, pause/resume sequences, and manually start new ones.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </CollapsibleContent>
+      </Collapsible>
+
       {/* Sequences List */}
       {sequences.length === 0 ? (
         <Card>
@@ -424,9 +487,24 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                             {sequence.isActive ? "Active" : "Paused"}
                           </Badge>
                         </div>
-                        <p className="text-sm text-muted-foreground">
+                        <p className="text-sm text-muted-foreground flex items-center gap-1">
                           {sequence.steps.length} steps ·{" "}
-                          {TRIGGER_OPTIONS.find((t) => t.value === sequence.triggerOn)?.label}
+                          {(() => {
+                            const trigger = getTriggerDisplay(sequence.name, sequence.triggerOn);
+                            return (
+                              <>
+                                {trigger.label}
+                                {trigger.tooltip && (
+                                  <span
+                                    className="inline-flex items-center cursor-help"
+                                    title={trigger.tooltip}
+                                  >
+                                    <Info className="h-3 w-3 text-muted-foreground/60" />
+                                  </span>
+                                )}
+                              </>
+                            );
+                          })()}
                         </p>
                       </div>
                     </div>
@@ -558,27 +636,46 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                 />
               </div>
               <div className="space-y-2">
-                <Label>Trigger</Label>
-                <Select
-                  value={formData.triggerOn}
-                  onValueChange={(v) =>
-                    setFormData({
-                      ...formData,
-                      triggerOn: v as typeof formData.triggerOn,
-                    })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TRIGGER_OPTIONS.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Label className="flex items-center gap-1">
+                  Trigger
+                  {editingSequence && BUILT_IN_TRIGGER_OVERRIDES[editingSequence.name] && (
+                    <span
+                      className="inline-flex items-center cursor-help"
+                      title="Built-in sequence: trigger is controlled by system behavior, not this setting"
+                    >
+                      <Info className="h-3 w-3 text-muted-foreground/60" />
+                    </span>
+                  )}
+                </Label>
+                {editingSequence && BUILT_IN_TRIGGER_OVERRIDES[editingSequence.name] ? (
+                  // Built-in sequences: show read-only trigger info
+                  <div className="flex items-center gap-2 h-10 px-3 rounded-md border bg-muted/50 text-sm">
+                    <span>{BUILT_IN_TRIGGER_OVERRIDES[editingSequence.name].label}</span>
+                    <span className="text-xs text-muted-foreground">(system-controlled)</span>
+                  </div>
+                ) : (
+                  // Custom sequences: editable dropdown
+                  <Select
+                    value={formData.triggerOn}
+                    onValueChange={(v) =>
+                      setFormData({
+                        ...formData,
+                        triggerOn: v as typeof formData.triggerOn,
+                      })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TRIGGER_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
             </div>
 
