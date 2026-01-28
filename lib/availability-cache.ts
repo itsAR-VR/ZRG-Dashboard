@@ -59,7 +59,9 @@ function normalizeAvailabilitySourceForClient(opts: {
     | {
         meetingBookingProvider?: "GHL" | "CALENDLY" | null;
         calendlyEventTypeLink?: string | null;
+        calendlyEventTypeUri?: string | null;
         calendlyDirectBookEventTypeLink?: string | null;
+        calendlyDirectBookEventTypeUri?: string | null;
         ghlDefaultCalendarId?: string | null;
         ghlDirectBookCalendarId?: string | null;
       }
@@ -73,8 +75,17 @@ function normalizeAvailabilitySourceForClient(opts: {
   if (provider === "CALENDLY") {
     const linkA = (opts.settings?.calendlyEventTypeLink || "").trim();
     const linkB = (opts.settings?.calendlyDirectBookEventTypeLink || "").trim();
-    if (!linkB) return "DEFAULT";
-    if (linkA && linkB === linkA) return "DEFAULT";
+    const uriA = (opts.settings?.calendlyEventTypeUri || "").trim();
+    const uriB = (opts.settings?.calendlyDirectBookEventTypeUri || "").trim();
+
+    const hasA = Boolean(linkA || uriA);
+    const hasB = Boolean(linkB || uriB);
+
+    if (!hasB) return "DEFAULT";
+    if (linkA && linkB && linkB === linkA) return "DEFAULT";
+    if (uriA && uriB && uriB === uriA) return "DEFAULT";
+    if (!hasA) return "DIRECT_BOOK";
+
     return "DIRECT_BOOK";
   }
 
@@ -91,7 +102,9 @@ function resolveAvailabilityUrl(opts: {
     | {
         meetingBookingProvider?: "GHL" | "CALENDLY" | null;
         calendlyEventTypeLink?: string | null;
+        calendlyEventTypeUri?: string | null;
         calendlyDirectBookEventTypeLink?: string | null;
+        calendlyDirectBookEventTypeUri?: string | null;
       }
     | null
     | undefined;
@@ -106,12 +119,29 @@ function resolveAvailabilityUrl(opts: {
 
   const linkA = normalizeCalendarUrl((opts.settings?.calendlyEventTypeLink || "").trim());
   const linkB = normalizeCalendarUrl((opts.settings?.calendlyDirectBookEventTypeLink || "").trim());
+  const uriA = normalizeCalendarUrl((opts.settings?.calendlyEventTypeUri || "").trim());
+  const uriB = normalizeCalendarUrl((opts.settings?.calendlyDirectBookEventTypeUri || "").trim());
 
-  return opts.availabilitySource === "DIRECT_BOOK" ? linkB || linkA || baseUrl : linkA || baseUrl;
+  return opts.availabilitySource === "DIRECT_BOOK"
+    ? linkB || uriB || linkA || uriA || baseUrl
+    : linkA || uriA || baseUrl;
 }
 
 function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function tryExtractCalendlyEventTypeUuid(value: string | null | undefined): string | null {
+  const trimmed = (value || "").trim();
+  if (!trimmed) return null;
+
+  // Supports:
+  // - https://api.calendly.com/event_types/<uuid>
+  // - https://calendly.com/api/booking/event_types/<uuid>/...
+  const match = trimmed.match(/\/event_types\/([0-9a-f-]{16,})(?:$|[/?#])/i);
+  if (!match) return null;
+
+  return match[1] || null;
 }
 
 function dedupeSortedIso(slotsUtc: string[]): string[] {
@@ -151,7 +181,9 @@ export async function refreshWorkspaceAvailabilityCache(
           ghlDefaultCalendarId: true,
           ghlDirectBookCalendarId: true,
           calendlyEventTypeLink: true,
+          calendlyEventTypeUri: true,
           calendlyDirectBookEventTypeLink: true,
+          calendlyDirectBookEventTypeUri: true,
         },
       }),
     ]);
@@ -313,21 +345,30 @@ export async function refreshWorkspaceAvailabilityCache(
         : null;
 
     if (calendarType === "calendly") {
+      const settingsEventTypeUuid =
+        availabilitySource === "DIRECT_BOOK"
+          ? tryExtractCalendlyEventTypeUuid(settings?.calendlyDirectBookEventTypeUri)
+          : tryExtractCalendlyEventTypeUuid(settings?.calendlyEventTypeUri);
+
       const calendly = await fetchCalendlyAvailabilityWithMeta(calendarUrl, DEFAULT_LOOKAHEAD_DAYS, {
-        eventTypeUuid: cachedMeta?.calendlyEventTypeUuid ?? null,
+        eventTypeUuid:
+          settingsEventTypeUuid ?? cachedMeta?.calendlyEventTypeUuid ?? tryExtractCalendlyEventTypeUuid(calendarUrl),
         availabilityTimezone: cachedMeta?.calendlyAvailabilityTimezone ?? null,
       });
       rawSlots = calendly.slots;
       providerMeta.calendlyEventTypeUuid = calendly.eventTypeUuid;
       providerMeta.calendlyAvailabilityTimezone = calendly.availabilityTimezone;
 
-      const fallbackLink =
-        availabilitySource === "DIRECT_BOOK"
-          ? normalizeCalendarUrl((settings?.calendlyDirectBookEventTypeLink || "").trim())
-          : normalizeCalendarUrl((settings?.calendlyEventTypeLink || "").trim());
-      if (rawSlots.length === 0 && fallbackLink && fallbackLink !== calendarUrl) {
-        const fallback = await fetchCalendlyAvailabilityWithMeta(fallbackLink, DEFAULT_LOOKAHEAD_DAYS, {
-          eventTypeUuid: cachedMeta?.calendlyEventTypeUuid ?? null,
+      const fallbackUrl = resolveAvailabilityUrl({
+        calendarLinkUrl: calendarLink.url,
+        settings,
+        availabilitySource,
+      });
+
+      if (rawSlots.length === 0 && fallbackUrl && fallbackUrl !== calendarUrl) {
+        const fallback = await fetchCalendlyAvailabilityWithMeta(fallbackUrl, DEFAULT_LOOKAHEAD_DAYS, {
+          eventTypeUuid:
+            settingsEventTypeUuid ?? cachedMeta?.calendlyEventTypeUuid ?? tryExtractCalendlyEventTypeUuid(fallbackUrl),
           availabilityTimezone: cachedMeta?.calendlyAvailabilityTimezone ?? null,
         });
 
@@ -335,8 +376,8 @@ export async function refreshWorkspaceAvailabilityCache(
           rawSlots = fallback.slots;
           providerMeta.calendlyEventTypeUuid = fallback.eventTypeUuid;
           providerMeta.calendlyAvailabilityTimezone = fallback.availabilityTimezone;
-          providerMeta.resolvedUrl = fallbackLink;
-          calendarUrl = fallbackLink;
+          providerMeta.resolvedUrl = fallbackUrl;
+          calendarUrl = fallbackUrl;
         }
       }
     } else if (calendarType === "hubspot") {
@@ -500,7 +541,9 @@ export async function getWorkspaceAvailabilityCache(
             meetingDurationMinutes: true,
             meetingBookingProvider: true,
             calendlyEventTypeLink: true,
+            calendlyEventTypeUri: true,
             calendlyDirectBookEventTypeLink: true,
+            calendlyDirectBookEventTypeUri: true,
             ghlDefaultCalendarId: true,
             ghlDirectBookCalendarId: true,
           },
@@ -763,7 +806,9 @@ export async function refreshAvailabilityCachesDue(opts?: {
           select: {
             meetingBookingProvider: true,
             calendlyEventTypeLink: true,
+            calendlyEventTypeUri: true,
             calendlyDirectBookEventTypeLink: true,
+            calendlyDirectBookEventTypeUri: true,
             ghlDefaultCalendarId: true,
             ghlDirectBookCalendarId: true,
           },
@@ -807,7 +852,9 @@ export async function refreshAvailabilityCachesDue(opts?: {
               select: {
                 meetingBookingProvider: true,
                 calendlyEventTypeLink: true,
+                calendlyEventTypeUri: true,
                 calendlyDirectBookEventTypeLink: true,
+                calendlyDirectBookEventTypeUri: true,
                 ghlDefaultCalendarId: true,
                 ghlDirectBookCalendarId: true,
               },
@@ -831,7 +878,9 @@ export async function refreshAvailabilityCachesDue(opts?: {
           select: {
             meetingBookingProvider: true,
             calendlyEventTypeLink: true,
+            calendlyEventTypeUri: true,
             calendlyDirectBookEventTypeLink: true,
+            calendlyDirectBookEventTypeUri: true,
             ghlDefaultCalendarId: true,
             ghlDirectBookCalendarId: true,
           },
