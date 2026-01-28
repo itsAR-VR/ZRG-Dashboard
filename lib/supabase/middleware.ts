@@ -172,15 +172,19 @@ export async function updateSession(request: NextRequest) {
   const rawAuthCookie = getSupabaseAuthCookieValue(request);
   if (rawAuthCookie) {
     const parsedSession = tryParseSupabaseSession(rawAuthCookie);
-    const refreshToken = parsedSession ? findRefreshToken(parsedSession) : null;
-    if (!refreshToken) {
-      markSupabaseAuthCookiesForClearing();
-      if (!isPublicRoute) {
-        const url = request.nextUrl.clone();
-        url.pathname = "/auth/login";
-        return applySupabaseAuthCookieClears(NextResponse.redirect(url));
+    // Only treat the cookie as invalid when we can parse it but it lacks a refresh token.
+    // If parsing fails, defer to Supabase's own session validation to avoid false logouts.
+    if (parsedSession) {
+      const refreshToken = findRefreshToken(parsedSession);
+      if (!refreshToken) {
+        markSupabaseAuthCookiesForClearing();
+        if (!isPublicRoute) {
+          const url = request.nextUrl.clone();
+          url.pathname = "/auth/login";
+          return applySupabaseAuthCookieClears(NextResponse.redirect(url));
+        }
+        return applySupabaseAuthCookieClears(supabaseResponse);
       }
-      return applySupabaseAuthCookieClears(supabaseResponse);
     }
   }
 
