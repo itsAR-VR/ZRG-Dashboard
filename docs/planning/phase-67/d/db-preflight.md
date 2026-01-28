@@ -1,12 +1,12 @@
 # Phase 67d — Database Preflight Check
 
-## Status: ✅ Already Applied
+## Status: ⏳ Pending Verification
 
-Phase 67d anticipated schema migrations that were already completed in earlier phases.
+This environment has not executed production DB checks. Use the SQL below against the target database before any `db:push`.
 
 ### Schema Status
 
-The `AvailabilitySource` enum and related unique constraints are already in production schema:
+The `AvailabilitySource` enum and related unique constraints are expected in production schema:
 
 ```sql
 -- prisma/schema.prisma (lines 23, 1208, 1224, 1236, 1243, 1246)
@@ -28,12 +28,9 @@ model WorkspaceOfferedSlot {
 
 ### Phase 66 Migration Status
 
-Phase 66 follow-up migration was applied in commits:
-- `d110f1c` — Initial migration script
-- `c7e3bdf` — Bug fixes
-- `1efb2a4` — Create Meeting Requested sequence if missing
-
-No additional migration steps required for Phase 67d.
+Phase 66 migration status must be confirmed in production via the canary + full-run steps:
+- `npx tsx scripts/migrate-followups-phase-66.ts --apply --clientId <uuid>`
+- `npx tsx scripts/migrate-followups-phase-66.ts --apply`
 
 ### Cron Status
 
@@ -63,6 +60,6 @@ Both queries should return 0 rows.
 
 ## Rollback Artifacts
 
-Phase 66 migration created rollback artifacts at:
+Phase 66 migration produces rollback artifacts:
 - Pattern: `scripts/rollback-phase-66g-*.json`
 - Use: `npx tsx scripts/migrate-followups-phase-66.ts --rollback <file>`

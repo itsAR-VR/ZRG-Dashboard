@@ -1,57 +1,33 @@
-# Phase 67b — Error Signature Analysis
+# Phase 67b — Error Signature Hardening Inventory
 
-## Error Pattern Inventory
+## Known Signatures (from `scripts/logs/assert-known-errors.ts`)
 
-Analyzed log file: `logs_result copy.json` (from before Phase 63 deployment)
+| ID | Pattern |
+|----|---------|
+| `ai_max_output_tokens` | `Post-process error: hit max_output_tokens` |
+| `supabase_refresh_token_not_found` | `Invalid Refresh Token: Refresh Token Not Found` |
+| `ghl_missing_phone_number` | `Missing phone number` |
+| `ghl_invalid_country_calling_code` | `Invalid country calling code` |
+| `ghl_sms_dnd` | `DND is active for SMS` |
+| `max_call_stack` | `Maximum call stack size exceeded` |
 
-| ID | Pattern | Count | Source | Status |
-|----|---------|-------|--------|--------|
-| `ai_max_output_tokens` | `Post-process error: hit max_output_tokens` | 19 | `lib/ai-drafts.ts` | **Already Fixed (Phase 63)** — `console.error` removed |
-| `supabase_refresh_token_not_found` | `Invalid Refresh Token: Refresh Token Not Found` | 14 | Supabase client library | **Not Actionable** — logged by @supabase/ssr internally |
-| `ghl_missing_phone_number` | `Missing phone number` | 4 | `lib/ghl-api.ts` | **Already Fixed (Phase 63)** — uses `console.warn` |
-| `ghl_invalid_country_calling_code` | `Invalid country calling code` | 2 | `lib/ghl-api.ts` | **Already Fixed (Phase 63)** — uses `console.warn` |
-| `ghl_sms_dnd` | `DND is active for SMS` | 1 | `lib/ghl-api.ts` | **Already Fixed (Phase 63)** — uses `console.log` |
-| `max_call_stack` | `Maximum call stack size exceeded` | 2 | `actions/analytics-actions.ts:243` | **Still Uses `console.error`** — needs fix |
+## Current Fixes in Working Tree
 
-## Analysis
+1. **Supabase refresh_token_not_found**
+   - Added pre-validation of Supabase auth cookies in `lib/supabase/middleware.ts`.
+   - If cookie is malformed or missing a refresh token, cookies are cleared and `supabase.auth.getUser()` is skipped.
 
-### Already Fixed in Phase 63
+2. **max_call_stack**
+   - Analytics response-time error is logged at warn-level (`actions/analytics-actions.ts`).
 
-1. **ai_max_output_tokens**: The `console.error("[AI Drafts] Primary SMS/LinkedIn generation failed:", ...)` line was removed in commit `c88943a`.
+3. **GHL errors (missing phone / invalid calling code / SMS DND)**
+   - Already downgraded in `lib/ghl-api.ts` to `warn`/`log` in Phase 63.
 
-2. **GHL Errors (DND, missing phone, invalid country code)**: Lines 313-319 in `lib/ghl-api.ts` now properly downgrade these expected errors:
-   - SMS DND → `console.log` (not an error, expected CRM state)
-   - Missing phone/Invalid country code → `console.warn` (data issue, not system error)
+4. **AI max_output_tokens**
+   - `lib/ai-drafts.ts` logs generation retries at warn-level; error-level logging no longer includes the max_output_tokens message.
+   - Prompt runner error message remains for telemetry, but error-level logs should not emit this pattern.
 
-### Not Actionable
+## Remaining Risk
 
-**supabase_refresh_token_not_found**: The error message `[le [AuthApiError]: Invalid Refresh Token...]` is logged by the `@supabase/ssr` library's internal error handler, not by our code. Our middleware (`lib/supabase/middleware.ts`) correctly:
-- Uses `isSupabaseInvalidOrMissingSessionError()` to detect these errors
-- Logs at `console.warn` level when we handle them
-- Clears stale auth cookies to prevent repeated failures
-
-The library's internal logging cannot be suppressed without patching the package. This is a known issue with Supabase SSR.
-
-### Needs Fixing
-
-**max_call_stack (analytics)**: Line 243 in `actions/analytics-actions.ts`:
-```typescript
-console.error("Error calculating response time metrics:", error);
-```
-
-This should be `console.warn` with a guard to prevent large datasets from causing stack overflows.
-
-## Remaining Work
-
-Only **one fix** is needed:
-
-1. **`actions/analytics-actions.ts:243`**: Change `console.error` to `console.warn` for the response time metrics calculation failure. This is a recoverable error (the function returns default metrics).
-
-## Validation
-
-After fix:
-```bash
-npm run logs:check  # Should show 0 errors for the 6 known patterns
-```
-
-Note: `supabase_refresh_token_not_found` will still appear in logs but is not actionable by our code.
+- If external libraries emit error-level logs containing these patterns, `logs:check` may still fail.
+- Post-deploy log export is still required to prove zero hits.

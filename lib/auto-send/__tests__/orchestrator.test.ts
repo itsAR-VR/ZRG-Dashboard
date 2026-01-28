@@ -67,9 +67,68 @@ describe("determineAutoSendMode", () => {
     const context = createContext({ emailCampaign: null, autoReplyEnabled: false });
     assert.equal(determineAutoSendMode(context), "DISABLED");
   });
+
+  it("returns DISABLED when global kill-switch is enabled", () => {
+    const prev = process.env.AUTO_SEND_DISABLED;
+    process.env.AUTO_SEND_DISABLED = "1";
+    try {
+      const context = createContext({
+        emailCampaign: createCampaign({ responseMode: "AI_AUTO_SEND" }),
+        autoReplyEnabled: true,
+      });
+      assert.equal(determineAutoSendMode(context), "DISABLED");
+    } finally {
+      if (prev === undefined) {
+        delete process.env.AUTO_SEND_DISABLED;
+      } else {
+        process.env.AUTO_SEND_DISABLED = prev;
+      }
+    }
+  });
 });
 
 describe("executeAutoSend - AI_AUTO_SEND path", () => {
+  it("skips when global kill-switch is enabled", async () => {
+    const prev = process.env.AUTO_SEND_DISABLED;
+    process.env.AUTO_SEND_DISABLED = "1";
+    try {
+      const evaluateAutoSend = mock.fn(async () => ({
+        confidence: 1,
+        safeToSend: true,
+        requiresHumanReview: false,
+        reason: "unused",
+      }));
+
+      const { executeAutoSend } = createAutoSendExecutor({
+        approveAndSendDraftSystem: mock.fn(async () => ({ success: true, messageId: "sent-1" })),
+        decideShouldAutoReply: mock.fn(async () => ({ shouldReply: false, reason: "unused" })),
+        evaluateAutoSend,
+        getPublicAppUrl: () => "https://app.example.com",
+        getCampaignDelayConfig: mock.fn(async () => null),
+        scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+        validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
+        sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      });
+
+      const result = await executeAutoSend(
+        createContext({
+          emailCampaign: createCampaign(),
+        })
+      );
+
+      assert.equal(result.mode, "DISABLED");
+      assert.equal(result.outcome.action, "skip");
+      assert.equal(result.outcome.reason, "globally_disabled_via_env");
+      assert.equal(evaluateAutoSend.mock.calls.length, 0);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.AUTO_SEND_DISABLED;
+      } else {
+        process.env.AUTO_SEND_DISABLED = prev;
+      }
+    }
+  });
+
   it("skips when draft content is missing/whitespace", async () => {
     const evaluateAutoSend = mock.fn(async () => ({
       confidence: 1,

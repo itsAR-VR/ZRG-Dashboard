@@ -11,17 +11,20 @@
 
 | Subphase | Change | Files |
 |----------|--------|-------|
-| 67b | Analytics error log → warn | `actions/analytics-actions.ts` |
-| 67c | Auto-send kill-switch | `lib/auto-send/orchestrator.ts`, `lib/auto-send/index.ts` |
+| 67b | Supabase cookie pre-validation; analytics warn | `lib/supabase/middleware.ts`, `actions/analytics-actions.ts` |
+| 67c | Auto-send kill-switch tests | `lib/auto-send/__tests__/orchestrator.test.ts` |
+| 67a | Follow-up UI clarity updates | `components/dashboard/crm-drawer.tsx`, `components/dashboard/followup-sequence-manager.tsx`, `components/dashboard/settings-view.tsx` |
 
 ### 3. Pending (Uncommitted) Changes
 
 | File | Purpose | Risk |
 |------|---------|------|
-| `lib/availability-cache.ts` | Calendly URI support | Low — Additive |
-| `lib/booking-target-selector.ts` | Deterministic fallback improvements | Low — Additive |
-| `actions/analytics-actions.ts` | Error → warn for recoverable failure | Low — Log level only |
-| `lib/auto-send/orchestrator.ts` | Global kill-switch | Low — Additive safety feature |
+| `components/dashboard/crm-drawer.tsx` | Follow-up instance display | Low — UI only |
+| `components/dashboard/followup-sequence-manager.tsx` | Built-in trigger labels/tooltips | Low — UI only |
+| `components/dashboard/settings-view.tsx` | Direct-book calendar sentinel | Low — UI only |
+| `lib/supabase/middleware.ts` | Avoid refresh_token_not_found errors | Low — Auth guard only |
+| `lib/auto-send/__tests__/orchestrator.test.ts` | Kill-switch test coverage | Low — tests only |
+| `docs/planning/phase-67/*` | Phase documentation updates | None |
 
 ---
 
@@ -68,8 +71,7 @@ npm run logs:check
 - `ghl_sms_dnd`: 0 hits
 - `max_call_stack`: 0 hits
 
-**Known Exception:**
-- `supabase_refresh_token_not_found`: May still appear (Supabase library internal logging, not actionable)
+**Expected:** `supabase_refresh_token_not_found` should drop to 0 after cookie pre-validation. If it persists, confirm whether it’s emitted by upstream library code.
 
 ---
 

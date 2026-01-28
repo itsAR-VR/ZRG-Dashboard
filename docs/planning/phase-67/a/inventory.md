@@ -2,70 +2,42 @@
 
 ## Current State
 
-**Branch:** `main` (up to date with `origin/main`)
-**Uncommitted Changes:** 2 tracked files + 1 untracked directory
+**Branch:** `main` (tracking `origin/main`)
+**Working tree:** has tracked modifications + untracked docs
 
-## Changed Files
+## Changed Files (tracked)
 
-| File | Lines Changed | Originating Phase | Purpose |
-|------|---------------|-------------------|---------|
-| `lib/availability-cache.ts` | +75 -27 | Phase 62j | Add `calendlyEventTypeUri` and `calendlyDirectBookEventTypeUri` support for Calendly URI-based availability resolution; extract UUID from URI for faster availability fetch; fallback chain improvements |
-| `lib/booking-target-selector.ts` | +88 -35 | Phase 62j | Extract `determineDeterministicBookingTarget()` function; add Calendly URI fields support; improve warning surfacing for missing configurations; enforce invariant that missing required answers → `no_questions` |
+| File | Scope | Purpose |
+|------|-------|---------|
+| `components/dashboard/crm-drawer.tsx` | UI | Show follow-up instance `startedAt` and improve status layout. |
+| `components/dashboard/followup-sequence-manager.tsx` | UI | Display built-in trigger labels/tooltips; make trigger selector read-only for built-ins. |
+| `components/dashboard/settings-view.tsx` | UI | Use a sentinel value for “Same as default” direct-book calendar selection (GHL). |
+| `lib/supabase/middleware.ts` | Auth | Pre-validate Supabase auth cookies; clear invalid/missing refresh tokens before `getUser()` to avoid `refresh_token_not_found`. |
+| `lib/auto-send/__tests__/orchestrator.test.ts` | Tests | Add global kill-switch (`AUTO_SEND_DISABLED`) test coverage. |
+| `docs/planning/phase-67/plan.md` | Docs | Phase 67 status/summary updates. |
 
-## Untracked Files
+## Untracked Files/Dirs
 
 | Path | Status | Notes |
 |------|--------|-------|
-| `docs/planning/phase-67/` | New | This phase's planning docs (will be committed with phase work) |
+| `docs/planning/phase-67/review.md` | New | Phase 67 review artifact |
+| `docs/planning/phase-68/` | New | Out of scope for Phase 67; leave untracked unless explicitly requested |
 
 ## Overlap Analysis
 
-### No Overlap with Previous Phases
+- UI changes touch follow-up sequencing surfaces and align with Phase 66 trigger refactor; no direct code-path conflicts.
+- Auth middleware change builds on Phase 63 hardening; no schema overlap.
+- Auto-send tests align with Phase 67c objectives.
 
-The uncommitted changes are **post-Phase 62j work** and do not overlap with any other uncommitted phase work:
+## Commit Grouping Plan (if/when commits are requested)
 
-- **Phase 62j** (commit `5411ffd`): The base for these changes; already committed
-- **Phase 66** (commits `d110f1c`, `c7e3bdf`, `1efb2a4`): Follow-up trigger refactor — no file overlap
-- **Phase 65** (commit `60ac871`): OpenAI timeout fix in `lib/ai/prompt-runner/runner.ts` — no file overlap
-- **Phase 64** (commit `d1fafd4`): Dual booking links with qualification answer support — no file overlap (Phase 64 touched `lib/ai-drafts.ts`, `lib/meeting-booking-provider.ts`)
-- **Phase 63** (commit `c88943a`): Error hardening in `lib/supabase/middleware.ts`, `actions/analytics-actions.ts`, `lib/ghl-api.ts`, `lib/ai-drafts.ts` — no file overlap
-
-### Semantic Dependencies
-
-The uncommitted changes **extend** Phase 62j's dual availability work by adding:
-1. Support for Calendly's `eventTypeUri` fields (in addition to `eventTypeLink`)
-2. A more robust deterministic booking target fallback with explicit invariant enforcement
-
-These are additive improvements and don't conflict with any recent phase commits.
-
-## Commit Grouping Plan
-
-Since all uncommitted work is tightly related to Phase 62j's Calendly URI support, a single commit is appropriate:
-
-### Commit 1 — Phase 62k: Calendly URI support + booking target invariant
-**Files:**
-- `lib/availability-cache.ts`
-- `lib/booking-target-selector.ts`
-
-**Description:**
-- Add `calendlyEventTypeUri` and `calendlyDirectBookEventTypeUri` field support
-- Extract Calendly event type UUID from URI for availability API calls
-- Improve fallback chain for availability URL resolution
-- Extract `determineDeterministicBookingTarget()` for clearer logic
-- Enforce invariant: missing required answers → `no_questions` (even if unconfigured)
-- Surface warnings when booking targets are misconfigured
+1. **UI follow-up clarity** — `crm-drawer.tsx`, `followup-sequence-manager.tsx`, `settings-view.tsx`
+2. **Auth + tests hardening** — `lib/supabase/middleware.ts`, `lib/auto-send/__tests__/orchestrator.test.ts`
+3. **Docs** — `docs/planning/phase-67/*`
 
 ## Pre-Commit Validation
 
-Before committing:
-1. `npm run lint` — verify no lint errors
-2. `npm run build` — verify build passes
-3. Verify schema is in sync (no `prisma/schema.prisma` changes pending)
-
-## Risk Assessment
-
-**Low Risk** — These changes are:
-- Additive (new fields, new helper function)
-- Backward compatible (existing field paths still work)
-- Well-scoped (only Calendly URI support and booking target improvements)
-- No Prisma schema changes required (fields already exist in schema per Phase 62j)
+- `npm run lint`
+- `npm run typecheck`
+- `npm test`
+- `npm run build`

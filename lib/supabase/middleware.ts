@@ -34,6 +34,94 @@ function getSupabaseAuthCookieNames(request: NextRequest): string[] {
     .filter((name) => name === baseName || name.startsWith(`${baseName}.`));
 }
 
+function getSupabaseAuthCookieValue(request: NextRequest): string | null {
+  const baseName = getDefaultSupabaseStorageKey();
+  if (!baseName) return null;
+
+  const relevant = request.cookies.getAll().filter(({ name }) => name === baseName || name.startsWith(`${baseName}.`));
+  if (relevant.length === 0) return null;
+
+  const direct = relevant.find(({ name }) => name === baseName);
+  if (direct?.value) return direct.value;
+
+  const chunks = relevant
+    .map(({ name, value }) => {
+      const suffix = name.slice(baseName.length + 1);
+      const index = Number.parseInt(suffix, 10);
+      return {
+        value,
+        index: Number.isFinite(index) ? index : null,
+        name,
+      };
+    })
+    .sort((a, b) => {
+      if (a.index != null && b.index != null) return a.index - b.index;
+      if (a.index != null) return -1;
+      if (b.index != null) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+  return chunks.map((c) => c.value).join("");
+}
+
+type SupabaseSessionLike = Record<string, unknown>;
+
+function tryParseSupabaseSession(rawValue: string): SupabaseSessionLike | null {
+  const trimmed = (rawValue || "").trim();
+  if (!trimmed) return null;
+
+  const candidates = new Set<string>();
+  candidates.add(trimmed);
+
+  if (trimmed.includes("%")) {
+    try {
+      const decoded = decodeURIComponent(trimmed);
+      if (decoded && decoded !== trimmed) candidates.add(decoded);
+    } catch {
+      // ignore
+    }
+  }
+
+  const maybeBase64 = !trimmed.includes("{") && /^[A-Za-z0-9+/=_-]+$/.test(trimmed);
+  if (maybeBase64 && typeof atob === "function") {
+    try {
+      const normalized = trimmed.replace(/-/g, "+").replace(/_/g, "/");
+      const decoded = atob(normalized).trim();
+      if (decoded.includes("{")) candidates.add(decoded);
+    } catch {
+      // ignore
+    }
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as SupabaseSessionLike;
+      if (parsed && typeof parsed === "object") return parsed;
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
+function findRefreshToken(session: SupabaseSessionLike, depth = 0): string | null {
+  if (depth > 2) return null;
+
+  const direct =
+    (typeof session.refresh_token === "string" && session.refresh_token.trim()) ||
+    (typeof session.refreshToken === "string" && session.refreshToken.trim());
+  if (direct) return direct;
+
+  for (const value of Object.values(session)) {
+    if (!value || typeof value !== "object") continue;
+    const nested = findRefreshToken(value as SupabaseSessionLike, depth + 1);
+    if (nested) return nested;
+  }
+
+  return null;
+}
+
 export async function updateSession(request: NextRequest) {
   // Middleware runs for every request matched by `middleware.ts`. Avoid doing network work
   // for API routes (webhooks/cron), which can be hot paths and don't need browser session refresh.
@@ -79,6 +167,22 @@ export async function updateSession(request: NextRequest) {
     }
     return response;
   };
+
+  // Guard: avoid supabase.auth.getUser() when cookies are malformed or missing refresh_token.
+  const rawAuthCookie = getSupabaseAuthCookieValue(request);
+  if (rawAuthCookie) {
+    const parsedSession = tryParseSupabaseSession(rawAuthCookie);
+    const refreshToken = parsedSession ? findRefreshToken(parsedSession) : null;
+    if (!refreshToken) {
+      markSupabaseAuthCookiesForClearing();
+      if (!isPublicRoute) {
+        const url = request.nextUrl.clone();
+        url.pathname = "/auth/login";
+        return applySupabaseAuthCookieClears(NextResponse.redirect(url));
+      }
+      return applySupabaseAuthCookieClears(supabaseResponse);
+    }
+  }
 
   const timeoutMs = Math.max(
     500,
@@ -177,5 +281,3 @@ export async function updateSession(request: NextRequest) {
 
   return applySupabaseAuthCookieClears(supabaseResponse);
 }
-
-

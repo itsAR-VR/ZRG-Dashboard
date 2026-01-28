@@ -32,7 +32,7 @@ The working tree contains uncommitted changes across availability caching, booki
 
 ## Success Criteria
 - [ ] Working tree clean; changes grouped into clear commits on a release branch.
-- [ ] `npm run lint`, `npm run typecheck`, `npm run test`, `npm run build` all pass.
+- [x] `npm run lint`, `npm run typecheck`, `npm run test`, `npm run build` all pass.
 - [ ] Schema changes applied safely (`db:push` with dedupe/preflight documented).
 - [ ] Phase 66 migration applied (canary + full) with rollback artifact captured.
 - [ ] AI auto-send and auto-book smoke tests pass with safety gating.
@@ -51,29 +51,54 @@ The working tree contains uncommitted changes across availability caching, booki
 - ✅ `docs/planning/phase-67/a/inventory.md` – file-to-phase map of uncommitted work
 - ✅ `docs/planning/phase-67/b/inventory.md` – error signature analysis (most already fixed in Phase 63)
 - ✅ `docs/planning/phase-67/c/smoke.md` – AI auto-send + auto-book test checklist
-- ✅ `docs/planning/phase-67/d/db-preflight.md` – SQL checks (confirmed already applied)
+- ✅ `docs/planning/phase-67/d/db-preflight.md` – SQL checks (pending verification)
 - ✅ `docs/planning/phase-67/release-checklist.md` – deployment gate summary
+- ✅ `docs/planning/phase-67/review.md` – post-implementation review snapshot
+- ✅ `docs/planning/phase-67/red-team.md` – release risk review + mitigations
 
-## Completion Status
+## Current Status
 
-| Subphase | Status | Key Deliverable |
-|----------|--------|-----------------|
-| 67a | ✅ Complete | Uncommitted changes inventory |
-| 67b | ✅ Complete | Error log hardening (analytics warn) |
-| 67c | ✅ Complete | Auto-send kill-switch + smoke tests |
-| 67d | ✅ Complete | DB preflight verified (already applied) |
-| 67e | ✅ Complete | Release checklist |
+- 67a: Inventory updated for current working tree (tracked changes + untracked docs).
+- 67b: Supabase cookie pre-validation added; analytics error logging downgraded to warn.
+- 67c: Auto-send global kill-switch tests added; smoke checklist exists.
+- 67d: DB preflight remains pending in this environment (no DB access used here).
+- 67e: Release checklist exists; red-team doc added; Phase 63/64 review updates still pending.
 
 ## Changes Made
 
-1. **`actions/analytics-actions.ts`**: Changed response time metrics error → warn (recoverable failure)
-2. **`lib/auto-send/orchestrator.ts`**: Added `isAutoSendGloballyDisabled()` kill-switch with `AUTO_SEND_DISABLED=1` env var
-3. **`lib/auto-send/index.ts`**: Exported kill-switch function
+1. **`lib/supabase/middleware.ts`**: Added auth cookie pre-validation and refresh-token gating to prevent `refresh_token_not_found` errors.
+2. **`lib/auto-send/__tests__/orchestrator.test.ts`**: Added kill-switch test coverage.
+3. **`actions/analytics-actions.ts`**: Response-time calculation failure now logs at warn level.
+4. **`components/dashboard/followup-sequence-manager.tsx`**: Built-in trigger labels/tooltips for Phase 66 semantics.
+5. **`components/dashboard/crm-drawer.tsx`**: Show follow-up instance start date in UI.
+6. **`components/dashboard/settings-view.tsx`**: Sentinel for “Same as default” direct-book calendar selection (GHL).
 
-## Ready for Deploy
+## Deploy Readiness
 
-All pre-deploy gates pass:
-- `npm run lint` ✅ (0 errors)
-- `npm run build` ✅ (passes)
+Pre-deploy gates executed locally:
+- `npm run lint` ✅ (0 errors; warnings only)
+- `npm run typecheck` ✅
+- `npm test` ✅
+- `npm run build` ✅
 
-Follow `release-checklist.md` for deployment procedure.
+Remaining before production deploy:
+- `db:push` (if schema changes reintroduced)
+- Phase 66 migration (canary + full)
+- Production smoke tests
+- Post-deploy logs:check (0 hits)
+
+## Phase Summary
+
+- Shipped:
+  - Phase 67 artifacts are present on disk: `docs/planning/phase-67/a/inventory.md`, `docs/planning/phase-67/b/inventory.md`, `docs/planning/phase-67/c/smoke.md`, `docs/planning/phase-67/d/db-preflight.md`, `docs/planning/phase-67/release-checklist.md`.
+  - Phase 67 red-team review documented: `docs/planning/phase-67/red-team.md`.
+  - Auto-send kill-switch is available in code (`lib/auto-send/orchestrator.ts`, `lib/auto-send/index.ts`).
+  - Analytics response-time error logging is warn-level (`actions/analytics-actions.ts`).
+- Verified:
+  - `npm run lint`: pass (warnings only)
+  - `npm run typecheck`: pass
+  - `npm test`: pass
+  - `npm run build`: pass
+  - `npm run db:push`: skipped (no schema changes in working tree)
+- Notes:
+  - Release-branch creation, schema rollout, Phase 66 migration, smoke tests, and post-deploy log checks remain pending.
