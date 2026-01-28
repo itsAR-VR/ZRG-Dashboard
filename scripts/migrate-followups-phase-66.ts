@@ -93,6 +93,205 @@ function createPrismaClient(): PrismaClient {
 }
 
 // ---------------------------------------------------------------------------
+// Meeting Requested Template (Phase 66d - no Day 1 email)
+// ---------------------------------------------------------------------------
+
+type StepTemplate = {
+  stepOrder: number;
+  dayOffset: number;
+  minuteOffset: number;
+  channel: string;
+  messageTemplate: string;
+  subject: string | null;
+  condition: unknown;
+  requiresApproval: boolean;
+};
+
+function getMeetingRequestedSteps(hasLinkedIn: boolean): StepTemplate[] {
+  const baseSteps: StepTemplate[] = [
+    // DAY 1 - SMS (2 minute delay after setter's reply)
+    {
+      stepOrder: 1,
+      dayOffset: 1,
+      minuteOffset: 2,
+      channel: "sms",
+      messageTemplate: `Hi {FIRST_NAME}, it's {name} from {company}, I just sent over an email but wanted to drop a text too incase it went to spam - here's the link {link}`,
+      subject: null,
+      condition: { type: "phone_provided" },
+      requiresApproval: false,
+    },
+    // DAY 2 - Email
+    {
+      stepOrder: 2,
+      dayOffset: 2,
+      minuteOffset: 0,
+      channel: "email",
+      messageTemplate: `Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?`,
+      subject: "Re: Scheduling a quick call",
+      condition: { type: "always" },
+      requiresApproval: false,
+    },
+    // DAY 2 - SMS (only if phone provided)
+    {
+      stepOrder: 3,
+      dayOffset: 2,
+      minuteOffset: 0,
+      channel: "sms",
+      messageTemplate: `Hey {FIRST_NAME}, when is a good time to give you a call?`,
+      subject: null,
+      condition: { type: "phone_provided" },
+      requiresApproval: false,
+    },
+    // DAY 5 - Email
+    {
+      stepOrder: 4,
+      dayOffset: 5,
+      minuteOffset: 0,
+      channel: "email",
+      messageTemplate: `Hi {FIRST_NAME}, just had time to get back to you.\n\nI'm currently reviewing the slots I have left for new clients and just wanted to give you a fair shot in case you were still interested in {achieving result}.\n\nNo problem if not but just let me know. I have {x day x time} and {y day y time} and if it's easier here's my calendar link for you to choose a time that works for you: {link}`,
+      subject: "Re: Scheduling a quick call",
+      condition: { type: "always" },
+      requiresApproval: false,
+    },
+    // DAY 5 - SMS
+    {
+      stepOrder: 5,
+      dayOffset: 5,
+      minuteOffset: 0,
+      channel: "sms",
+      messageTemplate: `Hey {FIRST_NAME} - {name} from {company} again\n\nJust sent over an email about getting {result}\n\nI have {x day x time} and {y day y time} for you\n\nHere's the link to choose a time to talk if those don't work {link}`,
+      subject: null,
+      condition: { type: "phone_provided" },
+      requiresApproval: false,
+    },
+    // DAY 7 - Email
+    {
+      stepOrder: 6,
+      dayOffset: 7,
+      minuteOffset: 0,
+      channel: "email",
+      messageTemplate: `Hey {FIRST_NAME}, tried to reach you a few times but didn't hear back….\n\nWhere should we go from here?`,
+      subject: "Re: Scheduling a quick call",
+      condition: { type: "always" },
+      requiresApproval: false,
+    },
+    // DAY 7 - SMS (only if phone provided)
+    {
+      stepOrder: 7,
+      dayOffset: 7,
+      minuteOffset: 0,
+      channel: "sms",
+      messageTemplate: `Hey {FIRST_NAME}, tried to reach you a few times but didn't hear back….\n\nWhere should we go from here?`,
+      subject: null,
+      condition: { type: "phone_provided" },
+      requiresApproval: false,
+    },
+  ];
+
+  if (!hasLinkedIn) {
+    return baseSteps;
+  }
+
+  // Add LinkedIn steps
+  const linkedInSteps: StepTemplate[] = [
+    // DAY 1 - LinkedIn connection request (1 hour after setter's reply)
+    {
+      stepOrder: 0, // will be renumbered
+      dayOffset: 1,
+      minuteOffset: 60,
+      channel: "linkedin",
+      messageTemplate: `Hi {FIRST_NAME}, just wanted to connect on here too as well as over email`,
+      subject: null,
+      condition: { type: "always" },
+      requiresApproval: false,
+    },
+    // DAY 2 - Follow up on LinkedIn if connected
+    {
+      stepOrder: 0, // will be renumbered
+      dayOffset: 2,
+      minuteOffset: 0,
+      channel: "linkedin",
+      messageTemplate: `Hi {FIRST_NAME} could I get the best number to reach you on so we can give you a call?`,
+      subject: null,
+      condition: { type: "linkedin_connected" },
+      requiresApproval: false,
+    },
+  ];
+
+  // Merge and sort by dayOffset, minuteOffset, then channel priority
+  const allSteps = [...baseSteps, ...linkedInSteps];
+  const channelOrder: Record<string, number> = { email: 0, sms: 1, linkedin: 2 };
+  allSteps.sort((a, b) => {
+    if (a.dayOffset !== b.dayOffset) return a.dayOffset - b.dayOffset;
+    if (a.minuteOffset !== b.minuteOffset) return a.minuteOffset - b.minuteOffset;
+    return (channelOrder[a.channel] ?? 99) - (channelOrder[b.channel] ?? 99);
+  });
+
+  // Renumber
+  return allSteps.map((s, idx) => ({ ...s, stepOrder: idx + 1 }));
+}
+
+async function createMeetingRequestedSequenceForClient(
+  prisma: PrismaClient,
+  clientId: string,
+  apply: boolean
+): Promise<{ id: string; steps: Array<{ id: string; stepOrder: number; channel: string; dayOffset: number; minuteOffset: number }> } | null> {
+  // Check if LinkedIn is configured
+  const workspaceSettings = await prisma.workspaceSettings.findUnique({
+    where: { clientId },
+  });
+  const hasLinkedIn = !!(workspaceSettings as { unipileAccountId?: string } | null)?.unipileAccountId;
+
+  const steps = getMeetingRequestedSteps(hasLinkedIn);
+  const description = hasLinkedIn
+    ? "Triggered when setter sends first email reply: Day 1 (SMS + LinkedIn connect), Day 2 (Email + SMS + LinkedIn DM if connected), Day 5 (reminder), Day 7 (final check-in)"
+    : "Triggered when setter sends first email reply: Day 1 (SMS), Day 2 (Email + SMS), Day 5 (reminder), Day 7 (final check-in)";
+
+  console.log(`  Creating 'Meeting Requested' sequence (hasLinkedIn: ${hasLinkedIn})...`);
+
+  if (!apply) {
+    console.log(`  [DRY-RUN] Would create Meeting Requested sequence with ${steps.length} steps`);
+    return null;
+  }
+
+  const sequence = await prisma.followUpSequence.create({
+    data: {
+      clientId,
+      name: DEFAULT_SEQUENCE_NAMES.meetingRequested,
+      description,
+      triggerOn: "manual",
+      isActive: true,
+      steps: {
+        create: steps.map((s) => ({
+          stepOrder: s.stepOrder,
+          dayOffset: s.dayOffset,
+          minuteOffset: s.minuteOffset,
+          channel: s.channel,
+          messageTemplate: s.messageTemplate,
+          subject: s.subject,
+          condition: s.condition ? JSON.stringify(s.condition) : null,
+          requiresApproval: s.requiresApproval,
+        })),
+      },
+    },
+    include: { steps: { orderBy: { stepOrder: "asc" } } },
+  });
+
+  console.log(`  Created 'Meeting Requested' sequence: ${sequence.id} with ${sequence.steps.length} steps`);
+
+  return {
+    id: sequence.id,
+    steps: sequence.steps.map((s) => ({
+      id: s.id,
+      stepOrder: s.stepOrder,
+      channel: s.channel,
+      dayOffset: s.dayOffset,
+      minuteOffset: s.minuteOffset,
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main Logic
 // ---------------------------------------------------------------------------
 
@@ -123,19 +322,28 @@ async function migrate(prisma: PrismaClient, apply: boolean, targetClientId?: st
       include: { steps: { orderBy: { stepOrder: "asc" } } },
     });
 
-    const meetingRequestedSeq = await prisma.followUpSequence.findFirst({
+    let meetingRequestedSeq = await prisma.followUpSequence.findFirst({
       where: { clientId: client.id, name: DEFAULT_SEQUENCE_NAMES.meetingRequested },
       include: { steps: { orderBy: { stepOrder: "asc" } } },
     });
 
-    // Step 1: Remove Day 1 auto-email from Meeting Requested
-    if (meetingRequestedSeq) {
-      await removeDay1EmailFromMeetingRequested(prisma, meetingRequestedSeq, artifact, apply);
+    // Step 1: Create Meeting Requested sequence if it doesn't exist
+    if (!meetingRequestedSeq) {
+      console.log("  No Meeting Requested sequence found - creating one...");
+      const created = await createMeetingRequestedSequenceForClient(prisma, client.id, apply);
+      if (created) {
+        // Re-fetch with full step data to match expected type
+        meetingRequestedSeq = await prisma.followUpSequence.findFirst({
+          where: { id: created.id },
+          include: { steps: { orderBy: { stepOrder: "asc" } } },
+        });
+      }
     } else {
-      console.log("  No Meeting Requested sequence found - skipping Day 1 email removal");
+      // Step 2: Remove Day 1 auto-email from existing Meeting Requested
+      await removeDay1EmailFromMeetingRequested(prisma, meetingRequestedSeq, artifact, apply);
     }
 
-    // Step 2: Disable No Response and migrate instances
+    // Step 3: Disable No Response and migrate instances
     if (noResponseSeq) {
       await disableNoResponseAndMigrateInstances(prisma, client.id, noResponseSeq, meetingRequestedSeq, artifact, apply);
     } else {
@@ -349,18 +557,10 @@ async function disableNoResponseAndMigrateInstances(
   console.log(`  Found ${instances.length} in-flight 'No Response' instance(s) to migrate`);
 
   if (!meetingRequestedSeq) {
-    console.log("  WARNING: No 'Meeting Requested' sequence exists - instances will be cancelled but not migrated");
-    if (apply) {
-      await prisma.followUpInstance.updateMany({
-        where: { id: { in: instances.map((i) => i.id) } },
-        data: {
-          status: "cancelled",
-          pausedReason: "no_migration_target",
-          nextStepDue: null,
-        },
-      });
-      console.log(`  Cancelled ${instances.length} instance(s)`);
-    }
+    // In dry-run mode, the sequence wasn't created so we can't simulate migration
+    // In apply mode, this shouldn't happen since we create the sequence first
+    console.log("  [DRY-RUN] Would create Meeting Requested sequence and migrate instances");
+    console.log(`  [DRY-RUN] ${instances.length} instance(s) would be migrated`);
     return;
   }
 
