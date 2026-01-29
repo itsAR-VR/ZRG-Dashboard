@@ -864,7 +864,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
           const confidenceText = `${evaluation.confidence.toFixed(2)} < ${autoSendThreshold.toFixed(2)}`;
 
           const dmResult = await sendSlackDmByEmail({
-            email: "jon@zeroriskgrowth.com",
+            email: "jonandmika@gmail.com",
             dedupeKey: `auto_send_review:${draftId}`,
             text: `AI auto-send review needed (${confidenceText})`,
             blocks: [

@@ -84,7 +84,7 @@ async function lookupSlackUserIdByEmail(email: string): Promise<string | null> {
   if (!normalized) return null;
 
   const envJon = (process.env.SLACK_JON_USER_ID || "").trim();
-  if (normalized === "jon@zeroriskgrowth.com" && envJon) {
+  if (normalized === "jonandmika@gmail.com" && envJon) {
     return envJon;
   }
 

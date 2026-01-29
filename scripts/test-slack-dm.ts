@@ -12,7 +12,7 @@ dotenv.config({ path: ".env" });
 
 import { sendSlackDmByEmail } from "../lib/slack-dm";
 
-const TARGET_EMAIL = "jon@zeroriskgrowth.com";
+const TARGET_EMAIL = "jonandmika@gmail.com";
 const TOTAL_MESSAGES = 10;
 const DELAY_MS = 1000;
 

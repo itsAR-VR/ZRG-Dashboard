@@ -75,7 +75,7 @@ export interface AutoSendResult {
 }
 
 export const AUTO_SEND_CONSTANTS = {
-  REVIEW_NOTIFICATION_EMAIL: "jon@zeroriskgrowth.com",
+  REVIEW_NOTIFICATION_EMAIL: "jonandmika@gmail.com",
   DEFAULT_CONFIDENCE_THRESHOLD: 0.9,
 } as const;
 
