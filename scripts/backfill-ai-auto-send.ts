@@ -4,23 +4,17 @@
  * Regenerates drafts for all AI auto-send campaign responses and processes auto-send.
  *
  * Run:
- *   npx tsx scripts/backfill-ai-auto-send.ts --dry-run
- *   npx tsx scripts/backfill-ai-auto-send.ts --apply
- *   npx tsx scripts/backfill-ai-auto-send.ts --apply --limit 10
- *   npx tsx scripts/backfill-ai-auto-send.ts --apply --campaign-id <id>
- *   npx tsx scripts/backfill-ai-auto-send.ts --apply --skip-draft-gen
- *   npx tsx scripts/backfill-ai-auto-send.ts --apply --skip-auto-send
- *   npx tsx scripts/backfill-ai-auto-send.ts --apply --missing-only
+ *   node --require ./scripts/server-only-mock.cjs --import tsx scripts/backfill-ai-auto-send.ts --dry-run
+ *   node --require ./scripts/server-only-mock.cjs --import tsx scripts/backfill-ai-auto-send.ts --apply
+ *   node --require ./scripts/server-only-mock.cjs --import tsx scripts/backfill-ai-auto-send.ts --apply --limit 10
  *
  * Env:
  *   DATABASE_URL         Required
  *   OPENAI_API_KEY       Required for auto-send gating
  *   SLACK_BOT_TOKEN      Required for Slack DMs
+ *
+ * Note: Env vars are loaded by the preload script (server-only-mock.cjs)
  */
-import * as dotenv from "dotenv";
-dotenv.config({ path: ".env.local" });
-dotenv.config({ path: ".env" });
-
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import dns from "node:dns";
