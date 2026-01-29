@@ -41,6 +41,9 @@ rollback-sequence-messaging-*.json
 .rerun-sentiment-neutral-or-new.state.json.bak.*
 .backfill-lead-scoring.state.json
 .backfill-lead-scoring.state.json.bak.*
+.backfill-ai-auto-send.state.json
+.backfill-ai-auto-send.state.json.bak.*
+scripts/logs/*.log
 
 # local AI/editor tooling
 .claude/
