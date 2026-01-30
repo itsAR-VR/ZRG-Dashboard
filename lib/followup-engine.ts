@@ -1317,16 +1317,9 @@ export async function executeFollowUpStep(
 // Batch Processing (called by cron)
 // =============================================================================
 
-const MEETING_REQUESTED_SEQUENCE_NAME = "Meeting Requested Day 1/2/5/7";
-const POST_BOOKING_SEQUENCE_NAME = "Post-Booking Qualification";
-
 function shouldPauseSequenceOnLeadReply(sequence: { name: string; triggerOn: string }): boolean {
-  // Response-driven sequences should continue even after a reply.
-  if (sequence.name === MEETING_REQUESTED_SEQUENCE_NAME) return false;
-  if (sequence.name === POST_BOOKING_SEQUENCE_NAME) return false;
-  if (sequence.triggerOn === "meeting_selected") return false;
-
-  // Default: treat sequences as "no-response style" and pause once the lead replies.
+  // Phase 71: Any inbound reply pauses automation. Follow-ups only resume after
+  // an outbound reply (AI or setter), and should continue from the current step.
   return true;
 }
 
@@ -1393,27 +1386,19 @@ export async function processFollowUpsDue(): Promise<{
       results.processed++;
 
       // Safety: if the lead has replied since the latest outbound touch, pause the instance so we don't
-      // keep sending "outreach style" steps while the conversation is already active.
-      // Also check for recent inbound activity (within 48 hours) - indicates an active conversation
-      // where a human is likely nurturing. This prevents automated follow-ups from overlapping.
+      // keep sending follow-ups while the conversation is active. Automation resumes on the next outbound reply.
       const leadHasRepliedSinceLatestOutbound =
         instance.lead.lastMessageDirection === "inbound" ||
         (instance.lead.lastInboundAt &&
           instance.lead.lastOutboundAt &&
           instance.lead.lastInboundAt > instance.lead.lastOutboundAt);
 
-      // Check for recent inbound within 48 hours - indicates active conversation
-      const recentActivityCutoffMs = 48 * 60 * 60 * 1000;
-      const hasRecentInbound =
-        instance.lead.lastInboundAt &&
-        now.getTime() - instance.lead.lastInboundAt.getTime() < recentActivityCutoffMs;
-
       const shouldPauseForConversation =
         shouldPauseSequenceOnLeadReply({
           name: instance.sequence.name,
           triggerOn: instance.sequence.triggerOn,
         }) &&
-        (leadHasRepliedSinceLatestOutbound || hasRecentInbound);
+        leadHasRepliedSinceLatestOutbound;
 
       if (shouldPauseForConversation) {
         await prisma.followUpInstance.update({
@@ -1574,15 +1559,6 @@ export async function pauseFollowUpsOnReply(leadId: string): Promise<void> {
       where: {
         leadId,
         status: "active",
-        NOT: {
-          sequence: {
-            OR: [
-              { name: MEETING_REQUESTED_SEQUENCE_NAME },
-              { name: POST_BOOKING_SEQUENCE_NAME },
-              { triggerOn: "meeting_selected" },
-            ],
-          },
-        },
       },
       select: { id: true },
     });

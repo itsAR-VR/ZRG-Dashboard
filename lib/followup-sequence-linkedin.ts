@@ -1,9 +1,9 @@
 import type { PrismaClient } from "@prisma/client";
-
-const DEFAULT_SEQUENCE_NAMES = {
-  noResponse: "No Response Day 2/5/7",
-  meetingRequested: "Meeting Requested Day 1/2/5/7",
-} as const;
+import {
+  MEETING_REQUESTED_SEQUENCE_NAMES,
+  NO_RESPONSE_SEQUENCE_NAME,
+  isMeetingRequestedSequenceName,
+} from "@/lib/followup-sequence-names";
 
 type StepCondition = { type: "phone_provided" | "linkedin_connected" | "no_response" | "email_opened" | "always"; value?: string };
 
@@ -82,11 +82,11 @@ function defaultMeetingRequestedLinkedInSteps(): NewLinkedInStep[] {
 export async function ensureDefaultSequencesIncludeLinkedInStepsForClient(opts: {
   prisma: PrismaClient;
   clientId: string;
-}): Promise<{ updatedSequences: number; insertedSteps: number }> {
+  }): Promise<{ updatedSequences: number; insertedSteps: number }> {
   const sequences = await opts.prisma.followUpSequence.findMany({
     where: {
       clientId: opts.clientId,
-      name: { in: [DEFAULT_SEQUENCE_NAMES.noResponse, DEFAULT_SEQUENCE_NAMES.meetingRequested] },
+      name: { in: [NO_RESPONSE_SEQUENCE_NAME, ...MEETING_REQUESTED_SEQUENCE_NAMES] },
     },
     include: { steps: { orderBy: { stepOrder: "asc" } } },
   });
@@ -99,9 +99,9 @@ export async function ensureDefaultSequencesIncludeLinkedInStepsForClient(opts: 
     if (hasLinkedInSteps) continue;
 
     const toCreate =
-      sequence.name === DEFAULT_SEQUENCE_NAMES.noResponse
+      sequence.name === NO_RESPONSE_SEQUENCE_NAME
         ? defaultNoResponseLinkedInSteps()
-        : sequence.name === DEFAULT_SEQUENCE_NAMES.meetingRequested
+        : isMeetingRequestedSequenceName(sequence.name)
           ? defaultMeetingRequestedLinkedInSteps()
           : [];
     if (toCreate.length === 0) continue;

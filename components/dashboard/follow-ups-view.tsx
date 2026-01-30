@@ -358,9 +358,9 @@ function SequenceInstanceCard({ instance, onPause, onResume, onCancel, actionInP
               </div>
             </div>
 
-            {instance.pausedReason === "lead_replied" && (
-              <p className="text-xs text-amber-500 mt-2">Lead replied - awaiting review</p>
-            )}
+	        {instance.pausedReason === "lead_replied" && (
+	          <p className="text-xs text-amber-500 mt-2">Lead replied — paused until you reply</p>
+	        )}
 
             {/* Actions */}
             <div className="flex items-center gap-2 mt-3">
@@ -543,12 +543,14 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
     }
 
     setIsLoading(true)
-    try {
-      const [tasksResult, instancesResult, leadsResult] = await Promise.all([
-        getFollowUpTasks("all", activeWorkspace),
-        getWorkspaceFollowUpInstances(activeWorkspace, "active"),
-        getFollowUpTaggedLeads(activeWorkspace),
-      ])
+		try {
+	      const [tasksResult, instancesResult, leadsResult] = await Promise.all([
+	        getFollowUpTasks("all", activeWorkspace),
+	        // Fetch paused + active so the "Paused" section persists after refresh.
+	        // Filter out completed/cancelled client-side so this view stays focused.
+	        getWorkspaceFollowUpInstances(activeWorkspace, "all"),
+	        getFollowUpTaggedLeads(activeWorkspace),
+	      ])
       
       if (tasksResult.success && tasksResult.data) {
         const dbTasks: UnifiedTask[] = tasksResult.data.map((t) => ({
@@ -568,11 +570,14 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
         setTasks([])
       }
 
-      if (instancesResult.success && instancesResult.data) {
-        setInstances(instancesResult.data)
-      } else {
-        setInstances([])
-      }
+	      if (instancesResult.success && instancesResult.data) {
+	        const activeOrPaused = instancesResult.data.filter(
+	          (inst) => inst.status === "active" || inst.status === "paused"
+	        )
+	        setInstances(activeOrPaused)
+	      } else {
+	        setInstances([])
+	      }
 
       if (leadsResult.success && leadsResult.data) {
         setFollowUpLeads(leadsResult.data)

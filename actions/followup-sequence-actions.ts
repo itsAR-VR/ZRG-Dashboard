@@ -6,6 +6,13 @@ import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
 import { ensureDefaultSequencesIncludeLinkedInStepsForClient } from "@/lib/followup-sequence-linkedin";
 import { computeStepDeltaMs, computeStepOffsetMs } from "@/lib/followup-schedule";
+import {
+  MEETING_REQUESTED_SEQUENCE_NAME_LEGACY,
+  MEETING_REQUESTED_SEQUENCE_NAMES,
+  NO_RESPONSE_SEQUENCE_NAME,
+  POST_BOOKING_SEQUENCE_NAME,
+  ZRG_WORKFLOW_V1_SEQUENCE_NAME,
+} from "@/lib/followup-sequence-names";
 
 async function requireFollowUpInstanceAccess(instanceId: string): Promise<void> {
   const scope = await resolveClientScope(null);
@@ -789,11 +796,24 @@ export async function advanceFollowUpInstance(
 // Default Sequence Templates
 // =============================================================================
 
-const DEFAULT_SEQUENCE_NAMES = {
-  noResponse: "No Response Day 2/5/7",
-  meetingRequested: "Meeting Requested Day 1/2/5/7",
-  postBooking: "Post-Booking Qualification",
-} as const;
+	const DEFAULT_SEQUENCE_NAMES = {
+	  noResponse: NO_RESPONSE_SEQUENCE_NAME,
+	  // Keep legacy name here for backward compatibility; runtime logic treats both names as the same workflow.
+	  meetingRequested: MEETING_REQUESTED_SEQUENCE_NAME_LEGACY,
+	  postBooking: POST_BOOKING_SEQUENCE_NAME,
+	} as const;
+
+	async function getMeetingRequestedSequenceNameForClient(clientId: string): Promise<string> {
+	  const settings = await prisma.workspaceSettings.findUnique({
+	    where: { clientId },
+	    select: { brandName: true },
+	  });
+
+	  // ZRG workspaces are identified by `WorkspaceSettings.brandName IS NULL`.
+	  // Branded workspaces (e.g. Founders Club) keep the legacy display name.
+	  if (!settings || settings.brandName == null) return ZRG_WORKFLOW_V1_SEQUENCE_NAME;
+	  return MEETING_REQUESTED_SEQUENCE_NAME_LEGACY;
+	}
 
 async function isAirtableModeEnabled(clientId: string): Promise<boolean> {
   const settings = await prisma.workspaceSettings.findUnique({
@@ -1012,6 +1032,7 @@ export async function createMeetingRequestedSequence(
 ): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
   await requireClientAdminAccess(clientId);
   const hasLinkedIn = await isLinkedInConfigured(clientId);
+  const sequenceName = await getMeetingRequestedSequenceNameForClient(clientId);
 
   // Phase 66: Removed Day 1 auto-email step. The setter's manual reply is the first touchpoint.
   // Day 1 now starts with SMS (+2 min after setter reply) and LinkedIn connect (+1 hour).
@@ -1132,7 +1153,7 @@ Where should we go from here?`,
 
   return createFollowUpSequence({
     clientId,
-    name: DEFAULT_SEQUENCE_NAMES.meetingRequested,
+    name: sequenceName,
     description,
     triggerOn: "manual",
     steps: filteredSteps,
@@ -1246,13 +1267,13 @@ export async function applyAirtableModeToDefaultSequences(opts: {
 
     const hasLinkedIn = await isLinkedInConfigured(opts.clientId);
 
-    const sequences = await prisma.followUpSequence.findMany({
-      where: {
-        clientId: opts.clientId,
-        name: { in: [DEFAULT_SEQUENCE_NAMES.noResponse, DEFAULT_SEQUENCE_NAMES.meetingRequested] },
-      },
-      include: { steps: { orderBy: { stepOrder: "asc" } } },
-    });
+	    const sequences = await prisma.followUpSequence.findMany({
+	      where: {
+	        clientId: opts.clientId,
+	        name: { in: [DEFAULT_SEQUENCE_NAMES.noResponse, ...MEETING_REQUESTED_SEQUENCE_NAMES] },
+	      },
+	      include: { steps: { orderBy: { stepOrder: "asc" } } },
+	    });
 
     let updated = 0;
 

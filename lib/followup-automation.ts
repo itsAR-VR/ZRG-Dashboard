@@ -2,20 +2,19 @@ import { prisma } from "@/lib/prisma";
 import { isMeetingBooked } from "@/lib/meeting-booking-provider";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 import { computeStepDeltaMs, computeStepOffsetMs } from "@/lib/followup-schedule";
+import {
+  MEETING_REQUESTED_SEQUENCE_NAME_LEGACY,
+  MEETING_REQUESTED_SEQUENCE_NAMES,
+  NO_RESPONSE_SEQUENCE_NAME,
+  POST_BOOKING_SEQUENCE_NAME,
+  ZRG_WORKFLOW_V1_SEQUENCE_NAME,
+} from "@/lib/followup-sequence-names";
 
-// =============================================================================
-// Constants
-// =============================================================================
-
-export const MEETING_REQUESTED_SEQUENCE_NAME = "Meeting Requested Day 1/2/5/7";
-const POST_BOOKING_SEQUENCE_NAME = "Post-Booking Qualification";
-const NO_RESPONSE_SEQUENCE_NAME = "No Response Day 2/5/7";
+// Backward compatibility: keep the legacy export name while we migrate.
+export const MEETING_REQUESTED_SEQUENCE_NAME = MEETING_REQUESTED_SEQUENCE_NAME_LEGACY;
 
 function shouldTreatAsOutreachSequence(sequence: { name: string; triggerOn: string }): boolean {
-  // Response-driven sequences should NOT be reset/paused by generic outreach logic.
-  if (sequence.name === MEETING_REQUESTED_SEQUENCE_NAME) return false;
-  if (sequence.name === POST_BOOKING_SEQUENCE_NAME) return false;
-  if (sequence.triggerOn === "meeting_selected") return false;
+  // Phase 71: Treat all follow-up sequences as eligible for outbound-touch schedule resets.
   return true;
 }
 
@@ -241,62 +240,36 @@ export async function handleOutboundTouchForFollowUps(opts: {
   if (isMeetingBooked(lead, { meetingBookingProvider: bookingProvider })) return { updated: false, reason: "already_booked" };
 
   const activeInstances = lead.followUpInstances.filter((i) => i.status === "active");
+  let resetCount = 0;
   if (activeInstances.length > 0) {
     // If a human just touched this lead, reset follow-up timing so cron doesn't overlap with manual nurturing.
     const isHumanOutbound = await wasHumanOutboundAtApproxTime({ leadId: opts.leadId, outboundAt });
-    if (!isHumanOutbound) return { updated: false, reason: "instance_already_active" };
+    if (isHumanOutbound) {
+      const outreachInstances = activeInstances.filter((i) =>
+        shouldTreatAsOutreachSequence({ name: i.sequence.name, triggerOn: i.sequence.triggerOn })
+      );
 
-    const outreachInstances = activeInstances.filter((i) =>
-      shouldTreatAsOutreachSequence({ name: i.sequence.name, triggerOn: i.sequence.triggerOn })
-    );
-
-    let resetCount = 0;
-    for (const instance of outreachInstances) {
-      const res = await resetActiveFollowUpInstanceScheduleOnOutboundTouch({
-        instanceId: instance.id,
-        sequenceId: instance.sequenceId,
-        currentStep: instance.currentStep,
-        touchedAt: outboundAt,
-        existingNextStepDue: instance.nextStepDue ?? null,
-      });
-      if (res.updated) resetCount++;
+      for (const instance of outreachInstances) {
+        const res = await resetActiveFollowUpInstanceScheduleOnOutboundTouch({
+          instanceId: instance.id,
+          sequenceId: instance.sequenceId,
+          currentStep: instance.currentStep,
+          touchedAt: outboundAt,
+          existingNextStepDue: instance.nextStepDue ?? null,
+        });
+        if (res.updated) resetCount++;
+      }
     }
-
-    return {
-      updated: resetCount > 0,
-      reason: resetCount > 0 ? "active_instances_reset_on_human_outbound" : "instance_already_active",
-      resetCount,
-    };
   }
 
   const pausedInstances = lead.followUpInstances.filter((i) => i.status === "paused");
   const pausedReplied = pausedInstances.filter((i) => i.pausedReason === "lead_replied");
-  const pausedOther = pausedInstances.filter((i) => i.pausedReason !== "lead_replied");
+  let resumedCount = 0;
 
-  // Policy: if an instance is paused due to a lead reply, re-enable it on the next outbound touch.
-  // This ensures we only auto-follow up when the latest touch is outbound (from us).
-  // BUT: If there's been recent inbound activity (within 48 hours), the conversation is "active"
-  // and a human is likely nurturing. Don't resume automated follow-ups to avoid spam/overlap.
-  if (pausedReplied.length > 0 && pausedOther.length === 0) {
-    // Check for recent inbound activity - indicates active conversation
-    const recentActivityCutoffHours = 48;
-    const recentActivityCutoff = new Date(Date.now() - recentActivityCutoffHours * 60 * 60 * 1000);
-
-    const recentInbound = await prisma.message.findFirst({
-      where: {
-        leadId: opts.leadId,
-        direction: "inbound",
-        sentAt: { gte: recentActivityCutoff },
-      },
-      select: { id: true },
-    });
-
-    if (recentInbound) {
-      return { updated: false, reason: "recent_inbound_activity" };
-    }
-
+  // Policy (Phase 71): if an instance is paused due to a lead reply, re-enable it on the next outbound touch.
+  // This ensures follow-ups resume only after AI/setter replies, and continue from the current step (no restart).
+  if (pausedReplied.length > 0) {
     const startAt = outboundAt;
-    let resumed = 0;
 
     for (const instance of pausedReplied) {
       const nextStep = await prisma.followUpStep.findFirst({
@@ -305,7 +278,7 @@ export async function handleOutboundTouchForFollowUps(opts: {
         select: { dayOffset: true, minuteOffset: true },
       });
 
-      // If the sequence is already complete, mark it completed so a fresh instance can be started on this outbound.
+      // Sequence complete.
       if (!nextStep) {
         await prisma.followUpInstance.update({
           where: { id: instance.id },
@@ -327,10 +300,11 @@ export async function handleOutboundTouchForFollowUps(opts: {
             })
           : null;
 
-      // When resuming, schedule relative to this outbound touch while preserving the spacing between steps.
+      // When resuming, schedule relative to this outbound touch while preserving spacing between steps.
       const currentStepTiming = currentStepMeta ?? { dayOffset: 0, minuteOffset: 0 };
       const deltaMs = computeStepDeltaMs(currentStepTiming, nextStep);
       const nextStepDue = new Date(startAt.getTime() + deltaMs);
+
       await prisma.followUpInstance.update({
         where: { id: instance.id },
         data: {
@@ -339,17 +313,23 @@ export async function handleOutboundTouchForFollowUps(opts: {
           nextStepDue,
         },
       });
-      resumed++;
-    }
 
-    if (resumed > 0) {
-      return { updated: true, reason: "resumed_on_outbound", resumedCount: resumed };
+      resumedCount++;
     }
   }
 
-  if (pausedInstances.length > 0) return { updated: false, reason: "instance_already_active" };
+  const updated = resetCount > 0 || resumedCount > 0;
+  if (updated) {
+    return {
+      updated,
+      reason: resumedCount > 0 ? "resumed_on_outbound" : "active_instances_reset_on_human_outbound",
+      ...(resetCount > 0 ? { resetCount } : {}),
+      ...(resumedCount > 0 ? { resumedCount } : {}),
+    };
+  }
 
-  // No active/paused instances to update
+  if (pausedInstances.length > 0) return { updated: false, reason: "paused_instances_not_resumed" };
+  if (activeInstances.length > 0) return { updated: false, reason: "instance_already_active" };
   return { updated: false, reason: "no_instances_to_update" };
 }
 
@@ -445,7 +425,11 @@ export async function autoStartMeetingRequestedSequenceOnSetterEmailReply(opts: 
   }
 
   if (!lead.autoFollowUpEnabled) {
-    return { started: false, reason: "lead_auto_followup_disabled" };
+    // Phase 71: if a setter is replying (first reply), enable follow-ups so the workflow can start.
+    await prisma.lead.updateMany({
+      where: { id: lead.id, autoFollowUpEnabled: false },
+      data: { autoFollowUpEnabled: true },
+    });
   }
 
   // First setter email reply only — do not restart on subsequent replies
@@ -464,11 +448,21 @@ export async function autoStartMeetingRequestedSequenceOnSetterEmailReply(opts: 
     return { started: false, reason: "not_first_setter_reply" };
   }
 
-  // Find the Meeting Requested sequence
-  const sequence = await prisma.followUpSequence.findFirst({
-    where: { clientId: lead.clientId, name: MEETING_REQUESTED_SEQUENCE_NAME, isActive: true },
-    select: { id: true },
+  // Find the Meeting Requested sequence (supports both legacy + ZRG Workflow V1 names).
+  const candidates = await prisma.followUpSequence.findMany({
+    where: {
+      clientId: lead.clientId,
+      isActive: true,
+      name: { in: [...MEETING_REQUESTED_SEQUENCE_NAMES] },
+    },
+    select: { id: true, name: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
   });
+
+  const sequence =
+    candidates.find((s) => s.name === ZRG_WORKFLOW_V1_SEQUENCE_NAME) ??
+    candidates.find((s) => s.name === MEETING_REQUESTED_SEQUENCE_NAME_LEGACY) ??
+    null;
 
   if (!sequence) {
     return { started: false, reason: "sequence_not_found_or_inactive" };

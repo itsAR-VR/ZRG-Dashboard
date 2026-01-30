@@ -44,10 +44,15 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { toast } from "sonner";
-import {
-  getFollowUpSequences,
-  createFollowUpSequence,
+	import { toast } from "sonner";
+	import {
+	  MEETING_REQUESTED_SEQUENCE_NAME_LEGACY,
+	  NO_RESPONSE_SEQUENCE_NAME,
+	  ZRG_WORKFLOW_V1_SEQUENCE_NAME,
+	} from "@/lib/followup-sequence-names";
+	import {
+	  getFollowUpSequences,
+	  createFollowUpSequence,
   updateFollowUpSequence,
   deleteFollowUpSequence,
   toggleSequenceActive,
@@ -82,18 +87,22 @@ const TRIGGER_OPTIONS = [
   { value: "manual", label: "Manual trigger only" },
 ];
 
-// Built-in sequences have trigger behavior controlled by code, not the triggerOn field.
-// This map provides accurate display labels for these sequences.
-const BUILT_IN_TRIGGER_OVERRIDES: Record<string, { label: string; tooltip: string }> = {
-  "Meeting Requested Day 1/2/5/7": {
-    label: "On setter email reply",
-    tooltip: "Starts automatically when you send your first email reply to this lead",
-  },
-  "No Response Day 2/5/7": {
-    label: "Backfill only",
-    tooltip: "Auto-start disabled. Only applies via manual backfill for positive leads who stopped responding.",
-  },
-};
+	// Built-in sequences have trigger behavior controlled by code, not the triggerOn field.
+	// This map provides accurate display labels for these sequences.
+	const BUILT_IN_TRIGGER_OVERRIDES: Record<string, { label: string; tooltip: string }> = {
+	  [MEETING_REQUESTED_SEQUENCE_NAME_LEGACY]: {
+	    label: "On setter email reply",
+	    tooltip: "Starts automatically when you send your first email reply to this lead",
+	  },
+	  [ZRG_WORKFLOW_V1_SEQUENCE_NAME]: {
+	    label: "On setter email reply",
+	    tooltip: "Starts automatically when you send your first email reply to this lead",
+	  },
+	  [NO_RESPONSE_SEQUENCE_NAME]: {
+	    label: "Backfill only",
+	    tooltip: "Auto-start disabled. Only applies via manual backfill for positive leads who stopped responding.",
+	  },
+	};
 
 /**
  * Resolves the display label for a sequence's trigger.
