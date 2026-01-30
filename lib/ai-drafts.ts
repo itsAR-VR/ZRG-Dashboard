@@ -529,7 +529,8 @@ Guidelines:
 - Keep each SMS part <= 160 characters (hard limit). Total parts max 3.
 - Be professional but personable
 - Don't use emojis unless the lead used them first
-- If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works; otherwise ask for their availability
+- TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". When no timing preference is expressed, prefer sooner options. If no available times match their preference, ask what works better.
+- If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) that match the lead's timing preference, and ask which works; otherwise ask for their availability
 - For objections, acknowledge and redirect professionally
 - Never be pushy or aggressive
 - If appropriate, naturally incorporate a qualification question
@@ -583,7 +584,8 @@ Guidelines:
 - Output plain text only (no markdown).
 - Keep it concise and natural (1-3 short paragraphs).
 - Don't use emojis unless the lead used them first.
-- If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works; otherwise ask for their availability.
+- TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". When no timing preference is expressed, prefer sooner options. If no available times match their preference, ask what works better.
+- If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) that match the lead's timing preference, and ask which works; otherwise ask for their availability.
 - For objections, acknowledge and redirect professionally.
 - Never be pushy or aggressive.
 - Start with: ${greeting}`;
@@ -616,7 +618,7 @@ function buildEmailPrompt(opts: {
 
   const availabilityBlock = shouldConsiderScheduling
     ? (opts.availability.length
-      ? `If scheduling is the right next step, offer exactly 2 of these options (verbatim, keep in bullets):\n${opts.availability
+      ? `If scheduling is the right next step, offer exactly 2 of these options (verbatim, keep in bullets) that MATCH the lead's timing preference. TIMING AWARENESS: If the lead said "next week", only offer next week times. If they said "after the 15th", only offer times after that date. If no times match their preference, ask what works better instead:\n${opts.availability
         .map((slot) => `- ${slot}`)
         .join("\n")}`
       : "If scheduling is the right next step, propose that you'll send a couple time options (or ask for their availability).")
@@ -893,7 +895,7 @@ Analyze this lead and conversation to produce a strategy for writing a personali
 Output a JSON object with your analysis. Focus on:
 1. What makes this lead unique (personalization_points)
 2. What the response should achieve (intent_summary)
-3. Whether to offer scheduling times (should_offer_times, times_to_offer)
+3. Whether to offer scheduling times (should_offer_times, times_to_offer) — TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th", "this month"), ONLY select times from the list that match their request. Do NOT offer "this week" times if they said "next week". When no timing preference is expressed, prefer sooner options. If no available times match their stated preference, set should_offer_times to false and plan to ask what works better.
 4. The email structure (outline) - aligned with ${opts.shouldSelectArchetype ? "your selected archetype" : "the archetype above"}
 5. What to avoid (must_avoid)
 ${archetypeTask}
