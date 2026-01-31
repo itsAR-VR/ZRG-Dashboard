@@ -458,6 +458,7 @@ async function updateLeadReplierState(params: {
 }): Promise<void> {
   const leadEmail = normalizeOptionalEmail(params.leadEmail);
   const inboundFromEmail = normalizeOptionalEmail(params.fromEmail);
+  const inboundFromName = (params.fromName || "").trim() || null;
   if (!leadEmail || !inboundFromEmail) return;
   const { isCcReplier } = detectCcReplier({
     leadEmail,
@@ -474,7 +475,7 @@ async function updateLeadReplierState(params: {
       where: { id: params.leadId },
       data: {
         currentReplierEmail: inboundFromEmail,
-        currentReplierName: params.fromName || null,
+        currentReplierName: inboundFromName,
         currentReplierSince: new Date(),
         alternateEmails: addToAlternateEmails(
           currentLead?.alternateEmails || [],

@@ -158,7 +158,8 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
   const isSetter = viewerRole === "SETTER"
   const alternateEmails = (lead.alternateEmails ?? []).filter((email) => {
     if (!email) return false
-    return email.toLowerCase() !== lead.email.toLowerCase()
+    const primaryEmailLower = (lead.email ?? "").toLowerCase()
+    return email.toLowerCase() !== primaryEmailLower
   })
 
   const handlePromoteContact = async (email: string) => {
