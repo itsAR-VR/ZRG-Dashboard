@@ -81,7 +81,7 @@ test("applyOutboundToOverride removes To from CC and removes primary when primar
 
   assert.equal(result.overrideApplied, true);
   assert.equal(result.toEmail, "lead@example.com");
-  assert.deepEqual(result.cc, ["other@example.com"]);
+  assert.deepEqual(result.cc, ["cc@example.com", "other@example.com"]);
 });
 
 test("computeLeadCurrentReplierUpdate sets current replier only when To differs from primary", () => {

@@ -67,7 +67,7 @@ export async function sendInstantlyReply(
     replyToUuid: string;
     eaccount: string;
     subject: string | null;
-    body: string;
+    body: { text?: string; html?: string };
     cc?: string[];   // Optional CC recipients
     bcc?: string[];  // Optional BCC recipients
   }
@@ -109,4 +109,3 @@ export async function sendInstantlyReply(
     return { success: false, error: error instanceof Error ? error.message : "Failed to send Instantly reply" };
   }
 }
-

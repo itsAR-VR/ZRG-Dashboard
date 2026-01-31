@@ -65,6 +65,8 @@ interface EmailRecipientEditorProps {
   toEmail: string
   toOptions: EmailRecipientOption[]
   onToEmailChange: (email: string) => void
+  toDisabled?: boolean
+  toDisabledReason?: string | null
   ccList: string[]
   onCcChange: (cc: string[]) => void
   ccInput: string
@@ -76,6 +78,8 @@ function EmailRecipientEditor({
   toEmail,
   toOptions,
   onToEmailChange,
+  toDisabled = false,
+  toDisabledReason = null,
   ccList,
   onCcChange,
   ccInput,
@@ -110,7 +114,7 @@ function EmailRecipientEditor({
           <Select
             value={toEmail || undefined}
             onValueChange={onToEmailChange}
-            disabled={disabled || toOptions.length === 0}
+            disabled={disabled || toDisabled || toOptions.length === 0}
           >
             <SelectTrigger className="h-7 text-xs">
               <SelectValue placeholder="Select recipient" />
@@ -125,6 +129,7 @@ function EmailRecipientEditor({
           </Select>
         </div>
       </div>
+      {toDisabledReason ? <div className="ml-10 text-[11px] text-muted-foreground">{toDisabledReason}</div> : null}
 
       {/* CC field (editable) */}
       <div className="flex items-start gap-2">
@@ -269,6 +274,14 @@ export function ActionStation({
     return latest
   }, [conversation?.messages])
 
+  const emailThreadProvider = useMemo(() => {
+    const replyId = typeof latestInboundEmail?.emailBisonReplyId === "string" ? latestInboundEmail.emailBisonReplyId : ""
+    if (!replyId) return null
+    if (replyId.startsWith("instantly:")) return "instantly"
+    if (replyId.startsWith("smartlead:")) return "smartlead"
+    return "emailbison"
+  }, [latestInboundEmail?.emailBisonReplyId])
+
   const toOptions = useMemo<EmailRecipientOption[]>(() => {
     const lead = conversation?.lead
     if (!lead?.email) return []
@@ -306,6 +319,9 @@ export function ActionStation({
     if (!normalized) return null
     return toOptions.find((opt) => opt.email === normalized)?.name ?? null
   }, [toEmail, toOptions])
+
+  const toDisabledReason =
+    emailThreadProvider === "instantly" ? "Instantly replies do not support overriding the To recipient." : null
   
   // Reset active channel when conversation changes
   useEffect(() => {
@@ -333,9 +349,10 @@ export function ActionStation({
     conversationMessagesRef.current = conversation?.messages || []
   }, [conversation?.messages])
 
-  // Phase 50: Initialize CC recipients from latest inbound email when channel/conversation changes
+  // Phase 50: Initialize CC recipients from latest inbound email when channel/conversation/messages change
+  // Use conversation?.messages directly (not ref) so CC updates when new emails arrive
   useEffect(() => {
-    const messages = conversationMessagesRef.current
+    const messages = conversation?.messages || []
     if (activeChannel === "email" && messages.length > 0) {
       const latestInbound = messages
         .filter(m => m.direction === "inbound" && m.channel === "email")
@@ -350,7 +367,7 @@ export function ActionStation({
       setCcRecipients([])
     }
     setCcInput("")
-  }, [conversation?.id, activeChannel])
+  }, [conversation?.id, conversation?.messages, activeChannel])
 
   // Scroll to bottom only on initial load or when user sends a message
   // NOT during background polling updates to preserve scroll position
@@ -943,6 +960,8 @@ export function ActionStation({
               setHasEditedTo(true)
               setToEmail(email)
             }}
+            toDisabled={emailThreadProvider === "instantly"}
+            toDisabledReason={toDisabledReason}
             ccList={ccRecipients}
             onCcChange={setCcRecipients}
             ccInput={ccInput}

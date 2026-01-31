@@ -296,13 +296,16 @@ export async function sendEmailReplySystem(params: {
     return { success: false, error: `Invalid To email: ${rawToOverride}` };
   }
 
+  // Instantly reply API does not support overriding the To recipient.
+  const allowToOverride = provider !== EmailIntegrationProvider.INSTANTLY;
+
   const recipientsWithOverride = applyOutboundToOverride({
     primaryEmail: lead.email,
     baseToEmail: recipients.toEmail,
     baseToName: recipients.toName,
     baseCc: recipients.cc,
-    overrideToEmail: rawToOverride || undefined,
-    overrideToName: params.toNameOverride ?? null,
+    overrideToEmail: allowToOverride ? rawToOverride || undefined : undefined,
+    overrideToName: allowToOverride ? (params.toNameOverride ?? null) : null,
   });
 
   let emailGuardTarget = recipientsWithOverride.toEmail;
@@ -484,7 +487,7 @@ export async function sendEmailReplySystem(params: {
       replyToUuid: instantlyHandle.replyToUuid,
       eaccount: instantlyHandle.eaccount,
       subject,
-      body: params.messageContent,
+      body: { text: params.messageContent },
       cc: instantlyCc.length > 0 ? instantlyCc : undefined,
       bcc: instantlyBcc.length > 0 ? instantlyBcc : undefined,
     });
@@ -523,7 +526,7 @@ export async function sendEmailReplySystem(params: {
 
   // If the user explicitly selected a To: recipient, persist it as the lead's active replier so
   // future drafts/follow-ups target the right person (Phase 74).
-  if (rawToOverride) {
+  if (rawToOverride && allowToOverride) {
     const update = computeLeadCurrentReplierUpdate({
       primaryEmail: lead.email,
       selectedToEmail: messageToEmail,
