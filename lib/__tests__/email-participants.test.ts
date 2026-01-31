@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   addToAlternateEmails,
+  applyOutboundToOverride,
+  computeLeadCurrentReplierUpdate,
   detectCcReplier,
   emailsMatch,
   normalizeOptionalEmail,
@@ -50,4 +52,91 @@ test("detectCcReplier returns true only when emails differ", () => {
 test("addToAlternateEmails normalizes, dedupes, and excludes primary", () => {
   const result = addToAlternateEmails(["MAX@Example.com", "other@example.com"], "TEDDY@example.com", "max@example.com");
   assert.deepEqual(result, ["other@example.com", "teddy@example.com"]);
+});
+
+test("applyOutboundToOverride ensures primary is CC'd when To differs", () => {
+  const result = applyOutboundToOverride({
+    primaryEmail: "lead@example.com",
+    baseToEmail: "cc@example.com",
+    baseToName: null,
+    baseCc: [],
+    overrideToEmail: "cc@example.com",
+    overrideToName: "Teddy",
+  });
+
+  assert.equal(result.overrideApplied, true);
+  assert.equal(result.toEmail, "cc@example.com");
+  assert.deepEqual(result.cc, ["lead@example.com"]);
+});
+
+test("applyOutboundToOverride removes To from CC and removes primary when primary is the To", () => {
+  const result = applyOutboundToOverride({
+    primaryEmail: "lead@example.com",
+    baseToEmail: "cc@example.com",
+    baseToName: null,
+    baseCc: ["lead@example.com", "cc@example.com", "other@example.com"],
+    overrideToEmail: "lead@example.com",
+    overrideToName: "Lead",
+  });
+
+  assert.equal(result.overrideApplied, true);
+  assert.equal(result.toEmail, "lead@example.com");
+  assert.deepEqual(result.cc, ["other@example.com"]);
+});
+
+test("computeLeadCurrentReplierUpdate sets current replier only when To differs from primary", () => {
+  const now = new Date("2026-01-31T00:00:00.000Z");
+  const result = computeLeadCurrentReplierUpdate({
+    primaryEmail: "lead@example.com",
+    selectedToEmail: "cc@example.com",
+    selectedToName: "Teddy",
+    existingAlternateEmails: [],
+    existingCurrentReplierEmail: null,
+    existingCurrentReplierName: null,
+    existingCurrentReplierSince: null,
+    now,
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.currentReplierEmail, "cc@example.com");
+  assert.equal(result.currentReplierName, "Teddy");
+  assert.equal(result.currentReplierSince?.toISOString(), now.toISOString());
+  assert.deepEqual(result.alternateEmails, ["cc@example.com"]);
+});
+
+test("computeLeadCurrentReplierUpdate clears current replier when selecting primary", () => {
+  const now = new Date("2026-01-31T00:00:00.000Z");
+  const result = computeLeadCurrentReplierUpdate({
+    primaryEmail: "lead@example.com",
+    selectedToEmail: "lead@example.com",
+    selectedToName: "Lead",
+    existingAlternateEmails: ["lead@example.com", "cc@example.com"],
+    existingCurrentReplierEmail: "cc@example.com",
+    existingCurrentReplierName: "Teddy",
+    existingCurrentReplierSince: new Date("2026-01-01T00:00:00.000Z"),
+    now,
+  });
+
+  assert.equal(result.currentReplierEmail, null);
+  assert.equal(result.currentReplierName, null);
+  assert.equal(result.currentReplierSince, null);
+  assert.deepEqual(result.alternateEmails, ["cc@example.com"]);
+});
+
+test("computeLeadCurrentReplierUpdate preserves currentReplierSince when email is unchanged", () => {
+  const existingSince = new Date("2026-01-01T00:00:00.000Z");
+  const now = new Date("2026-01-31T00:00:00.000Z");
+  const result = computeLeadCurrentReplierUpdate({
+    primaryEmail: "lead@example.com",
+    selectedToEmail: "cc@example.com",
+    selectedToName: "Teddy",
+    existingAlternateEmails: ["cc@example.com"],
+    existingCurrentReplierEmail: "cc@example.com",
+    existingCurrentReplierName: "Teddy",
+    existingCurrentReplierSince: existingSince,
+    now,
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.currentReplierSince?.toISOString(), existingSince.toISOString());
 });

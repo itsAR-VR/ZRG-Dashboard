@@ -3,7 +3,10 @@
 ## Summary
 
 - **Shipped:** Complete CC'd recipient handling infrastructure across schema, utilities, webhooks, AI drafts, email send, follow-ups, and UI
-- **Quality gates pass:** `npm run lint` (warnings only), `npm run build` (success)
+- **Repo state:** uncommitted changes include `actions/lead-actions.ts` and Phase 72 planning docs
+- **Quality gates pass:** `npm run lint` (0 errors, 18 warnings), `npm run build` (success)
+- **Tests pass:** `npm test` (57/57)
+- **Non-blocking warnings:** Next.js workspace root inferred from multiple lockfiles; `middleware` convention deprecation; `baseline-browser-mapping` staleness notice
 - **Remaining:** `npm run db:push` (requires DB credentials), manual smoke tests for CC replier flows + promotion
 
 ## What Shipped
@@ -41,13 +44,18 @@
 ## Verification
 
 ### Commands
-- `npm run lint` — **pass** (18 warnings, 0 errors) — Jan 30, 2026
-- `npm run build` — **pass** — Jan 30, 2026
+- `git status --porcelain` (before review doc edits) — **clean** — Fri Jan 30 22:03 EST 2026
+- `git status --porcelain` (after review doc edits) — `M docs/planning/phase-72/plan.md`, `M docs/planning/phase-72/review.md` — Fri Jan 30 22:09 EST 2026
+- `npm run lint` — **pass** (18 warnings, 0 errors) — Fri Jan 30 22:03 EST 2026
+- `npm run build` — **pass** — Fri Jan 30 22:04 EST 2026
+- `npm test` — **pass** (57/57) — Fri Jan 30 22:10 EST 2026
 - `npm run db:push` — **skip** (requires DB credentials; schema ready for push)
 
 ### Notes
 - Lint warnings are pre-existing (React hooks, img elements) — not introduced by Phase 72
 - Build compiled successfully in ~20s with no TypeScript errors
+- Build output includes (non-blocking) Next.js warnings about workspace root selection due to multiple lockfiles and a deprecation notice for the `middleware` convention.
+- Build and lint output include a repeated `baseline-browser-mapping` staleness notice (safe to ignore short-term; update dependency to silence).
 
 ## Success Criteria → Evidence
 
@@ -69,6 +77,7 @@
 | Create new `lib/email-participants.ts` | Extended existing file (Phase 50) | Better — avoided file proliferation |
 | Follow-up engine needs CC override | No changes needed — inherits from email-send | Simpler — less code |
 | Subphase h (lead matching hardening) | Added as planned | Prevents thread splits after promotion |
+| Setter request should not block if Slack isn't configured | `requestPromoteAlternateContactToPrimary` returns success with guidance when Slack notifications can't be sent | Setters can proceed even when Slack isn't configured |
 
 ## Risks / Rollback
 

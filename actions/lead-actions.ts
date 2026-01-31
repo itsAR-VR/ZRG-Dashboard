@@ -24,6 +24,8 @@ export interface ConversationData {
   lead: {
     id: string;
     name: string;
+    firstName: string | null;
+    lastName: string | null;
     email: string | null;
     alternateEmails: string[];
     currentReplierEmail: string | null;
@@ -47,6 +49,7 @@ export interface ConversationData {
     companyState: string | null;
     emailBisonLeadId: string | null;
     enrichmentStatus: string | null;
+    followUpBlockedReason: string | null;
     // GHL integration data
     ghlContactId: string | null;
     ghlLocationId: string | null;
@@ -131,6 +134,15 @@ function leadRequiresAttention(lead: {
   if (lead.sentimentTag === "Blacklist") return false;
   if (!isAttentionSentimentTag(lead.sentimentTag)) return false;
   return lead.lastMessageDirection === "inbound";
+}
+
+function getFollowUpBlockedReason(lead: {
+  followUpInstances?: Array<{ pausedReason: string | null }> | null;
+}): string | null {
+  const reason = lead.followUpInstances?.[0]?.pausedReason ?? null;
+  if (!reason) return null;
+  if (!reason.startsWith("missing_")) return null;
+  return reason;
 }
 
 /**
@@ -283,6 +295,15 @@ export async function getConversations(clientId?: string | null): Promise<{
           orderBy: { createdAt: "desc" },
           take: 1,
         },
+        followUpInstances: {
+          where: {
+            status: "paused",
+            pausedReason: { startsWith: "missing_" },
+          },
+          select: { pausedReason: true },
+          orderBy: { updatedAt: "desc" },
+          take: 1,
+        },
       },
       orderBy: {
         updatedAt: "desc",
@@ -316,11 +337,15 @@ export async function getConversations(clientId?: string | null): Promise<{
         (draft) => draft.channel === primaryChannel || (!draft.channel && primaryChannel === "sms")
       );
 
+      const followUpBlockedReason = getFollowUpBlockedReason(lead);
+
       return {
         id: lead.id,
         lead: {
           id: lead.id,
           name: fullName,
+          firstName: lead.firstName,
+          lastName: lead.lastName,
           email: lead.email,
           alternateEmails: lead.alternateEmails ?? [],
           currentReplierEmail: lead.currentReplierEmail ?? null,
@@ -344,6 +369,7 @@ export async function getConversations(clientId?: string | null): Promise<{
           companyState: lead.companyState,
           emailBisonLeadId: lead.emailBisonLeadId,
           enrichmentStatus: lead.enrichmentStatus,
+          followUpBlockedReason,
           // GHL integration data
           ghlContactId: lead.ghlContactId,
           ghlLocationId: lead.client.ghlLocationId,
@@ -720,6 +746,15 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           where: channelFilter ? { channel: channelFilter } : undefined,
           orderBy: { sentAt: "asc" }, // Order by actual message time
         },
+        followUpInstances: {
+          where: {
+            status: "paused",
+            pausedReason: { startsWith: "missing_" },
+          },
+          select: { pausedReason: true },
+          orderBy: { updatedAt: "desc" },
+          take: 1,
+        },
       },
     });
 
@@ -750,6 +785,8 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
       assignedToEmail = emailMap.get(lead.assignedToUserId) ?? null;
     }
 
+    const followUpBlockedReason = getFollowUpBlockedReason(lead);
+
     return {
       success: true,
       data: {
@@ -757,6 +794,8 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
         lead: {
           id: lead.id,
           name: fullName,
+          firstName: lead.firstName,
+          lastName: lead.lastName,
           email: lead.email,
           alternateEmails: lead.alternateEmails ?? [],
           currentReplierEmail: lead.currentReplierEmail ?? null,
@@ -781,6 +820,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           companyState: lead.companyState,
           emailBisonLeadId: lead.emailBisonLeadId,
           enrichmentStatus: lead.enrichmentStatus,
+          followUpBlockedReason,
           // GHL integration data
           ghlContactId: lead.ghlContactId,
           ghlLocationId: lead.client.ghlLocationId,
@@ -892,6 +932,7 @@ function transformLeadToConversation(
 ): ConversationData {
   const latestMessage = lead.messages[0];
   const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
+  const followUpBlockedReason = getFollowUpBlockedReason(lead);
   const primaryChannel = detectPrimaryChannel(latestMessage, lead);
   const channels = getChannelsFromMessages(lead.messages);
   const availableChannels = getAvailableChannels({
@@ -911,6 +952,8 @@ function transformLeadToConversation(
     lead: {
       id: lead.id,
       name: fullName,
+      firstName: lead.firstName,
+      lastName: lead.lastName,
       email: lead.email,
       alternateEmails: lead.alternateEmails ?? [],
       currentReplierEmail: lead.currentReplierEmail ?? null,
@@ -933,6 +976,7 @@ function transformLeadToConversation(
       companyState: lead.companyState,
       emailBisonLeadId: lead.emailBisonLeadId,
       enrichmentStatus: lead.enrichmentStatus,
+      followUpBlockedReason,
       ghlContactId: lead.ghlContactId,
       ghlLocationId: lead.client.ghlLocationId,
       // Lead scoring (Phase 33)
@@ -1188,6 +1232,15 @@ export async function getConversationsCursor(
             id: true,
             channel: true,
           },
+        },
+        followUpInstances: {
+          where: {
+            status: "paused",
+            pausedReason: { startsWith: "missing_" },
+          },
+          select: { pausedReason: true },
+          orderBy: { updatedAt: "desc" },
+          take: 1,
         },
       },
     };
@@ -1464,6 +1517,15 @@ export async function getConversationsFromEnd(
             id: true,
             channel: true,
           },
+        },
+        followUpInstances: {
+          where: {
+            status: "paused",
+            pausedReason: { startsWith: "missing_" },
+          },
+          select: { pausedReason: true },
+          orderBy: { updatedAt: "desc" },
+          take: 1,
         },
       },
     });
@@ -1762,14 +1824,30 @@ export async function requestPromoteAlternateContactToPrimary(
     }
 
     if (adminUserIds.size === 0) {
-      return { success: false, error: "No admins found for this workspace" };
+      return {
+        success: true,
+        message:
+          "No admins found for this workspace. Please contact a workspace admin/owner to promote this contact.",
+      };
     }
 
-    const adminEmailMap = await getSupabaseUserEmailsByIds(Array.from(adminUserIds));
-    const adminEmails = Array.from(adminEmailMap.values()).filter((email): email is string => Boolean(email));
+    let adminEmails: string[] = [];
+    try {
+      const adminEmailMap = await getSupabaseUserEmailsByIds(Array.from(adminUserIds));
+      adminEmails = Array.from(adminEmailMap.values()).filter((email): email is string => Boolean(email));
+    } catch (error) {
+      console.warn(
+        "[requestPromoteAlternateContactToPrimary] Failed to look up admin emails for Slack notifications:",
+        error
+      );
+    }
 
     if (adminEmails.length === 0) {
-      return { success: false, error: "No admin emails found for this workspace" };
+      return {
+        success: true,
+        message:
+          "Could not notify admins via Slack (admin email lookup not available). Please contact a workspace admin/owner to promote this contact.",
+      };
     }
 
     const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
@@ -1817,7 +1895,11 @@ export async function requestPromoteAlternateContactToPrimary(
     const notifiedCount = results.filter((result) => result.success).length;
 
     if (notifiedCount === 0) {
-      return { success: false, error: "Failed to notify admins (Slack not configured?)" };
+      return {
+        success: true,
+        message:
+          "Could not notify admins via Slack (Slack may not be configured). Please contact a workspace admin/owner to promote this contact.",
+      };
     }
 
     return {

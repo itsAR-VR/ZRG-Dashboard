@@ -200,9 +200,11 @@ Recent nearby phases with overlap (verify behavior before changing):
 - Extended inbox UI with current replier badge + alternate contacts list + promotion buttons
 
 ### Verified
-- `npm run lint`: pass (warnings only, pre-existing)
-- `npm run build`: pass
+- `npm run lint`: pass (0 errors, 18 warnings) — Fri Jan 30 22:03 EST 2026
+- `npm run build`: pass — Fri Jan 30 22:04 EST 2026
+- `npm test`: pass (57/57) — Fri Jan 30 22:10 EST 2026
+- Build output includes non-blocking warnings (workspace root inferred from multiple lockfiles; `middleware` convention deprecation; `baseline-browser-mapping` staleness notice)
 
 ### Remaining
-- Run `npm run db:push` (requires DB credentials)
+- Run `npm run db:push` against the intended DB (not run in this environment)
 - Manual smoke tests for CC replier flows + promotion

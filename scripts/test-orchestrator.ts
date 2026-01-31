@@ -6,7 +6,9 @@ const TEST_FILES = [
   "lib/__tests__/booking-target-selector.test.ts",
   "lib/__tests__/ghl-appointment-response.test.ts",
   "lib/__tests__/phone-normalization.test.ts",
+  "lib/__tests__/followup-template.test.ts",
   "lib/__tests__/insights-thread-extractor-schema.test.ts",
+  "lib/__tests__/email-participants.test.ts",
   "lib/__tests__/emailbison-stop-future-emails.test.ts",
 ];
 

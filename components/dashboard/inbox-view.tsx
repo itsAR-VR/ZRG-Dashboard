@@ -49,6 +49,8 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
     lead: {
       id: conv.lead.id,
       name: conv.lead.name,
+      firstName: conv.lead.firstName ?? null,
+      lastName: conv.lead.lastName ?? null,
       email: conv.lead.email || "",
       alternateEmails: conv.lead.alternateEmails ?? [],
       currentReplierEmail: conv.lead.currentReplierEmail ?? null,
@@ -80,6 +82,7 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
       companyState: conv.lead.companyState,
       emailBisonLeadId: conv.lead.emailBisonLeadId,
       enrichmentStatus: conv.lead.enrichmentStatus,
+      followUpBlockedReason: conv.lead.followUpBlockedReason ?? null,
       autoBookMeetingsEnabled: conv.lead.autoBookMeetingsEnabled,
       // GHL integration data
       ghlContactId: conv.lead.ghlContactId,
@@ -401,6 +404,8 @@ export function InboxView({
 	          viewerRole: result.data.viewerRole ?? baseConv.viewerRole ?? null,
 	          lead: {
 	            ...baseConv.lead,
+	            firstName: result.data.lead.firstName ?? baseConv.lead.firstName ?? null,
+	            lastName: result.data.lead.lastName ?? baseConv.lead.lastName ?? null,
 	            autoReplyEnabled: result.data.lead.autoReplyEnabled,
 	            autoFollowUpEnabled: result.data.lead.autoFollowUpEnabled,
 	            autoBookMeetingsEnabled: result.data.lead.autoBookMeetingsEnabled,
@@ -411,6 +416,7 @@ export function InboxView({
 	            currentReplierEmail: result.data.lead.currentReplierEmail ?? null,
 	            currentReplierName: result.data.lead.currentReplierName ?? null,
 	            currentReplierSince: result.data.lead.currentReplierSince ?? null,
+	            followUpBlockedReason: result.data.lead.followUpBlockedReason ?? baseConv.lead.followUpBlockedReason ?? null,
 	          },
 	          messages,
 	        });
@@ -424,6 +430,8 @@ export function InboxView({
           lead: {
             id: result.data.lead.id,
             name: result.data.lead.name,
+            firstName: result.data.lead.firstName ?? null,
+            lastName: result.data.lead.lastName ?? null,
             email: result.data.lead.email || "",
             alternateEmails: result.data.lead.alternateEmails ?? [],
             currentReplierEmail: result.data.lead.currentReplierEmail ?? null,
@@ -455,6 +463,7 @@ export function InboxView({
             companyState: result.data.lead.companyState,
             emailBisonLeadId: result.data.lead.emailBisonLeadId,
             enrichmentStatus: result.data.lead.enrichmentStatus,
+            followUpBlockedReason: result.data.lead.followUpBlockedReason ?? null,
             ghlContactId: result.data.lead.ghlContactId,
             ghlLocationId: result.data.lead.ghlLocationId,
             sentimentTag: result.data.lead.sentimentTag,

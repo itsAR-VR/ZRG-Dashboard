@@ -7,6 +7,14 @@ import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById, r
 import { ensureDefaultSequencesIncludeLinkedInStepsForClient } from "@/lib/followup-sequence-linkedin";
 import { computeStepDeltaMs, computeStepOffsetMs } from "@/lib/followup-schedule";
 import {
+  FOLLOWUP_TEMPLATE_TOKEN_DEFINITIONS,
+  extractFollowUpTemplateTokens,
+  getUnknownFollowUpTemplateTokens,
+  parseQualificationQuestions,
+  type FollowUpTemplateValueKey,
+} from "@/lib/followup-template";
+import { getBookingLink } from "@/lib/meeting-booking-provider";
+import {
   MEETING_REQUESTED_SEQUENCE_NAME_LEGACY,
   MEETING_REQUESTED_SEQUENCE_NAMES,
   NO_RESPONSE_SEQUENCE_NAME,
@@ -71,6 +79,104 @@ export interface FollowUpInstanceData {
   startedAt: Date;
   lastStepAt: Date | null;
   nextStepDue: Date | null;
+}
+
+// =============================================================================
+// Template Validation Helpers
+// =============================================================================
+
+type FollowUpStepTemplateInput = Pick<FollowUpStepData, "stepOrder" | "messageTemplate" | "subject">;
+
+const TOKEN_DEFINITION_BY_TOKEN = new Map(
+  FOLLOWUP_TEMPLATE_TOKEN_DEFINITIONS.map((definition) => [definition.token, definition])
+);
+
+function collectTemplateTokensFromSteps(steps: FollowUpStepTemplateInput[]): string[] {
+  const tokens = new Set<string>();
+
+  for (const step of steps) {
+    for (const token of extractFollowUpTemplateTokens(step.messageTemplate)) tokens.add(token);
+    for (const token of extractFollowUpTemplateTokens(step.subject)) tokens.add(token);
+  }
+
+  return Array.from(tokens);
+}
+
+function getUnknownTokenErrors(steps: FollowUpStepTemplateInput[]): string[] {
+  const errors: string[] = [];
+
+  steps.forEach((step, index) => {
+    const unknown = new Set([
+      ...getUnknownFollowUpTemplateTokens(step.messageTemplate),
+      ...getUnknownFollowUpTemplateTokens(step.subject),
+    ]);
+
+    if (unknown.size > 0) {
+      const stepLabel = Number.isFinite(step.stepOrder) ? step.stepOrder : index + 1;
+      errors.push(`step ${stepLabel}: ${Array.from(unknown).join(", ")}`);
+    }
+  });
+
+  return errors;
+}
+
+function getReferencedValueKeys(tokens: string[]): Set<FollowUpTemplateValueKey> {
+  const keys = new Set<FollowUpTemplateValueKey>();
+
+  for (const token of tokens) {
+    const definition = TOKEN_DEFINITION_BY_TOKEN.get(token);
+    if (definition) keys.add(definition.valueKey);
+  }
+
+  return keys;
+}
+
+async function getMissingWorkspaceSetup(
+  clientId: string,
+  tokens: string[]
+): Promise<{ missing: string[]; bookingLink: string | null }> {
+  const requiredKeys = getReferencedValueKeys(tokens);
+  const missing: string[] = [];
+
+  const settings = await prisma.workspaceSettings.findUnique({
+    where: { clientId },
+    select: {
+      aiPersonaName: true,
+      companyName: true,
+      targetResult: true,
+      qualificationQuestions: true,
+      meetingBookingProvider: true,
+      calendlyEventTypeLink: true,
+    },
+  });
+
+  if (requiredKeys.has("aiPersonaName") && !settings?.aiPersonaName?.trim()) {
+    missing.push("AI persona name");
+  }
+
+  if (requiredKeys.has("companyName") && !settings?.companyName?.trim()) {
+    missing.push("Company name");
+  }
+
+  if (requiredKeys.has("targetResult") && !settings?.targetResult?.trim()) {
+    missing.push("Target result");
+  }
+
+  const needsQualification =
+    requiredKeys.has("qualificationQuestion1") || requiredKeys.has("qualificationQuestion2");
+  if (needsQualification) {
+    const questions = parseQualificationQuestions(settings?.qualificationQuestions ?? null);
+    const hasQuestions = questions.some((question) => question.question?.trim().length > 0);
+    if (!hasQuestions) missing.push("Qualification questions");
+  }
+
+  let bookingLink: string | null = null;
+  if (requiredKeys.has("bookingLink")) {
+    bookingLink = await getBookingLink(clientId, settings);
+    if (!bookingLink) missing.push("Default calendar link");
+  }
+
+  return { missing, bookingLink };
 }
 
 // =============================================================================
@@ -189,6 +295,15 @@ export async function createFollowUpSequence(data: {
 }): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
   try {
     await requireClientAdminAccess(data.clientId);
+
+    const unknownErrors = getUnknownTokenErrors(data.steps);
+    if (unknownErrors.length > 0) {
+      return {
+        success: false,
+        error: `Unknown template variables: ${unknownErrors.join(" | ")}`,
+      };
+    }
+
     const sequence = await prisma.followUpSequence.create({
       data: {
         clientId: data.clientId,
@@ -240,6 +355,16 @@ export async function updateFollowUpSequence(
     });
     if (!existing) return { success: false, error: "Sequence not found" };
     await requireClientAdminAccess(existing.clientId);
+
+    if (data.steps) {
+      const unknownErrors = getUnknownTokenErrors(data.steps);
+      if (unknownErrors.length > 0) {
+        return {
+          success: false,
+          error: `Unknown template variables: ${unknownErrors.join(" | ")}`,
+        };
+      }
+    }
 
     // If steps are provided, delete existing steps and recreate
     if (data.steps) {
@@ -316,13 +441,42 @@ export async function toggleSequenceActive(
   try {
     const sequence = await prisma.followUpSequence.findUnique({
       where: { id: sequenceId },
-      select: { isActive: true, clientId: true },
+      select: {
+        isActive: true,
+        clientId: true,
+        steps: {
+          select: {
+            stepOrder: true,
+            messageTemplate: true,
+            subject: true,
+          },
+        },
+      },
     });
 
     if (!sequence) {
       return { success: false, error: "Sequence not found" };
     }
     await requireClientAdminAccess(sequence.clientId);
+
+    if (!sequence.isActive) {
+      const unknownErrors = getUnknownTokenErrors(sequence.steps);
+      if (unknownErrors.length > 0) {
+        return {
+          success: false,
+          error: `Unknown template variables: ${unknownErrors.join(" | ")}`,
+        };
+      }
+
+      const tokens = collectTemplateTokensFromSteps(sequence.steps);
+      const { missing } = await getMissingWorkspaceSetup(sequence.clientId, tokens);
+      if (missing.length > 0) {
+        return {
+          success: false,
+          error: `Follow-up setup incomplete: ${missing.join(", ")}`,
+        };
+      }
+    }
 
     const updated = await prisma.followUpSequence.update({
       where: { id: sequenceId },

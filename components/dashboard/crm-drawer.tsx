@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition, useEffect, useCallback } from "react"
+import { useState, useTransition, useEffect, useCallback, useMemo } from "react"
 import type { Lead } from "@/lib/mock-data"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
@@ -32,6 +32,7 @@ import {
   Building2,
   MapPin,
   ExternalLink,
+  AlertTriangle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { BookingMonthAvailabilityPicker } from "@/components/dashboard/booking-month-availability-picker"
@@ -59,6 +60,7 @@ import {
 } from "@/actions/booking-actions"
 import type { AppointmentHistoryItem } from "@/actions/booking-actions"
 import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
+import { getCalendarLinks, getUserSettings, type CalendarLinkData, type UserSettingsData } from "@/actions/settings-actions"
 import { useEnrichmentPolling } from "@/hooks/use-enrichment-polling"
 import { toast } from "sonner"
 import { toDisplayPhone } from "@/lib/phone-utils"
@@ -74,6 +76,12 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared"
 import { LeadScoreBadge } from "./lead-score-badge"
+import {
+  FOLLOWUP_TEMPLATE_TOKEN_DEFINITIONS,
+  extractFollowUpTemplateTokens,
+  parseQualificationQuestions,
+  type FollowUpTemplateValueKey,
+} from "@/lib/followup-template"
 
 interface CrmDrawerProps {
   lead: Lead
@@ -105,9 +113,22 @@ const snoozeOptions = [
 
 const MANUAL_SENTIMENT_TAGS = SENTIMENT_TAGS.filter((tag) => tag !== "Snoozed") as readonly SentimentTag[]
 
+const FOLLOWUP_TOKEN_DEFINITION_BY_TOKEN = new Map(
+  FOLLOWUP_TEMPLATE_TOKEN_DEFINITIONS.map((definition) => [definition.token, definition])
+)
+
 function normalizeSentimentTag(tag: string | null | undefined): SentimentTag {
   const match = MANUAL_SENTIMENT_TAGS.find((t) => t === tag)
   return match || "New"
+}
+
+function getReferencedValueKeys(tokens: string[]): Set<FollowUpTemplateValueKey> {
+  const keys = new Set<FollowUpTemplateValueKey>()
+  for (const token of tokens) {
+    const definition = FOLLOWUP_TOKEN_DEFINITION_BY_TOKEN.get(token)
+    if (definition) keys.add(definition.valueKey)
+  }
+  return keys
 }
 
 export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: CrmDrawerProps) {
@@ -134,6 +155,10 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
   const [availableSequences, setAvailableSequences] = useState<FollowUpSequenceData[]>([])
   const [isLoadingSequences, setIsLoadingSequences] = useState(false)
   const [sequenceActionInProgress, setSequenceActionInProgress] = useState<string | null>(null)
+  const [workspaceSettings, setWorkspaceSettings] = useState<UserSettingsData | null>(null)
+  const [calendarLinks, setCalendarLinks] = useState<CalendarLinkData[]>([])
+  const [isWorkspaceContextLoaded, setIsWorkspaceContextLoaded] = useState(false)
+  const [sequenceStartError, setSequenceStartError] = useState<string | null>(null)
 
   // GHL Booking states
   const [autoBookMeetingsEnabled, setAutoBookMeetingsEnabled] = useState(lead.autoBookMeetingsEnabled ?? true)
@@ -289,6 +314,27 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
     }
   }, [lead.id, lead.clientId])
 
+  const loadWorkspaceContext = useCallback(async () => {
+    if (!lead.clientId) return
+    setIsWorkspaceContextLoaded(false)
+    try {
+      const [settingsResult, calendarResult] = await Promise.all([
+        getUserSettings(lead.clientId),
+        getCalendarLinks(lead.clientId),
+      ])
+      if (settingsResult.success) {
+        setWorkspaceSettings(settingsResult.data ?? null)
+      }
+      if (calendarResult.success) {
+        setCalendarLinks(calendarResult.data ?? [])
+      }
+    } catch (error) {
+      console.error("Failed to load workspace settings:", error)
+    } finally {
+      setIsWorkspaceContextLoaded(true)
+    }
+  }, [lead.clientId])
+
   // Load booking configuration and status
   const loadBookingData = useCallback(async () => {
     if (!lead.clientId) return
@@ -330,8 +376,13 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
     if (isOpen) {
       loadFollowUpData()
       loadBookingData()
+      loadWorkspaceContext()
     }
-  }, [isOpen, loadFollowUpData, loadBookingData])
+  }, [isOpen, loadFollowUpData, loadBookingData, loadWorkspaceContext])
+
+  useEffect(() => {
+    setSequenceStartError(null)
+  }, [lead.id])
 
   // Load available time slots for booking dialog
   const loadAvailableSlots = async () => {
@@ -409,13 +460,126 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
     loadAvailableSlots()
   }
 
+  const collectSequenceTokens = useCallback((sequence: FollowUpSequenceData) => {
+    const tokens = new Set<string>()
+    for (const step of sequence.steps) {
+      for (const token of extractFollowUpTemplateTokens(step.messageTemplate)) tokens.add(token)
+      for (const token of extractFollowUpTemplateTokens(step.subject)) tokens.add(token)
+    }
+    return Array.from(tokens)
+  }, [])
+
+  const getMissingLeadItems = useCallback(
+    (tokens: string[]) => {
+      const requiredKeys = getReferencedValueKeys(tokens)
+      const missing: string[] = []
+
+      const isMissing = (value: string | null | undefined) => !value || value.trim().length === 0
+
+      if (requiredKeys.has("firstName") && isMissing(lead.firstName)) missing.push("First name")
+      if (requiredKeys.has("lastName") && isMissing(lead.lastName)) missing.push("Last name")
+      if (requiredKeys.has("email") && isMissing(lead.email)) missing.push("Email")
+      if (requiredKeys.has("phone") && isMissing(lead.phone)) missing.push("Phone")
+      if (requiredKeys.has("leadCompanyName") && isMissing(lead.companyName)) missing.push("Lead company name")
+
+      return missing
+    },
+    [lead.firstName, lead.lastName, lead.email, lead.phone, lead.companyName]
+  )
+
+  const getMissingWorkspaceItems = useCallback(
+    (tokens: string[]) => {
+      if (!isWorkspaceContextLoaded || !workspaceSettings) return []
+      const requiredKeys = getReferencedValueKeys(tokens)
+      const missing: string[] = []
+
+      if (requiredKeys.has("aiPersonaName") && !workspaceSettings.aiPersonaName?.trim()) {
+        missing.push("AI persona name")
+      }
+      if (requiredKeys.has("companyName") && !workspaceSettings.companyName?.trim()) {
+        missing.push("Company name")
+      }
+      if (requiredKeys.has("targetResult") && !workspaceSettings.targetResult?.trim()) {
+        missing.push("Target result")
+      }
+
+      const needsQualification =
+        requiredKeys.has("qualificationQuestion1") || requiredKeys.has("qualificationQuestion2")
+      if (needsQualification) {
+        const questions = parseQualificationQuestions(workspaceSettings.qualificationQuestions ?? null)
+        const hasQuestions = questions.some((q) => q.question?.trim().length > 0)
+        if (!hasQuestions) missing.push("Qualification questions")
+      }
+
+      if (requiredKeys.has("bookingLink")) {
+        const hasDefaultCalendar = calendarLinks.some((link) => link.isDefault)
+        if (!hasDefaultCalendar) missing.push("Default calendar link")
+      }
+
+      return missing
+    },
+    [isWorkspaceContextLoaded, workspaceSettings, calendarLinks]
+  )
+
+  const leadVariableRows = useMemo(() => {
+    const rows = [
+      { label: "First name", value: lead.firstName },
+      { label: "Last name", value: lead.lastName },
+      { label: "Email", value: lead.email },
+      { label: "Phone", value: lead.phone ? toDisplayPhone(lead.phone) : null },
+      { label: "Lead company name", value: lead.companyName },
+      { label: "LinkedIn URL", value: lead.linkedinUrl },
+    ]
+
+    return rows.map((row) => ({
+      ...row,
+      isMissing: !row.value || String(row.value).trim().length === 0,
+    }))
+  }, [lead.firstName, lead.lastName, lead.email, lead.phone, lead.companyName, lead.linkedinUrl])
+
   // Sequence handlers
   const handleStartSequence = async (sequenceId: string) => {
+    const sequence = availableSequences.find((seq) => seq.id === sequenceId)
+    if (sequence) {
+      if (!isWorkspaceContextLoaded || !workspaceSettings) {
+        toast.error("Follow-ups blocked", {
+          description: "Workspace settings are still loading. Please try again in a moment.",
+        })
+        return
+      }
+
+      const tokens = collectSequenceTokens(sequence)
+      const unknownTokens = tokens.filter((token) => !FOLLOWUP_TOKEN_DEFINITION_BY_TOKEN.has(token))
+      const missingLead = getMissingLeadItems(tokens)
+      const missingWorkspace = getMissingWorkspaceItems(tokens)
+
+      if (unknownTokens.length > 0 || missingLead.length > 0 || missingWorkspace.length > 0) {
+        const issues: string[] = []
+        if (unknownTokens.length > 0) {
+          issues.push(`Unknown variables: ${unknownTokens.join(", ")}`)
+        }
+        if (missingLead.length > 0) {
+          issues.push(`Missing lead data: ${missingLead.join(", ")}`)
+        }
+        if (missingWorkspace.length > 0) {
+          issues.push(`Missing setup: ${missingWorkspace.join(", ")}`)
+        }
+
+        const detail = issues.join(" • ")
+        setSequenceStartError(detail)
+        toast.error("Follow-ups blocked", {
+          description: `You need to set these things up correctly in order for follow-ups to send. ${detail}`,
+        })
+        return
+      }
+    }
+
     setSequenceActionInProgress(sequenceId)
     const result = await startFollowUpSequence(lead.id, sequenceId)
     if (result.success) {
       toast.success("Follow-up sequence started")
       loadFollowUpData()
+      setSequenceStartError(null)
     } else {
       toast.error(result.error || "Failed to start sequence")
     }
@@ -1112,6 +1276,33 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
               <ListTodo className="h-4 w-4 text-primary" />
               <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Follow-Up Sequences</h4>
             </div>
+
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-600" />
+                <span className="text-xs font-medium text-amber-700">Follow-up variables (lead info)</span>
+              </div>
+              <div className="grid gap-1 text-xs">
+                {leadVariableRows.map((row) => (
+                  <div key={row.label} className="flex items-center justify-between gap-2">
+                    <span className="text-muted-foreground">{row.label}</span>
+                    <span className={row.isMissing ? "text-destructive" : "text-foreground"}>
+                      {row.value || "Missing"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] text-amber-700/80">
+                Missing values will block follow-ups that reference these variables.
+              </p>
+            </div>
+
+            {sequenceStartError ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-700">
+                Follow-ups blocked. You need to set these things up correctly in order for follow-ups to send.{" "}
+                {sequenceStartError}
+              </div>
+            ) : null}
 
             {isLoadingSequences ? (
               <div className="flex items-center justify-center py-4">

@@ -902,7 +902,7 @@ export async function sendMessage(
 export async function sendEmailMessage(
   leadId: string,
   message: string,
-  options?: { cc?: string[] }
+  options?: { cc?: string[]; toEmail?: string; toName?: string | null }
 ): Promise<SendMessageResult> {
   return withAiTelemetrySourceIfUnset("action:message.send_email", async () => {
     try {
@@ -912,6 +912,8 @@ export async function sendEmailMessage(
         sentBy: "setter",
         sentByUserId: user.id,
         cc: options?.cc,
+        toEmail: options?.toEmail,
+        toName: options?.toName,
       });
       if (!result.success) {
         return { success: false, error: result.error || "Failed to send email reply" };
@@ -1129,7 +1131,14 @@ export async function getPendingDrafts(leadId: string, channel?: "sms" | "email"
  */
 export async function approveAndSendDraftSystem(
   draftId: string,
-  opts: { sentBy: "ai" | "setter"; sentByUserId?: string | null; editedContent?: string; cc?: string[] } = { sentBy: "setter" }
+  opts: {
+    sentBy: "ai" | "setter";
+    sentByUserId?: string | null;
+    editedContent?: string;
+    cc?: string[];
+    toEmail?: string;
+    toName?: string | null;
+  } = { sentBy: "setter" }
 ): Promise<SendMessageResult> {
   try {
     const draft = await prisma.aIDraft.findUnique({
@@ -1158,6 +1167,8 @@ export async function approveAndSendDraftSystem(
         sentBy: opts.sentBy,
         sentByUserId: opts.sentByUserId,
         cc: opts.cc,
+        toEmail: opts.toEmail,
+        toName: opts.toName,
       });
       if (!result.success) return { success: false, error: result.error || "Failed to send email reply" };
       return { success: true, messageId: result.messageId };
@@ -1231,7 +1242,7 @@ export async function approveAndSendDraftSystem(
 export async function approveAndSendDraft(
   draftId: string,
   editedContent?: string,
-  options?: { cc?: string[] }
+  options?: { cc?: string[]; toEmail?: string; toName?: string | null }
 ): Promise<SendMessageResult> {
   try {
     const user = await requireAuthUser();
@@ -1270,6 +1281,8 @@ export async function approveAndSendDraft(
         sentByUserId: user.id,
         editedContent,
         cc: options?.cc,
+        toEmail: options?.toEmail,
+        toName: options?.toName,
       });
     }
 

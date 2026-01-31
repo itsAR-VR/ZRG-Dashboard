@@ -196,3 +196,106 @@ export function sanitizeCcList(
 
   return { valid, invalid };
 }
+
+/**
+ * Apply an explicit To override on top of the system's base recipient resolution.
+ *
+ * Invariants:
+ * - `cc` never contains `toEmail`
+ * - If `toEmail` differs from the primary lead email, ensure the primary is CC'd
+ * - If `toEmail` equals the primary lead email, ensure the primary is NOT CC'd
+ */
+export function applyOutboundToOverride(params: {
+  primaryEmail: string | null | undefined;
+  baseToEmail: string;
+  baseToName: string | null;
+  baseCc: string[];
+  overrideToEmail?: string | null;
+  overrideToName?: string | null;
+}): { toEmail: string; toName: string | null; cc: string[]; overrideApplied: boolean } {
+  const primary = normalizeOptionalEmail(params.primaryEmail);
+  const overrideEmail = normalizeOptionalEmail(params.overrideToEmail);
+  const overrideApplied = !!overrideEmail && validateEmail(overrideEmail);
+
+  const toEmail = overrideApplied ? overrideEmail! : normalizeEmail(params.baseToEmail);
+  const toName = overrideApplied ? (params.overrideToName?.trim() ? params.overrideToName.trim() : null) : params.baseToName;
+
+  const seen = new Set<string>();
+  let cc: string[] = [];
+
+  for (const raw of params.baseCc || []) {
+    const normalized = normalizeOptionalEmail(raw);
+    if (!normalized) continue;
+    if (normalized === toEmail) continue;
+    if (primary && normalized === primary && toEmail === primary) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    cc.push(normalized);
+  }
+
+  if (primary && toEmail !== primary && !seen.has(primary)) {
+    cc = [primary, ...cc];
+    seen.add(primary);
+  }
+
+  return { toEmail, toName, cc, overrideApplied };
+}
+
+/**
+ * Compute how a lead's persisted "current replier" and alternate emails should change
+ * when the user explicitly selects a To recipient.
+ *
+ * Note: `currentReplierSince` is only set to `now` when the current replier email changes.
+ */
+export function computeLeadCurrentReplierUpdate(params: {
+  primaryEmail: string | null | undefined;
+  selectedToEmail: string | null | undefined;
+  selectedToName?: string | null;
+  existingAlternateEmails?: string[] | null;
+  existingCurrentReplierEmail?: string | null;
+  existingCurrentReplierName?: string | null;
+  existingCurrentReplierSince?: Date | null;
+  now: Date;
+}): {
+  alternateEmails: string[];
+  currentReplierEmail: string | null;
+  currentReplierName: string | null;
+  currentReplierSince: Date | null;
+  changed: boolean;
+} {
+  const primary = normalizeOptionalEmail(params.primaryEmail);
+  const selected = normalizeOptionalEmail(params.selectedToEmail);
+
+  const alternateEmails = addToAlternateEmails(params.existingAlternateEmails ?? [], selected, primary);
+
+  const shouldClear = !!primary && !!selected && selected === primary;
+  const nextCurrentEmail = shouldClear ? null : selected;
+  const nextCurrentName = nextCurrentEmail ? (params.selectedToName?.trim() ? params.selectedToName.trim() : null) : null;
+
+  const existingCurrentEmail = normalizeOptionalEmail(params.existingCurrentReplierEmail);
+  const existingSince = params.existingCurrentReplierSince ?? null;
+
+  let nextSince: Date | null;
+  if (!nextCurrentEmail) {
+    nextSince = null;
+  } else if (existingCurrentEmail && existingCurrentEmail === nextCurrentEmail) {
+    nextSince = existingSince ?? params.now;
+  } else {
+    nextSince = params.now;
+  }
+
+  const currentChanged =
+    (existingCurrentEmail || null) !== (nextCurrentEmail || null) ||
+    (params.existingCurrentReplierName ?? null) !== (nextCurrentName ?? null) ||
+    (existingSince?.getTime?.() ?? null) !== (nextSince?.getTime?.() ?? null);
+
+  const alternatesChanged = JSON.stringify(params.existingAlternateEmails ?? []) !== JSON.stringify(alternateEmails);
+
+  return {
+    alternateEmails,
+    currentReplierEmail: nextCurrentEmail,
+    currentReplierName: nextCurrentName,
+    currentReplierSince: nextSince,
+    changed: currentChanged || alternatesChanged,
+  };
+}

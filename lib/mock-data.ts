@@ -9,6 +9,8 @@
 export interface Lead {
   id: string
   name: string
+  firstName?: string | null
+  lastName?: string | null
   email: string
   alternateEmails?: string[]
   currentReplierEmail?: string | null
@@ -48,6 +50,7 @@ export interface Lead {
   companyState?: string | null
   emailBisonLeadId?: string | null
   enrichmentStatus?: string | null  // 'pending' | 'enriched' | 'not_found' | 'not_needed'
+  followUpBlockedReason?: string | null
   autoBookMeetingsEnabled?: boolean
   // GHL integration data
   ghlContactId?: string | null

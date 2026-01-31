@@ -2,7 +2,7 @@
 
 import { cn } from "@/lib/utils"
 import type { Conversation } from "@/lib/mock-data"
-import { Mail, MessageSquare, Linkedin, AlertCircle, Loader2, Moon, UserCheck } from "lucide-react"
+import { Mail, MessageSquare, Linkedin, AlertCircle, AlertTriangle, Loader2, Moon, UserCheck } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { formatDistanceToNow } from "date-fns"
 import { LeadScoreBadge } from "./lead-score-badge"
@@ -111,6 +111,12 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
     (primaryChannel === "email" || channels.includes("email")) && conversation.lastSubject
       ? `${conversation.lastSubject} — ${conversation.lastMessage}`
       : conversation.lastMessage
+  const followUpBlockedReason = conversation.lead.followUpBlockedReason
+  const followUpBlockedLabel = followUpBlockedReason
+    ? followUpBlockedReason.startsWith("missing_lead_data")
+      ? "Follow-ups blocked — missing lead data"
+      : "Follow-ups blocked — missing setup"
+    : null
   const workspaceName = conversation.lead.company
   const smsClient = conversation.lead.smsCampaignName?.trim() || null
   const isSmsAccountWorkspace = ["owen", "uday 18th", "uday18th", "u-day 18th"].includes(
@@ -190,6 +196,16 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
           >
             <Moon className="h-3 w-3 mr-1" />
             DND
+          </Badge>
+        ) : null}
+        {followUpBlockedLabel ? (
+          <Badge
+            variant="outline"
+            className="text-xs border-amber-500/30 bg-amber-500/10 text-amber-600"
+            title={followUpBlockedReason || undefined}
+          >
+            <AlertTriangle className="h-3 w-3 mr-1" />
+            {followUpBlockedLabel}
           </Badge>
         ) : null}
         <Badge variant="outline" className={cn("text-xs", classification.className)}>

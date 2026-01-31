@@ -21,6 +21,7 @@ import {
   Copy,
   Info,
   HelpCircle,
+  AlertTriangle,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -50,9 +51,9 @@ import {
 	  NO_RESPONSE_SEQUENCE_NAME,
 	  ZRG_WORKFLOW_V1_SEQUENCE_NAME,
 	} from "@/lib/followup-sequence-names";
-	import {
-	  getFollowUpSequences,
-	  createFollowUpSequence,
+import {
+  getFollowUpSequences,
+  createFollowUpSequence,
   updateFollowUpSequence,
   deleteFollowUpSequence,
   toggleSequenceActive,
@@ -62,6 +63,16 @@ import {
   type FollowUpStepData,
   type StepCondition,
 } from "@/actions/followup-sequence-actions";
+import {
+  FOLLOWUP_TEMPLATE_TOKEN_DEFINITIONS,
+  FOLLOWUP_TEMPLATE_TOKENS_BY_SOURCE,
+  extractFollowUpTemplateTokens,
+  getUnknownFollowUpTemplateTokens,
+  parseQualificationQuestions,
+  type FollowUpTemplateTokenSource,
+  type FollowUpTemplateValueKey,
+} from "@/lib/followup-template";
+import { getCalendarLinks, getUserSettings, type CalendarLinkData, type UserSettingsData } from "@/actions/settings-actions";
 
 interface FollowUpSequenceManagerProps {
   clientId: string | null;
@@ -86,6 +97,27 @@ const TRIGGER_OPTIONS = [
   { value: "meeting_selected", label: "After meeting selected" },
   { value: "manual", label: "Manual trigger only" },
 ];
+
+const TOKEN_DEFINITION_BY_TOKEN = new Map(
+  FOLLOWUP_TEMPLATE_TOKEN_DEFINITIONS.map((definition) => [definition.token, definition])
+);
+
+const TOKEN_SOURCE_LABELS: Record<FollowUpTemplateTokenSource, string> = {
+  lead: "Lead fields",
+  workspace: "Workspace settings",
+  booking: "Booking link",
+  availability: "Availability",
+  qualification: "Qualification questions",
+};
+
+function getReferencedValueKeys(tokens: string[]): Set<FollowUpTemplateValueKey> {
+  const keys = new Set<FollowUpTemplateValueKey>();
+  for (const token of tokens) {
+    const definition = TOKEN_DEFINITION_BY_TOKEN.get(token);
+    if (definition) keys.add(definition.valueKey);
+  }
+  return keys;
+}
 
 	// Built-in sequences have trigger behavior controlled by code, not the triggerOn field.
 	// This map provides accurate display labels for these sequences.
@@ -137,6 +169,11 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingSequence, setEditingSequence] = useState<FollowUpSequenceData | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [workspaceSettings, setWorkspaceSettings] = useState<UserSettingsData | null>(null);
+  const [calendarLinks, setCalendarLinks] = useState<CalendarLinkData[]>([]);
+  const [isWorkspaceContextLoaded, setIsWorkspaceContextLoaded] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [sequenceErrors, setSequenceErrors] = useState<Record<string, string>>({});
 
   // Form state for new/edit sequence
   const [formData, setFormData] = useState({
@@ -162,9 +199,31 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
     setIsLoading(false);
   }, [clientId]);
 
+  const loadWorkspaceContext = useCallback(async () => {
+    if (!clientId) return;
+    setIsWorkspaceContextLoaded(false);
+    try {
+      const [settingsResult, calendarResult] = await Promise.all([
+        getUserSettings(clientId),
+        getCalendarLinks(clientId),
+      ]);
+      if (settingsResult.success) {
+        setWorkspaceSettings(settingsResult.data ?? null);
+      }
+      if (calendarResult.success) {
+        setCalendarLinks(calendarResult.data ?? []);
+      }
+    } catch (error) {
+      console.error("Failed to load follow-up workspace settings:", error);
+    } finally {
+      setIsWorkspaceContextLoaded(true);
+    }
+  }, [clientId]);
+
   useEffect(() => {
     loadSequences();
-  }, [loadSequences]);
+    loadWorkspaceContext();
+  }, [loadSequences, loadWorkspaceContext]);
 
   // Create default sequence (No Response only)
   const handleCreateDefault = async () => {
@@ -199,6 +258,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
   // Open dialog for new sequence
   const handleNewSequence = () => {
     setEditingSequence(null);
+    setFormError(null);
     setFormData({
       name: "",
       description: "",
@@ -222,6 +282,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
   // Open dialog for editing
   const handleEditSequence = (sequence: FollowUpSequenceData) => {
     setEditingSequence(sequence);
+    setFormError(null);
     setFormData({
       name: sequence.name,
       description: sequence.description || "",
@@ -252,6 +313,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
       return;
     }
 
+    setFormError(null);
     setIsSaving(true);
 
     if (editingSequence) {
@@ -265,8 +327,17 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
         toast.success("Sequence updated");
         setIsDialogOpen(false);
         loadSequences();
+        setFormError(null);
       } else {
-        toast.error(result.error || "Failed to update sequence");
+        const message = result.error || "Failed to update sequence";
+        setFormError(message);
+        if (message.startsWith("Unknown template variables")) {
+          toast.error("Follow-ups blocked", {
+            description: message,
+          });
+        } else {
+          toast.error(message);
+        }
       }
     } else {
       const result = await createFollowUpSequence({
@@ -280,8 +351,17 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
         toast.success("Sequence created");
         setIsDialogOpen(false);
         loadSequences();
+        setFormError(null);
       } else {
-        toast.error(result.error || "Failed to create sequence");
+        const message = result.error || "Failed to create sequence";
+        setFormError(message);
+        if (message.startsWith("Unknown template variables")) {
+          toast.error("Follow-ups blocked", {
+            description: message,
+          });
+        } else {
+          toast.error(message);
+        }
       }
     }
 
@@ -311,8 +391,21 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
         )
       );
       toast.success(result.isActive ? "Sequence activated" : "Sequence paused");
+      setSequenceErrors((prev) => {
+        const next = { ...prev };
+        delete next[sequenceId];
+        return next;
+      });
     } else {
-      toast.error(result.error || "Failed to toggle sequence");
+      const message = result.error || "Failed to toggle sequence";
+      setSequenceErrors((prev) => ({ ...prev, [sequenceId]: message }));
+      if (message.startsWith("Follow-up setup incomplete")) {
+        toast.error("Follow-ups blocked", {
+          description: `You need to set these things up correctly in order for follow-ups to send. ${message}`,
+        });
+      } else {
+        toast.error(message);
+      }
     }
   };
 
@@ -354,6 +447,40 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
     const needsSpacer = current.length > 0 && !current.endsWith(" ") && !current.endsWith("\n");
     handleUpdateStep(index, { messageTemplate: `${current}${needsSpacer ? " " : ""}${snippet}` });
   };
+
+  const getMissingWorkspaceItems = useCallback(
+    (tokens: string[]) => {
+      if (!isWorkspaceContextLoaded || !workspaceSettings) return [];
+      const requiredKeys = getReferencedValueKeys(tokens);
+      const missing: string[] = [];
+
+      if (requiredKeys.has("aiPersonaName") && !workspaceSettings.aiPersonaName?.trim()) {
+        missing.push("AI persona name");
+      }
+      if (requiredKeys.has("companyName") && !workspaceSettings.companyName?.trim()) {
+        missing.push("Company name");
+      }
+      if (requiredKeys.has("targetResult") && !workspaceSettings.targetResult?.trim()) {
+        missing.push("Target result");
+      }
+
+      const needsQualification =
+        requiredKeys.has("qualificationQuestion1") || requiredKeys.has("qualificationQuestion2");
+      if (needsQualification) {
+        const questions = parseQualificationQuestions(workspaceSettings.qualificationQuestions ?? null);
+        const hasQuestions = questions.some((q) => q.question?.trim().length > 0);
+        if (!hasQuestions) missing.push("Qualification questions");
+      }
+
+      if (requiredKeys.has("bookingLink")) {
+        const hasDefaultCalendar = calendarLinks.some((link) => link.isDefault);
+        if (!hasDefaultCalendar) missing.push("Default calendar link");
+      }
+
+      return missing;
+    },
+    [isWorkspaceContextLoaded, workspaceSettings, calendarLinks]
+  );
 
   if (!clientId) {
     return (
@@ -551,6 +678,12 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                       </Button>
                     </div>
                   </div>
+                  {sequenceErrors[sequence.id] ? (
+                    <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-700">
+                      Follow-ups blocked. You need to set these things up correctly in order for follow-ups to send.{" "}
+                      {sequenceErrors[sequence.id]}
+                    </div>
+                  ) : null}
                 </CardHeader>
                 <CollapsibleContent>
                   <CardContent className="pt-0">
@@ -633,6 +766,16 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
           </DialogHeader>
 
           <div className="space-y-6 py-4">
+            {formError ? (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 space-y-1">
+                <div className="flex items-center gap-2 font-medium">
+                  <AlertTriangle className="h-4 w-4" />
+                  <span>Follow-ups blocked</span>
+                </div>
+                <div>{formError}</div>
+                <div>You need to set these things up correctly in order for follow-ups to send.</div>
+              </div>
+            ) : null}
             {/* Basic Info */}
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -714,6 +857,17 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
               {formData.steps.map((step, index) => {
                 const ChannelIcon = CHANNEL_ICONS[step.channel];
                 const isUnsupported = step.channel === "ai_voice";
+                const stepTokens = [
+                  ...extractFollowUpTemplateTokens(step.messageTemplate),
+                  ...extractFollowUpTemplateTokens(step.subject),
+                ];
+                const unknownTokens = Array.from(
+                  new Set([
+                    ...getUnknownFollowUpTemplateTokens(step.messageTemplate),
+                    ...getUnknownFollowUpTemplateTokens(step.subject),
+                  ])
+                );
+                const missingWorkspaceItems = getMissingWorkspaceItems(stepTokens);
 
                 return (
                   <Card key={index} className="bg-muted/50">
@@ -829,20 +983,6 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
 
                       <div className="space-y-1.5">
                         <Label className="text-xs">Message Template</Label>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Button
-                            type="button"
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => appendToStepMessageTemplate(index, "{calendarLink}")}
-                            disabled={isUnsupported}
-                            className="h-7 px-2 text-xs"
-                            title="Insert {calendarLink}"
-                          >
-                            <Calendar className="h-3.5 w-3.5 mr-1.5" />
-                            Calendar Link
-                          </Button>
-                        </div>
                         <Textarea
                           placeholder={`Hi {firstName},\n\nYour message here...`}
                           value={step.messageTemplate || ""}
@@ -852,9 +992,47 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                           rows={3}
                           disabled={isUnsupported}
                         />
-                        <p className="text-xs text-muted-foreground">
-                          Variables: {"{firstName}"}, {"{lastName}"}, {"{email}"}, {"{availability}"}, {"{calendarLink}"}
-                        </p>
+                        <div className="rounded-md border bg-background/60 p-2 space-y-2">
+                          <p className="text-[11px] text-muted-foreground">
+                            Click a variable to insert into the message template.
+                          </p>
+                          {Object.entries(FOLLOWUP_TEMPLATE_TOKENS_BY_SOURCE).map(([source, definitions]) => {
+                            const tokens = definitions.filter((def) => !def.isAlias);
+                            if (tokens.length === 0) return null;
+                            return (
+                              <div key={source} className="space-y-1">
+                                <p className="text-[11px] text-muted-foreground">
+                                  {TOKEN_SOURCE_LABELS[source as FollowUpTemplateTokenSource]}
+                                </p>
+                                <div className="flex flex-wrap gap-1">
+                                  {tokens.map((def) => (
+                                    <Button
+                                      key={def.token}
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => appendToStepMessageTemplate(index, def.token)}
+                                      disabled={isUnsupported}
+                                      className="h-6 px-2 text-[11px] font-mono"
+                                    >
+                                      {def.token}
+                                    </Button>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {unknownTokens.length > 0 ? (
+                          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+                            Unknown variables: {unknownTokens.join(", ")}. Remove or replace these to save.
+                          </div>
+                        ) : null}
+                        {missingWorkspaceItems.length > 0 ? (
+                          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-700">
+                            Follow-ups blocked until you set: {missingWorkspaceItems.join(", ")}.
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="flex items-center justify-between pt-2">

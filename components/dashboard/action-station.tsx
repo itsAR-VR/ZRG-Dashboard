@@ -10,8 +10,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Calendar, ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, Moon, Plus } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { sendMessage, sendEmailMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
-import { validateEmail, formatEmailParticipant } from "@/lib/email-participants"
+import { validateEmail, formatEmailParticipant, normalizeOptionalEmail } from "@/lib/email-participants"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { getCalendarLinkForLead } from "@/actions/settings-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
@@ -54,10 +55,16 @@ const CHANNEL_LABELS = {
   linkedin: "LinkedIn",
 } as const;
 
+type EmailRecipientOption = {
+  email: string
+  name: string | null
+}
+
 // Phase 50: Email recipient editor for CC management
 interface EmailRecipientEditorProps {
   toEmail: string
-  toName?: string | null
+  toOptions: EmailRecipientOption[]
+  onToEmailChange: (email: string) => void
   ccList: string[]
   onCcChange: (cc: string[]) => void
   ccInput: string
@@ -67,7 +74,8 @@ interface EmailRecipientEditorProps {
 
 function EmailRecipientEditor({
   toEmail,
-  toName,
+  toOptions,
+  onToEmailChange,
   ccList,
   onCcChange,
   ccInput,
@@ -95,12 +103,27 @@ function EmailRecipientEditor({
 
   return (
     <div className="text-xs border rounded-md p-3 mb-3 bg-muted/30 space-y-2">
-      {/* To field (read-only) */}
+      {/* To field (editable single-select) */}
       <div className="flex items-center gap-2">
         <span className="font-medium text-muted-foreground w-8">To:</span>
-        <Badge variant="secondary" className="font-normal">
-          {formatEmailParticipant(toEmail, toName)}
-        </Badge>
+        <div className="flex-1">
+          <Select
+            value={toEmail || undefined}
+            onValueChange={onToEmailChange}
+            disabled={disabled || toOptions.length === 0}
+          >
+            <SelectTrigger className="h-7 text-xs">
+              <SelectValue placeholder="Select recipient" />
+            </SelectTrigger>
+            <SelectContent>
+              {toOptions.map((opt) => (
+                <SelectItem key={opt.email} value={opt.email}>
+                  {formatEmailParticipant(opt.email, opt.name)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {/* CC field (editable) */}
@@ -152,6 +175,12 @@ function EmailRecipientEditor({
           )}
         </div>
       </div>
+      {!toEmail && (
+        <div className="flex items-center gap-1.5 text-xs text-amber-600">
+          <AlertCircle className="h-3.5 w-3.5" />
+          Select a recipient to send email
+        </div>
+      )}
     </div>
   )
 }
@@ -172,6 +201,7 @@ export function ActionStation({
   const shouldScrollRef = useRef(true)
   const prevConversationIdRef = useRef<string | null>(null)
   const prevMessageCountRef = useRef(0)
+  const conversationMessagesRef = useRef<Conversation["messages"]>([])
   const [composeMessage, setComposeMessage] = useState("")
   const [isSending, setIsSending] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
@@ -186,6 +216,9 @@ export function ActionStation({
   // Phase 50: CC recipient editing state
   const [ccRecipients, setCcRecipients] = useState<string[]>([])
   const [ccInput, setCcInput] = useState("")
+  // Phase 74: Editable To recipient (single-select)
+  const [toEmail, setToEmail] = useState("")
+  const [hasEditedTo, setHasEditedTo] = useState(false)
   const { user } = useUser()
   
   // Determine current channel type
@@ -216,6 +249,63 @@ export function ActionStation({
     if (!conversation?.messages) return []
     return conversation.messages.filter(msg => (msg.channel || "sms") === activeChannel)
   }, [conversation?.messages, activeChannel])
+
+  const latestInboundEmail = useMemo(() => {
+    if (!conversation?.messages?.length) return null
+
+    let latest: Conversation["messages"][number] | null = null
+    let latestAt = 0
+
+    for (const message of conversation.messages) {
+      if (message.direction !== "inbound" || message.channel !== "email") continue
+      const ts = new Date(message.timestamp).getTime()
+      if (!Number.isFinite(ts)) continue
+      if (!latest || ts > latestAt) {
+        latest = message
+        latestAt = ts
+      }
+    }
+
+    return latest
+  }, [conversation?.messages])
+
+  const toOptions = useMemo<EmailRecipientOption[]>(() => {
+    const lead = conversation?.lead
+    if (!lead?.email) return []
+
+    const options: EmailRecipientOption[] = []
+    const seen = new Set<string>()
+
+    const push = (email: string | null | undefined, name: string | null | undefined) => {
+      const normalized = normalizeOptionalEmail(email)
+      if (!normalized) return
+      if (seen.has(normalized)) return
+      seen.add(normalized)
+      options.push({ email: normalized, name: name?.trim() ? name.trim() : null })
+    }
+
+    // Prefer the current replier (if set), then latest inbound sender, then lead primary.
+    push(lead.currentReplierEmail, lead.currentReplierName)
+    push(latestInboundEmail?.fromEmail, latestInboundEmail?.fromName ?? null)
+    push(lead.email, lead.name)
+
+    // Include alternates as valid selectable recipients (names unknown).
+    for (const alt of lead.alternateEmails || []) {
+      push(alt, null)
+    }
+
+    return options
+  }, [
+    conversation?.lead,
+    latestInboundEmail?.fromEmail,
+    latestInboundEmail?.fromName,
+  ])
+
+  const selectedToName = useMemo(() => {
+    const normalized = normalizeOptionalEmail(toEmail)
+    if (!normalized) return null
+    return toOptions.find((opt) => opt.email === normalized)?.name ?? null
+  }, [toEmail, toOptions])
   
   // Reset active channel when conversation changes
   useEffect(() => {
@@ -226,10 +316,28 @@ export function ActionStation({
     }
   }, [conversation?.id, conversation?.primaryChannel, channels])
 
+  // Reset editable To selection when switching conversations
+  useEffect(() => {
+    setHasEditedTo(false)
+  }, [conversation?.id])
+
+  // Initialize default To selection (unless the user has explicitly edited it).
+  useEffect(() => {
+    if (!conversation || activeChannel !== "email") return
+    if (hasEditedTo) return
+    const next = toOptions[0]?.email || ""
+    if (next !== toEmail) setToEmail(next)
+  }, [conversation, activeChannel, hasEditedTo, toOptions, toEmail])
+
+  useEffect(() => {
+    conversationMessagesRef.current = conversation?.messages || []
+  }, [conversation?.messages])
+
   // Phase 50: Initialize CC recipients from latest inbound email when channel/conversation changes
   useEffect(() => {
-    if (activeChannel === "email" && conversation?.messages) {
-      const latestInbound = conversation.messages
+    const messages = conversationMessagesRef.current
+    if (activeChannel === "email" && messages.length > 0) {
+      const latestInbound = messages
         .filter(m => m.direction === "inbound" && m.channel === "email")
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]
 
@@ -242,7 +350,7 @@ export function ActionStation({
       setCcRecipients([])
     }
     setCcInput("")
-  }, [conversation?.id, activeChannel, conversation?.messages])
+  }, [conversation?.id, activeChannel])
 
   // Scroll to bottom only on initial load or when user sends a message
   // NOT during background polling updates to preserve scroll position
@@ -339,6 +447,10 @@ export function ActionStation({
 
   const handleSendMessage = async () => {
     if (!composeMessage.trim() || !conversation) return
+    if (isEmail && !toEmail) {
+      toast.error("Select a recipient before sending.")
+      return
+    }
 
     setIsSending(true)
     
@@ -360,7 +472,10 @@ export function ActionStation({
     } else if (isEmail) {
       // Manual email reply (no AI draft required)
       // Phase 50: Pass CC recipients to send action
-      result = await sendEmailMessage(conversation.id, composeMessage, { cc: ccRecipients })
+      result = await sendEmailMessage(conversation.id, composeMessage, {
+        cc: ccRecipients,
+        ...(hasEditedTo ? { toEmail, toName: selectedToName } : {}),
+      })
       if (result.success) {
         toast.success("Email sent!")
       }
@@ -388,6 +503,10 @@ export function ActionStation({
 
   const handleApproveAndSend = async () => {
     if (!composeMessage.trim() || !conversation) return
+    if (isEmail && !toEmail) {
+      toast.error("Select a recipient before sending.")
+      return
+    }
 
     if (isEmail && drafts.length === 0) {
       toast.error("No email draft available to approve.")
@@ -399,7 +518,16 @@ export function ActionStation({
     // If we have a real AI draft, approve it
     // Phase 50: Pass CC recipients to draft approval for email channel
     if (drafts.length > 0) {
-      const result = await approveAndSendDraft(drafts[0].id, composeMessage, isEmail ? { cc: ccRecipients } : undefined)
+      const result = await approveAndSendDraft(
+        drafts[0].id,
+        composeMessage,
+        isEmail
+          ? {
+              cc: ccRecipients,
+              ...(hasEditedTo ? { toEmail, toName: selectedToName } : {}),
+            }
+          : undefined
+      )
       if (result.success) {
         toast.success("Draft approved and sent!")
         setComposeMessage("")
@@ -809,8 +937,12 @@ export function ActionStation({
         {/* Phase 50: Email Recipient Editor - shown when email channel is active */}
         {isEmail && lead?.email && (
           <EmailRecipientEditor
-            toEmail={lead.email}
-            toName={lead.name}
+            toEmail={toEmail}
+            toOptions={toOptions}
+            onToEmailChange={(email) => {
+              setHasEditedTo(true)
+              setToEmail(email)
+            }}
             ccList={ccRecipients}
             onCcChange={setCcRecipients}
             ccInput={ccInput}
@@ -959,7 +1091,7 @@ export function ActionStation({
                 {/* Approve & Send button */}
                 <Button 
                   onClick={handleApproveAndSend} 
-                  disabled={!composeMessage.trim() || isSending || isRegenerating}
+                  disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail)}
                   className="h-8 px-3"
                   title="Approve and send"
                 >
@@ -990,7 +1122,7 @@ export function ActionStation({
 
                 <Button 
                   onClick={handleSendMessage} 
-                  disabled={!composeMessage.trim() || isSending || isRegenerating}
+                  disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail)}
                   className="h-8 px-3"
                 >
                   {isSending ? (

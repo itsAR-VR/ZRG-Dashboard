@@ -19,6 +19,8 @@ async function sendEmailReplyInternal(params: {
   sentBy?: OutboundSentBy | null;
   sentByUserId?: string | null;
   ccOverride?: string[];
+  toEmailOverride?: string;
+  toNameOverride?: string | null;
 }): Promise<SendEmailResult> {
   const result = await sendEmailReplySystem(params);
 
@@ -37,7 +39,13 @@ async function sendEmailReplyInternal(params: {
 export async function sendEmailReply(
   draftId: string,
   editedContent?: string,
-  opts: { sentBy?: OutboundSentBy | null; sentByUserId?: string | null; cc?: string[] } = {}
+  opts: {
+    sentBy?: OutboundSentBy | null;
+    sentByUserId?: string | null;
+    cc?: string[];
+    toEmail?: string;
+    toName?: string | null;
+  } = {}
 ): Promise<SendEmailResult> {
   try {
     const draft = await prisma.aIDraft.findUnique({
@@ -115,6 +123,8 @@ export async function sendEmailReply(
       sentBy: opts.sentBy,
       sentByUserId: opts.sentByUserId,
       ccOverride: opts.cc,
+      toEmailOverride: opts.toEmail,
+      toNameOverride: opts.toName ?? null,
     });
 
     if (!sendResult.success) {
@@ -138,7 +148,13 @@ export async function sendEmailReply(
 export async function sendEmailReplyForLead(
   leadId: string,
   messageContent: string,
-  opts: { sentBy?: OutboundSentBy | null; sentByUserId?: string | null; cc?: string[] } = {}
+  opts: {
+    sentBy?: OutboundSentBy | null;
+    sentByUserId?: string | null;
+    cc?: string[];
+    toEmail?: string;
+    toName?: string | null;
+  } = {}
 ): Promise<SendEmailResult> {
   try {
     const lead = await prisma.lead.findUnique({
@@ -183,6 +199,8 @@ export async function sendEmailReplyForLead(
       sentBy: opts.sentBy,
       sentByUserId: opts.sentByUserId,
       ccOverride: opts.cc,
+      toEmailOverride: opts.toEmail,
+      toNameOverride: opts.toName ?? null,
     });
   } catch (error) {
     console.error("[Email] Failed to send manual email reply:", error);

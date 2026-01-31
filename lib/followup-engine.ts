@@ -26,6 +26,12 @@ import { getBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
 import type { AvailabilitySource } from "@prisma/client";
 import { selectBookingTargetForLead } from "@/lib/booking-target-selector";
+import {
+  renderFollowUpTemplateStrict,
+  type FollowUpTemplateError,
+  type FollowUpTemplateValueKey,
+  type FollowUpTemplateValues,
+} from "@/lib/followup-template";
 
 // =============================================================================
 // Types
@@ -37,6 +43,7 @@ interface LeadContext {
   lastName: string | null;
   email: string | null;
   phone: string | null;
+  companyName: string | null;
   linkedinUrl: string | null;
   linkedinId: string | null;
   sentimentTag: string | null;
@@ -339,28 +346,114 @@ function parseQualificationQuestions(json: string | null): Array<{ id: string; q
 
 /**
  * Generate a follow-up message from template
- * Supports variables: {firstName}, {lastName}, {email}, {phone}, {availability},
- * {senderName}, {companyName}, {result}, {calendarLink}, {qualificationQuestion1}, {qualificationQuestion2}
+ * Supports variables (canonical + aliases): see `lib/followup-template.ts`
  *
- * Canonical follow-up copy also uses aliases:
- * - {FIRST_NAME}, {{contact.first_name}}
- * - {name}, {company}, {link}
- * - {achieving result}
- * - {qualification question 1}, {qualification question 2}
- * - Slot placeholders: {time 1 day 1}, {time 2 day 2}, {x day x time}, {y day y time}
+ * Policy (Phase 73): never send placeholders/fallbacks.
+ * - Unknown template variables block sends.
+ * - Missing referenced values block sends.
+ *
+ * This function returns a structured result so callers can pause automation safely.
  */
+type GenerateFollowUpMessageResult =
+  | { ok: true; content: string; subject: string | null; offeredSlots: OfferedSlot[] }
+  | { ok: false; error: string; templateErrors: FollowUpTemplateError[]; offeredSlots: OfferedSlot[] };
+
+function formatTemplateErrors(errors: FollowUpTemplateError[]): string {
+  return errors.map((e) => e.message).join("; ");
+}
+
+const LEAD_VALUE_KEYS = new Set<FollowUpTemplateValueKey>([
+  "firstName",
+  "lastName",
+  "email",
+  "phone",
+  "leadCompanyName",
+]);
+
+const WORKSPACE_VALUE_KEYS = new Set<FollowUpTemplateValueKey>([
+  "aiPersonaName",
+  "companyName",
+  "targetResult",
+  "qualificationQuestion1",
+  "qualificationQuestion2",
+]);
+
+const BOOKING_VALUE_KEYS = new Set<FollowUpTemplateValueKey>(["bookingLink"]);
+
+const AVAILABILITY_VALUE_KEYS = new Set<FollowUpTemplateValueKey>([
+  "availability",
+  "timeOption1",
+  "timeOption2",
+]);
+
+function buildTemplateBlockedPauseReason(errors: FollowUpTemplateError[]): string {
+  if (errors.length === 0) return "missing_workspace_setup";
+
+  const leadTokens = new Set<string>();
+  const workspaceTokens = new Set<string>();
+  const bookingTokens = new Set<string>();
+  const availabilityTokens = new Set<string>();
+
+  for (const error of errors) {
+    if (error.type === "unknown_token") {
+      workspaceTokens.add(error.token);
+      continue;
+    }
+
+    if (LEAD_VALUE_KEYS.has(error.valueKey)) {
+      leadTokens.add(error.token);
+    } else if (BOOKING_VALUE_KEYS.has(error.valueKey)) {
+      bookingTokens.add(error.token);
+    } else if (AVAILABILITY_VALUE_KEYS.has(error.valueKey)) {
+      availabilityTokens.add(error.token);
+    } else {
+      workspaceTokens.add(error.token);
+    }
+  }
+
+  const orderedTokens = [
+    ...leadTokens,
+    ...workspaceTokens,
+    ...bookingTokens,
+    ...availabilityTokens,
+  ];
+  const suffix = orderedTokens.length > 0 ? `: ${orderedTokens.join(", ")}` : "";
+
+  if (leadTokens.size > 0) return `missing_lead_data${suffix}`;
+  if (workspaceTokens.size > 0) return `missing_workspace_setup${suffix}`;
+  if (bookingTokens.size > 0) return `missing_booking_link${suffix}`;
+  if (availabilityTokens.size > 0) return `missing_availability${suffix}`;
+  return `missing_workspace_setup${suffix}`;
+}
+
 export async function generateFollowUpMessage(
   step: FollowUpStepData,
   lead: LeadContext,
   settings: WorkspaceSettings | null
-): Promise<{ content: string; subject: string | null; offeredSlots: OfferedSlot[] }> {
-  // Provider-aware booking link for {calendarLink}
-  const bookingLink = await getBookingLink(lead.clientId, settings as any);
+): Promise<GenerateFollowUpMessageResult> {
+  const template = (step.messageTemplate || "").trim();
+  if (!template) {
+    return {
+      ok: false,
+      error: "Follow-up step has no message template",
+      templateErrors: [],
+      offeredSlots: [],
+    };
+  }
+
+  // Provider-aware booking link for {calendarLink}/{link}
+  let bookingLink: string | null = null;
+  try {
+    bookingLink = await getBookingLink(lead.clientId, settings as any);
+  } catch (error) {
+    console.error("[FollowUp] Failed to resolve booking link:", error);
+    bookingLink = null;
+  }
 
   // Parse qualification questions
   const qualificationQuestions = parseQualificationQuestions(settings?.qualificationQuestions || null);
-  const question1 = qualificationQuestions[0]?.question || "[qualification question 1]";
-  const question2 = qualificationQuestions[1]?.question || "[qualification question 2]";
+  const question1 = qualificationQuestions[0]?.question ?? null;
+  const question2 = qualificationQuestions[1]?.question ?? null;
 
   const offeredAtIso = new Date().toISOString();
   const offeredAt = new Date(offeredAtIso);
@@ -376,10 +469,10 @@ export async function generateFollowUpMessage(
     (token) => (step.messageTemplate || "").includes(token) || (step.subject || "").includes(token)
   );
 
-  let availabilityText = "";
+  let availabilityText: string | null = null;
   let offeredSlots: OfferedSlot[] = [];
-  let slotOption1 = "[time option 1]";
-  let slotOption2 = "[time option 2]";
+  let slotOption1: string | null = null;
+  let slotOption2: string | null = null;
 
   if (needsAvailability) {
     try {
@@ -448,66 +541,57 @@ export async function generateFollowUpMessage(
             offeredAt: offeredAtIso,
             availabilitySource: availability.availabilitySource,
           }));
-        } else {
-          availabilityText = "a couple openings over the next few days";
-          offeredSlots = [];
-          slotOption1 = "a couple openings over the next few days";
-          slotOption2 = "a couple openings over the next few days";
         }
-      } else {
-        availabilityText = "a couple openings over the next few days";
-        slotOption1 = "a couple openings over the next few days";
-        slotOption2 = "a couple openings over the next few days";
       }
     } catch (error) {
       console.error("[FollowUp] Failed to load availability:", error);
-      availabilityText = "a couple openings over the next few days";
       offeredSlots = [];
-      slotOption1 = "a couple openings over the next few days";
-      slotOption2 = "a couple openings over the next few days";
     }
   }
 
-  // Replace template variables
-  const replaceVariables = (template: string | null): string => {
-    if (!template) return "";
-
-    return template
-      // Lead variables
-      .replace(/\{firstName\}/g, lead.firstName || "there")
-      .replace(/\{FIRST_NAME\}/g, lead.firstName || "there")
-      .replace(/\{FIRST\\_NAME\}/g, lead.firstName || "there")
-      .replace(/\{\{contact\.first_name\}\}/g, lead.firstName || "there")
-      .replace(/\{\{contact\.first\\_name\}\}/g, lead.firstName || "there")
-      .replace(/\{lastName\}/g, lead.lastName || "")
-      .replace(/\{email\}/g, lead.email || "")
-      .replace(/\{phone\}/g, lead.phone || "")
-      // Workspace/company variables
-      .replace(/\{senderName\}/g, settings?.aiPersonaName || "")
-      .replace(/\{name\}/g, settings?.aiPersonaName || "")
-      .replace(/\{companyName\}/g, settings?.companyName || "")
-      .replace(/\{company\}/g, settings?.companyName || "")
-      .replace(/\{result\}/g, settings?.targetResult || "achieving your goals")
-      .replace(/\{achieving result\}/g, settings?.targetResult || "achieving your goals")
-      // Calendar/availability variables
-      .replace(/\{availability\}/g, availabilityText)
-      .replace(/\{calendarLink\}/g, bookingLink || "[calendar link]")
-      .replace(/\{link\}/g, bookingLink || "[calendar link]")
-      .replace(/\{time 1 day 1\}/g, slotOption1)
-      .replace(/\{time 2 day 2\}/g, slotOption2)
-      .replace(/\{x day x time\}/g, slotOption1)
-      .replace(/\{y day y time\}/g, slotOption2)
-      // Qualification questions
-      .replace(/\{qualificationQuestion1\}/g, question1)
-      .replace(/\{qualificationQuestion2\}/g, question2)
-      .replace(/\{qualification question 1\}/g, question1)
-      .replace(/\{qualification question 2\}/g, question2);
+  const values: FollowUpTemplateValues = {
+    firstName: lead.firstName,
+    lastName: lead.lastName,
+    email: lead.email,
+    phone: lead.phone,
+    leadCompanyName: lead.companyName,
+    aiPersonaName: settings?.aiPersonaName ?? null,
+    companyName: settings?.companyName ?? null,
+    targetResult: settings?.targetResult ?? null,
+    qualificationQuestion1: question1,
+    qualificationQuestion2: question2,
+    bookingLink,
+    availability: availabilityText,
+    timeOption1: slotOption1,
+    timeOption2: slotOption2,
   };
 
-  const content = replaceVariables(step.messageTemplate);
-  const subject = step.subject ? replaceVariables(step.subject) : null;
+  const renderedContent = renderFollowUpTemplateStrict({ template: step.messageTemplate, values });
+  if (!renderedContent.ok) {
+    return {
+      ok: false,
+      error: formatTemplateErrors(renderedContent.errors),
+      templateErrors: renderedContent.errors,
+      offeredSlots,
+    };
+  }
 
-  return { content, subject, offeredSlots };
+  const renderedSubject = step.subject ? renderFollowUpTemplateStrict({ template: step.subject, values }) : null;
+  if (renderedSubject && !renderedSubject.ok) {
+    return {
+      ok: false,
+      error: formatTemplateErrors(renderedSubject.errors),
+      templateErrors: renderedSubject.errors,
+      offeredSlots,
+    };
+  }
+
+  return {
+    ok: true,
+    content: renderedContent.output,
+    subject: renderedSubject ? renderedSubject.output : null,
+    offeredSlots,
+  };
 }
 
 // =============================================================================
@@ -693,6 +777,7 @@ export async function executeFollowUpStep(
           id: true,
           firstName: true,
           lastName: true,
+          companyName: true,
           email: true,
           phone: true,
           linkedinUrl: true,
@@ -714,6 +799,7 @@ export async function executeFollowUpStep(
         ...lead,
         firstName: currentLead.firstName ?? lead.firstName,
         lastName: currentLead.lastName ?? lead.lastName,
+        companyName: currentLead.companyName ?? lead.companyName,
         email: currentLead.email ?? lead.email,
         phone: currentLead.phone ?? lead.phone,
         linkedinUrl: currentLead.linkedinUrl,
@@ -827,7 +913,24 @@ export async function executeFollowUpStep(
         };
       }
 
-      const { content, offeredSlots } = await generateFollowUpMessage(step, effectiveLead, settings);
+      const generated = await generateFollowUpMessage(step, effectiveLead, settings);
+      if (!generated.ok) {
+        await prisma.followUpInstance.update({
+          where: { id: instanceId },
+          data: {
+            status: "paused",
+            pausedReason: buildTemplateBlockedPauseReason(generated.templateErrors),
+          },
+        });
+
+        return {
+          success: true,
+          action: "skipped",
+          message: `Sequence paused - follow-up template blocked: ${generated.error}`,
+        };
+      }
+
+      const { content, offeredSlots } = generated;
 
       // If connected, send a DM. If not connected, send a connection request with note.
       if (currentLead.linkedinId) {
@@ -1088,8 +1191,25 @@ export async function executeFollowUpStep(
       };
     }
 
-    // Generate message content
-    const { content, subject, offeredSlots } = await generateFollowUpMessage(step, lead, settings);
+    // Generate message content (strict: never send placeholders/fallbacks)
+    const generated = await generateFollowUpMessage(step, lead, settings);
+    if (!generated.ok) {
+      await prisma.followUpInstance.update({
+        where: { id: instanceId },
+        data: {
+          status: "paused",
+          pausedReason: buildTemplateBlockedPauseReason(generated.templateErrors),
+        },
+      });
+
+      return {
+        success: true,
+        action: "skipped",
+        message: `Sequence paused - follow-up template blocked: ${generated.error}`,
+      };
+    }
+
+    const { content, subject, offeredSlots } = generated;
 
     // Check if approval is required
     if (step.requiresApproval) {
@@ -1438,6 +1558,7 @@ export async function processFollowUpsDue(): Promise<{
         lastName: instance.lead.lastName,
         email: instance.lead.email,
         phone: instance.lead.phone,
+        companyName: instance.lead.companyName ?? null,
         linkedinUrl: instance.lead.linkedinUrl,
         linkedinId: instance.lead.linkedinId,
         sentimentTag: instance.lead.sentimentTag,

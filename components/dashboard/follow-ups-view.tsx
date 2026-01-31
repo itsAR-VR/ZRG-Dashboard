@@ -310,6 +310,39 @@ interface SequenceInstanceCardProps {
 function SequenceInstanceCard({ instance, onPause, onResume, onCancel, actionInProgress }: SequenceInstanceCardProps) {
   const progress = (instance.currentStep / instance.totalSteps) * 100
   const isActionInProgress = actionInProgress === instance.id
+  const pausedReasonCopy = (() => {
+    const reason = instance.pausedReason
+    if (!reason) return null
+
+    if (reason === "lead_replied") return "Lead replied — paused until you reply"
+    if (reason === "awaiting_approval") return "Awaiting approval"
+    if (reason === "awaiting_enrichment") return "Awaiting enrichment"
+    if (reason === "unipile_disconnected") return "LinkedIn integration disconnected — reconnect in Settings"
+    if (reason === "linkedin_unreachable") return "LinkedIn recipient unreachable"
+    if (reason === "lead_snoozed") return "Lead snoozed"
+    if (reason.startsWith("missing_lead_data")) {
+      const detail = reason.replace(/^missing_lead_data:\s*/, "").trim()
+      return detail ? `Missing lead data — ${detail}` : "Missing lead data — update lead info"
+    }
+    if (reason.startsWith("missing_workspace_setup")) {
+      const detail = reason.replace(/^missing_workspace_setup:\s*/, "").trim()
+      return detail ? `Missing setup — ${detail}` : "Missing setup — update workspace settings"
+    }
+    if (reason.startsWith("missing_booking_link")) {
+      const detail = reason.replace(/^missing_booking_link:\s*/, "").trim()
+      return detail ? `Missing booking link — ${detail}` : "Missing booking link — set a default calendar link"
+    }
+    if (reason.startsWith("missing_availability")) {
+      const detail = reason.replace(/^missing_availability:\s*/, "").trim()
+      return detail ? `Missing availability — ${detail}` : "Missing availability — configure availability slots"
+    }
+    if (reason.startsWith("template_blocked")) {
+      const detail = reason.replace(/^template_blocked:\s*/, "").trim()
+      return detail ? `Template blocked — ${detail}` : "Template blocked — fix variables/settings"
+    }
+
+    return `Paused — ${reason}`
+  })()
 
   return (
     <Card className={cn(
@@ -358,9 +391,9 @@ function SequenceInstanceCard({ instance, onPause, onResume, onCancel, actionInP
               </div>
             </div>
 
-	        {instance.pausedReason === "lead_replied" && (
-	          <p className="text-xs text-amber-500 mt-2">Lead replied — paused until you reply</p>
-	        )}
+            {instance.status === "paused" && pausedReasonCopy && (
+              <p className="text-xs text-amber-500 mt-2">{pausedReasonCopy}</p>
+            )}
 
             {/* Actions */}
             <div className="flex items-center gap-2 mt-3">

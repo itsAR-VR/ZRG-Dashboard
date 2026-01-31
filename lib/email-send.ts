@@ -25,7 +25,14 @@ import { EmailIntegrationProvider } from "@prisma/client";
 import type { Prisma } from "@prisma/client";
 import { decodeInstantlyReplyHandle, decodeSmartLeadReplyHandle } from "@/lib/email-reply-handle";
 import { recordOutboundForBookingProgress } from "@/lib/booking-progress";
-import { emailsMatch, normalizeOptionalEmail, sanitizeCcList } from "@/lib/email-participants";
+import {
+  applyOutboundToOverride,
+  computeLeadCurrentReplierUpdate,
+  emailsMatch,
+  normalizeOptionalEmail,
+  sanitizeCcList,
+  validateEmail,
+} from "@/lib/email-participants";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 
 export interface SendEmailResult {
@@ -198,6 +205,8 @@ export async function sendEmailReplySystem(params: {
   sentBy?: OutboundSentBy | null;
   sentByUserId?: string | null;
   ccOverride?: string[];
+  toEmailOverride?: string;
+  toNameOverride?: string | null;
 }): Promise<SendEmailResult> {
   const lead = params.lead;
   const client = lead.client;
@@ -282,14 +291,30 @@ export async function sendEmailReplySystem(params: {
     ccResolution,
   });
 
-  let emailGuardTarget = recipients.toEmail;
+  const rawToOverride = typeof params.toEmailOverride === "string" ? params.toEmailOverride.trim() : "";
+  if (rawToOverride && !validateEmail(rawToOverride)) {
+    return { success: false, error: `Invalid To email: ${rawToOverride}` };
+  }
+
+  const recipientsWithOverride = applyOutboundToOverride({
+    primaryEmail: lead.email,
+    baseToEmail: recipients.toEmail,
+    baseToName: recipients.toName,
+    baseCc: recipients.cc,
+    overrideToEmail: rawToOverride || undefined,
+    overrideToName: params.toNameOverride ?? null,
+  });
+
+  let emailGuardTarget = recipientsWithOverride.toEmail;
   let smartLeadHandle: ReturnType<typeof decodeSmartLeadReplyHandle> = null;
   if (provider === EmailIntegrationProvider.SMARTLEAD) {
     smartLeadHandle = decodeSmartLeadReplyHandle(replyKey);
     if (!smartLeadHandle) {
       return { success: false, error: "SmartLead thread handle is invalid or missing" };
     }
-    emailGuardTarget = smartLeadHandle.toEmail || recipients.toEmail;
+    emailGuardTarget = recipientsWithOverride.overrideApplied
+      ? recipientsWithOverride.toEmail
+      : smartLeadHandle.toEmail || recipientsWithOverride.toEmail;
   }
 
   let instantlyHandle: ReturnType<typeof decodeInstantlyReplyHandle> = null;
@@ -329,9 +354,9 @@ export async function sendEmailReplySystem(params: {
 
     const htmlMessage = emailBisonHtmlFromPlainText(params.messageContent);
 
-    const toEmails = [{ name: recipients.toName, email_address: recipients.toEmail }];
+    const toEmails = [{ name: recipientsWithOverride.toName, email_address: recipientsWithOverride.toEmail }];
 
-    const ccEmails = recipients.cc.map((address) => ({ name: null, email_address: address }));
+    const ccEmails = recipientsWithOverride.cc.map((address) => ({ name: null, email_address: address }));
     const bccEmails = latestInboundEmail?.bcc?.map((address) => ({ name: null, email_address: address })) || [];
 
     let senderEmailId = lead.senderAccountId;
@@ -424,9 +449,11 @@ export async function sendEmailReplySystem(params: {
       return { success: false, error: "SmartLead thread handle is invalid or missing" };
     }
 
-    const cc = recipients.cc;
+    const cc = recipientsWithOverride.cc;
     const bcc = (latestInboundEmail?.bcc || []).filter(Boolean);
-    const smartLeadToEmail = smartLeadHandle.toEmail || recipients.toEmail;
+    const smartLeadToEmail = recipientsWithOverride.overrideApplied
+      ? recipientsWithOverride.toEmail
+      : smartLeadHandle.toEmail || recipientsWithOverride.toEmail;
 
     const sendResult = await sendSmartLeadReplyToThread(client.smartLeadApiKey, {
       campaignId: smartLeadHandle.campaignId,
@@ -450,7 +477,7 @@ export async function sendEmailReplySystem(params: {
       return { success: false, error: "Instantly thread handle is invalid or missing" };
     }
 
-    const instantlyCc = recipients.cc;
+    const instantlyCc = recipientsWithOverride.cc;
     const instantlyBcc = latestInboundEmail?.bcc || [];
 
     const sendResult = await sendInstantlyReply(client.instantlyApiKey, {
@@ -470,14 +497,18 @@ export async function sendEmailReplySystem(params: {
   }
 
   const messageToEmail =
-    provider === EmailIntegrationProvider.SMARTLEAD ? smartLeadHandle?.toEmail || recipients.toEmail : recipients.toEmail;
+    provider === EmailIntegrationProvider.SMARTLEAD
+      ? recipientsWithOverride.overrideApplied
+        ? recipientsWithOverride.toEmail
+        : smartLeadHandle?.toEmail || recipientsWithOverride.toEmail
+      : recipientsWithOverride.toEmail;
 
   const message = await prisma.message.create({
     data: {
       body: params.messageContent,
       subject,
       channel: "email",
-      cc: recipients.cc,
+      cc: recipientsWithOverride.cc,
       bcc: latestInboundEmail?.bcc || [],
       direction: "outbound",
       leadId: lead.id,
@@ -486,9 +517,40 @@ export async function sendEmailReplySystem(params: {
       sentByUserId: params.sentByUserId || undefined,
       ...(params.aiDraftId ? { aiDraftId: params.aiDraftId } : {}),
       toEmail: messageToEmail || undefined,
-      toName: recipients.toName || undefined,
+      toName: recipientsWithOverride.toName || undefined,
     },
   });
+
+  // If the user explicitly selected a To: recipient, persist it as the lead's active replier so
+  // future drafts/follow-ups target the right person (Phase 74).
+  if (rawToOverride) {
+    const update = computeLeadCurrentReplierUpdate({
+      primaryEmail: lead.email,
+      selectedToEmail: messageToEmail,
+      selectedToName: params.toNameOverride ?? recipientsWithOverride.toName,
+      existingAlternateEmails: lead.alternateEmails ?? [],
+      existingCurrentReplierEmail: lead.currentReplierEmail ?? null,
+      existingCurrentReplierName: lead.currentReplierName ?? null,
+      existingCurrentReplierSince: lead.currentReplierSince ?? null,
+      now: message.sentAt,
+    });
+
+    if (update.changed) {
+      await prisma.lead
+        .update({
+          where: { id: lead.id },
+          data: {
+            alternateEmails: update.alternateEmails,
+            currentReplierEmail: update.currentReplierEmail,
+            currentReplierName: update.currentReplierName,
+            currentReplierSince: update.currentReplierSince,
+          },
+        })
+        .catch((error) => {
+          console.warn("[Email] Failed to persist current replier override:", error);
+        });
+    }
+  }
 
   await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", source: "zrg", sentAt: message.sentAt });
 

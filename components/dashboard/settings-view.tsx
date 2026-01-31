@@ -1813,11 +1813,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               const companyName = (companyContext.companyName || "").trim()
               const targetResult = (companyContext.targetResult || "").trim()
               const hasDefaultCalendar = calendarLinks.some((l) => l.isDefault)
+              const hasQualificationQuestions = qualificationQuestions.some((q) => (q.question || "").trim())
 
               if (!senderName) missing.push("Sender name (AI Persona)")
               if (!companyName) missing.push("Company name")
               if (!targetResult) missing.push("Target result/outcome ({result})")
               if (!hasDefaultCalendar) missing.push("Default calendar link")
+              if (!hasQualificationQuestions) missing.push("Qualification questions")
 
               if (missing.length === 0) return null
 
@@ -1826,10 +1828,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   <CardHeader className="pb-3">
                     <CardTitle className="flex items-center gap-2">
                       <AlertTriangle className="h-5 w-5 text-amber-200" />
-                      <span className="text-amber-200">Follow-ups are ON, but templates are missing context</span>
+                      <span className="text-amber-200">Follow-ups blocked — setup incomplete</span>
                     </CardTitle>
                     <CardDescription className="text-amber-200/70">
-                      Follow-up messages may fall back to placeholders or generic wording until these are filled out.
+                      Follow-ups will not send until these are configured. You need to set these things up correctly in order for the platform to function.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-3">
