@@ -37,6 +37,7 @@ import { cn } from "@/lib/utils"
 import { BookingMonthAvailabilityPicker } from "@/components/dashboard/booking-month-availability-picker"
 import { bookMeeting, snoozeLead, snoozeLeadUntil, updateLeadAutomationSettings, updateLeadSentimentTag, updateLeadStatus } from "@/actions/crm-actions"
 import { createFollowUpTask } from "@/actions/followup-actions"
+import { promoteAlternateContactToPrimary, requestPromoteAlternateContactToPrimary } from "@/actions/lead-actions"
 import {
   getLeadFollowUpInstances,
   getFollowUpSequences,
@@ -76,6 +77,7 @@ import { LeadScoreBadge } from "./lead-score-badge"
 
 interface CrmDrawerProps {
   lead: Lead
+  viewerRole?: "OWNER" | "ADMIN" | "INBOX_MANAGER" | "SETTER" | null
   isOpen: boolean
   onClose: () => void
   onLeadUpdate?: () => void
@@ -108,8 +110,9 @@ function normalizeSentimentTag(tag: string | null | undefined): SentimentTag {
   return match || "New"
 }
 
-export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProps) {
+export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: CrmDrawerProps) {
   const [isPending, startTransition] = useTransition()
+  const [promotionAction, setPromotionAction] = useState<{ email: string; mode: "promote" | "request" } | null>(null)
   const [currentStatus, setCurrentStatus] = useState(lead.status)
   const [currentSentimentTag, setCurrentSentimentTag] = useState<SentimentTag>(
     normalizeSentimentTag(lead.sentimentTag)
@@ -150,6 +153,58 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
 
   // Enrichment state
   const [isEnriching, setIsEnriching] = useState(false)
+
+  const isAdmin = viewerRole === "OWNER" || viewerRole === "ADMIN"
+  const isSetter = viewerRole === "SETTER"
+  const alternateEmails = (lead.alternateEmails ?? []).filter((email) => {
+    if (!email) return false
+    return email.toLowerCase() !== lead.email.toLowerCase()
+  })
+
+  const handlePromoteContact = async (email: string) => {
+    const confirmed = window.confirm(
+      `Make ${email} the primary contact? The current email will be saved as an alternate.`
+    )
+    if (!confirmed) return
+
+    setPromotionAction({ email, mode: "promote" })
+    try {
+      const result = await promoteAlternateContactToPrimary(lead.id, email)
+      if (result.success) {
+        toast.success("Contact promoted to primary")
+        onLeadUpdate?.()
+      } else {
+        toast.error(result.error || "Failed to promote contact")
+      }
+    } catch (error) {
+      console.error("Promotion failed:", error)
+      toast.error("Failed to promote contact")
+    } finally {
+      setPromotionAction(null)
+    }
+  }
+
+  const handleRequestPromoteContact = async (email: string) => {
+    const confirmed = window.confirm(
+      `Request to make ${email} the primary contact? An admin must approve this change.`
+    )
+    if (!confirmed) return
+
+    setPromotionAction({ email, mode: "request" })
+    try {
+      const result = await requestPromoteAlternateContactToPrimary(lead.id, email)
+      if (result.success) {
+        toast.success(result.message || "Request sent to admin")
+      } else {
+        toast.error(result.error || "Failed to request promotion")
+      }
+    } catch (error) {
+      console.error("Request failed:", error)
+      toast.error("Failed to request promotion")
+    } finally {
+      setPromotionAction(null)
+    }
+  }
 
   // Keep local state in sync when the selected lead changes or refreshes.
   useEffect(() => {
@@ -787,6 +842,76 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                   <span className="text-foreground truncate">{lead.email}</span>
                 </div>
               )}
+
+              {lead.currentReplierEmail && (
+                <div className="flex items-center gap-3 text-sm">
+                  <Users className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-muted-foreground">Current replier</span>
+                    <Badge variant="secondary">
+                      {lead.currentReplierName || lead.currentReplierEmail}
+                    </Badge>
+                  </div>
+                </div>
+              )}
+
+              {alternateEmails.length > 0 && (
+                <div className="rounded-md border border-muted/50 bg-muted/30 p-3">
+                  <div className="text-xs font-medium text-muted-foreground mb-2">
+                    Other Contacts in Thread
+                  </div>
+                  <div className="space-y-2">
+                    {alternateEmails.map((email) => {
+                      const normalized = email.toLowerCase()
+                      const isCurrent =
+                        lead.currentReplierEmail?.toLowerCase() === normalized
+                      const isPromoting =
+                        promotionAction?.email === email && promotionAction.mode === "promote"
+                      const isRequesting =
+                        promotionAction?.email === email && promotionAction.mode === "request"
+                      const isBusy = promotionAction?.email === email
+
+                      return (
+                        <div key={email} className="flex items-center justify-between gap-3 text-sm">
+                          <div className="flex items-center gap-2">
+                            <span className="text-foreground">{email}</span>
+                            {isCurrent && (
+                              <Badge variant="secondary" className="text-[10px]">
+                                Current replier
+                              </Badge>
+                            )}
+                          </div>
+                          {isAdmin ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={isPending || isBusy}
+                              onClick={() => handlePromoteContact(email)}
+                            >
+                              {isPromoting ? (
+                                <Loader2 className="h-3 w-3 animate-spin mr-2" />
+                              ) : null}
+                              {isPromoting ? "Promoting" : "Make Primary"}
+                            </Button>
+                          ) : isSetter ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={isPending || isBusy}
+                              onClick={() => handleRequestPromoteContact(email)}
+                            >
+                              {isRequesting ? (
+                                <Loader2 className="h-3 w-3 animate-spin mr-2" />
+                              ) : null}
+                              {isRequesting ? "Requesting" : "Request Primary"}
+                            </Button>
+                          ) : null}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
               
               {/* Phone - ALWAYS show */}
               <div className="flex items-center gap-3 text-sm">
@@ -1016,9 +1141,9 @@ export function CrmDrawer({ lead, isOpen, onClose, onLeadUpdate }: CrmDrawerProp
                             {instance.nextStepDue && instance.status === "active" && (
                               <span>Next: {new Date(instance.nextStepDue).toLocaleDateString()}</span>
                             )}
-                            {instance.pausedReason === "lead_replied" && (
-                              <span className="text-amber-500">Paused: Lead replied</span>
-                            )}
+	                            {instance.pausedReason === "lead_replied" && (
+	                              <span className="text-amber-500">Paused: Lead replied (reply to resume)</span>
+	                            )}
                           </div>
                         </div>
                         {/* Progress bar */}

@@ -10,6 +10,10 @@ export interface Lead {
   id: string
   name: string
   email: string
+  alternateEmails?: string[]
+  currentReplierEmail?: string | null
+  currentReplierName?: string | null
+  currentReplierSince?: Date | null
   phone: string
   company: string
   title: string
@@ -89,6 +93,7 @@ export interface Message {
 export interface Conversation {
   id: string
   lead: Lead
+  viewerRole?: "OWNER" | "ADMIN" | "INBOX_MANAGER" | "SETTER" | null
   channels: Channel[]           // All channels this lead has messages on
   availableChannels: Channel[]  // Channels available based on contact info
   primaryChannel: Channel       // Most recent/active channel

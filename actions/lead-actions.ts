@@ -1,10 +1,21 @@
 "use server";
 
-import { prisma } from "@/lib/prisma";
+import { getPublicAppUrl } from "@/lib/app-url";
+import { addToAlternateEmails, emailsMatch, normalizeOptionalEmail, validateEmail } from "@/lib/email-participants";
 import { getAvailableChannels } from "@/lib/lead-matching";
-import { getAccessibleClientIdsForUser, getUserRoleForClient, isSetterRole, requireAuthUser, resolveClientScope } from "@/lib/workspace-access";
+import { prisma } from "@/lib/prisma";
+import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
-import { Prisma } from "@prisma/client";
+import {
+  getAccessibleClientIdsForUser,
+  getUserRoleForClient,
+  isSetterRole,
+  requireAuthUser,
+  requireClientAdminAccess,
+  requireLeadAccessById,
+  resolveClientScope,
+} from "@/lib/workspace-access";
+import { ClientMemberRole, Prisma } from "@prisma/client";
 
 export type Channel = "sms" | "email" | "linkedin";
 
@@ -14,6 +25,10 @@ export interface ConversationData {
     id: string;
     name: string;
     email: string | null;
+    alternateEmails: string[];
+    currentReplierEmail: string | null;
+    currentReplierName: string | null;
+    currentReplierSince: Date | null;
     phone: string | null;
     company: string;
     title: string;
@@ -265,6 +280,7 @@ export async function getConversations(clientId?: string | null): Promise<{
         },
         aiDrafts: {
           where: { status: "pending" },
+          orderBy: { createdAt: "desc" },
           take: 1,
         },
       },
@@ -306,6 +322,10 @@ export async function getConversations(clientId?: string | null): Promise<{
           id: lead.id,
           name: fullName,
           email: lead.email,
+          alternateEmails: lead.alternateEmails ?? [],
+          currentReplierEmail: lead.currentReplierEmail ?? null,
+          currentReplierName: lead.currentReplierName ?? null,
+          currentReplierSince: lead.currentReplierSince ?? null,
           phone: lead.phone,
           company: lead.client.name,
           title: "", // Not stored in current schema
@@ -378,6 +398,8 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
   previouslyRequiredAttention: number;
   awaitingReply: number;
   needsRepair: number;
+  aiSent: number;
+  aiReview: number;
   total: number;
 }> {
   const empty = {
@@ -386,6 +408,8 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     previouslyRequiredAttention: 0,
     awaitingReply: 0,
     needsRepair: 0,
+    aiSent: 0,
+    aiReview: 0,
     total: 0,
   };
 
@@ -430,6 +454,8 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       previouslyRequiredAttention: number;
       awaitingReply: number;
       needsRepair: number;
+      aiSent: number;
+      aiReview: number;
       total: number;
     }> => {
       const rows = await prisma.$queryRaw<
@@ -440,6 +466,8 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
           allResponses: number;
           requiresAttention: number;
           previouslyRequiredAttention: number;
+          aiSent: number;
+          aiReview: number;
         }>
       >(Prisma.sql`
         select
@@ -467,7 +495,30 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
               and l."sentimentTag" in (${Prisma.join(attentionTags)})
               and l."status" not in ('blacklisted', 'unqualified')
               and coalesce(l."lastZrgOutboundAt", l."lastOutboundAt", to_timestamp(0)) >= l."lastInboundAt"
-          )::int as "previouslyRequiredAttention"
+          )::int as "previouslyRequiredAttention",
+          count(*) filter (
+            where exists (
+              select 1
+              from "AIDraft" d
+              where d."leadId" = l.id
+                and d.status = 'pending'
+                and d."autoSendAction" = 'needs_review'
+            )
+          )::int as "aiReview",
+          count(*) filter (
+            where exists (
+              select 1
+              from "Message" m
+              join "EmailCampaign" ec on ec.id = l."emailCampaignId"
+              where m."leadId" = l.id
+                and m.channel = 'email'
+                and m.direction = 'outbound'
+                and m.source = 'zrg'
+                and m."sentBy" = 'ai'
+                and m."aiDraftId" is not null
+                and ec."responseMode" = 'AI_AUTO_SEND'
+            )
+          )::int as "aiSent"
         from "Lead" l
         where l."clientId" in (${Prisma.join(scope.clientIds)})
           and (l."snoozedUntil" is null or l."snoozedUntil" <= ${now})
@@ -481,6 +532,8 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
         allResponses: 0,
         requiresAttention: 0,
         previouslyRequiredAttention: 0,
+        aiSent: 0,
+        aiReview: 0,
       };
 
       return {
@@ -489,6 +542,8 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
         previouslyRequiredAttention: row.previouslyRequiredAttention,
         awaitingReply: Math.max(0, row.totalNonBlacklisted - row.requiresAttention),
         needsRepair: row.needsRepair,
+        aiSent: row.aiSent,
+        aiReview: row.aiReview,
         total: row.totalNonBlacklisted + row.blacklisted,
       };
     };
@@ -499,9 +554,11 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       previouslyRequiredAttention: number;
       awaitingReply: number;
       needsRepair: number;
+      aiSent: number;
+      aiReview: number;
       total: number;
     }> => {
-      const [replyCounts, totalNonBlacklisted, blacklisted, needsRepair] = await Promise.all([
+      const [replyCounts, totalNonBlacklisted, blacklisted, needsRepair, aiSent, aiReview] = await Promise.all([
         prisma.$queryRaw<
           Array<{
             allResponses: number;
@@ -569,6 +626,36 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
             status: "needs_repair",
           },
         }),
+        prisma.lead.count({
+          where: {
+            ...clientFilter,
+            ...snoozeFilter,
+            emailCampaign: {
+              is: { responseMode: "AI_AUTO_SEND" },
+            },
+            messages: {
+              some: {
+                channel: "email",
+                direction: "outbound",
+                source: "zrg",
+                sentBy: "ai",
+                aiDraftId: { not: null },
+              },
+            },
+          },
+        }),
+        prisma.lead.count({
+          where: {
+            ...clientFilter,
+            ...snoozeFilter,
+            aiDrafts: {
+              some: {
+                status: "pending",
+                autoSendAction: "needs_review",
+              },
+            },
+          },
+        }),
       ]);
 
       const openCounts = replyCounts[0] ?? { allResponses: 0, requiresAttention: 0, previouslyRequiredAttention: 0 };
@@ -579,6 +666,8 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
         previouslyRequiredAttention: openCounts.previouslyRequiredAttention,
         awaitingReply: Math.max(0, totalNonBlacklisted - openCounts.requiresAttention),
         needsRepair,
+        aiSent,
+        aiReview,
         total: totalNonBlacklisted + blacklisted,
       };
     };
@@ -640,6 +729,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
     if (!accessible.includes(lead.clientId)) {
       return { success: false, error: "Unauthorized" };
     }
+    const viewerRole = await getUserRoleForClient(user.id, lead.clientId);
 
     const fullName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
     const latestMessage = lead.messages[lead.messages.length - 1];
@@ -668,6 +758,10 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           id: lead.id,
           name: fullName,
           email: lead.email,
+          alternateEmails: lead.alternateEmails ?? [],
+          currentReplierEmail: lead.currentReplierEmail ?? null,
+          currentReplierName: lead.currentReplierName ?? null,
+          currentReplierSince: lead.currentReplierSince ?? null,
           phone: lead.phone,
           company: lead.client.name,
           title: "",
@@ -701,6 +795,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
         channels,
         availableChannels,
         primaryChannel,
+        viewerRole,
         messages: lead.messages.map((msg) => ({
           id: msg.id,
           sender: toUiSender(msg),
@@ -775,7 +870,7 @@ export interface ConversationsCursorOptions {
   sentimentTags?: string[];
   smsCampaignId?: string;
   smsCampaignUnattributed?: boolean;
-  filter?: "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "all";
+  filter?: "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "ai_sent" | "ai_review" | "all";
   // Lead scoring filter (Phase 33)
   scoreFilter?: "all" | "4" | "3+" | "2+" | "1+" | "unscored" | "disqualified";
 }
@@ -817,6 +912,10 @@ function transformLeadToConversation(
       id: lead.id,
       name: fullName,
       email: lead.email,
+      alternateEmails: lead.alternateEmails ?? [],
+      currentReplierEmail: lead.currentReplierEmail ?? null,
+      currentReplierName: lead.currentReplierName ?? null,
+      currentReplierSince: lead.currentReplierSince ?? null,
       phone: lead.phone,
       company: lead.client.name,
       title: "",
@@ -1016,6 +1115,34 @@ export async function getConversationsCursor(
       });
     } else if (filter === "needs_repair") {
       whereConditions.push({ status: "needs_repair" });
+    } else if (filter === "ai_sent") {
+      // Phase 70: "AI Sent" = actually sent by AI auto-send (not just evaluated/scheduled).
+      whereConditions.push({
+        emailCampaign: {
+          is: { responseMode: "AI_AUTO_SEND" },
+        },
+      });
+      whereConditions.push({
+        messages: {
+          some: {
+            channel: "email",
+            direction: "outbound",
+            sentBy: "ai",
+            source: "zrg",
+            aiDraftId: { not: null },
+          },
+        },
+      });
+    } else if (filter === "ai_review") {
+      // Phase 70: Pending drafts that auto-send flagged for human review.
+      whereConditions.push({
+        aiDrafts: {
+          some: {
+            status: "pending",
+            autoSendAction: "needs_review",
+          },
+        },
+      });
     }
 
     const where = whereConditions.length > 0
@@ -1055,6 +1182,7 @@ export async function getConversationsCursor(
         },
         aiDrafts: {
           where: { status: "pending" },
+          orderBy: { createdAt: "desc" },
           take: 1,
           select: {
             id: true,
@@ -1263,6 +1391,32 @@ export async function getConversationsFromEnd(
       });
     } else if (filter === "needs_repair") {
       whereConditions.push({ status: "needs_repair" });
+    } else if (filter === "ai_sent") {
+      whereConditions.push({
+        emailCampaign: {
+          is: { responseMode: "AI_AUTO_SEND" },
+        },
+      });
+      whereConditions.push({
+        messages: {
+          some: {
+            channel: "email",
+            direction: "outbound",
+            sentBy: "ai",
+            source: "zrg",
+            aiDraftId: { not: null },
+          },
+        },
+      });
+    } else if (filter === "ai_review") {
+      whereConditions.push({
+        aiDrafts: {
+          some: {
+            status: "pending",
+            autoSendAction: "needs_review",
+          },
+        },
+      });
     }
 
     const where = whereConditions.length > 0
@@ -1304,6 +1458,7 @@ export async function getConversationsFromEnd(
         },
         aiDrafts: {
           where: { status: "pending" },
+          orderBy: { createdAt: "desc" },
           take: 1,
           select: {
             id: true,
@@ -1487,5 +1642,190 @@ export async function diagnoseSentimentTags(clientId?: string | null): Promise<{
       success: false,
       error: `Failed to diagnose sentiment tags: ${errorMessage}`,
     };
+  }
+}
+
+export async function promoteAlternateContactToPrimary(
+  leadId: string,
+  newPrimaryEmail: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { clientId } = await requireLeadAccessById(leadId);
+    await requireClientAdminAccess(clientId);
+
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: {
+        email: true,
+        alternateEmails: true,
+        currentReplierEmail: true,
+        currentReplierName: true,
+        currentReplierSince: true,
+      },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    const normalizedNew = normalizeOptionalEmail(newPrimaryEmail);
+    if (!normalizedNew || !validateEmail(normalizedNew)) {
+      return { success: false, error: "Invalid email address" };
+    }
+
+    if (emailsMatch(lead.email, normalizedNew)) {
+      return { success: false, error: "Email is already the primary contact" };
+    }
+
+    const isAlternate = (lead.alternateEmails ?? []).some((alt) => emailsMatch(alt, normalizedNew));
+    if (!isAlternate) {
+      return { success: false, error: "Email is not an alternate contact for this lead" };
+    }
+
+    const nextAlternates = addToAlternateEmails(lead.alternateEmails ?? [], lead.email, normalizedNew);
+    const shouldClearReplier = emailsMatch(lead.currentReplierEmail, normalizedNew);
+
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: {
+        email: normalizedNew,
+        alternateEmails: nextAlternates,
+        currentReplierEmail: shouldClearReplier ? null : lead.currentReplierEmail,
+        currentReplierName: shouldClearReplier ? null : lead.currentReplierName,
+        currentReplierSince: shouldClearReplier ? null : lead.currentReplierSince,
+      },
+    });
+
+    return { success: true };
+  } catch (error) {
+    console.error("[promoteAlternateContactToPrimary] Error:", error);
+    return { success: false, error: "Failed to promote contact" };
+  }
+}
+
+export async function requestPromoteAlternateContactToPrimary(
+  leadId: string,
+  requestedEmail: string
+): Promise<{ success: boolean; error?: string; message?: string }> {
+  try {
+    const user = await requireAuthUser();
+    const { clientId } = await requireLeadAccessById(leadId);
+    const role = await getUserRoleForClient(user.id, clientId);
+
+    if (role !== "SETTER") {
+      return { success: false, error: "Only setters can request promotion approval" };
+    }
+
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      select: {
+        email: true,
+        alternateEmails: true,
+        firstName: true,
+        lastName: true,
+      },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    const normalizedRequested = normalizeOptionalEmail(requestedEmail);
+    if (!normalizedRequested || !validateEmail(normalizedRequested)) {
+      return { success: false, error: "Invalid email address" };
+    }
+
+    if (emailsMatch(lead.email, normalizedRequested)) {
+      return { success: false, error: "Email is already the primary contact" };
+    }
+
+    const isAlternate = (lead.alternateEmails ?? []).some((alt) => emailsMatch(alt, normalizedRequested));
+    if (!isAlternate) {
+      return { success: false, error: "Email is not an alternate contact for this lead" };
+    }
+
+    const [client, adminMembers] = await Promise.all([
+      prisma.client.findUnique({
+        where: { id: clientId },
+        select: { userId: true, name: true },
+      }),
+      prisma.clientMember.findMany({
+        where: { clientId, role: ClientMemberRole.ADMIN },
+        select: { userId: true },
+      }),
+    ]);
+
+    const adminUserIds = new Set<string>();
+    if (client?.userId) adminUserIds.add(client.userId);
+    for (const member of adminMembers) {
+      if (member.userId) adminUserIds.add(member.userId);
+    }
+
+    if (adminUserIds.size === 0) {
+      return { success: false, error: "No admins found for this workspace" };
+    }
+
+    const adminEmailMap = await getSupabaseUserEmailsByIds(Array.from(adminUserIds));
+    const adminEmails = Array.from(adminEmailMap.values()).filter((email): email is string => Boolean(email));
+
+    if (adminEmails.length === 0) {
+      return { success: false, error: "No admin emails found for this workspace" };
+    }
+
+    const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
+    const clientName = client?.name || "Workspace";
+    const dashboardUrl = `${getPublicAppUrl()}/?view=inbox&clientId=${encodeURIComponent(clientId)}&leadId=${encodeURIComponent(leadId)}`;
+    const requesterLabel = user.email ? `${user.email}` : `User ${user.id}`;
+    const leadLabel = `${leadName}${lead.email ? ` (${lead.email})` : ""}`;
+
+    const results = await Promise.all(
+      adminEmails.map((email) =>
+        sendSlackDmByEmail({
+          email,
+          dedupeKey: `promote_request:${leadId}:${normalizedRequested}:${email}`,
+          text: `Promotion request for ${leadName}`,
+          blocks: [
+            {
+              type: "header",
+              text: { type: "plain_text", text: "Contact Promotion Request", emoji: true },
+            },
+            {
+              type: "section",
+              fields: [
+                { type: "mrkdwn", text: `*Lead:*\n${leadLabel}` },
+                { type: "mrkdwn", text: `*Requested Primary:*\n${normalizedRequested}` },
+                { type: "mrkdwn", text: `*Requested By:*\n${requesterLabel}` },
+                { type: "mrkdwn", text: `*Workspace:*\n${clientName}` },
+              ],
+            },
+            {
+              type: "actions",
+              elements: [
+                {
+                  type: "button",
+                  text: { type: "plain_text", text: "Open in Dashboard", emoji: true },
+                  url: dashboardUrl,
+                  action_id: "open_dashboard",
+                },
+              ],
+            },
+          ],
+        })
+      )
+    );
+
+    const notifiedCount = results.filter((result) => result.success).length;
+
+    if (notifiedCount === 0) {
+      return { success: false, error: "Failed to notify admins (Slack not configured?)" };
+    }
+
+    return {
+      success: true,
+      message: `Request sent to ${notifiedCount} admin${notifiedCount === 1 ? "" : "s"}.`,
+    };
+  } catch (error) {
+    console.error("[requestPromoteAlternateContactToPrimary] Error:", error);
+    return { success: false, error: "Failed to request promotion" };
   }
 }

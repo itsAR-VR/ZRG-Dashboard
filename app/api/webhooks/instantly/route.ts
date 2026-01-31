@@ -7,6 +7,7 @@ import { EmailIntegrationProvider, BackgroundJobType } from "@prisma/client";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 import { encodeInstantlyReplyHandle } from "@/lib/email-reply-handle";
 import { enqueueBackgroundJob, buildJobDedupeKey } from "@/lib/background-jobs/enqueue";
+import { addToAlternateEmails, detectCcReplier, normalizeOptionalEmail } from "@/lib/email-participants";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
@@ -212,6 +213,43 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ success: true, deduped: true, eventType });
         }
         throw error;
+      }
+
+      const normalizedLeadEmail = normalizeOptionalEmail(lead.email);
+      const inboundFromEmail = normalizeOptionalEmail(payload.contact_email);
+      const { isCcReplier } = detectCcReplier({
+        leadEmail: normalizedLeadEmail,
+        inboundFromEmail,
+      });
+
+      const currentLead = await prisma.lead.findUnique({
+        where: { id: lead.id },
+        select: { alternateEmails: true, currentReplierEmail: true },
+      });
+
+      if (isCcReplier && inboundFromEmail) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: {
+            currentReplierEmail: inboundFromEmail,
+            currentReplierName: normalizeOptionalString(payload.contact_name) || null,
+            currentReplierSince: new Date(),
+            alternateEmails: addToAlternateEmails(
+              currentLead?.alternateEmails || [],
+              inboundFromEmail,
+              normalizedLeadEmail
+            ),
+          },
+        });
+      } else if (!isCcReplier && currentLead?.currentReplierEmail) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: {
+            currentReplierEmail: null,
+            currentReplierName: null,
+            currentReplierSince: null,
+          },
+        });
       }
 
       await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });

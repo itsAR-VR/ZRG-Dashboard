@@ -50,6 +50,10 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
       id: conv.lead.id,
       name: conv.lead.name,
       email: conv.lead.email || "",
+      alternateEmails: conv.lead.alternateEmails ?? [],
+      currentReplierEmail: conv.lead.currentReplierEmail ?? null,
+      currentReplierName: conv.lead.currentReplierName ?? null,
+      currentReplierSince: conv.lead.currentReplierSince ?? null,
       phone: conv.lead.phone || "",
       company: conv.lead.company,
       title: conv.lead.title || "",
@@ -160,14 +164,16 @@ export function InboxView({
 
   // Reset selection when switching workspaces to avoid showing a lead from another workspace.
   useEffect(() => {
-    setActiveConversationId(null);
+    // If the inbox was opened via deep-link (e.g. Slack "Edit in dashboard"),
+    // keep that lead selected when the workspace auto-switches.
+    setActiveConversationId(initialConversationId ?? null);
     setActiveConversation(null);
     setIsCrmOpen(false);
     setNewConversationCount(0);
     setSyncAllCursor(null);
     leadLastMessageAtRef.current = new Map();
     workspaceLastMessageAtRef.current = 0;
-  }, [activeWorkspace]);
+  }, [activeWorkspace, initialConversationId]);
 
   // Load workspace auto-followups-on-reply setting for the inbox sidebar switch
   useEffect(() => {
@@ -253,7 +259,7 @@ export function InboxView({
         ? activeSmsClient
         : undefined,
     smsCampaignUnattributed: activeSmsClient === "unattributed" ? true : undefined,
-    filter: activeFilter as "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "all" | undefined,
+    filter: activeFilter as "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "ai_sent" | "ai_review" | "all" | undefined,
     scoreFilter: activeScoreFilter !== "all" ? activeScoreFilter : undefined,
     limit: 50,
   }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter, activeScoreFilter]);
@@ -384,22 +390,45 @@ export function InboxView({
     }
 
     // Fetch full messages in background
-    const result = await getConversation(conversationId);
-    if (result.success && result.data) {
-      const { messages } = result.data;
+	    const result = await getConversation(conversationId);
+	    if (result.success && result.data) {
+	      const { messages } = result.data;
 
-      if (baseConv) {
-        setActiveConversation({ ...baseConv, messages });
-      } else {
-        const lastMessage = messages[messages.length - 1];
-        const sentimentTag = result.data.lead.sentimentTag ?? null;
+	      if (baseConv) {
+	        // Keep lead automation flags in sync with server-side updates (e.g. enabling follow-ups on first setter reply).
+	        setActiveConversation({
+	          ...baseConv,
+	          viewerRole: result.data.viewerRole ?? baseConv.viewerRole ?? null,
+	          lead: {
+	            ...baseConv.lead,
+	            autoReplyEnabled: result.data.lead.autoReplyEnabled,
+	            autoFollowUpEnabled: result.data.lead.autoFollowUpEnabled,
+	            autoBookMeetingsEnabled: result.data.lead.autoBookMeetingsEnabled,
+	            smsDndActive: result.data.lead.smsDndActive,
+	            status: result.data.lead.status as Lead["status"],
+	            sentimentTag: result.data.lead.sentimentTag,
+	            alternateEmails: result.data.lead.alternateEmails ?? baseConv.lead.alternateEmails ?? [],
+	            currentReplierEmail: result.data.lead.currentReplierEmail ?? null,
+	            currentReplierName: result.data.lead.currentReplierName ?? null,
+	            currentReplierSince: result.data.lead.currentReplierSince ?? null,
+	          },
+	          messages,
+	        });
+	      } else {
+	        const lastMessage = messages[messages.length - 1];
+	        const sentimentTag = result.data.lead.sentimentTag ?? null;
 
         setActiveConversation({
           id: result.data.id,
+          viewerRole: result.data.viewerRole ?? null,
           lead: {
             id: result.data.lead.id,
             name: result.data.lead.name,
             email: result.data.lead.email || "",
+            alternateEmails: result.data.lead.alternateEmails ?? [],
+            currentReplierEmail: result.data.lead.currentReplierEmail ?? null,
+            currentReplierName: result.data.lead.currentReplierName ?? null,
+            currentReplierSince: result.data.lead.currentReplierSince ?? null,
             phone: result.data.lead.phone || "",
             company: result.data.lead.company,
             title: result.data.lead.title || "",
@@ -978,6 +1007,7 @@ export function InboxView({
       {activeConversation && (
         <CrmDrawer
           lead={activeConversation.lead}
+          viewerRole={activeConversation.viewerRole}
           isOpen={isCrmOpen}
           onClose={() => setIsCrmOpen(false)}
           onLeadUpdate={() => {

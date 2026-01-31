@@ -15,6 +15,7 @@ import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation
 import { pauseFollowUpsOnReply } from "@/lib/followup-engine";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
+import { addToAlternateEmails, detectCcReplier, normalizeOptionalEmail } from "@/lib/email-participants";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 // Reduced from 800s to 60s after moving AI classification to background jobs (Phase 31g).
@@ -448,6 +449,57 @@ function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   return new Date();
 }
 
+async function updateLeadReplierState(params: {
+  leadId: string;
+  leadEmail: string | null;
+  fromEmail: string | null;
+  fromName: string | null;
+  logLabel: string;
+}): Promise<void> {
+  const leadEmail = normalizeOptionalEmail(params.leadEmail);
+  const inboundFromEmail = normalizeOptionalEmail(params.fromEmail);
+  if (!leadEmail || !inboundFromEmail) return;
+  const { isCcReplier } = detectCcReplier({
+    leadEmail,
+    inboundFromEmail,
+  });
+
+  const currentLead = await prisma.lead.findUnique({
+    where: { id: params.leadId },
+    select: { alternateEmails: true, currentReplierEmail: true },
+  });
+
+  if (isCcReplier && inboundFromEmail) {
+    await prisma.lead.update({
+      where: { id: params.leadId },
+      data: {
+        currentReplierEmail: inboundFromEmail,
+        currentReplierName: params.fromName || null,
+        currentReplierSince: new Date(),
+        alternateEmails: addToAlternateEmails(
+          currentLead?.alternateEmails || [],
+          inboundFromEmail,
+          leadEmail
+        ),
+      },
+    });
+
+    console.log(`[Email Webhook] CC replier detected (${params.logLabel}): ${inboundFromEmail} (lead: ${leadEmail})`);
+    return;
+  }
+
+  if (!isCcReplier && currentLead?.currentReplierEmail) {
+    await prisma.lead.update({
+      where: { id: params.leadId },
+      data: {
+        currentReplierEmail: null,
+        currentReplierName: null,
+        currentReplierSince: null,
+      },
+    });
+  }
+}
+
 // =============================================================================
 // Event Handlers
 // =============================================================================
@@ -623,6 +675,14 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
     }
     throw error;
   }
+
+  await updateLeadReplierState({
+    leadId: lead.id,
+    leadEmail: lead.email ?? null,
+    fromEmail: reply.from_email_address ?? null,
+    fromName: reply.from_name ?? null,
+    logLabel: "LEAD_REPLIED",
+  });
 
   await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
@@ -860,8 +920,9 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
           const campaignLabel = emailCampaign
             ? `${emailCampaign.name} (${emailCampaign.bisonCampaignId})`
             : "Unknown campaign";
-          const url = `${getPublicAppUrl()}/?view=inbox&leadId=${lead.id}`;
+          const url = `${getPublicAppUrl()}/?view=inbox&clientId=${encodeURIComponent(client.id)}&leadId=${encodeURIComponent(lead.id)}&draftId=${encodeURIComponent(draftId)}`;
           const confidenceText = `${evaluation.confidence.toFixed(2)} < ${autoSendThreshold.toFixed(2)}`;
+          const approvalValue = JSON.stringify({ draftId, leadId: lead.id, clientId: client.id });
 
           const dmResult = await sendSlackDmByEmail({
             email: "jonandmika@gmail.com",
@@ -893,8 +954,23 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
                 },
               },
               {
-                type: "section",
-                text: { type: "mrkdwn", text: `<${url}|Open lead in dashboard>` },
+                type: "actions",
+                block_id: `review_actions_${draftId}`,
+                elements: [
+                  {
+                    type: "button",
+                    text: { type: "plain_text", text: "Edit in dashboard", emoji: true },
+                    url,
+                    action_id: "edit_dashboard",
+                  },
+                  {
+                    type: "button",
+                    text: { type: "plain_text", text: "Approve & Send", emoji: true },
+                    style: "primary",
+                    action_id: "approve_send",
+                    value: approvalValue,
+                  },
+                ],
               },
             ],
           });
@@ -1113,6 +1189,14 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     }
     throw error;
   }
+
+  await updateLeadReplierState({
+    leadId: lead.id,
+    leadEmail: lead.email ?? null,
+    fromEmail: reply.from_email_address ?? null,
+    fromName: reply.from_name ?? null,
+    logLabel: "LEAD_INTERESTED",
+  });
 
   await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 
@@ -1665,6 +1749,14 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     }
     throw error;
   }
+
+  await updateLeadReplierState({
+    leadId: lead.id,
+    leadEmail: lead.email ?? null,
+    fromEmail: reply.from_email_address ?? null,
+    fromName: reply.from_name ?? null,
+    logLabel: "UNTRACKED_REPLY",
+  });
 
   await bumpLeadMessageRollup({ leadId: lead.id, direction: "inbound", sentAt });
 

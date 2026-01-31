@@ -91,6 +91,78 @@ export function normalizeEmail(email: string): string {
 }
 
 /**
+ * Normalize optional email: lowercase + trim, or null if empty
+ */
+export function normalizeOptionalEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const normalized = email.toLowerCase().trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+/**
+ * Check if two emails match (case-insensitive, trimmed)
+ */
+export function emailsMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  const normA = normalizeOptionalEmail(a);
+  const normB = normalizeOptionalEmail(b);
+  if (!normA || !normB) return false;
+  return normA === normB;
+}
+
+/**
+ * Detect if an inbound email came from a CC'd person (not the original lead)
+ */
+export function detectCcReplier(params: {
+  leadEmail: string | null | undefined;
+  inboundFromEmail: string | null | undefined;
+}): { isCcReplier: boolean } {
+  const leadEmail = normalizeOptionalEmail(params.leadEmail);
+  const inboundFromEmail = normalizeOptionalEmail(params.inboundFromEmail);
+  if (!leadEmail || !inboundFromEmail) return { isCcReplier: false };
+  return { isCcReplier: leadEmail !== inboundFromEmail };
+}
+
+/**
+ * Extract first name from a full name string
+ */
+export function extractFirstName(fullName: string | null | undefined): string | null {
+  const trimmed = (fullName || "").trim();
+  if (!trimmed) return null;
+  const firstSpace = trimmed.indexOf(" ");
+  return firstSpace > 0 ? trimmed.slice(0, firstSpace) : trimmed;
+}
+
+/**
+ * Build the alternate emails array, adding a new email if not already present.
+ * Ensures normalization and excludes the current primary email.
+ */
+export function addToAlternateEmails(
+  existingAlternates: string[],
+  newEmail: string | null | undefined,
+  primaryEmail: string | null | undefined
+): string[] {
+  const normalizedPrimary = normalizeOptionalEmail(primaryEmail);
+  const normalizedNew = normalizeOptionalEmail(newEmail);
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const value of existingAlternates || []) {
+    const normalized = normalizeOptionalEmail(value);
+    if (!normalized) continue;
+    if (normalizedPrimary && normalized === normalizedPrimary) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+
+  if (normalizedNew && (!normalizedPrimary || normalizedNew !== normalizedPrimary) && !seen.has(normalizedNew)) {
+    result.push(normalizedNew);
+  }
+
+  return result;
+}
+
+/**
  * Server-side CC validation and normalization
  * - Validates format
  * - Normalizes to lowercase

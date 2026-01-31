@@ -1,8 +1,19 @@
-type SlackBlock = {
+export type SlackBlock = {
   type: string;
+  block_id?: string;
   text?: { type: "plain_text" | "mrkdwn"; text: string; emoji?: boolean };
   fields?: Array<{ type: "mrkdwn"; text: string }>;
+  elements?: Array<SlackButtonElement>;
   accessory?: unknown;
+};
+
+export type SlackButtonElement = {
+  type: "button";
+  text: { type: "plain_text"; text: string; emoji?: boolean };
+  action_id: string;
+  value?: string;
+  url?: string;
+  style?: "primary" | "danger";
 };
 
 type SlackApiResponse<T> = { ok: boolean; error?: string } & T;
@@ -111,13 +122,22 @@ async function openDmChannel(userId: string): Promise<string | null> {
   return channelId;
 }
 
+export type SlackDmResult = {
+  success: boolean;
+  skipped?: boolean;
+  error?: string;
+  // Phase 70: Return message metadata for interactive button updates
+  messageTs?: string;
+  channelId?: string;
+};
+
 export async function sendSlackDmByEmail(opts: {
   email: string;
   text: string;
   blocks?: SlackBlock[];
   dedupeKey?: string;
   dedupeTtlMs?: number;
-}): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
+}): Promise<SlackDmResult> {
   const ttlMs = Math.max(1_000, opts.dedupeTtlMs ?? 10 * 60 * 1000);
 
   if (opts.dedupeKey) {
@@ -143,6 +163,36 @@ export async function sendSlackDmByEmail(opts: {
 
   if (!res.ok) {
     return { success: false, error: res.error || "Slack message failed" };
+  }
+
+  // Phase 70: Return message metadata for interactive button updates
+  return {
+    success: true,
+    messageTs: res.ts,
+    channelId,
+  };
+}
+
+/**
+ * Update an existing Slack message.
+ *
+ * Used by the Slack interactions webhook to update button states after approval.
+ */
+export async function updateSlackMessage(opts: {
+  channelId: string;
+  messageTs: string;
+  text: string;
+  blocks?: SlackBlock[];
+}): Promise<{ success: boolean; error?: string }> {
+  const res = await slackPost<{ ok: boolean }>("chat.update", {
+    channel: opts.channelId,
+    ts: opts.messageTs,
+    text: opts.text,
+    ...(opts.blocks ? { blocks: opts.blocks } : {}),
+  });
+
+  if (!res.ok) {
+    return { success: false, error: res.error || "Slack message update failed" };
   }
 
   return { success: true };

@@ -23,13 +23,14 @@ import * as path from "node:path";
 
 import { generateResponseDraft, shouldGenerateDraft } from "../lib/ai-drafts";
 import { buildSentimentTranscriptFromMessages, detectBounce, isOptOutText } from "../lib/sentiment";
-import { approveAndSendDraftSystem } from "../actions/message-actions";
 import { decideShouldAutoReply } from "../lib/auto-reply-gate";
 import { evaluateAutoSend } from "../lib/auto-send-evaluator";
 import { getPublicAppUrl } from "../lib/app-url";
 import { sendSlackDmByEmail } from "../lib/slack-dm";
 import { createAutoSendExecutor } from "../lib/auto-send/orchestrator";
+import type { AutoSendDecisionRecord } from "../lib/auto-send/record-auto-send-decision";
 import { scheduleDelayedAutoSend, validateDelayedAutoSend } from "../lib/background-jobs/delayed-auto-send";
+import { sendEmailReplyForDraftSystem } from "../lib/email-send";
 
 // Force IPv4 for DNS resolution (some environments have IPv6 issues)
 dns.setDefaultResultOrder("ipv4first");
@@ -247,8 +248,22 @@ async function main(): Promise<void> {
 
   const transcriptCache = new Map<string, string>();
 
+  // Phase 70 fix: Create a CLI-safe approveAndSendDraftSystem that uses sendEmailReplyForDraftSystem
+  // instead of the Next.js server action version (which calls revalidatePath).
+  // The backfill script only processes email drafts, so we can use the system function directly.
+  const approveAndSendDraftSystemForCli = async (
+    draftId: string,
+    opts: { sentBy: "ai" | "setter"; sentByUserId?: string | null; editedContent?: string; cc?: string[] } = { sentBy: "setter" }
+  ) => {
+    return sendEmailReplyForDraftSystem(draftId, opts.editedContent, {
+      sentBy: opts.sentBy,
+      sentByUserId: opts.sentByUserId,
+      cc: opts.cc,
+    });
+  };
+
   const { executeAutoSend } = createAutoSendExecutor({
-    approveAndSendDraftSystem,
+    approveAndSendDraftSystem: approveAndSendDraftSystemForCli,
     decideShouldAutoReply,
     evaluateAutoSend,
     getPublicAppUrl,
@@ -256,6 +271,19 @@ async function main(): Promise<void> {
     scheduleDelayedAutoSend,
     validateDelayedAutoSend,
     sendSlackDmByEmail,
+    recordAutoSendDecision: async (record: AutoSendDecisionRecord) => {
+      await prisma.aIDraft.update({
+        where: { id: record.draftId },
+        data: {
+          autoSendEvaluatedAt: record.evaluatedAt,
+          autoSendConfidence: typeof record.confidence === "number" ? record.confidence : null,
+          autoSendThreshold: typeof record.threshold === "number" ? record.threshold : null,
+          autoSendReason: record.reason ? record.reason : null,
+          autoSendAction: record.action,
+          autoSendSlackNotified: Boolean(record.slackNotified),
+        },
+      });
+    },
   });
 
   let cursor = args.cursor ?? (args.resume ? savedState?.cursor ?? undefined : undefined);
@@ -487,12 +515,25 @@ async function main(): Promise<void> {
             log(`        Existing draft: ${candidate.existingDraft?.id || "NONE"}`);
             log(`        Generating draft...`);
 
+            // Phase 70 fix: Reject existing pending drafts before generating new one
+            // This follows the regenerateDraft() pattern from actions/message-actions.ts
+            await prisma.aIDraft.updateMany({
+              where: {
+                leadId: candidate.leadId,
+                status: "pending",
+                channel: "email",
+              },
+              data: { status: "rejected" },
+            });
+
+            // Phase 70 fix: Always pass triggerMessageId (not conditional on --missing-only)
+            // This ensures the draft is linked to the trigger message for dashboard consistency
             const draftResult = await generateResponseDraft(
               candidate.leadId,
               transcript || candidate.inboundText,
               candidate.sentimentTag,
               "email",
-              args.missingOnly ? { triggerMessageId: candidate.messageId } : {}
+              { triggerMessageId: candidate.messageId }
             );
 
             if (!draftResult.success || !draftResult.draftId || !draftResult.content) {

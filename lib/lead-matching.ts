@@ -59,7 +59,7 @@ export interface FindOrCreateLeadResult {
     enrichmentStatus: string | null;
   };
   isNew: boolean;
-  matchedBy: "email" | "phone" | "ghlContactId" | "emailBisonLeadId" | "linkedinUrl" | "linkedinId" | "new";
+  matchedBy: "email" | "alternateEmail" | "phone" | "ghlContactId" | "emailBisonLeadId" | "linkedinUrl" | "linkedinId" | "new";
 }
 
 /**
@@ -68,8 +68,10 @@ export interface FindOrCreateLeadResult {
  * Matching priority:
  * 1. ghlContactId (if provided) - exact match for GHL contacts
  * 2. emailBisonLeadId (if provided) - exact match for Inboxxia leads  
- * 3. email (case-insensitive) - cross-channel matching
- * 4. phone (normalized digits) - cross-channel matching
+ * 3. linkedinId / linkedinUrl (if provided)
+ * 4. email (case-insensitive) - cross-channel matching
+ * 5. alternateEmails (array membership)
+ * 6. phone (normalized digits) - cross-channel matching
  * 
  * If a match is found, updates the lead with any new information.
  * If no match, creates a new lead.
@@ -84,72 +86,65 @@ export async function findOrCreateLead(
   const normalizedPhone = normalizePhone(contactInfo.phone);
   const normalizedLinkedInUrl = normalizeLinkedInUrl(contactInfo.linkedinUrl || externalIds?.linkedinUrl);
 
-  // Build search conditions
-  const searchConditions: any[] = [];
-
-  // Priority 1: Match by ghlContactId if provided
-  if (externalIds?.ghlContactId) {
-    searchConditions.push({ ghlContactId: externalIds.ghlContactId });
-  }
-
-  // Priority 2: Match by emailBisonLeadId if provided
-  if (externalIds?.emailBisonLeadId) {
-    searchConditions.push({ emailBisonLeadId: externalIds.emailBisonLeadId });
-  }
-
-  // Priority 3: Match by linkedinId if provided
-  if (externalIds?.linkedinId) {
-    searchConditions.push({ linkedinId: externalIds.linkedinId });
-  }
-
-  // Priority 4: Match by linkedinUrl (normalized)
-  if (normalizedLinkedInUrl) {
-    searchConditions.push({ linkedinUrl: normalizedLinkedInUrl });
-  }
-
-  // Priority 5: Match by email (case-insensitive via normalized comparison)
-  if (normalizedEmail) {
-    searchConditions.push({ email: { equals: normalizedEmail, mode: "insensitive" } });
-  }
-
-  // Priority 6: Match by phone (we store normalized, but also check raw)
-  if (normalizedPhone) {
-    // Phone is stored in E.164-like format (`+` + digits). Use a contains match so we can
-    // safely migrate older rows that stored digits-only without breaking matching.
-    searchConditions.push({ phone: { contains: normalizedPhone } });
-  }
-
-  // Try to find existing lead
+  // Try to find existing lead with explicit priority
   let existingLead = null;
   let matchedBy: FindOrCreateLeadResult["matchedBy"] = "new";
 
-  if (searchConditions.length > 0) {
+  if (!existingLead && externalIds?.ghlContactId) {
     existingLead = await prisma.lead.findFirst({
-      where: {
-        clientId,
-        OR: searchConditions,
-      },
+      where: { clientId, ghlContactId: externalIds.ghlContactId },
     });
+    if (existingLead) matchedBy = "ghlContactId";
+  }
 
-    if (existingLead) {
-      // Determine what we matched by (for logging/debugging)
-      if (externalIds?.ghlContactId && existingLead.ghlContactId === externalIds.ghlContactId) {
-        matchedBy = "ghlContactId";
-      } else if (externalIds?.emailBisonLeadId && existingLead.emailBisonLeadId === externalIds.emailBisonLeadId) {
-        matchedBy = "emailBisonLeadId";
-      } else if (externalIds?.linkedinId && existingLead.linkedinId === externalIds.linkedinId) {
-        matchedBy = "linkedinId";
-      } else if (normalizedLinkedInUrl && existingLead.linkedinUrl === normalizedLinkedInUrl) {
-        matchedBy = "linkedinUrl";
-      } else if (normalizedEmail && existingLead.email?.toLowerCase() === normalizedEmail) {
-        matchedBy = "email";
-      } else if (normalizedPhone && normalizePhone(existingLead.phone) === normalizedPhone) {
-        matchedBy = "phone";
-      }
-    }
+  if (!existingLead && externalIds?.emailBisonLeadId) {
+    existingLead = await prisma.lead.findFirst({
+      where: { clientId, emailBisonLeadId: externalIds.emailBisonLeadId },
+    });
+    if (existingLead) matchedBy = "emailBisonLeadId";
+  }
+
+  if (!existingLead && externalIds?.linkedinId) {
+    existingLead = await prisma.lead.findFirst({
+      where: { clientId, linkedinId: externalIds.linkedinId },
+    });
+    if (existingLead) matchedBy = "linkedinId";
+  }
+
+  if (!existingLead && normalizedLinkedInUrl) {
+    existingLead = await prisma.lead.findFirst({
+      where: { clientId, linkedinUrl: normalizedLinkedInUrl },
+    });
+    if (existingLead) matchedBy = "linkedinUrl";
+  }
+
+  if (!existingLead && normalizedEmail) {
+    existingLead = await prisma.lead.findFirst({
+      where: { clientId, email: { equals: normalizedEmail, mode: "insensitive" } },
+    });
+    if (existingLead) matchedBy = "email";
+  }
+
+  if (!existingLead && normalizedEmail) {
+    existingLead = await prisma.lead.findFirst({
+      where: { clientId, alternateEmails: { has: normalizedEmail } },
+    });
+    if (existingLead) matchedBy = "alternateEmail";
+  }
+
+  if (!existingLead && normalizedPhone) {
+    // Phone is stored in E.164-like format (`+` + digits). Use a contains match so we can
+    // safely migrate older rows that stored digits-only without breaking matching.
+    existingLead = await prisma.lead.findFirst({
+      where: { clientId, phone: { contains: normalizedPhone } },
+    });
+    if (existingLead) matchedBy = "phone";
   }
 
   if (existingLead) {
+    if (matchedBy === "alternateEmail") {
+      console.log(`[Lead Matching] Matched via alternateEmails (${normalizedEmail ?? "unknown"})`);
+    }
     // Update existing lead with any new information
     const updates: any = {};
 

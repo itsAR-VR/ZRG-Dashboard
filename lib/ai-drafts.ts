@@ -29,6 +29,7 @@ import { enforceCanonicalBookingLink, replaceEmDashesWithCommaSpace } from "@/li
 import { getBookingProcessInstructions } from "@/lib/booking-process-instructions";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
+import { emailsMatch, extractFirstName } from "@/lib/email-participants";
 import type { AvailabilitySource } from "@prisma/client";
 
 type DraftChannel = "sms" | "email" | "linkedin";
@@ -811,6 +812,8 @@ function buildEmailDraftStrategyInstructions(opts: {
   firstName: string;
   lastName: string | null;
   leadEmail: string | null;
+  currentReplierName: string | null;
+  currentReplierEmail: string | null;
   leadCompanyName: string | null;
   leadCompanyWebsite: string | null;
   leadCompanyState: string | null;
@@ -834,6 +837,8 @@ function buildEmailDraftStrategyInstructions(opts: {
     opts.firstName && `First Name: ${opts.firstName}`,
     opts.lastName && `Last Name: ${opts.lastName}`,
     opts.leadEmail && `Email: ${opts.leadEmail}`,
+    (opts.currentReplierEmail || opts.currentReplierName) &&
+      `Current Replier: ${opts.currentReplierName ? `${opts.currentReplierName} <${opts.currentReplierEmail || "unknown"}>` : opts.currentReplierEmail}`,
     opts.leadCompanyName && `Lead's Company: ${opts.leadCompanyName}`,
     opts.leadCompanyWebsite && `Website: ${opts.leadCompanyWebsite}`,
     opts.leadCompanyState && `State: ${opts.leadCompanyState}`,
@@ -1056,6 +1061,9 @@ export async function generateResponseDraft(
         firstName: true,
         lastName: true,
         email: true,
+        currentReplierEmail: true,
+        currentReplierName: true,
+        currentReplierSince: true,
         companyName: true,
         companyWebsite: true,
         companyState: true,
@@ -1173,7 +1181,15 @@ export async function generateResponseDraft(
       }
     }
 
-    const firstName = lead?.firstName || "there";
+    const primaryFirstName = lead?.firstName || "there";
+    const hasCcReplier =
+      channel === "email" &&
+      !!lead.currentReplierEmail &&
+      !emailsMatch(lead.currentReplierEmail, lead.email);
+    const replierFirstName = extractFirstName(lead.currentReplierName);
+    const firstName = hasCcReplier ? (replierFirstName || "there") : primaryFirstName;
+    const currentReplierEmail = hasCcReplier ? lead.currentReplierEmail : null;
+    const currentReplierName = hasCcReplier ? lead.currentReplierName : null;
     const responseStrategy = getResponseStrategy(sentimentTag);
     const shouldConsiderScheduling = [
       "Meeting Requested",
@@ -1400,6 +1416,8 @@ export async function generateResponseDraft(
         firstName,
         lastName: lead.lastName,
         leadEmail: lead.email,
+        currentReplierName,
+        currentReplierEmail,
         leadCompanyName: lead.companyName,
         leadCompanyWebsite: lead.companyWebsite,
         leadCompanyState: lead.companyState,

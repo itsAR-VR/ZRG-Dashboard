@@ -108,6 +108,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
         scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
         validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
         sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+        recordAutoSendDecision: mock.fn(async () => undefined),
       });
 
       const result = await executeAutoSend(
@@ -146,6 +147,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
       sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     const result = await executeAutoSend(
@@ -173,6 +175,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     const approveAndSendDraftSystem = mock.fn(async () => ({ success: true, messageId: "sent-1" }));
     const scheduleDelayedAutoSend = mock.fn(async () => ({ scheduled: false as const, skipReason: "already_scheduled" }));
     const sendSlackDmByEmail = mock.fn(async (_opts: unknown) => ({ success: true }));
+    const recordAutoSendDecision = mock.fn(async () => undefined);
     const decideShouldAutoReply = mock.fn(async () => ({ shouldReply: false, reason: "no" }));
 
     const { executeAutoSend } = createAutoSendExecutor({
@@ -184,6 +187,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       scheduleDelayedAutoSend,
       validateDelayedAutoSend,
       sendSlackDmByEmail,
+      recordAutoSendDecision,
     });
 
     const result = await executeAutoSend(
@@ -199,6 +203,9 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     assert.deepEqual(approveAndSendDraftSystem.mock.calls[0]?.arguments, ["draft-1", { sentBy: "ai" }]);
     assert.equal(scheduleDelayedAutoSend.mock.calls.length, 0);
     assert.equal(sendSlackDmByEmail.mock.calls.length, 0);
+    assert.equal(recordAutoSendDecision.mock.calls.length, 1);
+    const recordArg = (recordAutoSendDecision.mock.calls as unknown[])[0] as { arguments: [{ action?: string }] };
+    assert.equal(recordArg?.arguments[0]?.action, "send_immediate");
   });
 
   it("returns error when approveAndSendDraftSystem fails", async () => {
@@ -221,6 +228,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
       sendSlackDmByEmail,
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     const result = await executeAutoSend(
@@ -260,6 +268,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       scheduleDelayedAutoSend,
       validateDelayedAutoSend,
       sendSlackDmByEmail,
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     const result = await executeAutoSend(
@@ -296,6 +305,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       scheduleDelayedAutoSend,
       validateDelayedAutoSend,
       sendSlackDmByEmail,
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     const result = await executeAutoSend(
@@ -331,6 +341,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       scheduleDelayedAutoSend,
       validateDelayedAutoSend,
       sendSlackDmByEmail,
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     const result = await executeAutoSend(
@@ -367,6 +378,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend,
       sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     const result = await executeAutoSend(
@@ -394,6 +406,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     const validateDelayedAutoSend = mock.fn(async () => ({ proceed: true }));
     const approveAndSendDraftSystem = mock.fn(async () => ({ success: true, messageId: "sent-1" }));
     const sendSlackDmByEmail = mock.fn(async (_opts: unknown) => ({ success: true }));
+    const recordAutoSendDecision = mock.fn(async () => undefined);
     const decideShouldAutoReply = mock.fn(async () => ({ shouldReply: false, reason: "no" }));
 
     const { executeAutoSend } = createAutoSendExecutor({
@@ -405,6 +418,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       scheduleDelayedAutoSend,
       validateDelayedAutoSend,
       sendSlackDmByEmail,
+      recordAutoSendDecision,
     });
 
     const result = await executeAutoSend(
@@ -416,6 +430,9 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
 
     assert.equal(result.outcome.action, "needs_review");
     assert.equal(sendSlackDmByEmail.mock.calls.length, 1);
+    assert.equal(recordAutoSendDecision.mock.calls.length, 1);
+    const recordArg = (recordAutoSendDecision.mock.calls as unknown[])[0] as { arguments: [{ action?: string }] };
+    assert.equal(recordArg?.arguments[0]?.action, "needs_review");
 
     const opts = sendSlackDmByEmail.mock.calls[0]?.arguments[0] as { blocks?: Array<{ type: string; text?: { text?: string } }> };
     const hasDraftPreviewBlock = (opts.blocks || []).some((b) => b.type === "section" && (b.text?.text || "").includes("*Draft Preview:*"));
@@ -440,6 +457,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
       sendSlackDmByEmail,
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     await executeAutoSend(
@@ -486,6 +504,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       scheduleDelayedAutoSend,
       validateDelayedAutoSend,
       sendSlackDmByEmail,
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     await executeAutoSend(
@@ -520,6 +539,7 @@ describe("executeAutoSend - LEGACY_AUTO_REPLY path", () => {
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
       sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     const result = await executeAutoSend(
@@ -552,6 +572,7 @@ describe("executeAutoSend - LEGACY_AUTO_REPLY path", () => {
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
       sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     const result = await executeAutoSend(
@@ -584,6 +605,7 @@ describe("executeAutoSend - LEGACY_AUTO_REPLY path", () => {
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
       sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
     const result = await executeAutoSend(
@@ -621,6 +643,7 @@ describe("executeAutoSend - DISABLED + debug logging", () => {
         scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
         validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
         sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+        recordAutoSendDecision: mock.fn(async () => undefined),
       });
 
       const result = await executeAutoSend(
@@ -668,6 +691,7 @@ describe("executeAutoSend - DISABLED + debug logging", () => {
         scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
         validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
         sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+        recordAutoSendDecision: mock.fn(async () => undefined),
       });
 
       const result = await executeAutoSend(

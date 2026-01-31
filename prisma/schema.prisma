@@ -427,6 +427,11 @@ model Lead {
   // Lead-provided scheduler link (Phase 52d)
   externalSchedulingLink String? @db.Text
   externalSchedulingLinkLastSeenAt DateTime?
+  // Phase 72: CC'd recipient tracking
+  alternateEmails         String[]   @default([])  // Email addresses of people who have replied to this thread
+  currentReplierEmail     String?                  // Email of most recent inbound sender (if different from lead.email)
+  currentReplierName      String?                  // Name of most recent inbound sender
+  currentReplierSince     DateTime?                // When they started being the active replier
   // Relations
   messages          Message[]
   backgroundJobs    BackgroundJob[]
@@ -448,6 +453,7 @@ model Lead {
   @@index([smsCampaignId])
   @@index([emailCampaignId])
   @@index([emailBisonLeadId])
+  @@index([alternateEmails], type: Gin)
   @@index([sentimentTag])
   @@index([email])          // For cross-channel matching
   @@index([phone])          // For cross-channel matching
@@ -815,11 +821,25 @@ model AIDraft {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Phase 70: Persist AI auto-send evaluation metadata (for dashboard visibility + filtering).
+  autoSendEvaluatedAt   DateTime?
+  autoSendConfidence    Float?
+  autoSendThreshold     Float?
+  autoSendReason        String?   @db.Text
+  autoSendAction        String?   // send_immediate | send_delayed | needs_review | skip | error
+  autoSendSlackNotified Boolean   @default(false)
+
+  // Phase 70: Slack notification tracking (for interactive button updates).
+  slackNotificationChannelId String?
+  slackNotificationMessageTs String?
+
   @@index([leadId])
   @@index([triggerMessageId])
   @@unique([triggerMessageId, channel])
   @@index([channel])
   @@index([status])
+  @@index([autoSendAction])
+  @@index([autoSendEvaluatedAt])
 }
 
 model BackgroundJob {

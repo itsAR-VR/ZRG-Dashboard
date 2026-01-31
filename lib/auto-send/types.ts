@@ -14,7 +14,14 @@ export type AutoSendOutcome =
       reason: string;
       confidence: number;
       threshold: number;
-      slackDm: { sent: boolean; skipped?: boolean; error?: string };
+      slackDm: {
+        sent: boolean;
+        skipped?: boolean;
+        error?: string;
+        // Phase 70: Include message metadata for interactive button updates
+        messageTs?: string;
+        channelId?: string;
+      };
     }
   | { action: "skip"; reason: string }
   | { action: "error"; error: string };

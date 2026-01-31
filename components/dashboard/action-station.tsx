@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input"
 import { getCalendarLinkForLead } from "@/actions/settings-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
+import { useSearchParams } from "next/navigation"
 
 interface ActionStationProps {
   conversation: Conversation | null
@@ -33,6 +34,12 @@ interface AIDraft {
   status: string
   createdAt: Date
   channel?: "sms" | "email" | "linkedin"
+  autoSendEvaluatedAt?: Date | null
+  autoSendConfidence?: number | null
+  autoSendThreshold?: number | null
+  autoSendReason?: string | null
+  autoSendAction?: string | null
+  autoSendSlackNotified?: boolean | null
 }
 
 const CHANNEL_ICONS = {
@@ -159,6 +166,8 @@ export function ActionStation({
   onReanalyzeSentiment,
   isLoadingMessages = false,
 }: ActionStationProps) {
+  const searchParams = useSearchParams()
+  const deepLinkedDraftId = searchParams.get("draftId")
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const shouldScrollRef = useRef(true)
   const prevConversationIdRef = useRef<string | null>(null)
@@ -303,11 +312,16 @@ export function ActionStation({
       
       if (result.success && result.data && result.data.length > 0) {
         const draftData = result.data as AIDraft[]
-        console.log("[ActionStation] Found drafts:", draftData.length, "First draft:", draftData[0]?.content?.substring(0, 50))
-        setDrafts(draftData)
+        // If we were deep-linked from Slack, prefer the referenced draft to avoid mismatch.
+        const preferredDrafts =
+          deepLinkedDraftId && draftData.some((draft) => draft.id === deepLinkedDraftId)
+            ? [...draftData].sort((a, b) => (a.id === deepLinkedDraftId ? -1 : b.id === deepLinkedDraftId ? 1 : 0))
+            : draftData
+        console.log("[ActionStation] Found drafts:", preferredDrafts.length, "First draft:", preferredDrafts[0]?.content?.substring(0, 50))
+        setDrafts(preferredDrafts)
         // Auto-populate the compose box with the AI draft
-        setComposeMessage(draftData[0].content)
-        setOriginalDraft(draftData[0].content)
+        setComposeMessage(preferredDrafts[0].content)
+        setOriginalDraft(preferredDrafts[0].content)
         setHasAiDraft(true)
       } else {
         // No drafts found
@@ -321,7 +335,7 @@ export function ActionStation({
     }
 
     fetchDrafts()
-  }, [conversation?.id, activeChannel])
+  }, [conversation?.id, activeChannel, deepLinkedDraftId])
 
   const handleSendMessage = async () => {
     if (!composeMessage.trim() || !conversation) return
@@ -854,6 +868,28 @@ export function ActionStation({
             )}
           </div>
         )}
+
+        {/* Phase 70: Show auto-send confidence + reasoning for drafts requiring review */}
+        {hasAiDraft && drafts[0]?.autoSendAction === "needs_review" ? (
+          <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <div className="font-medium">
+                  AI Auto-Send Needs Review
+                  {typeof drafts[0].autoSendConfidence === "number" && typeof drafts[0].autoSendThreshold === "number"
+                    ? ` — ${Math.round(drafts[0].autoSendConfidence * 100)}% (thresh ${Math.round(drafts[0].autoSendThreshold * 100)}%)`
+                    : ""}
+                </div>
+                {drafts[0].autoSendReason ? (
+                  <div className="mt-1 whitespace-pre-wrap break-words text-amber-700">
+                    {drafts[0].autoSendReason}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
         
         <div className="flex gap-2">
           <Textarea

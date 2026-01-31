@@ -94,6 +94,8 @@ interface FilterCounts {
   attention: number
   previousAttention: number
   needsRepair: number
+  aiSent: number
+  aiReview: number
 }
 
 export function Sidebar({
@@ -131,6 +133,8 @@ export function Sidebar({
           attention: result.requiresAttention,
           previousAttention: result.previouslyRequiredAttention,
           needsRepair: result.needsRepair,
+          aiSent: result.aiSent,
+          aiReview: result.aiReview,
         })
         setIsLoadingCounts(false)
       }
@@ -149,6 +153,8 @@ export function Sidebar({
   const filterItems = [
     { id: "responses", label: "All Responses", icon: MessageSquare, count: counts?.allResponses ?? 0, variant: "outline" as const },
     { id: "attention", label: "Requires Attention", icon: AlertCircle, count: counts?.attention ?? 0, variant: "destructive" as const },
+    { id: "ai_sent", label: "AI Sent", icon: Bot, count: counts?.aiSent ?? 0, variant: "outline" as const },
+    { id: "ai_review", label: "AI Needs Review", icon: FileEdit, count: counts?.aiReview ?? 0, variant: "warning" as const },
     { id: "needs_repair", label: "Needs Repair", icon: Wrench, count: counts?.needsRepair ?? 0, variant: "outline" as const },
     { id: "previous_attention", label: "Previously Required Attention", icon: FileEdit, count: counts?.previousAttention ?? 0, variant: "warning" as const },
   ]

@@ -12,6 +12,7 @@ import {
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import type { AutoSendContext, AutoSendMode, AutoSendResult } from "./types";
 import { AUTO_SEND_CONSTANTS } from "./types";
+import { recordAutoSendDecision, type AutoSendDecisionRecord } from "./record-auto-send-decision";
 
 /**
  * Check for global kill-switch. Set `AUTO_SEND_DISABLED=1` to disable all auto-send globally.
@@ -57,21 +58,42 @@ export type AutoSendDependencies = {
   scheduleDelayedAutoSend: typeof scheduleDelayedAutoSend;
   validateDelayedAutoSend: typeof validateDelayedAutoSend;
   sendSlackDmByEmail: typeof sendSlackDmByEmail;
+  recordAutoSendDecision: typeof recordAutoSendDecision;
 };
 
 export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAutoSend: (context: AutoSendContext) => Promise<AutoSendResult> } {
+  async function safeRecord(record: AutoSendDecisionRecord): Promise<void> {
+    try {
+      await deps.recordAutoSendDecision(record);
+    } catch (error) {
+      console.error("[AutoSend] Failed to persist auto-send decision", {
+        draftId: record.draftId,
+        action: record.action,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async function sendReviewNeededSlackDm(params: {
     context: AutoSendContext;
     confidence: number;
     threshold: number;
     reason: string;
-  }): Promise<{ success: boolean; skipped?: boolean; error?: string }> {
+  }): Promise<{ success: boolean; skipped?: boolean; error?: string; messageTs?: string; channelId?: string }> {
     const { context, confidence, threshold, reason } = params;
 
     const leadName = buildLeadName(context);
     const campaignLabel = buildCampaignLabel(context);
-    const url = `${deps.getPublicAppUrl()}/?view=inbox&leadId=${context.leadId}`;
+    // Deep-link to the correct workspace + lead (+ draft) to avoid Slack vs dashboard mismatches.
+    const dashboardUrl = `${deps.getPublicAppUrl()}/?view=inbox&clientId=${encodeURIComponent(context.clientId)}&leadId=${encodeURIComponent(context.leadId)}&draftId=${encodeURIComponent(context.draftId)}`;
     const confidenceText = `${confidence.toFixed(2)} < ${threshold.toFixed(2)}`;
+
+    // Phase 70: Build button action value with IDs needed for approval webhook
+    const buttonValue = JSON.stringify({
+      draftId: context.draftId,
+      leadId: context.leadId,
+      clientId: context.clientId,
+    });
 
     const blocks = [
       {
@@ -108,9 +130,25 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
             },
           ] as const)
         : ([] as const)),
+      // Phase 70: Add interactive buttons for quick actions
       {
-        type: "section",
-        text: { type: "mrkdwn", text: `<${url}|Open lead in dashboard>` },
+        type: "actions",
+        block_id: `review_actions_${context.draftId}`,
+        elements: [
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Edit in dashboard", emoji: true },
+            url: dashboardUrl,
+            action_id: "view_dashboard",
+          },
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Approve & Send", emoji: true },
+            style: "primary",
+            action_id: "approve_send",
+            value: buttonValue,
+          },
+        ],
       },
     ] as const;
 
@@ -124,6 +162,14 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
 
   async function executeAiAutoSendPath(context: AutoSendContext, startTimeMs: number): Promise<AutoSendResult> {
     if (!context.draftContent.trim()) {
+      await safeRecord({
+        draftId: context.draftId,
+        evaluatedAt: new Date(),
+        action: "skip",
+        reason: "missing_draft_content",
+        threshold: context.emailCampaign?.autoSendConfidenceThreshold ?? AUTO_SEND_CONSTANTS.DEFAULT_CONFIDENCE_THRESHOLD,
+      });
+
       return {
         mode: "AI_AUTO_SEND",
         outcome: { action: "skip", reason: "missing_draft_content" },
@@ -147,6 +193,7 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
     });
 
     const evaluationTimeMs = Date.now() - startTimeMs;
+    const evaluatedAt = new Date();
 
     if (evaluation.safeToSend && evaluation.confidence >= threshold) {
       const delayConfig = context.emailCampaign?.id ? await deps.getCampaignDelayConfig(context.emailCampaign.id) : null;
@@ -168,6 +215,16 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
             Math.round((scheduleResult.runAt.getTime() - context.messageSentAt.getTime()) / 1000)
           );
 
+          await safeRecord({
+            draftId: context.draftId,
+            evaluatedAt,
+            confidence: evaluation.confidence,
+            threshold,
+            reason: evaluation.reason,
+            action: "send_delayed",
+            slackNotified: false,
+          });
+
           return {
             mode: "AI_AUTO_SEND",
             outcome: { action: "send_delayed", draftId: context.draftId, runAt: scheduleResult.runAt },
@@ -180,6 +237,21 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
             },
           };
         }
+
+        const scheduleSkipReason = scheduleResult.skipReason || "unknown";
+        const shouldTreatAsAlreadyScheduled = scheduleSkipReason === "already_scheduled";
+
+        await safeRecord({
+          draftId: context.draftId,
+          evaluatedAt,
+          confidence: evaluation.confidence,
+          threshold,
+          reason: shouldTreatAsAlreadyScheduled
+            ? evaluation.reason
+            : `delayed_send_not_scheduled:${scheduleSkipReason}`,
+          action: shouldTreatAsAlreadyScheduled ? "send_delayed" : "skip",
+          slackNotified: false,
+        });
 
         return {
           mode: "AI_AUTO_SEND",
@@ -202,6 +274,16 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
         });
 
         if (!validation.proceed) {
+          await safeRecord({
+            draftId: context.draftId,
+            evaluatedAt,
+            confidence: evaluation.confidence,
+            threshold,
+            reason: `immediate_send_validation_failed:${validation.reason || "unknown_reason"}`,
+            action: "skip",
+            slackNotified: false,
+          });
+
           return {
             mode: "AI_AUTO_SEND",
             outcome: {
@@ -221,6 +303,16 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
 
       const sendResult = await deps.approveAndSendDraftSystem(context.draftId, { sentBy: "ai" });
       if (sendResult.success) {
+        await safeRecord({
+          draftId: context.draftId,
+          evaluatedAt,
+          confidence: evaluation.confidence,
+          threshold,
+          reason: evaluation.reason,
+          action: "send_immediate",
+          slackNotified: false,
+        });
+
         return {
           mode: "AI_AUTO_SEND",
           outcome: { action: "send_immediate", draftId: context.draftId, messageId: sendResult.messageId },
@@ -232,6 +324,16 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
           },
         };
       }
+
+      await safeRecord({
+        draftId: context.draftId,
+        evaluatedAt,
+        confidence: evaluation.confidence,
+        threshold,
+        reason: sendResult.error || "Failed to send draft",
+        action: "error",
+        slackNotified: false,
+      });
 
       return {
         mode: "AI_AUTO_SEND",
@@ -252,6 +354,19 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
       reason: evaluation.reason,
     });
 
+    await safeRecord({
+      draftId: context.draftId,
+      evaluatedAt,
+      confidence: evaluation.confidence,
+      threshold,
+      reason: evaluation.reason,
+      action: "needs_review",
+      slackNotified: dmResult.success,
+      // Phase 70: Persist Slack message metadata for interactive button updates
+      slackNotificationChannelId: dmResult.channelId,
+      slackNotificationMessageTs: dmResult.messageTs,
+    });
+
     return {
       mode: "AI_AUTO_SEND",
       outcome: {
@@ -260,7 +375,14 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
         reason: evaluation.reason,
         confidence: evaluation.confidence,
         threshold,
-        slackDm: { sent: dmResult.success, skipped: dmResult.skipped, error: dmResult.error },
+        slackDm: {
+          sent: dmResult.success,
+          skipped: dmResult.skipped,
+          error: dmResult.error,
+          // Phase 70: Include message metadata in result for testing/debugging
+          messageTs: dmResult.messageTs,
+          channelId: dmResult.channelId,
+        },
       },
       telemetry: {
         path: "campaign_ai_auto_send",
@@ -384,6 +506,7 @@ const defaultExecutor = createAutoSendExecutor({
   scheduleDelayedAutoSend,
   validateDelayedAutoSend,
   sendSlackDmByEmail,
+  recordAutoSendDecision,
 });
 
 export const executeAutoSend = defaultExecutor.executeAutoSend;

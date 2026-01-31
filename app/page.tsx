@@ -32,7 +32,12 @@ function DashboardPageInner() {
   const [activeView, setActiveView] = useState<ViewType>("inbox")
   const [activeChannels, setActiveChannels] = useState<Channel[]>([])
   const [activeFilter, setActiveFilter] = useState("")
-  const [activeWorkspace, setActiveWorkspace] = useState<string | null>(null)
+  // If a deep-link includes clientId, initialize the workspace immediately so the inbox
+  // doesn't briefly load "All Workspaces" (which can be slow and can lose lead selection).
+  const [activeWorkspace, setActiveWorkspace] = useState<string | null>(() => {
+    const clientIdParam = searchParams.get("clientId")
+    return clientIdParam ? clientIdParam : null
+  })
   const [workspaces, setWorkspaces] = useState<Client[]>([])
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const [settingsTab, setSettingsTab] = useState("general")
@@ -77,6 +82,7 @@ function DashboardPageInner() {
     const params = new URLSearchParams(searchParamsKey)
     const viewParam = params.get("view")
     const leadIdParam = params.get("leadId")
+    const clientIdParam = params.get("clientId")
     const settingsTabParam = params.get("settingsTab")
 
     if (leadIdParam) {
@@ -84,14 +90,20 @@ function DashboardPageInner() {
       setActiveView("inbox")
       setSelectedLeadId(leadIdParam)
 
-      // Ensure the correct workspace is selected so the inbox list isn't empty
-      getLeadWorkspaceId(leadIdParam)
-        .then((result) => {
-          if (result.success && result.workspaceId) {
-            setActiveWorkspace(result.workspaceId)
-          }
-        })
-        .catch(() => undefined)
+      // Prefer explicit workspace selection from the deep-link.
+      if (clientIdParam) {
+        setActiveWorkspace(clientIdParam)
+      } else {
+        // Back-compat: resolve the workspace from the leadId.
+        // This prevents landing in the wrong workspace for older links.
+        getLeadWorkspaceId(leadIdParam)
+          .then((result) => {
+            if (result.success && result.workspaceId) {
+              setActiveWorkspace(result.workspaceId)
+            }
+          })
+          .catch(() => undefined)
+      }
 
       return
     }
