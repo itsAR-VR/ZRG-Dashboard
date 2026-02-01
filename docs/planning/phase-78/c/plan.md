@@ -25,5 +25,14 @@ Ensure transient platform connectivity issues and external dependency failures d
 
 ## Handoff
 
-Phase 78d introduces Prisma migrations to remove the root schema drift cause across prod + preview.
+Phase 78d documents `db:push` workflow for prod + preview.
 
+## Review Notes
+
+- Evidence:
+  - `app/api/cron/insights/booked-summaries/route.ts:36-40` implements retry loop with delays [0, 250, 1000]ms
+  - `app/api/cron/insights/booked-summaries/route.ts:178-183` detects transient errors (connection reset, timeout)
+  - `app/api/cron/insights/booked-summaries/route.ts:192-202` returns 200 with `{ success: false, errors }`
+  - `app/api/cron/emailbison/availability-slot/route.ts:43-55` wraps in try/catch, returns 200 with structured error
+- Deviations: None
+- Follow-ups: None

@@ -31,3 +31,8 @@ Confirm the exact error signatures and which handlers/functions are responsible 
 
 Phase 78b implements schema compatibility gating for the core paths using the verified field requirements from this subphase.
 
+## Review Notes
+
+- Evidence: Error signatures analyzed from `logs_result.json`; P2022 errors confirmed in followups/email routes, transient errors in insights/emailbison routes
+- Deviations: None
+- Follow-ups: None

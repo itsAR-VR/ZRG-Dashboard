@@ -30,5 +30,14 @@ Prevent noisy Prisma P2022 failures during schema drift windows by adding explic
 
 ## Handoff
 
-Phase 78c uses the same “never throw out of handler” pattern to harden non-critical cron routes.
+Phase 78c uses the same "never throw out of handler" pattern to harden non-critical cron routes.
 
+## Review Notes
+
+- Evidence:
+  - `lib/db-schema-compat.ts` created with `getDbSchemaMissingColumnsForModels()`, `isPrismaMissingTableOrColumnError()`
+  - `app/api/cron/followups/route.ts:17-27` defines `CORE_MODELS_FOR_FOLLOWUPS_CRON`
+  - `app/api/cron/followups/route.ts:29-52` implements `schemaOutOfDateResponse()` returning 503 with `Retry-After`
+  - `app/api/webhooks/email/route.ts` imports schema compat utilities
+- Deviations: None
+- Follow-ups: None

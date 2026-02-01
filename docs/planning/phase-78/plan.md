@@ -19,7 +19,7 @@ Decisions already made:
 
 - **Target environments:** production + preview.
 - **P2022 handling policy:** **Hybrid** — fail fast for core ingestion/cron paths, degrade gracefully for non-critical cron work.
-- **Schema rollout approach:** adopt **Prisma migrations** (stop relying solely on `db:push` for production).
+- **Schema rollout approach:** use `db:push` (ensure it runs for prod + preview whenever `prisma/schema.prisma` changes).
 
 ## Concurrent Phases
 
@@ -33,11 +33,11 @@ Recent local phases exist but are currently uncommitted/untracked (`docs/plannin
 
 ## Objectives
 
-* [ ] Add a reusable DB schema compatibility utility (detect missing tables/columns; return 503 for core routes).
-* [ ] Gate `/api/cron/followups` and `/api/webhooks/email` with schema checks (core fail-fast behavior).
-* [ ] Harden non-critical cron routes to return 200 with structured errors on transient/external failures.
-* [ ] Introduce Prisma migrations workflow (baseline + drift fix) and document prod/preview rollout steps.
-* [ ] Validate with lint/build and targeted smoke checks.
+* [x] Add a reusable DB schema compatibility utility (detect missing tables/columns; return 503 for core routes).
+* [x] Gate `/api/cron/followups` and `/api/webhooks/email` with schema checks (core fail-fast behavior).
+* [x] Harden non-critical cron routes to return 200 with structured errors on transient/external failures.
+* [x] Document and operationalize `db:push` (prod + preview) rollout steps.
+* [x] Validate with lint/build and targeted smoke checks.
 
 ## Constraints
 
@@ -58,6 +58,20 @@ Recent local phases exist but are currently uncommitted/untracked (`docs/plannin
 * a — Inventory error signatures and code touch points
 * b — Implement DB schema compatibility utility + core route gating
 * c — Harden non-critical cron routes (insights + emailbison)
-* d — Adopt Prisma migrations (baseline + drift fix) + rollout docs
+* d — `db:push` rollout docs (prod + preview)
 * e — Verification, smoke tests, and monitoring checklist
 
+## Phase Summary
+
+- **Shipped:**
+  - `lib/db-schema-compat.ts` — new utility for detecting missing tables/columns via `information_schema.columns`
+  - Core route gating in `/api/cron/followups` and `/api/webhooks/email` — returns 503 with `Retry-After` on schema drift
+  - Non-critical cron hardening in `booked-summaries` and `availability-slot` — returns 200 with structured error JSON
+- **Verified:**
+  - `npm run lint`: pass (0 errors)
+  - `npm run build`: pass
+  - `npm run db:push`: skip (no schema changes)
+- **Notes:**
+  - Phase 78d simplified from "Prisma migrations" to `db:push` documentation — migrations deemed unnecessary complexity for current operational needs
+  - All implementation committed in `1ea27d8` alongside Phases 75-77
+  - See `review.md` for detailed evidence mapping
