@@ -29,6 +29,7 @@ import { enforceCanonicalBookingLink, replaceEmDashesWithCommaSpace } from "@/li
 import { getBookingProcessInstructions } from "@/lib/booking-process-instructions";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
+import { extractImportantEmailSignatureContext, type EmailSignatureContextExtraction } from "@/lib/email-signature-context";
 import { emailsMatch, extractFirstName } from "@/lib/email-participants";
 import type { AvailabilitySource } from "@prisma/client";
 
@@ -276,7 +277,7 @@ async function runEmailDraftVerificationStep3(opts: {
       schema: EMAIL_DRAFT_VERIFY_STEP3_JSON_SCHEMA,
       attempts: [1400],
       budget: { min: 1400, max: 1400 },
-      timeoutMs: Math.max(2500, opts.timeoutMs),
+      timeoutMs: Math.max(5000, opts.timeoutMs),
       maxRetries: 0,
       resolved: {
         system: instructions,
@@ -798,6 +799,41 @@ interface EmailDraftStrategy {
   recommended_archetype_id: string | null;
 }
 
+function formatEmailSignatureContextForPrompt(ctx: EmailSignatureContextExtraction): string {
+  const lines: string[] = [];
+
+  if (ctx.importantLines.length > 0) {
+    lines.push(...ctx.importantLines.slice(0, 10));
+  }
+
+  const kv: string[] = [];
+  if (ctx.name) kv.push(`Name: ${ctx.name}`);
+  if (ctx.title) kv.push(`Title: ${ctx.title}`);
+  if (ctx.company) kv.push(`Company: ${ctx.company}`);
+  if (ctx.email) kv.push(`Email: ${ctx.email}`);
+  if (ctx.phone) kv.push(`Phone: ${ctx.phone}`);
+  if (ctx.linkedinUrl) kv.push(`LinkedIn: ${ctx.linkedinUrl}`);
+
+  if (kv.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(...kv);
+  }
+
+  if (ctx.schedulingLinks.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Scheduling links:");
+    lines.push(...ctx.schedulingLinks.slice(0, 5).map((u) => `- ${u}`));
+  }
+
+  if (ctx.otherLinks.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push("Other links:");
+    lines.push(...ctx.otherLinks.slice(0, 10).map((u) => `- ${u}`));
+  }
+
+  return lines.join("\n").trim();
+}
+
 /**
  * Build the Step 1 (Strategy) system instructions.
  * Analyzes lead context and outputs a structured strategy JSON.
@@ -832,6 +868,8 @@ function buildEmailDraftStrategyInstructions(opts: {
   archetype: EmailDraftArchetype | null;
   /** When true, AI should select the best archetype based on context */
   shouldSelectArchetype: boolean;
+  /** Important signature/footer context extracted from the trigger email (optional) */
+  signatureContext: string | null;
 }): string {
   const leadContext = [
     opts.firstName && `First Name: ${opts.firstName}`,
@@ -846,6 +884,10 @@ function buildEmailDraftStrategyInstructions(opts: {
     opts.leadEmployeeHeadcount && `Company Size: ${opts.leadEmployeeHeadcount}`,
     opts.leadLinkedinUrl && `LinkedIn: ${opts.leadLinkedinUrl}`,
   ].filter(Boolean).join("\n");
+
+  const signatureContextSection = opts.signatureContext
+    ? `\nTRIGGER EMAIL SIGNATURE/FOOTER (EXTRACTED — IMPORTANT CONTEXT):\n${opts.signatureContext}\nIMPORTANT: If a scheduling link is present above, do NOT claim it "didn't come through" or "wasn't received".`
+    : "";
 
   const availabilitySection = opts.availability.length > 0
     ? `\nAVAILABLE TIMES (use verbatim if scheduling):\n${opts.availability.map(s => `- ${s}`).join("\n")}`
@@ -889,6 +931,8 @@ CONTEXT:
 LEAD INFORMATION:
 ${leadContext || "No additional lead information available."}
 
+${signatureContextSection}
+
 ${opts.serviceDescription ? `OUR OFFER:\n${opts.serviceDescription}\n` : ""}
 ${opts.aiGoals ? `GOALS/STRATEGY:\n${opts.aiGoals}\n` : ""}
 ${qualificationSection}${knowledgeSection}${availabilitySection}
@@ -918,6 +962,8 @@ function buildEmailDraftGenerationInstructions(opts: {
   aiGreeting: string;
   firstName: string;
   signature: string | null;
+  /** Important signature/footer context extracted from the trigger email (optional) */
+  signatureContext: string | null;
   ourCompanyName: string | null;
   sentimentTag: string;
   strategy: EmailDraftStrategy;
@@ -944,6 +990,10 @@ ${opts.strategy.should_offer_times && opts.strategy.times_to_offer?.length
 MUST AVOID:
 ${opts.strategy.must_avoid.length > 0 ? opts.strategy.must_avoid.map(a => `- ${a}`).join("\n") : "- No specific avoidances identified."}`;
 
+  const signatureContextSection = opts.signatureContext
+    ? `\nTRIGGER EMAIL SIGNATURE/FOOTER (EXTRACTED — IMPORTANT CONTEXT):\n${opts.signatureContext}\nIMPORTANT: If a scheduling link is present above, do NOT claim it "didn't come through" or "wasn't received".`
+    : "";
+
   // Use workspace-specific forbidden terms if provided, otherwise default (Phase 47e)
   const forbiddenTermsList = opts.forbiddenTerms ?? EMAIL_FORBIDDEN_TERMS;
   const forbiddenTerms = forbiddenTermsList.slice(0, 30).join(", ");
@@ -962,6 +1012,8 @@ STRUCTURE ARCHETYPE: "${opts.archetype.name}"
 ${opts.archetype.instructions}
 
 ${strategySection}
+
+${signatureContextSection}
 
 OUTPUT RULES:
 - Do not include a subject line.
@@ -1218,7 +1270,7 @@ export async function generateResponseDraft(
           const offeredAt = new Date(offeredAtIso);
           const tzResult = await ensureLeadTimezone(leadId);
           const timeZone = tzResult.timezone || settings?.timezone || "UTC";
-          const mode = tzResult.source === "workspace_fallback" ? "explicit_tz" : "your_time";
+          const mode = "explicit_tz"; // Always show explicit timezone (e.g., "EST", "PST")
 
           const existingOffered = new Set<string>();
           if (lead.offeredSlots) {
@@ -1402,6 +1454,36 @@ export async function generateResponseDraft(
       // Track the final archetype (will be set after strategy for initial drafts)
       let archetype: EmailDraftArchetype | null = preSelectedArchetype;
 
+      // ---------------------------------------------------------------------------
+      // Trigger email signature/footer context (Phase 76)
+      // ---------------------------------------------------------------------------
+      let signatureContextForPrompt: string | null = null;
+      if (triggerMessageId) {
+        try {
+          const triggerMessage = await prisma.message.findUnique({
+            where: { id: triggerMessageId },
+            select: { rawText: true, rawHtml: true },
+          });
+
+          const expectedSignatureName = currentReplierName || [lead.firstName, lead.lastName].filter(Boolean).join(" ") || null;
+          const expectedSignatureEmail = currentReplierEmail || lead.email || null;
+
+          const signatureContext = await extractImportantEmailSignatureContext({
+            clientId: lead.clientId,
+            leadId,
+            leadName: expectedSignatureName,
+            leadEmail: expectedSignatureEmail,
+            rawText: triggerMessage?.rawText ?? null,
+            rawHtml: triggerMessage?.rawHtml ?? null,
+            timeoutMs: Math.min(4500, Math.max(1000, Math.floor(timeoutMs * 0.15))),
+          });
+
+          signatureContextForPrompt = signatureContext ? formatEmailSignatureContextForPrompt(signatureContext) : null;
+        } catch (error) {
+          console.warn("[AI Drafts] Failed to extract signature/footer context for prompt:", error);
+        }
+      }
+
 	      // Split timeout: ~40% for strategy, ~60% for generation
 	      const strategyTimeoutMs = Math.max(3000, Math.floor(timeoutMs * 0.4));
 	      const generationTimeoutMs = Math.max(3000, timeoutMs - strategyTimeoutMs);
@@ -1434,6 +1516,7 @@ export async function generateResponseDraft(
         availability,
         archetype: preSelectedArchetype,
         shouldSelectArchetype,
+        signatureContext: signatureContextForPrompt,
       });
 
       // Append booking process instructions if available (Phase 36)
@@ -1457,7 +1540,7 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
       );
       const strategyBaseMaxOutputTokens = Math.max(
         500,
-        Number.parseInt(process.env.OPENAI_EMAIL_STRATEGY_BASE_MAX_OUTPUT_TOKENS || "2000", 10) || 2000
+        Number.parseInt(process.env.OPENAI_EMAIL_STRATEGY_BASE_MAX_OUTPUT_TOKENS || "5000", 10) || 5000
       );
       const strategyMaxOutputTokensCap = Math.max(
         strategyBaseMaxOutputTokens,
@@ -1597,6 +1680,7 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
 	          aiGreeting,
 	          firstName,
 	          signature: aiSignature || null,
+	          signatureContext: signatureContextForPrompt,
 	          ourCompanyName: companyName,
 	          sentimentTag,
 	          strategy,

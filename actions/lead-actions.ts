@@ -217,6 +217,70 @@ function htmlToPlainTextForDisplay(html: string): string {
   return decoded.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function stripTrailingUrlPunctuation(url: string): string {
+  return url.replace(/[),.;:\]\}]+$/g, "");
+}
+
+function normalizeUrlCandidate(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  const cleaned = stripTrailingUrlPunctuation(trimmed);
+  const withScheme = cleaned.startsWith("http://") || cleaned.startsWith("https://") ? cleaned : cleaned.startsWith("www.") ? `https://${cleaned}` : null;
+  if (!withScheme) return null;
+
+  try {
+    const url = new URL(withScheme);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function extractHttpLinksFromEmailHtml(rawHtml: string): Array<{ href: string; label: string }> {
+  const html = rawHtml || "";
+  if (!html || !/<a\b/i.test(html)) return [];
+
+  // Hard cap: avoid pathological payload sizes in the inbox fetch path.
+  const capped = html.length > 80_000 ? html.slice(0, 80_000) : html;
+
+  const out: Array<{ href: string; label: string }> = [];
+  const seen = new Set<string>();
+
+  const anchorRegex =
+    /<a\b[^>]*href\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))[^>]*>([\s\S]*?)<\/a>/gi;
+
+  for (const match of capped.matchAll(anchorRegex)) {
+    const hrefRaw = decodeBasicHtmlEntities(String(match[1] || match[2] || match[3] || ""));
+    const normalizedHref = normalizeUrlCandidate(hrefRaw);
+    if (!normalizedHref) continue;
+    if (seen.has(normalizedHref)) continue;
+
+    const innerRaw = String(match[4] || "");
+    const label = decodeBasicHtmlEntities(innerRaw.replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim();
+    const safeLabel = (label || normalizedHref).slice(0, 120);
+
+    seen.add(normalizedHref);
+    out.push({ href: normalizedHref, label: safeLabel });
+    if (out.length >= 10) break;
+  }
+
+  return out;
+}
+
+function enhanceEmailBodyWithLinkTargets(body: string, rawHtml?: string | null): string {
+  const base = body || "";
+  const links = rawHtml ? extractHttpLinksFromEmailHtml(rawHtml) : [];
+  if (links.length === 0) return base;
+
+  const missing = links.filter((l) => !base.includes(l.href));
+  if (missing.length === 0) return base;
+
+  const lines = missing.slice(0, 10).map((l) => `- [${l.label}](${l.href})`);
+  return `${base.trim() ? base + "\n\n" : ""}Links:\n${lines.join("\n")}`;
+}
+
 function toPlainTextIfHtml(input: string | null | undefined): string {
   const value = input ?? "";
   if (!value) return "";
@@ -836,26 +900,32 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
         availableChannels,
         primaryChannel,
         viewerRole,
-        messages: lead.messages.map((msg) => ({
-          id: msg.id,
-          sender: toUiSender(msg),
-          content: toPlainTextIfHtml(msg.body),
-          subject: msg.subject || undefined,
-          rawHtml: msg.rawHtml || undefined,
-          rawText: msg.rawText || undefined,
-          cc: msg.cc,
-          bcc: msg.bcc,
-          source: msg.source || undefined,
-          // Phase 50: Email participant metadata
-          fromEmail: msg.fromEmail || undefined,
-          fromName: msg.fromName ?? null,
-          toEmail: msg.toEmail || undefined,
-          toName: msg.toName ?? null,
-          emailBisonReplyId: msg.emailBisonReplyId || undefined,
-          channel: (msg.channel || "sms") as Channel,
-          direction: msg.direction as "inbound" | "outbound",
-          timestamp: msg.sentAt, // Use sentAt for actual message time
-        })),
+        messages: lead.messages.map((msg) => {
+          const isEmailMessage = msg.channel === "email" || !!msg.subject || !!msg.rawHtml || !!msg.emailBisonReplyId;
+          const baseContent = toPlainTextIfHtml(msg.body);
+          const content = isEmailMessage ? enhanceEmailBodyWithLinkTargets(baseContent, msg.rawHtml) : baseContent;
+
+          return {
+            id: msg.id,
+            sender: toUiSender(msg),
+            content,
+            subject: msg.subject || undefined,
+            rawHtml: msg.rawHtml || undefined,
+            rawText: msg.rawText || undefined,
+            cc: msg.cc,
+            bcc: msg.bcc,
+            source: msg.source || undefined,
+            // Phase 50: Email participant metadata
+            fromEmail: msg.fromEmail || undefined,
+            fromName: msg.fromName ?? null,
+            toEmail: msg.toEmail || undefined,
+            toName: msg.toName ?? null,
+            emailBisonReplyId: msg.emailBisonReplyId || undefined,
+            channel: (msg.channel || "sms") as Channel,
+            direction: msg.direction as "inbound" | "outbound",
+            timestamp: msg.sentAt, // Use sentAt for actual message time
+          };
+        }),
       },
     };
   } catch (error) {

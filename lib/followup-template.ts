@@ -164,7 +164,15 @@ export function renderFollowUpTemplateStrict(opts: {
     const definition = TOKEN_DEFINITION_BY_TOKEN.get(token);
     if (!definition) continue;
     const value = opts.values[definition.valueKey];
-    output = output.split(token).join(String(value));
+    // Re-validate before rendering: fail-fast if value is not a non-empty string
+    // (guards against mutation between validation and rendering phases)
+    if (!isNonEmptyString(value)) {
+      throw new Error(
+        `[followup-template] Invariant violation: value for ${token} became invalid after validation. ` +
+          `Expected non-empty string, got: ${typeof value === "string" ? `"${value}"` : String(value)}`
+      );
+    }
+    output = output.split(token).join(value);
   }
 
   return { ok: true, output, usedTokens };

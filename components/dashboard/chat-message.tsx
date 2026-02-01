@@ -9,6 +9,41 @@ import { useState } from "react"
 import { safeLinkifiedHtmlFromText } from "@/lib/safe-html"
 import { formatEmailParticipant } from "@/lib/email-participants"
 
+function decodeBasicHtmlEntities(input: string): string {
+  return input
+    .replaceAll("&nbsp;", " ")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replaceAll("&#x27;", "'");
+}
+
+function htmlToPlainTextPreservingAnchorHrefs(html: string): string {
+  const withoutScripts = (html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, "")
+
+  const anchorsPreserved = withoutScripts.replace(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_m, href, inner) => {
+    const label = decodeBasicHtmlEntities(String(inner || "").replace(/<[^>]+>/g, "")).replace(/\s+/g, " ").trim()
+    const hrefText = decodeBasicHtmlEntities(String(href || "")).trim()
+    if (!hrefText) return label || ""
+    return label ? `${label} (${hrefText})` : hrefText
+  })
+
+  const withBreaks = anchorsPreserved
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/div>/gi, "\n")
+
+  const noTags = withBreaks.replace(/<[^>]+>/g, "")
+  const decoded = decodeBasicHtmlEntities(noTags)
+
+  return decoded.replace(/\n{3,}/g, "\n\n").trim()
+}
+
 interface ChatMessageProps {
   message: Message
   leadName?: string
@@ -118,6 +153,12 @@ export function ChatMessage({ message, leadName, leadEmail, userName = "You", us
       .slice(0, 2)
   }
 
+  const originalText = message.rawText
+    ? message.rawText
+    : message.rawHtml
+      ? htmlToPlainTextPreservingAnchorHrefs(message.rawHtml)
+      : ""
+
   return (
     <div className={cn("flex gap-3", isRight && "flex-row-reverse")}>
       <Avatar className={cn("h-8 w-8 shrink-0", !userAvatar && config.avatarClass)}>
@@ -149,7 +190,7 @@ export function ChatMessage({ message, leadName, leadEmail, userName = "You", us
           )}
           {showOriginal && (message.rawHtml || message.rawText) ? (
             <pre className="text-xs text-muted-foreground whitespace-pre-wrap max-h-64 overflow-auto">
-              {message.rawHtml || message.rawText}
+              {originalText}
             </pre>
           ) : (
             <div

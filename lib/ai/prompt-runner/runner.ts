@@ -10,6 +10,72 @@ import { categorizePromptRunnerError } from "@/lib/ai/prompt-runner/errors";
 import { resolvePromptTemplate } from "@/lib/ai/prompt-runner/resolve";
 import type { PromptRunnerError, PromptRunnerResult, StructuredJsonPromptParams, TextPromptParams } from "@/lib/ai/prompt-runner/types";
 
+function coerceMaxAttempts(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : null;
+  if (typeof parsed === "number") return Math.max(1, Math.min(10, parsed));
+  return fallback;
+}
+
+function getDefaultMaxAttempts(): number {
+  const parsed = Number.parseInt(process.env.OPENAI_PROMPT_MAX_ATTEMPTS || "2", 10);
+  if (Number.isFinite(parsed) && parsed > 0) return Math.max(1, Math.min(10, parsed));
+  return 2;
+}
+
+function coerceRetryMultiplier(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof parsed === "number" && parsed > 1) return Math.max(1.01, Math.min(3, parsed));
+  return fallback;
+}
+
+function getDefaultRetryMultiplier(): number {
+  const parsed = Number.parseFloat(process.env.OPENAI_RETRY_OUTPUT_TOKENS_MULTIPLIER || "1.2");
+  if (Number.isFinite(parsed) && parsed > 1) return Math.max(1.01, Math.min(3, parsed));
+  return 1.2;
+}
+
+function expandAttemptsWithMultiplier(opts: {
+  attempts: number[];
+  maxAttempts: number;
+  multiplier: number;
+  cap: number;
+}): number[] {
+  const out = [...opts.attempts];
+  while (out.length < opts.maxAttempts) {
+    const prev = out[out.length - 1] ?? 0;
+    const nextRaw = Math.ceil(prev * opts.multiplier);
+    const next = Math.min(opts.cap, Math.max(prev + 1, nextRaw));
+    if (!Number.isFinite(next) || next <= prev) break;
+    out.push(next);
+  }
+  return out;
+}
+
+function resolveTemperatureAndReasoning(opts: {
+  model: string;
+  temperature: number | null;
+  reasoningEffort: StructuredJsonPromptParams<unknown>["reasoningEffort"] | null;
+}): {
+  temperature?: number;
+  reasoning?: { effort: NonNullable<StructuredJsonPromptParams<unknown>["reasoningEffort"]> };
+} {
+  const hasTemperature = typeof opts.temperature === "number" && Number.isFinite(opts.temperature);
+  if (hasTemperature) {
+    // OpenAI model compatibility: temperature requires reasoning effort = "none" on gpt-5.2.
+    if (opts.model === "gpt-5.2") {
+      return { temperature: opts.temperature!, reasoning: { effort: "none" } };
+    }
+    // For other models, omit reasoning to preserve temperature controls when supported.
+    return { temperature: opts.temperature! };
+  }
+
+  if (opts.reasoningEffort) {
+    return { reasoning: { effort: opts.reasoningEffort } };
+  }
+
+  return {};
+}
+
 function buildTelemetryBase(opts: {
   traceId?: string;
   parentSpanId?: string | null;
@@ -65,7 +131,25 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
   const featureId = resolved.featureId;
   const promptKeyForTelemetry = resolved.promptKeyForTelemetry;
 
-  const attempts: number[] = Array.isArray(params.attempts) && params.attempts.length > 0 ? normalizeAttempts(params.attempts) : [];
+  const seedAttempts: number[] = Array.isArray(params.attempts) && params.attempts.length > 0 ? normalizeAttempts(params.attempts) : [];
+
+  const envMaxAttempts = getDefaultMaxAttempts();
+  const maxAttempts = coerceMaxAttempts(params.maxAttempts, Math.max(seedAttempts.length, envMaxAttempts));
+  const multiplier = coerceRetryMultiplier(params.retryOutputTokensMultiplier, getDefaultRetryMultiplier());
+
+  const cap = (() => {
+    const retryMax =
+      typeof params.budget.retryMax === "number" && Number.isFinite(params.budget.retryMax)
+        ? Math.max(1, Math.trunc(params.budget.retryMax))
+        : null;
+    if (retryMax) return retryMax;
+
+    const baseMax =
+      typeof params.budget.max === "number" && Number.isFinite(params.budget.max) ? Math.max(1, Math.trunc(params.budget.max)) : 800;
+    return Math.ceil(baseMax * Math.pow(multiplier, Math.max(0, maxAttempts - 1)));
+  })();
+
+  const attempts: number[] = [...seedAttempts];
 
   if (attempts.length === 0) {
     const budget = await computeAdaptiveMaxOutputTokens({
@@ -80,33 +164,29 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
     });
 
     attempts.push(budget.maxOutputTokens);
-
-    const retryMax =
-      typeof params.budget.retryMax === "number" && Number.isFinite(params.budget.retryMax) ? Math.trunc(params.budget.retryMax) : null;
-    if (retryMax && retryMax > budget.maxOutputTokens) {
-      const retryMinBase =
-        typeof params.budget.retryMinBaseTokens === "number" && Number.isFinite(params.budget.retryMinBaseTokens)
-          ? Math.max(1, Math.trunc(params.budget.retryMinBaseTokens))
-          : 512;
-      const retryExtra =
-        typeof params.budget.retryExtraTokens === "number" && Number.isFinite(params.budget.retryExtraTokens)
-          ? Math.max(0, Math.trunc(params.budget.retryExtraTokens))
-          : 400;
-      const retryBudgetBase = Math.max(budget.maxOutputTokens, retryMinBase);
-      const retryTokens = Math.min(retryBudgetBase + retryExtra, retryMax);
-      if (retryTokens > budget.maxOutputTokens) {
-        attempts.push(retryTokens);
-      }
-    }
   }
+
+  // Auto-expand attempts with a percentage-based increase (default +20%).
+  const expandedAttempts = expandAttemptsWithMultiplier({
+    attempts,
+    maxAttempts: Math.max(attempts.length, maxAttempts),
+    multiplier,
+    cap: Math.max(cap, ...attempts),
+  });
+
+  const samplingAndReasoning = resolveTemperatureAndReasoning({
+    model: params.model,
+    temperature: typeof params.temperature === "number" && Number.isFinite(params.temperature) ? params.temperature : null,
+    reasoningEffort: params.reasoningEffort ?? null,
+  });
 
   let lastInteractionId: string | null = null;
   let lastError: { category: "parse_error" | "schema_violation" | "incomplete_output"; message: string; raw?: string } | null = null;
   let lastRaw: string | null = null;
   let lastRequestError: ReturnType<typeof categorizePromptRunnerError> | null = null;
 
-  for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
-    const maxOutputTokens = attempts[attemptIndex]!;
+  for (let attemptIndex = 0; attemptIndex < expandedAttempts.length; attemptIndex++) {
+    const maxOutputTokens = expandedAttempts[attemptIndex]!;
     const attemptSuffix = attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`;
 
     try {
@@ -118,8 +198,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
         promptKey: promptKeyForTelemetry + attemptSuffix,
         params: {
           model: params.model,
-          ...(typeof params.temperature === "number" && Number.isFinite(params.temperature) ? { temperature: params.temperature } : {}),
-          ...(params.reasoningEffort ? { reasoning: { effort: params.reasoningEffort } } : {}),
+          ...samplingAndReasoning,
           max_output_tokens: maxOutputTokens,
           instructions: system,
           text: {
@@ -156,7 +235,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
         const details = summarizeResponseForTelemetry(response);
         const message = `Post-process error: hit max_output_tokens${details ? ` (${details})` : ""}`;
         lastError = { category: "incomplete_output", message, ...(text ? { raw: text } : {}) };
-        if (attemptIndex < attempts.length - 1) {
+        if (attemptIndex < expandedAttempts.length - 1) {
           continue;
         }
         break;
@@ -165,7 +244,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
         const details = summarizeResponseForTelemetry(response);
         const message = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
         lastError = { category: "incomplete_output", message };
-        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < attempts.length - 1) {
+        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < expandedAttempts.length - 1) {
           continue;
         }
         break;
@@ -182,7 +261,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
           details ? ` (${details})` : ""
         }`;
         lastError = { category: "parse_error", message: msg, raw: text };
-        if (attemptIndex < attempts.length - 1) {
+        if (attemptIndex < expandedAttempts.length - 1) {
           continue;
         }
         break;
@@ -193,7 +272,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
         if (!validated.success) {
           const msg = `Post-process error: schema violation (${validated.error})`;
           lastError = { category: "schema_violation", message: msg, raw: text };
-          if (attemptIndex < attempts.length - 1) {
+          if (attemptIndex < expandedAttempts.length - 1) {
             continue;
           }
           break;
@@ -234,7 +313,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
     } catch (error) {
       const categorized = categorizePromptRunnerError(error);
       lastRequestError = categorized;
-      if (attemptIndex < attempts.length - 1) {
+      if (attemptIndex < expandedAttempts.length - 1) {
         continue;
       }
 
@@ -280,7 +359,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
       featureId: params.featureId || featureId,
       model: params.model,
       pattern: "structured_json",
-      attemptCount: attempts.length,
+      attemptCount: expandedAttempts.length,
     }),
   };
 }
@@ -321,6 +400,40 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
     ? normalizeAttempts(params.attempts)
     : [fallbackMaxOutputTokens];
 
+  const envMaxAttempts = getDefaultMaxAttempts();
+  const maxAttempts = coerceMaxAttempts(params.maxAttempts, Math.max(attempts.length, envMaxAttempts));
+  const multiplier = coerceRetryMultiplier(params.retryOutputTokensMultiplier, getDefaultRetryMultiplier());
+  const cap = (() => {
+    if (params.budget) {
+      const retryMax =
+        typeof params.budget.retryMax === "number" && Number.isFinite(params.budget.retryMax)
+          ? Math.max(1, Math.trunc(params.budget.retryMax))
+          : null;
+      if (retryMax) return retryMax;
+
+      const baseMax =
+        typeof params.budget.max === "number" && Number.isFinite(params.budget.max)
+          ? Math.max(1, Math.trunc(params.budget.max))
+          : fallbackMaxOutputTokens;
+      return Math.ceil(baseMax * Math.pow(multiplier, Math.max(0, maxAttempts - 1)));
+    }
+
+    const baseMax =
+      typeof params.maxOutputTokens === "number" && Number.isFinite(params.maxOutputTokens)
+        ? Math.max(1, Math.trunc(params.maxOutputTokens))
+        : fallbackMaxOutputTokens;
+    return Math.ceil(baseMax * Math.pow(multiplier, Math.max(0, maxAttempts - 1)));
+  })();
+
+  const expandedAttempts = expandAttemptsWithMultiplier({
+    attempts,
+    maxAttempts: Math.max(attempts.length, maxAttempts),
+    multiplier,
+    cap: Math.max(cap, ...attempts),
+  });
+
+  const temperature = typeof params.temperature === "number" && Number.isFinite(params.temperature) ? params.temperature : null;
+
   const retryOn = Array.isArray(params.retryOn) && params.retryOn.length
     ? new Set(params.retryOn)
     : new Set<PromptRunnerError["category"]>(["timeout", "rate_limit", "api_error"]);
@@ -329,8 +442,8 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
   let lastError: { category: "incomplete_output"; message: string; raw?: string } | null = null;
   let lastRaw: string | null = null;
 
-  for (let attemptIndex = 0; attemptIndex < attempts.length; attemptIndex++) {
-    const maxOutputTokens = attempts[attemptIndex]!;
+  for (let attemptIndex = 0; attemptIndex < expandedAttempts.length; attemptIndex++) {
+    const maxOutputTokens = expandedAttempts[attemptIndex]!;
     const attemptSuffix = attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`;
     const effort =
       attemptIndex > 0 && params.retryReasoningEffort ? params.retryReasoningEffort : params.reasoningEffort;
@@ -344,8 +457,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
         promptKey: promptKeyForTelemetry + attemptSuffix,
         params: {
           model: params.model,
-          ...(typeof params.temperature === "number" && Number.isFinite(params.temperature) ? { temperature: params.temperature } : {}),
-          ...(effort ? { reasoning: { effort } } : {}),
+          ...resolveTemperatureAndReasoning({ model: params.model, temperature, reasoningEffort: effort ?? null }),
           max_output_tokens: maxOutputTokens,
           instructions: system,
           ...(params.verbosity ? { text: { verbosity: params.verbosity } } : {}),
@@ -374,7 +486,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
         const details = summarizeResponseForTelemetry(response);
         const msg = `Post-process error: hit max_output_tokens${details ? ` (${details})` : ""}`;
         lastError = { category: "incomplete_output", message: msg, ...(text ? { raw: text } : {}) };
-        if (attemptIndex < attempts.length - 1) {
+        if (attemptIndex < expandedAttempts.length - 1) {
           continue;
         }
         break;
@@ -383,7 +495,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
         const details = summarizeResponseForTelemetry(response);
         const msg = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
         lastError = { category: "incomplete_output", message: msg };
-        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < attempts.length - 1) {
+        if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < expandedAttempts.length - 1) {
           continue;
         }
         break;
@@ -408,7 +520,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
       };
     } catch (error) {
       const categorized = categorizePromptRunnerError(error);
-      if (categorized.retryable && retryOn.has(categorized.category) && attemptIndex < attempts.length - 1) {
+      if (categorized.retryable && retryOn.has(categorized.category) && attemptIndex < expandedAttempts.length - 1) {
         continue;
       }
 
@@ -450,7 +562,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
       featureId: params.featureId || featureId,
       model: params.model,
       pattern: "text",
-      attemptCount: attempts.length,
+      attemptCount: expandedAttempts.length,
     }),
   };
 }

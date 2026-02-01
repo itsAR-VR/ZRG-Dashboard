@@ -491,7 +491,7 @@ export async function generateFollowUpMessage(
       if (slotsUtc.length > 0) {
         const tzResult = await ensureLeadTimezone(lead.id);
         const timeZone = tzResult.timezone || settings?.timezone || "UTC";
-        const mode = tzResult.source === "workspace_fallback" ? "explicit_tz" : "your_time";
+        const mode = "explicit_tz"; // Always show explicit timezone (e.g., "EST", "PST")
 
         const existingOffered = new Set<string>();
         if (lead.offeredSlots) {
@@ -2131,8 +2131,9 @@ export async function parseAcceptedTimeFromMessage(
       templateVars: { slotContext },
       input: message,
       budget: {
-        min: 96,
-        max: 400,
+        min: 800,
+        max: 1200,
+        retryMax: 1600,
         overheadTokens: 128,
         outputScale: 0.1,
         preferApiCount: true,
@@ -2295,8 +2296,9 @@ export async function detectMeetingAcceptedIntent(
       systemFallback: "Determine if the message indicates acceptance. Reply YES or NO.",
       input: message,
       budget: {
-        min: 64,
-        max: 256,
+        min: 512,
+        max: 800,
+        retryMax: 1200,
         overheadTokens: 96,
         outputScale: 0.1,
         preferApiCount: true,
@@ -2509,7 +2511,7 @@ export async function processMessageForAutoBooking(
     // Not safe to auto-book (low confidence or no matching availability). Offer alternatives.
     const type = await pickTaskType();
     const timeZone = tzResult.timezone || "UTC";
-    const mode = tzResult.source === "workspace_fallback" ? "explicit_tz" : "your_time";
+    const mode = "explicit_tz"; // Always show explicit timezone (e.g., "EST", "PST")
 
     const anchor = new Date();
     const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);

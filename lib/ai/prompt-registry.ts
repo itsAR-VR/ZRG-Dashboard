@@ -292,6 +292,29 @@ Respond with ONLY valid JSON, no explanation:
 }
 </output_format>`;
 
+const SIGNATURE_CONTEXT_SYSTEM_TEMPLATE = `<task>
+Extract the important, non-junk context from an email signature/footer so an inbox manager can draft an accurate reply.
+</task>
+
+<rules>
+- Only use information present in the provided signature/footer candidate.
+- Ignore legal disclaimers, confidentiality notices, trackers, and repeated boilerplate.
+- Do not invent links or contact info.
+- If URLs are present, choose only from the provided URL list.
+</rules>
+
+<what_to_extract>
+- Name, title, company (if clearly present)
+- Contact info (email, phone) if clearly present
+- LinkedIn URL if clearly present
+- Scheduling/meeting links (Calendly, HubSpot meetings, GHL booking, etc.)
+- A short list of the most important signature lines (exclude junk)
+</what_to_extract>
+
+<output_format>
+Respond with ONLY valid JSON matching the schema. No explanation.
+</output_format>`;
+
 const TIMEZONE_INFER_SYSTEM_TEMPLATE = `<task>
 Infer the lead's IANA timezone identifier.
 </task>
@@ -845,6 +868,22 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
           role: "user",
           content:
             "Email from: {{leadEmail}}\nExpected lead name: {{leadName}}\n\nEmail body:\n{{emailBody}}",
+        },
+      ],
+    },
+    {
+      key: "signature.context.v1",
+      featureId: "signature.context",
+      name: "Signature Context (Drafts)",
+      description: "Extracts important signature/footer context (contact + scheduling links) for draft generation.",
+      model: "gpt-5-nano",
+      apiType: "responses",
+      messages: [
+        { role: "system", content: SIGNATURE_CONTEXT_SYSTEM_TEMPLATE },
+        {
+          role: "user",
+          content:
+            "Expected lead: {{leadName}} <{{leadEmail}}>\n\nSignature/footer candidate (may include junk/disclaimers):\n{{candidate}}\n\nDetected URLs (choose only from these; do not invent):\n{{detectedUrls}}",
         },
       ],
     },

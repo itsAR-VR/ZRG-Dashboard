@@ -83,7 +83,7 @@ ${emailBody.slice(0, 5000)}`;
           confidence: { type: "string", enum: ["high", "medium", "low"] },
           reasoning: { type: ["string", "null"] },
         },
-        required: ["isFromLead", "phone", "linkedinUrl", "confidence"],
+        required: ["isFromLead", "phone", "linkedinUrl", "confidence", "reasoning"],
       },
       budget: {
         min: 500,

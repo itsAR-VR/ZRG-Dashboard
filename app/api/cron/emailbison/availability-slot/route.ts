@@ -44,10 +44,13 @@ export async function GET(request: NextRequest) {
       console.error("[Cron] EmailBison availability-slot error:", error);
       return NextResponse.json(
         {
+          success: false,
+          errors: [error instanceof Error ? error.message : String(error)],
           error: "Failed to process EmailBison availability slots",
           message: error instanceof Error ? error.message : "Unknown error",
+          timestamp: new Date().toISOString(),
         },
-        { status: 500 }
+        { status: 200 }
       );
     }
   });

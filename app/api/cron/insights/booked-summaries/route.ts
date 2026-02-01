@@ -31,13 +31,21 @@ export async function GET(request: NextRequest) {
     const limit = Math.max(1, Number.parseInt(process.env.INSIGHTS_BOOKED_SUMMARIES_CRON_LIMIT || "10", 10) || 10);
     const allowUpgrade = process.env.INSIGHTS_ALLOW_SCHEMA_UPGRADE_REEXTRACT === "true";
 
-    try {
-      const candidates = await prisma.lead.findMany({
-      where: {
-        appointmentBookedAt: { not: null },
-        ...(allowUpgrade ? {} : { conversationInsight: { is: null } }),
-      },
-      select: {
+    const errors: string[] = [];
+
+    const delaysMs = [0, 250, 1_000];
+    for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+      if (delaysMs[attempt] > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]));
+      }
+
+      try {
+        const candidates = await prisma.lead.findMany({
+	      where: {
+	        appointmentBookedAt: { not: null },
+	        ...(allowUpgrade ? {} : { conversationInsight: { is: null } }),
+	      },
+	      select: {
         id: true,
         clientId: true,
         sentimentTag: true,
@@ -66,11 +74,11 @@ export async function GET(request: NextRequest) {
           },
         },
       },
-      orderBy: { appointmentBookedAt: "desc" },
-      take: allowUpgrade ? Math.max(limit * 8, 50) : Math.max(limit * 3, 20),
-    });
+	      orderBy: { appointmentBookedAt: "desc" },
+	      take: allowUpgrade ? Math.max(limit * 8, 50) : Math.max(limit * 3, 20),
+	    });
 
-    const booked = candidates.filter((lead) => {
+	    const booked = candidates.filter((lead) => {
       const provider = lead.client.settings?.meetingBookingProvider ?? "GHL";
       return isMeetingBooked(
         {
@@ -97,21 +105,21 @@ export async function GET(request: NextRequest) {
     let skipped = 0;
     let failed = 0;
 
-    for (const lead of toProcess) {
-      try {
-        const model = coerceInsightsChatModel(lead.client.settings?.insightsChatModel ?? null);
-        const effort = coerceInsightsChatReasoningEffort({
-          model,
-          storedValue: lead.client.settings?.insightsChatReasoningEffort ?? null,
-        });
+	    for (const lead of toProcess) {
+	      try {
+	        const model = coerceInsightsChatModel(lead.client.settings?.insightsChatModel ?? null);
+	        const effort = coerceInsightsChatReasoningEffort({
+	          model,
+	          storedValue: lead.client.settings?.insightsChatReasoningEffort ?? null,
+	        });
 
-        const extracted = await extractConversationInsightForLead({
-          clientId: lead.clientId,
-          leadId: lead.id,
-          outcome: "BOOKED",
-          model,
-          reasoningEffort: effort.api,
-        });
+	        const extracted = await extractConversationInsightForLead({
+	          clientId: lead.clientId,
+	          leadId: lead.id,
+	          outcome: "BOOKED",
+	          model,
+	          reasoningEffort: effort.api,
+	        });
 
         await prisma.leadConversationInsight.upsert({
           where: { leadId: lead.id },
@@ -138,36 +146,68 @@ export async function GET(request: NextRequest) {
           },
         });
 
-        processed++;
+	        processed++;
+	      } catch (error) {
+	        // Most likely a unique constraint race or an LLM failure.
+	        const msg = error instanceof Error ? error.message : String(error);
+	        if (msg.toLowerCase().includes("unique constraint") || msg.toLowerCase().includes("unique")) {
+	          skipped++;
+	        } else {
+	          failed++;
+	          console.error("[Insights Cron] Failed to compute booked summary:", { leadId: lead.id, error });
+	        }
+	      }
+	    }
+
+	      return NextResponse.json({
+	        success: true,
+          errors,
+	        candidates: candidates.length,
+	        booked: booked.length,
+	        processed,
+	        skipped,
+	        failed,
+	        limit,
+	        timestamp: new Date().toISOString(),
+	      });
       } catch (error) {
-        // Most likely a unique constraint race or an LLM failure.
         const msg = error instanceof Error ? error.message : String(error);
-        if (msg.toLowerCase().includes("unique constraint") || msg.toLowerCase().includes("unique")) {
-          skipped++;
-        } else {
-          failed++;
-          console.error("[Insights Cron] Failed to compute booked summary:", { leadId: lead.id, error });
+        errors.push(msg);
+
+        const lower = msg.toLowerCase();
+        const isTransient =
+          lower.includes("internal_function_connection_error") ||
+          lower.includes("ecconnreset") ||
+          lower.includes("econnreset") ||
+          lower.includes("timeout") ||
+          lower.includes("timed out");
+
+        console.error("[Insights Cron] Error:", { attempt, error });
+
+        if (isTransient && attempt < delaysMs.length - 1) {
+          console.warn("[Insights Cron] Transient failure detected; retrying", { attempt, nextDelayMs: delaysMs[attempt + 1] });
+          continue;
         }
+
+        return NextResponse.json(
+          {
+            success: false,
+            errors,
+            error: "Failed to process booked summaries",
+            message: msg,
+            limit,
+            timestamp: new Date().toISOString(),
+          },
+          { status: 200 }
+        );
       }
     }
 
-      return NextResponse.json({
-        success: true,
-        candidates: candidates.length,
-        booked: booked.length,
-        processed,
-        skipped,
-        failed,
-        limit,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error) {
-      console.error("[Insights Cron] Error:", error);
-      return NextResponse.json(
-        { error: "Failed to process booked summaries", message: error instanceof Error ? error.message : "Unknown error" },
-        { status: 500 }
-      );
-    }
+    // Should be unreachable (loop always returns), but keep a safe default.
+    return NextResponse.json(
+      { success: false, errors, error: "Failed to process booked summaries", limit, timestamp: new Date().toISOString() },
+      { status: 200 }
+    );
   });
 }
 

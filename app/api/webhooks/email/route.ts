@@ -16,6 +16,7 @@ import { pauseFollowUpsOnReply } from "@/lib/followup-engine";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { addToAlternateEmails, detectCcReplier, normalizeOptionalEmail } from "@/lib/email-participants";
+import { getDbSchemaMissingColumnsForModels, isPrismaMissingTableOrColumnError } from "@/lib/db-schema-compat";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 // Reduced from 800s to 60s after moving AI classification to background jobs (Phase 31g).
@@ -2244,6 +2245,28 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "Missing data" }, { status: 400 });
       }
 
+      // Fail fast (retryable) if the deployed Prisma schema expects columns that aren't present yet.
+      // This avoids noisy Prisma P2022 stack traces during migrations/rollouts.
+      try {
+        const missing = await getDbSchemaMissingColumnsForModels({
+          models: ["Client", "Lead", "Message", "BackgroundJob", "WorkspaceSettings", "EmailCampaign", "AIDraft"],
+        });
+        if (missing.length > 0) {
+          console.error("[SchemaCompat] DB schema out of date:", { path: request.nextUrl.pathname, missing });
+          return NextResponse.json(
+            { error: "DB schema out of date", path: request.nextUrl.pathname, missing },
+            { status: 503, headers: { "Retry-After": "60" } }
+          );
+        }
+      } catch (error) {
+        const details = error instanceof Error ? error.message : String(error);
+        console.error("[SchemaCompat] Failed to validate DB schema:", { path: request.nextUrl.pathname, details });
+        return NextResponse.json(
+          { error: "DB unavailable", path: request.nextUrl.pathname, details },
+          { status: 503, headers: { "Retry-After": "60" } }
+        );
+      }
+
       switch (eventType) {
         case "LEAD_REPLIED":
           return handleLeadReplied(request, payload);
@@ -2275,6 +2298,15 @@ export async function POST(request: NextRequest) {
           });
       }
     } catch (error) {
+      if (isPrismaMissingTableOrColumnError(error)) {
+        const details = error instanceof Error ? error.message : String(error);
+        console.error("[SchemaCompat] Prisma schema drift detected:", { path: request.nextUrl.pathname, details });
+        return NextResponse.json(
+          { error: "DB schema out of date", path: request.nextUrl.pathname, details },
+          { status: 503, headers: { "Retry-After": "60" } }
+        );
+      }
+
       console.error("[Inboxxia Webhook] Error processing payload:", error);
       return NextResponse.json(
         {

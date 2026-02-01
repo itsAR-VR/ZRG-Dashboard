@@ -58,10 +58,23 @@ export type PromptRunnerBaseParams = {
   model: string;
   systemFallback: string;
   templateVars?: Record<string, string>;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
   temperature?: number;
   timeoutMs?: number;
   maxRetries?: number;
+  /**
+   * Max number of prompt attempts (this is separate from OpenAI SDK `maxRetries`,
+   * which retries network/API failures).
+   *
+   * Defaults to `OPENAI_PROMPT_MAX_ATTEMPTS` (or 2).
+   */
+  maxAttempts?: number;
+  /**
+   * When retrying, increase `max_output_tokens` by this multiplier each attempt.
+   *
+   * Defaults to `OPENAI_RETRY_OUTPUT_TOKENS_MULTIPLIER` (or 1.2).
+   */
+  retryOutputTokensMultiplier?: number;
   traceId?: string;
   parentSpanId?: string | null;
   resolved?: ResolvedPromptMetadata;

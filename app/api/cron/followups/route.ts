@@ -9,9 +9,173 @@ import { backfillNoResponseFollowUpsDueOnCron } from "@/lib/followup-backfill";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { retrySmsDndHeldLeads } from "@/lib/booking-sms-dnd-retry";
 import { processDailyNotificationDigestsDue } from "@/lib/notification-center";
+import { getDbSchemaMissingColumnsForModels, isPrismaMissingTableOrColumnError } from "@/lib/db-schema-compat";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
+
+const CORE_MODELS_FOR_FOLLOWUPS_CRON = [
+  "Client",
+  "WorkspaceSettings",
+  "Lead",
+  "Message",
+  "FollowUpSequence",
+  "FollowUpStep",
+  "FollowUpInstance",
+  "NotificationEvent",
+  "NotificationSendLog",
+] as const;
+
+function schemaOutOfDateResponse(opts: {
+  path: string;
+  missing?: unknown;
+  details?: string;
+}) {
+  console.error("[SchemaCompat] DB schema out of date:", {
+    path: opts.path,
+    missing: opts.missing,
+    details: opts.details,
+  });
+
+  return NextResponse.json(
+    {
+      error: "DB schema out of date",
+      path: opts.path,
+      missing: opts.missing,
+      details: opts.details,
+    },
+    {
+      status: 503,
+      headers: { "Retry-After": "60" },
+    }
+  );
+}
+
+async function runFollowupsCron(request: NextRequest) {
+  const path = request.nextUrl.pathname;
+
+  const missing = await getDbSchemaMissingColumnsForModels({
+    models: [...CORE_MODELS_FOR_FOLLOWUPS_CRON],
+  }).catch((error) => {
+    const details = error instanceof Error ? error.message : String(error);
+    return schemaOutOfDateResponse({ path, details });
+  });
+
+  if (missing instanceof NextResponse) return missing;
+  if (missing.length > 0) return schemaOutOfDateResponse({ path, missing });
+
+  const errors: string[] = [];
+
+  let snoozed: unknown = null;
+  let resumed: unknown = null;
+  let enrichmentResumed: unknown = null;
+  let smsDndRetry: unknown = null;
+  let backfill: unknown = null;
+  let results: unknown = null;
+  let notificationDigests: unknown = null;
+
+  console.log("[Cron] Resuming snoozed follow-ups...");
+  try {
+    snoozed = await resumeSnoozedFollowUps({ limit: 200 });
+    console.log("[Cron] Snoozed follow-up resume complete:", snoozed);
+  } catch (error) {
+    if (isPrismaMissingTableOrColumnError(error)) {
+      return schemaOutOfDateResponse({ path, details: error instanceof Error ? error.message : String(error) });
+    }
+    errors.push(`resumeSnoozedFollowUps: ${error instanceof Error ? error.message : String(error)}`);
+    console.error("[Cron] Failed to resume snoozed follow-ups:", error);
+  }
+
+  console.log("[Cron] Resuming ghosted follow-ups...");
+  try {
+    resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
+    console.log("[Cron] Ghosted follow-up resume complete:", resumed);
+  } catch (error) {
+    if (isPrismaMissingTableOrColumnError(error)) {
+      return schemaOutOfDateResponse({ path, details: error instanceof Error ? error.message : String(error) });
+    }
+    errors.push(`resumeGhostedFollowUps: ${error instanceof Error ? error.message : String(error)}`);
+    console.error("[Cron] Failed to resume ghosted follow-ups:", error);
+  }
+
+  console.log("[Cron] Resuming enrichment-paused follow-ups...");
+  try {
+    enrichmentResumed = await resumeAwaitingEnrichmentFollowUps({ limit: 200 });
+    console.log("[Cron] Enrichment-paused follow-up resume complete:", enrichmentResumed);
+  } catch (error) {
+    if (isPrismaMissingTableOrColumnError(error)) {
+      return schemaOutOfDateResponse({ path, details: error instanceof Error ? error.message : String(error) });
+    }
+    errors.push(`resumeAwaitingEnrichmentFollowUps: ${error instanceof Error ? error.message : String(error)}`);
+    console.error("[Cron] Failed to resume enrichment-paused follow-ups:", error);
+  }
+
+  console.log("[Cron] Retrying SMS DND held leads...");
+  try {
+    smsDndRetry = await retrySmsDndHeldLeads({ limit: 50 });
+    console.log("[Cron] SMS DND retry complete:", smsDndRetry);
+  } catch (error) {
+    if (isPrismaMissingTableOrColumnError(error)) {
+      return schemaOutOfDateResponse({ path, details: error instanceof Error ? error.message : String(error) });
+    }
+    errors.push(`retrySmsDndHeldLeads: ${error instanceof Error ? error.message : String(error)}`);
+    console.error("[Cron] Failed to retry SMS DND held leads:", error);
+  }
+
+  console.log("[Cron] Backfilling awaiting-reply follow-ups...");
+  try {
+    backfill = await backfillNoResponseFollowUpsDueOnCron();
+    console.log("[Cron] Follow-up backfill complete:", backfill);
+  } catch (error) {
+    if (isPrismaMissingTableOrColumnError(error)) {
+      return schemaOutOfDateResponse({ path, details: error instanceof Error ? error.message : String(error) });
+    }
+    errors.push(`backfillNoResponseFollowUpsDueOnCron: ${error instanceof Error ? error.message : String(error)}`);
+    console.error("[Cron] Failed to backfill awaiting-reply follow-ups:", error);
+  }
+
+  console.log("[Cron] Processing follow-ups...");
+  try {
+    results = await processFollowUpsDue();
+    console.log("[Cron] Follow-up processing complete:", results);
+  } catch (error) {
+    if (isPrismaMissingTableOrColumnError(error)) {
+      return schemaOutOfDateResponse({ path, details: error instanceof Error ? error.message : String(error) });
+    }
+    errors.push(`processFollowUpsDue: ${error instanceof Error ? error.message : String(error)}`);
+    console.error("[Cron] Failed to process follow-ups:", error);
+  }
+
+  console.log("[Cron] Processing notification digests...");
+  try {
+    notificationDigests = await processDailyNotificationDigestsDue({ limit: 50 });
+    console.log("[Cron] Notification digests complete:", notificationDigests);
+  } catch (error) {
+    if (isPrismaMissingTableOrColumnError(error)) {
+      return schemaOutOfDateResponse({ path, details: error instanceof Error ? error.message : String(error) });
+    }
+    errors.push(`processDailyNotificationDigestsDue: ${error instanceof Error ? error.message : String(error)}`);
+    console.error("[Cron] Failed to process notification digests:", error);
+  }
+
+  const success = errors.length === 0;
+
+  return NextResponse.json(
+    {
+      success,
+      errors,
+      snoozed,
+      resumed,
+      enrichmentResumed,
+      smsDndRetry,
+      backfill,
+      results,
+      notificationDigests,
+      timestamp: new Date().toISOString(),
+    },
+    { status: success ? 200 : 500 }
+  );
+}
 
 /**
  * GET /api/cron/followups
@@ -25,9 +189,9 @@ export const maxDuration = 800;
 export async function GET(request: NextRequest) {
   return withAiTelemetrySource(request.nextUrl.pathname, async () => {
     try {
-    // Verify cron secret using Vercel's Bearer token pattern
-    const authHeader = request.headers.get("Authorization");
-    const expectedSecret = process.env.CRON_SECRET;
+	    // Verify cron secret using Vercel's Bearer token pattern
+	    const authHeader = request.headers.get("Authorization");
+	    const expectedSecret = process.env.CRON_SECRET;
 
     if (!expectedSecret) {
       console.warn("[Cron] CRON_SECRET not configured - endpoint disabled");
@@ -37,63 +201,28 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    if (authHeader !== `Bearer ${expectedSecret}`) {
-      console.warn("[Cron] Invalid authorization attempt");
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
-    }
+	    if (authHeader !== `Bearer ${expectedSecret}`) {
+	      console.warn("[Cron] Invalid authorization attempt");
+	      return NextResponse.json(
+	        { error: "Unauthorized" },
+	        { status: 401 }
+	      );
+	    }
 
-    // Phase 61: Availability refresh is handled by the dedicated `/api/cron/availability` endpoint.
-    // Keep follow-ups cron focused on follow-up processing (and avoid double-refresh provider load).
-
-    console.log("[Cron] Resuming snoozed follow-ups...");
-    const snoozed = await resumeSnoozedFollowUps({ limit: 200 });
-    console.log("[Cron] Snoozed follow-up resume complete:", snoozed);
-
-    console.log("[Cron] Resuming ghosted follow-ups...");
-    const resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
-    console.log("[Cron] Ghosted follow-up resume complete:", resumed);
-
-    console.log("[Cron] Resuming enrichment-paused follow-ups...");
-    const enrichmentResumed = await resumeAwaitingEnrichmentFollowUps({ limit: 200 });
-    console.log("[Cron] Enrichment-paused follow-up resume complete:", enrichmentResumed);
-
-    console.log("[Cron] Retrying SMS DND held leads...");
-    const smsDndRetry = await retrySmsDndHeldLeads({ limit: 50 });
-    console.log("[Cron] SMS DND retry complete:", smsDndRetry);
-
-    console.log("[Cron] Backfilling awaiting-reply follow-ups...");
-    const backfill = await backfillNoResponseFollowUpsDueOnCron();
-    console.log("[Cron] Follow-up backfill complete:", backfill);
-
-    console.log("[Cron] Processing follow-ups...");
-    const results = await processFollowUpsDue();
-    console.log("[Cron] Follow-up processing complete:", results);
-
-    console.log("[Cron] Processing notification digests...");
-    const notificationDigests = await processDailyNotificationDigestsDue({ limit: 50 });
-    console.log("[Cron] Notification digests complete:", notificationDigests);
-
-      return NextResponse.json({
-        success: true,
-        snoozed,
-        resumed,
-        enrichmentResumed,
-        smsDndRetry,
-        backfill,
-        results,
-        notificationDigests,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error) {
-      console.error("[Cron] Follow-up processing error:", error);
-      return NextResponse.json(
-        {
-          error: "Failed to process follow-ups",
-          message: error instanceof Error ? error.message : "Unknown error",
-        },
+	    return runFollowupsCron(request);
+	    } catch (error) {
+	      console.error("[Cron] Follow-up processing error:", error);
+        if (isPrismaMissingTableOrColumnError(error)) {
+          return schemaOutOfDateResponse({
+            path: request.nextUrl.pathname,
+            details: error instanceof Error ? error.message : String(error),
+          });
+        }
+	      return NextResponse.json(
+	        {
+	          error: "Failed to process follow-ups",
+	          message: error instanceof Error ? error.message : "Unknown error",
+	        },
         { status: 500 }
       );
     }
@@ -109,8 +238,8 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   return withAiTelemetrySource(request.nextUrl.pathname, async () => {
     try {
-    // Check both Authorization header (Vercel pattern) and x-cron-secret (legacy)
-    const authHeader = request.headers.get("Authorization");
+	    // Check both Authorization header (Vercel pattern) and x-cron-secret (legacy)
+	    const authHeader = request.headers.get("Authorization");
     const legacySecret = request.headers.get("x-cron-secret");
     const expectedSecret = process.env.CRON_SECRET;
 
@@ -126,63 +255,28 @@ export async function POST(request: NextRequest) {
       authHeader === `Bearer ${expectedSecret}` || 
       legacySecret === expectedSecret;
 
-    if (!isAuthorized) {
-      console.warn("[Cron] Invalid authorization attempt");
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
-    }
+	    if (!isAuthorized) {
+	      console.warn("[Cron] Invalid authorization attempt");
+	      return NextResponse.json(
+	        { error: "Unauthorized" },
+	        { status: 401 }
+	      );
+	    }
 
-    // Phase 61: Availability refresh is handled by the dedicated `/api/cron/availability` endpoint.
-    // Keep follow-ups cron focused on follow-up processing (and avoid double-refresh provider load).
-
-    console.log("[Cron] Resuming snoozed follow-ups (POST)...");
-    const snoozed = await resumeSnoozedFollowUps({ limit: 200 });
-    console.log("[Cron] Snoozed follow-up resume complete:", snoozed);
-
-    console.log("[Cron] Resuming ghosted follow-ups (POST)...");
-    const resumed = await resumeGhostedFollowUps({ days: 7, limit: 100 });
-    console.log("[Cron] Ghosted follow-up resume complete:", resumed);
-
-    console.log("[Cron] Resuming enrichment-paused follow-ups (POST)...");
-    const enrichmentResumed = await resumeAwaitingEnrichmentFollowUps({ limit: 200 });
-    console.log("[Cron] Enrichment-paused follow-up resume complete:", enrichmentResumed);
-
-    console.log("[Cron] Retrying SMS DND held leads (POST)...");
-    const smsDndRetry = await retrySmsDndHeldLeads({ limit: 50 });
-    console.log("[Cron] SMS DND retry complete:", smsDndRetry);
-
-    console.log("[Cron] Backfilling awaiting-reply follow-ups (POST)...");
-    const backfill = await backfillNoResponseFollowUpsDueOnCron();
-    console.log("[Cron] Follow-up backfill complete:", backfill);
-
-    console.log("[Cron] Processing follow-ups (POST)...");
-    const results = await processFollowUpsDue();
-    console.log("[Cron] Follow-up processing complete:", results);
-
-    console.log("[Cron] Processing notification digests (POST)...");
-    const notificationDigests = await processDailyNotificationDigestsDue({ limit: 50 });
-    console.log("[Cron] Notification digests complete:", notificationDigests);
-
-      return NextResponse.json({
-        success: true,
-        snoozed,
-        resumed,
-        enrichmentResumed,
-        smsDndRetry,
-        backfill,
-        results,
-        notificationDigests,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (error) {
-      console.error("[Cron] Follow-up processing error:", error);
-      return NextResponse.json(
-        {
-          error: "Failed to process follow-ups",
-          message: error instanceof Error ? error.message : "Unknown error",
-        },
+	    return runFollowupsCron(request);
+	    } catch (error) {
+	      console.error("[Cron] Follow-up processing error:", error);
+        if (isPrismaMissingTableOrColumnError(error)) {
+          return schemaOutOfDateResponse({
+            path: request.nextUrl.pathname,
+            details: error instanceof Error ? error.message : String(error),
+          });
+        }
+	      return NextResponse.json(
+	        {
+	          error: "Failed to process follow-ups",
+	          message: error instanceof Error ? error.message : "Unknown error",
+	        },
         { status: 500 }
       );
     }
