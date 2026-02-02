@@ -12,6 +12,7 @@ import { runSmartLeadInboundPostProcessJob } from "@/lib/background-jobs/smartle
 import { runInstantlyInboundPostProcessJob } from "@/lib/background-jobs/instantly-inbound-post-process";
 import { runConversationSyncJob } from "@/lib/background-jobs/conversation-sync";
 import { runAiAutoSendDelayedJob } from "@/lib/background-jobs/ai-auto-send-delayed";
+import { RescheduleBackgroundJobError } from "@/lib/background-jobs/errors";
 import { processWebhookEvents } from "@/lib/webhook-events/runner";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
@@ -245,6 +246,22 @@ export async function processBackgroundJobs(): Promise<{
       });
       succeeded++;
     } catch (error) {
+      if (error instanceof RescheduleBackgroundJobError) {
+        await prisma.backgroundJob.update({
+          where: { id: lockedJob.id },
+          data: {
+            status: BackgroundJobStatus.PENDING,
+            runAt: error.runAt,
+            finishedAt: new Date(),
+            lockedAt: null,
+            lockedBy: null,
+            lastError: error.message,
+          },
+        });
+        retried++;
+        continue;
+      }
+
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 10_000);
       const attempts = lockedJob.attempts;
       const shouldRetry = attempts < lockedJob.maxAttempts;

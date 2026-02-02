@@ -74,9 +74,18 @@ import { AiPersonaManager } from "./settings/ai-persona-manager"
 import { BulkDraftRegenerationCard } from "./settings/bulk-draft-regeneration"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { getWorkspaceAdminStatus } from "@/actions/access-actions"
-import { getSlackBotTokenStatus, listSlackChannelsForWorkspace, updateSlackBotToken } from "@/actions/slack-integration-actions"
+import {
+  getSlackApprovalRecipients,
+  getSlackBotTokenStatus,
+  getSlackMembers,
+  listSlackChannelsForWorkspace,
+  refreshSlackMembersCache,
+  updateSlackApprovalRecipients,
+  updateSlackBotToken,
+} from "@/actions/slack-integration-actions"
 import { getResendConfigStatus, updateResendConfig } from "@/actions/resend-integration-actions"
 import { SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared"
+import type { SlackApprovalRecipient } from "@/lib/auto-send/get-approval-recipients"
 import {
   getClientEmailBisonBaseHost,
   getEmailBisonBaseHosts,
@@ -149,6 +158,79 @@ import { useUser } from "@/contexts/user-context"
 
 const EMAILBISON_BASE_HOST_DEFAULT_VALUE = "__DEFAULT__"
 const GHL_SAME_AS_DEFAULT_CALENDAR = "__SAME_AS_DEFAULT__"
+const AUTO_SEND_SCHEDULE_DAYS = [
+  { label: "Sun", value: 0 },
+  { label: "Mon", value: 1 },
+  { label: "Tue", value: 2 },
+  { label: "Wed", value: 3 },
+  { label: "Thu", value: 4 },
+  { label: "Fri", value: 5 },
+  { label: "Sat", value: 6 },
+]
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+type AutoSendHolidayState = {
+  presetEnabled: boolean
+  excludedPresetDates: string[]
+  additionalBlackoutDates: string[]
+  additionalBlackoutDateRanges: Array<{ start: string; end: string }>
+}
+
+const DEFAULT_AUTO_SEND_HOLIDAYS: AutoSendHolidayState = {
+  presetEnabled: false,
+  excludedPresetDates: [],
+  additionalBlackoutDates: [],
+  additionalBlackoutDateRanges: [],
+}
+
+const normalizeDateList = (input: unknown): string[] => {
+  if (!Array.isArray(input)) return []
+  const filtered = input.filter((value) => typeof value === "string" && DATE_PATTERN.test(value)) as string[]
+  return Array.from(new Set(filtered)).sort()
+}
+
+const normalizeDateRanges = (input: unknown): Array<{ start: string; end: string }> => {
+  if (!Array.isArray(input)) return []
+  const ranges = new Map<string, { start: string; end: string }>()
+
+  for (const entry of input) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue
+    const record = entry as Record<string, unknown>
+    const start = typeof record.start === "string" && DATE_PATTERN.test(record.start) ? record.start : null
+    const end = typeof record.end === "string" && DATE_PATTERN.test(record.end) ? record.end : null
+    if (!start || !end) continue
+    const normalizedStart = start <= end ? start : end
+    const normalizedEnd = start <= end ? end : start
+    ranges.set(`${normalizedStart}:${normalizedEnd}`, { start: normalizedStart, end: normalizedEnd })
+  }
+
+  return Array.from(ranges.values()).sort((a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end))
+}
+
+function coerceAutoSendCustomSchedule(input: unknown): { days: number[]; startTime: string; endTime: string; holidays: AutoSendHolidayState } | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null
+  const record = input as Record<string, unknown>
+  const days = Array.isArray(record.days)
+    ? record.days.filter((d) => typeof d === "number" && d >= 0 && d <= 6)
+    : []
+  const startTime = typeof record.startTime === "string" ? record.startTime : null
+  const endTime = typeof record.endTime === "string" ? record.endTime : null
+  if (!startTime || !endTime || days.length === 0) return null
+
+  let holidays = { ...DEFAULT_AUTO_SEND_HOLIDAYS }
+  if (record.holidays && typeof record.holidays === "object" && !Array.isArray(record.holidays)) {
+    const holidayRecord = record.holidays as Record<string, unknown>
+    holidays = {
+      presetEnabled: holidayRecord.preset === "US_FEDERAL_PLUS_COMMON",
+      excludedPresetDates: normalizeDateList(holidayRecord.excludedPresetDates),
+      additionalBlackoutDates: normalizeDateList(holidayRecord.additionalBlackoutDates),
+      additionalBlackoutDateRanges: normalizeDateRanges(holidayRecord.additionalBlackoutDateRanges),
+    }
+  }
+
+  return { days, startTime, endTime, holidays }
+}
 
 interface SettingsViewProps {
   activeWorkspace?: string | null
@@ -297,6 +379,18 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     endTime: "17:00",
   })
 
+  const [autoSendSchedule, setAutoSendSchedule] = useState({
+    mode: "ALWAYS" as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM",
+    customDays: [1, 2, 3, 4, 5],
+    customStartTime: "09:00",
+    customEndTime: "17:00",
+    holidays: { ...DEFAULT_AUTO_SEND_HOLIDAYS },
+  })
+  const [holidayExcludedPresetDate, setHolidayExcludedPresetDate] = useState("")
+  const [holidayBlackoutDate, setHolidayBlackoutDate] = useState("")
+  const [holidayBlackoutRangeStart, setHolidayBlackoutRangeStart] = useState("")
+  const [holidayBlackoutRangeEnd, setHolidayBlackoutRangeEnd] = useState("")
+
   const [notifications, setNotifications] = useState({
     emailDigest: true,
     slackAlerts: true,
@@ -375,6 +469,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   >([])
   const [isLoadingSlackChannels, setIsLoadingSlackChannels] = useState(false)
   const [slackChannelToAdd, setSlackChannelToAdd] = useState("")
+  const [slackMembers, setSlackMembers] = useState<SlackApprovalRecipient[]>([])
+  const [selectedApprovalRecipients, setSelectedApprovalRecipients] = useState<SlackApprovalRecipient[]>([])
+  const [isLoadingSlackMembers, setIsLoadingSlackMembers] = useState(false)
 
   // Resend integration (per-workspace)
   const [resendStatus, setResendStatus] = useState<{
@@ -496,6 +593,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       setSlackIntegrationError(null)
       setSlackChannels([])
       setSlackChannelToAdd("")
+      setSlackMembers([])
+      setSelectedApprovalRecipients([])
       setResendIntegrationError(null)
       setResendApiKeyDraft("")
       setResendFromEmailDraft("")
@@ -534,6 +633,20 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           timezone: result.data.timezone || "America/New_York",
           startTime: result.data.workStartTime || "09:00",
           endTime: result.data.workEndTime || "17:00",
+        })
+        const customSchedule = coerceAutoSendCustomSchedule(result.data.autoSendCustomSchedule)
+        const holidays = customSchedule?.holidays ?? DEFAULT_AUTO_SEND_HOLIDAYS
+        setAutoSendSchedule({
+          mode: (result.data.autoSendScheduleMode as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM") || "ALWAYS",
+          customDays: customSchedule?.days ?? [1, 2, 3, 4, 5],
+          customStartTime: customSchedule?.startTime || result.data.workStartTime || "09:00",
+          customEndTime: customSchedule?.endTime || result.data.workEndTime || "17:00",
+          holidays: {
+            presetEnabled: holidays.presetEnabled,
+            excludedPresetDates: [...holidays.excludedPresetDates],
+            additionalBlackoutDates: [...holidays.additionalBlackoutDates],
+            additionalBlackoutDateRanges: [...holidays.additionalBlackoutDateRanges],
+          },
         })
         setNotifications({
           emailDigest: result.data.emailDigest,
@@ -604,6 +717,21 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         }
       } else {
         setSlackTokenStatus(null)
+      }
+
+      if (activeWorkspace && adminStatus.success && adminStatus.isAdmin) {
+        const [recipientsResult, membersResult] = await Promise.all([
+          getSlackApprovalRecipients(activeWorkspace),
+          getSlackMembers(activeWorkspace),
+        ])
+
+        if (recipientsResult.success) {
+          setSelectedApprovalRecipients(recipientsResult.recipients || [])
+        }
+
+        if (membersResult.success) {
+          setSlackMembers(membersResult.members || [])
+        }
       }
 
       if (activeWorkspace && adminStatus.success && adminStatus.isAdmin) {
@@ -1134,6 +1262,35 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     }
   }
 
+  const handleRefreshSlackMembers = async () => {
+    if (!activeWorkspace) return
+    setIsLoadingSlackMembers(true)
+    try {
+      const res = await refreshSlackMembersCache(activeWorkspace)
+      if (!res.success) {
+        toast.error(res.error || "Failed to refresh Slack members")
+        return
+      }
+      setSlackMembers(res.members || [])
+      toast.success("Slack members refreshed")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Failed to refresh Slack members")
+    } finally {
+      setIsLoadingSlackMembers(false)
+    }
+  }
+
+  const toggleApprovalRecipient = (member: SlackApprovalRecipient) => {
+    setSelectedApprovalRecipients((prev) => {
+      const exists = prev.some((r) => r.id === member.id)
+      if (exists) {
+        return prev.filter((r) => r.id !== member.id)
+      }
+      return [...prev, member]
+    })
+    handleChange()
+  }
+
   const handleAddSlackChannel = () => {
     const channelId = slackChannelToAdd.trim()
     if (!channelId) return
@@ -1166,6 +1323,36 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       const trimmed = value?.trim()
       return trimmed ? value : null
     }
+    const normalizedCustomDays = autoSendSchedule.customDays.length > 0
+      ? Array.from(new Set(autoSendSchedule.customDays)).sort()
+      : [1, 2, 3, 4, 5]
+
+    const normalizedExcludedPresetDates = normalizeDateList(autoSendSchedule.holidays.excludedPresetDates)
+    const normalizedAdditionalBlackoutDates = normalizeDateList(autoSendSchedule.holidays.additionalBlackoutDates)
+    const normalizedAdditionalBlackoutRanges = normalizeDateRanges(autoSendSchedule.holidays.additionalBlackoutDateRanges)
+
+    const holidayPayload =
+      autoSendSchedule.holidays.presetEnabled ||
+      normalizedExcludedPresetDates.length > 0 ||
+      normalizedAdditionalBlackoutDates.length > 0 ||
+      normalizedAdditionalBlackoutRanges.length > 0
+        ? {
+            ...(autoSendSchedule.holidays.presetEnabled ? { preset: "US_FEDERAL_PLUS_COMMON" } : {}),
+            ...(normalizedExcludedPresetDates.length > 0 ? { excludedPresetDates: normalizedExcludedPresetDates } : {}),
+            ...(normalizedAdditionalBlackoutDates.length > 0 ? { additionalBlackoutDates: normalizedAdditionalBlackoutDates } : {}),
+            ...(normalizedAdditionalBlackoutRanges.length > 0 ? { additionalBlackoutDateRanges: normalizedAdditionalBlackoutRanges } : {}),
+          }
+        : undefined
+
+    const customSchedulePayload = autoSendSchedule.mode === "CUSTOM"
+      ? {
+          version: 1,
+          days: normalizedCustomDays,
+          startTime: autoSendSchedule.customStartTime,
+          endTime: autoSendSchedule.customEndTime,
+          ...(holidayPayload ? { holidays: holidayPayload } : {}),
+        }
+      : null
     
     const payload: Partial<UserSettingsData> = {
       aiPersonaName: toNullableText(aiPersona.name),
@@ -1205,6 +1392,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     }
 
     if (isWorkspaceAdmin) {
+      payload.autoSendScheduleMode = autoSendSchedule.mode
+      payload.autoSendCustomSchedule = customSchedulePayload
       payload.insightsChatModel = insightsChatSettings.model
       payload.insightsChatReasoningEffort = insightsChatSettings.reasoningEffort
       payload.insightsChatEnableCampaignChanges = insightsChatSettings.enableCampaignChanges
@@ -1230,14 +1419,19 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
     const result = await updateUserSettings(activeWorkspace, payload)
 
-    if (result.success) {
+    let approvalRecipientsResult: { success: boolean; error?: string } | null = null
+    if (result.success && isWorkspaceAdmin && activeWorkspace) {
+      approvalRecipientsResult = await updateSlackApprovalRecipients(activeWorkspace, selectedApprovalRecipients)
+    }
+
+    if (result.success && (approvalRecipientsResult?.success ?? true)) {
       toast.success("Settings saved", {
         description: "Your settings have been saved successfully.",
       })
       setHasChanges(false)
     } else {
       toast.error("Error", {
-        description: result.error || "Failed to save settings.",
+        description: approvalRecipientsResult?.error || result.error || "Failed to save settings.",
       })
     }
 
@@ -1958,6 +2152,336 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               </CardContent>
             </Card>
 
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Bot className="h-5 w-5" />
+                  AI Auto-Send Schedule
+                </CardTitle>
+                <CardDescription>Control when AI auto-sends are allowed to run</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {!isWorkspaceAdmin ? (
+                  <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+                    Only workspace admins can edit auto-send schedules and holiday blackouts.
+                  </div>
+                ) : null}
+                <div className="space-y-2">
+                  <Label>Schedule mode</Label>
+                  <Select
+                    value={autoSendSchedule.mode}
+                    onValueChange={(v) => {
+                      setAutoSendSchedule((prev) => ({
+                        ...prev,
+                        mode: v as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM",
+                      }))
+                      handleChange()
+                    }}
+                  >
+                    <SelectTrigger disabled={!isWorkspaceAdmin}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ALWAYS">Always (24/7)</SelectItem>
+                      <SelectItem value="BUSINESS_HOURS">Business hours (workspace)</SelectItem>
+                      <SelectItem value="CUSTOM">Custom schedule</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {autoSendSchedule.mode === "BUSINESS_HOURS" ? (
+                  <p className="text-xs text-muted-foreground">
+                    Uses the workspace timezone and working hours above.
+                  </p>
+                ) : null}
+
+                {autoSendSchedule.mode === "CUSTOM" ? (
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <Label>Active days</Label>
+                      <div className="flex flex-wrap items-center gap-3">
+                        {AUTO_SEND_SCHEDULE_DAYS.map((day) => (
+                          <label key={day.value} className="flex items-center gap-2 text-sm">
+                            <Checkbox
+                              checked={autoSendSchedule.customDays.includes(day.value)}
+                              disabled={!isWorkspaceAdmin}
+                              onCheckedChange={(v) => {
+                                const checked = v === true
+                                setAutoSendSchedule((prev) => {
+                                  const exists = prev.customDays.includes(day.value)
+                                  const nextDays = checked
+                                    ? (exists ? prev.customDays : [...prev.customDays, day.value])
+                                    : prev.customDays.filter((d) => d !== day.value)
+                                  return { ...prev, customDays: nextDays }
+                                })
+                                handleChange()
+                              }}
+                            />
+                            {day.label}
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Start Time</Label>
+                        <Input
+                          type="time"
+                          value={autoSendSchedule.customStartTime}
+                          disabled={!isWorkspaceAdmin}
+                          onChange={(e) => {
+                            setAutoSendSchedule((prev) => ({ ...prev, customStartTime: e.target.value }))
+                            handleChange()
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>End Time</Label>
+                        <Input
+                          type="time"
+                          value={autoSendSchedule.customEndTime}
+                          disabled={!isWorkspaceAdmin}
+                          onChange={(e) => {
+                            setAutoSendSchedule((prev) => ({ ...prev, customEndTime: e.target.value }))
+                            handleChange()
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-3">
+                      <div>
+                        <Label>Holiday blackouts</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Skip auto-sends on holidays. Campaign overrides can add extra blackouts.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <Checkbox
+                          checked={autoSendSchedule.holidays.presetEnabled}
+                          disabled={!isWorkspaceAdmin}
+                          onCheckedChange={(v) => {
+                            const checked = v === true
+                            setAutoSendSchedule((prev) => ({
+                              ...prev,
+                              holidays: { ...prev.holidays, presetEnabled: checked },
+                            }))
+                            handleChange()
+                          }}
+                        />
+                        <span className="text-sm">Use US federal + common holidays (no observed dates)</span>
+                      </div>
+
+                      {autoSendSchedule.holidays.presetEnabled ? (
+                        <div className="space-y-2">
+                          <Label className="text-sm">Exclude preset dates</Label>
+                          <div className="flex flex-wrap gap-2">
+                            <Input
+                              type="date"
+                              value={holidayExcludedPresetDate}
+                              disabled={!isWorkspaceAdmin}
+                              onChange={(e) => setHolidayExcludedPresetDate(e.target.value)}
+                            />
+                            <Button
+                              variant="outline"
+                              disabled={!isWorkspaceAdmin || !holidayExcludedPresetDate}
+                              onClick={() => {
+                                if (!holidayExcludedPresetDate) return
+                                setAutoSendSchedule((prev) => ({
+                                  ...prev,
+                                  holidays: {
+                                    ...prev.holidays,
+                                    excludedPresetDates: normalizeDateList([
+                                      ...prev.holidays.excludedPresetDates,
+                                      holidayExcludedPresetDate,
+                                    ]),
+                                  },
+                                }))
+                                setHolidayExcludedPresetDate("")
+                                handleChange()
+                              }}
+                            >
+                              Add
+                            </Button>
+                          </div>
+                          {autoSendSchedule.holidays.excludedPresetDates.length > 0 ? (
+                            <div className="space-y-2">
+                              {autoSendSchedule.holidays.excludedPresetDates.map((date) => (
+                                <div key={date} className="flex items-center justify-between rounded-lg border p-2">
+                                  <span className="text-sm">{date}</span>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                    onClick={() => {
+                                      setAutoSendSchedule((prev) => ({
+                                        ...prev,
+                                        holidays: {
+                                          ...prev.holidays,
+                                          excludedPresetDates: prev.holidays.excludedPresetDates.filter((d) => d !== date),
+                                        },
+                                      }))
+                                      handleChange()
+                                    }}
+                                    disabled={!isWorkspaceAdmin}
+                                    aria-label="Remove excluded holiday"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">No excluded holiday dates.</p>
+                          )}
+                        </div>
+                      ) : null}
+
+                      <div className="space-y-2">
+                        <Label className="text-sm">Additional blackout dates</Label>
+                        <div className="flex flex-wrap gap-2">
+                          <Input
+                            type="date"
+                            value={holidayBlackoutDate}
+                            disabled={!isWorkspaceAdmin}
+                            onChange={(e) => setHolidayBlackoutDate(e.target.value)}
+                          />
+                          <Button
+                            variant="outline"
+                            disabled={!isWorkspaceAdmin || !holidayBlackoutDate}
+                            onClick={() => {
+                              if (!holidayBlackoutDate) return
+                              setAutoSendSchedule((prev) => ({
+                                ...prev,
+                                holidays: {
+                                  ...prev.holidays,
+                                  additionalBlackoutDates: normalizeDateList([
+                                    ...prev.holidays.additionalBlackoutDates,
+                                    holidayBlackoutDate,
+                                  ]),
+                                },
+                              }))
+                              setHolidayBlackoutDate("")
+                              handleChange()
+                            }}
+                          >
+                            Add
+                          </Button>
+                        </div>
+                        {autoSendSchedule.holidays.additionalBlackoutDates.length > 0 ? (
+                          <div className="space-y-2">
+                            {autoSendSchedule.holidays.additionalBlackoutDates.map((date) => (
+                              <div key={date} className="flex items-center justify-between rounded-lg border p-2">
+                                <span className="text-sm">{date}</span>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                  onClick={() => {
+                                    setAutoSendSchedule((prev) => ({
+                                      ...prev,
+                                      holidays: {
+                                        ...prev.holidays,
+                                        additionalBlackoutDates: prev.holidays.additionalBlackoutDates.filter((d) => d !== date),
+                                      },
+                                    }))
+                                    handleChange()
+                                  }}
+                                  disabled={!isWorkspaceAdmin}
+                                  aria-label="Remove blackout date"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">No additional blackout dates.</p>
+                        )}
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-sm">Additional blackout ranges</Label>
+                        <div className="flex flex-wrap gap-2">
+                          <Input
+                            type="date"
+                            value={holidayBlackoutRangeStart}
+                            disabled={!isWorkspaceAdmin}
+                            onChange={(e) => setHolidayBlackoutRangeStart(e.target.value)}
+                          />
+                          <Input
+                            type="date"
+                            value={holidayBlackoutRangeEnd}
+                            disabled={!isWorkspaceAdmin}
+                            onChange={(e) => setHolidayBlackoutRangeEnd(e.target.value)}
+                          />
+                          <Button
+                            variant="outline"
+                            disabled={!isWorkspaceAdmin || !holidayBlackoutRangeStart || !holidayBlackoutRangeEnd}
+                            onClick={() => {
+                              if (!holidayBlackoutRangeStart || !holidayBlackoutRangeEnd) return
+                              setAutoSendSchedule((prev) => ({
+                                ...prev,
+                                holidays: {
+                                  ...prev.holidays,
+                                  additionalBlackoutDateRanges: normalizeDateRanges([
+                                    ...prev.holidays.additionalBlackoutDateRanges,
+                                    { start: holidayBlackoutRangeStart, end: holidayBlackoutRangeEnd },
+                                  ]),
+                                },
+                              }))
+                              setHolidayBlackoutRangeStart("")
+                              setHolidayBlackoutRangeEnd("")
+                              handleChange()
+                            }}
+                          >
+                            Add
+                          </Button>
+                        </div>
+                        {autoSendSchedule.holidays.additionalBlackoutDateRanges.length > 0 ? (
+                          <div className="space-y-2">
+                            {autoSendSchedule.holidays.additionalBlackoutDateRanges.map((range) => (
+                              <div key={`${range.start}:${range.end}`} className="flex items-center justify-between rounded-lg border p-2">
+                                <span className="text-sm">
+                                  {range.start} → {range.end}
+                                </span>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                  onClick={() => {
+                                    setAutoSendSchedule((prev) => ({
+                                      ...prev,
+                                      holidays: {
+                                        ...prev.holidays,
+                                        additionalBlackoutDateRanges: prev.holidays.additionalBlackoutDateRanges.filter(
+                                          (r) => !(r.start === range.start && r.end === range.end)
+                                        ),
+                                      },
+                                    }))
+                                    handleChange()
+                                  }}
+                                  disabled={!isWorkspaceAdmin}
+                                  aria-label="Remove blackout range"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">No blackout ranges.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+
             {/* Company/Outreach Context */}
             <Card>
               <CardHeader>
@@ -2566,7 +3090,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                         </Button>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Required scopes: <code>chat:write</code>, <code>channels:read</code>, <code>groups:read</code>. The bot must be invited to private channels.
+                        Required scopes: <code>chat:write</code>, <code>channels:read</code>, <code>groups:read</code>,{" "}
+                        <code>users:read</code>, <code>im:write</code>. The bot must be invited to private channels.
                       </p>
                     </div>
 
@@ -2640,6 +3165,76 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       ) : (
                         <p className="text-xs text-muted-foreground">No Slack channels selected yet</p>
                       )}
+                    </div>
+
+                    <Separator />
+
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <Label>AI Auto-Send Approval Recipients</Label>
+                          <p className="text-xs text-muted-foreground">
+                            Team members who receive Slack DMs when AI auto-send needs human review
+                          </p>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleRefreshSlackMembers}
+                          disabled={isLoadingSlackMembers || !slackTokenStatus?.configured}
+                        >
+                          {isLoadingSlackMembers ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+                          Refresh members
+                        </Button>
+                      </div>
+
+                      {!slackTokenStatus?.configured ? (
+                        <p className="text-xs text-muted-foreground">
+                          Configure a Slack bot token above to select approval recipients.
+                        </p>
+                      ) : slackMembers.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          No members loaded. Click “Refresh members” to pull your Slack workspace members.
+                        </p>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          {slackMembers.map((member) => {
+                            const isSelected = selectedApprovalRecipients.some((r) => r.id === member.id)
+                            return (
+                              <button
+                                key={member.id}
+                                type="button"
+                                onClick={() => toggleApprovalRecipient(member)}
+                                className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                                  isSelected
+                                    ? "border-primary bg-primary/10 text-primary"
+                                    : "border-muted hover:border-primary/50"
+                                }`}
+                              >
+                                <Avatar className="h-5 w-5">
+                                  <AvatarImage src={member.avatarUrl || undefined} />
+                                  <AvatarFallback>{member.displayName?.slice(0, 1) || "?"}</AvatarFallback>
+                                </Avatar>
+                                <span className="max-w-[140px] truncate">{member.displayName}</span>
+                                {isSelected ? <Check className="h-3 w-3" /> : null}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
+
+                      {slackTokenStatus?.configured && slackMembers.length > 0 && selectedApprovalRecipients.length === 0 ? (
+                        <p className="text-xs text-amber-600 dark:text-amber-400">
+                          No recipients selected. AI auto-send review DMs will be skipped for this workspace.
+                        </p>
+                      ) : null}
+
+                      {selectedApprovalRecipients.length > 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          {selectedApprovalRecipients.length} recipient
+                          {selectedApprovalRecipients.length > 1 ? "s" : ""} selected
+                        </p>
+                      ) : null}
                     </div>
                   </>
                 )}

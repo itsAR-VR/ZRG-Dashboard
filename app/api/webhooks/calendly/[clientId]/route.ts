@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { autoStartPostBookingSequenceIfEligible } from "@/lib/followup-automation";
+import { pauseFollowUpsOnBooking } from "@/lib/followup-engine";
 import { verifyCalendlyWebhookSignature } from "@/lib/calendly-webhook";
 import { upsertAppointmentWithRollup } from "@/lib/appointment-upsert";
 import { AppointmentStatus, AppointmentSource } from "@prisma/client";
@@ -55,26 +56,7 @@ function parseInviteePayload(payload: unknown): {
 
 async function applyPostBookingSideEffects(leadId: string) {
   await autoStartPostBookingSequenceIfEligible({ leadId });
-
-  const activeInstances = await prisma.followUpInstance.findMany({
-    where: {
-      leadId,
-      status: { in: ["active", "paused"] },
-      sequence: { triggerOn: { not: "meeting_selected" } },
-    },
-    select: { id: true },
-  });
-
-  if (activeInstances.length > 0) {
-    await prisma.followUpInstance.updateMany({
-      where: { id: { in: activeInstances.map((i) => i.id) } },
-      data: {
-        status: "completed",
-        completedAt: new Date(),
-        nextStepDue: null,
-      },
-    });
-  }
+  await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
 }
 
 export async function POST(request: NextRequest, context: { params: Promise<{ clientId: string }> }) {
@@ -237,6 +219,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ cl
           provider: "CALENDLY",
         });
       }
+
+      // No resume on cancellation when using completion semantics.
     } else {
       // Fallback: update lead directly if no invitee URI (legacy support)
       const nextStatus = lead.status === "meeting-booked" ? "qualified" : lead.status;

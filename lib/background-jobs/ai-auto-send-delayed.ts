@@ -9,6 +9,13 @@ import "server-only";
 
 import { validateDelayedAutoSend } from "@/lib/background-jobs/delayed-auto-send";
 import { approveAndSendDraftSystem } from "@/actions/message-actions";
+import { prisma } from "@/lib/prisma";
+import { RescheduleBackgroundJobError } from "@/lib/background-jobs/errors";
+import {
+  getNextAutoSendWindow,
+  isWithinAutoSendSchedule,
+  resolveAutoSendScheduleConfig,
+} from "@/lib/auto-send-schedule";
 
 export interface AiAutoSendDelayedJobParams {
   clientId: string;
@@ -40,6 +47,43 @@ export async function runAiAutoSendDelayedJob(
     );
     // Return successfully (job is "done" - we just chose not to send)
     return;
+  }
+
+  const lead = await prisma.lead.findUnique({
+    where: { id: leadId },
+    select: {
+      timezone: true,
+      emailCampaign: {
+        select: {
+          autoSendScheduleMode: true,
+          autoSendCustomSchedule: true,
+        },
+      },
+      client: {
+        select: {
+          settings: {
+            select: {
+              timezone: true,
+              workStartTime: true,
+              workEndTime: true,
+              autoSendScheduleMode: true,
+              autoSendCustomSchedule: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const scheduleConfig = resolveAutoSendScheduleConfig(
+    lead?.client?.settings ?? null,
+    lead?.emailCampaign ?? null,
+    lead?.timezone ?? null
+  );
+  const scheduleCheck = isWithinAutoSendSchedule(scheduleConfig);
+  if (!scheduleCheck.withinSchedule) {
+    const nextWindow = scheduleCheck.nextWindowStart || getNextAutoSendWindow(scheduleConfig);
+    throw new RescheduleBackgroundJobError(nextWindow, `outside_schedule:${scheduleCheck.reason}`);
   }
 
   // Execute the send

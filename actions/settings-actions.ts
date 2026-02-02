@@ -9,8 +9,9 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { extractKnowledgeNotesFromFile, extractKnowledgeNotesFromText } from "@/lib/knowledge-asset-extraction";
 import { crawl4aiExtractMarkdown } from "@/lib/crawl4ai";
 import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
+import { validateAutoSendCustomSchedule } from "@/lib/auto-send-schedule";
 import { isIP } from "node:net";
-import { MeetingBookingProvider } from "@prisma/client";
+import { MeetingBookingProvider, Prisma } from "@prisma/client";
 
 export interface UserSettingsData {
   id: string;
@@ -55,6 +56,8 @@ export interface UserSettingsData {
   timezone: string | null;
   workStartTime: string | null;
   workEndTime: string | null;
+  autoSendScheduleMode: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
+  autoSendCustomSchedule: Record<string, unknown> | null;
   // Calendar Settings
   calendarSlotsToShow: number | null;
   calendarLookAheadDays: number | null;
@@ -158,6 +161,8 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           timezone: "America/New_York",
           workStartTime: "09:00",
           workEndTime: "17:00",
+          autoSendScheduleMode: "ALWAYS",
+          autoSendCustomSchedule: null,
           calendarSlotsToShow: 3,
           calendarLookAheadDays: 28,
           emailBisonFirstTouchAvailabilitySlotEnabled: true,
@@ -195,7 +200,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
 
     // Create default settings if none exist
     if (!settings) {
-      settings = await prisma.workspaceSettings.create({
+      const created = await prisma.workspaceSettings.create({
         data: {
           clientId,
           aiTone: "friendly-professional",
@@ -213,11 +218,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           timezone: "America/New_York",
           workStartTime: "09:00",
           workEndTime: "17:00",
-        },
-        include: {
-          knowledgeAssets: true,
+          autoSendScheduleMode: "ALWAYS",
+          autoSendCustomSchedule: Prisma.JsonNull,
         },
       });
+      settings = { ...created, knowledgeAssets: [] };
     }
 
     const knowledgeAssets: KnowledgeAssetData[] = settings.knowledgeAssets.map((asset) => ({
@@ -274,6 +279,8 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         timezone: settings.timezone,
         workStartTime: settings.workStartTime,
         workEndTime: settings.workEndTime,
+        autoSendScheduleMode: settings.autoSendScheduleMode ?? "ALWAYS",
+        autoSendCustomSchedule: (settings.autoSendCustomSchedule as Record<string, unknown> | null) ?? null,
         calendarSlotsToShow: settings.calendarSlotsToShow,
         calendarLookAheadDays: settings.calendarLookAheadDays,
         emailBisonFirstTouchAvailabilitySlotEnabled: settings.emailBisonFirstTouchAvailabilitySlotEnabled,
@@ -317,6 +324,9 @@ export async function updateUserSettings(
     }
     await requireClientAccess(clientId);
 
+    const toNullableJson = (value: Record<string, unknown> | null | undefined) =>
+      value === null ? Prisma.JsonNull : (value as Prisma.InputJsonValue | undefined);
+
     const wantsInsightsUpdate =
       data.insightsChatModel !== undefined ||
       data.insightsChatReasoningEffort !== undefined ||
@@ -338,11 +348,27 @@ export async function updateUserSettings(
       data.emailBisonAvailabilitySlotIncludeWeekends !== undefined ||
       data.emailBisonAvailabilitySlotCount !== undefined ||
       data.emailBisonAvailabilitySlotPreferWithinDays !== undefined;
+    const wantsScheduleUpdate =
+      data.autoSendScheduleMode !== undefined ||
+      data.autoSendCustomSchedule !== undefined;
+
+    let normalizedCustomSchedule = data.autoSendCustomSchedule;
+
     if (wantsInsightsUpdate || wantsDraftGenerationUpdate || wantsNotificationUpdate) {
       await requireClientAdminAccess(clientId);
     }
     if (wantsEmailBisonAvailabilitySlotUpdate) {
       await requireClientAdminAccess(clientId);
+    }
+    if (wantsScheduleUpdate) {
+      await requireClientAdminAccess(clientId);
+      if (data.autoSendCustomSchedule !== undefined && data.autoSendCustomSchedule !== null) {
+        const validation = validateAutoSendCustomSchedule(data.autoSendCustomSchedule);
+        if (!validation.ok) {
+          return { success: false, error: validation.error };
+        }
+        normalizedCustomSchedule = validation.value as unknown as Record<string, unknown>;
+      }
     }
 
     await prisma.workspaceSettings.upsert({
@@ -382,6 +408,8 @@ export async function updateUserSettings(
         timezone: data.timezone,
         workStartTime: data.workStartTime,
         workEndTime: data.workEndTime,
+        autoSendScheduleMode: data.autoSendScheduleMode as any,
+        autoSendCustomSchedule: toNullableJson(normalizedCustomSchedule),
         calendarSlotsToShow: data.calendarSlotsToShow,
         calendarLookAheadDays: data.calendarLookAheadDays,
         emailBisonFirstTouchAvailabilitySlotEnabled: data.emailBisonFirstTouchAvailabilitySlotEnabled,
@@ -442,6 +470,8 @@ export async function updateUserSettings(
         timezone: data.timezone,
         workStartTime: data.workStartTime ?? "09:00",
         workEndTime: data.workEndTime ?? "17:00",
+        autoSendScheduleMode: (data.autoSendScheduleMode as any) ?? "ALWAYS",
+        autoSendCustomSchedule: toNullableJson(normalizedCustomSchedule) ?? Prisma.JsonNull,
         calendarSlotsToShow: data.calendarSlotsToShow ?? 3,
         calendarLookAheadDays: data.calendarLookAheadDays ?? 28,
         emailBisonFirstTouchAvailabilitySlotEnabled: data.emailBisonFirstTouchAvailabilitySlotEnabled ?? true,

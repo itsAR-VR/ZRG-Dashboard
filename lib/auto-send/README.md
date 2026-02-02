@@ -42,7 +42,8 @@ Important nuance: if a campaign exists but is not `AI_AUTO_SEND` (e.g. `SETTER_M
 
 If the AI evaluation is not safe or is below threshold, we send a Slack DM for review:
 
-- Recipient email is currently hardcoded (`AUTO_SEND_CONSTANTS.REVIEW_NOTIFICATION_EMAIL`).
+- Recipients are configured per workspace via `WorkspaceSettings.slackAutoSendApprovalRecipients`.
+- If no recipients (or no workspace Slack token), the review DM is skipped.
 - The Slack `blocks` structure is treated as a “golden master” to avoid behavior drift.
 - Some jobs include a draft preview in the Slack message (`includeDraftPreviewInSlack`), matching historical behavior.
 

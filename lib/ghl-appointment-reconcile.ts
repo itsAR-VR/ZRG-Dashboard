@@ -19,6 +19,7 @@ import {
   type AppointmentSource,
 } from "@/lib/meeting-lifecycle";
 import { autoStartPostBookingSequenceIfEligible } from "@/lib/followup-automation";
+import { pauseFollowUpsOnBooking } from "@/lib/followup-engine";
 import { createCancellationTask } from "@/lib/appointment-cancellation-task";
 import { upsertAppointmentWithRollup, mapStringToAppointmentStatus } from "@/lib/appointment-upsert";
 import { AppointmentSource as PrismaAppointmentSource, AppointmentStatus } from "@prisma/client";
@@ -256,26 +257,7 @@ export async function reconcileGHLAppointmentForLead(
         // Start post-booking sequence
         await autoStartPostBookingSequenceIfEligible({ leadId });
 
-        // Complete/stop non-booking follow-up instances
-        const activeInstances = await prisma.followUpInstance.findMany({
-          where: {
-            leadId,
-            status: { in: ["active", "paused"] },
-            sequence: { triggerOn: { not: "meeting_selected" } },
-          },
-          select: { id: true },
-        });
-
-        if (activeInstances.length > 0) {
-          await prisma.followUpInstance.updateMany({
-            where: { id: { in: activeInstances.map((i) => i.id) } },
-            data: {
-              status: "completed",
-              completedAt: new Date(),
-              nextStepDue: null,
-            },
-          });
-        }
+        await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
       }
 
       // Create cancellation task for new cancellations (surface in Follow-ups UI)
@@ -286,6 +268,8 @@ export async function reconcileGHLAppointmentForLead(
           appointmentStartTime: startTime,
           provider: "GHL",
         });
+
+        // No resume on cancellation when using completion semantics.
       }
     }
 

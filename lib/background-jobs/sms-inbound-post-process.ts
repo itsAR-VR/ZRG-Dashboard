@@ -42,6 +42,8 @@ export async function runSmsInboundPostProcessJob(params: {
               bisonCampaignId: true,
               responseMode: true,
               autoSendConfidenceThreshold: true,
+              autoSendScheduleMode: true,
+              autoSendCustomSchedule: true,
             },
           },
         },
@@ -293,8 +295,10 @@ export async function runSmsInboundPostProcessJob(params: {
         leadFirstName: lead.firstName,
         leadLastName: lead.lastName,
         leadEmail: lead.email,
+        leadTimezone: lead.timezone ?? null,
         emailCampaign: lead.emailCampaign,
         autoReplyEnabled: lead.autoReplyEnabled,
+        workspaceSettings: settings,
         validateImmediateSend: true,
         includeDraftPreviewInSlack: true,
       });
@@ -322,9 +326,9 @@ export async function runSmsInboundPostProcessJob(params: {
           break;
         }
         case "needs_review": {
-          if (!autoSendResult.outcome.slackDm.sent) {
+          if (!autoSendResult.outcome.slackDm.sent && !autoSendResult.outcome.slackDm.skipped) {
             console.error(
-              `[Slack DM] Failed to notify Jon for draft ${draftId}: ${autoSendResult.outcome.slackDm.error || "unknown error"}`
+              `[Slack DM] Failed to notify Slack reviewers for draft ${draftId}: ${autoSendResult.outcome.slackDm.error || "unknown error"}`
             );
           }
           console.log(`[SMS Post-Process] Auto-send blocked: ${autoSendResult.outcome.reason}`);

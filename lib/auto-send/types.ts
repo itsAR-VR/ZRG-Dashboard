@@ -47,6 +47,7 @@ export interface AutoSendContext {
   leadFirstName?: string | null;
   leadLastName?: string | null;
   leadEmail?: string | null;
+  leadTimezone?: string | null;
 
   // Campaign context (determines which path)
   emailCampaign?: {
@@ -55,10 +56,20 @@ export interface AutoSendContext {
     bisonCampaignId: string | null;
     responseMode: string | null;
     autoSendConfidenceThreshold: number;
+    autoSendScheduleMode?: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
+    autoSendCustomSchedule?: unknown;
   } | null;
 
   // Legacy per-lead flag
   autoReplyEnabled?: boolean;
+
+  workspaceSettings?: {
+    timezone?: string | null;
+    workStartTime?: string | null;
+    workEndTime?: string | null;
+    autoSendScheduleMode?: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
+    autoSendCustomSchedule?: unknown;
+  } | null;
 
   // Behavior toggles to preserve per-job semantics
   validateImmediateSend?: boolean;
@@ -82,7 +93,6 @@ export interface AutoSendResult {
 }
 
 export const AUTO_SEND_CONSTANTS = {
-  REVIEW_NOTIFICATION_EMAIL: "jonandmika@gmail.com",
   DEFAULT_CONFIDENCE_THRESHOLD: 0.9,
 } as const;
 

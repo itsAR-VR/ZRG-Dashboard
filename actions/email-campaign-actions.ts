@@ -6,8 +6,9 @@ import { fetchSmartLeadCampaigns } from "@/lib/smartlead-api";
 import { fetchInstantlyCampaigns } from "@/lib/instantly-api";
 import { revalidatePath } from "next/cache";
 import { requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
-import { CampaignResponseMode, EmailIntegrationProvider } from "@prisma/client";
+import { CampaignResponseMode, EmailIntegrationProvider, Prisma } from "@prisma/client";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
+import { validateAutoSendCustomSchedule } from "@/lib/auto-send-schedule";
 
 interface EmailCampaignData {
   id: string;
@@ -21,6 +22,8 @@ interface EmailCampaignData {
   // Phase 47l: Auto-send delay window
   autoSendDelayMinSeconds: number;
   autoSendDelayMaxSeconds: number;
+  autoSendScheduleMode: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
+  autoSendCustomSchedule: Record<string, unknown> | null;
   bookingProcessId: string | null;
   bookingProcessName: string | null;
   // AI Persona assignment (Phase 39)
@@ -67,6 +70,8 @@ export async function getEmailCampaigns(clientId?: string): Promise<{
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold,
       autoSendDelayMinSeconds: c.autoSendDelayMinSeconds,
       autoSendDelayMaxSeconds: c.autoSendDelayMaxSeconds,
+      autoSendScheduleMode: c.autoSendScheduleMode ?? null,
+      autoSendCustomSchedule: (c.autoSendCustomSchedule as Record<string, unknown> | null) ?? null,
       bookingProcessId: c.bookingProcess?.id ?? null,
       bookingProcessName: c.bookingProcess?.name ?? null,
       aiPersonaId: c.aiPersona?.id ?? null,
@@ -105,6 +110,8 @@ export async function updateEmailCampaignConfig(
     autoSendConfidenceThreshold?: number;
     autoSendDelayMinSeconds?: number;
     autoSendDelayMaxSeconds?: number;
+    autoSendScheduleMode?: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
+    autoSendCustomSchedule?: Record<string, unknown> | null;
   }
 ): Promise<{
   success: boolean;
@@ -113,6 +120,8 @@ export async function updateEmailCampaignConfig(
     autoSendConfidenceThreshold: number;
     autoSendDelayMinSeconds: number;
     autoSendDelayMaxSeconds: number;
+    autoSendScheduleMode: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
+    autoSendCustomSchedule: Record<string, unknown> | null;
   };
   error?: string;
 }> {
@@ -125,12 +134,16 @@ export async function updateEmailCampaignConfig(
 
     await requireClientAdminAccess(campaign.clientId);
 
-    const data: {
-      responseMode?: CampaignResponseMode;
-      autoSendConfidenceThreshold?: number;
-      autoSendDelayMinSeconds?: number;
-      autoSendDelayMaxSeconds?: number;
-    } = {};
+    const data: Prisma.EmailCampaignUpdateInput = {};
+    let normalizedCustomSchedule: Record<string, unknown> | null | undefined = opts.autoSendCustomSchedule;
+
+    if (opts.autoSendCustomSchedule !== undefined && opts.autoSendCustomSchedule !== null) {
+      const validation = validateAutoSendCustomSchedule(opts.autoSendCustomSchedule);
+      if (!validation.ok) {
+        return { success: false, error: validation.error };
+      }
+      normalizedCustomSchedule = validation.value as unknown as Record<string, unknown>;
+    }
 
     if (opts.responseMode) data.responseMode = opts.responseMode;
 
@@ -163,6 +176,16 @@ export async function updateEmailCampaignConfig(
       data.autoSendDelayMaxSeconds = maxSec;
     }
 
+    if (opts.autoSendScheduleMode !== undefined) {
+      data.autoSendScheduleMode = opts.autoSendScheduleMode;
+    }
+    if (opts.autoSendCustomSchedule !== undefined) {
+      data.autoSendCustomSchedule =
+        normalizedCustomSchedule === null
+          ? Prisma.JsonNull
+          : (normalizedCustomSchedule as Prisma.InputJsonValue);
+    }
+
     const updated = await prisma.emailCampaign.update({
       where: { id: emailCampaignId },
       data,
@@ -171,6 +194,8 @@ export async function updateEmailCampaignConfig(
         autoSendConfidenceThreshold: true,
         autoSendDelayMinSeconds: true,
         autoSendDelayMaxSeconds: true,
+        autoSendScheduleMode: true,
+        autoSendCustomSchedule: true,
       },
     });
 
@@ -183,6 +208,8 @@ export async function updateEmailCampaignConfig(
         autoSendConfidenceThreshold: updated.autoSendConfidenceThreshold,
         autoSendDelayMinSeconds: updated.autoSendDelayMinSeconds,
         autoSendDelayMaxSeconds: updated.autoSendDelayMaxSeconds,
+        autoSendScheduleMode: updated.autoSendScheduleMode ?? null,
+        autoSendCustomSchedule: (updated.autoSendCustomSchedule as Record<string, unknown> | null) ?? null,
       },
     };
   } catch (error) {

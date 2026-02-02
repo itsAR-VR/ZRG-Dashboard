@@ -97,6 +97,15 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
             select: {
               id: true,
               name: true,
+              settings: {
+                select: {
+                  timezone: true,
+                  workStartTime: true,
+                  workEndTime: true,
+                  autoSendScheduleMode: true,
+                  autoSendCustomSchedule: true,
+                },
+              },
             },
           },
           emailCampaign: {
@@ -106,6 +115,8 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
               bisonCampaignId: true,
               responseMode: true,
               autoSendConfidenceThreshold: true,
+              autoSendScheduleMode: true,
+              autoSendCustomSchedule: true,
             },
           },
         },
@@ -320,8 +331,10 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
           leadFirstName: lead.firstName,
           leadLastName: lead.lastName,
           leadEmail: lead.email,
+          leadTimezone: lead.timezone ?? null,
           emailCampaign,
           autoReplyEnabled: lead.autoReplyEnabled,
+          workspaceSettings: lead.client?.settings ?? null,
           validateImmediateSend: true,
           includeDraftPreviewInSlack: false,
         });
@@ -351,9 +364,9 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
               break;
             }
             case "needs_review": {
-              if (!autoSendResult.outcome.slackDm.sent) {
+              if (!autoSendResult.outcome.slackDm.sent && !autoSendResult.outcome.slackDm.skipped) {
                 console.error(
-                  "[Slack DM] Failed to notify Jon for draft",
+                  "[Slack DM] Failed to notify Slack reviewers for draft",
                   draftId,
                   autoSendResult.outcome.slackDm.error || "unknown error"
                 );

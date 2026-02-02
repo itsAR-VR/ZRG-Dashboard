@@ -26,7 +26,6 @@ import { buildSentimentTranscriptFromMessages, detectBounce, isOptOutText } from
 import { decideShouldAutoReply } from "../lib/auto-reply-gate";
 import { evaluateAutoSend } from "../lib/auto-send-evaluator";
 import { getPublicAppUrl } from "../lib/app-url";
-import { sendSlackDmByEmail } from "../lib/slack-dm";
 import { createAutoSendExecutor } from "../lib/auto-send/orchestrator";
 import type { AutoSendDecisionRecord } from "../lib/auto-send/record-auto-send-decision";
 import { scheduleDelayedAutoSend, validateDelayedAutoSend } from "../lib/background-jobs/delayed-auto-send";
@@ -269,8 +268,10 @@ async function main(): Promise<void> {
     getPublicAppUrl,
     getCampaignDelayConfig: async () => ({ delayMinSeconds: 0, delayMaxSeconds: 0 }),
     scheduleDelayedAutoSend,
+    scheduleAutoSendAt: async () => ({ scheduled: false, skipReason: "backfill_script" }),
     validateDelayedAutoSend,
-    sendSlackDmByEmail,
+    sendSlackDmByUserIdWithToken: async () => ({ success: true, skipped: true }),
+    getSlackAutoSendApprovalConfig: async () => ({ token: null, recipients: [], skipReason: "no_recipients" }),
     recordAutoSendDecision: async (record: AutoSendDecisionRecord) => {
       await prisma.aIDraft.update({
         where: { id: record.draftId },
@@ -317,6 +318,7 @@ async function main(): Promise<void> {
             firstName: true,
             lastName: true,
             email: true,
+            timezone: true,
             sentimentTag: true,
             autoReplyEnabled: true,
             appointmentBookedAt: true,
@@ -362,6 +364,7 @@ async function main(): Promise<void> {
       leadFirstName: string | null;
       leadLastName: string | null;
       leadEmail: string | null;
+      leadTimezone: string | null;
       autoReplyEnabled: boolean;
       sentimentTag: string;
       inboundText: string;
@@ -424,6 +427,7 @@ async function main(): Promise<void> {
         leadFirstName: lead.firstName ?? null,
         leadLastName: lead.lastName ?? null,
         leadEmail,
+        leadTimezone: lead.timezone ?? null,
         autoReplyEnabled: Boolean(lead.autoReplyEnabled),
         sentimentTag,
         inboundText: message.body,
@@ -594,6 +598,7 @@ async function main(): Promise<void> {
           leadFirstName: candidate.leadFirstName,
           leadLastName: candidate.leadLastName,
           leadEmail: candidate.leadEmail,
+          leadTimezone: candidate.leadTimezone,
           emailCampaign: candidate.campaign,
           autoReplyEnabled: candidate.autoReplyEnabled,
           validateImmediateSend: true,

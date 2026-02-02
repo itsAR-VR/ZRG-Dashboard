@@ -50,6 +50,60 @@ function computeDeterministicDelay(
   return minSeconds + (hash % (range + 1));
 }
 
+export function computeDelayedAutoSendRunAt(params: {
+  triggerMessageId: string;
+  inboundSentAt: Date;
+  delayMinSeconds: number;
+  delayMaxSeconds: number;
+}): Date {
+  const { triggerMessageId, inboundSentAt, delayMinSeconds, delayMaxSeconds } = params;
+  const delaySeconds = computeDeterministicDelay(triggerMessageId, delayMinSeconds, delayMaxSeconds);
+  const runAt = new Date(inboundSentAt.getTime() + delaySeconds * 1000);
+  const now = new Date();
+  return runAt < now ? new Date(now.getTime() + 30_000) : runAt;
+}
+
+export async function scheduleAutoSendAt(params: {
+  clientId: string;
+  leadId: string;
+  triggerMessageId: string;
+  draftId: string;
+  runAt: Date;
+}): Promise<{ scheduled: boolean; runAt?: Date; skipReason?: string }> {
+  const { clientId, leadId, triggerMessageId, draftId, runAt } = params;
+  const dedupeKey = `${clientId}:${triggerMessageId}:${BackgroundJobType.AI_AUTO_SEND_DELAYED}:${draftId}`;
+
+  try {
+    await prisma.backgroundJob.create({
+      data: {
+        type: BackgroundJobType.AI_AUTO_SEND_DELAYED,
+        clientId,
+        leadId,
+        messageId: triggerMessageId,
+        draftId,
+        dedupeKey,
+        status: "PENDING",
+        runAt,
+        maxAttempts: 3,
+        attempts: 0,
+      },
+    });
+
+    console.log(
+      `[DelayedAutoSend] Scheduled job for draft ${draftId}, runAt: ${runAt.toISOString()}`
+    );
+
+    return { scheduled: true, runAt };
+  } catch (error) {
+    if (isPrismaUniqueConstraintError(error)) {
+      console.log(`[DelayedAutoSend] Job already scheduled (dedupe): ${dedupeKey}`);
+      return { scheduled: false, skipReason: "already_scheduled" };
+    }
+
+    throw error;
+  }
+}
+
 /**
  * Schedule a delayed auto-send job.
  * Returns true if job was enqueued, false if duplicate or delay is zero.
@@ -74,55 +128,32 @@ export async function scheduleDelayedAutoSend(
     return { scheduled: false, skipReason: "delay_window_zero" };
   }
 
-  // Compute deterministic delay
-  const delaySeconds = computeDeterministicDelay(
+  const effectiveRunAt = computeDelayedAutoSendRunAt({
     triggerMessageId,
+    inboundSentAt,
     delayMinSeconds,
-    delayMaxSeconds
-  );
+    delayMaxSeconds,
+  });
 
-  // Calculate runAt time
-  const runAt = new Date(inboundSentAt.getTime() + delaySeconds * 1000);
+  const scheduleResult = await scheduleAutoSendAt({
+    clientId,
+    leadId,
+    triggerMessageId,
+    draftId,
+    runAt: effectiveRunAt,
+  });
 
-  // If runAt is in the past (message is old), use now + 30s minimum
-  const now = new Date();
-  const effectiveRunAt = runAt < now ? new Date(now.getTime() + 30_000) : runAt;
-
-  // Build dedupe key: includes type, messageId, and draftId for uniqueness
-  const dedupeKey = `${clientId}:${triggerMessageId}:${BackgroundJobType.AI_AUTO_SEND_DELAYED}:${draftId}`;
-
-  try {
-    await prisma.backgroundJob.create({
-      data: {
-        type: BackgroundJobType.AI_AUTO_SEND_DELAYED,
-        clientId,
-        leadId,
-        messageId: triggerMessageId,
-        draftId,
-        dedupeKey,
-        status: "PENDING",
-        runAt: effectiveRunAt,
-        maxAttempts: 3, // Fewer retries for auto-send (avoid stale sends)
-        attempts: 0,
-      },
-    });
-
-    console.log(
-      `[DelayedAutoSend] Scheduled job for draft ${draftId}, runAt: ${effectiveRunAt.toISOString()} (delay: ${delaySeconds}s)`
+  if (scheduleResult.scheduled && scheduleResult.runAt) {
+    const delaySeconds = Math.max(
+      0,
+      Math.round((scheduleResult.runAt.getTime() - inboundSentAt.getTime()) / 1000)
     );
-
-    return { scheduled: true, runAt: effectiveRunAt };
-  } catch (error) {
-    // Unique constraint violation means job already scheduled
-    if (isPrismaUniqueConstraintError(error)) {
-      console.log(
-        `[DelayedAutoSend] Job already scheduled (dedupe): ${dedupeKey}`
-      );
-      return { scheduled: false, skipReason: "already_scheduled" };
-    }
-
-    throw error;
+    console.log(
+      `[DelayedAutoSend] Scheduled job for draft ${draftId}, runAt: ${scheduleResult.runAt.toISOString()} (delay: ${delaySeconds}s)`
+    );
   }
+
+  return scheduleResult;
 }
 
 /**

@@ -20,6 +20,7 @@ type SlackApiResponse<T> = { ok: boolean; error?: string } & T;
 
 const userIdCache = new Map<string, string>();
 const dmChannelCache = new Map<string, string>();
+const dmChannelCacheByToken = new Map<string, Map<string, string>>();
 const dedupeCache = new Map<string, number>();
 
 function getSlackTimeoutMs(): number {
@@ -33,10 +34,17 @@ function getSlackBotToken(): string | null {
   return token ? token : null;
 }
 
-async function slackGet<T>(path: string, query: Record<string, string>): Promise<SlackApiResponse<T>> {
-  const token = getSlackBotToken();
-  if (!token) return { ok: false, error: "SLACK_BOT_TOKEN not configured" } as SlackApiResponse<T>;
+function getDmChannelCacheForToken(token: string): Map<string, string> {
+  const existing = dmChannelCacheByToken.get(token);
+  if (existing) return existing;
+  const next = new Map<string, string>();
+  dmChannelCacheByToken.set(token, next);
+  return next;
+}
 
+async function slackGetWithToken<T>(token: string, path: string, query: Record<string, string>): Promise<SlackApiResponse<T>> {
+  const trimmed = token.trim();
+  if (!trimmed) return { ok: false, error: "Missing Slack bot token" } as SlackApiResponse<T>;
   const url = new URL(`https://slack.com/api/${path}`);
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
 
@@ -47,8 +55,42 @@ async function slackGet<T>(path: string, query: Record<string, string>): Promise
     const response = await fetch(url.toString(), {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${trimmed}`,
       },
+      signal: controller.signal,
+    });
+
+    const json = (await response.json()) as SlackApiResponse<T>;
+    return json;
+  } catch (error) {
+    const isAbort = error instanceof Error && error.name === "AbortError";
+    return { ok: false, error: isAbort ? "Slack request timed out" : (error instanceof Error ? error.message : "Slack request failed") } as SlackApiResponse<T>;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function slackGet<T>(path: string, query: Record<string, string>): Promise<SlackApiResponse<T>> {
+  const token = getSlackBotToken();
+  if (!token) return { ok: false, error: "SLACK_BOT_TOKEN not configured" } as SlackApiResponse<T>;
+  return slackGetWithToken(token, path, query);
+}
+
+async function slackPostWithToken<T>(token: string, path: string, body: unknown): Promise<SlackApiResponse<T>> {
+  const trimmed = token.trim();
+  if (!trimmed) return { ok: false, error: "Missing Slack bot token" } as SlackApiResponse<T>;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getSlackTimeoutMs());
+
+  try {
+    const response = await fetch(`https://slack.com/api/${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${trimmed}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
 
@@ -65,29 +107,7 @@ async function slackGet<T>(path: string, query: Record<string, string>): Promise
 async function slackPost<T>(path: string, body: unknown): Promise<SlackApiResponse<T>> {
   const token = getSlackBotToken();
   if (!token) return { ok: false, error: "SLACK_BOT_TOKEN not configured" } as SlackApiResponse<T>;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), getSlackTimeoutMs());
-
-  try {
-    const response = await fetch(`https://slack.com/api/${path}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-
-    const json = (await response.json()) as SlackApiResponse<T>;
-    return json;
-  } catch (error) {
-    const isAbort = error instanceof Error && error.name === "AbortError";
-    return { ok: false, error: isAbort ? "Slack request timed out" : (error instanceof Error ? error.message : "Slack request failed") } as SlackApiResponse<T>;
-  } finally {
-    clearTimeout(timeout);
-  }
+  return slackPostWithToken(token, path, body);
 }
 
 async function lookupSlackUserIdByEmail(email: string): Promise<string | null> {
@@ -119,6 +139,21 @@ async function openDmChannel(userId: string): Promise<string | null> {
   if (!channelId) return null;
 
   dmChannelCache.set(userId, channelId);
+  return channelId;
+}
+
+async function openDmChannelWithToken(token: string, userId: string): Promise<string | null> {
+  const trimmed = token.trim();
+  if (!trimmed) return null;
+  const cache = getDmChannelCacheForToken(trimmed);
+  const cached = cache.get(userId);
+  if (cached) return cached;
+
+  const res = await slackPostWithToken<{ channel?: { id?: string } }>(trimmed, "conversations.open", { users: userId });
+  const channelId = res.ok ? (res.channel?.id || null) : null;
+  if (!channelId) return null;
+
+  cache.set(userId, channelId);
   return channelId;
 }
 
@@ -173,6 +208,83 @@ export async function sendSlackDmByEmail(opts: {
   };
 }
 
+export async function sendSlackDmByUserId(opts: {
+  userId: string;
+  text: string;
+  blocks?: SlackBlock[];
+  dedupeKey?: string;
+  dedupeTtlMs?: number;
+}): Promise<SlackDmResult> {
+  const ttlMs = Math.max(1_000, opts.dedupeTtlMs ?? 10 * 60 * 1000);
+
+  if (opts.dedupeKey) {
+    const last = dedupeCache.get(opts.dedupeKey);
+    const now = Date.now();
+    if (last && now - last < ttlMs) {
+      return { success: true, skipped: true };
+    }
+    dedupeCache.set(opts.dedupeKey, now);
+  }
+
+  const channelId = await openDmChannel(opts.userId);
+  if (!channelId) return { success: false, error: "Slack DM channel open failed" };
+
+  const res = await slackPost<{ ts?: string }>("chat.postMessage", {
+    channel: channelId,
+    text: opts.text,
+    ...(opts.blocks ? { blocks: opts.blocks } : {}),
+  });
+
+  if (!res.ok) {
+    return { success: false, error: res.error || "Slack message failed" };
+  }
+
+  return {
+    success: true,
+    messageTs: res.ts,
+    channelId,
+  };
+}
+
+export async function sendSlackDmByUserIdWithToken(opts: {
+  token: string;
+  userId: string;
+  text: string;
+  blocks?: SlackBlock[];
+  dedupeKey?: string;
+  dedupeTtlMs?: number;
+}): Promise<SlackDmResult> {
+  const ttlMs = Math.max(1_000, opts.dedupeTtlMs ?? 10 * 60 * 1000);
+
+  if (opts.dedupeKey) {
+    const last = dedupeCache.get(opts.dedupeKey);
+    const now = Date.now();
+    if (last && now - last < ttlMs) {
+      return { success: true, skipped: true };
+    }
+    dedupeCache.set(opts.dedupeKey, now);
+  }
+
+  const channelId = await openDmChannelWithToken(opts.token, opts.userId);
+  if (!channelId) return { success: false, error: "Slack DM channel open failed" };
+
+  const res = await slackPostWithToken<{ ts?: string }>(opts.token, "chat.postMessage", {
+    channel: channelId,
+    text: opts.text,
+    ...(opts.blocks ? { blocks: opts.blocks } : {}),
+  });
+
+  if (!res.ok) {
+    return { success: false, error: res.error || "Slack message failed" };
+  }
+
+  return {
+    success: true,
+    messageTs: res.ts,
+    channelId,
+  };
+}
+
 /**
  * Update an existing Slack message.
  *
@@ -185,6 +297,27 @@ export async function updateSlackMessage(opts: {
   blocks?: SlackBlock[];
 }): Promise<{ success: boolean; error?: string }> {
   const res = await slackPost<{ ok: boolean }>("chat.update", {
+    channel: opts.channelId,
+    ts: opts.messageTs,
+    text: opts.text,
+    ...(opts.blocks ? { blocks: opts.blocks } : {}),
+  });
+
+  if (!res.ok) {
+    return { success: false, error: res.error || "Slack message update failed" };
+  }
+
+  return { success: true };
+}
+
+export async function updateSlackMessageWithToken(opts: {
+  token: string;
+  channelId: string;
+  messageTs: string;
+  text: string;
+  blocks?: SlackBlock[];
+}): Promise<{ success: boolean; error?: string }> {
+  const res = await slackPostWithToken<{ ok: boolean }>(opts.token, "chat.update", {
     channel: opts.channelId,
     ts: opts.messageTs,
     text: opts.text,

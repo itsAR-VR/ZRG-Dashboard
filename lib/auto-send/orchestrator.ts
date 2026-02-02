@@ -5,11 +5,19 @@ import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
 import { evaluateAutoSend } from "@/lib/auto-send-evaluator";
 import { getPublicAppUrl } from "@/lib/app-url";
 import {
+  computeDelayedAutoSendRunAt,
   getCampaignDelayConfig,
+  scheduleAutoSendAt,
   scheduleDelayedAutoSend,
   validateDelayedAutoSend,
 } from "@/lib/background-jobs/delayed-auto-send";
-import { sendSlackDmByEmail } from "@/lib/slack-dm";
+import { sendSlackDmByUserIdWithToken } from "@/lib/slack-dm";
+import {
+  getNextAutoSendWindow,
+  isWithinAutoSendSchedule,
+  resolveAutoSendScheduleConfig,
+} from "@/lib/auto-send-schedule";
+import { getSlackAutoSendApprovalConfig } from "./get-approval-recipients";
 import type { AutoSendContext, AutoSendMode, AutoSendResult } from "./types";
 import { AUTO_SEND_CONSTANTS } from "./types";
 import { recordAutoSendDecision, type AutoSendDecisionRecord } from "./record-auto-send-decision";
@@ -55,9 +63,11 @@ export type AutoSendDependencies = {
   evaluateAutoSend: typeof evaluateAutoSend;
   getPublicAppUrl: typeof getPublicAppUrl;
   getCampaignDelayConfig: typeof getCampaignDelayConfig;
+  scheduleAutoSendAt: typeof scheduleAutoSendAt;
   scheduleDelayedAutoSend: typeof scheduleDelayedAutoSend;
   validateDelayedAutoSend: typeof validateDelayedAutoSend;
-  sendSlackDmByEmail: typeof sendSlackDmByEmail;
+  sendSlackDmByUserIdWithToken: typeof sendSlackDmByUserIdWithToken;
+  getSlackAutoSendApprovalConfig: typeof getSlackAutoSendApprovalConfig;
   recordAutoSendDecision: typeof recordAutoSendDecision;
 };
 
@@ -152,12 +162,60 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
       },
     ] as const;
 
-    return await deps.sendSlackDmByEmail({
-      email: AUTO_SEND_CONSTANTS.REVIEW_NOTIFICATION_EMAIL,
-      dedupeKey: `auto_send_review:${context.draftId}`,
-      text: `AI auto-send review needed (${confidenceText})`,
-      blocks: blocks as unknown as Parameters<typeof sendSlackDmByEmail>[0]["blocks"],
-    });
+    const approvalConfig = await deps.getSlackAutoSendApprovalConfig(context.clientId);
+    if (approvalConfig.skipReason) {
+      console.log("[AutoSend] Slack review DM skipped", {
+        clientId: context.clientId,
+        reason: approvalConfig.skipReason,
+      });
+      return { success: false, skipped: true };
+    }
+
+    const recipients = approvalConfig.recipients;
+    const token = approvalConfig.token;
+    if (!token || recipients.length === 0) {
+      return { success: false, skipped: true };
+    }
+
+    const recipientResults: Array<{ userId: string; success: boolean; skipped?: boolean; error?: string }> = [];
+    let firstSuccess: { messageTs?: string; channelId?: string } | null = null;
+
+    for (let i = 0; i < recipients.length; i += 1) {
+      const recipient = recipients[i];
+      if (i > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+
+      const result = await deps.sendSlackDmByUserIdWithToken({
+        token,
+        userId: recipient.id,
+        dedupeKey: `auto_send_review:${context.draftId}:${recipient.id}`,
+        text: `AI auto-send review needed (${confidenceText})`,
+        blocks: blocks as unknown as Parameters<typeof sendSlackDmByUserIdWithToken>[0]["blocks"],
+      });
+
+      recipientResults.push({
+        userId: recipient.id,
+        success: result.success,
+        skipped: result.skipped,
+        error: result.error,
+      });
+
+      if (result.success && !result.skipped && !firstSuccess) {
+        firstSuccess = { messageTs: result.messageTs, channelId: result.channelId };
+      }
+    }
+
+    const anySuccess = recipientResults.some((r) => r.success);
+    const allSkipped = recipientResults.length > 0 && recipientResults.every((r) => r.success && r.skipped);
+
+    return {
+      success: anySuccess,
+      skipped: allSkipped,
+      error: anySuccess ? undefined : recipientResults.map((r) => r.error).filter(Boolean).join("; "),
+      messageTs: firstSuccess?.messageTs,
+      channelId: firstSuccess?.channelId,
+    };
   }
 
   async function executeAiAutoSendPath(context: AutoSendContext, startTimeMs: number): Promise<AutoSendResult> {
@@ -196,18 +254,42 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
     const evaluatedAt = new Date();
 
     if (evaluation.safeToSend && evaluation.confidence >= threshold) {
+      const scheduleConfig = resolveAutoSendScheduleConfig(
+        context.workspaceSettings ?? null,
+        context.emailCampaign ?? null,
+        context.leadTimezone ?? null
+      );
       const delayConfig = context.emailCampaign?.id ? await deps.getCampaignDelayConfig(context.emailCampaign.id) : null;
 
       if (delayConfig && (delayConfig.delayMinSeconds > 0 || delayConfig.delayMaxSeconds > 0)) {
-        const scheduleResult = await deps.scheduleDelayedAutoSend({
-          clientId: context.clientId,
-          leadId: context.leadId,
+        const baseRunAt = computeDelayedAutoSendRunAt({
           triggerMessageId: context.triggerMessageId,
-          draftId: context.draftId,
+          inboundSentAt: context.messageSentAt,
           delayMinSeconds: delayConfig.delayMinSeconds,
           delayMaxSeconds: delayConfig.delayMaxSeconds,
-          inboundSentAt: context.messageSentAt,
         });
+        const scheduleCheck = isWithinAutoSendSchedule(scheduleConfig, baseRunAt);
+        const finalRunAt = scheduleCheck.withinSchedule
+          ? baseRunAt
+          : scheduleCheck.nextWindowStart || getNextAutoSendWindow(scheduleConfig, baseRunAt);
+
+        const scheduleResult = scheduleCheck.withinSchedule
+          ? await deps.scheduleDelayedAutoSend({
+              clientId: context.clientId,
+              leadId: context.leadId,
+              triggerMessageId: context.triggerMessageId,
+              draftId: context.draftId,
+              delayMinSeconds: delayConfig.delayMinSeconds,
+              delayMaxSeconds: delayConfig.delayMaxSeconds,
+              inboundSentAt: context.messageSentAt,
+            })
+          : await deps.scheduleAutoSendAt({
+              clientId: context.clientId,
+              leadId: context.leadId,
+              triggerMessageId: context.triggerMessageId,
+              draftId: context.draftId,
+              runAt: finalRunAt,
+            });
 
         if (scheduleResult.scheduled && scheduleResult.runAt) {
           const delaySeconds = Math.max(
@@ -256,6 +338,74 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
         return {
           mode: "AI_AUTO_SEND",
           outcome: { action: "skip", reason: `delayed_send_not_scheduled:${scheduleResult.skipReason || "unknown"}` },
+          telemetry: {
+            path: "campaign_ai_auto_send",
+            evaluationTimeMs,
+            confidence: evaluation.confidence,
+            threshold,
+            delayedScheduleSkipReason: scheduleResult.skipReason,
+          },
+        };
+      }
+
+      const scheduleCheck = isWithinAutoSendSchedule(scheduleConfig);
+      if (!scheduleCheck.withinSchedule) {
+        const runAt = scheduleCheck.nextWindowStart || getNextAutoSendWindow(scheduleConfig);
+        const scheduleResult = await deps.scheduleAutoSendAt({
+          clientId: context.clientId,
+          leadId: context.leadId,
+          triggerMessageId: context.triggerMessageId,
+          draftId: context.draftId,
+          runAt,
+        });
+
+        if (scheduleResult.scheduled && scheduleResult.runAt) {
+          const delaySeconds = Math.max(
+            0,
+            Math.round((scheduleResult.runAt.getTime() - context.messageSentAt.getTime()) / 1000)
+          );
+
+          await safeRecord({
+            draftId: context.draftId,
+            evaluatedAt,
+            confidence: evaluation.confidence,
+            threshold,
+            reason: `outside_schedule:${scheduleCheck.reason}`,
+            action: "send_delayed",
+            slackNotified: false,
+          });
+
+          return {
+            mode: "AI_AUTO_SEND",
+            outcome: { action: "send_delayed", draftId: context.draftId, runAt: scheduleResult.runAt },
+            telemetry: {
+              path: "campaign_ai_auto_send",
+              evaluationTimeMs,
+              confidence: evaluation.confidence,
+              threshold,
+              delaySeconds,
+            },
+          };
+        }
+
+        const scheduleSkipReason = scheduleResult.skipReason || "unknown";
+        const shouldTreatAsAlreadyScheduled = scheduleSkipReason === "already_scheduled";
+
+        await safeRecord({
+          draftId: context.draftId,
+          evaluatedAt,
+          confidence: evaluation.confidence,
+          threshold,
+          reason: shouldTreatAsAlreadyScheduled
+            ? evaluation.reason
+            : `scheduled_send_not_scheduled:${scheduleSkipReason}`,
+          action: shouldTreatAsAlreadyScheduled ? "send_delayed" : "skip",
+          slackNotified: false,
+        });
+
+        return {
+          mode: "AI_AUTO_SEND",
+          outcome: { action: "skip", reason: `scheduled_send_not_scheduled:${scheduleResult.skipReason || "unknown"}` },
           telemetry: {
             path: "campaign_ai_auto_send",
             evaluationTimeMs,
@@ -503,9 +653,11 @@ const defaultExecutor = createAutoSendExecutor({
   evaluateAutoSend,
   getPublicAppUrl,
   getCampaignDelayConfig,
+  scheduleAutoSendAt,
   scheduleDelayedAutoSend,
   validateDelayedAutoSend,
-  sendSlackDmByEmail,
+  sendSlackDmByUserIdWithToken,
+  getSlackAutoSendApprovalConfig,
   recordAutoSendDecision,
 });
 

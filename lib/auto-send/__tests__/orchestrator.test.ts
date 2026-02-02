@@ -42,6 +42,11 @@ function createContext(overrides: Partial<AutoSendContext> = {}): AutoSendContex
   };
 }
 
+const defaultSlackApprovalConfig = {
+  token: "xoxb-test",
+  recipients: [{ id: "U1", displayName: "Test User" }],
+};
+
 describe("determineAutoSendMode", () => {
   it("returns AI_AUTO_SEND when campaign is AI mode (even if autoReplyEnabled is true)", () => {
     const context = createContext({
@@ -106,8 +111,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
         getPublicAppUrl: () => "https://app.example.com",
         getCampaignDelayConfig: mock.fn(async () => null),
         scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+        scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
         validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
-        sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+        getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+        sendSlackDmByUserIdWithToken: mock.fn(async (_opts: unknown) => ({ success: true })),
         recordAutoSendDecision: mock.fn(async () => undefined),
       });
 
@@ -145,8 +152,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig: mock.fn(async () => null),
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
-      sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: mock.fn(async (_opts: unknown) => ({ success: true })),
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -185,8 +194,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig,
       scheduleDelayedAutoSend,
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend,
-      sendSlackDmByEmail,
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
       recordAutoSendDecision,
     });
 
@@ -226,8 +237,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig,
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
-      sendSlackDmByEmail,
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -266,8 +279,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig,
       scheduleDelayedAutoSend,
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend,
-      sendSlackDmByEmail,
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -303,8 +318,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig,
       scheduleDelayedAutoSend,
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend,
-      sendSlackDmByEmail,
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -339,8 +356,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig,
       scheduleDelayedAutoSend,
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend,
-      sendSlackDmByEmail,
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -376,8 +395,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig,
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend,
-      sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: mock.fn(async (_opts: unknown) => ({ success: true })),
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -416,8 +437,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig,
       scheduleDelayedAutoSend,
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend,
-      sendSlackDmByEmail,
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
       recordAutoSendDecision,
     });
 
@@ -455,8 +478,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig: mock.fn(async () => null),
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
-      sendSlackDmByEmail,
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -502,8 +527,10 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig,
       scheduleDelayedAutoSend,
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend,
-      sendSlackDmByEmail,
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -537,8 +564,10 @@ describe("executeAutoSend - LEGACY_AUTO_REPLY path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig: mock.fn(async () => null),
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
-      sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: mock.fn(async (_opts: unknown) => ({ success: true })),
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -570,8 +599,10 @@ describe("executeAutoSend - LEGACY_AUTO_REPLY path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig: mock.fn(async () => null),
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
-      sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: mock.fn(async (_opts: unknown) => ({ success: true })),
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -603,8 +634,10 @@ describe("executeAutoSend - LEGACY_AUTO_REPLY path", () => {
       getPublicAppUrl: () => "https://app.example.com",
       getCampaignDelayConfig: mock.fn(async () => null),
       scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
       validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
-      sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: mock.fn(async (_opts: unknown) => ({ success: true })),
       recordAutoSendDecision: mock.fn(async () => undefined),
     });
 
@@ -641,8 +674,10 @@ describe("executeAutoSend - DISABLED + debug logging", () => {
         getPublicAppUrl: () => "https://app.example.com",
         getCampaignDelayConfig: mock.fn(async () => null),
         scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+        scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
         validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
-        sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+        getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+        sendSlackDmByUserIdWithToken: mock.fn(async (_opts: unknown) => ({ success: true })),
         recordAutoSendDecision: mock.fn(async () => undefined),
       });
 
@@ -689,8 +724,10 @@ describe("executeAutoSend - DISABLED + debug logging", () => {
         getPublicAppUrl: () => "https://app.example.com",
         getCampaignDelayConfig: mock.fn(async () => null),
         scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+        scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
         validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
-        sendSlackDmByEmail: mock.fn(async (_opts: unknown) => ({ success: true })),
+        getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+        sendSlackDmByUserIdWithToken: mock.fn(async (_opts: unknown) => ({ success: true })),
         recordAutoSendDecision: mock.fn(async () => undefined),
       });
 

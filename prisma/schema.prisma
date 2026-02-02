@@ -47,6 +47,18 @@ enum CampaignResponseMode {
   AI_AUTO_SEND
 }
 
+enum AutoSendScheduleMode {
+  ALWAYS
+  BUSINESS_HOURS
+  CUSTOM
+}
+
+enum CrmResponseMode {
+  AI
+  HUMAN
+  UNKNOWN
+}
+
 enum EmailIntegrationProvider {
   EMAILBISON
   SMARTLEAD
@@ -283,6 +295,14 @@ model WorkspaceSettings {
   timezone             String?
   workStartTime        String?  @default("09:00")
   workEndTime          String?  @default("17:00")
+  autoSendScheduleMode   AutoSendScheduleMode @default(ALWAYS)
+  autoSendCustomSchedule Json?
+  // AI Auto-Send Approval Recipients (Phase 81)
+  // JSON array: [{ id: string, displayName: string, avatarUrl?: string, email?: string }]
+  slackAutoSendApprovalRecipients Json?
+  // Cached Slack members for settings UI (1-hour TTL)
+  slackMembersCacheJson           Json?
+  slackMembersCachedAt            DateTime?
   // Calendar Settings
   calendarSlotsToShow    Int?     @default(3)   // Number of availability slots to show
   calendarLookAheadDays  Int?     @default(28)  // Days to look ahead for availability
@@ -445,6 +465,7 @@ model Lead {
   conversationInsight LeadConversationInsight?
   appointments      Appointment[]   // Appointment history (Phase 34)
   bookingProgress   LeadCampaignBookingProgress[]  // Booking process wave tracking (Phase 36)
+  crmRow            LeadCrmRow?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -488,6 +509,62 @@ model Lead {
   // Round-robin assignment indexes (Phase 43)
   @@index([assignedToUserId])                           // Filter by assignee
   @@index([clientId, assignedToUserId])                 // Workspace + assignee filter (inbox)
+}
+
+// =============================================================================
+// CRM Analytics Row (Google Sheet replica + pipeline/sales skeleton)
+// =============================================================================
+
+model LeadCrmRow {
+  id        String   @id @default(uuid())
+  leadId    String   @unique
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  // Interest registration snapshot
+  interestRegisteredAt DateTime?
+  interestType         String?
+  interestMessageId    String?
+  interestChannel      String?
+  interestCampaignName String?
+
+  // Response attribution
+  responseMode         CrmResponseMode?
+  responseMessageId    String?
+  responseSentByUserId String?
+
+  // Lead score snapshot at interest time
+  leadScoreAtInterest       Int?
+  leadFitScoreAtInterest    Int?
+  leadIntentScoreAtInterest Int?
+
+  // Pipeline tracking (skeleton only; editable later)
+  pipelineStage    String?
+  pipelineStatus   String?
+  pipelineValue    Float?
+  pipelineCurrency String?
+  pipelineOutcome  String?
+  pipelineOutcomeAt DateTime?
+
+  // Sales call tracking (skeleton only; metadata-only)
+  salesCallHeldAt          DateTime?
+  salesCallOutcome         String?
+  salesCallScore           Int?
+  salesCallContext         String? @db.Text
+  salesCallNotes           String? @db.Text
+  salesCallImprovementNotes String? @db.Text
+  salesCallRecordingUrl    String? @db.Text
+  salesCallOwnerUserId     String?
+  salesCallReviewedByUserId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([leadId])
+  @@index([interestRegisteredAt(sort: Desc)])
+  @@index([interestType])
+  @@index([responseMode])
+  @@index([pipelineStage])
+  @@index([pipelineOutcome])
 }
 
 // =============================================================================
@@ -972,6 +1049,8 @@ model EmailCampaign {
   // When responseMode = AI_AUTO_SEND, wait this long after inbound before auto-sending
   autoSendDelayMinSeconds Int @default(180) // 3 minutes
   autoSendDelayMaxSeconds Int @default(420) // 7 minutes
+  autoSendScheduleMode     AutoSendScheduleMode?
+  autoSendCustomSchedule   Json?
   // Booking process assignment (Phase 36)
   bookingProcessId String?
   bookingProcess   BookingProcess? @relation(fields: [bookingProcessId], references: [id], onDelete: SetNull)

@@ -10,6 +10,20 @@ export type SlackConversation = {
   is_archived?: boolean;
 };
 
+export type SlackUser = {
+  id: string;
+  name: string;
+  real_name?: string;
+  profile?: {
+    email?: string;
+    image_48?: string;
+    display_name?: string;
+  };
+  deleted?: boolean;
+  is_bot?: boolean;
+  is_app_user?: boolean;
+};
+
 function getSlackTimeoutMs(): number {
   const parsed = Number.parseInt(process.env.SLACK_TIMEOUT_MS || "8000", 10);
   if (!Number.isFinite(parsed)) return 8_000;
@@ -129,6 +143,45 @@ export async function slackListConversations(opts: {
   }
 
   return { success: true, channels };
+}
+
+export async function slackListUsers(opts: {
+  token: string;
+  limit?: number;
+}): Promise<{ success: boolean; users?: SlackUser[]; error?: string }> {
+  const trimmed = opts.token.trim();
+  if (!trimmed) return { success: false, error: "Missing Slack bot token" };
+
+  const pageLimit = Math.max(1, Math.min(200, opts.limit ?? 200));
+  const users: SlackUser[] = [];
+  let cursor: string | undefined = undefined;
+
+  for (let page = 0; page < 6; page += 1) {
+    const res: SlackApiResponse<{
+      members?: SlackUser[];
+      response_metadata?: { next_cursor?: string };
+    }> = await slackGet(trimmed, "users.list", {
+      limit: pageLimit,
+      cursor,
+    });
+
+    if (!res.ok) return { success: false, error: res.error || "Slack users.list failed" };
+
+    if (Array.isArray(res.members)) {
+      for (const member of res.members) {
+        if (!member?.id) continue;
+        if (member.deleted || member.is_bot || member.is_app_user) continue;
+        users.push(member);
+      }
+    }
+
+    const next = res.response_metadata?.next_cursor;
+    const nextCursor = typeof next === "string" && next.trim() ? next.trim() : null;
+    if (!nextCursor) break;
+    cursor = nextCursor;
+  }
+
+  return { success: true, users };
 }
 
 export async function slackPostMessage(opts: {

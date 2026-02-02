@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -26,10 +27,91 @@ type CampaignRow = {
   // Phase 47l: Auto-send delay window
   autoSendDelayMinSeconds: number
   autoSendDelayMaxSeconds: number
+  autoSendScheduleMode: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null
+  autoSendCustomSchedule: CampaignCustomSchedule
   bookingProcessId: string | null
   bookingProcessName: string | null
   aiPersonaId: string | null
   aiPersonaName: string | null
+}
+
+type CampaignHolidayState = {
+  additionalBlackoutDates: string[]
+  additionalBlackoutDateRanges: Array<{ start: string; end: string }>
+}
+
+type CampaignCustomSchedule = {
+  days: number[]
+  startTime: string
+  endTime: string
+  holidays: CampaignHolidayState
+}
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+const DEFAULT_CUSTOM_SCHEDULE: CampaignCustomSchedule = {
+  days: [1, 2, 3, 4, 5],
+  startTime: "09:00",
+  endTime: "17:00",
+  holidays: {
+    additionalBlackoutDates: [],
+    additionalBlackoutDateRanges: [],
+  },
+}
+const DEFAULT_SCHEDULE_DRAFT = { blackoutDate: "", rangeStart: "", rangeEnd: "" }
+const SCHEDULE_DAYS = [
+  { label: "Sun", value: 0 },
+  { label: "Mon", value: 1 },
+  { label: "Tue", value: 2 },
+  { label: "Wed", value: 3 },
+  { label: "Thu", value: 4 },
+  { label: "Fri", value: 5 },
+  { label: "Sat", value: 6 },
+]
+
+const normalizeDateList = (input: unknown): string[] => {
+  if (!Array.isArray(input)) return []
+  const filtered = input.filter((value) => typeof value === "string" && DATE_PATTERN.test(value)) as string[]
+  return Array.from(new Set(filtered)).sort()
+}
+
+const normalizeDateRanges = (input: unknown): Array<{ start: string; end: string }> => {
+  if (!Array.isArray(input)) return []
+  const ranges = new Map<string, { start: string; end: string }>()
+  for (const entry of input) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue
+    const record = entry as Record<string, unknown>
+    const start = typeof record.start === "string" && DATE_PATTERN.test(record.start) ? record.start : null
+    const end = typeof record.end === "string" && DATE_PATTERN.test(record.end) ? record.end : null
+    if (!start || !end) continue
+    const normalizedStart = start <= end ? start : end
+    const normalizedEnd = start <= end ? end : start
+    ranges.set(`${normalizedStart}:${normalizedEnd}`, { start: normalizedStart, end: normalizedEnd })
+  }
+  return Array.from(ranges.values()).sort((a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end))
+}
+
+function coerceCustomSchedule(input: unknown): CampaignCustomSchedule | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null
+  const record = input as Record<string, unknown>
+  const days = Array.isArray(record.days)
+    ? record.days.filter((d) => typeof d === "number" && d >= 0 && d <= 6)
+    : []
+  const startTime = typeof record.startTime === "string" ? record.startTime : null
+  const endTime = typeof record.endTime === "string" ? record.endTime : null
+  if (!startTime || !endTime || days.length === 0) return null
+  const holidayRecord =
+    record.holidays && typeof record.holidays === "object" && !Array.isArray(record.holidays)
+      ? (record.holidays as Record<string, unknown>)
+      : null
+  return {
+    days,
+    startTime,
+    endTime,
+    holidays: {
+      additionalBlackoutDates: normalizeDateList(holidayRecord?.additionalBlackoutDates),
+      additionalBlackoutDateRanges: normalizeDateRanges(holidayRecord?.additionalBlackoutDateRanges),
+    },
+  }
 }
 
 function clamp01(value: number): number {
@@ -40,11 +122,18 @@ function clamp01(value: number): number {
 }
 
 function areEqual(a: CampaignRow, b: CampaignRow): boolean {
+  const scheduleModeEqual = a.autoSendScheduleMode === b.autoSendScheduleMode
+  const scheduleDataEqual =
+    a.autoSendScheduleMode === "CUSTOM"
+      ? JSON.stringify(a.autoSendCustomSchedule) === JSON.stringify(b.autoSendCustomSchedule)
+      : true
   return (
     a.responseMode === b.responseMode &&
     Math.abs((a.autoSendConfidenceThreshold ?? 0) - (b.autoSendConfidenceThreshold ?? 0)) < 0.00001 &&
     a.autoSendDelayMinSeconds === b.autoSendDelayMinSeconds &&
     a.autoSendDelayMaxSeconds === b.autoSendDelayMaxSeconds &&
+    scheduleModeEqual &&
+    scheduleDataEqual &&
     a.bookingProcessId === b.bookingProcessId &&
     a.aiPersonaId === b.aiPersonaId
   )
@@ -57,6 +146,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
   const [personas, setPersonas] = useState<AiPersonaSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [savingIds, setSavingIds] = useState<Record<string, boolean>>({})
+  const [scheduleDraftsById, setScheduleDraftsById] = useState<Record<string, typeof DEFAULT_SCHEDULE_DRAFT>>({})
 
   const load = useCallback(async () => {
     if (!activeWorkspace) {
@@ -64,6 +154,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       setBaselineById({})
       setBookingProcesses([])
       setPersonas([])
+      setScheduleDraftsById({})
       return
     }
 
@@ -99,6 +190,8 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold ?? 0.9,
       autoSendDelayMinSeconds: c.autoSendDelayMinSeconds ?? 180,
       autoSendDelayMaxSeconds: c.autoSendDelayMaxSeconds ?? 420,
+      autoSendScheduleMode: c.autoSendScheduleMode ?? null,
+      autoSendCustomSchedule: coerceCustomSchedule(c.autoSendCustomSchedule) ?? DEFAULT_CUSTOM_SCHEDULE,
       bookingProcessId: c.bookingProcessId,
       bookingProcessName: c.bookingProcessName,
       aiPersonaId: c.aiPersonaId,
@@ -110,6 +203,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
 
     setRows(nextRows)
     setBaselineById(nextBaseline)
+    setScheduleDraftsById({})
     setLoading(false)
   }, [activeWorkspace])
 
@@ -155,6 +249,17 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
     setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)))
   }
 
+  const updateScheduleDraft = (id: string, patch: Partial<typeof DEFAULT_SCHEDULE_DRAFT>) => {
+    setScheduleDraftsById((prev) => ({
+      ...prev,
+      [id]: {
+        ...DEFAULT_SCHEDULE_DRAFT,
+        ...(prev[id] ?? {}),
+        ...patch,
+      },
+    }))
+  }
+
   const resetRow = (id: string) => {
     const baseline = baselineById[id]
     if (!baseline) return
@@ -169,11 +274,16 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
     setSavingIds((prev) => ({ ...prev, [id]: true }))
 
     // Check what changed
+    const scheduleChanged =
+      row.autoSendScheduleMode !== baseline.autoSendScheduleMode ||
+      (row.autoSendScheduleMode === "CUSTOM" &&
+        JSON.stringify(row.autoSendCustomSchedule) !== JSON.stringify(baseline.autoSendCustomSchedule))
     const responseModeChanged =
       row.responseMode !== baseline.responseMode ||
       Math.abs((row.autoSendConfidenceThreshold ?? 0) - (baseline.autoSendConfidenceThreshold ?? 0)) >= 0.00001 ||
       row.autoSendDelayMinSeconds !== baseline.autoSendDelayMinSeconds ||
-      row.autoSendDelayMaxSeconds !== baseline.autoSendDelayMaxSeconds
+      row.autoSendDelayMaxSeconds !== baseline.autoSendDelayMaxSeconds ||
+      scheduleChanged
     const bookingProcessChanged = row.bookingProcessId !== baseline.bookingProcessId
     const personaChanged = row.aiPersonaId !== baseline.aiPersonaId
 
@@ -186,6 +296,8 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
         autoSendConfidenceThreshold: clamp01(row.autoSendConfidenceThreshold),
         autoSendDelayMinSeconds: row.autoSendDelayMinSeconds,
         autoSendDelayMaxSeconds: row.autoSendDelayMaxSeconds,
+        autoSendScheduleMode: row.autoSendScheduleMode,
+        autoSendCustomSchedule: row.autoSendScheduleMode === "CUSTOM" ? row.autoSendCustomSchedule : null,
       })
 
       if (!res.success || !res.data) {
@@ -198,6 +310,9 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       nextRow.autoSendConfidenceThreshold = res.data.autoSendConfidenceThreshold
       nextRow.autoSendDelayMinSeconds = res.data.autoSendDelayMinSeconds
       nextRow.autoSendDelayMaxSeconds = res.data.autoSendDelayMaxSeconds
+      nextRow.autoSendScheduleMode = res.data.autoSendScheduleMode
+      nextRow.autoSendCustomSchedule =
+        coerceCustomSchedule(res.data.autoSendCustomSchedule) ?? nextRow.autoSendCustomSchedule
     }
 
     // Save booking process if changed
@@ -306,6 +421,12 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                 <TableHead>
                   <div className="flex items-center gap-1.5">
                     <Clock className="h-4 w-4" />
+                    <span>Schedule</span>
+                  </div>
+                </TableHead>
+                <TableHead>
+                  <div className="flex items-center gap-1.5">
+                    <Clock className="h-4 w-4" />
                     <span>Booking Process</span>
                   </div>
                 </TableHead>
@@ -327,6 +448,8 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
 
                 const thresholdDisabled = row.responseMode !== "AI_AUTO_SEND"
                 const thresholdPct = Math.round((row.autoSendConfidenceThreshold || 0) * 100)
+                const scheduleValue = row.autoSendScheduleMode ?? "INHERIT"
+                const scheduleDraft = scheduleDraftsById[row.id] ?? DEFAULT_SCHEDULE_DRAFT
 
                 return (
                   <TableRow key={row.id} className={isDirty ? "bg-muted/30" : undefined}>
@@ -436,6 +559,232 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                               ? "Sends immediately (0 delay)."
                               : `Waits ${Math.round(row.autoSendDelayMinSeconds / 60)}–${Math.round(row.autoSendDelayMaxSeconds / 60)} min before send.`}
                         </Label>
+                      </div>
+                    </TableCell>
+                    <TableCell className="min-w-[220px]">
+                      <div className="space-y-2">
+                        <Select
+                          value={scheduleValue}
+                          onValueChange={(v) => {
+                            const nextMode =
+                              v === "INHERIT" ? null : (v as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM")
+                            updateRow(row.id, {
+                              autoSendScheduleMode: nextMode,
+                              autoSendCustomSchedule:
+                                nextMode === "CUSTOM"
+                                  ? row.autoSendCustomSchedule ?? DEFAULT_CUSTOM_SCHEDULE
+                                  : row.autoSendCustomSchedule,
+                            })
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="INHERIT">Inherit workspace</SelectItem>
+                            <SelectItem value="ALWAYS">Always (24/7)</SelectItem>
+                            <SelectItem value="BUSINESS_HOURS">Business hours</SelectItem>
+                            <SelectItem value="CUSTOM">Custom</SelectItem>
+                          </SelectContent>
+                        </Select>
+
+                        {row.autoSendScheduleMode === "CUSTOM" ? (
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {SCHEDULE_DAYS.map((day) => (
+                                <label key={day.value} className="flex items-center gap-2 text-xs">
+                                  <Checkbox
+                                    checked={row.autoSendCustomSchedule.days.includes(day.value)}
+                                    onCheckedChange={(v) => {
+                                      const checked = v === true
+                                      const nextDays = checked
+                                        ? row.autoSendCustomSchedule.days.includes(day.value)
+                                          ? row.autoSendCustomSchedule.days
+                                          : [...row.autoSendCustomSchedule.days, day.value]
+                                        : row.autoSendCustomSchedule.days.filter((d) => d !== day.value)
+                                      updateRow(row.id, {
+                                        autoSendCustomSchedule: {
+                                          ...row.autoSendCustomSchedule,
+                                          days: nextDays,
+                                        },
+                                      })
+                                    }}
+                                  />
+                                  {day.label}
+                                </label>
+                              ))}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Input
+                                type="time"
+                                className="w-24"
+                                value={row.autoSendCustomSchedule.startTime}
+                                onChange={(e) =>
+                                  updateRow(row.id, {
+                                    autoSendCustomSchedule: {
+                                      ...row.autoSendCustomSchedule,
+                                      startTime: e.target.value,
+                                    },
+                                  })
+                                }
+                              />
+                              <span className="text-xs text-muted-foreground">–</span>
+                              <Input
+                                type="time"
+                                className="w-24"
+                                value={row.autoSendCustomSchedule.endTime}
+                                onChange={(e) =>
+                                  updateRow(row.id, {
+                                    autoSendCustomSchedule: {
+                                      ...row.autoSendCustomSchedule,
+                                      endTime: e.target.value,
+                                    },
+                                  })
+                                }
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <Label className="text-xs text-muted-foreground">
+                                Additional blackout dates (campaign-only)
+                              </Label>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Input
+                                  type="date"
+                                  className="w-[140px]"
+                                  value={scheduleDraft.blackoutDate}
+                                  onChange={(e) => updateScheduleDraft(row.id, { blackoutDate: e.target.value })}
+                                />
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!scheduleDraft.blackoutDate}
+                                  onClick={() => {
+                                    if (!scheduleDraft.blackoutDate) return
+                                    updateRow(row.id, {
+                                      autoSendCustomSchedule: {
+                                        ...row.autoSendCustomSchedule,
+                                        holidays: {
+                                          ...row.autoSendCustomSchedule.holidays,
+                                          additionalBlackoutDates: normalizeDateList([
+                                            ...row.autoSendCustomSchedule.holidays.additionalBlackoutDates,
+                                            scheduleDraft.blackoutDate,
+                                          ]),
+                                        },
+                                      },
+                                    })
+                                    updateScheduleDraft(row.id, { blackoutDate: "" })
+                                  }}
+                                >
+                                  Add
+                                </Button>
+                              </div>
+                              {row.autoSendCustomSchedule.holidays.additionalBlackoutDates.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {row.autoSendCustomSchedule.holidays.additionalBlackoutDates.map((date) => (
+                                    <Badge key={date} variant="outline" className="text-[10px]">
+                                      {date}
+                                      <button
+                                        type="button"
+                                        className="ml-1 text-muted-foreground hover:text-destructive"
+                                        onClick={() => {
+                                          updateRow(row.id, {
+                                            autoSendCustomSchedule: {
+                                              ...row.autoSendCustomSchedule,
+                                              holidays: {
+                                                ...row.autoSendCustomSchedule.holidays,
+                                                additionalBlackoutDates: row.autoSendCustomSchedule.holidays.additionalBlackoutDates.filter(
+                                                  (d) => d !== date
+                                                ),
+                                              },
+                                            },
+                                          })
+                                        }}
+                                        aria-label="Remove blackout date"
+                                      >
+                                        ×
+                                      </button>
+                                    </Badge>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+
+                            <div className="space-y-1">
+                              <Label className="text-xs text-muted-foreground">Additional blackout ranges</Label>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Input
+                                  type="date"
+                                  className="w-[140px]"
+                                  value={scheduleDraft.rangeStart}
+                                  onChange={(e) => updateScheduleDraft(row.id, { rangeStart: e.target.value })}
+                                />
+                                <Input
+                                  type="date"
+                                  className="w-[140px]"
+                                  value={scheduleDraft.rangeEnd}
+                                  onChange={(e) => updateScheduleDraft(row.id, { rangeEnd: e.target.value })}
+                                />
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!scheduleDraft.rangeStart || !scheduleDraft.rangeEnd}
+                                  onClick={() => {
+                                    if (!scheduleDraft.rangeStart || !scheduleDraft.rangeEnd) return
+                                    updateRow(row.id, {
+                                      autoSendCustomSchedule: {
+                                        ...row.autoSendCustomSchedule,
+                                        holidays: {
+                                          ...row.autoSendCustomSchedule.holidays,
+                                          additionalBlackoutDateRanges: normalizeDateRanges([
+                                            ...row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges,
+                                            { start: scheduleDraft.rangeStart, end: scheduleDraft.rangeEnd },
+                                          ]),
+                                        },
+                                      },
+                                    })
+                                    updateScheduleDraft(row.id, { rangeStart: "", rangeEnd: "" })
+                                  }}
+                                >
+                                  Add
+                                </Button>
+                              </div>
+                              {row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges.map((range) => (
+                                    <Badge key={`${range.start}:${range.end}`} variant="outline" className="text-[10px]">
+                                      {range.start} → {range.end}
+                                      <button
+                                        type="button"
+                                        className="ml-1 text-muted-foreground hover:text-destructive"
+                                        onClick={() => {
+                                          updateRow(row.id, {
+                                            autoSendCustomSchedule: {
+                                              ...row.autoSendCustomSchedule,
+                                              holidays: {
+                                                ...row.autoSendCustomSchedule.holidays,
+                                                additionalBlackoutDateRanges: row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges.filter(
+                                                  (r) => !(r.start === range.start && r.end === range.end)
+                                                ),
+                                              },
+                                            },
+                                          })
+                                        }}
+                                        aria-label="Remove blackout range"
+                                      >
+                                        ×
+                                      </button>
+                                    </Badge>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : (
+                          <Label className="text-xs text-muted-foreground">
+                            {scheduleValue === "INHERIT" ? "Uses workspace schedule." : "Applies to this campaign only."}
+                          </Label>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell className="min-w-[200px]">

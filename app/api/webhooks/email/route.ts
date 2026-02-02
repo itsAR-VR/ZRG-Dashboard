@@ -17,6 +17,8 @@ import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { addToAlternateEmails, detectCcReplier, normalizeOptionalEmail } from "@/lib/email-participants";
 import { getDbSchemaMissingColumnsForModels, isPrismaMissingTableOrColumnError } from "@/lib/db-schema-compat";
+import { sendSlackDmByUserIdWithToken } from "@/lib/slack-dm";
+import { getSlackAutoSendApprovalConfig } from "@/lib/auto-send/get-approval-recipients";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 // Reduced from 800s to 60s after moving AI classification to background jobs (Phase 31g).
@@ -926,11 +928,9 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
           const confidenceText = `${evaluation.confidence.toFixed(2)} < ${autoSendThreshold.toFixed(2)}`;
           const approvalValue = JSON.stringify({ draftId, leadId: lead.id, clientId: client.id });
 
-          const dmResult = await sendSlackDmByEmail({
-            email: "jonandmika@gmail.com",
-            dedupeKey: `auto_send_review:${draftId}`,
-            text: `AI auto-send review needed (${confidenceText})`,
-            blocks: [
+          const approvalConfig = await getSlackAutoSendApprovalConfig(client.id);
+          if (approvalConfig.token && approvalConfig.recipients.length > 0) {
+            const blocks = [
               {
                 type: "header",
                 text: { type: "plain_text", text: "AI Auto-Send: Review Needed", emoji: true },
@@ -974,10 +974,28 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
                   },
                 ],
               },
-            ],
-          });
-          if (!dmResult.success) {
-            console.error(`[Slack DM] Failed to notify Jon for draft ${draftId}: ${dmResult.error || "unknown error"}`);
+            ];
+
+            for (let i = 0; i < approvalConfig.recipients.length; i += 1) {
+              const recipient = approvalConfig.recipients[i];
+              if (i > 0) {
+                await new Promise((resolve) => setTimeout(resolve, 500));
+              }
+
+              const dmResult = await sendSlackDmByUserIdWithToken({
+                token: approvalConfig.token,
+                userId: recipient.id,
+                dedupeKey: `auto_send_review:${draftId}:${recipient.id}`,
+                text: `AI auto-send review needed (${confidenceText})`,
+                blocks,
+              });
+
+              if (!dmResult.success && !dmResult.skipped) {
+                console.error(
+                  `[Slack DM] Failed to notify Slack reviewers for draft ${draftId}: ${dmResult.error || "unknown error"}`
+                );
+              }
+            }
           }
         }
       } else if (!emailCampaign && lead.autoReplyEnabled && draftId) {

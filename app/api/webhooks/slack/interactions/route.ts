@@ -17,7 +17,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
-import { updateSlackMessage, type SlackBlock } from "@/lib/slack-dm";
+import { updateSlackMessageWithToken, type SlackBlock } from "@/lib/slack-dm";
 import { sendEmailReplyForDraftSystem } from "@/lib/email-send";
 
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || "";
@@ -115,9 +115,36 @@ async function handleApproveSend(params: {
     return { success: false, error: "Draft not found" };
   }
 
+  const slackToken = await prisma.client.findUnique({
+    where: { id: value.clientId },
+    select: { slackBotToken: true },
+  });
+  const slackTokenValue = (slackToken?.slackBotToken || "").trim();
+  const updateSlackMessageSafe = async (opts: {
+    channelId: string;
+    messageTs: string;
+    text: string;
+    blocks?: SlackBlock[];
+  }) => {
+    if (!slackTokenValue) {
+      console.warn("[SlackInteractions] Slack bot token not configured for client", value.clientId);
+      return;
+    }
+    const result = await updateSlackMessageWithToken({
+      token: slackTokenValue,
+      channelId: opts.channelId,
+      messageTs: opts.messageTs,
+      text: opts.text,
+      blocks: opts.blocks,
+    });
+    if (!result.success) {
+      console.warn("[SlackInteractions] Failed to update Slack message", result.error);
+    }
+  };
+
   if (draft.status !== "pending") {
     // Update Slack message to show already processed
-    await updateSlackMessage({
+    await updateSlackMessageSafe({
       channelId,
       messageTs,
       text: `This draft has already been ${draft.status}.`,
@@ -137,7 +164,7 @@ async function handleApproveSend(params: {
   // 2. Check lead not blacklisted
   const lead = draft.lead;
   if (lead.status === "blacklisted" || lead.sentimentTag === "Blacklist") {
-    await updateSlackMessage({
+    await updateSlackMessageSafe({
       channelId,
       messageTs,
       text: "Cannot send - lead is blacklisted (opted out).",
@@ -155,7 +182,7 @@ async function handleApproveSend(params: {
   const sendResult = await sendEmailReplyForDraftSystem(value.draftId, undefined, { sentBy: "setter" });
 
   if (!sendResult.success) {
-    await updateSlackMessage({
+    await updateSlackMessageSafe({
       channelId,
       messageTs,
       text: `Failed to send: ${sendResult.error}`,
@@ -170,7 +197,7 @@ async function handleApproveSend(params: {
 
   // 4. Update Slack message to show success
   const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
-  await updateSlackMessage({
+  await updateSlackMessageSafe({
     channelId,
     messageTs,
     text: `Email sent to ${leadName} (${lead.email}) by ${userName}`,

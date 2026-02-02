@@ -1696,6 +1696,114 @@ export async function pauseFollowUpsOnReply(leadId: string): Promise<void> {
 }
 
 /**
+ * Pause follow-up instances when a meeting is booked.
+ * Leaves meeting-selected sequences running and prevents other sequences from sending.
+ */
+export async function pauseFollowUpsOnBooking(
+  leadId: string,
+  opts?: { mode?: "complete" | "pause" }
+): Promise<{ completedCount: number; pausedCount: number }> {
+  try {
+    const mode = opts?.mode ?? "complete";
+    const instances = await prisma.followUpInstance.findMany({
+      where: {
+        leadId,
+        status: { in: ["active", "paused"] },
+        sequence: { triggerOn: { not: "meeting_selected" } },
+      },
+      select: { id: true },
+    });
+
+    if (instances.length === 0) return { completedCount: 0, pausedCount: 0 };
+
+    const ids = instances.map((i) => i.id);
+
+    if (mode === "complete") {
+      await prisma.followUpInstance.updateMany({
+        where: { id: { in: ids } },
+        data: {
+          status: "completed",
+          completedAt: new Date(),
+          nextStepDue: null,
+        },
+      });
+      return { completedCount: ids.length, pausedCount: 0 };
+    }
+
+    await prisma.followUpInstance.updateMany({
+      where: { id: { in: ids } },
+      data: {
+        status: "paused",
+        pausedReason: "meeting_booked",
+        nextStepDue: null,
+      },
+    });
+
+    return { completedCount: 0, pausedCount: ids.length };
+  } catch (error) {
+    console.error("Failed to pause follow-ups on booking:", error);
+    return { completedCount: 0, pausedCount: 0 };
+  }
+}
+
+/**
+ * Resume follow-up instances that were paused due to a booking after the booking is canceled.
+ */
+export async function resumeFollowUpsOnBookingCanceled(leadId: string): Promise<{ resumedCount: number }> {
+  try {
+    const now = new Date();
+    const instances = await prisma.followUpInstance.findMany({
+      where: {
+        leadId,
+        status: "paused",
+        pausedReason: "meeting_booked",
+      },
+      select: {
+        id: true,
+        lead: {
+          select: {
+            autoFollowUpEnabled: true,
+            snoozedUntil: true,
+            client: { select: { settings: { select: { followUpsPausedUntil: true } } } },
+          },
+        },
+      },
+    });
+
+    if (instances.length === 0) return { resumedCount: 0 };
+
+    let resumed = 0;
+    for (const instance of instances) {
+      if (!instance.lead.autoFollowUpEnabled) continue;
+      if (instance.lead.snoozedUntil && instance.lead.snoozedUntil > now) continue;
+      if (
+        isWorkspaceFollowUpsPaused({
+          followUpsPausedUntil: instance.lead.client.settings?.followUpsPausedUntil,
+          now,
+        })
+      ) {
+        continue;
+      }
+
+      await prisma.followUpInstance.update({
+        where: { id: instance.id },
+        data: {
+          status: "active",
+          pausedReason: null,
+          nextStepDue: new Date(),
+        },
+      });
+      resumed++;
+    }
+
+    return { resumedCount: resumed };
+  } catch (error) {
+    console.error("Failed to resume follow-ups on booking cancellation:", error);
+    return { resumedCount: 0 };
+  }
+}
+
+/**
  * Pause follow-up instances for a lead until a specific timestamp.
  * Used for "contact me after X" deferrals (snooze).
  *

@@ -6,6 +6,7 @@ import { ensureGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { createCalendlyInvitee, getCalendlyEventType } from "@/lib/calendly-api";
 import { resolveCalendlyEventTypeUuidFromLink, toCalendlyEventTypeUri } from "@/lib/calendly-link";
 import { upsertAppointmentWithRollup } from "@/lib/appointment-upsert";
+import { pauseFollowUpsOnBooking } from "@/lib/followup-engine";
 import {
   ensureLeadQualificationAnswersExtracted,
   getLeadQualificationAnswerState,
@@ -317,25 +318,7 @@ export async function bookMeetingOnGHL(
 
     await autoStartPostBookingSequenceIfEligible({ leadId });
 
-    const activeInstances = await prisma.followUpInstance.findMany({
-      where: {
-        leadId,
-        status: { in: ["active", "paused"] },
-        sequence: { triggerOn: { not: "meeting_selected" } },
-      },
-      select: { id: true },
-    });
-
-    if (activeInstances.length > 0) {
-      await prisma.followUpInstance.updateMany({
-        where: { id: { in: activeInstances.map((i) => i.id) } },
-        data: {
-          status: "completed",
-          completedAt: new Date(),
-          nextStepDue: null,
-        },
-      });
-    }
+    await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
 
     return {
       success: true,
@@ -584,25 +567,7 @@ export async function bookMeetingOnCalendly(
 
     await autoStartPostBookingSequenceIfEligible({ leadId });
 
-    const activeInstances = await prisma.followUpInstance.findMany({
-      where: {
-        leadId,
-        status: { in: ["active", "paused"] },
-        sequence: { triggerOn: { not: "meeting_selected" } },
-      },
-      select: { id: true },
-    });
-
-    if (activeInstances.length > 0) {
-      await prisma.followUpInstance.updateMany({
-        where: { id: { in: activeInstances.map((i) => i.id) } },
-        data: {
-          status: "completed",
-          completedAt: new Date(),
-          nextStepDue: null,
-        },
-      });
-    }
+    await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
 
     return {
       success: true,

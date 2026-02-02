@@ -3,6 +3,7 @@
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { autoStartPostBookingSequenceIfEligible } from "@/lib/followup-automation";
+import { pauseFollowUpsOnBooking } from "@/lib/followup-engine";
 import {
     createGHLAppointment,
     getGHLCalendars,
@@ -488,26 +489,7 @@ export async function bookMeetingOnGHL(
 
         await autoStartPostBookingSequenceIfEligible({ leadId });
 
-        // Stop any non-post-booking sequences once a meeting is booked
-        const activeInstances = await prisma.followUpInstance.findMany({
-            where: {
-                leadId,
-                status: { in: ["active", "paused"] },
-                sequence: { triggerOn: { not: "meeting_selected" } },
-            },
-            select: { id: true },
-        });
-
-        if (activeInstances.length > 0) {
-            await prisma.followUpInstance.updateMany({
-                where: { id: { in: activeInstances.map((i) => i.id) } },
-                data: {
-                    status: "completed",
-                    completedAt: new Date(),
-                    nextStepDue: null,
-                },
-            });
-        }
+        await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
 
         revalidatePath("/");
 
