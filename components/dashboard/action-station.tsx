@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Calendar, ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, Moon, Plus } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { sendMessage, sendEmailMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
+import { sendMessage, sendEmailMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, refreshDraftAvailability, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
 import { validateEmail, formatEmailParticipant, normalizeOptionalEmail } from "@/lib/email-participants"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -210,6 +210,7 @@ export function ActionStation({
   const [composeMessage, setComposeMessage] = useState("")
   const [isSending, setIsSending] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
+  const [isRefreshingAvailability, setIsRefreshingAvailability] = useState(false)
   const [drafts, setDrafts] = useState<AIDraft[]>([])
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(false)
   const [hasAiDraft, setHasAiDraft] = useState(false)
@@ -637,6 +638,27 @@ export function ActionStation({
     }
     
     setIsRegenerating(false)
+  }
+
+  const handleRefreshAvailability = async () => {
+    if (!drafts.length) return
+
+    setIsRefreshingAvailability(true)
+
+    const result = await refreshDraftAvailability(drafts[0].id, composeMessage)
+
+    if (result.success && result.content) {
+      toast.success(`Refreshed availability: ${result.newSlots?.length || 0} new slots`)
+      setComposeMessage(result.content)
+      setOriginalDraft(result.content)
+      setDrafts(prev => prev.map(d =>
+        d.id === drafts[0].id ? { ...d, content: result.content! } : d
+      ))
+    } else {
+      toast.error(result.error || "Failed to refresh availability")
+    }
+
+    setIsRefreshingAvailability(false)
   }
 
   const handleResetDraft = () => {
@@ -1077,6 +1099,23 @@ export function ActionStation({
                   aria-label="Insert calendar link"
                 >
                   <Calendar className="h-4 w-4" />
+                </Button>
+
+                {/* Refresh Availability button */}
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleRefreshAvailability}
+                  disabled={isSending || isRegenerating || isRefreshingAvailability}
+                  className="h-8 w-8"
+                  aria-label="Refresh availability times"
+                  title="Refresh availability times"
+                >
+                  {isRefreshingAvailability ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Clock className="h-4 w-4" />
+                  )}
                 </Button>
 
                 {/* Reject button */}

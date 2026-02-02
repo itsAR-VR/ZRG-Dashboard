@@ -6,6 +6,13 @@ import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, isPositiveSentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply, sendEmailReplyForLead } from "@/actions/email-actions";
+import { extractAvailabilitySection, replaceAvailabilitySlotsInContent } from "@/lib/availability-slot-parser";
+import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
+import { selectDistributedAvailabilitySlots } from "@/lib/availability-distribution";
+import { formatAvailabilitySlots } from "@/lib/availability-format";
+import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
+import { getWorkspaceSlotOfferCountsForRange, incrementWorkspaceSlotOffersBatch } from "@/lib/slot-offer-ledger";
+import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { ensureGhlContactIdForLead, resolveGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
@@ -25,7 +32,7 @@ import {
 import { updateUnipileConnectionHealth } from "@/lib/workspace-integration-health";
 import { recordOutboundForBookingProgress } from "@/lib/booking-progress";
 import { coerceSmsDraftPartsOrThrow } from "@/lib/sms-multipart";
-import { BackgroundJobType } from "@prisma/client";
+import { BackgroundJobType, type AvailabilitySource } from "@prisma/client";
 import { enqueueBackgroundJob } from "@/lib/background-jobs/enqueue";
 
 /**
@@ -1448,6 +1455,176 @@ export async function regenerateDraft(
       };
     }
   });
+}
+
+export async function refreshDraftAvailability(
+  draftId: string,
+  currentContent: string
+): Promise<{
+  success: boolean;
+  content?: string;
+  draftId?: string;
+  oldSlots?: string[];
+  newSlots?: string[];
+  error?: string;
+}> {
+  try {
+    const draft = await prisma.aIDraft.findUnique({
+      where: { id: draftId },
+      select: {
+        id: true,
+        status: true,
+        leadId: true,
+        lead: {
+          select: {
+            id: true,
+            clientId: true,
+            offeredSlots: true,
+            snoozedUntil: true,
+          },
+        },
+      },
+    });
+
+    if (!draft) return { success: false, error: "Draft not found" };
+
+    await requireLeadAccess(draft.leadId);
+
+    if (draft.status !== "pending") {
+      return { success: false, error: "Can only refresh availability for pending drafts" };
+    }
+
+    const section = extractAvailabilitySection(currentContent);
+    if (!section) {
+      return { success: false, error: "This draft doesn't contain availability times to refresh" };
+    }
+
+    if (section.sectionCount > 1) {
+      console.log(`[Refresh Availability] Multiple sections detected for draft ${draftId}; updating first only.`);
+    }
+
+    const answerState = await getLeadQualificationAnswerState({ leadId: draft.leadId, clientId: draft.lead.clientId });
+    const requestedAvailabilitySource: AvailabilitySource =
+      answerState.requiredQuestionIds.length > 0 && !answerState.hasAllRequiredAnswers ? "DIRECT_BOOK" : "DEFAULT";
+
+    const availability = await getWorkspaceAvailabilitySlotsUtc(draft.lead.clientId, {
+      refreshIfStale: true,
+      availabilitySource: requestedAvailabilitySource,
+    });
+
+    if (availability.slotsUtc.length === 0) {
+      return { success: false, error: "No available time slots found. Check your calendar settings." };
+    }
+
+    const offeredAtIso = new Date().toISOString();
+    const offeredAt = new Date(offeredAtIso);
+
+    const tzResult = await ensureLeadTimezone(draft.leadId);
+    const timeZone = tzResult.timezone || "UTC";
+
+    const existingOffered = new Set<string>();
+    if (draft.lead.offeredSlots) {
+      try {
+        const parsed = JSON.parse(draft.lead.offeredSlots) as Array<{ datetime?: string }>;
+        for (const slot of parsed) {
+          if (!slot?.datetime) continue;
+          const date = new Date(slot.datetime);
+          if (!Number.isNaN(date.getTime())) {
+            existingOffered.add(date.toISOString());
+          }
+        }
+      } catch {
+        // ignore parse errors
+      }
+    }
+
+    const startAfterUtc =
+      draft.lead.snoozedUntil && draft.lead.snoozedUntil > offeredAt ? draft.lead.snoozedUntil : null;
+    const anchor = startAfterUtc && startAfterUtc > offeredAt ? startAfterUtc : offeredAt;
+    const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const offerCounts = await getWorkspaceSlotOfferCountsForRange(draft.lead.clientId, anchor, rangeEnd, {
+      availabilitySource: availability.availabilitySource,
+    });
+
+    const selectedUtcIso = selectDistributedAvailabilitySlots({
+      slotsUtcIso: availability.slotsUtc,
+      offeredCountBySlotUtcIso: offerCounts,
+      timeZone,
+      excludeUtcIso: existingOffered,
+      startAfterUtc,
+      preferWithinDays: 5,
+      now: offeredAt,
+    });
+
+    if (selectedUtcIso.length === 0) {
+      return {
+        success: false,
+        error: "No new time slots available right now. Please try again later or adjust your calendar.",
+      };
+    }
+
+    const formatted = formatAvailabilitySlots({
+      slotsUtcIso: selectedUtcIso,
+      timeZone,
+      mode: "explicit_tz",
+      limit: selectedUtcIso.length,
+    });
+
+    if (formatted.length === 0) {
+      return {
+        success: false,
+        error: "No new time slots available right now. Please try again later or adjust your calendar.",
+      };
+    }
+
+    const newContent = replaceAvailabilitySlotsInContent(
+      currentContent,
+      formatted.map((slot) => slot.label)
+    );
+
+    await prisma.$transaction([
+      prisma.aIDraft.update({
+        where: { id: draftId },
+        data: { content: newContent },
+      }),
+      prisma.lead.update({
+        where: { id: draft.leadId },
+        data: {
+          offeredSlots: JSON.stringify(
+            formatted.map((slot) => ({
+              datetime: slot.datetime,
+              label: slot.label,
+              offeredAt: offeredAtIso,
+              availabilitySource: availability.availabilitySource,
+            }))
+          ),
+        },
+      }),
+    ]);
+
+    await incrementWorkspaceSlotOffersBatch({
+      clientId: draft.lead.clientId,
+      slotUtcIsoList: formatted.map((slot) => slot.datetime),
+      offeredAt,
+      availabilitySource: availability.availabilitySource,
+    });
+
+    revalidatePath("/");
+
+    return {
+      success: true,
+      content: newContent,
+      draftId,
+      oldSlots: section.slotLines,
+      newSlots: formatted.map((slot) => slot.label),
+    };
+  } catch (error) {
+    console.error("Failed to refresh draft availability:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
 }
 
 // =============================================================================
