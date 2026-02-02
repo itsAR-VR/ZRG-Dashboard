@@ -13,6 +13,7 @@ enum ClientMemberRole {
   ADMIN
   SETTER
   INBOX_MANAGER
+  CLIENT_PORTAL
 }
 
 enum MeetingBookingProvider {
@@ -283,6 +284,9 @@ model WorkspaceSettings {
   // Round-robin lead assignment (Phase 43)
   roundRobinEnabled         Boolean  @default(false)  // When true, new positive leads are assigned to setters in rotation
   roundRobinLastSetterIndex Int?                      // Index of last assigned setter (for rotation)
+  // Weighted round-robin sequence (Phase 89)
+  roundRobinSetterSequence  String[] @default([])     // Ordered Supabase Auth user IDs; duplicates allowed for weighting
+  roundRobinEmailOnly       Boolean  @default(false)  // When true, only Email inbound triggers assignment
   // Notification Settings
   emailDigest          Boolean  @default(true)
   slackAlerts          Boolean  @default(true)
@@ -306,6 +310,9 @@ model WorkspaceSettings {
   // Calendar Settings
   calendarSlotsToShow    Int?     @default(3)   // Number of availability slots to show
   calendarLookAheadDays  Int?     @default(28)  // Days to look ahead for availability
+  // Calendar Health (weekly slot sufficiency check)
+  calendarHealthEnabled  Boolean  @default(true)
+  calendarHealthMinSlots Int      @default(10)
   // EmailBison first-touch availability_slot injection controls (Phase 55/61)
   emailBisonFirstTouchAvailabilitySlotEnabled Boolean @default(true)
   emailBisonAvailabilitySlotTemplate          String?  @db.Text
@@ -375,6 +382,7 @@ model Lead {
   lastName     String?
   email        String?
   phone        String?       // Stored normalized (digits only)
+  jobTitle     String?       // Lead job title (CRM sheet "Job Title")
   timezone     String?       // Lead's timezone for availability slot formatting
   // Company information (from EmailBison custom variables)
   companyName      String?   // Lead's actual company name
@@ -537,6 +545,14 @@ model LeadCrmRow {
   leadFitScoreAtInterest    Int?
   leadIntentScoreAtInterest Int?
 
+  // CRM editable display fields
+  leadType             String?   // Sheet "Lead Type"
+  applicationStatus    String?   // Sheet "Application Status"
+  leadCategoryOverride String?   // Overrides interestType for CRM display; null = use interestType
+
+  // CRM notes (manual)
+  notes String? @db.Text
+
   // Pipeline tracking (skeleton only; editable later)
   pipelineStage    String?
   pipelineStatus   String?
@@ -562,6 +578,7 @@ model LeadCrmRow {
   @@index([leadId])
   @@index([interestRegisteredAt(sort: Desc)])
   @@index([interestType])
+  @@index([leadCategoryOverride])
   @@index([responseMode])
   @@index([pipelineStage])
   @@index([pipelineOutcome])

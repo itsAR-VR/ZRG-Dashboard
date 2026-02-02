@@ -68,12 +68,12 @@ import {
 import { IntegrationsManager } from "./settings/integrations-manager"
 import { AiCampaignAssignmentPanel } from "./settings/ai-campaign-assignment"
 import { BookingProcessManager } from "./settings/booking-process-manager"
-import { BookingProcessAnalytics } from "./settings/booking-process-analytics"
 import { BookingProcessReference } from "./settings/booking-process-reference"
 import { AiPersonaManager } from "./settings/ai-persona-manager"
 import { BulkDraftRegenerationCard } from "./settings/bulk-draft-regeneration"
+import { ClientPortalUsersManager } from "./settings/client-portal-users-manager"
 // Note: FollowUpSequenceManager moved to Follow-ups view
-import { getWorkspaceAdminStatus } from "@/actions/access-actions"
+import { getWorkspaceAdminStatus, getWorkspaceCapabilities } from "@/actions/access-actions"
 import {
   getSlackApprovalRecipients,
   getSlackBotTokenStatus,
@@ -86,6 +86,7 @@ import {
 import { getResendConfigStatus, updateResendConfig } from "@/actions/resend-integration-actions"
 import { SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared"
 import type { SlackApprovalRecipient } from "@/lib/auto-send/get-approval-recipients"
+import type { WorkspaceCapabilities } from "@/lib/workspace-capabilities"
 import {
   getClientEmailBisonBaseHost,
   getEmailBisonBaseHosts,
@@ -379,6 +380,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     endTime: "17:00",
   })
 
+  const [calendarHealth, setCalendarHealth] = useState({
+    enabled: true,
+    minSlots: 10,
+  })
+
   const [autoSendSchedule, setAutoSendSchedule] = useState({
     mode: "ALWAYS" as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM",
     customDays: [1, 2, 3, 4, 5],
@@ -500,6 +506,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   // AI observability (admin-only)
   const [isWorkspaceAdmin, setIsWorkspaceAdmin] = useState(false)
+  const [workspaceCapabilities, setWorkspaceCapabilities] = useState<WorkspaceCapabilities | null>(null)
   const [aiObsWindow, setAiObsWindow] = useState<AiObservabilityWindow>("24h")
   const [aiObs, setAiObs] = useState<ObservabilitySummary | null>(null)
   const [aiObsLoading, setAiObsLoading] = useState(false)
@@ -558,6 +565,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [selectedPersonaDetails, setSelectedPersonaDetails] = useState<AiPersonaData | null>(null)
   const [personaLoading, setPersonaLoading] = useState(false)
 
+  const isClientPortalUser = Boolean(workspaceCapabilities?.isClientPortalUser)
+  const canViewAiObservability = Boolean(workspaceCapabilities?.canViewAiObservability)
+
   const resetAiPromptModalState = useCallback(() => {
     setAiPromptTemplates(null)
     setPromptOverrides(new Map())
@@ -584,12 +594,15 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   useEffect(() => {
     async function loadSettings() {
       setIsLoading(true)
-      const [result, adminStatus] = await Promise.all([
+      const [result, adminStatus, capabilitiesResult] = await Promise.all([
         getUserSettings(activeWorkspace),
         activeWorkspace ? getWorkspaceAdminStatus(activeWorkspace) : Promise.resolve({ success: true, isAdmin: false }),
+        activeWorkspace ? getWorkspaceCapabilities(activeWorkspace) : Promise.resolve({ success: true, capabilities: null }),
       ])
 
-      setIsWorkspaceAdmin(Boolean(adminStatus.success && adminStatus.isAdmin))
+      const capabilities = capabilitiesResult.success ? capabilitiesResult.capabilities ?? null : null
+      setWorkspaceCapabilities(capabilities)
+      setIsWorkspaceAdmin(Boolean(adminStatus.success && adminStatus.isAdmin) && !capabilities?.isClientPortalUser)
       setSlackIntegrationError(null)
       setSlackChannels([])
       setSlackChannelToAdd("")
@@ -633,6 +646,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           timezone: result.data.timezone || "America/New_York",
           startTime: result.data.workStartTime || "09:00",
           endTime: result.data.workEndTime || "17:00",
+        })
+        setCalendarHealth({
+          enabled: result.data.calendarHealthEnabled ?? true,
+          minSlots:
+            typeof result.data.calendarHealthMinSlots === "number" && Number.isFinite(result.data.calendarHealthMinSlots)
+              ? result.data.calendarHealthMinSlots
+              : 10,
         })
         const customSchedule = coerceAutoSendCustomSchedule(result.data.autoSendCustomSchedule)
         const holidays = customSchedule?.holidays ?? DEFAULT_AUTO_SEND_HOLIDAYS
@@ -912,6 +932,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       return
     }
 
+    if (isClientPortalUser || !canViewAiObservability) {
+      setAiObs(null)
+      setCanViewAiObs(false)
+      setAiObsError(null)
+      return
+    }
+
     setAiObsLoading(true)
     try {
       const result = await getAiObservabilitySummary(activeWorkspace, aiObsWindow)
@@ -936,7 +963,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     } finally {
       setAiObsLoading(false)
     }
-  }, [activeWorkspace, aiObsWindow])
+  }, [activeWorkspace, aiObsWindow, canViewAiObservability, isClientPortalUser])
 
   useEffect(() => {
     refreshAiObservability()
@@ -944,6 +971,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   useEffect(() => {
     if (!aiPromptsOpen) return
+    if (isClientPortalUser || !canViewAiObservability) return
     if (!activeWorkspace) return
     if (aiPromptTemplates) return
 
@@ -1007,7 +1035,15 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     return () => {
       cancelled = true
     }
-  }, [aiPromptsOpen, activeWorkspace, aiPromptTemplates])
+  }, [aiPromptsOpen, activeWorkspace, aiPromptTemplates, canViewAiObservability, isClientPortalUser])
+
+  useEffect(() => {
+    if (!isClientPortalUser) return
+    if (aiPromptsOpen) {
+      setAiPromptsOpen(false)
+    }
+    resetAiPromptModalState()
+  }, [aiPromptsOpen, isClientPortalUser, resetAiPromptModalState])
 
   // Load persona details when selected persona changes (Phase 47j)
   useEffect(() => {
@@ -1312,11 +1348,22 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   // Track changes
   const handleChange = () => {
+    if (isClientPortalUser) return
     setHasChanges(true)
   }
 
+  useEffect(() => {
+    if (isClientPortalUser) {
+      setHasChanges(false)
+    }
+  }, [isClientPortalUser])
+
   // Save all settings
   const handleSaveSettings = async () => {
+    if (isClientPortalUser) {
+      toast.info("Settings are read-only. Request changes from ZRG.")
+      return
+    }
     setIsSaving(true)
 
     const toNullableText = (value: string | null | undefined) => {
@@ -1394,6 +1441,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     if (isWorkspaceAdmin) {
       payload.autoSendScheduleMode = autoSendSchedule.mode
       payload.autoSendCustomSchedule = customSchedulePayload
+      payload.calendarHealthEnabled = calendarHealth.enabled
+      payload.calendarHealthMinSlots = calendarHealth.minSlots
       payload.insightsChatModel = insightsChatSettings.model
       payload.insightsChatReasoningEffort = insightsChatSettings.reasoningEffort
       payload.insightsChatEnableCampaignChanges = insightsChatSettings.enableCampaignChanges
@@ -1971,7 +2020,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             <h1 className="text-2xl font-bold">Settings</h1>
             <p className="text-muted-foreground">Manage your account and preferences</p>
           </div>
-          {hasChanges && (
+          {hasChanges && !isClientPortalUser && (
             <Button onClick={handleSaveSettings} disabled={isSaving}>
               {isSaving ? (
                 <>
@@ -1999,8 +2048,23 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             <TabsTrigger value="team">Team</TabsTrigger>
           </TabsList>
 
+          {isClientPortalUser ? (
+            <Card className="border-amber-500/30 bg-amber-500/5">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-amber-200">
+                  <Lock className="h-5 w-5 text-amber-200" />
+                  Read-only settings
+                </CardTitle>
+                <CardDescription className="text-amber-200/70">
+                  Settings are read-only for client portal users. Request changes from ZRG.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          ) : null}
+
           {/* General Settings */}
           <TabsContent value="general" className="space-y-6">
+            <fieldset disabled={isClientPortalUser} className="space-y-6">
             {settings?.autoFollowUpsOnReply ? (() => {
               const missing: string[] = []
               const senderName = (aiPersona.name || "").trim()
@@ -2767,6 +2831,72 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
+                  <AlertTriangle className="h-5 w-5" />
+                  Calendar Health Check
+                </CardTitle>
+                <CardDescription>
+                  Weekly check counts available slots in the next 7 days (weekdays only) during your workspace working hours.
+                  If below the threshold, we post a Slack alert to your Notification Center Slack channels.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {!isWorkspaceAdmin ? (
+                  <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+                    Only workspace admins can edit calendar health settings.
+                  </div>
+                ) : null}
+
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p id="calendar-health-enabled-label" className="font-medium">Weekly calendar health alerts</p>
+                    <p className="text-sm text-muted-foreground">Alert when your booking calendars have too few slots</p>
+                  </div>
+                  <Switch
+                    id="calendar-health-enabled-switch"
+                    aria-labelledby="calendar-health-enabled-label"
+                    checked={calendarHealth.enabled}
+                    disabled={!isWorkspaceAdmin}
+                    onCheckedChange={(v) => {
+                      setCalendarHealth((prev) => ({ ...prev, enabled: v }))
+                      handleChange()
+                    }}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="calendarHealthMinSlots">Minimum slots (next 7 days)</Label>
+                    <Input
+                      id="calendarHealthMinSlots"
+                      type="number"
+                      min={0}
+                      max={500}
+                      value={String(calendarHealth.minSlots)}
+                      disabled={!isWorkspaceAdmin || !calendarHealth.enabled}
+                      onChange={(e) => {
+                        const next = Number.parseInt(e.target.value, 10)
+                        if (!Number.isFinite(next)) return
+                        setCalendarHealth((prev) => ({ ...prev, minSlots: Math.max(0, Math.min(500, next)) }))
+                        handleChange()
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">Default is 10. Counts only weekday slots within your working hours.</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Window used</Label>
+                    <div className="rounded-lg border bg-muted/20 p-3 text-sm text-muted-foreground">
+                      <div>Timezone: {availability.timezone}</div>
+                      <div>Hours: {availability.startTime}–{availability.endTime}</div>
+                      <div>Days: Mon–Fri (next 7 days)</div>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
                   <Bell className="h-5 w-5" />
                   Notifications
                 </CardTitle>
@@ -3039,10 +3169,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </div>
               </CardContent>
             </Card>
+            </fieldset>
           </TabsContent>
 
           {/* Integrations */}
           <TabsContent value="integrations" className="space-y-6">
+            <fieldset disabled={isClientPortalUser} className="space-y-6">
             {/* GHL Workspaces - Dynamic Multi-Tenancy */}
             <IntegrationsManager onWorkspacesChange={onWorkspacesChange} />
 
@@ -4148,12 +4280,60 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               </CardContent>
             </Card>
 
+            </fieldset>
           </TabsContent>
 
           {/* AI Personality */}
           <TabsContent value="ai" className="space-y-6">
+            <fieldset disabled={isClientPortalUser} className="space-y-6">
             {/* AI Personas Manager (Phase 39) */}
-            <AiPersonaManager activeWorkspace={activeWorkspace} />
+            {isClientPortalUser ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Bot className="h-5 w-5" />
+                    AI Personality (Read-only)
+                  </CardTitle>
+                  <CardDescription>Request changes from ZRG.</CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-4 md:grid-cols-2 text-sm">
+                  <div>
+                    <div className="text-xs text-muted-foreground">Sender name</div>
+                    <div className="font-medium">{aiPersona.name || "—"}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-muted-foreground">Tone</div>
+                    <div className="font-medium">{aiPersona.tone || "—"}</div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-muted-foreground">Greeting</div>
+                    <div className="font-mono text-xs whitespace-pre-wrap">{aiPersona.greeting || "—"}</div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-muted-foreground">SMS Greeting</div>
+                    <div className="font-mono text-xs whitespace-pre-wrap">{aiPersona.smsGreeting || "—"}</div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-muted-foreground">Signature</div>
+                    <div className="font-mono text-xs whitespace-pre-wrap">{aiPersona.signature || "—"}</div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-muted-foreground">Goals</div>
+                    <div className="text-xs whitespace-pre-wrap">{aiPersona.goals || "—"}</div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-muted-foreground">Service description</div>
+                    <div className="text-xs whitespace-pre-wrap">{aiPersona.serviceDescription || "—"}</div>
+                  </div>
+                  <div className="md:col-span-2">
+                    <div className="text-xs text-muted-foreground">Ideal customer profile</div>
+                    <div className="text-xs whitespace-pre-wrap">{aiPersona.idealCustomerProfile || "—"}</div>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : (
+              <AiPersonaManager activeWorkspace={activeWorkspace} />
+            )}
 
             {/* Workspace-Level Settings Card (Qualification Questions, Knowledge Assets) */}
             <Card>
@@ -4567,10 +4747,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Sparkles className="h-5 w-5" />
-                  Campaign Assistant
+                  Campaign Strategist
                 </CardTitle>
                 <CardDescription>
-                  Model + reasoning settings for the Campaign Assistant (read-only v1). Action tools are wired but disabled by default.
+                  Model + reasoning settings for the Campaign Strategist (read-only v1). Action tools are wired but disabled by default.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -4818,12 +4998,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 	              </CardContent>
 	            </Card>
 
-	            {isWorkspaceAdmin && activeWorkspace ? (
-	              <BulkDraftRegenerationCard clientId={activeWorkspace} />
-	            ) : null}
+            {isWorkspaceAdmin && activeWorkspace && !isClientPortalUser ? (
+              <BulkDraftRegenerationCard clientId={activeWorkspace} />
+            ) : null}
 
-	            {canViewAiObs ? (
-	              <>
+            {!isClientPortalUser && canViewAiObs ? (
+              <>
 	                <Card>
 	                  <CardHeader>
                     <div className="flex items-start justify-between gap-4">
@@ -5728,10 +5908,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </Dialog>
               </>
             ) : null}
+            </fieldset>
           </TabsContent>
 
           {/* Booking Processes (Phase 36) */}
           <TabsContent value="booking" className="space-y-6">
+            <fieldset disabled={isClientPortalUser} className="space-y-6">
             <Card>
               <CardHeader className="flex flex-row items-start justify-between space-y-0">
                 <div className="space-y-1">
@@ -5793,33 +5975,18 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             {/* Campaign Assignment Panel - moved here for booking context */}
             <AiCampaignAssignmentPanel activeWorkspace={activeWorkspace} />
 
-            {/* Booking Process Analytics (Phase 36f) */}
-            <BookingProcessAnalytics activeWorkspace={activeWorkspace} />
+            </fieldset>
           </TabsContent>
 
           {/* Team Management */}
           <TabsContent value="team" className="space-y-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Users className="h-5 w-5" />
-                  Team Members
-                </CardTitle>
-                <CardDescription>Manage who has access to this workspace</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-col items-center justify-center py-12 text-center">
-                  <div className="rounded-full bg-muted p-4 mb-4">
-                    <Lock className="h-8 w-8 text-muted-foreground" />
-                  </div>
-                  <h3 className="text-lg font-semibold mb-2">Team Management Coming Soon</h3>
-                  <p className="text-sm text-muted-foreground max-w-md">
-                    Multi-user team management and role-based access control will be available in a future update.
-                    Currently, each workspace is tied to your individual account.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
+            <fieldset disabled={isClientPortalUser} className="space-y-6">
+              {!isClientPortalUser ? (
+                <ClientPortalUsersManager
+                  activeWorkspace={activeWorkspace ?? null}
+                  isWorkspaceAdmin={isWorkspaceAdmin}
+                />
+              ) : null}
 
             <Card>
               <CardHeader>
@@ -5859,6 +6026,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </div>
               </CardContent>
             </Card>
+            </fieldset>
           </TabsContent>
         </Tabs>
       </div>

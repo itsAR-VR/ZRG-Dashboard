@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { applyAirtableModeToDefaultSequences } from "@/actions/followup-sequence-actions";
 import { computeWorkspaceFollowUpsPausedUntil } from "@/lib/workspace-followups-pause";
 import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById } from "@/lib/workspace-access";
+import { requireWorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { extractKnowledgeNotesFromFile, extractKnowledgeNotesFromText } from "@/lib/knowledge-asset-extraction";
 import { crawl4aiExtractMarkdown } from "@/lib/crawl4ai";
@@ -61,6 +62,8 @@ export interface UserSettingsData {
   // Calendar Settings
   calendarSlotsToShow: number | null;
   calendarLookAheadDays: number | null;
+  calendarHealthEnabled: boolean;
+  calendarHealthMinSlots: number;
   // EmailBison first-touch availability_slot injection controls (Phase 55/61)
   emailBisonFirstTouchAvailabilitySlotEnabled: boolean;
   emailBisonAvailabilitySlotTemplate: string | null;
@@ -106,6 +109,13 @@ export interface CalendarLinkData {
   type: "calendly" | "hubspot" | "ghl" | "unknown";
   isDefault: boolean;
   createdAt: Date;
+}
+
+async function requireSettingsWriteAccess(clientId: string): Promise<void> {
+  const { capabilities } = await requireWorkspaceCapabilities(clientId);
+  if (capabilities.isClientPortalUser) {
+    throw new Error("Unauthorized");
+  }
 }
 
 /**
@@ -165,6 +175,8 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           autoSendCustomSchedule: null,
           calendarSlotsToShow: 3,
           calendarLookAheadDays: 28,
+          calendarHealthEnabled: true,
+          calendarHealthMinSlots: 10,
           emailBisonFirstTouchAvailabilitySlotEnabled: true,
           emailBisonAvailabilitySlotTemplate: null,
           emailBisonAvailabilitySlotIncludeWeekends: false,
@@ -220,6 +232,8 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           workEndTime: "17:00",
           autoSendScheduleMode: "ALWAYS",
           autoSendCustomSchedule: Prisma.JsonNull,
+          calendarHealthEnabled: true,
+          calendarHealthMinSlots: 10,
         },
       });
       settings = { ...created, knowledgeAssets: [] };
@@ -283,6 +297,8 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         autoSendCustomSchedule: (settings.autoSendCustomSchedule as Record<string, unknown> | null) ?? null,
         calendarSlotsToShow: settings.calendarSlotsToShow,
         calendarLookAheadDays: settings.calendarLookAheadDays,
+        calendarHealthEnabled: settings.calendarHealthEnabled,
+        calendarHealthMinSlots: settings.calendarHealthMinSlots,
         emailBisonFirstTouchAvailabilitySlotEnabled: settings.emailBisonFirstTouchAvailabilitySlotEnabled,
         emailBisonAvailabilitySlotTemplate: settings.emailBisonAvailabilitySlotTemplate,
         emailBisonAvailabilitySlotIncludeWeekends: settings.emailBisonAvailabilitySlotIncludeWeekends,
@@ -351,8 +367,15 @@ export async function updateUserSettings(
     const wantsScheduleUpdate =
       data.autoSendScheduleMode !== undefined ||
       data.autoSendCustomSchedule !== undefined;
+    const wantsCalendarHealthUpdate =
+      data.calendarHealthEnabled !== undefined ||
+      data.calendarHealthMinSlots !== undefined;
 
     let normalizedCustomSchedule = data.autoSendCustomSchedule;
+    const normalizedCalendarHealthMinSlots =
+      typeof data.calendarHealthMinSlots === "number" && Number.isFinite(data.calendarHealthMinSlots)
+        ? Math.max(0, Math.min(500, Math.floor(data.calendarHealthMinSlots)))
+        : undefined;
 
     if (wantsInsightsUpdate || wantsDraftGenerationUpdate || wantsNotificationUpdate) {
       await requireClientAdminAccess(clientId);
@@ -369,6 +392,9 @@ export async function updateUserSettings(
         }
         normalizedCustomSchedule = validation.value as unknown as Record<string, unknown>;
       }
+    }
+    if (wantsCalendarHealthUpdate) {
+      await requireClientAdminAccess(clientId);
     }
 
     await prisma.workspaceSettings.upsert({
@@ -412,6 +438,8 @@ export async function updateUserSettings(
         autoSendCustomSchedule: toNullableJson(normalizedCustomSchedule),
         calendarSlotsToShow: data.calendarSlotsToShow,
         calendarLookAheadDays: data.calendarLookAheadDays,
+        calendarHealthEnabled: data.calendarHealthEnabled,
+        calendarHealthMinSlots: normalizedCalendarHealthMinSlots,
         emailBisonFirstTouchAvailabilitySlotEnabled: data.emailBisonFirstTouchAvailabilitySlotEnabled,
         emailBisonAvailabilitySlotTemplate: data.emailBisonAvailabilitySlotTemplate,
         emailBisonAvailabilitySlotIncludeWeekends: data.emailBisonAvailabilitySlotIncludeWeekends,
@@ -474,6 +502,8 @@ export async function updateUserSettings(
         autoSendCustomSchedule: toNullableJson(normalizedCustomSchedule) ?? Prisma.JsonNull,
         calendarSlotsToShow: data.calendarSlotsToShow ?? 3,
         calendarLookAheadDays: data.calendarLookAheadDays ?? 28,
+        calendarHealthEnabled: data.calendarHealthEnabled ?? true,
+        calendarHealthMinSlots: normalizedCalendarHealthMinSlots ?? 10,
         emailBisonFirstTouchAvailabilitySlotEnabled: data.emailBisonFirstTouchAvailabilitySlotEnabled ?? true,
         emailBisonAvailabilitySlotTemplate: data.emailBisonAvailabilitySlotTemplate ?? null,
         emailBisonAvailabilitySlotIncludeWeekends: data.emailBisonAvailabilitySlotIncludeWeekends ?? false,
@@ -516,7 +546,7 @@ export async function updateAISignature(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -551,7 +581,7 @@ export async function updateAIPersonality(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -594,7 +624,7 @@ export async function updateAutomationRules(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -649,7 +679,7 @@ export async function getAutoFollowUpsOnReply(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     const settings = await prisma.workspaceSettings.findUnique({
       where: { clientId },
@@ -671,7 +701,7 @@ export async function setAutoFollowUpsOnReply(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -775,7 +805,7 @@ export async function addKnowledgeAsset(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     // Ensure settings exist
     const settings = await prisma.workspaceSettings.upsert({
@@ -818,7 +848,7 @@ export async function addFileKnowledgeAsset(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     // Ensure settings exist
     const settings = await prisma.workspaceSettings.upsert({
@@ -935,7 +965,7 @@ export async function uploadKnowledgeAssetFile(
     if (!name) return { success: false, error: "Missing asset name" };
     if (!file) return { success: false, error: "Missing file" };
 
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     const maxBytes = Math.max(1, Number.parseInt(process.env.KNOWLEDGE_ASSET_MAX_BYTES || "12582912", 10) || 12_582_912); // 12MB
     if (file.size > maxBytes) {
@@ -1082,7 +1112,7 @@ export async function addWebsiteKnowledgeAsset(
       return { success: false, error: "URL hostname is not allowed" };
     }
 
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     const settings = await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -1167,7 +1197,7 @@ export async function retryWebsiteKnowledgeAssetIngestion(
       if (!asset) return { success: false, error: "Asset not found" };
       if (asset.type !== "url") return { success: false, error: "Not a website asset" };
 
-    await requireClientAccess(asset.workspaceSettings.clientId);
+    await requireSettingsWriteAccess(asset.workspaceSettings.clientId);
 
     const url = (asset.fileUrl || "").trim();
     if (!url) return { success: false, error: "Missing URL" };
@@ -1233,7 +1263,7 @@ export async function updateAssetTextContent(
       select: { id: true, workspaceSettings: { select: { clientId: true } } },
     });
     if (!asset) return { success: false, error: "Asset not found" };
-    await requireClientAccess(asset.workspaceSettings.clientId);
+    await requireSettingsWriteAccess(asset.workspaceSettings.clientId);
 
     await prisma.knowledgeAsset.update({
       where: { id: assetId },
@@ -1260,7 +1290,7 @@ export async function deleteKnowledgeAsset(
       select: { id: true, workspaceSettings: { select: { clientId: true } } },
     });
     if (!asset) return { success: false, error: "Asset not found" };
-    await requireClientAccess(asset.workspaceSettings.clientId);
+    await requireSettingsWriteAccess(asset.workspaceSettings.clientId);
 
     await prisma.knowledgeAsset.delete({
       where: { id: assetId },
@@ -1430,7 +1460,7 @@ export async function addCalendarLink(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     // Auto-detect calendar type
     const type = detectCalendarType(data.url);
@@ -1497,7 +1527,7 @@ export async function updateCalendarLink(
       select: { id: true, clientId: true, url: true },
     });
     if (!existing) return { success: false, error: "Calendar link not found" };
-    await requireClientAccess(existing.clientId);
+    await requireSettingsWriteAccess(existing.clientId);
 
     const nextUrl = data.url?.trim();
     const nextType = nextUrl ? detectCalendarType(nextUrl) : undefined;
@@ -1543,7 +1573,7 @@ export async function deleteCalendarLink(
     if (!link) {
       return { success: false, error: "Calendar link not found" };
     }
-    await requireClientAccess(link.clientId);
+    await requireSettingsWriteAccess(link.clientId);
 
     await prisma.calendarLink.delete({
       where: { id: calendarLinkId },
@@ -1590,7 +1620,7 @@ export async function setDefaultCalendarLink(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
-    await requireClientAccess(clientId);
+    await requireSettingsWriteAccess(clientId);
 
     const link = await prisma.calendarLink.findUnique({
       where: { id: calendarLinkId },
