@@ -1,0 +1,800 @@
+"use client"
+
+import { useCallback, useEffect, useMemo, useState, type FocusEvent } from "react"
+import { Loader2, RefreshCw } from "lucide-react"
+
+import {
+  getCrmAssigneeOptions,
+  getCrmSheetRows,
+  updateCrmSheetCell,
+  type CrmSheetFilters,
+  type CrmSheetRow,
+} from "@/actions/analytics-actions"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Textarea } from "@/components/ui/textarea"
+import { toDisplayPhone } from "@/lib/phone-utils"
+import { cn } from "@/lib/utils"
+
+const LEAD_STATUSES = [
+  { value: "all", label: "All Statuses" },
+  { value: "new", label: "New" },
+  { value: "qualified", label: "Qualified" },
+  { value: "unqualified", label: "Unqualified" },
+  { value: "meeting-booked", label: "Meeting Booked" },
+  { value: "not-interested", label: "Not Interested" },
+  { value: "blacklisted", label: "Blacklisted" },
+]
+
+const RESPONSE_MODES = [
+  { value: "all", label: "All Responses" },
+  { value: "AI", label: "AI" },
+  { value: "HUMAN", label: "Human" },
+  { value: "UNKNOWN", label: "Unknown" },
+]
+
+const formatDate = (value: Date | null) => {
+  if (!value) return "—"
+  return new Date(value).toLocaleDateString()
+}
+
+const renderValue = (value: string | number | null | undefined) => {
+  if (value === null || value === undefined || value === "") return "—"
+  return value
+}
+
+const responseModeLabel = (value: CrmSheetRow["responseMode"]) => {
+  if (!value) return "—"
+  if (value === "AI") return "AI"
+  if (value === "HUMAN") return "Human"
+  return "Unknown"
+}
+
+type CrmAssigneeOption = { userId: string; email: string | null }
+
+type EditableField =
+  | "jobTitle"
+  | "leadCategory"
+  | "leadStatus"
+  | "leadType"
+  | "applicationStatus"
+  | "notes"
+  | "campaign"
+  | "email"
+  | "phone"
+  | "linkedinUrl"
+  | "assignedToUserId"
+
+type SaveCellArgs = {
+  rowId: string
+  leadId: string
+  field: EditableField
+  value: string | null
+  updateAutomation?: boolean
+}
+
+type SaveCellResult = { success: boolean; error?: string; newValue?: string | null }
+
+type SaveCellFn = (args: SaveCellArgs) => Promise<SaveCellResult>
+
+interface EditableTextCellProps {
+  rowId: string
+  leadId: string
+  field: EditableField
+  value: string | null
+  displayValue?: string | null
+  multiline?: boolean
+  showAutomationToggle?: boolean
+  onSave: SaveCellFn
+}
+
+function EditableTextCell({
+  rowId,
+  leadId,
+  field,
+  value,
+  displayValue,
+  multiline,
+  showAutomationToggle,
+  onSave,
+}: EditableTextCellProps) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [draftValue, setDraftValue] = useState(value ?? "")
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [flash, setFlash] = useState(false)
+  const [updateAutomation, setUpdateAutomation] = useState(false)
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraftValue(value ?? "")
+    }
+  }, [value, isEditing])
+
+  const startEdit = () => {
+    setIsEditing(true)
+    setError(null)
+    setUpdateAutomation(false)
+  }
+
+  const cancelEdit = () => {
+    setIsEditing(false)
+    setError(null)
+    setDraftValue(value ?? "")
+  }
+
+  const handleSave = async () => {
+    if (isSaving) return
+    const trimmed = multiline ? draftValue : draftValue.trim()
+    const nextValue = trimmed.length > 0 ? trimmed : null
+    setIsSaving(true)
+    const result = await onSave({
+      rowId,
+      leadId,
+      field,
+      value: nextValue,
+      updateAutomation: showAutomationToggle ? updateAutomation : undefined,
+    })
+    setIsSaving(false)
+    if (!result.success) {
+      setError(result.error || "Failed to save")
+      return
+    }
+    setError(null)
+    setIsEditing(false)
+    setFlash(true)
+    window.setTimeout(() => setFlash(false), 800)
+  }
+
+  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return
+    if (isEditing) void handleSave()
+  }
+
+  if (!isEditing) {
+    const currentDisplay = displayValue ?? value
+    const hasValue = currentDisplay !== null && currentDisplay !== undefined && currentDisplay !== ""
+    return (
+      <button
+        type="button"
+        onClick={startEdit}
+        className={cn(
+          "w-full text-left hover:text-foreground focus-visible:outline-none",
+          flash ? "rounded bg-emerald-50/70" : "",
+          hasValue ? "text-foreground" : "text-muted-foreground"
+        )}
+      >
+        {renderValue(currentDisplay)}
+      </button>
+    )
+  }
+
+  return (
+    <div className="space-y-1" onBlur={handleBlur}>
+      {multiline ? (
+        <Textarea
+          autoFocus
+          rows={3}
+          value={draftValue}
+          onChange={(event) => setDraftValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault()
+              cancelEdit()
+            }
+            if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+              event.preventDefault()
+              void handleSave()
+            }
+          }}
+        />
+      ) : (
+        <Input
+          autoFocus
+          value={draftValue}
+          onChange={(event) => setDraftValue(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault()
+              cancelEdit()
+            }
+            if (event.key === "Enter") {
+              event.preventDefault()
+              void handleSave()
+            }
+          }}
+        />
+      )}
+      {showAutomationToggle ? (
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Checkbox
+            checked={updateAutomation}
+            onCheckedChange={(checked) => setUpdateAutomation(Boolean(checked))}
+          />
+          Also update automation
+        </label>
+      ) : null}
+      {isSaving ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Saving...
+        </div>
+      ) : null}
+      {error ? <div className="text-xs text-red-500">{error}</div> : null}
+    </div>
+  )
+}
+
+interface EditableSelectCellProps {
+  rowId: string
+  leadId: string
+  value: string | null
+  options: CrmAssigneeOption[]
+  isLoading: boolean
+  onSave: SaveCellFn
+}
+
+function EditableSelectCell({
+  rowId,
+  leadId,
+  value,
+  options,
+  isLoading,
+  onSave,
+}: EditableSelectCellProps) {
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [flash, setFlash] = useState(false)
+
+  const resolvedId = useMemo(() => {
+    if (!value) return ""
+    if (!value.includes("@")) return value
+    const match = options.find((option) => option.email === value)
+    return match?.userId ?? ""
+  }, [value, options])
+
+  const selectValue = resolvedId || undefined
+  const isDisabled = isSaving || options.length === 0
+
+  const handleChange = async (nextValue: string) => {
+    const selectedId = nextValue === "unassigned" ? null : nextValue
+    setIsSaving(true)
+    setError(null)
+    const result = await onSave({
+      rowId,
+      leadId,
+      field: "assignedToUserId",
+      value: selectedId,
+    })
+    setIsSaving(false)
+    if (!result.success) {
+      setError(result.error || "Failed to save")
+      return
+    }
+    setFlash(true)
+    window.setTimeout(() => setFlash(false), 800)
+  }
+
+  if (isLoading && options.length === 0) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Loading...
+      </div>
+    )
+  }
+
+  return (
+    <div className={cn("space-y-1", flash && "rounded bg-emerald-50/70")}>
+      <Select value={selectValue} onValueChange={handleChange} disabled={isDisabled}>
+        <SelectTrigger className="h-8">
+          <SelectValue placeholder={value ? renderValue(value) : "Unassigned"} />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="unassigned">Unassigned</SelectItem>
+          {options.map((option) => (
+            <SelectItem key={option.userId} value={option.userId}>
+              {option.email ?? option.userId}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {isSaving ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Saving...
+        </div>
+      ) : null}
+      {error ? <div className="text-xs text-red-500">{error}</div> : null}
+    </div>
+  )
+}
+
+interface AnalyticsCrmTableProps {
+  activeWorkspace?: string | null
+}
+
+export function AnalyticsCrmTable({ activeWorkspace }: AnalyticsCrmTableProps) {
+  const [rows, setRows] = useState<CrmSheetRow[]>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [isLoadingMore, setIsLoadingMore] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [filters, setFilters] = useState<CrmSheetFilters>({})
+  const [assigneeOptions, setAssigneeOptions] = useState<CrmAssigneeOption[]>([])
+  const [assigneeLoading, setAssigneeLoading] = useState(false)
+
+  const canLoadMore = Boolean(nextCursor)
+
+  const normalizedFilters = useMemo(() => {
+    return {
+      ...filters,
+      campaign: filters.campaign?.trim() || null,
+      leadCategory: filters.leadCategory?.trim() || null,
+      leadStatus: filters.leadStatus?.trim() || null,
+    }
+  }, [filters])
+
+  useEffect(() => {
+    if (!activeWorkspace) {
+      setRows([])
+      setNextCursor(null)
+      setError(null)
+      return
+    }
+
+    let cancelled = false
+
+    const fetchRows = async () => {
+      setIsLoading(true)
+      setError(null)
+
+      const result = await getCrmSheetRows({
+        clientId: activeWorkspace,
+        limit: 150,
+        filters: normalizedFilters,
+      })
+
+      if (cancelled) return
+
+      if (result.success && result.data) {
+        setRows(result.data.rows)
+        setNextCursor(result.data.nextCursor)
+      } else {
+        setRows([])
+        setNextCursor(null)
+        setError(result.error || "Failed to load CRM rows")
+      }
+
+      setIsLoading(false)
+    }
+
+    fetchRows()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeWorkspace, normalizedFilters])
+
+  useEffect(() => {
+    if (!activeWorkspace) {
+      setAssigneeOptions([])
+      return
+    }
+
+    let cancelled = false
+
+    const fetchAssignees = async () => {
+      setAssigneeLoading(true)
+      const result = await getCrmAssigneeOptions({ clientId: activeWorkspace })
+      if (cancelled) return
+      if (result.success && result.data) {
+        setAssigneeOptions(result.data)
+      } else {
+        setAssigneeOptions([])
+      }
+      setAssigneeLoading(false)
+    }
+
+    fetchAssignees()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeWorkspace])
+
+  const handleRefresh = async () => {
+    if (!activeWorkspace) return
+    setIsLoading(true)
+    setError(null)
+
+    const result = await getCrmSheetRows({
+      clientId: activeWorkspace,
+      limit: 150,
+      filters: normalizedFilters,
+    })
+
+    if (result.success && result.data) {
+      setRows(result.data.rows)
+      setNextCursor(result.data.nextCursor)
+    } else {
+      setError(result.error || "Failed to refresh CRM rows")
+    }
+
+    setIsLoading(false)
+  }
+
+  const handleLoadMore = async () => {
+    if (!activeWorkspace || !nextCursor) return
+    setIsLoadingMore(true)
+
+    const result = await getCrmSheetRows({
+      clientId: activeWorkspace,
+      cursor: nextCursor,
+      limit: 150,
+      filters: normalizedFilters,
+    })
+
+    const data = result.data
+
+    if (!result.success || !data) {
+      setIsLoadingMore(false)
+      return
+    }
+
+    setRows((prev) => [...prev, ...data.rows])
+    setNextCursor(data.nextCursor)
+
+    setIsLoadingMore(false)
+  }
+
+  const applyRowUpdate = useCallback(
+    (row: CrmSheetRow, field: EditableField, value: string | null): CrmSheetRow => {
+      switch (field) {
+        case "jobTitle":
+          return { ...row, jobTitle: value }
+        case "leadCategory":
+          return { ...row, leadCategory: value }
+        case "leadStatus":
+          return { ...row, leadStatus: value }
+        case "leadType":
+          return { ...row, leadType: value }
+        case "applicationStatus":
+          return { ...row, applicationStatus: value }
+        case "notes":
+          return { ...row, notes: value }
+        case "campaign":
+          return { ...row, campaign: value }
+        case "email":
+          return { ...row, leadEmail: value }
+        case "phone":
+          return { ...row, phoneNumber: value }
+        case "linkedinUrl":
+          return { ...row, leadLinkedIn: value }
+        case "assignedToUserId": {
+          const assigneeEmail = value
+            ? assigneeOptions.find((option) => option.userId === value)?.email ?? value
+            : null
+          return { ...row, appointmentSetter: assigneeEmail, setters: assigneeEmail }
+        }
+        default:
+          return row
+      }
+    },
+    [assigneeOptions]
+  )
+
+  const handleSaveCell = useCallback<SaveCellFn>(
+    async ({ rowId, leadId, field, value, updateAutomation }) => {
+      let previousRow: CrmSheetRow | null = null
+
+      setRows((prev) =>
+        prev.map((row) => {
+          if (row.id !== rowId) return row
+          previousRow = row
+          return applyRowUpdate(row, field, value)
+        })
+      )
+
+      const result = await updateCrmSheetCell({
+        leadId,
+        field,
+        value,
+        updateAutomation,
+      })
+
+      if (!result.success) {
+        if (previousRow) {
+          setRows((prev) => prev.map((row) => (row.id === rowId ? previousRow! : row)))
+        }
+        return { success: false, error: result.error || "Failed to save" }
+      }
+
+      const finalValue = result.newValue ?? value ?? null
+      if (result.newValue !== undefined) {
+        setRows((prev) =>
+          prev.map((row) => (row.id === rowId ? applyRowUpdate(row, field, finalValue) : row))
+        )
+      }
+
+      return { success: true, newValue: finalValue }
+    },
+    [applyRowUpdate]
+  )
+
+  if (!activeWorkspace) {
+    return (
+      <div className="py-12 text-center text-muted-foreground">
+        Select a workspace to view CRM analytics.
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-wrap items-center gap-3">
+          <Input
+            className="w-[220px]"
+            placeholder="Filter by campaign"
+            value={filters.campaign || ""}
+            onChange={(event) => setFilters((prev) => ({ ...prev, campaign: event.target.value }))}
+          />
+          <Input
+            className="w-[200px]"
+            placeholder="Filter by lead category"
+            value={filters.leadCategory || ""}
+            onChange={(event) => setFilters((prev) => ({ ...prev, leadCategory: event.target.value }))}
+          />
+          <Select
+            value={filters.leadStatus ?? "all"}
+            onValueChange={(value) =>
+              setFilters((prev) => ({ ...prev, leadStatus: value === "all" ? null : value }))
+            }
+          >
+            <SelectTrigger className="w-[180px]">
+              <SelectValue placeholder="Lead status" />
+            </SelectTrigger>
+            <SelectContent>
+              {LEAD_STATUSES.map((status) => (
+                <SelectItem key={status.value} value={status.value}>
+                  {status.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select
+            value={filters.responseMode ?? "all"}
+            onValueChange={(value) =>
+              setFilters((prev) => ({
+                ...prev,
+                responseMode: value === "all" ? null : (value as CrmSheetFilters["responseMode"]),
+              }))
+            }
+          >
+            <SelectTrigger className="w-[170px]">
+              <SelectValue placeholder="Response mode" />
+            </SelectTrigger>
+            <SelectContent>
+              {RESPONSE_MODES.map((mode) => (
+                <SelectItem key={mode.value} value={mode.value}>
+                  {mode.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant="secondary">{rows.length.toLocaleString()} rows</Badge>
+          <Button size="sm" variant="outline" onClick={handleRefresh} disabled={isLoading}>
+            <RefreshCw className="mr-2 h-4 w-4" />
+            Refresh
+          </Button>
+        </div>
+      </div>
+
+      <div className="rounded-lg border">
+        <div className="overflow-auto">
+          <Table className="min-w-[1800px]">
+            <TableHeader>
+              <TableRow>
+                <TableHead>DATE</TableHead>
+                <TableHead>Campaign</TableHead>
+                <TableHead>Company Name</TableHead>
+                <TableHead>Website</TableHead>
+                <TableHead>First Name</TableHead>
+                <TableHead>Last Name</TableHead>
+                <TableHead>Job Title</TableHead>
+                <TableHead>Lead&apos;s Email</TableHead>
+                <TableHead>Lead LinkedIn</TableHead>
+                <TableHead>Phone Number</TableHead>
+                <TableHead>Email/LinkedIn Step Responded</TableHead>
+                <TableHead>Lead Category</TableHead>
+                <TableHead>Lead Status</TableHead>
+                <TableHead>Channel</TableHead>
+                <TableHead>Lead Type</TableHead>
+                <TableHead>Application Status</TableHead>
+                <TableHead>Appointment Setter</TableHead>
+                <TableHead>Setter Assignment</TableHead>
+                <TableHead>Notes</TableHead>
+                <TableHead>Initial response date</TableHead>
+                <TableHead>Follow-up 1</TableHead>
+                <TableHead>Follow-up 2</TableHead>
+                <TableHead>Follow-up 3</TableHead>
+                <TableHead>Follow-up 4</TableHead>
+                <TableHead>Follow-up 5</TableHead>
+                <TableHead>Response step complete</TableHead>
+                <TableHead>Date of Booking</TableHead>
+                <TableHead>Date of Meeting</TableHead>
+                <TableHead>Qualified</TableHead>
+                <TableHead>Follow-up Date Requested</TableHead>
+                <TableHead>Setters</TableHead>
+                <TableHead>AI vs Human Response</TableHead>
+                <TableHead>Lead Score</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={33} className="h-28 text-center text-muted-foreground">
+                    <Loader2 className="inline h-4 w-4 animate-spin" /> Loading CRM rows...
+                  </TableCell>
+                </TableRow>
+              ) : rows.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={33} className="h-28 text-center text-muted-foreground">
+                    {error || "No CRM rows yet"}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                rows.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>{formatDate(row.date)}</TableCell>
+                    <TableCell>
+                      <EditableTextCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        field="campaign"
+                        value={row.campaign}
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>{renderValue(row.companyName)}</TableCell>
+                    <TableCell>{renderValue(row.website)}</TableCell>
+                    <TableCell>{renderValue(row.firstName)}</TableCell>
+                    <TableCell>{renderValue(row.lastName)}</TableCell>
+                    <TableCell>
+                      <EditableTextCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        field="jobTitle"
+                        value={row.jobTitle}
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <EditableTextCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        field="email"
+                        value={row.leadEmail}
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <EditableTextCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        field="linkedinUrl"
+                        value={row.leadLinkedIn}
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <EditableTextCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        field="phone"
+                        value={row.phoneNumber}
+                        displayValue={toDisplayPhone(row.phoneNumber || "") || row.phoneNumber}
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>{renderValue(row.stepResponded)}</TableCell>
+                    <TableCell>
+                      <EditableTextCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        field="leadCategory"
+                        value={row.leadCategory}
+                        showAutomationToggle
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <EditableTextCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        field="leadStatus"
+                        value={row.leadStatus}
+                        showAutomationToggle
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>{renderValue(row.channel)}</TableCell>
+                    <TableCell>
+                      <EditableTextCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        field="leadType"
+                        value={row.leadType}
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <EditableTextCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        field="applicationStatus"
+                        value={row.applicationStatus}
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <EditableSelectCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        value={row.appointmentSetter}
+                        options={assigneeOptions}
+                        isLoading={assigneeLoading}
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>{renderValue(row.setterAssignment)}</TableCell>
+                    <TableCell>
+                      <EditableTextCell
+                        rowId={row.id}
+                        leadId={row.leadId}
+                        field="notes"
+                        value={row.notes}
+                        multiline
+                        onSave={handleSaveCell}
+                      />
+                    </TableCell>
+                    <TableCell>{formatDate(row.initialResponseDate)}</TableCell>
+                    <TableCell>{formatDate(row.followUp1)}</TableCell>
+                    <TableCell>{formatDate(row.followUp2)}</TableCell>
+                    <TableCell>{formatDate(row.followUp3)}</TableCell>
+                    <TableCell>{formatDate(row.followUp4)}</TableCell>
+                    <TableCell>{formatDate(row.followUp5)}</TableCell>
+                    <TableCell>{row.responseStepComplete == null ? "—" : row.responseStepComplete ? "Yes" : "No"}</TableCell>
+                    <TableCell>{formatDate(row.dateOfBooking)}</TableCell>
+                    <TableCell>{formatDate(row.dateOfMeeting)}</TableCell>
+                    <TableCell>{row.qualified == null ? "—" : row.qualified ? "Yes" : "No"}</TableCell>
+                    <TableCell>{formatDate(row.followUpDateRequested)}</TableCell>
+                    <TableCell>{renderValue(row.setters)}</TableCell>
+                    <TableCell>{responseModeLabel(row.responseMode)}</TableCell>
+                    <TableCell>{row.leadScore == null ? "—" : row.leadScore}</TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+
+      {canLoadMore ? (
+        <div className="flex justify-center">
+          <Button variant="outline" onClick={handleLoadMore} disabled={isLoadingMore}>
+            {isLoadingMore ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Load more rows
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  )
+}

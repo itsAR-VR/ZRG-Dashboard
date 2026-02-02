@@ -1,14 +1,17 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { Users, MessageSquare, Calendar, Clock, ArrowUpRight, ArrowDownRight, Loader2, BarChart3, Send, Inbox, Info } from "lucide-react"
+import { useState, useEffect, useMemo } from "react"
+import { Users, MessageSquare, Calendar, ArrowUpRight, ArrowDownRight, Loader2, BarChart3, Send, Inbox, Info } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { ChatgptExportControls } from "@/components/dashboard/chatgpt-export-controls"
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { AnalyticsCrmTable } from "@/components/dashboard/analytics-crm-table"
+import { BookingProcessAnalytics } from "@/components/dashboard/settings/booking-process-analytics"
 import {
   Cell,
   BarChart,
@@ -21,7 +24,16 @@ import {
   Line,
   LabelList,
 } from "recharts"
-import { getAnalytics, getEmailCampaignAnalytics, type AnalyticsData, type EmailCampaignKpiRow, type SetterResponseTimeRow } from "@/actions/analytics-actions"
+import {
+  getAnalytics,
+  getEmailCampaignAnalytics,
+  getWorkflowAttributionAnalytics,
+  getReactivationCampaignAnalytics,
+  type AnalyticsData,
+  type EmailCampaignKpiRow,
+  type WorkflowAttributionData,
+  type ReactivationAnalyticsData,
+} from "@/actions/analytics-actions"
 
 // Sentiment colors for charts
 const SENTIMENT_COLORS: Record<string, string> = {
@@ -69,35 +81,116 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [campaignRows, setCampaignRows] = useState<EmailCampaignKpiRow[] | null>(null)
   const [campaignLoading, setCampaignLoading] = useState(true)
+  const [workflowData, setWorkflowData] = useState<WorkflowAttributionData | null>(null)
+  const [workflowLoading, setWorkflowLoading] = useState(true)
+  const [reactivationData, setReactivationData] = useState<ReactivationAnalyticsData | null>(null)
+  const [reactivationLoading, setReactivationLoading] = useState(true)
+  const [datePreset, setDatePreset] = useState<"7d" | "30d" | "90d" | "custom">("30d")
+  const [customFrom, setCustomFrom] = useState("")
+  const [customTo, setCustomTo] = useState("")
+
+  const windowRange = useMemo(() => {
+    if (datePreset === "custom") {
+      if (!customFrom || !customTo) return null
+      const from = new Date(customFrom)
+      const to = new Date(customTo)
+      if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) return null
+      // Make the end date inclusive by adding a day.
+      to.setDate(to.getDate() + 1)
+      return { from: from.toISOString(), to: to.toISOString() }
+    }
+
+    const now = new Date()
+    const days = datePreset === "7d" ? 7 : datePreset === "30d" ? 30 : 90
+    const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000)
+    return { from: from.toISOString(), to: now.toISOString() }
+  }, [datePreset, customFrom, customTo])
+
+  const windowParams = useMemo(
+    () => (windowRange ? { from: windowRange.from, to: windowRange.to } : undefined),
+    [windowRange]
+  )
+  const windowKey = windowRange ? `${windowRange.from}:${windowRange.to}` : datePreset
+  const windowLabel = useMemo(() => {
+    if (datePreset === "custom") {
+      return windowRange ? `${customFrom} → ${customTo}` : "Custom range"
+    }
+    if (datePreset === "7d") return "Last 7 days"
+    if (datePreset === "30d") return "Last 30 days"
+    if (datePreset === "90d") return "Last 90 days"
+    return "Selected window"
+  }, [datePreset, customFrom, customTo, windowRange])
 
   useEffect(() => {
+    let cancelled = false
+
     async function fetchAnalytics() {
       setIsLoading(true)
-      const result = await getAnalytics(activeWorkspace)
-      
-      if (result.success && result.data) {
-        setData(result.data)
-      } else {
-        setData(null)
+      const result = await getAnalytics(activeWorkspace, { window: windowParams })
+      if (!cancelled) {
+        if (result.success && result.data) {
+          setData(result.data)
+        } else {
+          setData(null)
+        }
+        setIsLoading(false)
       }
-      
-      setIsLoading(false)
     }
 
     async function fetchCampaignAnalytics() {
       setCampaignLoading(true)
-      const result = await getEmailCampaignAnalytics({ clientId: activeWorkspace })
-      if (result.success && result.data) {
-        setCampaignRows(result.data.campaigns)
-      } else {
-        setCampaignRows(null)
+      const result = await getEmailCampaignAnalytics(
+        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
+      )
+      if (!cancelled) {
+        if (result.success && result.data) {
+          setCampaignRows(result.data.campaigns)
+        } else {
+          setCampaignRows(null)
+        }
+        setCampaignLoading(false)
       }
-      setCampaignLoading(false)
+    }
+
+    async function fetchWorkflowAnalytics() {
+      setWorkflowLoading(true)
+      const result = await getWorkflowAttributionAnalytics(
+        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
+      )
+      if (!cancelled) {
+        if (result.success && result.data) {
+          setWorkflowData(result.data)
+        } else {
+          setWorkflowData(null)
+        }
+        setWorkflowLoading(false)
+      }
+    }
+
+    async function fetchReactivationAnalytics() {
+      setReactivationLoading(true)
+      const result = await getReactivationCampaignAnalytics(
+        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
+      )
+      if (!cancelled) {
+        if (result.success && result.data) {
+          setReactivationData(result.data)
+        } else {
+          setReactivationData(null)
+        }
+        setReactivationLoading(false)
+      }
     }
 
     fetchAnalytics()
     fetchCampaignAnalytics()
-  }, [activeWorkspace])
+    fetchWorkflowAnalytics()
+    fetchReactivationAnalytics()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeWorkspace, windowKey, windowParams])
 
   const kpiCards = [
     { label: "Total Leads", value: data?.overview.totalLeads.toLocaleString() || "0", icon: Users },
@@ -118,6 +211,37 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
       tooltip: "How fast clients reply to our messages (9am-5pm EST, weekdays)"
     },
   ]
+
+  const workflowCards = workflowData
+    ? [
+        { label: "Total Booked", value: workflowData.totalBooked.toLocaleString(), icon: Calendar },
+        { label: "Booked from Initial", value: workflowData.bookedFromInitial.toLocaleString(), icon: ArrowDownRight },
+        { label: "Booked from Workflow", value: workflowData.bookedFromWorkflow.toLocaleString(), icon: ArrowUpRight },
+        {
+          label: "Workflow Share",
+          value: formatPercent((workflowData.workflowRate || 0) * 100),
+          icon: BarChart3,
+        },
+      ]
+    : []
+
+  const reactivationSummaryCards = reactivationData
+    ? [
+        { label: "Sent", value: reactivationData.totals.totalSent.toLocaleString(), icon: Send },
+        { label: "Responded", value: reactivationData.totals.responded.toLocaleString(), icon: MessageSquare },
+        {
+          label: "Response Rate",
+          value: formatPercent((reactivationData.totals.responseRate || 0) * 100),
+          icon: ArrowDownRight,
+        },
+        { label: "Meetings Booked", value: reactivationData.totals.meetingsBooked.toLocaleString(), icon: Calendar },
+        {
+          label: "Booking Rate",
+          value: formatPercent((reactivationData.totals.bookingRate || 0) * 100),
+          icon: ArrowUpRight,
+        },
+      ]
+    : []
 
   // Prepare response sentiment breakdown for bar chart
   const sentimentBarData = (() => {
@@ -150,68 +274,82 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
     .slice()
     .sort((a, b) => b.rates.bookedPerPositive - a.rates.bookedPerPositive)
 
-  if (isLoading) {
-    return (
-      <div className="flex flex-1 flex-col items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
-
-  // Empty state when no data
-  if (!data || data.overview.totalLeads === 0) {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold">Analytics</h1>
-          <p className="text-muted-foreground">Track your outreach performance</p>
-        </div>
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center space-y-4">
-            <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
-              <BarChart3 className="h-12 w-12 text-muted-foreground" />
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold">No analytics data yet</h3>
-              <p className="text-sm text-muted-foreground max-w-sm">
-                {activeWorkspace 
-                  ? "This workspace doesn't have enough data to show analytics. Start conversations to see insights."
-                  : "Select a workspace or wait for incoming messages to see analytics data."
-                }
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   return (
-    <div className="flex flex-col h-full overflow-auto">
-      <div className="border-b px-6 py-4">
-        <div className="flex items-center justify-between">
+    <Tabs defaultValue="overview" className="flex flex-col h-full overflow-auto">
+      <div className="border-b px-6 py-4 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold">Analytics</h1>
             <p className="text-muted-foreground">Track your outreach performance</p>
-	          </div>
+          </div>
           <div className="flex items-center gap-2">
             <ChatgptExportControls activeWorkspace={activeWorkspace} />
-            <Select defaultValue="7d">
-              <SelectTrigger className="w-[150px]" disabled title="Time range filtering is coming soon">
+            <Select value={datePreset} onValueChange={(value) => setDatePreset(value as typeof datePreset)}>
+              <SelectTrigger className="w-[160px]">
                 <SelectValue placeholder="Select period" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="24h">Last 24 hours</SelectItem>
                 <SelectItem value="7d">Last 7 days</SelectItem>
                 <SelectItem value="30d">Last 30 days</SelectItem>
                 <SelectItem value="90d">Last 90 days</SelectItem>
+                <SelectItem value="custom">Custom range</SelectItem>
               </SelectContent>
             </Select>
           </div>
         </div>
+        {datePreset === "custom" && (
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">From</span>
+              <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">To</span>
+              <Input
+                type="date"
+                value={customTo}
+                min={customFrom || undefined}
+                onChange={(e) => setCustomTo(e.target.value)}
+              />
+            </div>
+            {!windowRange && (
+              <span className="text-xs text-muted-foreground">Select a start and end date to apply.</span>
+            )}
+          </div>
+        )}
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="workflows">Workflows</TabsTrigger>
+          <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
+          <TabsTrigger value="booking">Booking</TabsTrigger>
+          <TabsTrigger value="crm">CRM</TabsTrigger>
+        </TabsList>
       </div>
 
-      <div className="p-6 space-y-6">
+      <TabsContent value="overview" className="flex-1">
+        {isLoading ? (
+          <div className="flex flex-1 flex-col items-center justify-center">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : !data || data.overview.totalLeads === 0 ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center space-y-4">
+              <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
+                <BarChart3 className="h-12 w-12 text-muted-foreground" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold">No analytics data yet</h3>
+                <p className="text-sm text-muted-foreground max-w-sm">
+                  {activeWorkspace 
+                    ? "This workspace doesn't have enough data to show analytics. Start conversations to see insights."
+                    : "Select a workspace or wait for incoming messages to see analytics data."
+                  }
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-6 space-y-6">
         {/* KPI Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
           {kpiCards.map((kpi) => (
@@ -365,7 +503,7 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
             <CardHeader>
               <CardTitle>Setter Response Times</CardTitle>
               <CardDescription>
-                Average response time per setter (9am-5pm EST, last 30 days)
+                Average response time per setter (9am-5pm EST, {windowLabel})
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -473,65 +611,6 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
           </Card>
         ) : null}
 
-        {/* Email Campaign KPIs */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Email Campaign KPIs</CardTitle>
-            <CardDescription>Last 7 days (positive replies → meetings requested/booked)</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {campaignLoading ? (
-              <div className="h-[120px] flex items-center justify-center text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin" />
-              </div>
-            ) : sortedCampaignRows.length > 0 ? (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Campaign</TableHead>
-                    <TableHead className="text-right">Positive</TableHead>
-                    <TableHead className="text-right">Requested</TableHead>
-                    <TableHead className="text-right">Booked</TableHead>
-                    <TableHead className="text-right">Booked / Positive</TableHead>
-                    <TableHead className="text-right">Booked / Requested</TableHead>
-                    <TableHead className="text-right">Mode</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {sortedCampaignRows.map((row) => (
-                    <TableRow key={row.id}>
-                      <TableCell className="font-medium">
-                        <div className="flex flex-col">
-                          <span>{row.name}</span>
-                          <span className="text-xs text-muted-foreground">{row.bisonCampaignId}</span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-right">{row.positiveReplies}</TableCell>
-                      <TableCell className="text-right">{row.meetingsRequested}</TableCell>
-	                      <TableCell className="text-right">{row.meetingsBooked}</TableCell>
-	                      <TableCell className="text-right">{Math.round(row.rates.bookedPerPositive * 100)}%</TableCell>
-	                      <TableCell className="text-right">{Math.round(row.rates.bookedPerRequested * 100)}%</TableCell>
-	                      <TableCell className="text-right">
-	                        {row.responseMode === "AI_AUTO_SEND" ? (
-	                          <Badge variant="default">
-	                            AI ≥ {Math.round(row.autoSendConfidenceThreshold * 100)}%
-	                          </Badge>
-	                        ) : (
-	                          <Badge variant="secondary">Setter</Badge>
-	                        )}
-	                      </TableCell>
-	                    </TableRow>
-	                  ))}
-	                </TableBody>
-	              </Table>
-            ) : (
-              <div className="py-8 text-center text-muted-foreground">
-                No campaign data available
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
         {/* Top Clients */}
         <Card>
           <CardHeader>
@@ -588,7 +667,212 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
             )}
           </CardContent>
         </Card>
-      </div>
-    </div>
+          </div>
+        )}
+      </TabsContent>
+
+      <TabsContent value="workflows" className="flex-1">
+        <div className="p-6 space-y-6">
+          {workflowLoading ? (
+            <div className="flex h-[200px] items-center justify-center text-muted-foreground">
+              <Loader2 className="h-6 w-6 animate-spin" />
+            </div>
+          ) : !workflowData || workflowData.totalBooked === 0 ? (
+            <div className="py-12 text-center text-muted-foreground">
+              <BarChart3 className="h-12 w-12 mx-auto mb-4 opacity-50" />
+              <p>No workflow attribution data yet</p>
+              <p className="text-sm mt-2">Bookings in the selected window will appear here.</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {workflowCards.map((card) => (
+                  <Card key={card.label}>
+                    <CardContent className="p-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <card.icon className="h-5 w-5 text-muted-foreground" />
+                      </div>
+                      <p className="text-2xl font-bold">{card.value}</p>
+                      <p className="text-xs text-muted-foreground">{card.label}</p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Sequence Attribution</CardTitle>
+                  <CardDescription>Bookings attributed to the earliest follow-up step ({windowLabel})</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {workflowData.bySequence.length > 0 ? (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Sequence</TableHead>
+                          <TableHead className="text-right">Booked</TableHead>
+                          <TableHead className="text-right">Share</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {workflowData.bySequence.map((row) => (
+                          <TableRow key={row.sequenceId}>
+                            <TableCell className="font-medium">{row.sequenceName}</TableCell>
+                            <TableCell className="text-right">{row.bookedCount}</TableCell>
+                            <TableCell className="text-right">{formatPercent(row.percentage * 100)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  ) : (
+                    <div className="py-6 text-center text-muted-foreground">No sequence attribution yet.</div>
+                  )}
+                  {workflowData.unattributed > 0 && (
+                    <div className="mt-4 text-xs text-muted-foreground">
+                      Unattributed bookings: {workflowData.unattributed}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          )}
+        </div>
+      </TabsContent>
+
+      <TabsContent value="campaigns" className="flex-1">
+        <div className="p-6 space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Reactivation Campaign KPIs</CardTitle>
+              <CardDescription>{windowLabel}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {reactivationLoading ? (
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                </div>
+              ) : reactivationData ? (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+                    {reactivationSummaryCards.map((card) => (
+                      <Card key={card.label}>
+                        <CardContent className="p-4">
+                          <div className="flex items-center justify-between mb-2">
+                            <card.icon className="h-5 w-5 text-muted-foreground" />
+                          </div>
+                          <p className="text-2xl font-bold">{card.value}</p>
+                          <p className="text-xs text-muted-foreground">{card.label}</p>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+
+                  {reactivationData.campaigns.length > 0 ? (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Campaign</TableHead>
+                          <TableHead className="text-right">Sent</TableHead>
+                          <TableHead className="text-right">Responded</TableHead>
+                          <TableHead className="text-right">Response Rate</TableHead>
+                          <TableHead className="text-right">Booked</TableHead>
+                          <TableHead className="text-right">Booking Rate</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {reactivationData.campaigns.map((row) => (
+                          <TableRow key={row.campaignId}>
+                            <TableCell className="font-medium">{row.campaignName}</TableCell>
+                            <TableCell className="text-right">{row.totalSent}</TableCell>
+                            <TableCell className="text-right">{row.responded}</TableCell>
+                            <TableCell className="text-right">{formatPercent(row.responseRate * 100)}</TableCell>
+                            <TableCell className="text-right">{row.meetingsBooked}</TableCell>
+                            <TableCell className="text-right">{formatPercent(row.bookingRate * 100)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  ) : (
+                    <div className="py-8 text-center text-muted-foreground">No reactivation campaigns yet.</div>
+                  )}
+                </>
+              ) : (
+                <div className="py-8 text-center text-muted-foreground">No reactivation data available</div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Email Campaign KPIs</CardTitle>
+              <CardDescription>{windowLabel} (positive replies → meetings requested/booked)</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {campaignLoading ? (
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                </div>
+              ) : sortedCampaignRows.length > 0 ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Campaign</TableHead>
+                      <TableHead className="text-right">Positive</TableHead>
+                      <TableHead className="text-right">Requested</TableHead>
+                      <TableHead className="text-right">Booked</TableHead>
+                      <TableHead className="text-right">Booked / Positive</TableHead>
+                      <TableHead className="text-right">Booked / Requested</TableHead>
+                      <TableHead className="text-right">Mode</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {sortedCampaignRows.map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell className="font-medium">
+                          <div className="flex flex-col">
+                            <span>{row.name}</span>
+                            <span className="text-xs text-muted-foreground">{row.bisonCampaignId}</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">{row.positiveReplies}</TableCell>
+                        <TableCell className="text-right">{row.meetingsRequested}</TableCell>
+                        <TableCell className="text-right">{row.meetingsBooked}</TableCell>
+                        <TableCell className="text-right">{Math.round(row.rates.bookedPerPositive * 100)}%</TableCell>
+                        <TableCell className="text-right">{Math.round(row.rates.bookedPerRequested * 100)}%</TableCell>
+                        <TableCell className="text-right">
+                          {row.responseMode === "AI_AUTO_SEND" ? (
+                            <Badge variant="default">
+                              AI ≥ {Math.round(row.autoSendConfidenceThreshold * 100)}%
+                            </Badge>
+                          ) : (
+                            <Badge variant="secondary">Setter</Badge>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <div className="py-8 text-center text-muted-foreground">
+                  No campaign data available
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </TabsContent>
+
+      <TabsContent value="booking" className="flex-1">
+        <div className="p-6 space-y-6">
+          <BookingProcessAnalytics activeWorkspace={activeWorkspace} />
+        </div>
+      </TabsContent>
+
+      <TabsContent value="crm" className="flex-1">
+        <div className="p-6">
+          <AnalyticsCrmTable activeWorkspace={activeWorkspace} />
+        </div>
+      </TabsContent>
+    </Tabs>
   )
 }

@@ -1,12 +1,22 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import {
+  deriveCrmResponseMode,
+  mapLeadStatusFromSheet,
+  mapSentimentTagFromSheet,
+  normalizeCrmValue,
+} from "@/lib/crm-sheet-utils";
 import { POSITIVE_SENTIMENTS } from "@/lib/sentiment-shared";
+import { normalizeEmail, normalizePhone } from "@/lib/lead-matching";
+import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { isSamePhone, toStoredPhone } from "@/lib/phone-utils";
 import { requireAuthUser } from "@/lib/workspace-access";
 import { formatDurationMs } from "@/lib/business-hours";
 import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
 import { accessibleClientWhere, accessibleLeadWhere } from "@/lib/workspace-access-filters";
-import { Prisma, type ClientMemberRole, type MeetingBookingProvider } from "@prisma/client";
+import { requireWorkspaceCapabilities } from "@/lib/workspace-capabilities";
+import { Prisma, type ClientMemberRole, type MeetingBookingProvider, type CrmResponseMode } from "@prisma/client";
 
 // Simple in-memory cache for analytics with TTL (5 minutes)
 // Analytics data can be slightly stale without issues, and this dramatically reduces DB load
@@ -14,6 +24,316 @@ const ANALYTICS_CACHE_TTL_MS = 5 * 60 * 1000;
 interface AnalyticsCacheEntry {
   data: AnalyticsData;
   expiresAt: number;
+}
+
+export interface SequenceAttributionRow {
+  sequenceId: string;
+  sequenceName: string;
+  bookedCount: number;
+  percentage: number;
+}
+
+export interface WorkflowAttributionData {
+  window: { from: string; to: string };
+  totalBooked: number;
+  bookedFromInitial: number;
+  bookedFromWorkflow: number;
+  unattributed: number;
+  initialRate: number;
+  workflowRate: number;
+  bySequence: SequenceAttributionRow[];
+}
+
+export async function getWorkflowAttributionAnalytics(opts?: {
+  clientId?: string | null;
+  from?: string;
+  to?: string;
+}): Promise<{ success: boolean; data?: WorkflowAttributionData; error?: string }> {
+  try {
+    const user = await requireAuthUser();
+    const now = new Date();
+    const windowState = resolveAnalyticsWindow({ from: opts?.from, to: opts?.to });
+    const to = windowState.to ?? now;
+    const from =
+      windowState.from ?? new Date(to.getTime() - DEFAULT_ANALYTICS_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+    if (opts?.clientId) {
+      const canAccess = await prisma.client.findFirst({
+        where: { id: opts.clientId, ...accessibleClientWhere(user.id) },
+        select: { id: true },
+      });
+      if (!canAccess) return { success: false, error: "Unauthorized" };
+    }
+
+    const accessibleWhere = buildAccessibleLeadSqlWhere({ userId: user.id, clientId: opts?.clientId ?? null });
+
+    const { totalsRows, sequenceRows } = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL statement_timeout = 10000`;
+
+      const totalsRows = await tx.$queryRaw<
+        Array<{ total_booked: bigint; workflow_booked: bigint }>
+      >`
+        WITH booked AS (
+          SELECT l.id AS lead_id, l."appointmentBookedAt" AS booked_at
+          FROM "Lead" l
+          WHERE l."appointmentBookedAt" >= ${from}
+            AND l."appointmentBookedAt" < ${to}
+            AND ${accessibleWhere}
+        ),
+        matched AS (
+          SELECT
+            b.lead_id,
+            fi."sequenceId" AS sequence_id,
+            fi."lastStepAt" AS last_step_at,
+            ROW_NUMBER() OVER (PARTITION BY b.lead_id ORDER BY fi."lastStepAt" ASC) AS rn
+          FROM booked b
+          JOIN "FollowUpInstance" fi ON fi."leadId" = b.lead_id
+          WHERE fi."lastStepAt" IS NOT NULL
+            AND fi."lastStepAt" < b.booked_at
+        ),
+        workflow AS (
+          SELECT lead_id, sequence_id
+          FROM matched
+          WHERE rn = 1
+        )
+        SELECT
+          (SELECT COUNT(*) FROM booked) AS total_booked,
+          (SELECT COUNT(*) FROM workflow) AS workflow_booked
+      `;
+
+      const sequenceRows = await tx.$queryRaw<
+        Array<{ sequence_id: string; booked_count: bigint }>
+      >`
+        WITH booked AS (
+          SELECT l.id AS lead_id, l."appointmentBookedAt" AS booked_at
+          FROM "Lead" l
+          WHERE l."appointmentBookedAt" >= ${from}
+            AND l."appointmentBookedAt" < ${to}
+            AND ${accessibleWhere}
+        ),
+        matched AS (
+          SELECT
+            b.lead_id,
+            fi."sequenceId" AS sequence_id,
+            fi."lastStepAt" AS last_step_at,
+            ROW_NUMBER() OVER (PARTITION BY b.lead_id ORDER BY fi."lastStepAt" ASC) AS rn
+          FROM booked b
+          JOIN "FollowUpInstance" fi ON fi."leadId" = b.lead_id
+          WHERE fi."lastStepAt" IS NOT NULL
+            AND fi."lastStepAt" < b.booked_at
+        ),
+        workflow AS (
+          SELECT lead_id, sequence_id
+          FROM matched
+          WHERE rn = 1
+        )
+        SELECT
+          sequence_id,
+          COUNT(*)::bigint AS booked_count
+        FROM workflow
+        GROUP BY sequence_id
+        ORDER BY booked_count DESC
+      `;
+
+      return { totalsRows, sequenceRows };
+    });
+
+    const totalBooked = totalsRows?.[0]?.total_booked ? Number(totalsRows[0].total_booked) : 0;
+    const bookedFromWorkflow = totalsRows?.[0]?.workflow_booked ? Number(totalsRows[0].workflow_booked) : 0;
+    const bookedFromInitial = Math.max(0, totalBooked - bookedFromWorkflow);
+    const unattributed = Math.max(0, totalBooked - bookedFromInitial - bookedFromWorkflow);
+
+    const sequenceIds = sequenceRows.map((row) => row.sequence_id);
+    const sequences = sequenceIds.length
+      ? await prisma.followUpSequence.findMany({
+          where: { id: { in: sequenceIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const sequenceNameById = new Map(sequences.map((s) => [s.id, s.name]));
+
+    const bySequence: SequenceAttributionRow[] = sequenceRows.map((row) => {
+      const bookedCount = Number(row.booked_count);
+      return {
+        sequenceId: row.sequence_id,
+        sequenceName: sequenceNameById.get(row.sequence_id) ?? "Unknown",
+        bookedCount,
+        percentage: bookedFromWorkflow > 0 ? bookedCount / bookedFromWorkflow : 0,
+      };
+    });
+
+    return {
+      success: true,
+      data: {
+        window: { from: from.toISOString(), to: to.toISOString() },
+        totalBooked,
+        bookedFromInitial,
+        bookedFromWorkflow,
+        unattributed,
+        initialRate: safeRate(bookedFromInitial, totalBooked),
+        workflowRate: safeRate(bookedFromWorkflow, totalBooked),
+        bySequence,
+      },
+    };
+  } catch (error) {
+    console.error("[Analytics] Failed to get workflow attribution:", error);
+    return { success: false, error: "Failed to fetch workflow attribution" };
+  }
+}
+
+export interface ReactivationCampaignKpiRow {
+  campaignId: string;
+  campaignName: string;
+  totalSent: number;
+  responded: number;
+  responseRate: number;
+  meetingsBooked: number;
+  bookingRate: number;
+}
+
+export interface ReactivationAnalyticsData {
+  window: { from: string; to: string };
+  campaigns: ReactivationCampaignKpiRow[];
+  totals: {
+    totalSent: number;
+    responded: number;
+    responseRate: number;
+    meetingsBooked: number;
+    bookingRate: number;
+  };
+}
+
+export async function getReactivationCampaignAnalytics(opts?: {
+  clientId?: string | null;
+  from?: string;
+  to?: string;
+}): Promise<{ success: boolean; data?: ReactivationAnalyticsData; error?: string }> {
+  try {
+    const user = await requireAuthUser();
+    const now = new Date();
+    const windowState = resolveAnalyticsWindow({ from: opts?.from, to: opts?.to });
+    const to = windowState.to ?? now;
+    const from =
+      windowState.from ?? new Date(to.getTime() - DEFAULT_ANALYTICS_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+    if (opts?.clientId) {
+      const canAccess = await prisma.client.findFirst({
+        where: { id: opts.clientId, ...accessibleClientWhere(user.id) },
+        select: { id: true },
+      });
+      if (!canAccess) return { success: false, error: "Unauthorized" };
+    }
+
+    const accessibleWhere = buildAccessibleLeadSqlWhere({ userId: user.id, clientId: opts?.clientId ?? null });
+
+    const { rows } = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL statement_timeout = 10000`;
+
+      const rows = await tx.$queryRaw<
+        Array<{
+          campaign_id: string;
+          total_sent: bigint;
+          responded: bigint;
+          meetings_booked: bigint;
+        }>
+      >`
+        WITH sent AS (
+          SELECT
+            re.id AS enrollment_id,
+            re."campaignId" AS campaign_id,
+            re."leadId" AS lead_id,
+            re."sentAt" AS sent_at
+          FROM "ReactivationEnrollment" re
+          INNER JOIN "ReactivationCampaign" rc ON rc.id = re."campaignId"
+          INNER JOIN "Lead" l ON l.id = re."leadId"
+          WHERE re.status = 'sent'
+            AND re."sentAt" >= ${from}
+            AND re."sentAt" < ${to}
+            AND ${accessibleWhere}
+        ),
+        responses AS (
+          SELECT DISTINCT s.enrollment_id
+          FROM sent s
+          INNER JOIN "Message" m ON m."leadId" = s.lead_id
+          WHERE m.direction = 'inbound'
+            AND m."sentAt" > s.sent_at
+            AND m."sentAt" < ${to}
+        ),
+        bookings AS (
+          SELECT DISTINCT s.enrollment_id
+          FROM sent s
+          INNER JOIN "Lead" l ON l.id = s.lead_id
+          WHERE l."appointmentBookedAt" IS NOT NULL
+            AND l."appointmentBookedAt" > s.sent_at
+            AND l."appointmentBookedAt" < ${to}
+        )
+        SELECT
+          s.campaign_id,
+          COUNT(*)::bigint AS total_sent,
+          COUNT(DISTINCT r.enrollment_id)::bigint AS responded,
+          COUNT(DISTINCT b.enrollment_id)::bigint AS meetings_booked
+        FROM sent s
+        LEFT JOIN responses r ON r.enrollment_id = s.enrollment_id
+        LEFT JOIN bookings b ON b.enrollment_id = s.enrollment_id
+        GROUP BY s.campaign_id
+        ORDER BY total_sent DESC
+      `;
+
+      return { rows };
+    });
+
+    const campaignIds = rows.map((row) => row.campaign_id);
+    const campaigns = campaignIds.length
+      ? await prisma.reactivationCampaign.findMany({
+          where: { id: { in: campaignIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const campaignNameById = new Map(campaigns.map((c) => [c.id, c.name]));
+
+    const campaignRows: ReactivationCampaignKpiRow[] = rows.map((row) => {
+      const totalSent = Number(row.total_sent);
+      const responded = Number(row.responded);
+      const meetingsBooked = Number(row.meetings_booked);
+      return {
+        campaignId: row.campaign_id,
+        campaignName: campaignNameById.get(row.campaign_id) ?? "Unknown",
+        totalSent,
+        responded,
+        responseRate: safeRate(responded, totalSent),
+        meetingsBooked,
+        bookingRate: safeRate(meetingsBooked, totalSent),
+      };
+    });
+
+    const totals = campaignRows.reduce(
+      (acc, row) => {
+        acc.totalSent += row.totalSent;
+        acc.responded += row.responded;
+        acc.meetingsBooked += row.meetingsBooked;
+        return acc;
+      },
+      { totalSent: 0, responded: 0, meetingsBooked: 0 }
+    );
+
+    return {
+      success: true,
+      data: {
+        window: { from: from.toISOString(), to: to.toISOString() },
+        campaigns: campaignRows,
+        totals: {
+          totalSent: totals.totalSent,
+          responded: totals.responded,
+          responseRate: safeRate(totals.responded, totals.totalSent),
+          meetingsBooked: totals.meetingsBooked,
+          bookingRate: safeRate(totals.meetingsBooked, totals.totalSent),
+        },
+      },
+    };
+  } catch (error) {
+    console.error("[Analytics] Failed to get reactivation campaign analytics:", error);
+    return { success: false, error: "Failed to fetch reactivation analytics" };
+  }
 }
 const analyticsCache = new Map<string, AnalyticsCacheEntry>();
 
@@ -44,6 +364,39 @@ export async function invalidateAnalyticsCache(clientId?: string | null) {
   if (clientId) {
     void clientId;
   }
+}
+
+export interface AnalyticsWindow {
+  from?: string; // ISO string (inclusive)
+  to?: string; // ISO string (exclusive)
+}
+
+const DEFAULT_ANALYTICS_WINDOW_DAYS = 30;
+
+function resolveAnalyticsWindow(window?: AnalyticsWindow, fallbackDays = DEFAULT_ANALYTICS_WINDOW_DAYS): {
+  from: Date | null;
+  to: Date | null;
+  key: string;
+} {
+  if (!window?.from && !window?.to) {
+    return { from: null, to: null, key: "all" };
+  }
+
+  const now = new Date();
+  const to = window?.to ? new Date(window.to) : now;
+  const from = window?.from
+    ? new Date(window.from)
+    : new Date(to.getTime() - fallbackDays * 24 * 60 * 60 * 1000);
+
+  if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
+    return { from: null, to: null, key: "all" };
+  }
+
+  if (from > to) {
+    return { from: to, to: from, key: `${to.toISOString()}_${from.toISOString()}` };
+  }
+
+  return { from, to, key: `${from.toISOString()}_${to.toISOString()}` };
 }
 
 export interface ResponseTimeMetrics {
@@ -108,6 +461,53 @@ export interface AnalyticsData {
   perSetterResponseTimes: SetterResponseTimeRow[];
 }
 
+export interface CrmSheetRow {
+  id: string;
+  leadId: string;
+  date: Date | null;
+  campaign: string | null;
+  companyName: string | null;
+  website: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  jobTitle: string | null;
+  leadEmail: string | null;
+  leadLinkedIn: string | null;
+  phoneNumber: string | null;
+  stepResponded: number | null;
+  leadCategory: string | null;
+  leadStatus: string | null;
+  channel: string | null;
+  leadType: string | null;
+  applicationStatus: string | null;
+  appointmentSetter: string | null;
+  setterAssignment: string | null;
+  notes: string | null;
+  initialResponseDate: Date | null;
+  followUp1: Date | null;
+  followUp2: Date | null;
+  followUp3: Date | null;
+  followUp4: Date | null;
+  followUp5: Date | null;
+  responseStepComplete: boolean | null;
+  dateOfBooking: Date | null;
+  dateOfMeeting: Date | null;
+  qualified: boolean | null;
+  followUpDateRequested: Date | null;
+  setters: string | null;
+  responseMode: CrmResponseMode | null;
+  leadScore: number | null;
+}
+
+export interface CrmSheetFilters {
+  campaign?: string | null;
+  leadStatus?: string | null;
+  leadCategory?: string | null;
+  responseMode?: CrmResponseMode | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+}
+
 function buildAccessibleLeadSqlWhere(opts: { userId: string; clientId?: string | null }): Prisma.Sql {
   if (opts.clientId) {
     return Prisma.sql`l."clientId" = ${opts.clientId}`;
@@ -141,15 +541,19 @@ function sqlIsWithinEstBusinessHours(tsSql: Prisma.Sql): Prisma.Sql {
  * @param clientId - Optional workspace ID to filter by
  * @returns ResponseTimeMetrics with setter and client response time data
  */
-async function calculateResponseTimeMetricsSql(opts: { userId: string; clientId?: string | null }): Promise<ResponseTimeMetrics> {
+async function calculateResponseTimeMetricsSql(opts: {
+  userId: string;
+  clientId?: string | null;
+  window?: { from: Date; to: Date };
+}): Promise<ResponseTimeMetrics> {
   const defaultMetrics: ResponseTimeMetrics = {
     setterResponseTime: { avgMs: 0, formatted: "N/A", sampleCount: 0 },
     clientResponseTime: { avgMs: 0, formatted: "N/A", sampleCount: 0 },
   };
 
   try {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const windowTo = opts.window?.to ?? new Date();
+    const windowFrom = opts.window?.from ?? new Date(windowTo.getTime() - 30 * 24 * 60 * 60 * 1000);
 
     const accessibleWhere = buildAccessibleLeadSqlWhere({ userId: opts.userId, clientId: opts.clientId });
     const bh1 = sqlIsWithinEstBusinessHours(Prisma.sql`sent_at`);
@@ -172,7 +576,8 @@ async function calculateResponseTimeMetricsSql(opts: { userId: string; clientId?
           LEAD(m.direction) OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_direction
         FROM "Message" m
         INNER JOIN "Lead" l ON l.id = m."leadId"
-        WHERE m."sentAt" >= ${thirtyDaysAgo}
+        WHERE m."sentAt" >= ${windowFrom}
+          AND m."sentAt" < ${windowTo}
           AND ${accessibleWhere}
       )
       SELECT
@@ -181,6 +586,7 @@ async function calculateResponseTimeMetricsSql(opts: { userId: string; clientId?
             WHERE
               next_sent_at IS NOT NULL
               AND next_sent_at > sent_at
+              AND next_sent_at < ${windowTo}
               AND next_sent_at <= sent_at + INTERVAL '7 days'
               AND direction = 'inbound'
               AND next_direction = 'outbound'
@@ -188,20 +594,22 @@ async function calculateResponseTimeMetricsSql(opts: { userId: string; clientId?
               AND ${bh2}
           ) AS setter_avg_ms,
         COUNT(*) FILTER (
-          WHERE
-            next_sent_at IS NOT NULL
-            AND next_sent_at > sent_at
-            AND next_sent_at <= sent_at + INTERVAL '7 days'
-            AND direction = 'inbound'
-            AND next_direction = 'outbound'
-            AND ${bh1}
-            AND ${bh2}
+            WHERE
+              next_sent_at IS NOT NULL
+              AND next_sent_at > sent_at
+              AND next_sent_at < ${windowTo}
+              AND next_sent_at <= sent_at + INTERVAL '7 days'
+              AND direction = 'inbound'
+              AND next_direction = 'outbound'
+              AND ${bh1}
+              AND ${bh2}
         )::bigint AS setter_count,
         AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)::double precision
           FILTER (
             WHERE
               next_sent_at IS NOT NULL
               AND next_sent_at > sent_at
+              AND next_sent_at < ${windowTo}
               AND next_sent_at <= sent_at + INTERVAL '7 days'
               AND direction = 'outbound'
               AND next_direction = 'inbound'
@@ -209,14 +617,15 @@ async function calculateResponseTimeMetricsSql(opts: { userId: string; clientId?
               AND ${bh2}
           ) AS client_avg_ms,
         COUNT(*) FILTER (
-          WHERE
-            next_sent_at IS NOT NULL
-            AND next_sent_at > sent_at
-            AND next_sent_at <= sent_at + INTERVAL '7 days'
-            AND direction = 'outbound'
-            AND next_direction = 'inbound'
-            AND ${bh1}
-            AND ${bh2}
+            WHERE
+              next_sent_at IS NOT NULL
+              AND next_sent_at > sent_at
+              AND next_sent_at < ${windowTo}
+              AND next_sent_at <= sent_at + INTERVAL '7 days'
+              AND direction = 'outbound'
+              AND next_direction = 'inbound'
+              AND ${bh1}
+              AND ${bh2}
         )::bigint AS client_count
       FROM ordered
     `;
@@ -253,7 +662,11 @@ async function calculateResponseTimeMetricsSql(opts: { userId: string; clientId?
  * @param clientId - Required workspace ID to filter by (per-setter only makes sense per workspace)
  * @returns Array of SetterResponseTimeRow sorted by response count (most active first)
  */
-async function calculatePerSetterResponseTimesSql(opts: { userId: string; clientId: string }): Promise<SetterResponseTimeRow[]> {
+async function calculatePerSetterResponseTimesSql(opts: {
+  userId: string;
+  clientId: string;
+  window?: { from: Date; to: Date };
+}): Promise<SetterResponseTimeRow[]> {
   try {
     // Ensure caller has access to the workspace (server-side guard; avoids cross-user cache poisoning).
     const canAccess = await prisma.client.findFirst({
@@ -262,8 +675,8 @@ async function calculatePerSetterResponseTimesSql(opts: { userId: string; client
     });
     if (!canAccess) return [];
 
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const windowTo = opts.window?.to ?? new Date();
+    const windowFrom = opts.window?.from ?? new Date(windowTo.getTime() - 30 * 24 * 60 * 60 * 1000);
 
     const bh1 = sqlIsWithinEstBusinessHours(Prisma.sql`sent_at`);
     const bh2 = sqlIsWithinEstBusinessHours(Prisma.sql`next_sent_at`);
@@ -285,7 +698,8 @@ async function calculatePerSetterResponseTimesSql(opts: { userId: string; client
           LEAD(m."sentByUserId") OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_sent_by_user_id
         FROM "Message" m
         INNER JOIN "Lead" l ON l.id = m."leadId"
-        WHERE m."sentAt" >= ${thirtyDaysAgo}
+        WHERE m."sentAt" >= ${windowFrom}
+          AND m."sentAt" < ${windowTo}
           AND l."clientId" = ${opts.clientId}
       )
       SELECT
@@ -296,6 +710,7 @@ async function calculatePerSetterResponseTimesSql(opts: { userId: string; client
       WHERE
         next_sent_at IS NOT NULL
         AND next_sent_at > sent_at
+        AND next_sent_at < ${windowTo}
         AND next_sent_at <= sent_at + INTERVAL '7 days'
         AND direction = 'inbound'
         AND next_direction = 'outbound'
@@ -355,10 +770,11 @@ async function calculatePerSetterResponseTimesSql(opts: { userId: string; client
  * @param clientId - Optional workspace ID to filter by
  * @param opts - Options for fetching analytics
  * @param opts.forceRefresh - Skip cache and fetch fresh data
+ * @param opts.window - Optional analytics window (ISO from/to)
  */
 export async function getAnalytics(
   clientId?: string | null,
-  opts?: { forceRefresh?: boolean }
+  opts?: { forceRefresh?: boolean; window?: AnalyticsWindow }
 ): Promise<{
   success: boolean;
   data?: AnalyticsData;
@@ -378,11 +794,16 @@ export async function getAnalytics(
       }
     }
 
+    const windowState = resolveAnalyticsWindow(opts?.window);
+    const windowFrom = windowState.from;
+    const windowTo = windowState.to;
+    const hasWindow = Boolean(windowFrom && windowTo);
+
     // Cleanup stale cache entries periodically
     maybeCleanupCache();
 
     // Cache is user-scoped to avoid cross-user data leakage.
-    const cacheKey = `${user.id}:${clientId || "__all__"}`;
+    const cacheKey = `${user.id}:${clientId || "__all__"}:${windowState.key}`;
     const now = Date.now();
 
     if (!opts?.forceRefresh) {
@@ -393,6 +814,8 @@ export async function getAnalytics(
     }
 
     const leadWhere = clientId ? { clientId } : accessibleLeadWhere(user.id);
+    const leadCreatedWindow = hasWindow ? { createdAt: { gte: windowFrom!, lt: windowTo! } } : {};
+    const messageWindow = hasWindow ? { sentAt: { gte: windowFrom!, lt: windowTo! } } : {};
 
     // If global scope yields no accessible leads, return zeros.
     const anyAccessibleLead = await prisma.lead.findFirst({
@@ -423,9 +846,9 @@ export async function getAnalytics(
       };
     }
 
-    // Get total leads
+    // Get total leads (windowed by createdAt when a window is provided)
     const totalLeads = await prisma.lead.count({
-      where: leadWhere,
+      where: { ...leadWhere, ...leadCreatedWindow },
     });
 
     // Outbound leads contacted (best-effort from DB only; outbound SMS from GHL automations isn't ingested yet)
@@ -435,6 +858,7 @@ export async function getAnalytics(
         messages: {
           some: {
             direction: "outbound",
+            ...messageWindow,
           },
         },
       },
@@ -445,6 +869,7 @@ export async function getAnalytics(
       messages: {
         some: {
           direction: "inbound",
+          ...messageWindow,
         },
       },
     };
@@ -459,16 +884,20 @@ export async function getAnalytics(
       ? Math.round((responses / outboundLeadsContacted) * 100)
       : 0;
 
-    // Meetings booked = leads with a booked appointment (created by our system)
+    // Meetings booked = leads with a booked appointment
     const meetingsBooked = await prisma.lead.count({
       where: {
         ...leadWhere,
-        OR: [
-          { appointmentBookedAt: { not: null } },
-          { ghlAppointmentId: { not: null } },
-          { calendlyInviteeUri: { not: null } },
-          { calendlyScheduledEventUri: { not: null } },
-        ],
+        ...(hasWindow
+          ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
+          : {
+              OR: [
+                { appointmentBookedAt: { not: null } },
+                { ghlAppointmentId: { not: null } },
+                { calendlyInviteeUri: { not: null } },
+                { calendlyScheduledEventUri: { not: null } },
+              ],
+            }),
       },
     });
 
@@ -498,7 +927,7 @@ export async function getAnalytics(
     // Get status breakdown
     const statusCounts = await prisma.lead.groupBy({
       by: ["status"],
-      where: leadWhere,
+      where: { ...leadWhere, ...leadCreatedWindow },
       _count: {
         status: true,
       },
@@ -512,11 +941,21 @@ export async function getAnalytics(
         : 0,
     }));
 
-    // Get weekly message stats (last 7 days) - using SQL GROUP BY for efficiency
-    const currentDate = new Date();
-    const sevenDaysAgo = new Date(currentDate);
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6); // 6 days ago + today = 7 days
-    sevenDaysAgo.setHours(0, 0, 0, 0);
+    // Message stats (windowed when provided; defaults to last 7 days)
+    const statsTo = hasWindow ? new Date(windowTo!) : new Date();
+    const statsFrom = hasWindow ? new Date(windowFrom!) : new Date(statsTo);
+    if (!hasWindow) {
+      statsFrom.setDate(statsFrom.getDate() - 6); // 6 days ago + today = 7 days
+    }
+
+    // Normalize to day boundaries for chart labels
+    const statsStartDay = new Date(statsFrom);
+    statsStartDay.setHours(0, 0, 0, 0);
+    const statsEndDay = new Date(statsTo);
+    statsEndDay.setHours(0, 0, 0, 0);
+    if (statsTo.getTime() === statsEndDay.getTime()) {
+      statsEndDay.setDate(statsEndDay.getDate() - 1);
+    }
 
     // Use raw SQL to group by date in the database instead of fetching all messages
     const weeklyMessageStats = await prisma.$queryRaw<
@@ -529,7 +968,8 @@ export async function getAnalytics(
       FROM "Message" m
       INNER JOIN "Lead" l ON m."leadId" = l.id
       WHERE ${buildAccessibleLeadSqlWhere({ userId: user.id, clientId })}
-        AND m."sentAt" >= ${sevenDaysAgo}
+        AND m."sentAt" >= ${statsFrom}
+        AND m."sentAt" < ${statsTo}
       GROUP BY DATE_TRUNC('day', m."sentAt"), m.direction
       ORDER BY day_date ASC
     `;
@@ -539,7 +979,7 @@ export async function getAnalytics(
     const statsMap = new Map<string, { inbound: number; outbound: number }>();
 
     for (const row of weeklyMessageStats) {
-      const dateKey = new Date(row.day_date).toISOString().split('T')[0];
+      const dateKey = new Date(row.day_date).toISOString().split("T")[0];
       if (!statsMap.has(dateKey)) {
         statsMap.set(dateKey, { inbound: 0, outbound: 0 });
       }
@@ -551,17 +991,23 @@ export async function getAnalytics(
       }
     }
 
-    // Build the weeklyStats array for the last 7 days
+    // Build the stats array for the window
     const weeklyStats: { day: string; inbound: number; outbound: number }[] = [];
-    for (let i = 6; i >= 0; i--) {
-      const date = new Date(currentDate);
-      date.setDate(date.getDate() - i);
-      date.setHours(0, 0, 0, 0);
-      const dateKey = date.toISOString().split('T')[0];
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const totalDays =
+      Math.max(0, Math.floor((statsEndDay.getTime() - statsStartDay.getTime()) / msPerDay)) + 1;
+    const useDateLabels = totalDays > 7;
+
+    for (let i = 0; i < totalDays; i++) {
+      const date = new Date(statsStartDay);
+      date.setDate(statsStartDay.getDate() + i);
+      const dateKey = date.toISOString().split("T")[0];
       const stats = statsMap.get(dateKey) || { inbound: 0, outbound: 0 };
 
       weeklyStats.push({
-        day: dayNames[date.getDay()],
+        day: useDateLabels
+          ? date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+          : dayNames[date.getDay()],
         inbound: stats.inbound,
         outbound: stats.outbound,
       });
@@ -571,7 +1017,7 @@ export async function getAnalytics(
     const [leadCountsByClient, meetingCountsByClient] = await Promise.all([
       prisma.lead.groupBy({
         by: ["clientId"],
-        where: leadWhere,
+        where: { ...leadWhere, ...leadCreatedWindow },
         _count: { id: true },
         orderBy: { _count: { id: "desc" } },
         take: 5,
@@ -580,12 +1026,16 @@ export async function getAnalytics(
         by: ["clientId"],
         where: {
           ...leadWhere,
-          OR: [
-            { appointmentBookedAt: { not: null } },
-            { ghlAppointmentId: { not: null } },
-            { calendlyInviteeUri: { not: null } },
-            { calendlyScheduledEventUri: { not: null } },
-          ],
+          ...(hasWindow
+            ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
+            : {
+                OR: [
+                  { appointmentBookedAt: { not: null } },
+                  { ghlAppointmentId: { not: null } },
+                  { calendlyInviteeUri: { not: null } },
+                  { calendlyScheduledEventUri: { not: null } },
+                ],
+              }),
         },
         _count: { id: true },
       }),
@@ -623,6 +1073,7 @@ export async function getAnalytics(
           where: {
             clientId,
             sentimentTag: { in: positiveSentimentTags },
+            ...(hasWindow ? { lastInboundAt: { gte: windowFrom!, lt: windowTo! } } : {}),
           },
           _count: { _all: true },
         }),
@@ -630,7 +1081,7 @@ export async function getAnalytics(
           by: ["smsCampaignId"],
           where: {
             clientId,
-            messages: { some: { direction: "inbound" } },
+            messages: { some: { direction: "inbound", ...messageWindow } },
           },
           _count: { _all: true },
         }),
@@ -638,12 +1089,16 @@ export async function getAnalytics(
           by: ["smsCampaignId"],
           where: {
             clientId,
-            OR: [
-              { appointmentBookedAt: { not: null } },
-              { ghlAppointmentId: { not: null } },
-              { calendlyInviteeUri: { not: null } },
-              { calendlyScheduledEventUri: { not: null } },
-            ],
+            ...(hasWindow
+              ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
+              : {
+                  OR: [
+                    { appointmentBookedAt: { not: null } },
+                    { ghlAppointmentId: { not: null } },
+                    { calendlyInviteeUri: { not: null } },
+                    { calendlyScheduledEventUri: { not: null } },
+                  ],
+                }),
           },
           _count: { _all: true },
         }),
@@ -688,11 +1143,19 @@ export async function getAnalytics(
     }
 
     // Calculate response time metrics (setter and client, business hours only)
-    const responseTimeMetrics = await calculateResponseTimeMetricsSql({ userId: user.id, clientId });
+    const responseTimeMetrics = await calculateResponseTimeMetricsSql({
+      userId: user.id,
+      clientId,
+      window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
+    });
 
     // Calculate per-setter response times (only when a specific workspace is selected)
     const perSetterResponseTimes = clientId
-      ? await calculatePerSetterResponseTimesSql({ userId: user.id, clientId })
+      ? await calculatePerSetterResponseTimesSql({
+          userId: user.id,
+          clientId,
+          window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
+        })
       : [];
 
     const analyticsData: AnalyticsData = {
@@ -1233,5 +1696,626 @@ export async function getSetterFunnelAnalytics(
   } catch (error) {
     console.error("[getSetterFunnelAnalytics] Failed:", error);
     return { success: false, error: error instanceof Error ? error.message : "Failed to fetch setter analytics" };
+  }
+}
+
+export async function getCrmSheetRows(params: {
+  clientId?: string | null;
+  cursor?: string | null;
+  limit?: number;
+  filters?: CrmSheetFilters;
+}): Promise<{
+  success: boolean;
+  data?: { rows: CrmSheetRow[]; nextCursor: string | null };
+  error?: string;
+}> {
+  try {
+    const user = await requireAuthUser();
+    const clientId = params.clientId ?? null;
+
+    if (!clientId) {
+      return { success: true, data: { rows: [], nextCursor: null } };
+    }
+
+    const canAccess = await prisma.client.findFirst({
+      where: { id: clientId, ...accessibleClientWhere(user.id) },
+      select: { id: true },
+    });
+    if (!canAccess) {
+      return { success: false, error: "Unauthorized" };
+    }
+
+    const limit = Math.min(params.limit ?? 100, 300);
+    const filters = params.filters ?? {};
+
+    const leadWhere: Prisma.LeadWhereInput = { clientId };
+    if (filters.leadStatus) {
+      leadWhere.status = filters.leadStatus;
+    }
+
+    const rowWhere: Prisma.LeadCrmRowWhereInput = { lead: leadWhere };
+    if (filters.responseMode) {
+      rowWhere.responseMode = filters.responseMode;
+    }
+    if (filters.leadCategory) {
+      rowWhere.OR = [
+        { leadCategoryOverride: { contains: filters.leadCategory, mode: "insensitive" } },
+        { interestType: { contains: filters.leadCategory, mode: "insensitive" } },
+      ];
+    }
+    if (filters.campaign) {
+      rowWhere.interestCampaignName = { contains: filters.campaign, mode: "insensitive" };
+    }
+
+    if (filters.dateFrom || filters.dateTo) {
+      const dateFilter: { gte?: Date; lte?: Date } = {};
+      if (filters.dateFrom) {
+        const parsed = new Date(filters.dateFrom);
+        if (!Number.isNaN(parsed.getTime())) dateFilter.gte = parsed;
+      }
+      if (filters.dateTo) {
+        const parsed = new Date(filters.dateTo);
+        if (!Number.isNaN(parsed.getTime())) dateFilter.lte = parsed;
+      }
+      if (dateFilter.gte || dateFilter.lte) {
+        rowWhere.interestRegisteredAt = dateFilter;
+      }
+    }
+
+    const rows = await prisma.leadCrmRow.findMany({
+      where: rowWhere,
+      orderBy: [{ interestRegisteredAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+      ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
+      include: {
+        lead: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            email: true,
+            phone: true,
+            linkedinUrl: true,
+            companyName: true,
+            companyWebsite: true,
+            jobTitle: true,
+            status: true,
+            sentimentTag: true,
+            createdAt: true,
+            snoozedUntil: true,
+            assignedToUserId: true,
+            appointmentBookedAt: true,
+            appointmentStartAt: true,
+            overallScore: true,
+            emailCampaign: { select: { name: true } },
+            smsCampaign: { select: { name: true } },
+            campaign: { select: { name: true } },
+          },
+        },
+      },
+    });
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const nextCursor = hasMore ? page[page.length - 1]?.id ?? null : null;
+
+    const leadIds = page.map((row) => row.leadId);
+    const stepRespondedByLeadId = new Map<string, number>();
+    const responseStepCompleteByLeadId = new Set<string>();
+    const responseModeByLeadId = new Map<string, CrmResponseMode>();
+    const followUpsByLeadId = new Map<string, Date[]>();
+
+    if (leadIds.length > 0) {
+      const withTimeout = async <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> => {
+        return prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL statement_timeout = 10000`;
+          return fn(tx);
+        });
+      };
+
+      try {
+        const touchRows = await withTimeout((tx) =>
+          tx.$queryRaw<Array<{ leadId: string; touch_count: bigint }>>`
+            SELECT m."leadId", COUNT(*)::bigint as touch_count
+            FROM "Message" m
+            JOIN "LeadCrmRow" lcr ON lcr."leadId" = m."leadId"
+            WHERE m."leadId" IN (${Prisma.join(leadIds)})
+              AND m.direction = 'outbound'
+              AND lcr."interestChannel" IS NOT NULL
+              AND lcr."interestRegisteredAt" IS NOT NULL
+              AND m.channel = lcr."interestChannel"
+              AND m."sentAt" < lcr."interestRegisteredAt"
+            GROUP BY m."leadId"
+          `
+        );
+
+        for (const row of touchRows) {
+          stepRespondedByLeadId.set(row.leadId, Number(row.touch_count));
+        }
+      } catch (error) {
+        console.warn("[getCrmSheetRows] Step responded query failed:", error);
+      }
+
+      try {
+        const followUpRows = await withTimeout((tx) =>
+          tx.followUpTask.findMany({
+            where: {
+              leadId: { in: leadIds },
+              status: "pending",
+            },
+            select: { leadId: true, dueDate: true },
+            orderBy: [{ leadId: "asc" }, { dueDate: "asc" }],
+          })
+        );
+
+        for (const row of followUpRows) {
+          const list = followUpsByLeadId.get(row.leadId) ?? [];
+          if (list.length < 5) {
+            list.push(row.dueDate);
+            followUpsByLeadId.set(row.leadId, list);
+          }
+        }
+      } catch (error) {
+        console.warn("[getCrmSheetRows] Follow-up query failed:", error);
+      }
+
+      try {
+        const responseRows = await withTimeout((tx) =>
+          tx.$queryRaw<Array<{ leadId: string }>>`
+            SELECT DISTINCT m."leadId"
+            FROM "Message" m
+            JOIN "LeadCrmRow" lcr ON lcr."leadId" = m."leadId"
+            WHERE m."leadId" IN (${Prisma.join(leadIds)})
+              AND m.direction = 'outbound'
+              AND lcr."interestChannel" IS NOT NULL
+              AND lcr."interestRegisteredAt" IS NOT NULL
+              AND m.channel = lcr."interestChannel"
+              AND m."sentAt" > lcr."interestRegisteredAt"
+          `
+        );
+
+        for (const row of responseRows) {
+          responseStepCompleteByLeadId.add(row.leadId);
+        }
+      } catch (error) {
+        console.warn("[getCrmSheetRows] Response step query failed:", error);
+      }
+
+      try {
+        const responseModeRows = await withTimeout((tx) =>
+          tx.$queryRaw<Array<{ leadId: string; sentBy: string | null; sentByUserId: string | null }>>`
+            SELECT DISTINCT ON (m."leadId")
+              m."leadId",
+              m."sentBy",
+              m."sentByUserId"
+            FROM "Message" m
+            JOIN "LeadCrmRow" lcr ON lcr."leadId" = m."leadId"
+            WHERE m."leadId" IN (${Prisma.join(leadIds)})
+              AND m.direction = 'outbound'
+              AND lcr."interestChannel" IS NOT NULL
+              AND lcr."interestRegisteredAt" IS NOT NULL
+              AND m.channel = lcr."interestChannel"
+              AND m."sentAt" > lcr."interestRegisteredAt"
+            ORDER BY m."leadId", m."sentAt" ASC
+          `
+        );
+
+        for (const row of responseModeRows) {
+          responseModeByLeadId.set(row.leadId, deriveCrmResponseMode(row.sentBy, row.sentByUserId));
+        }
+      } catch (error) {
+        console.warn("[getCrmSheetRows] Response mode query failed:", error);
+      }
+    }
+
+    const userIds = new Set<string>();
+    for (const row of page) {
+      if (row.lead.assignedToUserId) userIds.add(row.lead.assignedToUserId);
+      if (row.responseSentByUserId) userIds.add(row.responseSentByUserId);
+    }
+
+    let emailMap = new Map<string, string | null>();
+    if (userIds.size > 0) {
+      try {
+        emailMap = await getSupabaseUserEmailsByIds([...userIds]);
+      } catch (error) {
+        console.warn("[getCrmSheetRows] Failed to resolve setter emails:", error);
+      }
+    }
+
+    const rowsMapped: CrmSheetRow[] = page.map((row) => {
+      const lead = row.lead;
+      const campaign =
+        row.interestCampaignName ?? lead.emailCampaign?.name ?? lead.smsCampaign?.name ?? lead.campaign?.name ?? null;
+      const appointmentSetter =
+        lead.assignedToUserId ? emailMap.get(lead.assignedToUserId) ?? lead.assignedToUserId : null;
+      const setterAssignment =
+        row.responseSentByUserId ? emailMap.get(row.responseSentByUserId) ?? row.responseSentByUserId : null;
+
+      const status = row.pipelineStatus ?? lead.status ?? null;
+      const qualified =
+        status === "qualified" || status === "meeting-booked"
+          ? true
+          : status === "unqualified" || status === "not-interested" || status === "blacklisted"
+            ? false
+            : null;
+
+      const interestRegisteredAt = row.interestRegisteredAt ?? null;
+      const interestChannel = row.interestChannel ?? null;
+      const stepResponded =
+        interestRegisteredAt && interestChannel
+          ? stepRespondedByLeadId.get(row.leadId) ?? 0
+          : null;
+      const followUps = followUpsByLeadId.get(row.leadId) ?? [];
+      const responseStepComplete =
+        interestRegisteredAt && interestChannel
+          ? responseStepCompleteByLeadId.has(row.leadId)
+          : null;
+      const derivedResponseMode = responseModeByLeadId.get(row.leadId) ?? null;
+
+      return {
+        id: row.id,
+        leadId: row.leadId,
+        date: interestRegisteredAt,
+        campaign,
+        companyName: lead.companyName ?? null,
+        website: lead.companyWebsite ?? null,
+        firstName: lead.firstName ?? null,
+        lastName: lead.lastName ?? null,
+        jobTitle: lead.jobTitle ?? null,
+        leadEmail: lead.email ?? null,
+        leadLinkedIn: lead.linkedinUrl ?? null,
+        phoneNumber: lead.phone ?? null,
+        stepResponded,
+        leadCategory: row.leadCategoryOverride ?? row.interestType ?? lead.sentimentTag ?? null,
+        leadStatus: status,
+        channel: interestChannel,
+        leadType: row.leadType ?? null,
+        applicationStatus: row.applicationStatus ?? null,
+        appointmentSetter,
+        setterAssignment,
+        notes: row.notes ?? null,
+        initialResponseDate: interestRegisteredAt,
+        followUp1: followUps[0] ?? null,
+        followUp2: followUps[1] ?? null,
+        followUp3: followUps[2] ?? null,
+        followUp4: followUps[3] ?? null,
+        followUp5: followUps[4] ?? null,
+        responseStepComplete,
+        dateOfBooking: lead.appointmentBookedAt ?? null,
+        dateOfMeeting: lead.appointmentStartAt ?? null,
+        qualified,
+        followUpDateRequested: lead.snoozedUntil ?? null,
+        setters: appointmentSetter,
+        responseMode: row.responseMode ?? derivedResponseMode ?? null,
+        leadScore: row.leadScoreAtInterest ?? lead.overallScore ?? null,
+      };
+    });
+
+    return { success: true, data: { rows: rowsMapped, nextCursor } };
+  } catch (error) {
+    console.error("[getCrmSheetRows] Failed:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to fetch CRM rows" };
+  }
+}
+
+type CrmAssigneeOption = { userId: string; email: string | null };
+
+export async function getCrmAssigneeOptions(params: {
+  clientId: string;
+}): Promise<{ success: boolean; data?: CrmAssigneeOption[]; error?: string }> {
+  try {
+    const clientId = params.clientId;
+    if (!clientId) return { success: false, error: "Missing clientId" };
+
+    await requireWorkspaceCapabilities(clientId);
+
+    const setters = await prisma.clientMember.findMany({
+      where: { clientId, role: "SETTER" },
+      select: { userId: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const userIds = [...new Set(setters.map((s) => s.userId))];
+    if (userIds.length === 0) return { success: true, data: [] };
+
+    const emailMap = await getSupabaseUserEmailsByIds(userIds);
+    const options = userIds.map((userId) => ({
+      userId,
+      email: emailMap.get(userId) ?? null,
+    }));
+
+    return { success: true, data: options };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to fetch assignee options" };
+  }
+}
+
+type CrmEditableField =
+  | "jobTitle"
+  | "leadCategory"
+  | "leadStatus"
+  | "leadType"
+  | "applicationStatus"
+  | "notes"
+  | "campaign"
+  | "email"
+  | "phone"
+  | "linkedinUrl"
+  | "assignedToUserId";
+
+function parseExpectedUpdatedAt(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+export async function updateCrmSheetCell(params: {
+  leadId: string;
+  field: CrmEditableField;
+  value: string | null;
+  updateAutomation?: boolean;
+  expectedUpdatedAt?: string | null;
+}): Promise<{ success: boolean; error?: string; newValue?: string | null }> {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { id: params.leadId },
+      select: {
+        id: true,
+        clientId: true,
+        updatedAt: true,
+        email: true,
+        phone: true,
+        linkedinUrl: true,
+        jobTitle: true,
+        assignedToUserId: true,
+        status: true,
+        sentimentTag: true,
+        crmRow: {
+          select: {
+            id: true,
+            updatedAt: true,
+            leadCategoryOverride: true,
+            pipelineStatus: true,
+            leadType: true,
+            applicationStatus: true,
+            notes: true,
+            interestCampaignName: true,
+          },
+        },
+      },
+    });
+
+    if (!lead) {
+      return { success: false, error: "Lead not found" };
+    }
+
+    const { capabilities } = await requireWorkspaceCapabilities(lead.clientId);
+    if (capabilities.isClientPortalUser) {
+      return { success: false, error: "Unauthorized" };
+    }
+
+    const updateAutomation = Boolean(params.updateAutomation);
+    const value = normalizeCrmValue(params.value);
+    const expectedUpdatedAt = parseExpectedUpdatedAt(params.expectedUpdatedAt ?? null);
+
+    const assertNotStale = (current: Date | null | undefined) => {
+      if (!expectedUpdatedAt) return;
+      if (!current || current.getTime() !== expectedUpdatedAt.getTime()) {
+        throw new Error("Row was modified by another user");
+      }
+    };
+
+    switch (params.field) {
+      case "jobTitle": {
+        assertNotStale(lead.updatedAt);
+        if (value === (lead.jobTitle ?? null)) {
+          return { success: true, newValue: lead.jobTitle ?? null };
+        }
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { jobTitle: value },
+        });
+        return { success: true, newValue: value };
+      }
+      case "email": {
+        assertNotStale(lead.updatedAt);
+        const normalizedEmail = value ? normalizeEmail(value) : null;
+        if (normalizedEmail === (lead.email ?? null)) {
+          return { success: true, newValue: lead.email ?? null };
+        }
+        if (normalizedEmail) {
+          const duplicate = await prisma.lead.findFirst({
+            where: {
+              clientId: lead.clientId,
+              id: { not: lead.id },
+              email: { equals: normalizedEmail, mode: "insensitive" },
+            },
+            select: { id: true },
+          });
+          if (duplicate) {
+            return { success: false, error: "Email is already used by another lead" };
+          }
+        }
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { email: normalizedEmail },
+        });
+        return { success: true, newValue: normalizedEmail };
+      }
+      case "phone": {
+        assertNotStale(lead.updatedAt);
+        const storedPhone = value ? toStoredPhone(value) : null;
+        if (value && !storedPhone) {
+          return { success: false, error: "Invalid phone number" };
+        }
+        if (storedPhone && isSamePhone(lead.phone, storedPhone)) {
+          return { success: true, newValue: lead.phone ?? null };
+        }
+        if (storedPhone) {
+          const normalizedDigits = normalizePhone(storedPhone);
+          if (normalizedDigits) {
+            const duplicate = await prisma.lead.findFirst({
+              where: {
+                clientId: lead.clientId,
+                id: { not: lead.id },
+                phone: { contains: normalizedDigits },
+              },
+              select: { id: true },
+            });
+            if (duplicate) {
+              return { success: false, error: "Phone number is already used by another lead" };
+            }
+          }
+        }
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { phone: storedPhone },
+        });
+        return { success: true, newValue: storedPhone };
+      }
+      case "linkedinUrl": {
+        assertNotStale(lead.updatedAt);
+        const normalizedLinkedIn = value ? normalizeLinkedInUrl(value) : null;
+        if (value && !normalizedLinkedIn) {
+          return { success: false, error: "Invalid LinkedIn URL" };
+        }
+        const existingNormalized = normalizeLinkedInUrl(lead.linkedinUrl);
+        if (normalizedLinkedIn === existingNormalized) {
+          return { success: true, newValue: lead.linkedinUrl ?? null };
+        }
+        if (normalizedLinkedIn) {
+          const duplicate = await prisma.lead.findFirst({
+            where: {
+              clientId: lead.clientId,
+              id: { not: lead.id },
+              linkedinUrl: normalizedLinkedIn,
+            },
+            select: { id: true },
+          });
+          if (duplicate) {
+            return { success: false, error: "LinkedIn URL is already used by another lead" };
+          }
+        }
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { linkedinUrl: normalizedLinkedIn },
+        });
+        return { success: true, newValue: normalizedLinkedIn };
+      }
+      case "assignedToUserId": {
+        assertNotStale(lead.updatedAt);
+        const newAssignee = value;
+        if (newAssignee === (lead.assignedToUserId ?? null)) {
+          return { success: true, newValue: lead.assignedToUserId ?? null };
+        }
+        if (newAssignee) {
+          const exists = await prisma.clientMember.findFirst({
+            where: { clientId: lead.clientId, userId: newAssignee },
+            select: { id: true },
+          });
+          if (!exists) {
+            return { success: false, error: "Assignee not found for workspace" };
+          }
+        }
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: {
+            assignedToUserId: newAssignee,
+            assignedAt: newAssignee ? new Date() : null,
+          },
+        });
+        return { success: true, newValue: newAssignee };
+      }
+      case "leadCategory":
+      case "leadStatus":
+      case "leadType":
+      case "applicationStatus":
+      case "notes":
+      case "campaign": {
+        assertNotStale(lead.crmRow?.updatedAt);
+        const currentCrm = lead.crmRow;
+        const crmUpdate: Record<string, unknown> = {};
+        let leadUpdate: Record<string, unknown> | null = null;
+
+        if (params.field === "leadCategory") {
+          if (value !== (currentCrm?.leadCategoryOverride ?? null)) {
+            crmUpdate.leadCategoryOverride = value;
+          }
+          if (updateAutomation) {
+            const mappedSentiment = mapSentimentTagFromSheet(value);
+            if (mappedSentiment && mappedSentiment !== lead.sentimentTag) {
+              leadUpdate = { sentimentTag: mappedSentiment };
+            }
+          }
+        }
+
+        if (params.field === "leadStatus") {
+          if (value !== (currentCrm?.pipelineStatus ?? null)) {
+            crmUpdate.pipelineStatus = value;
+          }
+          if (updateAutomation) {
+            const mappedStatus = mapLeadStatusFromSheet(value);
+            if (mappedStatus && mappedStatus !== lead.status) {
+              leadUpdate = { status: mappedStatus };
+            }
+          }
+        }
+
+        if (params.field === "leadType" && value !== (currentCrm?.leadType ?? null)) {
+          crmUpdate.leadType = value;
+        }
+
+        if (params.field === "applicationStatus" && value !== (currentCrm?.applicationStatus ?? null)) {
+          crmUpdate.applicationStatus = value;
+        }
+
+        if (params.field === "notes" && value !== (currentCrm?.notes ?? null)) {
+          crmUpdate.notes = value;
+        }
+
+        if (params.field === "campaign" && value !== (currentCrm?.interestCampaignName ?? null)) {
+          crmUpdate.interestCampaignName = value;
+        }
+
+        const crmNeedsUpdate = Object.keys(crmUpdate).length > 0;
+        if (!crmNeedsUpdate && !leadUpdate) {
+          return { success: true, newValue: value };
+        }
+
+        if (leadUpdate) {
+          await prisma.$transaction(async (tx) => {
+            if (crmNeedsUpdate) {
+              await tx.leadCrmRow.upsert({
+                where: { leadId: lead.id },
+                create: { leadId: lead.id, ...crmUpdate },
+                update: crmUpdate,
+              });
+            }
+            await tx.lead.update({
+              where: { id: lead.id },
+              data: leadUpdate,
+            });
+          });
+        } else if (crmNeedsUpdate) {
+          await prisma.leadCrmRow.upsert({
+            where: { leadId: lead.id },
+            create: { leadId: lead.id, ...crmUpdate },
+            update: crmUpdate,
+          });
+        }
+
+        return { success: true, newValue: value };
+      }
+      default:
+        return { success: false, error: "Unsupported field" };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to update CRM cell";
+    if (message === "Row was modified by another user") {
+      return { success: false, error: message };
+    }
+    return { success: false, error: message };
   }
 }
