@@ -870,6 +870,8 @@ function buildEmailDraftStrategyInstructions(opts: {
   shouldSelectArchetype: boolean;
   /** Important signature/footer context extracted from the trigger email (optional) */
   signatureContext: string | null;
+  /** Lead explicitly provided their own scheduling link (optional) */
+  leadSchedulerLink: string | null;
 }): string {
   const leadContext = [
     opts.firstName && `First Name: ${opts.firstName}`,
@@ -887,6 +889,10 @@ function buildEmailDraftStrategyInstructions(opts: {
 
   const signatureContextSection = opts.signatureContext
     ? `\nTRIGGER EMAIL SIGNATURE/FOOTER (EXTRACTED — IMPORTANT CONTEXT):\n${opts.signatureContext}\nIMPORTANT: If a scheduling link is present above, do NOT claim it "didn't come through" or "wasn't received".`
+    : "";
+
+  const leadSchedulerLinkSection = opts.leadSchedulerLink
+    ? `\nLEAD-PROVIDED SCHEDULING LINK (EXPLICITLY SHARED BY LEAD):\n${opts.leadSchedulerLink}\nIMPORTANT: Do NOT offer our availability times or our booking link. Instead, acknowledge their link and express willingness to book via their scheduler.`
     : "";
 
   const availabilitySection = opts.availability.length > 0
@@ -932,6 +938,7 @@ LEAD INFORMATION:
 ${leadContext || "No additional lead information available."}
 
 ${signatureContextSection}
+${leadSchedulerLinkSection}
 
 ${opts.serviceDescription ? `OUR OFFER:\n${opts.serviceDescription}\n` : ""}
 ${opts.aiGoals ? `GOALS/STRATEGY:\n${opts.aiGoals}\n` : ""}
@@ -945,6 +952,7 @@ Output a JSON object with your analysis. Focus on:
 1. What makes this lead unique (personalization_points)
 2. What the response should achieve (intent_summary)
 3. Whether to offer scheduling times (should_offer_times, times_to_offer) — TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th", "this month"), ONLY select times from the list that match their request. Do NOT offer "this week" times if they said "next week". When no timing preference is expressed, prefer sooner options. If no available times match their stated preference, set should_offer_times to false and plan to ask what works better.
+   - LEAD SCHEDULER: If a lead-provided scheduling link is present above, set should_offer_times to false (times_to_offer = null) and plan to acknowledge their link instead of proposing our times.
 4. The email structure (outline) - aligned with ${opts.shouldSelectArchetype ? "your selected archetype" : "the archetype above"}
 5. What to avoid (must_avoid)
 ${archetypeTask}
@@ -964,6 +972,8 @@ function buildEmailDraftGenerationInstructions(opts: {
   signature: string | null;
   /** Important signature/footer context extracted from the trigger email (optional) */
   signatureContext: string | null;
+  /** Lead explicitly provided their own scheduling link (optional) */
+  leadSchedulerLink: string | null;
   ourCompanyName: string | null;
   sentimentTag: string;
   strategy: EmailDraftStrategy;
@@ -994,6 +1004,10 @@ ${opts.strategy.must_avoid.length > 0 ? opts.strategy.must_avoid.map(a => `- ${a
     ? `\nTRIGGER EMAIL SIGNATURE/FOOTER (EXTRACTED — IMPORTANT CONTEXT):\n${opts.signatureContext}\nIMPORTANT: If a scheduling link is present above, do NOT claim it "didn't come through" or "wasn't received".`
     : "";
 
+  const leadSchedulerLinkSection = opts.leadSchedulerLink
+    ? `\nLEAD-PROVIDED SCHEDULING LINK (EXPLICITLY SHARED BY LEAD):\n${opts.leadSchedulerLink}\nIMPORTANT: Do NOT offer our availability times or our booking link. Instead, acknowledge their link and express willingness to book via their scheduler (no need to repeat the full URL).`
+    : "";
+
   // Use workspace-specific forbidden terms if provided, otherwise default (Phase 47e)
   const forbiddenTermsList = opts.forbiddenTerms ?? EMAIL_FORBIDDEN_TERMS;
   const forbiddenTerms = forbiddenTermsList.slice(0, 30).join(", ");
@@ -1014,6 +1028,7 @@ ${opts.archetype.instructions}
 ${strategySection}
 
 ${signatureContextSection}
+${leadSchedulerLinkSection}
 
 OUTPUT RULES:
 - Do not include a subject line.
@@ -1124,6 +1139,7 @@ export async function generateResponseDraft(
         linkedinUrl: true,
         clientId: true,
         offeredSlots: true,
+        externalSchedulingLink: true,
         snoozedUntil: true,
         client: {
           select: {
@@ -1243,13 +1259,17 @@ export async function generateResponseDraft(
     const currentReplierEmail = hasCcReplier ? lead.currentReplierEmail : null;
     const currentReplierName = hasCcReplier ? lead.currentReplierName : null;
     const responseStrategy = getResponseStrategy(sentimentTag);
+
+    const leadSchedulerLink = (lead.externalSchedulingLink || "").trim() || null;
+    const leadHasSchedulerLink = Boolean(leadSchedulerLink);
+
     const shouldConsiderScheduling = [
       "Meeting Requested",
       "Call Requested",
       "Interested",
       "Positive",
       "Information Requested",
-    ].includes(sentimentTag);
+    ].includes(sentimentTag) && !leadHasSchedulerLink;
 
     let availability: string[] = [];
 
@@ -1517,11 +1537,19 @@ export async function generateResponseDraft(
         archetype: preSelectedArchetype,
         shouldSelectArchetype,
         signatureContext: signatureContextForPrompt,
+        leadSchedulerLink,
       });
 
       // Append booking process instructions if available (Phase 36)
       if (bookingProcessInstructions) {
         strategyInstructions += bookingProcessInstructions;
+      }
+
+      // Lead-scheduler-link override (Phase 79): prevent booking-process templates from suggesting our times/link
+      // when the lead explicitly provided their own scheduling link.
+      if (leadSchedulerLink) {
+        strategyInstructions +=
+          "\nLEAD SCHEDULER LINK OVERRIDE:\nThe lead explicitly provided their own scheduling link.\nIMPORTANT: Do NOT offer our availability times or our booking link. Acknowledge their link and express willingness to book via their scheduler (no need to repeat the full URL).";
       }
 
       const strategyInput = `<conversation_transcript>
@@ -1681,6 +1709,7 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
 	          firstName,
 	          signature: aiSignature || null,
 	          signatureContext: signatureContextForPrompt,
+	          leadSchedulerLink,
 	          ourCompanyName: companyName,
 	          sentimentTag,
 	          strategy,
@@ -1921,6 +1950,13 @@ Write the email response now, following the strategy and structure archetype.
           fallbackSystemPrompt += bookingProcessInstructions;
         }
 
+        // Lead-scheduler-link override (Phase 79): prevent fallback prompt from suggesting our times/link
+        // when the lead explicitly provided their own scheduling link.
+        if (leadSchedulerLink) {
+          fallbackSystemPrompt +=
+            "\nLEAD SCHEDULER LINK OVERRIDE:\nThe lead explicitly provided their own scheduling link.\nIMPORTANT: Do NOT offer our availability times or our booking link. Acknowledge their link and express willingness to book via their scheduler (no need to repeat the full URL).";
+        }
+
         const fallbackInputMessages = [
           {
             role: "assistant" as const,
@@ -2154,6 +2190,13 @@ Generate an appropriate email response following the guidelines and structure ar
       // Append booking process instructions if available (Phase 36)
       if (bookingProcessInstructions) {
         instructions += bookingProcessInstructions;
+      }
+
+      // Lead-scheduler-link override (Phase 79): prevent SMS/LinkedIn drafts from suggesting our times/link
+      // when the lead explicitly provided their own scheduling link.
+      if (leadSchedulerLink) {
+        instructions +=
+          "\nLEAD SCHEDULER LINK OVERRIDE:\nThe lead explicitly provided their own scheduling link.\nIMPORTANT: Do NOT offer our availability times or our booking link. Acknowledge their link and indicate you'll book via their scheduler (no need to repeat the full URL).";
       }
 
       const templatedInput = promptTemplate?.messages
@@ -2456,5 +2499,8 @@ export function shouldGenerateDraft(sentimentTag: string, email?: string | null)
   // Generate drafts for positive intents, plus "Follow Up" (deferrals / not-now timing).
   // (Legacy: "Positive" is treated as "Interested".)
   const normalized = sentimentTag === "Positive" ? "Interested" : sentimentTag;
+  if (normalized === "Meeting Booked") {
+    return true;
+  }
   return normalized === "Follow Up" || isPositiveSentiment(normalized);
 }

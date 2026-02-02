@@ -75,9 +75,12 @@ export async function handleLeadSchedulerLinkIfPresent(opts: {
 
   // Safety: only act when the lead explicitly wants us to book via their link.
   // (Sentiment rules treat signature-only links as not meeting-booked.)
-  if (lead.sentimentTag !== "Meeting Booked") {
-    return { handled: false, outcome: "sentiment_not_meeting_booked" };
+  const schedulingIntentSentiments = new Set(["Meeting Requested", "Meeting Booked"]);
+  if (!schedulingIntentSentiments.has(lead.sentimentTag ?? "")) {
+    return { handled: false, outcome: "sentiment_not_scheduling_intent" };
   }
+
+  const isMeetingRequested = lead.sentimentTag === "Meeting Requested";
 
   const existingTask = await prisma.followUpTask.findFirst({
     where: { leadId: lead.id, status: "pending", campaignName: "lead_scheduler_link" },
@@ -98,8 +101,12 @@ export async function handleLeadSchedulerLinkIfPresent(opts: {
   const leadUrl = buildLeadUrl(lead.id);
 
   if (!overlap) {
+    const header = isMeetingRequested
+      ? `Lead shared their scheduler link (${leadAvailability.calendarType}). Consider booking via their calendar or asking for their preferred times/timezone.`
+      : `Lead asked us to book via their scheduler link (${leadAvailability.calendarType}), but no clear overlap found in the next 14 days.`;
+
     const suggestion = [
-      `Lead shared scheduler link (${leadAvailability.calendarType}), but no clear overlap found in the next 14 days.`,
+      header,
       `Lead link: ${url}`,
       bookingLink ? `Fallback: ask them to book on our link: ${bookingLink}` : null,
       `Lead thread: ${leadUrl}`,
@@ -122,8 +129,12 @@ export async function handleLeadSchedulerLinkIfPresent(opts: {
   }
 
   const chosen = new Date(overlap);
+  const header = isMeetingRequested
+    ? `Lead shared their scheduler link (${leadAvailability.calendarType}). Consider booking via their calendar or asking for their preferred times/timezone.`
+    : `Lead asked us to book via their scheduler link (${leadAvailability.calendarType}).`;
+
   const suggestion = [
-    `Lead asked us to book via their scheduler link (${leadAvailability.calendarType}).`,
+    header,
     `Suggested overlap: ${formatInTimeZone(chosen, tz)} (${tz})`,
     `Lead link: ${url}`,
     `Lead thread: ${leadUrl}`,
