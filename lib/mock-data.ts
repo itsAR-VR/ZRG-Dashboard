@@ -96,7 +96,7 @@ export interface Message {
 export interface Conversation {
   id: string
   lead: Lead
-  viewerRole?: "OWNER" | "ADMIN" | "INBOX_MANAGER" | "SETTER" | null
+  viewerRole?: "OWNER" | "ADMIN" | "INBOX_MANAGER" | "SETTER" | "CLIENT_PORTAL" | null
   channels: Channel[]           // All channels this lead has messages on
   availableChannels: Channel[]  // Channels available based on contact info
   primaryChannel: Channel       // Most recent/active channel

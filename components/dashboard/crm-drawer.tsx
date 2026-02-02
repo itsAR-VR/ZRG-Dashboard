@@ -85,7 +85,7 @@ import {
 
 interface CrmDrawerProps {
   lead: Lead
-  viewerRole?: "OWNER" | "ADMIN" | "INBOX_MANAGER" | "SETTER" | null
+  viewerRole?: "OWNER" | "ADMIN" | "INBOX_MANAGER" | "SETTER" | "CLIENT_PORTAL" | null
   isOpen: boolean
   onClose: () => void
   onLeadUpdate?: () => void

@@ -128,6 +128,7 @@ const ROLE_PRECEDENCE: Record<UserRole, number> = {
   ADMIN: 4,
   INBOX_MANAGER: 3,
   SETTER: 1,
+  CLIENT_PORTAL: 0,
 };
 
 /**

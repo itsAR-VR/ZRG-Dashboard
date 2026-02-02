@@ -94,6 +94,22 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 - [x] **Settings Page** - Workspace management, API key configuration
 - [x] **Email Credential Management** - Inboxxia API key input per workspace
 
+### Client Portal Users (Read-Only)
+- **Resend per workspace:** Configure `Resend` API key + From email in Settings → Integrations → Resend (stored on `Client`).
+- **Provisioning:** Settings → Team → Client Portal Users → enter client email (optional temp password) → “Create & Send Login”.
+- **Password resets:** Use the same panel (“Reset password”) or the client can use “Forgot password”.
+- **Permissions:** Inbox + CRM + draft approval only. Settings are read-only; AI personality is view-only; prompts/cost/observability are hidden.
+- **Mobile app:** Uses the same Supabase email/password credentials as web.
+
+---
+
+## 🧭 Roadmap (Planned / Skeleton-Only Fields)
+
+- **Analytics → CRM Sheet Replica**: replicate the Founders Club CRM Google Sheet view inside the Analytics tab with live updates as interest is registered.
+- **Pipeline Tracking**: stage, value, and outcome fields exist as nullable schema skeletons; full pipeline workflows and UI are not yet implemented.
+- **Sales Call Metadata**: placeholders for call context, score, coaching notes, and recording URL are present; capture + review flows are not yet implemented.
+- **AI Optimization Loop**: use CRM + pipeline outcomes to tune campaigns, responses, and sales coaching; planned but not yet built.
+
 ---
 
 ## 🔌 Core Integrations
