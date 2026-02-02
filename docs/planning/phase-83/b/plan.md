@@ -34,6 +34,7 @@ Add database fields/models needed to support the CRM “sheet” rows, pipeline 
   - Interest snapshot: `interestRegisteredAt`, `interestType`, `interestMessageId`, `interestChannel`, `interestCampaignName`
   - Response attribution: `responseMode`, `responseMessageId`, `responseSentByUserId`
   - Score snapshot: `leadScoreAtInterest`, `leadFitScoreAtInterest`, `leadIntentScoreAtInterest`
+  - Manual notes: `notes`
   - Pipeline skeleton: `pipelineStage`, `pipelineStatus`, `pipelineValue`, `pipelineCurrency`, `pipelineOutcome`, `pipelineOutcomeAt`
   - Sales call skeleton: `salesCallHeldAt`, `salesCallOutcome`, `salesCallScore`, `salesCallContext`, `salesCallNotes`, `salesCallImprovementNotes`, `salesCallRecordingUrl`, `salesCallOwnerUserId`, `salesCallReviewedByUserId`
   - Standard timestamps: `createdAt`, `updatedAt`

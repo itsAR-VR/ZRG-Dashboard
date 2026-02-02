@@ -28,14 +28,14 @@ Recreate the Founders Club CRM Google Sheet view inside the **Analytics** tab, k
 | Phase 82 | Active (planning artifacts) | Founders Club CRM column inventory | Reuse column list + mapping notes as inputs for the replica |
 
 ## Objectives
-* [ ] Capture the Google Sheet layout (columns, sections, formulas, formatting intent) and define the in-app replica spec
-* [ ] Add Prisma schema skeleton to persist:
+* [x] Capture the Google Sheet layout (columns, sections, formulas, formatting intent) and define the in-app replica spec
+* [x] Add Prisma schema skeleton to persist:
   - “interest registered” metadata
   - pipeline status/value/outcomes
   - sales call recording/outcome/coaching fields
-* [ ] Define a live automation path so rows appear/refresh as new inbound interest is detected
-* [ ] Plan the Analytics tab UX: spreadsheet-like table, filters, and export
-* [ ] Document future (not-now) features in `README.md` (sales call scoring/training, AI optimization loop)
+* [x] Define a live automation path so rows appear/refresh as new inbound interest is detected
+* [x] Plan the Analytics tab UX: spreadsheet-like table, filters, and export
+* [x] Document future (not-now) features in `README.md` (sales call scoring/training, AI optimization loop)
 
 ## Constraints
 - Do not store or commit Google Sheet row data or any CRM exports containing PII.
@@ -56,10 +56,10 @@ The first version of the in-app CRM table must include at minimum:
 | Lead score | Quality score | `Lead.overallScore` (and/or fit/intent/overall) |
 
 ## Success Criteria
-- Clear spec for a “Google Sheet replica” view inside Analytics (columns + ordering + computed fields).
-- Clear schema plan (models/enums/fields + indexes) that supports pipeline + sales call metadata while staying optional/nullable.
-- Clear automation plan for “lead registered interest” → row appears/updates.
-- README contains a concise roadmap note for the future sales-call + AI optimization loop.
+- [x] Clear spec for a “Google Sheet replica” view inside Analytics (columns + ordering + computed fields).
+- [x] Clear schema plan (models/enums/fields + indexes) that supports pipeline + sales call metadata while staying optional/nullable.
+- [x] Clear automation plan for “lead registered interest” → row appears/updates.
+- [x] README contains a concise roadmap note for the future sales-call + AI optimization loop.
 
 ## Subphase Index
 * a — Sheet replica spec (Playwright + workbook validation)
@@ -67,3 +67,35 @@ The first version of the in-app CRM table must include at minimum:
 * c — Live automation plan (interest detection + idempotent upserts)
 * d — Analytics UI plan (table, filters, export, performance)
 * e — README roadmap (future features, not implemented)
+
+## Phase Summary
+
+### Status: Complete
+
+**What shipped:**
+- Sheet replica spec based on the local workbook headers (Playwright not required per current request)
+- Schema skeleton in `prisma/schema.prisma` (`LeadCrmRow`, `CrmResponseMode`, pipeline + sales call fields)
+- Live CRM row upserts via `lib/lead-crm-row.ts` wired into inbound post-process pipelines
+- Analytics CRM table UI in `components/dashboard/analytics-crm-table.tsx` and tabbed layout in `components/dashboard/analytics-view.tsx`
+- Server action `getCrmSheetRows` in `actions/analytics-actions.ts`
+- Roadmap update in `README.md` documenting skeleton-only CRM/pipeline/sales-call fields
+
+**Key decisions:**
+- Store CRM row data in a 1:1 `LeadCrmRow` model to avoid bloating `Lead`.
+- Attribute AI vs human response from the most recent outbound message in the same channel.
+- Keep pipeline and sales-call fields nullable until workflows are built.
+
+**Artifacts / code paths:**
+- `prisma/schema.prisma`
+- `lib/lead-crm-row.ts`
+- `lib/inbound-post-process/pipeline.ts`
+- `lib/background-jobs/email-inbound-post-process.ts`
+- `lib/background-jobs/sms-inbound-post-process.ts`
+- `lib/background-jobs/linkedin-inbound-post-process.ts`
+- `actions/analytics-actions.ts`
+- `components/dashboard/analytics-crm-table.tsx`
+- `components/dashboard/analytics-view.tsx`
+- `README.md`
+
+**Notes:**
+- Playwright validation was intentionally skipped; the workbook headers were sufficient for the MVP replica.

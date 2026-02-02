@@ -15,6 +15,7 @@ import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
+import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
 
 export async function runLinkedInInboundPostProcessJob(params: {
   clientId: string;
@@ -175,6 +176,7 @@ export async function runLinkedInInboundPostProcessJob(params: {
     leadId: lead.id,
     clientId: client.id,
     sentimentTag: finalSentiment,
+    channel: "linkedin",
   });
 
   // 3. Pause Follow-Ups on Reply
@@ -204,6 +206,16 @@ export async function runLinkedInInboundPostProcessJob(params: {
     messageId: message.id,
     latestInboundText: messageBody,
   }).catch(() => undefined);
+
+  upsertLeadCrmRowOnInterest({
+    leadId: lead.id,
+    messageId: message.id,
+    messageSentAt: message.sentAt ?? new Date(),
+    channel: message.channel,
+    sentimentTag: newSentiment,
+  }).catch((error) => {
+    console.warn(`[LinkedIn Post-Process] Failed to upsert CRM row for lead ${lead.id}:`, error);
+  });
 
   if (newSentiment === "Call Requested") {
     ensureCallRequestedTask({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);

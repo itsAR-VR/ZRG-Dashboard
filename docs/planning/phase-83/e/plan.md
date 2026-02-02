@@ -16,8 +16,15 @@ Document the CRM/pipeline/sales-call vision and explicitly mark which parts are 
 - Clearly mark “skeleton only / coming soon” items.
 
 ## Output
-- A README update plan (copy blocks + placement), ready for implementation.
+### README Updated
+
+- Added **Roadmap (Planned / Skeleton-Only Fields)** section outlining:
+  - Analytics CRM Sheet replica
+  - Pipeline tracking fields (schema-only)
+  - Sales call metadata (schema-only)
+  - AI optimization loop (future)
+
+**File updated:** `README.md`
 
 ## Handoff
-Implement README update only after the MVP table schema is merged (so docs match reality).
-
+Phase 83 execution complete. Proceed to phase wrap-up in the root plan.

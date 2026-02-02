@@ -44,6 +44,7 @@ import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
+import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   for (const dateStr of dateStrs) {
@@ -848,12 +849,23 @@ export async function runEmailInboundPostProcessJob(opts: {
     latestInboundText: inboundText,
   }).catch(() => undefined);
 
+  upsertLeadCrmRowOnInterest({
+    leadId: lead.id,
+    messageId: message.id,
+    messageSentAt: message.sentAt ?? new Date(),
+    channel: message.channel,
+    sentimentTag: lead.sentimentTag,
+  }).catch((error) => {
+    console.warn(`[Email PostProcess] Failed to upsert CRM row for lead ${lead.id}:`, error);
+  });
+
   // Round-robin lead assignment (Phase 43)
   // Assign lead to next setter if sentiment is positive and not already assigned
   await maybeAssignLead({
     leadId: lead.id,
     clientId: client.id,
     sentimentTag: lead.sentimentTag,
+    channel: "email",
   });
 
   // Snooze detection: if the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.

@@ -10,12 +10,39 @@ import { prisma } from "@/lib/prisma";
 import { ClientMemberRole } from "@prisma/client";
 import { POSITIVE_SENTIMENTS, isPositiveSentiment } from "@/lib/sentiment-shared";
 
+export type LeadAssignmentChannel = "sms" | "email" | "linkedin";
+
 /**
  * Check if a sentiment tag should trigger lead assignment.
  * Uses the shared POSITIVE_SENTIMENTS constant for consistency.
  */
 export function shouldAssignLead(sentimentTag: string | null): boolean {
   return isPositiveSentiment(sentimentTag);
+}
+
+export function getNextRoundRobinIndex(lastIndex: number | null | undefined, length: number): number {
+  if (length <= 0) return -1;
+  const safeLastIndex = typeof lastIndex === "number" ? lastIndex : -1;
+  return (safeLastIndex + 1) % length;
+}
+
+export function computeEffectiveSetterSequence(opts: {
+  activeSetterUserIds: string[];
+  configuredSequence: string[] | null | undefined;
+}): string[] {
+  const configured = Array.isArray(opts.configuredSequence) ? opts.configuredSequence : [];
+  if (configured.length === 0) return opts.activeSetterUserIds;
+
+  const activeSet = new Set(opts.activeSetterUserIds);
+  return configured.filter((userId) => activeSet.has(userId));
+}
+
+export function isChannelEligibleForLeadAssignment(opts: {
+  emailOnly: boolean;
+  channel?: LeadAssignmentChannel;
+}): boolean {
+  if (!opts.emailOnly) return true;
+  return opts.channel === "email";
 }
 
 /**
@@ -50,19 +77,34 @@ async function getActiveSetters(clientId: string) {
 export async function assignLeadRoundRobin({
   leadId,
   clientId,
+  channel,
 }: {
   leadId: string;
   clientId: string;
+  channel?: LeadAssignmentChannel;
 }): Promise<string | null> {
   return prisma.$transaction(async (tx) => {
+    // Concurrency hardening: lock the workspace settings row before reading/updating the pointer.
+    // This avoids pointer drift under concurrent assignments.
+    await tx.$executeRaw`SELECT 1 FROM "WorkspaceSettings" WHERE "clientId" = ${clientId} FOR UPDATE`;
+
     // 1. Check if round-robin is enabled and get current state
     const settings = await tx.workspaceSettings.findUnique({
       where: { clientId },
-      select: { roundRobinEnabled: true, roundRobinLastSetterIndex: true },
+      select: {
+        roundRobinEnabled: true,
+        roundRobinLastSetterIndex: true,
+        roundRobinSetterSequence: true,
+        roundRobinEmailOnly: true,
+      },
     });
 
     if (!settings?.roundRobinEnabled) {
       return null; // Round-robin not enabled for this workspace
+    }
+
+    if (!isChannelEligibleForLeadAssignment({ emailOnly: settings.roundRobinEmailOnly, channel })) {
+      return null; // Workspace is email-only; skip SMS/LinkedIn-triggered assignments
     }
 
     // 2. Check if lead is already assigned
@@ -91,10 +133,19 @@ export async function assignLeadRoundRobin({
       return null;
     }
 
-    // 4. Calculate next setter index
-    const lastIndex = settings.roundRobinLastSetterIndex ?? -1;
-    const nextIndex = (lastIndex + 1) % setters.length;
-    const nextSetter = setters[nextIndex];
+    const activeSetterUserIds = setters.map((s) => s.userId);
+    const effectiveSequence = computeEffectiveSetterSequence({
+      activeSetterUserIds,
+      configuredSequence: settings.roundRobinSetterSequence,
+    });
+
+    if (effectiveSequence.length === 0) {
+      console.warn(`[LeadAssignment] No eligible setters in configured sequence for client ${clientId}`);
+      return null;
+    }
+
+    const nextIndex = getNextRoundRobinIndex(settings.roundRobinLastSetterIndex, effectiveSequence.length);
+    const nextSetterUserId = effectiveSequence[nextIndex];
     const now = new Date();
 
     // 5. Atomic update: assign lead (only if still unassigned) + update index
@@ -104,7 +155,7 @@ export async function assignLeadRoundRobin({
         assignedToUserId: null, // Idempotency guard
       },
       data: {
-        assignedToUserId: nextSetter.userId,
+        assignedToUserId: nextSetterUserId,
         assignedAt: now,
       },
     });
@@ -117,10 +168,12 @@ export async function assignLeadRoundRobin({
       });
 
       console.log(
-        `[LeadAssignment] Assigned lead ${leadId} to setter ${nextSetter.userId} (index ${nextIndex})`
+        `[LeadAssignment] Assigned lead ${leadId} to setter ${nextSetterUserId} (index ${nextIndex}, sequence=${
+          settings.roundRobinSetterSequence.length > 0 ? "custom" : "fallback"
+        })`
       );
 
-      return nextSetter.userId;
+      return nextSetterUserId;
     }
 
     // Lead was assigned by a concurrent call — return the current assignee
@@ -147,17 +200,19 @@ export async function maybeAssignLead({
   leadId,
   clientId,
   sentimentTag,
+  channel,
 }: {
   leadId: string;
   clientId: string;
   sentimentTag: string | null;
+  channel: LeadAssignmentChannel;
 }): Promise<string | null> {
   // Quick check: only assign if sentiment is positive
   if (!shouldAssignLead(sentimentTag)) {
     return null;
   }
 
-  return assignLeadRoundRobin({ leadId, clientId });
+  return assignLeadRoundRobin({ leadId, clientId, channel });
 }
 
 /**
@@ -171,12 +226,24 @@ export async function backfillLeadAssignments(clientId: string): Promise<{
   skipped: number;
   errors: number;
 }> {
+  const settings = await prisma.workspaceSettings.findUnique({
+    where: { clientId },
+    select: { roundRobinEmailOnly: true },
+  });
+
+  const emailOnly = Boolean(settings?.roundRobinEmailOnly);
+
   // Find all unassigned leads with positive sentiment
   const unassignedLeads = await prisma.lead.findMany({
     where: {
       clientId,
       assignedToUserId: null,
       sentimentTag: { in: [...POSITIVE_SENTIMENTS] },
+      ...(emailOnly
+        ? {
+          OR: [{ emailBisonLeadId: { not: null } }, { emailCampaignId: { not: null } }],
+        }
+        : {}),
     },
     orderBy: { lastInboundAt: "desc" }, // Most recent first
     select: { id: true },
@@ -192,7 +259,7 @@ export async function backfillLeadAssignments(clientId: string): Promise<{
 
   for (const lead of unassignedLeads) {
     try {
-      const result = await assignLeadRoundRobin({ leadId: lead.id, clientId });
+      const result = await assignLeadRoundRobin({ leadId: lead.id, clientId, channel: "email" });
       if (result) {
         assigned++;
       } else {

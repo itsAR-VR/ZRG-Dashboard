@@ -1438,11 +1438,11 @@ function InsightsConsoleBody({
                 <Bot className="h-5 w-5" />
               </div>
               <span className="bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text">
-                Insights Console
+                Campaign Strategist
               </span>
             </h1>
             <p className="text-sm text-muted-foreground max-w-md">
-              Read-only insights grounded in your analytics and representative threads.
+              Read-only strategist grounded in your analytics and representative threads.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -1457,7 +1457,7 @@ function InsightsConsoleBody({
       </div>
 
       {!activeWorkspace ? (
-        <div className="p-4 text-sm text-muted-foreground">Select a workspace to use the Insights Console.</div>
+        <div className="p-4 text-sm text-muted-foreground">Select a workspace to use the Campaign Strategist.</div>
       ) : (
         <div className="grid flex-1 min-h-0 grid-cols-1 gap-4 overflow-hidden p-4 md:grid-cols-[320px_1fr] lg:grid-cols-[360px_1fr]">
           {/* Sessions sidebar */}
@@ -1918,7 +1918,7 @@ export function InsightsChatSheet({ activeWorkspace }: { activeWorkspace?: strin
       <SheetTrigger asChild>
         <Button variant="outline" size="sm" disabled={!activeWorkspace} title={!activeWorkspace ? "Select a workspace first" : undefined}>
           <MessageSquareText className="h-4 w-4 mr-2" />
-          Insights Console
+          Campaign Strategist
         </Button>
       </SheetTrigger>
 

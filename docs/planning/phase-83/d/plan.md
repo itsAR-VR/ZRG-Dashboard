@@ -22,8 +22,33 @@ Design the in-app Google Sheet replica in the **Analytics** tab: a spreadsheet-l
   - CSV export of current filtered view (no hidden PII beyond what the UI already displays)
 
 ## Output
-- UI spec: components to add/modify, query shape, and a list of filters/columns for MVP.
+### CRM Table UI Implemented (MVP)
+
+- **Analytics tab layout**
+  - Added `Overview` + `CRM` tabs inside `components/dashboard/analytics-view.tsx`
+  - `CRM` tab mounts a new sheet-like table component
+- **CRM table component**
+  - New: `components/dashboard/analytics-crm-table.tsx`
+  - Renders a wide, horizontally scrollable table with the sheet headers
+  - Provides filters for Campaign, Lead Category, Lead Status, and Response Mode
+  - Cursor pagination with “Load more” (default page size 150)
+- **Server action**
+  - `getCrmSheetRows` in `actions/analytics-actions.ts`
+  - Filters on campaign/category/status/response mode/date range (date range supported in API but not yet surfaced in UI)
+  - Joins `LeadCrmRow` + `Lead` with safe defaults for missing fields
+  - Best-effort setter email resolution via Supabase admin
+
+### Deferred (not yet implemented)
+- Date range filter UI
+- Pipeline stage/value filters (schema exists but no UI yet)
+- CSV export
+- Row virtualization (current table is paginated but not virtualized)
+
+## Coordination Notes
+
+**Issue:** Another agent’s stash/pull removed the CRM upsert helper and pipeline hooks.  
+**Resolution:** Recreated `lib/lead-crm-row.ts` and restored upsert calls in inbound post-process handlers so CRM rows are populated.  
+**Files affected:** `lib/lead-crm-row.ts`, inbound post-process files in `lib/` and `lib/background-jobs/`.
 
 ## Handoff
-After schema + automation exist, implement the UI in small PRs: tab scaffolding → table read-only → filters → export.
-
+Proceed to Phase 83e to update `README.md` with the CRM/pipeline/sales-call roadmap (marking skeleton-only features).

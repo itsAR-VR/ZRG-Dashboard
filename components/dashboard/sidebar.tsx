@@ -85,7 +85,7 @@ const navItems = [
   { id: "followups" as ViewType, label: "Follow-ups", icon: Clock },
   { id: "crm" as ViewType, label: "CRM / Leads", icon: Users },
   { id: "analytics" as ViewType, label: "Analytics", icon: BarChart3 },
-  { id: "insights" as ViewType, label: "Insights", icon: Bot },
+  { id: "insights" as ViewType, label: "Campaign Strategist", icon: Bot },
   { id: "settings" as ViewType, label: "Settings", icon: Settings },
 ]
 

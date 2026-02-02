@@ -29,6 +29,7 @@ import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
+import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
 import type { InboundPostProcessParams, InboundPostProcessResult, InboundPostProcessPipelineStage } from "@/lib/inbound-post-process/types";
 
 function mapInboxClassificationToSentimentTag(classification: string): SentimentTag {
@@ -227,6 +228,16 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
     latestInboundText: messageBody,
   }).catch(() => undefined);
 
+  upsertLeadCrmRowOnInterest({
+    leadId: lead.id,
+    messageId: message.id,
+    messageSentAt,
+    channel: message.channel,
+    sentimentTag,
+  }).catch((error) => {
+    console.warn(prefix, "Failed to upsert CRM row for lead", lead.id, error);
+  });
+
   if (sentimentTag === "Call Requested") {
     ensureCallRequestedTask({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
   }
@@ -238,6 +249,7 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
     leadId: lead.id,
     clientId: client.id,
     sentimentTag,
+    channel: "email",
   });
 
   pushStage("apply_auto_followup_policy");

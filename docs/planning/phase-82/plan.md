@@ -17,10 +17,10 @@ Turn the pasted spreadsheet requirements into a concrete, spreadsheet-backed col
 | Phase 81 | Uncommitted | `prisma/schema.prisma`, Slack settings + orchestrator | Same as Phase 80; keep this phase scoped to planning + artifacts |
 
 ## Objectives
-* [ ] Identify which spreadsheet columns are source-of-truth vs derived/empty (e.g., “Unnamed” columns)
-* [ ] Produce an `.xlsx` mapping artifact listing columns, target model/field, and transforms
-* [ ] Define an import/cleanup strategy (idempotency, dedupe rules, and required lookups)
-* [ ] Ensure PII exports stay untracked (gitignore)
+* [x] Identify which spreadsheet columns are source-of-truth vs derived/empty (e.g., "Unnamed" columns)
+* [x] Produce an `.xlsx` mapping artifact listing columns, target model/field, and transforms
+* [x] Define an import/cleanup strategy (idempotency, dedupe rules, and required lookups)
+* [x] Ensure PII exports stay untracked (gitignore)
 
 ## Constraints
 - Do not add CRM PII to git-tracked files.
@@ -28,12 +28,34 @@ Turn the pasted spreadsheet requirements into a concrete, spreadsheet-backed col
 - Any proposed importer must be **idempotent** (safe to re-run) and dedupe primarily by normalized email and/or phone.
 
 ## Success Criteria
-- A mapping spreadsheet exists on disk (not committed) with formulas summarizing mapping coverage.
-- `docs/planning/phase-82/a/plan.md`, `docs/planning/phase-82/b/plan.md`, and `docs/planning/phase-82/c/plan.md` exist and clearly describe next actions.
-- `.gitignore` prevents accidental commit of CRM export files.
+- [x] A mapping spreadsheet exists on disk (not committed) with formulas summarizing mapping coverage.
+- [x] `docs/planning/phase-82/a/plan.md`, `docs/planning/phase-82/b/plan.md`, and `docs/planning/phase-82/c/plan.md` exist and clearly describe next actions.
+- [x] `.gitignore` prevents accidental commit of CRM export files.
 
 ## Subphase Index
 * a — Inspect source workbook/CSV and extract column inventory
 * b — Generate column-mapping `.xlsx` artifact (with formulas + validations)
 * c — Draft importer/cleanup approach (dry-run, dedupe, and field transforms)
 
+## Phase Summary
+
+### Status: Complete
+
+**What shipped:**
+- Column inventory (Phase 82a) covering 62 headers and unused `Unnamed:*` columns
+- Mapping artifact: `docs/planning/phase-82/artifacts/founders-club-crm-column-mapping.xlsx` (headers-only, formulas + validations)
+- Importer checklist: `docs/planning/phase-82/artifacts/importer-checklist.md`
+- `.gitignore` protections for CRM files (`Founders Club CRM*.csv`, `Founders Club CRM*.xlsx`, `docs/planning/**/artifacts/*.xlsx`)
+
+### Key Decisions
+- Keep mapping focused on existing `Lead` fields; avoid schema changes in this phase.
+- Idempotent import keyed by normalized email (primary) and phone (secondary).
+- No CRM row data or PII is committed to git.
+
+### Artifacts
+- `docs/planning/phase-82/artifacts/founders-club-crm-column-mapping.xlsx`
+- `docs/planning/phase-82/artifacts/importer-checklist.md`
+- `docs/planning/phase-82/review.md`
+
+### Follow-ups
+- If manual import is needed later, implement against the checklist artifact in a follow-on phase.

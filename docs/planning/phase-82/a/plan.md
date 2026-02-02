@@ -20,9 +20,51 @@ Inventory the Founders Club CRM spreadsheet structure (sheets + columns) and ide
   - status/category normalization (map to `Lead.status` and/or `Lead.sentimentTag`)
 
 ## Output
-- A column inventory (source headers) used as the backbone for the mapping artifact in Phase 82b.
-- A short list of “unknowns” that need user clarification (e.g., which statuses should map to `Lead.status` vs sentiment tags).
+### Column Inventory (CSV Header Scan)
+
+Total columns detected: **62**
+
+**Named headers:**
+- DATE
+- Campaign
+- Company Name
+- Website
+- First Name
+- Last Name
+- Job Title
+- Lead's Email
+- Lead LinkedIn
+- Phone Number
+- Email/LinkedIn Step Responded
+- Lead Category
+- Lead Status
+- Channel
+- Lead Type
+- Application Status
+- Appointment Setter
+- Setter Assignment
+- Notes
+- Initial response date
+- Follow-up 1
+- Follow-up 2
+- Follow-up 3
+- Follow-up 4
+- Follow-up 5
+- Response step complete
+- Date of Booking
+- Date of Meeting
+- Qualfied
+- Follow-up Date Requested
+- Setters
+- Rolling Meeting Request Rate
+- Rolling Booking Rate
+
+**Unnamed/empty headers:** `Unnamed: 31` through `Unnamed: 61`  
+These appear unused/empty in the export and are safe to drop in mapping.
+
+### Unknowns / Decisions Needed
+- Confirm whether `Lead Category` maps directly to `Lead.sentimentTag` or is a separate CRM-specific taxonomy.
+- Confirm if `Lead Status` should map to `Lead.status` or to a pipeline-specific field (separate from sentiment).
 
 ## Handoff
 Proceed to Phase 82b to materialize the mapping into an `.xlsx` artifact (no PII).
-

@@ -1,12 +1,13 @@
 "use client";
 
 import { useState, useEffect, useTransition } from "react";
-import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil, Eraser, Linkedin, Users, Calendar } from "lucide-react";
+import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, ChevronDown, ChevronUp, MessageSquare, Pencil, Eraser, Linkedin, Users, Calendar, X } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -29,6 +30,21 @@ import { toast } from "sonner";
 import type { EmailIntegrationProvider } from "@prisma/client";
 
 const EMAILBISON_BASE_HOST_DEFAULT_VALUE = "__DEFAULT__";
+
+function parseUniqueEmailList(raw: string): string[] {
+  const emails = raw
+    .split(/[\n,;]+/g)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return Array.from(new Set(emails));
+}
+
+function parseEmailSequence(raw: string): string[] {
+  return raw
+    .split(/[\n,;]+/g)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
 
 interface Client {
   id: string;
@@ -157,6 +173,9 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
   const emptyAssignmentsForm = {
     setterEmailsRaw: "",
     inboxManagerEmailsRaw: "",
+    roundRobinEnabled: false,
+    roundRobinEmailOnly: false,
+    roundRobinSequence: [] as string[],
   };
 
   // Separate form states to prevent cross-contamination between "Add Workspace" and per-client edits
@@ -221,6 +240,9 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
       setAssignmentsForm({
         setterEmailsRaw: res.data.setters.join(", "),
         inboxManagerEmailsRaw: res.data.inboxManagers.join(", "),
+        roundRobinEnabled: res.data.roundRobinEnabled,
+        roundRobinEmailOnly: res.data.roundRobinEmailOnly,
+        roundRobinSequence: parseEmailSequence(res.data.roundRobinSequence.join(", ")),
       });
     } else {
       setAssignmentsForm(emptyAssignmentsForm);
@@ -236,6 +258,9 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
       const res = await setClientAssignments(clientId, {
         setterEmailsRaw: assignmentsForm.setterEmailsRaw,
         inboxManagerEmailsRaw: assignmentsForm.inboxManagerEmailsRaw,
+        roundRobinEnabled: assignmentsForm.roundRobinEnabled,
+        roundRobinEmailOnly: assignmentsForm.roundRobinEmailOnly,
+        roundRobinSequenceRaw: assignmentsForm.roundRobinSequence.join(", "),
       });
       if (res.success) {
         toast.success("Assignments updated");
@@ -274,6 +299,9 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
           const assign = await setClientAssignments(created.id, {
             setterEmailsRaw: newClientForm.setterEmailsRaw,
             inboxManagerEmailsRaw: newClientForm.inboxManagerEmailsRaw,
+            roundRobinEnabled: false,
+            roundRobinEmailOnly: false,
+            roundRobinSequenceRaw: "",
           });
           if (!assign.success) {
             toast.error(assign.error || "Workspace created, but failed to set assignments");
@@ -402,6 +430,20 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
       }
     });
   }
+
+  useEffect(() => {
+    const setterEmails = parseUniqueEmailList(assignmentsForm.setterEmailsRaw);
+    if (setterEmails.length === 0 || assignmentsForm.roundRobinSequence.length === 0) return;
+
+    const setterSet = new Set(setterEmails);
+    const filteredSequence = assignmentsForm.roundRobinSequence.filter((email) => setterSet.has(email));
+    if (filteredSequence.length === assignmentsForm.roundRobinSequence.length) return;
+
+    setAssignmentsForm((prev) => ({
+      ...prev,
+      roundRobinSequence: prev.roundRobinSequence.filter((email) => setterSet.has(email)),
+    }));
+  }, [assignmentsForm.setterEmailsRaw, assignmentsForm.roundRobinSequence]);
 
   async function handleSyncEmailCampaigns(client: Client) {
     setSyncingEmailClientId(client.id);
@@ -1578,6 +1620,176 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                       onChange={(e) => setAssignmentsForm({ ...assignmentsForm, inboxManagerEmailsRaw: e.target.value })}
                                       className="h-8 text-sm"
                                     />
+                                  </div>
+                                  <div className="space-y-2 border-t pt-2 mt-2">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <Label htmlFor={`roundRobinEnabled-${client.id}`} className="text-xs">
+                                        Round robin enabled
+                                      </Label>
+                                      <Switch
+                                        id={`roundRobinEnabled-${client.id}`}
+                                        checked={assignmentsForm.roundRobinEnabled}
+                                        onCheckedChange={(checked) =>
+                                          setAssignmentsForm({
+                                            ...assignmentsForm,
+                                            roundRobinEnabled: checked,
+                                            roundRobinEmailOnly: checked ? assignmentsForm.roundRobinEmailOnly : false,
+                                          })
+                                        }
+                                      />
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      When enabled, new positive leads are assigned to setters automatically in rotation.
+                                    </p>
+                                  </div>
+                                  <div className="space-y-2">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <Label htmlFor={`roundRobinEmailOnly-${client.id}`} className="text-xs">
+                                        Email-only assignment
+                                      </Label>
+                                      <Switch
+                                        id={`roundRobinEmailOnly-${client.id}`}
+                                        checked={assignmentsForm.roundRobinEmailOnly}
+                                        disabled={!assignmentsForm.roundRobinEnabled}
+                                        onCheckedChange={(checked) =>
+                                          setAssignmentsForm({
+                                            ...assignmentsForm,
+                                            roundRobinEmailOnly: checked,
+                                          })
+                                        }
+                                      />
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      If enabled, only inbound Email events trigger assignment (SMS/LinkedIn will not).
+                                    </p>
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label htmlFor={`roundRobinSequence-${client.id}`} className="text-xs">
+                                      Round robin sequence (optional)
+                                    </Label>
+                                    <div className="space-y-2">
+                                      <div className="flex flex-wrap gap-2">
+                                        {parseUniqueEmailList(assignmentsForm.setterEmailsRaw).length > 0 ? (
+                                          parseUniqueEmailList(assignmentsForm.setterEmailsRaw).map((email) => (
+                                            <Button
+                                              key={email}
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              disabled={!assignmentsForm.roundRobinEnabled}
+                                              onClick={() =>
+                                                setAssignmentsForm((prev) => ({
+                                                  ...prev,
+                                                  roundRobinSequence: [...prev.roundRobinSequence, email],
+                                                }))
+                                              }
+                                              className="h-7 px-2 text-[10px]"
+                                            >
+                                              + {email}
+                                            </Button>
+                                          ))
+                                        ) : (
+                                          <p className="text-[10px] text-muted-foreground">
+                                            Add setter emails above to enable the sequence builder.
+                                          </p>
+                                        )}
+                                      </div>
+
+                                      <div className="flex flex-wrap gap-2">
+                                        {assignmentsForm.roundRobinSequence.length > 0 ? (
+                                          assignmentsForm.roundRobinSequence.map((email, index) => (
+                                            <div key={`${email}-${index}`} className="flex items-center gap-1">
+                                              <Badge variant="outline" className="text-[10px]">
+                                                {email}
+                                              </Badge>
+                                              <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="icon"
+                                                disabled={!assignmentsForm.roundRobinEnabled}
+                                                className="h-6 w-6"
+                                                onClick={() =>
+                                                  setAssignmentsForm((prev) => ({
+                                                    ...prev,
+                                                    roundRobinSequence: prev.roundRobinSequence.filter((_, i) => i !== index),
+                                                  }))
+                                                }
+                                                aria-label="Remove from sequence"
+                                              >
+                                                <X className="h-3 w-3" />
+                                              </Button>
+                                              <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="icon"
+                                                disabled={!assignmentsForm.roundRobinEnabled || index === 0}
+                                                className="h-6 w-6"
+                                                onClick={() =>
+                                                  setAssignmentsForm((prev) => {
+                                                    const next = [...prev.roundRobinSequence];
+                                                    const tmp = next[index - 1];
+                                                    next[index - 1] = next[index];
+                                                    next[index] = tmp;
+                                                    return { ...prev, roundRobinSequence: next };
+                                                  })
+                                                }
+                                                aria-label="Move up"
+                                              >
+                                                <ChevronUp className="h-3 w-3" />
+                                              </Button>
+                                              <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="icon"
+                                                disabled={!assignmentsForm.roundRobinEnabled || index === assignmentsForm.roundRobinSequence.length - 1}
+                                                className="h-6 w-6"
+                                                onClick={() =>
+                                                  setAssignmentsForm((prev) => {
+                                                    const next = [...prev.roundRobinSequence];
+                                                    const tmp = next[index + 1];
+                                                    next[index + 1] = next[index];
+                                                    next[index] = tmp;
+                                                    return { ...prev, roundRobinSequence: next };
+                                                  })
+                                                }
+                                                aria-label="Move down"
+                                              >
+                                                <ChevronDown className="h-3 w-3" />
+                                              </Button>
+                                            </div>
+                                          ))
+                                        ) : (
+                                          <p className="text-[10px] text-muted-foreground">
+                                            Click a setter above to build the rotation sequence. Repeats are allowed for weighting.
+                                          </p>
+                                        )}
+                                      </div>
+
+                                      {assignmentsForm.roundRobinSequence.length > 0 && (
+                                        <div>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            disabled={!assignmentsForm.roundRobinEnabled}
+                                            onClick={() =>
+                                              setAssignmentsForm((prev) => ({
+                                                ...prev,
+                                                roundRobinSequence: [],
+                                              }))
+                                            }
+                                            className="h-7 px-2 text-[10px]"
+                                          >
+                                            <Eraser className="h-3 w-3 mr-1" />
+                                            Clear sequence
+                                          </Button>
+                                        </div>
+                                      )}
+                                    </div>
+                                    <p className="text-[10px] text-muted-foreground">
+                                      Order matters; repeats allowed for weighting. Sequence must be a subset of the setter emails
+                                      (omit Jon here to stop new assignments).
+                                    </p>
                                   </div>
                                   <Button
                                     size="sm"
