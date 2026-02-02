@@ -32,6 +32,8 @@ import {
   Star,
   AlertTriangle,
   Pencil,
+  PauseCircle,
+  PlayCircle,
   RotateCcw,
   ChevronDown,
   ChevronRight,
@@ -39,12 +41,13 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { SecretInput } from "@/components/ui/secret-input"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -54,17 +57,12 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from "@/components/ui/dialog"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { IntegrationsManager } from "./settings/integrations-manager"
 import { AiCampaignAssignmentPanel } from "./settings/ai-campaign-assignment"
 import { BookingProcessManager } from "./settings/booking-process-manager"
@@ -74,6 +72,7 @@ import { BulkDraftRegenerationCard } from "./settings/bulk-draft-regeneration"
 import { ClientPortalUsersManager } from "./settings/client-portal-users-manager"
 import { WorkspaceMembersManager } from "./settings/workspace-members-manager"
 // Note: FollowUpSequenceManager moved to Follow-ups view
+import { cn } from "@/lib/utils"
 import { getWorkspaceAdminStatus, getWorkspaceCapabilities } from "@/actions/access-actions"
 import {
   getSlackApprovalRecipients,
@@ -95,27 +94,27 @@ import {
   type EmailBisonBaseHostRow,
 } from "@/actions/emailbison-base-host-actions"
 import { previewEmailBisonAvailabilitySlotSentenceForWorkspace } from "@/actions/emailbison-availability-slot-actions"
-	import { 
-	  getUserSettings, 
-	  updateUserSettings, 
-	  addKnowledgeAsset,
-	  uploadKnowledgeAssetFile,
-	  addWebsiteKnowledgeAsset,
-	  retryWebsiteKnowledgeAssetIngestion,
-	  deleteKnowledgeAsset,
-	  getCalendarLinks,
-	  addCalendarLink,
-	  updateCalendarLink,
-	  deleteCalendarLink,
-	  setDefaultCalendarLink,
-	  setAirtableMode,
-	  pauseWorkspaceFollowUps,
-	  resumeWorkspaceFollowUps,
-	  type UserSettingsData,
-	  type KnowledgeAssetData,
-	  type QualificationQuestion,
-	  type CalendarLinkData,
-	} from "@/actions/settings-actions"
+import {
+  getUserSettings,
+  updateUserSettings,
+  addKnowledgeAsset,
+  uploadKnowledgeAssetFile,
+  addWebsiteKnowledgeAsset,
+  retryWebsiteKnowledgeAssetIngestion,
+  deleteKnowledgeAsset,
+  getCalendarLinks,
+  addCalendarLink,
+  updateCalendarLink,
+  deleteCalendarLink,
+  setDefaultCalendarLink,
+  setAirtableMode,
+  pauseWorkspaceFollowUps,
+  resumeWorkspaceFollowUps,
+  type UserSettingsData,
+  type KnowledgeAssetData,
+  type QualificationQuestion,
+  type CalendarLinkData,
+} from "@/actions/settings-actions"
 import {
   getAiObservabilitySummary,
   getAiPromptTemplates,
@@ -307,6 +306,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   // Qualification questions state
   const [qualificationQuestions, setQualificationQuestions] = useState<QualificationQuestion[]>([])
   const [newQuestion, setNewQuestion] = useState("")
+  const [qualificationQuestionsOpen, setQualificationQuestionsOpen] = useState(false)
 
   // Knowledge assets state
   const [knowledgeAssets, setKnowledgeAssets] = useState<KnowledgeAssetData[]>([])
@@ -314,6 +314,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [newAssetContent, setNewAssetContent] = useState("")
   const [newAssetType, setNewAssetType] = useState<"text" | "url" | "file">("text")
   const [newAssetFile, setNewAssetFile] = useState<File | null>(null)
+  const [addAssetOpen, setAddAssetOpen] = useState(false)
 
   // Company/Outreach context state
   const [companyContext, setCompanyContext] = useState({
@@ -520,6 +521,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [emailBisonBaseHostLoading, setEmailBisonBaseHostLoading] = useState(false)
   const [emailBisonBaseHostSaving, setEmailBisonBaseHostSaving] = useState(false)
   const [emailBisonBaseHostError, setEmailBisonBaseHostError] = useState<string | null>(null)
+  const [emailBisonBaseHostOpen, setEmailBisonBaseHostOpen] = useState(false)
 
   // EmailBison first-touch availability_slot (per workspace)
   const [emailBisonAvailabilitySlot, setEmailBisonAvailabilitySlot] = useState({
@@ -2004,6 +2006,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     .join("")
     .toUpperCase()
     .slice(0, 2)
+  const currentEmailBisonBaseHost = emailBisonBaseHostId
+    ? emailBisonBaseHosts.find((row) => row.id === emailBisonBaseHostId)
+    : null
+  const emailBisonBaseHostLabel = currentEmailBisonBaseHost
+    ? `${currentEmailBisonBaseHost.host}${currentEmailBisonBaseHost.label ? ` — ${currentEmailBisonBaseHost.label}` : ""}`
+    : "Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)"
 
   if (isLoading || isUserLoading) {
     return (
@@ -2118,6 +2126,14 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </Card>
               )
             })() : null}
+
+            <div className="flex items-center gap-2 mt-2">
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Account
+              </h3>
+              <Separator className="flex-1" />
+            </div>
+
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -2145,6 +2161,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               </CardContent>
             </Card>
 
+            <div className="flex items-center gap-2 mt-6">
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Scheduling
+              </h3>
+              <Separator className="flex-1" />
+            </div>
+
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -2168,25 +2191,38 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="UTC">UTC</SelectItem>
+                      <SelectGroup>
+                        <SelectLabel>Universal</SelectLabel>
+                        <SelectItem value="UTC">UTC</SelectItem>
+                      </SelectGroup>
                       <SelectSeparator />
-                      <SelectItem value="America/New_York">Eastern Time (ET)</SelectItem>
-                      <SelectItem value="America/Chicago">Central Time (CT)</SelectItem>
-                      <SelectItem value="America/Denver">Mountain Time (MT)</SelectItem>
-                      <SelectItem value="America/Phoenix">Arizona (MST)</SelectItem>
-                      <SelectItem value="America/Los_Angeles">Pacific Time (PT)</SelectItem>
+                      <SelectGroup>
+                        <SelectLabel>Americas</SelectLabel>
+                        <SelectItem value="America/New_York">Eastern (ET)</SelectItem>
+                        <SelectItem value="America/Chicago">Central (CT)</SelectItem>
+                        <SelectItem value="America/Denver">Mountain (MT)</SelectItem>
+                        <SelectItem value="America/Phoenix">Arizona (MST)</SelectItem>
+                        <SelectItem value="America/Los_Angeles">Pacific (PT)</SelectItem>
+                        <SelectItem value="America/Anchorage">Alaska (AKT)</SelectItem>
+                        <SelectItem value="Pacific/Honolulu">Hawaii (HT)</SelectItem>
+                      </SelectGroup>
                       <SelectSeparator />
-                      <SelectItem value="Europe/London">London (UK)</SelectItem>
-                      <SelectItem value="Europe/Dublin">Dublin (Ireland)</SelectItem>
-                      <SelectItem value="Europe/Paris">Paris (France)</SelectItem>
-                      <SelectItem value="Europe/Berlin">Berlin (Germany)</SelectItem>
+                      <SelectGroup>
+                        <SelectLabel>Europe</SelectLabel>
+                        <SelectItem value="Europe/London">London (GMT/BST)</SelectItem>
+                        <SelectItem value="Europe/Dublin">Dublin (GMT/BST)</SelectItem>
+                        <SelectItem value="Europe/Paris">Paris (CET)</SelectItem>
+                        <SelectItem value="Europe/Berlin">Berlin (CET)</SelectItem>
+                      </SelectGroup>
                       <SelectSeparator />
-                      <SelectItem value="Asia/Dubai">Dubai (UAE)</SelectItem>
-                      <SelectItem value="Asia/Kolkata">India (IST)</SelectItem>
-                      <SelectItem value="Asia/Singapore">Singapore</SelectItem>
-                      <SelectItem value="Asia/Tokyo">Tokyo (Japan)</SelectItem>
-                      <SelectSeparator />
-                      <SelectItem value="Australia/Sydney">Sydney (Australia)</SelectItem>
+                      <SelectGroup>
+                        <SelectLabel>Asia Pacific</SelectLabel>
+                        <SelectItem value="Asia/Dubai">Dubai (GST)</SelectItem>
+                        <SelectItem value="Asia/Kolkata">India (IST)</SelectItem>
+                        <SelectItem value="Asia/Singapore">Singapore (SGT)</SelectItem>
+                        <SelectItem value="Asia/Tokyo">Tokyo (JST)</SelectItem>
+                        <SelectItem value="Australia/Sydney">Sydney (AEST)</SelectItem>
+                      </SelectGroup>
                     </SelectContent>
                   </Select>
                 </div>
@@ -2231,150 +2267,247 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     Only workspace admins can edit auto-send schedules and holiday blackouts.
                   </div>
                 ) : null}
-                <div className="space-y-2">
-                  <Label>Schedule mode</Label>
-                  <Select
-                    value={autoSendSchedule.mode}
-                    onValueChange={(v) => {
-                      setAutoSendSchedule((prev) => ({
-                        ...prev,
-                        mode: v as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM",
-                      }))
-                      handleChange()
-                    }}
-                  >
-                    <SelectTrigger disabled={!isWorkspaceAdmin}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="ALWAYS">Always (24/7)</SelectItem>
-                      <SelectItem value="BUSINESS_HOURS">Business hours (workspace)</SelectItem>
-                      <SelectItem value="CUSTOM">Custom schedule</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {autoSendSchedule.mode === "BUSINESS_HOURS" ? (
-                  <p className="text-xs text-muted-foreground">
-                    Uses the workspace timezone and working hours above.
-                  </p>
-                ) : null}
-
-                {autoSendSchedule.mode === "CUSTOM" ? (
-                  <div className="space-y-3">
-                    <div className="space-y-2">
-                      <Label>Active days</Label>
-                      <div className="flex flex-wrap items-center gap-3">
-                        {AUTO_SEND_SCHEDULE_DAYS.map((day) => (
-                          <label key={day.value} className="flex items-center gap-2 text-sm">
-                            <Checkbox
-                              checked={autoSendSchedule.customDays.includes(day.value)}
-                              disabled={!isWorkspaceAdmin}
-                              onCheckedChange={(v) => {
-                                const checked = v === true
-                                setAutoSendSchedule((prev) => {
-                                  const exists = prev.customDays.includes(day.value)
-                                  const nextDays = checked
-                                    ? (exists ? prev.customDays : [...prev.customDays, day.value])
-                                    : prev.customDays.filter((d) => d !== day.value)
-                                  return { ...prev, customDays: nextDays }
-                                })
-                                handleChange()
-                              }}
-                            />
-                            {day.label}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label>Start Time</Label>
-                        <Input
-                          type="time"
-                          value={autoSendSchedule.customStartTime}
-                          disabled={!isWorkspaceAdmin}
-                          onChange={(e) => {
-                            setAutoSendSchedule((prev) => ({ ...prev, customStartTime: e.target.value }))
-                            handleChange()
-                          }}
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>End Time</Label>
-                        <Input
-                          type="time"
-                          value={autoSendSchedule.customEndTime}
-                          disabled={!isWorkspaceAdmin}
-                          onChange={(e) => {
-                            setAutoSendSchedule((prev) => ({ ...prev, customEndTime: e.target.value }))
-                            handleChange()
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <Separator />
-
-                    <div className="space-y-3">
-                      <div>
-                        <Label>Holiday blackouts</Label>
-                        <p className="text-xs text-muted-foreground">
-                          Skip auto-sends on holidays. Campaign overrides can add extra blackouts.
-                        </p>
-                      </div>
-
+                <Accordion type="single" collapsible className="w-full">
+                  <AccordionItem value="schedule-mode">
+                    <AccordionTrigger>
                       <div className="flex items-center gap-2">
-                        <Checkbox
-                          checked={autoSendSchedule.holidays.presetEnabled}
-                          disabled={!isWorkspaceAdmin}
-                          onCheckedChange={(v) => {
-                            const checked = v === true
-                            setAutoSendSchedule((prev) => ({
-                              ...prev,
-                              holidays: { ...prev.holidays, presetEnabled: checked },
-                            }))
-                            handleChange()
-                          }}
-                        />
-                        <span className="text-sm">Use US federal + common holidays (no observed dates)</span>
+                        <Clock className="h-4 w-4" />
+                        <span>Schedule Mode</span>
+                        <Badge variant="secondary" className="ml-2">
+                          {autoSendSchedule.mode === "ALWAYS"
+                            ? "Always On"
+                            : autoSendSchedule.mode === "BUSINESS_HOURS"
+                              ? "Business Hours"
+                              : "Custom"}
+                        </Badge>
                       </div>
-
-                      {autoSendSchedule.holidays.presetEnabled ? (
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <div className="space-y-4">
                         <div className="space-y-2">
-                          <Label className="text-sm">Exclude preset dates</Label>
+                          <Label>Schedule mode</Label>
+                          <Select
+                            value={autoSendSchedule.mode}
+                            onValueChange={(v) => {
+                              setAutoSendSchedule((prev) => ({
+                                ...prev,
+                                mode: v as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM",
+                              }))
+                              handleChange()
+                            }}
+                          >
+                            <SelectTrigger disabled={!isWorkspaceAdmin}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="ALWAYS">Always (24/7)</SelectItem>
+                              <SelectItem value="BUSINESS_HOURS">Business hours (workspace)</SelectItem>
+                              <SelectItem value="CUSTOM">Custom schedule</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        {autoSendSchedule.mode === "BUSINESS_HOURS" ? (
+                          <p className="text-xs text-muted-foreground">
+                            Uses the workspace timezone and working hours above.
+                          </p>
+                        ) : null}
+
+                        {autoSendSchedule.mode === "CUSTOM" ? (
+                          <div className="space-y-3">
+                            <div className="space-y-2">
+                              <Label>Active days</Label>
+                              <div className="flex flex-wrap items-center gap-3">
+                                {AUTO_SEND_SCHEDULE_DAYS.map((day) => (
+                                  <label key={day.value} className="flex items-center gap-2 text-sm">
+                                    <Checkbox
+                                      checked={autoSendSchedule.customDays.includes(day.value)}
+                                      disabled={!isWorkspaceAdmin}
+                                      onCheckedChange={(v) => {
+                                        const checked = v === true
+                                        setAutoSendSchedule((prev) => {
+                                          const exists = prev.customDays.includes(day.value)
+                                          const nextDays = checked
+                                            ? (exists ? prev.customDays : [...prev.customDays, day.value])
+                                            : prev.customDays.filter((d) => d !== day.value)
+                                          return { ...prev, customDays: nextDays }
+                                        })
+                                        handleChange()
+                                      }}
+                                    />
+                                    {day.label}
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-4">
+                              <div className="space-y-2">
+                                <Label>Start Time</Label>
+                                <Input
+                                  type="time"
+                                  value={autoSendSchedule.customStartTime}
+                                  disabled={!isWorkspaceAdmin}
+                                  onChange={(e) => {
+                                    setAutoSendSchedule((prev) => ({ ...prev, customStartTime: e.target.value }))
+                                    handleChange()
+                                  }}
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <Label>End Time</Label>
+                                <Input
+                                  type="time"
+                                  value={autoSendSchedule.customEndTime}
+                                  disabled={!isWorkspaceAdmin}
+                                  onChange={(e) => {
+                                    setAutoSendSchedule((prev) => ({ ...prev, customEndTime: e.target.value }))
+                                    handleChange()
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+
+                  <AccordionItem value="holidays">
+                    <AccordionTrigger>
+                      <div className="flex items-center gap-2">
+                        <Calendar className="h-4 w-4" />
+                        <span>Holiday Settings</span>
+                        <Badge variant="outline" className="ml-2">
+                          {autoSendSchedule.holidays.excludedPresetDates.length +
+                            autoSendSchedule.holidays.additionalBlackoutDates.length +
+                            autoSendSchedule.holidays.additionalBlackoutDateRanges.length} exclusions
+                        </Badge>
+                      </div>
+                    </AccordionTrigger>
+                    <AccordionContent>
+                      <div className="space-y-3">
+                        <div>
+                          <Label>Holiday blackouts</Label>
+                          <p className="text-xs text-muted-foreground">
+                            Skip auto-sends on holidays. Campaign overrides can add extra blackouts.
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <Checkbox
+                            checked={autoSendSchedule.holidays.presetEnabled}
+                            disabled={!isWorkspaceAdmin}
+                            onCheckedChange={(v) => {
+                              const checked = v === true
+                              setAutoSendSchedule((prev) => ({
+                                ...prev,
+                                holidays: { ...prev.holidays, presetEnabled: checked },
+                              }))
+                              handleChange()
+                            }}
+                          />
+                          <span className="text-sm">Use US federal + common holidays (no observed dates)</span>
+                        </div>
+
+                        {autoSendSchedule.holidays.presetEnabled ? (
+                          <div className="space-y-2">
+                            <Label className="text-sm">Exclude preset dates</Label>
+                            <div className="flex flex-wrap gap-2">
+                              <Input
+                                type="date"
+                                value={holidayExcludedPresetDate}
+                                disabled={!isWorkspaceAdmin}
+                                onChange={(e) => setHolidayExcludedPresetDate(e.target.value)}
+                              />
+                              <Button
+                                variant="outline"
+                                disabled={!isWorkspaceAdmin || !holidayExcludedPresetDate}
+                                onClick={() => {
+                                  if (!holidayExcludedPresetDate) return
+                                  setAutoSendSchedule((prev) => ({
+                                    ...prev,
+                                    holidays: {
+                                      ...prev.holidays,
+                                      excludedPresetDates: normalizeDateList([
+                                        ...prev.holidays.excludedPresetDates,
+                                        holidayExcludedPresetDate,
+                                      ]),
+                                    },
+                                  }))
+                                  setHolidayExcludedPresetDate("")
+                                  handleChange()
+                                }}
+                              >
+                                Add
+                              </Button>
+                            </div>
+                            {autoSendSchedule.holidays.excludedPresetDates.length > 0 ? (
+                              <div className="space-y-2">
+                                {autoSendSchedule.holidays.excludedPresetDates.map((date) => (
+                                  <div key={date} className="flex items-center justify-between rounded-lg border p-2">
+                                    <span className="text-sm">{date}</span>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                      onClick={() => {
+                                        setAutoSendSchedule((prev) => ({
+                                          ...prev,
+                                          holidays: {
+                                            ...prev.holidays,
+                                            excludedPresetDates: prev.holidays.excludedPresetDates.filter((d) => d !== date),
+                                          },
+                                        }))
+                                        handleChange()
+                                      }}
+                                      disabled={!isWorkspaceAdmin}
+                                      aria-label="Remove excluded holiday"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-xs text-muted-foreground">No excluded holiday dates.</p>
+                            )}
+                          </div>
+                        ) : null}
+
+                        <div className="space-y-2">
+                          <Label className="text-sm">Additional blackout dates</Label>
                           <div className="flex flex-wrap gap-2">
                             <Input
                               type="date"
-                              value={holidayExcludedPresetDate}
+                              value={holidayBlackoutDate}
                               disabled={!isWorkspaceAdmin}
-                              onChange={(e) => setHolidayExcludedPresetDate(e.target.value)}
+                              onChange={(e) => setHolidayBlackoutDate(e.target.value)}
                             />
                             <Button
                               variant="outline"
-                              disabled={!isWorkspaceAdmin || !holidayExcludedPresetDate}
+                              disabled={!isWorkspaceAdmin || !holidayBlackoutDate}
                               onClick={() => {
-                                if (!holidayExcludedPresetDate) return
+                                if (!holidayBlackoutDate) return
                                 setAutoSendSchedule((prev) => ({
                                   ...prev,
                                   holidays: {
                                     ...prev.holidays,
-                                    excludedPresetDates: normalizeDateList([
-                                      ...prev.holidays.excludedPresetDates,
-                                      holidayExcludedPresetDate,
+                                    additionalBlackoutDates: normalizeDateList([
+                                      ...prev.holidays.additionalBlackoutDates,
+                                      holidayBlackoutDate,
                                     ]),
                                   },
                                 }))
-                                setHolidayExcludedPresetDate("")
+                                setHolidayBlackoutDate("")
                                 handleChange()
                               }}
                             >
                               Add
                             </Button>
                           </div>
-                          {autoSendSchedule.holidays.excludedPresetDates.length > 0 ? (
+                          {autoSendSchedule.holidays.additionalBlackoutDates.length > 0 ? (
                             <div className="space-y-2">
-                              {autoSendSchedule.holidays.excludedPresetDates.map((date) => (
+                              {autoSendSchedule.holidays.additionalBlackoutDates.map((date) => (
                                 <div key={date} className="flex items-center justify-between rounded-lg border p-2">
                                   <span className="text-sm">{date}</span>
                                   <Button
@@ -2386,13 +2519,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                         ...prev,
                                         holidays: {
                                           ...prev.holidays,
-                                          excludedPresetDates: prev.holidays.excludedPresetDates.filter((d) => d !== date),
+                                          additionalBlackoutDates: prev.holidays.additionalBlackoutDates.filter((d) => d !== date),
                                         },
                                       }))
                                       handleChange()
                                     }}
                                     disabled={!isWorkspaceAdmin}
-                                    aria-label="Remove excluded holiday"
+                                    aria-label="Remove blackout date"
                                   >
                                     <Trash2 className="h-4 w-4" />
                                   </Button>
@@ -2400,152 +2533,96 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                               ))}
                             </div>
                           ) : (
-                            <p className="text-xs text-muted-foreground">No excluded holiday dates.</p>
+                            <p className="text-xs text-muted-foreground">No additional blackout dates.</p>
                           )}
                         </div>
-                      ) : null}
 
-                      <div className="space-y-2">
-                        <Label className="text-sm">Additional blackout dates</Label>
-                        <div className="flex flex-wrap gap-2">
-                          <Input
-                            type="date"
-                            value={holidayBlackoutDate}
-                            disabled={!isWorkspaceAdmin}
-                            onChange={(e) => setHolidayBlackoutDate(e.target.value)}
-                          />
-                          <Button
-                            variant="outline"
-                            disabled={!isWorkspaceAdmin || !holidayBlackoutDate}
-                            onClick={() => {
-                              if (!holidayBlackoutDate) return
-                              setAutoSendSchedule((prev) => ({
-                                ...prev,
-                                holidays: {
-                                  ...prev.holidays,
-                                  additionalBlackoutDates: normalizeDateList([
-                                    ...prev.holidays.additionalBlackoutDates,
-                                    holidayBlackoutDate,
-                                  ]),
-                                },
-                              }))
-                              setHolidayBlackoutDate("")
-                              handleChange()
-                            }}
-                          >
-                            Add
-                          </Button>
-                        </div>
-                        {autoSendSchedule.holidays.additionalBlackoutDates.length > 0 ? (
-                          <div className="space-y-2">
-                            {autoSendSchedule.holidays.additionalBlackoutDates.map((date) => (
-                              <div key={date} className="flex items-center justify-between rounded-lg border p-2">
-                                <span className="text-sm">{date}</span>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                                  onClick={() => {
-                                    setAutoSendSchedule((prev) => ({
-                                      ...prev,
-                                      holidays: {
-                                        ...prev.holidays,
-                                        additionalBlackoutDates: prev.holidays.additionalBlackoutDates.filter((d) => d !== date),
-                                      },
-                                    }))
-                                    handleChange()
-                                  }}
-                                  disabled={!isWorkspaceAdmin}
-                                  aria-label="Remove blackout date"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            ))}
+                        <div className="space-y-2">
+                          <Label className="text-sm">Additional blackout ranges</Label>
+                          <div className="flex flex-wrap gap-2">
+                            <Input
+                              type="date"
+                              value={holidayBlackoutRangeStart}
+                              disabled={!isWorkspaceAdmin}
+                              onChange={(e) => setHolidayBlackoutRangeStart(e.target.value)}
+                            />
+                            <Input
+                              type="date"
+                              value={holidayBlackoutRangeEnd}
+                              disabled={!isWorkspaceAdmin}
+                              onChange={(e) => setHolidayBlackoutRangeEnd(e.target.value)}
+                            />
+                            <Button
+                              variant="outline"
+                              disabled={!isWorkspaceAdmin || !holidayBlackoutRangeStart || !holidayBlackoutRangeEnd}
+                              onClick={() => {
+                                if (!holidayBlackoutRangeStart || !holidayBlackoutRangeEnd) return
+                                setAutoSendSchedule((prev) => ({
+                                  ...prev,
+                                  holidays: {
+                                    ...prev.holidays,
+                                    additionalBlackoutDateRanges: normalizeDateRanges([
+                                      ...prev.holidays.additionalBlackoutDateRanges,
+                                      { start: holidayBlackoutRangeStart, end: holidayBlackoutRangeEnd },
+                                    ]),
+                                  },
+                                }))
+                                setHolidayBlackoutRangeStart("")
+                                setHolidayBlackoutRangeEnd("")
+                                handleChange()
+                              }}
+                            >
+                              Add
+                            </Button>
                           </div>
-                        ) : (
-                          <p className="text-xs text-muted-foreground">No additional blackout dates.</p>
-                        )}
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label className="text-sm">Additional blackout ranges</Label>
-                        <div className="flex flex-wrap gap-2">
-                          <Input
-                            type="date"
-                            value={holidayBlackoutRangeStart}
-                            disabled={!isWorkspaceAdmin}
-                            onChange={(e) => setHolidayBlackoutRangeStart(e.target.value)}
-                          />
-                          <Input
-                            type="date"
-                            value={holidayBlackoutRangeEnd}
-                            disabled={!isWorkspaceAdmin}
-                            onChange={(e) => setHolidayBlackoutRangeEnd(e.target.value)}
-                          />
-                          <Button
-                            variant="outline"
-                            disabled={!isWorkspaceAdmin || !holidayBlackoutRangeStart || !holidayBlackoutRangeEnd}
-                            onClick={() => {
-                              if (!holidayBlackoutRangeStart || !holidayBlackoutRangeEnd) return
-                              setAutoSendSchedule((prev) => ({
-                                ...prev,
-                                holidays: {
-                                  ...prev.holidays,
-                                  additionalBlackoutDateRanges: normalizeDateRanges([
-                                    ...prev.holidays.additionalBlackoutDateRanges,
-                                    { start: holidayBlackoutRangeStart, end: holidayBlackoutRangeEnd },
-                                  ]),
-                                },
-                              }))
-                              setHolidayBlackoutRangeStart("")
-                              setHolidayBlackoutRangeEnd("")
-                              handleChange()
-                            }}
-                          >
-                            Add
-                          </Button>
+                          {autoSendSchedule.holidays.additionalBlackoutDateRanges.length > 0 ? (
+                            <div className="space-y-2">
+                              {autoSendSchedule.holidays.additionalBlackoutDateRanges.map((range) => (
+                                <div key={`${range.start}-${range.end}`} className="flex items-center justify-between rounded-lg border p-2">
+                                  <span className="text-sm">
+                                    {range.start} → {range.end}
+                                  </span>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                    onClick={() => {
+                                      setAutoSendSchedule((prev) => ({
+                                        ...prev,
+                                        holidays: {
+                                          ...prev.holidays,
+                                          additionalBlackoutDateRanges: prev.holidays.additionalBlackoutDateRanges.filter(
+                                            (r) => !(r.start === range.start && r.end === range.end)
+                                          ),
+                                        },
+                                      }))
+                                      handleChange()
+                                    }}
+                                    disabled={!isWorkspaceAdmin}
+                                    aria-label="Remove blackout range"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">No blackout ranges.</p>
+                          )}
                         </div>
-                        {autoSendSchedule.holidays.additionalBlackoutDateRanges.length > 0 ? (
-                          <div className="space-y-2">
-                            {autoSendSchedule.holidays.additionalBlackoutDateRanges.map((range) => (
-                              <div key={`${range.start}:${range.end}`} className="flex items-center justify-between rounded-lg border p-2">
-                                <span className="text-sm">
-                                  {range.start} → {range.end}
-                                </span>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                                  onClick={() => {
-                                    setAutoSendSchedule((prev) => ({
-                                      ...prev,
-                                      holidays: {
-                                        ...prev.holidays,
-                                        additionalBlackoutDateRanges: prev.holidays.additionalBlackoutDateRanges.filter(
-                                          (r) => !(r.start === range.start && r.end === range.end)
-                                        ),
-                                      },
-                                    }))
-                                    handleChange()
-                                  }}
-                                  disabled={!isWorkspaceAdmin}
-                                  aria-label="Remove blackout range"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-xs text-muted-foreground">No blackout ranges.</p>
-                        )}
                       </div>
-                    </div>
-                  </div>
-                ) : null}
+                    </AccordionContent>
+                  </AccordionItem>
+                </Accordion>
               </CardContent>
             </Card>
+
+            <div className="flex items-center gap-2 mt-6">
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Company Profile
+              </h3>
+              <Separator className="flex-1" />
+            </div>
 
             {/* Company/Outreach Context */}
             <Card>
@@ -2615,6 +2692,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </div>
               </CardContent>
             </Card>
+
+            <div className="flex items-center gap-2 mt-6">
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Calendar Links
+              </h3>
+              <Separator className="flex-1" />
+            </div>
 
             {/* Calendar Links */}
             <Card>
@@ -2894,6 +2978,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </div>
               </CardContent>
             </Card>
+
+            <div className="flex items-center gap-2 mt-6">
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Notifications
+              </h3>
+              <Separator className="flex-1" />
+            </div>
 
             <Card>
               <CardHeader>
@@ -3182,9 +3273,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             {/* Slack (bot token + channel selector) */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <MessageSquare className="h-5 w-5" />
-                  Slack Notifications
+                <CardTitle className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[color:var(--brand-slack-bg)]">
+                    <MessageSquare className="h-5 w-5 text-[color:var(--brand-slack)]" />
+                  </div>
+                  <span>Slack Notifications</span>
                 </CardTitle>
                 <CardDescription>Send notifications to a selected Slack channel using a bot token</CardDescription>
               </CardHeader>
@@ -3197,178 +3290,214 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   <>
                     {slackIntegrationError ? <div className="text-sm text-destructive">{slackIntegrationError}</div> : null}
 
-                    <div className="space-y-2">
-                      <Label>Slack Bot Token</Label>
-                      <div className="flex gap-2">
-                        <Input
-                          type="password"
-                          placeholder={slackTokenStatus?.configured ? slackTokenStatus.masked || "Configured" : "xoxb-..."}
-                          value={slackTokenDraft}
-                          onChange={(e) => setSlackTokenDraft(e.target.value)}
-                        />
-                        <Button
-                          variant="outline"
-                          onClick={handleSaveSlackToken}
-                          disabled={isSavingSlackToken || !slackTokenDraft.trim()}
-                        >
-                          {isSavingSlackToken ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
-                          Save
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          onClick={handleClearSlackToken}
-                          disabled={isSavingSlackToken || !slackTokenStatus?.configured}
-                        >
-                          Clear
-                        </Button>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Required scopes: <code>chat:write</code>, <code>channels:read</code>, <code>groups:read</code>,{" "}
-                        <code>users:read</code>, <code>im:write</code>. The bot must be invited to private channels.
-                      </p>
-                    </div>
-
-                    <Separator />
-
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <Label>Notification channels</Label>
-                          <p className="text-xs text-muted-foreground">Selected channels receive Slack notifications</p>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={handleLoadSlackChannels}
-                          disabled={isLoadingSlackChannels || !slackTokenStatus?.configured}
-                        >
-                          {isLoadingSlackChannels ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
-                          Refresh channels
-                        </Button>
-                      </div>
-
-                      <div className="flex gap-2">
-                        <Select
-                          value={slackChannelToAdd}
-                          onValueChange={(v) => setSlackChannelToAdd(v)}
-                          disabled={!slackTokenStatus?.configured || isLoadingSlackChannels || slackChannels.length === 0}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder={slackChannels.length > 0 ? "Select a channel" : "Load channels first"} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {slackChannels.map((c) => (
-                              <SelectItem key={c.id} value={c.id}>
-                                {(c.is_private ? "🔒 " : "#") + c.name + (c.is_member === false ? " (invite bot)" : "")}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button variant="outline" onClick={handleAddSlackChannel} disabled={!slackChannelToAdd}>
-                          Add
-                        </Button>
-                      </div>
-
-                      {notificationCenter.slackChannelIds.length > 0 ? (
-                        <div className="space-y-2">
-                          {notificationCenter.slackChannelIds.map((id) => {
-                            const name = slackChannels.find((c) => c.id === id)?.name
-                            return (
-                              <div key={id} className="flex items-center justify-between rounded-lg border p-2">
-                                <div className="min-w-0">
-                                  <p className="text-sm font-medium truncate">{name ? `#${name}` : id}</p>
-                                  <p className="text-xs text-muted-foreground truncate">{id}</p>
-                                </div>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                                  onClick={() => handleRemoveSlackChannel(id)}
-                                  aria-label="Remove Slack channel"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </Button>
-                              </div>
-                            )
-                          })}
-                          <p className="text-xs text-muted-foreground">
-                            Channel selection is saved with the workspace settings (click “Save Changes”).
-                          </p>
-                        </div>
-                      ) : (
-                        <p className="text-xs text-muted-foreground">No Slack channels selected yet</p>
-                      )}
-                    </div>
-
-                    <Separator />
-
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <Label>AI Auto-Send Approval Recipients</Label>
-                          <p className="text-xs text-muted-foreground">
-                            Team members who receive Slack DMs when AI auto-send needs human review
-                          </p>
-                        </div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={handleRefreshSlackMembers}
-                          disabled={isLoadingSlackMembers || !slackTokenStatus?.configured}
-                        >
-                          {isLoadingSlackMembers ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
-                          Refresh members
-                        </Button>
-                      </div>
-
-                      {!slackTokenStatus?.configured ? (
-                        <p className="text-xs text-muted-foreground">
-                          Configure a Slack bot token above to select approval recipients.
-                        </p>
-                      ) : slackMembers.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          No members loaded. Click “Refresh members” to pull your Slack workspace members.
-                        </p>
-                      ) : (
-                        <div className="flex flex-wrap gap-2">
-                          {slackMembers.map((member) => {
-                            const isSelected = selectedApprovalRecipients.some((r) => r.id === member.id)
-                            return (
-                              <button
-                                key={member.id}
-                                type="button"
-                                onClick={() => toggleApprovalRecipient(member)}
-                                className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${
-                                  isSelected
-                                    ? "border-primary bg-primary/10 text-primary"
-                                    : "border-muted hover:border-primary/50"
-                                }`}
+                    <Accordion type="multiple" defaultValue={["bot-config"]} className="w-full">
+                      <AccordionItem value="bot-config">
+                        <AccordionTrigger>
+                          <div className="flex items-center gap-2">
+                            <Bot className="h-4 w-4" />
+                            <span>Bot Configuration</span>
+                            {slackTokenStatus?.configured ? (
+                              <Badge variant="secondary" className="ml-2">Connected</Badge>
+                            ) : null}
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent>
+                          <div className="space-y-2">
+                            <Label>Slack Bot Token</Label>
+                            <div className="flex gap-2">
+                              <SecretInput
+                                placeholder={slackTokenStatus?.configured ? slackTokenStatus.masked || "Configured" : "xoxb-..."}
+                                value={slackTokenDraft}
+                                onChange={(e) => setSlackTokenDraft(e.target.value)}
+                              />
+                              <Button
+                                variant="outline"
+                                onClick={handleSaveSlackToken}
+                                disabled={isSavingSlackToken || !slackTokenDraft.trim()}
                               >
-                                <Avatar className="h-5 w-5">
-                                  <AvatarImage src={member.avatarUrl || undefined} />
-                                  <AvatarFallback>{member.displayName?.slice(0, 1) || "?"}</AvatarFallback>
-                                </Avatar>
-                                <span className="max-w-[140px] truncate">{member.displayName}</span>
-                                {isSelected ? <Check className="h-3 w-3" /> : null}
-                              </button>
-                            )
-                          })}
-                        </div>
-                      )}
+                                {isSavingSlackToken ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+                                Save
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                onClick={handleClearSlackToken}
+                                disabled={isSavingSlackToken || !slackTokenStatus?.configured}
+                              >
+                                Clear
+                              </Button>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Required scopes: <code>chat:write</code>, <code>channels:read</code>, <code>groups:read</code>,{" "}
+                              <code>users:read</code>, <code>im:write</code>. The bot must be invited to private channels.
+                            </p>
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
 
-                      {slackTokenStatus?.configured && slackMembers.length > 0 && selectedApprovalRecipients.length === 0 ? (
-                        <p className="text-xs text-amber-600 dark:text-amber-400">
-                          No recipients selected. AI auto-send review DMs will be skipped for this workspace.
-                        </p>
-                      ) : null}
+                      <AccordionItem value="channels">
+                        <AccordionTrigger>
+                          <div className="flex items-center gap-2">
+                            <MessageSquare className="h-4 w-4" />
+                            <span>Notification Channels</span>
+                            <Badge variant="outline" className="ml-2">
+                              {notificationCenter.slackChannelIds.length} selected
+                            </Badge>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent>
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <Label>Notification channels</Label>
+                                <p className="text-xs text-muted-foreground">Selected channels receive Slack notifications</p>
+                              </div>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleLoadSlackChannels}
+                                disabled={isLoadingSlackChannels || !slackTokenStatus?.configured}
+                              >
+                                {isLoadingSlackChannels ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+                                Refresh channels
+                              </Button>
+                            </div>
 
-                      {selectedApprovalRecipients.length > 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          {selectedApprovalRecipients.length} recipient
-                          {selectedApprovalRecipients.length > 1 ? "s" : ""} selected
-                        </p>
-                      ) : null}
-                    </div>
+                            <div className="flex gap-2">
+                              <Select
+                                value={slackChannelToAdd}
+                                onValueChange={(v) => setSlackChannelToAdd(v)}
+                                disabled={!slackTokenStatus?.configured || isLoadingSlackChannels || slackChannels.length === 0}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder={slackChannels.length > 0 ? "Select a channel" : "Load channels first"} />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {slackChannels.map((c) => (
+                                    <SelectItem key={c.id} value={c.id}>
+                                      {(c.is_private ? "🔒 " : "#") + c.name + (c.is_member === false ? " (invite bot)" : "")}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Button variant="outline" onClick={handleAddSlackChannel} disabled={!slackChannelToAdd}>
+                                Add
+                              </Button>
+                            </div>
+
+                            {notificationCenter.slackChannelIds.length > 0 ? (
+                              <div className="space-y-2">
+                                {notificationCenter.slackChannelIds.map((id) => {
+                                  const name = slackChannels.find((c) => c.id === id)?.name
+                                  return (
+                                    <div key={id} className="flex items-center justify-between rounded-lg border p-2">
+                                      <div className="min-w-0">
+                                        <p className="text-sm font-medium truncate">{name ? `#${name}` : id}</p>
+                                        <p className="text-xs text-muted-foreground truncate">{id}</p>
+                                      </div>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                                        onClick={() => handleRemoveSlackChannel(id)}
+                                        aria-label="Remove Slack channel"
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </Button>
+                                    </div>
+                                  )
+                                })}
+                                <p className="text-xs text-muted-foreground">
+                                  Channel selection is saved with the workspace settings (click “Save Changes”).
+                                </p>
+                              </div>
+                            ) : (
+                              <p className="text-xs text-muted-foreground">No Slack channels selected yet</p>
+                            )}
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
+
+                      <AccordionItem value="recipients">
+                        <AccordionTrigger>
+                          <div className="flex items-center gap-2">
+                            <Users className="h-4 w-4" />
+                            <span>Approval Recipients</span>
+                            <Badge variant="outline" className="ml-2">
+                              {selectedApprovalRecipients.length} members
+                            </Badge>
+                          </div>
+                        </AccordionTrigger>
+                        <AccordionContent>
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <Label>AI Auto-Send Approval Recipients</Label>
+                                <p className="text-xs text-muted-foreground">
+                                  Team members who receive Slack DMs when AI auto-send needs human review
+                                </p>
+                              </div>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleRefreshSlackMembers}
+                                disabled={isLoadingSlackMembers || !slackTokenStatus?.configured}
+                              >
+                                {isLoadingSlackMembers ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+                                Refresh members
+                              </Button>
+                            </div>
+
+                            {!slackTokenStatus?.configured ? (
+                              <p className="text-xs text-muted-foreground">
+                                Configure a Slack bot token above to select approval recipients.
+                              </p>
+                            ) : slackMembers.length === 0 ? (
+                              <p className="text-xs text-muted-foreground">
+                                No members loaded. Click “Refresh members” to pull your Slack workspace members.
+                              </p>
+                            ) : (
+                              <div className="flex flex-wrap gap-2">
+                                {slackMembers.map((member) => {
+                                  const isSelected = selectedApprovalRecipients.some((r) => r.id === member.id)
+                                  return (
+                                    <button
+                                      key={member.id}
+                                      type="button"
+                                      onClick={() => toggleApprovalRecipient(member)}
+                                      className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                                        isSelected
+                                          ? "border-primary bg-primary/10 text-primary"
+                                          : "border-muted hover:border-primary/50"
+                                      }`}
+                                    >
+                                      <Avatar className="h-5 w-5">
+                                        <AvatarImage src={member.avatarUrl || undefined} />
+                                        <AvatarFallback>{member.displayName?.slice(0, 1) || "?"}</AvatarFallback>
+                                      </Avatar>
+                                      <span className="max-w-[140px] truncate">{member.displayName}</span>
+                                      {isSelected ? <Check className="h-3 w-3" /> : null}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            )}
+
+                            {slackTokenStatus?.configured && slackMembers.length > 0 && selectedApprovalRecipients.length === 0 ? (
+                              <p className="text-xs text-amber-600 dark:text-amber-400">
+                                No recipients selected. AI auto-send review DMs will be skipped for this workspace.
+                              </p>
+                            ) : null}
+
+                            {selectedApprovalRecipients.length > 0 ? (
+                              <p className="text-xs text-muted-foreground">
+                                {selectedApprovalRecipients.length} recipient
+                                {selectedApprovalRecipients.length > 1 ? "s" : ""} selected
+                              </p>
+                            ) : null}
+                          </div>
+                        </AccordionContent>
+                      </AccordionItem>
+                    </Accordion>
                   </>
                 )}
               </CardContent>
@@ -3377,9 +3506,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             {/* Resend (per-workspace email notifications) */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Send className="h-5 w-5" />
-                  Resend (Email Notifications)
+                <CardTitle className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted">
+                    <Send className="h-5 w-5 text-foreground" />
+                  </div>
+                  <span>Resend (Email Notifications)</span>
                 </CardTitle>
                 <CardDescription>Configure Resend credentials for Notification Center email alerts</CardDescription>
               </CardHeader>
@@ -3395,8 +3526,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     <div className="space-y-2">
                       <Label>Resend API Key</Label>
                       <div className="flex gap-2">
-                        <Input
-                          type="password"
+                        <SecretInput
                           placeholder={resendStatus?.maskedApiKey || "re_..."}
                           value={resendApiKeyDraft}
                           onChange={(e) => setResendApiKeyDraft(e.target.value)}
@@ -3442,9 +3572,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             {/* EmailBison base host (per workspace) */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Mail className="h-5 w-5" />
-                  EmailBison Base Host
+                <CardTitle className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[color:var(--brand-emailbison-bg)]">
+                    <Mail className="h-5 w-5 text-[color:var(--brand-emailbison)]" />
+                  </div>
+                  <span>EmailBison Base Host</span>
                 </CardTitle>
                 <CardDescription>
                   Required for white-label EmailBison accounts. Set the correct send domain for the selected workspace.
@@ -3461,53 +3593,88 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       <div className="text-sm text-destructive">{emailBisonBaseHostError}</div>
                     )}
 
-                    <div className="space-y-2">
-                      <Label>EmailBison Base Host</Label>
-                      <Select
-                        value={emailBisonBaseHostId}
-                        onValueChange={(value) =>
-                          setEmailBisonBaseHostId(value === EMAILBISON_BASE_HOST_DEFAULT_VALUE ? "" : value)
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue
-                            placeholder={
-                              emailBisonBaseHostLoading
-                                ? "Loading…"
-                                : "Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)"
-                            }
-                          />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={EMAILBISON_BASE_HOST_DEFAULT_VALUE}>
-                            Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)
-                          </SelectItem>
-                          {emailBisonBaseHosts.map((row) => (
-                            <SelectItem key={row.id} value={row.id}>
-                              {row.host}
-                              {row.label ? ` — ${row.label}` : ""}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground">
-                        Example: Founders Club should use <code className="bg-background px-1 py-0.5 rounded">send.foundersclubsend.com</code>.
-                      </p>
+                    <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">Current base host</p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {emailBisonBaseHostLoading ? "Loading…" : emailBisonBaseHostLabel}
+                        </p>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={() => setEmailBisonBaseHostOpen(true)}>
+                        Manage hosts
+                      </Button>
                     </div>
 
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleSaveEmailBisonBaseHost}
-                      disabled={emailBisonBaseHostLoading || emailBisonBaseHostSaving}
-                    >
-                      {emailBisonBaseHostSaving ? (
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      ) : (
-                        <Save className="h-4 w-4 mr-2" />
-                      )}
-                      Save
-                    </Button>
+                    <Dialog open={emailBisonBaseHostOpen} onOpenChange={setEmailBisonBaseHostOpen}>
+                      <DialogContent>
+                        <DialogHeader>
+                          <DialogTitle>EmailBison Base Hosts</DialogTitle>
+                          <DialogDescription>
+                            Required for white-label EmailBison accounts. Choose the send domain for this workspace.
+                          </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="space-y-4">
+                          <div className="space-y-2">
+                            <Label>EmailBison Base Host</Label>
+                            <Select
+                              value={emailBisonBaseHostId}
+                              onValueChange={(value) =>
+                                setEmailBisonBaseHostId(value === EMAILBISON_BASE_HOST_DEFAULT_VALUE ? "" : value)
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue
+                                  placeholder={
+                                    emailBisonBaseHostLoading
+                                      ? "Loading…"
+                                      : "Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)"
+                                  }
+                                />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value={EMAILBISON_BASE_HOST_DEFAULT_VALUE}>
+                                  Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)
+                                </SelectItem>
+                                {emailBisonBaseHosts.map((row) => (
+                                  <SelectItem key={row.id} value={row.id}>
+                                    {row.host}
+                                    {row.label ? ` — ${row.label}` : ""}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <p className="text-xs text-muted-foreground">
+                              Example: Founders Club should use <code className="bg-background px-1 py-0.5 rounded">send.foundersclubsend.com</code>.
+                            </p>
+                          </div>
+
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              variant="outline"
+                              onClick={() => setEmailBisonBaseHostOpen(false)}
+                              disabled={emailBisonBaseHostSaving}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              onClick={async () => {
+                                await handleSaveEmailBisonBaseHost()
+                                setEmailBisonBaseHostOpen(false)
+                              }}
+                              disabled={emailBisonBaseHostLoading || emailBisonBaseHostSaving}
+                            >
+                              {emailBisonBaseHostSaving ? (
+                                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                              ) : (
+                                <Save className="h-4 w-4 mr-2" />
+                              )}
+                              Save
+                            </Button>
+                          </div>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
                   </>
                 )}
               </CardContent>
@@ -3516,9 +3683,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             {/* EmailBison first-touch availability_slot (per workspace) */}
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Mail className="h-5 w-5" />
-                  EmailBison First-Touch Times
+                <CardTitle className="flex items-center gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[color:var(--brand-emailbison-bg)]">
+                    <Mail className="h-5 w-5 text-[color:var(--brand-emailbison)]" />
+                  </div>
+                  <span>EmailBison First-Touch Times</span>
                 </CardTitle>
                 <CardDescription>
                   Controls the <code className="bg-background px-1 py-0.5 rounded">availability_slot</code> custom variable injected
@@ -4357,63 +4526,79 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   <p className="text-sm text-muted-foreground">
                     Questions the AI should ask to qualify leads. These will be woven into conversations naturally.
                   </p>
-                  
-                  {/* Existing questions */}
-                  <div className="space-y-2">
-                    {qualificationQuestions.map((q) => (
-                      <div key={q.id} className="flex items-center gap-2 p-3 rounded-lg border">
-                        <span className="flex-1 text-sm">{q.question}</span>
-                        <div className="flex items-center gap-2">
-                          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                            <Switch
-                              checked={q.required}
-                              onCheckedChange={() => handleToggleQuestionRequired(q.id)}
-                              className="h-4 w-7"
-                            />
-                            Required
-                          </label>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                            onClick={() => handleRemoveQuestion(q.id)}
-                            aria-label="Delete qualification question"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+
+                  <Collapsible open={qualificationQuestionsOpen} onOpenChange={setQualificationQuestionsOpen}>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm font-medium">Current questions</Label>
+                      <CollapsibleTrigger asChild>
+                        <Button variant="ghost" size="sm">
+                          {qualificationQuestionsOpen ? "Collapse" : "Add Questions"}
+                          <ChevronDown
+                            className={cn(
+                              "h-4 w-4 ml-2 transition-transform",
+                              qualificationQuestionsOpen && "rotate-180"
+                            )}
+                          />
+                        </Button>
+                      </CollapsibleTrigger>
+                    </div>
+
+                    {/* Existing questions */}
+                    <div className="space-y-2 mt-3">
+                      {qualificationQuestions.map((q) => (
+                        <div key={q.id} className="flex items-center gap-2 p-3 rounded-lg border">
+                          <span className="flex-1 text-sm">{q.question}</span>
+                          <div className="flex items-center gap-2">
+                            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                              <Switch
+                                checked={q.required}
+                                onCheckedChange={() => handleToggleQuestionRequired(q.id)}
+                                className="h-4 w-7"
+                              />
+                              Required
+                            </label>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                              onClick={() => handleRemoveQuestion(q.id)}
+                              aria-label="Delete qualification question"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
                         </div>
+                      ))}
+                    </div>
+
+                    <CollapsibleContent>
+                      <div className="flex gap-2 mt-4">
+                        <Input
+                          placeholder="Add a qualification question..."
+                          value={newQuestion}
+                          onChange={(e) => setNewQuestion(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault()
+                              handleAddQuestion()
+                            }
+                          }}
+                        />
+                        <Button
+                          variant="outline"
+                          size="icon"
+                          onClick={handleAddQuestion}
+                          disabled={!newQuestion.trim()}
+                        >
+                          <Plus className="h-4 w-4" />
+                        </Button>
                       </div>
-                    ))}
-                  </div>
-
-                  {/* Add new question */}
-                  <div className="flex gap-2">
-                    <Input
-                      placeholder="Add a qualification question..."
-                      value={newQuestion}
-                      onChange={(e) => setNewQuestion(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault()
-                          handleAddQuestion()
-                        }
-                      }}
-                    />
-                    <Button 
-                      variant="outline" 
-                      size="icon"
-                      onClick={handleAddQuestion}
-                      disabled={!newQuestion.trim()}
-                    >
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Examples: &quot;What is your current monthly budget for this solution?&quot;, &quot;Who else is involved in this decision?&quot;
-                  </p>
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Examples: &quot;What is your current monthly budget for this solution?&quot;, &quot;Who else is involved in this decision?&quot;
+                      </p>
+                    </CollapsibleContent>
+                  </Collapsible>
                 </div>
-
-                <Separator />
 
                 {/* Knowledge Assets */}
                 <div className="space-y-4">
@@ -4487,82 +4672,105 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   )}
                   
                   {/* Add new asset */}
-                  <div className="space-y-3 p-4 rounded-lg border border-dashed">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1.5">
-                        <Label className="text-xs">Asset Name</Label>
-                        <Input
-                          placeholder="e.g., Pricing Guide"
-                          value={newAssetName}
-                          onChange={(e) => setNewAssetName(e.target.value)}
-                        />
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label className="text-xs">Type</Label>
-                        <Select
-                          value={newAssetType}
-                          onValueChange={(v) => setNewAssetType(v as "text" | "url" | "file")}
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="text">Text Snippet</SelectItem>
-                            <SelectItem value="url">Website (Scrape)</SelectItem>
-                            <SelectItem value="file">File Upload</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label className="text-xs">
-                        {newAssetType === "file" ? "File" : newAssetType === "url" ? "URL" : "Content"}
-                      </Label>
-                      {newAssetType === "file" ? (
-                        <div className="space-y-2">
-                          <Input
-                            type="file"
-                            accept=".pdf,.docx,.txt,.md,image/*"
-                            onChange={(e) => {
-                              const f = e.target.files?.[0] || null
-                              setNewAssetFile(f)
-                            }}
-                          />
-                          {newAssetFile ? (
-                            <p className="text-xs text-muted-foreground">
-                              Selected: {newAssetFile.name} ({Math.round(newAssetFile.size / 1024)} KB)
-                            </p>
-                          ) : null}
+                  <div className="space-y-3">
+                    <Dialog open={addAssetOpen} onOpenChange={setAddAssetOpen}>
+                      <DialogTrigger asChild>
+                        <Button variant="outline" className="w-full">
+                          <Plus className="h-4 w-4 mr-2" />
+                          Add Knowledge Asset
+                        </Button>
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-[520px]">
+                        <DialogHeader>
+                          <DialogTitle>Add Knowledge Asset</DialogTitle>
+                          <DialogDescription>
+                            Add documents, text snippets, or URLs that the AI can reference when generating responses.
+                          </DialogDescription>
+                        </DialogHeader>
+
+                        <div className="space-y-3">
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Asset Name</Label>
+                              <Input
+                                placeholder="e.g., Pricing Guide"
+                                value={newAssetName}
+                                onChange={(e) => setNewAssetName(e.target.value)}
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Type</Label>
+                              <Select
+                                value={newAssetType}
+                                onValueChange={(v) => setNewAssetType(v as "text" | "url" | "file")}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="text">Text Snippet</SelectItem>
+                                  <SelectItem value="url">Website (Scrape)</SelectItem>
+                                  <SelectItem value="file">File Upload</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs">
+                              {newAssetType === "file" ? "File" : newAssetType === "url" ? "URL" : "Content"}
+                            </Label>
+                            {newAssetType === "file" ? (
+                              <div className="space-y-2">
+                                <Input
+                                  type="file"
+                                  accept=".pdf,.docx,.txt,.md,image/*"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0] || null
+                                    setNewAssetFile(f)
+                                  }}
+                                />
+                                {newAssetFile ? (
+                                  <p className="text-xs text-muted-foreground">
+                                    Selected: {newAssetFile.name} ({Math.round(newAssetFile.size / 1024)} KB)
+                                  </p>
+                                ) : null}
+                              </div>
+                            ) : (
+                              <Textarea
+                                placeholder={newAssetType === "url"
+                                  ? "https://example.com/pricing"
+                                  : "Paste content here that the AI can reference..."
+                                }
+                                value={newAssetContent}
+                                onChange={(e) => setNewAssetContent(e.target.value)}
+                                rows={3}
+                              />
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            {newAssetType === "url"
+                              ? "Website scraping uses Crawl4AI. If not configured, this will error until a Crawl4AI runner is available."
+                              : "Supported: PDF, DOCX, TXT/MD, and images. Uploaded files are processed into concise notes for AI."}
+                          </p>
                         </div>
-                      ) : (
-                        <Textarea
-                          placeholder={newAssetType === "url"
-                            ? "https://example.com/pricing"
-                            : "Paste content here that the AI can reference..."
-                          }
-                          value={newAssetContent}
-                          onChange={(e) => setNewAssetContent(e.target.value)}
-                          rows={3}
-                        />
-                      )}
-                    </div>
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      onClick={handleAddAsset}
-                      disabled={
-                        !newAssetName.trim() ||
-                        (newAssetType === "file" ? !newAssetFile : !newAssetContent.trim())
-                      }
-                    >
-                      <Plus className="h-4 w-4 mr-1.5" />
-                      Add Asset
-                    </Button>
-                    <p className="text-xs text-muted-foreground">
-                      {newAssetType === "url"
-                        ? "Website scraping uses Crawl4AI. If not configured, this will error until a Crawl4AI runner is available."
-                        : "Supported: PDF, DOCX, TXT/MD, and images. Uploaded files are processed into concise notes for AI."}
-                    </p>
+
+                        <div className="flex justify-end gap-2">
+                          <Button variant="outline" onClick={() => setAddAssetOpen(false)}>
+                            Cancel
+                          </Button>
+                          <Button
+                            onClick={handleAddAsset}
+                            disabled={
+                              !newAssetName.trim() ||
+                              (newAssetType === "file" ? !newAssetFile : !newAssetContent.trim())
+                            }
+                          >
+                            <Plus className="h-4 w-4 mr-1.5" />
+                            Add Asset
+                          </Button>
+                        </div>
+                      </DialogContent>
+                    </Dialog>
                   </div>
                 </div>
 
@@ -4575,7 +4783,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </div>
                   <div className="grid gap-3">
                     <div className="flex items-center justify-between p-3 rounded-lg border">
-                      <span id="auto-approve-meetings-label" className="text-sm">Auto-approve meeting confirmations</span>
+                      <div className="space-y-0.5">
+                        <span id="auto-approve-meetings-label" className="text-sm">Auto-approve meeting confirmations</span>
+                        <p className="text-xs text-muted-foreground">
+                          Automatically confirm meeting acceptances when the lead is clear.
+                        </p>
+                      </div>
                       <Switch
                         id="auto-approve-meetings-switch"
                         aria-labelledby="auto-approve-meetings-label"
@@ -4587,7 +4800,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       />
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
-                      <span id="flag-uncertain-replies-label" className="text-sm">Flag uncertain responses for review</span>
+                      <div className="space-y-0.5">
+                        <span id="flag-uncertain-replies-label" className="text-sm">Flag uncertain responses for review</span>
+                        <p className="text-xs text-muted-foreground">
+                          Sends drafts for review when confidence is low or intent is ambiguous.
+                        </p>
+                      </div>
                       <Switch
                         id="flag-uncertain-replies-switch"
                         aria-labelledby="flag-uncertain-replies-label"
@@ -4599,7 +4817,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       />
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
-                      <span id="pause-for-ooo-label" className="text-sm">Pause sequences for Out-of-Office replies</span>
+                      <div className="space-y-0.5">
+                        <span id="pause-for-ooo-label" className="text-sm">Pause sequences for Out-of-Office replies</span>
+                        <p className="text-xs text-muted-foreground">
+                          Prevents follow-ups from sending while the lead is away.
+                        </p>
+                      </div>
                       <Switch
                         id="pause-for-ooo-switch"
                         aria-labelledby="pause-for-ooo-label"
@@ -4610,74 +4833,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                         }}
                       />
                     </div>
-                    <div className="p-3 rounded-lg border space-y-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="space-y-0.5">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm">Pause all follow-ups</span>
-                            {isFollowUpsPaused ? (
-                              <Badge variant="destructive" className="text-xs">Paused</Badge>
-                            ) : (
-                              <Badge variant="outline" className="text-xs">Active</Badge>
-                            )}
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            Blocks auto-enrollment and automated outbound sends. Manual messages are still allowed.
-                          </p>
-                          {isFollowUpsPaused && followUpsPausedUntil ? (
-                            <p className="text-xs text-muted-foreground">
-                              Paused until {formatWorkspaceDateTime(followUpsPausedUntil)}
-                            </p>
-                          ) : null}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Input
-                            type="number"
-                            min={1}
-                            max={365}
-                            step={1}
-                            className="w-[90px]"
-                            value={pauseFollowUpsDays}
-                            disabled={!activeWorkspace || isPausingFollowUps}
-                            onChange={(e) => setPauseFollowUpsDays(e.target.value)}
-                          />
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={!activeWorkspace || isPausingFollowUps}
-                            onClick={() => handlePauseWorkspaceFollowUps()}
-                          >
-                            Pause
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            disabled={!activeWorkspace || isPausingFollowUps || !isFollowUpsPaused}
-                            onClick={() => handleResumeWorkspaceFollowUps()}
-                          >
-                            Resume
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {[1, 3, 7, 14].map((d) => (
-                          <Button
-                            key={d}
-                            variant="secondary"
-                            size="sm"
-                            disabled={!activeWorkspace || isPausingFollowUps}
-                            onClick={() => {
-                              setPauseFollowUpsDays(String(d))
-                              handlePauseWorkspaceFollowUps(d)
-                            }}
-                          >
-                            {d}d
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
                     <div className="flex items-center justify-between p-3 rounded-lg border">
-                      <span id="auto-blacklist-label" className="text-sm">Auto-blacklist explicit opt-outs</span>
+                      <div className="space-y-0.5">
+                        <span id="auto-blacklist-label" className="text-sm">Auto-blacklist explicit opt-outs</span>
+                        <p className="text-xs text-muted-foreground">
+                          Immediately blacklists leads who clearly request to stop.
+                        </p>
+                      </div>
                       <Switch
                         id="auto-blacklist-switch"
                         aria-labelledby="auto-blacklist-label"
@@ -4692,7 +4854,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       <div className="space-y-0.5">
                         <span id="airtable-mode-label" className="text-sm">Airtable Mode</span>
                         <p className="text-xs text-muted-foreground">
-                          Email is handled externally; default sequences become SMS/LinkedIn-only
+                          Email is handled externally; default sequences become SMS/LinkedIn-only.
                         </p>
                       </div>
                       <Switch
@@ -4700,49 +4862,115 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                         aria-labelledby="airtable-mode-label"
                         checked={airtableModeEnabled}
                         disabled={!activeWorkspace || isApplyingAirtableMode}
-	                        onCheckedChange={async (v) => {
-	                          if (!activeWorkspace) return
+                        onCheckedChange={async (v) => {
+                          if (!activeWorkspace) return
 
-		                          if (v) {
-		                            const ok = confirm(
-		                              [
-		                                "Enable Airtable Mode for this workspace?",
-		                                "",
-		                                "This will remove email steps from the default follow-up sequences and skip email steps during execution.",
-		                                "Turning it off will NOT automatically restore email steps.",
-		                              ].join("\n")
-		                            )
-		                            if (!ok) return
-		                          }
+                          if (v) {
+                            const ok = confirm(
+                              [
+                                "Enable Airtable Mode for this workspace?",
+                                "",
+                                "This will remove email steps from the default follow-up sequences and skip email steps during execution.",
+                                "Turning it off will NOT automatically restore email steps.",
+                              ].join("\n")
+                            )
+                            if (!ok) return
+                          }
 
-	                          setIsApplyingAirtableMode(true)
-	                          const previous = airtableModeEnabled
-	                          setAirtableModeEnabled(v)
-	                          try {
-	                            const result = await setAirtableMode(activeWorkspace, v)
-		                            if (result.success) {
-		                              toast.success("Airtable Mode updated", {
-		                                description: v
-		                                  ? `Updated ${result.updatedSequences ?? 0} default sequence(s)`
-		                                  : "Email steps remain unchanged (manual restore)",
-		                              })
-		                            } else {
-		                              setAirtableModeEnabled(previous)
-		                              toast.error(result.error || "Failed to update Airtable Mode")
-		                            }
-		                          } catch (err) {
-		                            setAirtableModeEnabled(previous)
-		                            toast.error("Failed to update Airtable Mode")
-		                          } finally {
-		                            setIsApplyingAirtableMode(false)
-		                          }
-	                        }}
-	                      />
-	                    </div>
-	                  </div>
-	                </div>
-	              </CardContent>
-	            </Card>
+                          setIsApplyingAirtableMode(true)
+                          const previous = airtableModeEnabled
+                          setAirtableModeEnabled(v)
+                          try {
+                            const result = await setAirtableMode(activeWorkspace, v)
+                            if (result.success) {
+                              toast.success("Airtable Mode updated", {
+                                description: v
+                                  ? `Updated ${result.updatedSequences ?? 0} default sequence(s)`
+                                  : "Email steps remain unchanged (manual restore)",
+                              })
+                            } else {
+                              setAirtableModeEnabled(previous)
+                              toast.error(result.error || "Failed to update Airtable Mode")
+                            }
+                          } catch (err) {
+                            setAirtableModeEnabled(previous)
+                            toast.error("Failed to update Airtable Mode")
+                          } finally {
+                            setIsApplyingAirtableMode(false)
+                          }
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className={cn(
+              "border-2",
+              isFollowUpsPaused ? "border-amber-500/50 bg-amber-500/5" : "border-border"
+            )}>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={cn(
+                      "flex h-10 w-10 items-center justify-center rounded-lg",
+                      isFollowUpsPaused ? "bg-amber-500/20" : "bg-muted"
+                    )}>
+                      {isFollowUpsPaused ? (
+                        <PauseCircle className="h-5 w-5 text-amber-500" />
+                      ) : (
+                        <PlayCircle className="h-5 w-5 text-muted-foreground" />
+                      )}
+                    </div>
+                    <div>
+                      <CardTitle className="text-base">Follow-Up Sequences</CardTitle>
+                      <CardDescription>
+                        {isFollowUpsPaused
+                          ? `Paused until ${followUpsPausedUntil ? formatWorkspaceDateTime(followUpsPausedUntil) : "manual resume"}`
+                          : "Sequences are running normally"}
+                      </CardDescription>
+                    </div>
+                  </div>
+                  <Badge variant={isFollowUpsPaused ? "destructive" : "secondary"}>
+                    {isFollowUpsPaused ? "Paused" : "Active"}
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {isFollowUpsPaused ? (
+                  <Button
+                    onClick={() => handleResumeWorkspaceFollowUps()}
+                    variant="outline"
+                    disabled={!activeWorkspace || isPausingFollowUps}
+                    className="w-full"
+                  >
+                    Resume Follow-ups
+                  </Button>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      min={1}
+                      max={365}
+                      step={1}
+                      className="w-[90px]"
+                      value={pauseFollowUpsDays}
+                      disabled={!activeWorkspace || isPausingFollowUps}
+                      onChange={(e) => setPauseFollowUpsDays(e.target.value)}
+                    />
+                    <span className="text-sm text-muted-foreground">days</span>
+                    <Button
+                      variant="outline"
+                      disabled={!activeWorkspace || isPausingFollowUps}
+                      onClick={() => handlePauseWorkspaceFollowUps()}
+                    >
+                      Pause
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
             <Card>
               <CardHeader>
@@ -4897,11 +5125,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             </Card>
 
             {/* Email Draft Generation Model (Phase 30) */}
-	            <Card>
-	              <CardHeader>
-	                <CardTitle className="flex items-center gap-2">
-	                  <Mail className="h-5 w-5" />
-	                  Email Draft Generation
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Mail className="h-5 w-5" />
+                  Email Draft Generation
                 </CardTitle>
                 <CardDescription>
                   Configure the AI model used for generating email draft responses.
@@ -5915,55 +6143,21 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           {/* Booking Processes (Phase 36) */}
           <TabsContent value="booking" className="space-y-6">
             <fieldset disabled={isClientPortalUser} className="space-y-6">
-            <Card>
-              <CardHeader className="flex flex-row items-start justify-between space-y-0">
-                <div className="space-y-1">
-                  <CardTitle className="flex items-center gap-2">
-                    <AlertTriangle className="h-5 w-5" />
-                    Booking Notices
-                  </CardTitle>
-                  <CardDescription>Important reminders and known limitations</CardDescription>
-                </div>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="sm">
-                      Notices
-                      <ChevronDown className="h-4 w-4 ml-2" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-[420px]">
-                    <DropdownMenuLabel>Booking</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onSelect={(e) => e.preventDefault()}
-                      className="items-start gap-3 whitespace-normal"
-                    >
-                      <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-300" />
-                      <div className="min-w-0">
-                        <p className="font-medium">Process 5 (lead scheduler links) is manual-review for now</p>
-                        <p className="text-xs text-muted-foreground">
-                          When a lead asks you to book via their own Calendly/HubSpot/GHL/etc link, the system captures the link
-                          and creates a follow-up task for review (with overlap suggestions when possible).
-                        </p>
-                      </div>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={(e) => e.preventDefault()}
-                      className="items-start gap-3 whitespace-normal"
-                    >
-                      <Activity className="h-4 w-4 mt-0.5 text-blue-300" />
-                      <div className="min-w-0">
-                        <p className="font-medium">Third-party scheduler auto-booking is planned (browser automation)</p>
-                        <p className="text-xs text-muted-foreground">
-                          Future work may use Playwright + a long-running backend (Fly.io) to book across platforms when no public API
-                          is available. This will ship behind a warning flag.
-                        </p>
-                      </div>
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </CardHeader>
-            </Card>
+            <Alert className="border-amber-500/30 bg-amber-500/5">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <AlertTitle>Booking configuration notes</AlertTitle>
+              <AlertDescription>
+                <ul className="list-disc list-inside mt-2 space-y-1 text-sm">
+                  <li>
+                    Process 5 (lead scheduler links) is manual-review for now. We capture the lead&apos;s link and create a task for
+                    review with overlap suggestions when possible.
+                  </li>
+                  <li>
+                    Third-party scheduler auto-booking is planned (browser automation). This will ship behind a warning flag.
+                  </li>
+                </ul>
+              </AlertDescription>
+            </Alert>
 
             {/* Booking Processes Reference (Phase 60) */}
             <BookingProcessReference />

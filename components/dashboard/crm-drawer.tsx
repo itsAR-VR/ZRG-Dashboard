@@ -1095,7 +1095,7 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
               
               {/* LinkedIn - ALWAYS show */}
               <div className="flex items-center gap-3 text-sm">
-                <Linkedin className="h-4 w-4 text-[#0A66C2] shrink-0" />
+                <Linkedin className="h-4 w-4 text-[color:var(--brand-linkedin)] shrink-0" />
                 {lead.linkedinUrl ? (
                   <a
                     href={lead.linkedinUrl}

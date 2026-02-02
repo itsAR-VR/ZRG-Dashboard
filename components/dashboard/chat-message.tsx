@@ -3,8 +3,10 @@
 import { cn } from "@/lib/utils"
 import type { Message } from "@/lib/mock-data"
 import { format } from "date-fns"
-import { Bot, Mail, User, UserCircle } from "lucide-react"
+import { Bot, ChevronDown, Mail, User, UserCircle } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Button } from "@/components/ui/button"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { useState } from "react"
 import { safeLinkifiedHtmlFromText } from "@/lib/safe-html"
 import { formatEmailParticipant } from "@/lib/email-participants"
@@ -115,6 +117,14 @@ export function ChatMessage({ message, leadName, leadEmail, userName = "You", us
   const isCampaign = message.source === "inboxxia_campaign"
   const isEmail = message.channel === "email" || !!message.subject
   const [showOriginal, setShowOriginal] = useState(false)
+  const [emailDetailsOpen, setEmailDetailsOpen] = useState(false)
+  const hasEmailDetails =
+    isEmail &&
+    (message.fromEmail ||
+      message.toEmail ||
+      (message.cc && message.cc.length > 0) ||
+      (message.bcc && message.bcc.length > 0) ||
+      message.subject)
 
   const config = isLead
     ? {
@@ -178,15 +188,37 @@ export function ChatMessage({ message, leadName, leadEmail, userName = "You", us
           <span className="text-xs text-muted-foreground/60">{format(message.timestamp, "MMM d, h:mm a")}</span>
         </div>
         <div className={cn("rounded-lg px-4 py-2.5 space-y-1", config.bubbleClass)}>
-          {/* Phase 50: Email participant header */}
-          <EmailParticipantHeader
-            message={message}
-            leadName={leadName}
-            leadEmail={leadEmail}
-            isInbound={isLead}
-          />
-          {isEmail && message.subject && (
-            <p className="text-xs font-semibold text-foreground">Subject: {message.subject}</p>
+          {hasEmailDetails && (
+            <Collapsible open={emailDetailsOpen} onOpenChange={setEmailDetailsOpen}>
+              <CollapsibleTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-[11px] text-muted-foreground hover:text-foreground"
+                >
+                  {emailDetailsOpen ? "Hide email details" : "Show email details"}
+                  <ChevronDown
+                    className={cn(
+                      "h-3 w-3 ml-1 transition-transform",
+                      emailDetailsOpen && "rotate-180"
+                    )}
+                  />
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="mt-2 text-xs text-muted-foreground space-y-1">
+                  <EmailParticipantHeader
+                    message={message}
+                    leadName={leadName}
+                    leadEmail={leadEmail}
+                    isInbound={isLead}
+                  />
+                  {isEmail && message.subject && (
+                    <p className="text-xs font-semibold text-foreground">Subject: {message.subject}</p>
+                  )}
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           )}
           {showOriginal && (message.rawHtml || message.rawText) ? (
             <pre className="text-xs text-muted-foreground whitespace-pre-wrap max-h-64 overflow-auto">

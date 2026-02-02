@@ -5,6 +5,7 @@ import { Plus, Trash2, Building2, Key, MapPin, Loader2, RefreshCw, Mail, Chevron
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SecretInput } from "@/components/ui/secret-input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -619,7 +620,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 <Label htmlFor="emailBisonBaseHost" className="text-sm">
                   Hostname
                 </Label>
-                <Input
+                <SecretInput
                   id="emailBisonBaseHost"
                   placeholder="send.example.com"
                   value={newEmailBisonHost}
@@ -756,9 +757,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                   <Key className="h-4 w-4" />
                   GHL Private Integration Key
                 </Label>
-                <Input
+                <SecretInput
                   id="privateKey"
-                  type="password"
                   autoComplete="off"
                   placeholder="pit_xxxxxxxxxxxxxxxx"
                   value={newClientForm.ghlPrivateKey}
@@ -778,7 +778,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="setterEmails" className="text-sm">Setter email(s)</Label>
-                    <Input
+                    <SecretInput
                       id="setterEmails"
                       placeholder="setter1@company.com, setter2@company.com"
                       value={newClientForm.setterEmailsRaw}
@@ -876,7 +876,6 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                           </Label>
                           <Input
                             id="emailBisonApiKey"
-                            type="password"
                             autoComplete="off"
                             placeholder="eb_xxxxxxxxxxxxxxxx"
                             value={newClientForm.emailBisonApiKey}
@@ -893,9 +892,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             <Key className="h-4 w-4" />
                             SmartLead API Key
                           </Label>
-                          <Input
+                          <SecretInput
                             id="smartLeadApiKey"
-                            type="password"
                             autoComplete="off"
                             placeholder="sl_..."
                             value={newClientForm.smartLeadApiKey}
@@ -907,9 +905,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             <Key className="h-4 w-4" />
                             SmartLead Webhook Secret
                           </Label>
-                          <Input
+                          <SecretInput
                             id="smartLeadWebhookSecret"
-                            type="password"
                             autoComplete="off"
                             placeholder="whsec_..."
                             value={newClientForm.smartLeadWebhookSecret}
@@ -929,9 +926,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             <Key className="h-4 w-4" />
                             Instantly API Key
                           </Label>
-                          <Input
+                          <SecretInput
                             id="instantlyApiKey"
-                            type="password"
                             autoComplete="off"
                             placeholder="ins_..."
                             value={newClientForm.instantlyApiKey}
@@ -943,9 +939,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             <Key className="h-4 w-4" />
                             Instantly Webhook Secret
                           </Label>
-                          <Input
+                          <SecretInput
                             id="instantlyWebhookSecret"
-                            type="password"
                             autoComplete="off"
                             placeholder="whsec_..."
                             value={newClientForm.instantlyWebhookSecret}
@@ -964,7 +959,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                         <Linkedin className="h-4 w-4" />
                         LinkedIn Account ID (Unipile)
                       </Label>
-                      <Input
+                      <SecretInput
                         id="unipileAccountId"
                         placeholder="e.g., Asdq-j08dsqQS89QSD"
                         value={newClientForm.unipileAccountId}
@@ -1067,7 +1062,11 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                         <span>{client.name}</span>
                         <div className="flex gap-1">
                           {client.hasGhlIntegration ? (
-                            <Badge variant="outline" className="text-green-500 border-green-500/30 bg-green-500/10 text-[10px]">
+                            <Badge
+                              variant="outline"
+                              className="text-[color:var(--brand-gohighlevel)] border-[color:var(--brand-gohighlevel)] bg-[color:var(--brand-gohighlevel-bg)] text-[10px]"
+                            >
+                              <MessageSquare className="h-3 w-3 mr-1" />
                               SMS
                             </Badge>
                           ) : (
@@ -1083,10 +1082,10 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                 !emailConfigured
                                   ? "text-amber-500 border-amber-500/30 bg-amber-500/10 text-[10px]"
                                   : emailProvider === "SMARTLEAD"
-                                    ? "text-violet-600 border-violet-600/30 bg-violet-600/10 text-[10px]"
+                                    ? "text-[color:var(--brand-smartlead)] border-[color:var(--brand-smartlead)] bg-[color:var(--brand-smartlead-bg)] text-[10px]"
                                     : emailProvider === "INSTANTLY"
-                                      ? "text-cyan-600 border-cyan-600/30 bg-cyan-600/10 text-[10px]"
-                                      : "text-blue-500 border-blue-500/30 bg-blue-500/10 text-[10px]"
+                                      ? "text-[color:var(--brand-instantly)] border-[color:var(--brand-instantly)] bg-[color:var(--brand-instantly-bg)] text-[10px]"
+                                      : "text-[color:var(--brand-emailbison)] border-[color:var(--brand-emailbison)] bg-[color:var(--brand-emailbison-bg)] text-[10px]"
                               }
                             >
                               <Mail className="h-3 w-3 mr-1" />
@@ -1104,7 +1103,10 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             </Badge>
                           )}
                           {hasLinkedIn ? (
-                            <Badge variant="outline" className="text-[#0A66C2] border-[#0A66C2]/30 bg-[#0A66C2]/10 text-[10px]">
+                            <Badge
+                              variant="outline"
+                              className="text-[color:var(--brand-linkedin)] border-[color:var(--brand-linkedin)] bg-[color:var(--brand-linkedin-bg)] text-[10px]"
+                            >
                               <Linkedin className="h-3 w-3 mr-1" />
                               LinkedIn
                             </Badge>
@@ -1115,7 +1117,10 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                             </Badge>
                           )}
                           {hasCalendly ? (
-                            <Badge variant="outline" className="text-indigo-600 border-indigo-600/30 bg-indigo-600/10 text-[10px]">
+                            <Badge
+                              variant="outline"
+                              className="text-[color:var(--brand-calendly)] border-[color:var(--brand-calendly)] bg-[color:var(--brand-calendly-bg)] text-[10px]"
+                            >
                               <Calendar className="h-3 w-3 mr-1" />
                               Calendly
                             </Badge>
@@ -1352,9 +1357,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                               <Label htmlFor={`ghlPrivateKey-${client.id}`} className="text-xs">
                                 GHL Private Integration Key {client.hasGhlPrivateKey && "(leave blank to keep current)"}
                               </Label>
-                              <Input
+                              <SecretInput
                                 id={`ghlPrivateKey-${client.id}`}
-                                type="password"
                                 autoComplete="off"
                                 placeholder={client.hasGhlPrivateKey ? "••••••••" : "ghl_xxxxxxxxxxxxxxxx"}
                                 value={integrationsForm.ghlPrivateKey}
@@ -1432,7 +1436,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                 </div>
                                 <div className="space-y-2">
                                   <Label htmlFor={`workspaceId-${client.id}`} className="text-xs">EmailBison Workspace ID (optional)</Label>
-                                  <Input
+                                  <SecretInput
                                     id={`workspaceId-${client.id}`}
                                     placeholder="e.g., 78"
                                     value={integrationsForm.emailBisonWorkspaceId}
@@ -1449,7 +1453,6 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                   </Label>
                                   <Input
                                     id={`emailKey-${client.id}`}
-                                    type="password"
                                     autoComplete="off"
                                     placeholder={client.hasEmailBisonApiKey ? "••••••••" : "eb_xxxxxxxxxxxxxxxx"}
                                     value={integrationsForm.emailBisonApiKey}
@@ -1466,9 +1469,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                   <Label htmlFor={`smartLeadApiKey-${client.id}`} className="text-xs">
                                     SmartLead API Key {client.hasSmartLeadApiKey && "(leave blank to keep current)"}
                                   </Label>
-                                  <Input
+                                  <SecretInput
                                     id={`smartLeadApiKey-${client.id}`}
-                                    type="password"
                                     autoComplete="off"
                                     placeholder={client.hasSmartLeadApiKey ? "••••••••" : "sl_..."}
                                     value={integrationsForm.smartLeadApiKey}
@@ -1480,9 +1482,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                   <Label htmlFor={`smartLeadWebhookSecret-${client.id}`} className="text-xs">
                                     SmartLead Webhook Secret {client.hasSmartLeadWebhookSecret && "(leave blank to keep current)"}
                                   </Label>
-                                  <Input
+                                  <SecretInput
                                     id={`smartLeadWebhookSecret-${client.id}`}
-                                    type="password"
                                     autoComplete="off"
                                     placeholder={client.hasSmartLeadWebhookSecret ? "••••••••" : "whsec_..."}
                                     value={integrationsForm.smartLeadWebhookSecret}
@@ -1505,9 +1506,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                   <Label htmlFor={`instantlyApiKey-${client.id}`} className="text-xs">
                                     Instantly API Key {client.hasInstantlyApiKey && "(leave blank to keep current)"}
                                   </Label>
-                                  <Input
+                                  <SecretInput
                                     id={`instantlyApiKey-${client.id}`}
-                                    type="password"
                                     autoComplete="off"
                                     placeholder={client.hasInstantlyApiKey ? "••••••••" : "ins_..."}
                                     value={integrationsForm.instantlyApiKey}
@@ -1519,9 +1519,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                   <Label htmlFor={`instantlyWebhookSecret-${client.id}`} className="text-xs">
                                     Instantly Webhook Secret {client.hasInstantlyWebhookSecret && "(leave blank to keep current)"}
                                   </Label>
-                                  <Input
+                                  <SecretInput
                                     id={`instantlyWebhookSecret-${client.id}`}
-                                    type="password"
                                     autoComplete="off"
                                     placeholder={client.hasInstantlyWebhookSecret ? "••••••••" : "whsec_..."}
                                     value={integrationsForm.instantlyWebhookSecret}
@@ -1544,7 +1543,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                 <Linkedin className="h-3 w-3" />
                                 LinkedIn Account ID (Unipile)
                               </Label>
-                              <Input
+                              <SecretInput
                                 id={`linkedinId-${client.id}`}
                                 placeholder="e.g., Asdq-j08dsqQS89QSD"
                                 value={integrationsForm.unipileAccountId}
@@ -1564,7 +1563,6 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                               </Label>
                               <Input
                                 id={`calendlyToken-${client.id}`}
-                                type="password"
                                 autoComplete="off"
                                 placeholder={client.hasCalendlyAccessToken ? "••••••••" : "cal_live_..."}
                                 value={integrationsForm.calendlyAccessToken}

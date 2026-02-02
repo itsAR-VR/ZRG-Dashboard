@@ -36,51 +36,51 @@ const classificationStyles: Record<string, { label: string; className: string }>
   // AI Sentiment Tags (from OpenAI classification)
   "meeting-requested": {
     label: "Meeting Requested",
-    className: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
+    className: "bg-[color:var(--sentiment-meeting-requested-bg)] text-[color:var(--sentiment-meeting-requested)] border-[color:var(--sentiment-meeting-requested-border)]",
   },
   "call-requested": {
     label: "Call Requested",
-    className: "bg-indigo-500/10 text-indigo-500 border-indigo-500/20",
+    className: "bg-[color:var(--sentiment-call-requested-bg)] text-[color:var(--sentiment-call-requested)] border-[color:var(--sentiment-call-requested-border)]",
   },
   "not-interested": {
     label: "Not Interested",
-    className: "bg-muted text-muted-foreground border-muted",
+    className: "bg-[color:var(--sentiment-not-interested-bg)] text-[color:var(--sentiment-not-interested)] border-[color:var(--sentiment-not-interested-border)]",
   },
   "out-of-office": {
     label: "Out of Office",
-    className: "bg-amber-500/10 text-amber-500 border-amber-500/20",
+    className: "bg-[color:var(--sentiment-out-of-office-bg)] text-[color:var(--sentiment-out-of-office)] border-[color:var(--sentiment-out-of-office-border)]",
   },
   "automated-reply": {
     label: "Automated Reply",
-    className: "bg-slate-500/10 text-slate-300 border-slate-500/20",
+    className: "bg-[color:var(--sentiment-automated-reply-bg)] text-[color:var(--sentiment-automated-reply)] border-[color:var(--sentiment-automated-reply-border)]",
   },
   "follow-up": {
     label: "Follow Up",
-    className: "bg-blue-500/10 text-blue-500 border-blue-500/20",
+    className: "bg-[color:var(--sentiment-follow-up-bg)] text-[color:var(--sentiment-follow-up)] border-[color:var(--sentiment-follow-up-border)]",
   },
   "information-requested": {
     label: "Info Requested",
-    className: "bg-cyan-500/10 text-cyan-500 border-cyan-500/20",
+    className: "bg-[color:var(--sentiment-information-requested-bg)] text-[color:var(--sentiment-information-requested)] border-[color:var(--sentiment-information-requested-border)]",
   },
   "interested": {
     label: "Interested",
-    className: "bg-green-500/10 text-green-500 border-green-500/20",
+    className: "bg-[color:var(--sentiment-interested-bg)] text-[color:var(--sentiment-interested)] border-[color:var(--sentiment-interested-border)]",
   },
   "blacklist": {
     label: "Blacklist",
-    className: "bg-destructive/10 text-destructive border-destructive/20",
+    className: "bg-[color:var(--sentiment-blacklist-bg)] text-[color:var(--sentiment-blacklist)] border-[color:var(--sentiment-blacklist-border)]",
   },
   "positive": {
     label: "Positive",
-    className: "bg-green-500/10 text-green-500 border-green-500/20",
+    className: "bg-[color:var(--sentiment-positive-bg)] text-[color:var(--sentiment-positive)] border-[color:var(--sentiment-positive-border)]",
   },
   "neutral": {
     label: "Neutral",
-    className: "bg-gray-500/10 text-gray-400 border-gray-500/20",
+    className: "bg-[color:var(--sentiment-neutral-bg)] text-[color:var(--sentiment-neutral)] border-[color:var(--sentiment-neutral-border)]",
   },
   "new": {
     label: "New",
-    className: "bg-primary/10 text-primary border-primary/20",
+    className: "bg-[color:var(--sentiment-new-bg)] text-[color:var(--sentiment-new)] border-[color:var(--sentiment-new-border)]",
   },
 }
 
@@ -119,14 +119,9 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
     : null
   const workspaceName = conversation.lead.company
   const smsClient = conversation.lead.smsCampaignName?.trim() || null
-  const isSmsAccountWorkspace = ["owen", "uday 18th", "uday18th", "u-day 18th"].includes(
-    workspaceName.toLowerCase()
-  )
   const workspaceLine = smsClient
     ? `${workspaceName} • Client: ${smsClient}`
-    : isSmsAccountWorkspace
-      ? `${workspaceName} • Client: Unattributed`
-      : workspaceName
+    : workspaceName
 
   return (
     <button

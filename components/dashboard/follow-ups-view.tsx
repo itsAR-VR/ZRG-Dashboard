@@ -75,12 +75,12 @@ const typeIcons: Record<FollowUpTaskType, typeof Mail> = {
 }
 
 const typeColors: Record<FollowUpTaskType, string> = {
-  email: "text-blue-500",
-  call: "text-green-500",
-  linkedin: "text-sky-500",
-  sms: "text-purple-500",
-  "meeting-canceled": "text-red-500",
-  "meeting-rescheduled": "text-orange-500",
+  email: "text-[color:var(--channel-email)]",
+  call: "text-[color:var(--channel-call)]",
+  linkedin: "text-[color:var(--channel-linkedin)]",
+  sms: "text-[color:var(--channel-sms)]",
+  "meeting-canceled": "text-[color:var(--channel-meeting-canceled)]",
+  "meeting-rescheduled": "text-[color:var(--channel-meeting-rescheduled)]",
 }
 
 // Default icon for unknown task types (defensive fallback)

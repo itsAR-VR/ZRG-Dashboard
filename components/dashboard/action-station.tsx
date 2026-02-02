@@ -5,9 +5,10 @@ import type { Conversation, Channel } from "@/lib/mock-data"
 import { ChatMessage } from "./chat-message"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Calendar, ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, Moon, Plus } from "lucide-react"
+import { Calendar, ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, AlertTriangle, Moon, Plus } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { sendMessage, sendEmailMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, refreshDraftAvailability, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
 import { validateEmail, formatEmailParticipant, normalizeOptionalEmail } from "@/lib/email-participants"
@@ -147,6 +148,7 @@ function EmailRecipientEditor({
                   onClick={() => handleRemoveCc(email)}
                   className="hover:bg-destructive/20 rounded-full p-0.5"
                   type="button"
+                  aria-label="Remove CC recipient"
                 >
                   <X className="h-3 w-3" />
                 </button>
@@ -170,6 +172,7 @@ function EmailRecipientEditor({
                 onClick={handleAddCc}
                 disabled={!ccInput.trim() || !validateEmail(ccInput.trim())}
                 className="h-6 w-6 p-0"
+                aria-label="Add CC recipient"
               >
                 <Plus className="h-3 w-3" />
               </Button>
@@ -775,6 +778,7 @@ export function ActionStation({
             onClick={handleSyncHistory}
             disabled={isSyncing || isReanalyzingSentiment}
             title={isEmail ? "Sync email conversation from EmailBison" : "Sync conversation history from GHL"}
+            className="h-11 min-h-[44px]"
           >
             {isSyncing ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -789,6 +793,7 @@ export function ActionStation({
             onClick={handleReanalyzeSentiment}
             disabled={isSyncing || isReanalyzingSentiment}
             title="Re-analyze sentiment for this conversation"
+            className="h-11 min-h-[44px]"
           >
             {isReanalyzingSentiment ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -797,7 +802,12 @@ export function ActionStation({
             )}
             Re-analyze Sentiment
           </Button>
-          <Button variant={isCrmOpen ? "secondary" : "outline"} size="sm" onClick={onToggleCrm}>
+          <Button
+            variant={isCrmOpen ? "secondary" : "outline"}
+            size="sm"
+            onClick={onToggleCrm}
+            className="h-11 min-h-[44px]"
+          >
             <PanelRightOpen className="mr-2 h-4 w-4" />
             CRM
           </Button>
@@ -808,7 +818,7 @@ export function ActionStation({
       {channels.length > 0 && (
         <div className="border-b border-border px-6 py-2 bg-muted/30">
           <Tabs value={activeChannel} onValueChange={(v) => setActiveChannel(v as Channel)}>
-            <TabsList className="h-8">
+            <TabsList className="h-11">
               {availableChannels.map((ch) => {
                 const Icon = CHANNEL_ICONS[ch]
                 const count = messageCounts[ch]
@@ -824,7 +834,7 @@ export function ActionStation({
                     value={ch}
                     disabled={isLinkedInChannel ? (!linkedInEnabled && ch !== activeChannel) : false}
                     className={cn(
-                      "text-xs gap-1.5 px-3",
+                      "text-xs gap-1.5 px-3 min-h-[44px]",
                       isLinkedInChannel && !linkedInEnabled && "opacity-50"
                     )}
                   >
@@ -1044,24 +1054,40 @@ export function ActionStation({
 
         {/* Phase 70: Show auto-send confidence + reasoning for drafts requiring review */}
         {hasAiDraft && drafts[0]?.autoSendAction === "needs_review" ? (
-          <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700">
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-              <div className="min-w-0">
-                <div className="font-medium">
-                  AI Auto-Send Needs Review
-                  {typeof drafts[0].autoSendConfidence === "number" && typeof drafts[0].autoSendThreshold === "number"
-                    ? ` — ${Math.round(drafts[0].autoSendConfidence * 100)}% (thresh ${Math.round(drafts[0].autoSendThreshold * 100)}%)`
-                    : ""}
-                </div>
-                {drafts[0].autoSendReason ? (
-                  <div className="mt-1 whitespace-pre-wrap break-words text-amber-700">
-                    {drafts[0].autoSendReason}
-                  </div>
-                ) : null}
+          <Alert variant="destructive" className="mb-3">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle className="flex items-center justify-between">
+              <span>AI Auto-Send Needs Review</span>
+              {typeof drafts[0].autoSendConfidence === "number" ? (
+                <Badge variant="outline" className="ml-2">
+                  {Math.round(drafts[0].autoSendConfidence * 100)}% confidence
+                </Badge>
+              ) : null}
+            </AlertTitle>
+            <AlertDescription className="mt-2 text-foreground">
+              <p className="text-sm">
+                {drafts[0].autoSendReason || "This draft needs manual review before sending."}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={handleRejectDraft}
+                  disabled={isSending || isRegenerating}
+                >
+                  Reject
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleApproveAndSend}
+                  disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail)}
+                >
+                  Approve & Send
+                </Button>
               </div>
-            </div>
-          </div>
+            </AlertDescription>
+          </Alert>
         ) : null}
         
         <div className="flex gap-2">
@@ -1095,7 +1121,7 @@ export function ActionStation({
                   size="icon"
                   onClick={handleInsertCalendarLink}
                   disabled={isSending || isRegenerating}
-                  className="h-8 w-8"
+                  className="h-11 w-11 min-h-[44px] min-w-[44px]"
                   aria-label="Insert calendar link"
                 >
                   <Calendar className="h-4 w-4" />
@@ -1107,7 +1133,7 @@ export function ActionStation({
                   size="icon"
                   onClick={handleRefreshAvailability}
                   disabled={isSending || isRegenerating || isRefreshingAvailability}
-                  className="h-8 w-8"
+                  className="h-11 w-11 min-h-[44px] min-w-[44px]"
                   aria-label="Refresh availability times"
                   title="Refresh availability times"
                 >
@@ -1124,7 +1150,7 @@ export function ActionStation({
                   size="icon"
                   onClick={handleRejectDraft}
                   disabled={isSending || isRegenerating}
-                  className="h-8 w-8"
+                  className="h-11 w-11 min-h-[44px] min-w-[44px]"
                   aria-label="Reject draft"
                 >
                   <X className="h-4 w-4" />
@@ -1136,7 +1162,7 @@ export function ActionStation({
                   size="icon"
                   onClick={handleRegenerateDraft}
                   disabled={isSending || isRegenerating}
-                  className="h-8 w-8"
+                  className="h-11 w-11 min-h-[44px] min-w-[44px]"
                   aria-label="Regenerate draft"
                 >
                   {isRegenerating ? (
@@ -1150,7 +1176,7 @@ export function ActionStation({
                 <Button 
                   onClick={handleApproveAndSend} 
                   disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail)}
-                  className="h-8 px-3"
+                  className="h-11 px-3 min-h-[44px]"
                   title="Approve and send"
                 >
                   {isSending ? (
@@ -1172,7 +1198,7 @@ export function ActionStation({
                   size="icon"
                   onClick={handleInsertCalendarLink}
                   disabled={isSending || isRegenerating}
-                  className="h-8 w-8"
+                  className="h-11 w-11 min-h-[44px] min-w-[44px]"
                   aria-label="Insert calendar link"
                 >
                   <Calendar className="h-4 w-4" />
@@ -1181,7 +1207,7 @@ export function ActionStation({
                 <Button 
                   onClick={handleSendMessage} 
                   disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail)}
-                  className="h-8 px-3"
+                  className="h-11 px-3 min-h-[44px]"
                 >
                   {isSending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
