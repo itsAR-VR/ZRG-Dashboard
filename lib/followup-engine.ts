@@ -399,6 +399,10 @@ function buildTemplateBlockedPauseReason(errors: FollowUpTemplateError[]): strin
       workspaceTokens.add(error.token);
       continue;
     }
+    if (error.type === "spintax_error") {
+      workspaceTokens.add("invalid_spintax");
+      continue;
+    }
 
     if (LEAD_VALUE_KEYS.has(error.valueKey)) {
       leadTokens.add(error.token);
@@ -566,7 +570,10 @@ export async function generateFollowUpMessage(
     timeOption2: slotOption2,
   };
 
-  const renderedContent = renderFollowUpTemplateStrict({ template: step.messageTemplate, values });
+  const stepKey = step.id ?? `order-${step.stepOrder}`;
+  const spintaxSeed = `${lead.id}:${stepKey}`;
+
+  const renderedContent = renderFollowUpTemplateStrict({ template: step.messageTemplate, values, spintaxSeed });
   if (!renderedContent.ok) {
     return {
       ok: false,
@@ -576,7 +583,9 @@ export async function generateFollowUpMessage(
     };
   }
 
-  const renderedSubject = step.subject ? renderFollowUpTemplateStrict({ template: step.subject, values }) : null;
+  const renderedSubject = step.subject
+    ? renderFollowUpTemplateStrict({ template: step.subject, values, spintaxSeed })
+    : null;
   if (renderedSubject && !renderedSubject.ok) {
     return {
       ok: false,

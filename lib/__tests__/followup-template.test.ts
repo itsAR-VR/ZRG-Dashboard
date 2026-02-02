@@ -7,6 +7,7 @@ import {
   renderFollowUpTemplateStrict,
   type FollowUpTemplateValues,
 } from "../followup-template";
+import { fnv1a32 } from "../spintax";
 
 const BASE_VALUES: FollowUpTemplateValues = {
   firstName: "Ava",
@@ -124,6 +125,90 @@ describe("followup-template", () => {
     if (!res.ok) {
       const types = res.errors.map((e) => e.type).sort();
       assert.deepEqual(types, ["missing_value", "unknown_token"]);
+    }
+  });
+
+  it("expands spintax deterministically per seed", () => {
+    const template = "[[Hi|Hey|Hello]] {firstName}";
+    const seed = "lead-123:step-1";
+    const res1 = renderFollowUpTemplateStrict({ template, values: BASE_VALUES, spintaxSeed: seed });
+    const res2 = renderFollowUpTemplateStrict({ template, values: BASE_VALUES, spintaxSeed: seed });
+    assert.equal(res1.ok, true);
+    assert.equal(res2.ok, true);
+    if (res1.ok && res2.ok) {
+      assert.equal(res1.output, res2.output);
+    }
+  });
+
+  it("expands spintax with distributed variants across seeds", () => {
+    const template = "[[Hi|Hey|Hello]] {firstName}";
+    const options = ["Hi", "Hey", "Hello"];
+    const seedA = "lead-a:step-1";
+    const indexA = fnv1a32(`${seedA}:0`) % options.length;
+    let seedB = "";
+    let indexB = indexA;
+    for (let i = 0; i < 50; i += 1) {
+      const candidate = `lead-${i}:step-1`;
+      const candidateIndex = fnv1a32(`${candidate}:0`) % options.length;
+      if (candidateIndex !== indexA) {
+        seedB = candidate;
+        indexB = candidateIndex;
+        break;
+      }
+    }
+    assert.notEqual(indexA, indexB, "expected to find a seed with a different variant");
+
+    const resA = renderFollowUpTemplateStrict({ template, values: BASE_VALUES, spintaxSeed: seedA });
+    const resB = renderFollowUpTemplateStrict({ template, values: BASE_VALUES, spintaxSeed: seedB });
+    assert.equal(resA.ok, true);
+    assert.equal(resB.ok, true);
+    if (resA.ok && resB.ok) {
+      assert.equal(resA.output, `${options[indexA]} Ava`);
+      assert.equal(resB.output, `${options[indexB]} Ava`);
+    }
+  });
+
+  it("renders template variables inside spintax options", () => {
+    const res = renderFollowUpTemplateStrict({
+      template: "[[Hi {firstName}|Hey {firstName}]]",
+      values: BASE_VALUES,
+      spintaxSeed: "lead-xyz:step-2",
+    });
+    assert.equal(res.ok, true);
+    if (res.ok) {
+      assert.equal(res.output.includes("Ava"), true);
+    }
+  });
+
+  it("blocks malformed spintax patterns", () => {
+    const unclosed = renderFollowUpTemplateStrict({
+      template: "[[Hi|Hey",
+      values: BASE_VALUES,
+      spintaxSeed: "lead-1:step-1",
+    });
+    assert.equal(unclosed.ok, false);
+    if (!unclosed.ok) {
+      assert.equal(unclosed.errors.some((e) => e.type === "spintax_error"), true);
+    }
+
+    const emptyOption = renderFollowUpTemplateStrict({
+      template: "[[Hi||Hey]]",
+      values: BASE_VALUES,
+      spintaxSeed: "lead-1:step-1",
+    });
+    assert.equal(emptyOption.ok, false);
+    if (!emptyOption.ok) {
+      assert.equal(emptyOption.errors.some((e) => e.type === "spintax_error"), true);
+    }
+
+    const nested = renderFollowUpTemplateStrict({
+      template: "[[Hi [[there|you]]|Hey]]",
+      values: BASE_VALUES,
+      spintaxSeed: "lead-1:step-1",
+    });
+    assert.equal(nested.ok, false);
+    if (!nested.ok) {
+      assert.equal(nested.errors.some((e) => e.type === "spintax_error"), true);
     }
   });
 });

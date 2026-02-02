@@ -13,6 +13,7 @@ import {
   parseQualificationQuestions,
   type FollowUpTemplateValueKey,
 } from "@/lib/followup-template";
+import { validateSpintax } from "@/lib/spintax";
 import { getBookingLink } from "@/lib/meeting-booking-provider";
 import {
   MEETING_REQUESTED_SEQUENCE_NAME_LEGACY,
@@ -114,6 +115,26 @@ function getUnknownTokenErrors(steps: FollowUpStepTemplateInput[]): string[] {
     if (unknown.size > 0) {
       const stepLabel = Number.isFinite(step.stepOrder) ? step.stepOrder : index + 1;
       errors.push(`step ${stepLabel}: ${Array.from(unknown).join(", ")}`);
+    }
+  });
+
+  return errors;
+}
+
+function getSpintaxErrors(steps: FollowUpStepTemplateInput[]): string[] {
+  const errors: string[] = [];
+
+  steps.forEach((step, index) => {
+    const stepLabel = Number.isFinite(step.stepOrder) ? step.stepOrder : index + 1;
+    const messageResult = validateSpintax(step.messageTemplate ?? "");
+    if (!messageResult.ok) {
+      errors.push(`step ${stepLabel} message: ${messageResult.error}`);
+    }
+    if (step.subject) {
+      const subjectResult = validateSpintax(step.subject);
+      if (!subjectResult.ok) {
+        errors.push(`step ${stepLabel} subject: ${subjectResult.error}`);
+      }
     }
   });
 
@@ -303,6 +324,13 @@ export async function createFollowUpSequence(data: {
         error: `Unknown template variables: ${unknownErrors.join(" | ")}`,
       };
     }
+    const spintaxErrors = getSpintaxErrors(data.steps);
+    if (spintaxErrors.length > 0) {
+      return {
+        success: false,
+        error: `Invalid spintax: ${spintaxErrors.join(" | ")}`,
+      };
+    }
 
     const sequence = await prisma.followUpSequence.create({
       data: {
@@ -362,6 +390,13 @@ export async function updateFollowUpSequence(
         return {
           success: false,
           error: `Unknown template variables: ${unknownErrors.join(" | ")}`,
+        };
+      }
+      const spintaxErrors = getSpintaxErrors(data.steps);
+      if (spintaxErrors.length > 0) {
+        return {
+          success: false,
+          error: `Invalid spintax: ${spintaxErrors.join(" | ")}`,
         };
       }
     }
@@ -465,6 +500,13 @@ export async function toggleSequenceActive(
         return {
           success: false,
           error: `Unknown template variables: ${unknownErrors.join(" | ")}`,
+        };
+      }
+      const spintaxErrors = getSpintaxErrors(sequence.steps);
+      if (spintaxErrors.length > 0) {
+        return {
+          success: false,
+          error: `Invalid spintax: ${spintaxErrors.join(" | ")}`,
         };
       }
 

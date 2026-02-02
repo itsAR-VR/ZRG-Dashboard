@@ -1,3 +1,5 @@
+import { expandSpintax } from "./spintax";
+
 export type FollowUpTemplateValueKey =
   // Lead variables
   | "firstName"
@@ -110,7 +112,8 @@ export type FollowUpTemplateValues = Partial<Record<FollowUpTemplateValueKey, st
 
 export type FollowUpTemplateError =
   | { type: "unknown_token"; token: string; message: string }
-  | { type: "missing_value"; token: string; valueKey: FollowUpTemplateValueKey; message: string };
+  | { type: "missing_value"; token: string; valueKey: FollowUpTemplateValueKey; message: string }
+  | { type: "spintax_error"; message: string };
 
 const MISSING_HINT_BY_VALUE_KEY: Record<FollowUpTemplateValueKey, string> = {
   firstName: "Lead is missing first name",
@@ -132,11 +135,25 @@ const MISSING_HINT_BY_VALUE_KEY: Record<FollowUpTemplateValueKey, string> = {
 export function renderFollowUpTemplateStrict(opts: {
   template: string | null | undefined;
   values: FollowUpTemplateValues;
+  spintaxSeed?: string;
 }): { ok: true; output: string; usedTokens: string[] } | { ok: false; errors: FollowUpTemplateError[]; usedTokens: string[] } {
   const template = opts.template ?? "";
   if (!template) return { ok: true, output: "", usedTokens: [] };
 
-  const usedTokens = extractFollowUpTemplateTokens(template);
+  let expandedTemplate = template;
+  if (template.includes("[[")) {
+    const expanded = expandSpintax(template, { seed: opts.spintaxSeed ?? "" });
+    if (!expanded.ok) {
+      return {
+        ok: false,
+        errors: [{ type: "spintax_error", message: expanded.error }],
+        usedTokens: [],
+      };
+    }
+    expandedTemplate = expanded.output;
+  }
+
+  const usedTokens = extractFollowUpTemplateTokens(expandedTemplate);
   const errors: FollowUpTemplateError[] = [];
 
   for (const token of usedTokens) {
@@ -159,7 +176,7 @@ export function renderFollowUpTemplateStrict(opts: {
 
   if (errors.length > 0) return { ok: false, errors, usedTokens };
 
-  let output = template;
+  let output = expandedTemplate;
   for (const token of usedTokens) {
     const definition = TOKEN_DEFINITION_BY_TOKEN.get(token);
     if (!definition) continue;

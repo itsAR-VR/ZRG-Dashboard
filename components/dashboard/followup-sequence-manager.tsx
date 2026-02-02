@@ -72,6 +72,7 @@ import {
   type FollowUpTemplateTokenSource,
   type FollowUpTemplateValueKey,
 } from "@/lib/followup-template";
+import { validateSpintax } from "@/lib/spintax";
 import { getCalendarLinks, getUserSettings, type CalendarLinkData, type UserSettingsData } from "@/actions/settings-actions";
 
 interface FollowUpSequenceManagerProps {
@@ -867,6 +868,13 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                     ...getUnknownFollowUpTemplateTokens(step.subject),
                   ])
                 );
+                const spintaxErrors: string[] = [];
+                const messageSpintax = validateSpintax(step.messageTemplate ?? "");
+                if (!messageSpintax.ok) spintaxErrors.push(`Message: ${messageSpintax.error}`);
+                if (step.subject) {
+                  const subjectSpintax = validateSpintax(step.subject);
+                  if (!subjectSpintax.ok) spintaxErrors.push(`Subject: ${subjectSpintax.error}`);
+                }
                 const missingWorkspaceItems = getMissingWorkspaceItems(stepTokens);
 
                 return (
@@ -978,11 +986,17 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                               handleUpdateStep(index, { subject: e.target.value })
                             }
                           />
+                          <p className="text-[11px] text-muted-foreground">
+                            Spintax: [[Hi|Hey|Hello]] (chosen per lead).
+                          </p>
                         </div>
                       )}
 
                       <div className="space-y-1.5">
                         <Label className="text-xs">Message Template</Label>
+                        <p className="text-[11px] text-muted-foreground">
+                          Spintax: [[Hi|Hey|Hello]] (chosen per lead).
+                        </p>
                         <Textarea
                           placeholder={`Hi {firstName},\n\nYour message here...`}
                           value={step.messageTemplate || ""}
@@ -1026,6 +1040,11 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                         {unknownTokens.length > 0 ? (
                           <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
                             Unknown variables: {unknownTokens.join(", ")}. Remove or replace these to save.
+                          </div>
+                        ) : null}
+                        {spintaxErrors.length > 0 ? (
+                          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+                            Spintax error: {spintaxErrors.join(" | ")}. Use [[option1|option2]].
                           </div>
                         ) : null}
                         {missingWorkspaceItems.length > 0 ? (
