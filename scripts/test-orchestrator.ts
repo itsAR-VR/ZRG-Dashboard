@@ -13,6 +13,7 @@ const TEST_FILES = [
   "lib/__tests__/workspace-capabilities.test.ts",
   "lib/__tests__/lead-assignment.test.ts",
   "lib/__tests__/crm-sheet.test.ts",
+  "lib/__tests__/workspace-member-provisioning.test.ts",
 ];
 
 async function main(): Promise<void> {

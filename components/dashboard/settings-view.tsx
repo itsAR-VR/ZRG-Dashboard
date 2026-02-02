@@ -72,6 +72,7 @@ import { BookingProcessReference } from "./settings/booking-process-reference"
 import { AiPersonaManager } from "./settings/ai-persona-manager"
 import { BulkDraftRegenerationCard } from "./settings/bulk-draft-regeneration"
 import { ClientPortalUsersManager } from "./settings/client-portal-users-manager"
+import { WorkspaceMembersManager } from "./settings/workspace-members-manager"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { getWorkspaceAdminStatus, getWorkspaceCapabilities } from "@/actions/access-actions"
 import {
@@ -5982,10 +5983,16 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           <TabsContent value="team" className="space-y-6">
             <fieldset disabled={isClientPortalUser} className="space-y-6">
               {!isClientPortalUser ? (
-                <ClientPortalUsersManager
-                  activeWorkspace={activeWorkspace ?? null}
-                  isWorkspaceAdmin={isWorkspaceAdmin}
-                />
+                <>
+                  <WorkspaceMembersManager
+                    activeWorkspace={activeWorkspace ?? null}
+                    isWorkspaceAdmin={isWorkspaceAdmin}
+                  />
+                  <ClientPortalUsersManager
+                    activeWorkspace={activeWorkspace ?? null}
+                    isWorkspaceAdmin={isWorkspaceAdmin}
+                  />
+                </>
               ) : null}
 
             <Card>
