@@ -49,3 +49,11 @@ scripts/logs/*.log
 .claude/
 .cursor/
 .mcp.json
+
+# local CRM exports (PII) — do not commit
+Founders Club CRM*.csv
+Founders Club CRM*.xlsx
+
+# planning artifacts that may contain sensitive data (keep local-only)
+docs/planning/**/artifacts/*.csv
+docs/planning/**/artifacts/*.xlsx
