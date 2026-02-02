@@ -60,7 +60,8 @@ export interface FollowUpSequenceData {
   description: string | null;
   clientId: string;
   isActive: boolean;
-  triggerOn: "no_response" | "meeting_selected" | "manual";
+  triggerOn: "no_response" | "meeting_selected" | "manual" | "setter_reply";
+  aiPersonaId: string | null;
   steps: FollowUpStepData[];
   createdAt: Date;
   updatedAt: Date;
@@ -154,25 +155,41 @@ function getReferencedValueKeys(tokens: string[]): Set<FollowUpTemplateValueKey>
 
 async function getMissingWorkspaceSetup(
   clientId: string,
-  tokens: string[]
+  tokens: string[],
+  opts?: { aiPersonaId?: string | null }
 ): Promise<{ missing: string[]; bookingLink: string | null }> {
   const requiredKeys = getReferencedValueKeys(tokens);
   const missing: string[] = [];
 
-  const settings = await prisma.workspaceSettings.findUnique({
-    where: { clientId },
-    select: {
-      aiPersonaName: true,
-      companyName: true,
-      targetResult: true,
-      qualificationQuestions: true,
-      meetingBookingProvider: true,
-      calendlyEventTypeLink: true,
-    },
-  });
+  const [settings, persona] = await Promise.all([
+    prisma.workspaceSettings.findUnique({
+      where: { clientId },
+      select: {
+        aiPersonaName: true,
+        aiSignature: true,
+        companyName: true,
+        targetResult: true,
+        qualificationQuestions: true,
+        meetingBookingProvider: true,
+        calendlyEventTypeLink: true,
+      },
+    }),
+    opts?.aiPersonaId
+      ? prisma.aiPersona.findUnique({
+          where: { id: opts.aiPersonaId },
+          select: { personaName: true, signature: true },
+        })
+      : Promise.resolve(null),
+  ]);
 
-  if (requiredKeys.has("aiPersonaName") && !settings?.aiPersonaName?.trim()) {
+  const resolvedPersonaName = persona?.personaName?.trim() || settings?.aiPersonaName?.trim();
+  if (requiredKeys.has("aiPersonaName") && !resolvedPersonaName) {
     missing.push("AI persona name");
+  }
+
+  const resolvedSignature = persona?.signature?.trim() || settings?.aiSignature?.trim();
+  if (requiredKeys.has("signature") && !resolvedSignature) {
+    missing.push("Signature");
   }
 
   if (requiredKeys.has("companyName") && !settings?.companyName?.trim()) {
@@ -229,6 +246,7 @@ export async function getFollowUpSequences(
       clientId: seq.clientId,
       isActive: seq.isActive,
       triggerOn: seq.triggerOn as FollowUpSequenceData["triggerOn"],
+      aiPersonaId: seq.aiPersonaId,
       steps: seq.steps.map((step) => ({
         id: step.id,
         stepOrder: step.stepOrder,
@@ -280,6 +298,7 @@ export async function getFollowUpSequence(
       clientId: sequence.clientId,
       isActive: sequence.isActive,
       triggerOn: sequence.triggerOn as FollowUpSequenceData["triggerOn"],
+      aiPersonaId: sequence.aiPersonaId,
       steps: sequence.steps.map((step) => ({
         id: step.id,
         stepOrder: step.stepOrder,
@@ -310,12 +329,23 @@ export async function createFollowUpSequence(data: {
   clientId: string;
   name: string;
   description?: string;
-  triggerOn?: "no_response" | "meeting_selected" | "manual";
+  triggerOn?: "no_response" | "meeting_selected" | "manual" | "setter_reply";
+  aiPersonaId?: string | null;
   steps: Omit<FollowUpStepData, "id">[];
   isActive?: boolean; // Phase 66: Added to support creating disabled sequences
 }): Promise<{ success: boolean; sequenceId?: string; error?: string }> {
   try {
     await requireClientAdminAccess(data.clientId);
+
+    if (data.aiPersonaId) {
+      const persona = await prisma.aiPersona.findUnique({
+        where: { id: data.aiPersonaId },
+        select: { clientId: true },
+      });
+      if (!persona || persona.clientId !== data.clientId) {
+        return { success: false, error: "Invalid persona for this workspace" };
+      }
+    }
 
     const unknownErrors = getUnknownTokenErrors(data.steps);
     if (unknownErrors.length > 0) {
@@ -338,6 +368,7 @@ export async function createFollowUpSequence(data: {
         name: data.name,
         description: data.description,
         triggerOn: data.triggerOn || "no_response",
+        aiPersonaId: data.aiPersonaId ?? null,
         isActive: data.isActive ?? true,
         steps: {
           create: data.steps.map((step) => ({
@@ -372,7 +403,8 @@ export async function updateFollowUpSequence(
     name?: string;
     description?: string;
     isActive?: boolean;
-    triggerOn?: "no_response" | "meeting_selected" | "manual";
+    triggerOn?: "no_response" | "meeting_selected" | "manual" | "setter_reply";
+    aiPersonaId?: string | null;
     steps?: Omit<FollowUpStepData, "id">[];
   }
 ): Promise<{ success: boolean; error?: string }> {
@@ -383,6 +415,16 @@ export async function updateFollowUpSequence(
     });
     if (!existing) return { success: false, error: "Sequence not found" };
     await requireClientAdminAccess(existing.clientId);
+
+    if (data.aiPersonaId !== undefined && data.aiPersonaId !== null) {
+      const persona = await prisma.aiPersona.findUnique({
+        where: { id: data.aiPersonaId },
+        select: { clientId: true },
+      });
+      if (!persona || persona.clientId !== existing.clientId) {
+        return { success: false, error: "Invalid persona for this workspace" };
+      }
+    }
 
     if (data.steps) {
       const unknownErrors = getUnknownTokenErrors(data.steps);
@@ -415,6 +457,7 @@ export async function updateFollowUpSequence(
         ...(data.description !== undefined && { description: data.description }),
         ...(data.isActive !== undefined && { isActive: data.isActive }),
         ...(data.triggerOn && { triggerOn: data.triggerOn }),
+        ...(data.aiPersonaId !== undefined && { aiPersonaId: data.aiPersonaId }),
         ...(data.steps && {
           steps: {
             create: data.steps.map((step) => ({
@@ -479,6 +522,7 @@ export async function toggleSequenceActive(
       select: {
         isActive: true,
         clientId: true,
+        aiPersonaId: true,
         steps: {
           select: {
             stepOrder: true,
@@ -511,7 +555,9 @@ export async function toggleSequenceActive(
       }
 
       const tokens = collectTemplateTokensFromSteps(sequence.steps);
-      const { missing } = await getMissingWorkspaceSetup(sequence.clientId, tokens);
+      const { missing } = await getMissingWorkspaceSetup(sequence.clientId, tokens, {
+        aiPersonaId: sequence.aiPersonaId,
+      });
       if (missing.length > 0) {
         return {
           success: false,

@@ -26,6 +26,7 @@ import { getBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
 import type { AvailabilitySource } from "@prisma/client";
 import { selectBookingTargetForLead } from "@/lib/booking-target-selector";
+import { resolveFollowUpPersonaContext, type FollowUpPersonaContext } from "@/lib/followup-persona";
 import {
   renderFollowUpTemplateStrict,
   type FollowUpTemplateError,
@@ -60,6 +61,7 @@ interface WorkspaceSettings {
   followUpsPausedUntil?: Date | null;
   // New fields for template variables
   aiPersonaName: string | null;
+  aiSignature: string | null;
   companyName: string | null;
   targetResult: string | null;
   qualificationQuestions: string | null; // JSON array of questions
@@ -372,6 +374,7 @@ const LEAD_VALUE_KEYS = new Set<FollowUpTemplateValueKey>([
 
 const WORKSPACE_VALUE_KEYS = new Set<FollowUpTemplateValueKey>([
   "aiPersonaName",
+  "signature",
   "companyName",
   "targetResult",
   "qualificationQuestion1",
@@ -433,7 +436,8 @@ function buildTemplateBlockedPauseReason(errors: FollowUpTemplateError[]): strin
 export async function generateFollowUpMessage(
   step: FollowUpStepData,
   lead: LeadContext,
-  settings: WorkspaceSettings | null
+  settings: WorkspaceSettings | null,
+  personaContext?: FollowUpPersonaContext | null
 ): Promise<GenerateFollowUpMessageResult> {
   const template = (step.messageTemplate || "").trim();
   if (!template) {
@@ -553,13 +557,17 @@ export async function generateFollowUpMessage(
     }
   }
 
+  const resolvedSenderName = personaContext?.senderName ?? settings?.aiPersonaName ?? null;
+  const resolvedSignature = personaContext?.signature ?? settings?.aiSignature ?? null;
+
   const values: FollowUpTemplateValues = {
     firstName: lead.firstName,
     lastName: lead.lastName,
     email: lead.email,
     phone: lead.phone,
     leadCompanyName: lead.companyName,
-    aiPersonaName: settings?.aiPersonaName ?? null,
+    aiPersonaName: resolvedSenderName,
+    signature: resolvedSignature,
     companyName: settings?.companyName ?? null,
     targetResult: settings?.targetResult ?? null,
     qualificationQuestion1: question1,
@@ -613,7 +621,8 @@ export async function generateFollowUpMessage(
 export async function executeFollowUpStep(
   instanceId: string,
   step: FollowUpStepData,
-  lead: LeadContext
+  lead: LeadContext,
+  sequencePersonaId?: string | null
 ): Promise<ExecutionResult> {
   try {
     if (process.env.FOLLOWUPS_DRY_RUN === "true") {
@@ -632,6 +641,17 @@ export async function executeFollowUpStep(
 
     const settings = client?.settings || null;
     const now = new Date();
+    let personaContext: FollowUpPersonaContext | null = null;
+
+    try {
+      personaContext = await resolveFollowUpPersonaContext({
+        clientId: lead.clientId,
+        leadId: lead.id,
+        sequencePersonaId: sequencePersonaId ?? null,
+      });
+    } catch (error) {
+      console.warn("[FollowUp] Failed to resolve persona context:", error);
+    }
 
     // Workspace-level pause: block automated follow-up execution while paused.
     // Manual messaging remains allowed via other actions.
@@ -922,7 +942,7 @@ export async function executeFollowUpStep(
         };
       }
 
-      const generated = await generateFollowUpMessage(step, effectiveLead, settings);
+      const generated = await generateFollowUpMessage(step, effectiveLead, settings, personaContext);
       if (!generated.ok) {
         await prisma.followUpInstance.update({
           where: { id: instanceId },
@@ -1201,7 +1221,7 @@ export async function executeFollowUpStep(
     }
 
     // Generate message content (strict: never send placeholders/fallbacks)
-    const generated = await generateFollowUpMessage(step, lead, settings);
+    const generated = await generateFollowUpMessage(step, lead, settings, personaContext);
     if (!generated.ok) {
       await prisma.followUpInstance.update({
         where: { id: instanceId },
@@ -1592,7 +1612,12 @@ export async function processFollowUpsDue(): Promise<{
       };
 
       // Execute the step
-      const result = await executeFollowUpStep(instance.id, stepData, leadContext);
+      const result = await executeFollowUpStep(
+        instance.id,
+        stepData,
+        leadContext,
+        instance.sequence.aiPersonaId ?? null
+      );
 
       if (result.success) {
         if (result.action === "sent" || result.action === "queued_for_approval") {

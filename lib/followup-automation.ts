@@ -2,10 +2,9 @@ import { prisma } from "@/lib/prisma";
 import { isMeetingBooked } from "@/lib/meeting-booking-provider";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 import { computeStepDeltaMs, computeStepOffsetMs } from "@/lib/followup-schedule";
+import { routeSequenceByPersona } from "@/lib/followup-sequence-router";
 import {
   MEETING_REQUESTED_SEQUENCE_NAME_LEGACY,
-  MEETING_REQUESTED_SEQUENCE_NAMES,
-  NO_RESPONSE_SEQUENCE_NAME,
   POST_BOOKING_SEQUENCE_NAME,
   ZRG_WORKFLOW_V1_SEQUENCE_NAME,
 } from "@/lib/followup-sequence-names";
@@ -157,7 +156,13 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
       calendlyInviteeUri: true,
       calendlyScheduledEventUri: true,
       appointmentStatus: true,
-      client: { select: { settings: { select: { followUpsPausedUntil: true, meetingBookingProvider: true } } } },
+      emailCampaign: { select: { id: true, aiPersonaId: true } },
+      client: {
+        select: {
+          settings: { select: { followUpsPausedUntil: true, meetingBookingProvider: true } },
+          aiPersonas: { where: { isDefault: true }, select: { id: true }, take: 1 },
+        },
+      },
     },
   });
 
@@ -172,14 +177,27 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
   if (!isMeetingBooked(lead, { meetingBookingProvider: postBookingProvider })) return { started: false, reason: "no_appointment" };
   if (!lead.autoFollowUpEnabled) return { started: false, reason: "lead_auto_followup_disabled" };
 
-  const sequence = await prisma.followUpSequence.findFirst({
-    where: { clientId: lead.clientId, name: POST_BOOKING_SEQUENCE_NAME, isActive: true },
-    select: { id: true },
+  const routingPersonaId = lead.emailCampaign?.aiPersonaId ?? lead.client.aiPersonas?.[0]?.id ?? null;
+  const routed = await routeSequenceByPersona({
+    clientId: lead.clientId,
+    triggerOn: "meeting_selected",
+    routingPersonaId,
+    fallbackNames: [POST_BOOKING_SEQUENCE_NAME],
   });
 
-  if (!sequence) return { started: false, reason: "sequence_not_found_or_inactive" };
+  if (!routed.sequence) return { started: false, reason: routed.reason };
 
-  await startSequenceInstance(lead.id, sequence.id);
+  await startSequenceInstance(lead.id, routed.sequence.id);
+  console.log("[FollowUp] Auto-start routing", {
+    triggerOn: "meeting_selected",
+    leadId: lead.id,
+    clientId: lead.clientId,
+    emailCampaignId: lead.emailCampaign?.id ?? null,
+    routingPersonaId,
+    sequenceId: routed.sequence.id,
+    sequenceName: routed.sequence.name,
+    reason: routed.reason,
+  });
   return { started: true };
 }
 
@@ -397,9 +415,11 @@ export async function autoStartMeetingRequestedSequenceOnSetterEmailReply(opts: 
       calendlyInviteeUri: true,
       calendlyScheduledEventUri: true,
       appointmentStatus: true,
+      emailCampaign: { select: { id: true, aiPersonaId: true } },
       client: {
         select: {
           settings: { select: { followUpsPausedUntil: true, meetingBookingProvider: true } },
+          aiPersonas: { where: { isDefault: true }, select: { id: true }, take: 1 },
         },
       },
     },
@@ -448,29 +468,21 @@ export async function autoStartMeetingRequestedSequenceOnSetterEmailReply(opts: 
     return { started: false, reason: "not_first_setter_reply" };
   }
 
-  // Find the Meeting Requested sequence (supports both legacy + ZRG Workflow V1 names).
-  const candidates = await prisma.followUpSequence.findMany({
-    where: {
-      clientId: lead.clientId,
-      isActive: true,
-      name: { in: [...MEETING_REQUESTED_SEQUENCE_NAMES] },
-    },
-    select: { id: true, name: true, createdAt: true },
-    orderBy: { createdAt: "desc" },
+  const routingPersonaId = lead.emailCampaign?.aiPersonaId ?? lead.client.aiPersonas?.[0]?.id ?? null;
+  const routed = await routeSequenceByPersona({
+    clientId: lead.clientId,
+    triggerOn: "setter_reply",
+    routingPersonaId,
+    fallbackNames: [ZRG_WORKFLOW_V1_SEQUENCE_NAME, MEETING_REQUESTED_SEQUENCE_NAME_LEGACY],
   });
 
-  const sequence =
-    candidates.find((s) => s.name === ZRG_WORKFLOW_V1_SEQUENCE_NAME) ??
-    candidates.find((s) => s.name === MEETING_REQUESTED_SEQUENCE_NAME_LEGACY) ??
-    null;
-
-  if (!sequence) {
-    return { started: false, reason: "sequence_not_found_or_inactive" };
+  if (!routed.sequence) {
+    return { started: false, reason: routed.reason };
   }
 
   // Check if instance already exists (don't double-start)
   const existingInstance = await prisma.followUpInstance.findUnique({
-    where: { leadId_sequenceId: { leadId: lead.id, sequenceId: sequence.id } },
+    where: { leadId_sequenceId: { leadId: lead.id, sequenceId: routed.sequence.id } },
     select: { id: true, status: true },
   });
 
@@ -479,7 +491,18 @@ export async function autoStartMeetingRequestedSequenceOnSetterEmailReply(opts: 
   }
 
   // Start the sequence anchored to the reply timestamp
-  await startSequenceInstance(lead.id, sequence.id, { startedAt: opts.outboundAt });
+  await startSequenceInstance(lead.id, routed.sequence.id, { startedAt: opts.outboundAt });
+
+  console.log("[FollowUp] Auto-start routing", {
+    triggerOn: "setter_reply",
+    leadId: lead.id,
+    clientId: lead.clientId,
+    emailCampaignId: lead.emailCampaign?.id ?? null,
+    routingPersonaId,
+    sequenceId: routed.sequence.id,
+    sequenceName: routed.sequence.name,
+    reason: routed.reason,
+  });
 
   return { started: true };
 }

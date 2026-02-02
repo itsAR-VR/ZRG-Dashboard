@@ -9,6 +9,7 @@ export type FollowUpTemplateValueKey =
   | "leadCompanyName"
   // Workspace variables
   | "aiPersonaName"
+  | "signature"
   | "companyName"
   | "targetResult"
   | "qualificationQuestion1"
@@ -43,6 +44,7 @@ export const FOLLOWUP_TEMPLATE_TOKEN_DEFINITIONS: readonly FollowUpTemplateToken
   // Workspace/company (canonical + aliases)
   { token: "{senderName}", valueKey: "aiPersonaName", source: "workspace" },
   { token: "{name}", valueKey: "aiPersonaName", source: "workspace", isAlias: true },
+  { token: "{signature}", valueKey: "signature", source: "workspace" },
   { token: "{companyName}", valueKey: "companyName", source: "workspace" },
   { token: "{company}", valueKey: "companyName", source: "workspace", isAlias: true },
   { token: "{result}", valueKey: "targetResult", source: "workspace" },
@@ -122,6 +124,7 @@ const MISSING_HINT_BY_VALUE_KEY: Record<FollowUpTemplateValueKey, string> = {
   phone: "Lead is missing phone",
   leadCompanyName: "Lead is missing company name",
   aiPersonaName: "Workspace is missing AI Persona name (aiPersonaName)",
+  signature: "Workspace or persona is missing signature",
   companyName: "Workspace is missing company name",
   targetResult: "Workspace is missing target result/outcome",
   bookingLink: "Workspace is missing calendar link / booking link",

@@ -16,6 +16,7 @@ const BASE_VALUES: FollowUpTemplateValues = {
   phone: "+14155552671",
   leadCompanyName: "Acme Inc",
   aiPersonaName: "Jordan",
+  signature: "Best,\nJordan",
   companyName: "ZRG",
   targetResult: "book more meetings",
   qualificationQuestion1: "What is your current role?",
@@ -58,12 +59,16 @@ describe("followup-template", () => {
 
   it("renders workspace and lead-company variables", () => {
     const res = renderFollowUpTemplateStrict({
-      template: "{senderName} / {name} / {companyName} / {company} / {leadCompanyName} / {result} / {achieving result}",
+      template:
+        "{senderName} / {name} / {signature} / {companyName} / {company} / {leadCompanyName} / {result} / {achieving result}",
       values: BASE_VALUES,
     });
     assert.equal(res.ok, true);
     if (res.ok) {
-      assert.equal(res.output, "Jordan / Jordan / ZRG / ZRG / Acme Inc / book more meetings / book more meetings");
+      assert.equal(
+        res.output,
+        "Jordan / Jordan / Best,\nJordan / ZRG / ZRG / Acme Inc / book more meetings / book more meetings"
+      );
     }
   });
 
@@ -104,6 +109,17 @@ describe("followup-template", () => {
     assert.equal(res.ok, false);
     if (!res.ok) {
       assert.equal(res.errors.some((e) => e.type === "missing_value" && e.token === "{firstName}"), true);
+    }
+  });
+
+  it("blocks rendering when signature is missing", () => {
+    const res = renderFollowUpTemplateStrict({
+      template: "Thanks,{signature}",
+      values: { ...BASE_VALUES, signature: null },
+    });
+    assert.equal(res.ok, false);
+    if (!res.ok) {
+      assert.equal(res.errors.some((e) => e.type === "missing_value" && e.token === "{signature}"), true);
     }
   });
 

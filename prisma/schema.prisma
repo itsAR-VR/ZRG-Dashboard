@@ -1133,7 +1133,9 @@ model FollowUpSequence {
   clientId    String
   client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
   isActive    Boolean  @default(true)
-  triggerOn   String   @default("no_response")  // 'no_response' | 'meeting_selected' | 'manual'
+  triggerOn   String   @default("no_response")  // 'no_response' | 'meeting_selected' | 'manual' | 'setter_reply'
+  aiPersonaId String?
+  aiPersona   AiPersona? @relation(fields: [aiPersonaId], references: [id], onDelete: SetNull)
   steps       FollowUpStep[]
   instances   FollowUpInstance[]
   reactivationCampaigns ReactivationCampaign[]
@@ -1141,6 +1143,8 @@ model FollowUpSequence {
   updatedAt   DateTime @updatedAt
 
   @@index([clientId])
+  @@index([clientId, triggerOn, isActive])
+  @@index([aiPersonaId])
   @@index([isActive])
 }
 
@@ -1565,6 +1569,7 @@ model AiPersona {
 
   // Relations
   campaigns   EmailCampaign[]
+  followUpSequences FollowUpSequence[]
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

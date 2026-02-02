@@ -64,6 +64,12 @@ import {
   type StepCondition,
 } from "@/actions/followup-sequence-actions";
 import {
+  getAiPersona,
+  listAiPersonas,
+  type AiPersonaData,
+  type AiPersonaSummary,
+} from "@/actions/ai-persona-actions";
+import {
   FOLLOWUP_TEMPLATE_TOKEN_DEFINITIONS,
   FOLLOWUP_TEMPLATE_TOKENS_BY_SOURCE,
   extractFollowUpTemplateTokens,
@@ -96,6 +102,7 @@ const CHANNEL_LABELS = {
 const TRIGGER_OPTIONS = [
   { value: "no_response", label: "No response (after 24h)" },
   { value: "meeting_selected", label: "After meeting selected" },
+  { value: "setter_reply", label: "On first manual email reply" },
   { value: "manual", label: "Manual trigger only" },
 ];
 
@@ -172,6 +179,8 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
   const [isSaving, setIsSaving] = useState(false);
   const [workspaceSettings, setWorkspaceSettings] = useState<UserSettingsData | null>(null);
   const [calendarLinks, setCalendarLinks] = useState<CalendarLinkData[]>([]);
+  const [aiPersonas, setAiPersonas] = useState<AiPersonaSummary[]>([]);
+  const [personaDetailsById, setPersonaDetailsById] = useState<Record<string, AiPersonaData>>({});
   const [isWorkspaceContextLoaded, setIsWorkspaceContextLoaded] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [sequenceErrors, setSequenceErrors] = useState<Record<string, string>>({});
@@ -180,7 +189,8 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
   const [formData, setFormData] = useState({
     name: "",
     description: "",
-    triggerOn: "no_response" as "no_response" | "meeting_selected" | "manual",
+    triggerOn: "no_response" as "no_response" | "meeting_selected" | "setter_reply" | "manual",
+    aiPersonaId: null as string | null,
     steps: [] as Omit<FollowUpStepData, "id">[],
   });
 
@@ -204,15 +214,19 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
     if (!clientId) return;
     setIsWorkspaceContextLoaded(false);
     try {
-      const [settingsResult, calendarResult] = await Promise.all([
+      const [settingsResult, calendarResult, personasResult] = await Promise.all([
         getUserSettings(clientId),
         getCalendarLinks(clientId),
+        listAiPersonas(clientId),
       ]);
       if (settingsResult.success) {
         setWorkspaceSettings(settingsResult.data ?? null);
       }
       if (calendarResult.success) {
         setCalendarLinks(calendarResult.data ?? []);
+      }
+      if (personasResult.success) {
+        setAiPersonas(personasResult.data ?? []);
       }
     } catch (error) {
       console.error("Failed to load follow-up workspace settings:", error);
@@ -225,6 +239,27 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
     loadSequences();
     loadWorkspaceContext();
   }, [loadSequences, loadWorkspaceContext]);
+
+  useEffect(() => {
+    const personaId = formData.aiPersonaId;
+    if (!personaId || personaDetailsById[personaId]) return;
+
+    let active = true;
+    getAiPersona(personaId)
+      .then((res) => {
+        if (!active) return;
+        if (!res.success || !res.data) return;
+        const persona = res.data;
+        setPersonaDetailsById((prev) => ({ ...prev, [personaId]: persona }));
+      })
+      .catch((error) => {
+        console.error("[FollowUps] Failed to load persona details:", error);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [formData.aiPersonaId, personaDetailsById]);
 
   // Create default sequence (No Response only)
   const handleCreateDefault = async () => {
@@ -264,6 +299,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
       name: "",
       description: "",
       triggerOn: "no_response",
+      aiPersonaId: null,
       steps: [
         {
           stepOrder: 1,
@@ -288,6 +324,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
       name: sequence.name,
       description: sequence.description || "",
       triggerOn: sequence.triggerOn,
+      aiPersonaId: sequence.aiPersonaId ?? null,
       steps: sequence.steps.map((s) => ({
         stepOrder: s.stepOrder,
         dayOffset: s.dayOffset,
@@ -322,6 +359,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
         name: formData.name,
         description: formData.description,
         triggerOn: formData.triggerOn,
+        aiPersonaId: formData.aiPersonaId,
         steps: formData.steps,
       });
       if (result.success) {
@@ -346,6 +384,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
         name: formData.name,
         description: formData.description,
         triggerOn: formData.triggerOn,
+        aiPersonaId: formData.aiPersonaId,
         steps: formData.steps,
       });
       if (result.success) {
@@ -454,9 +493,23 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
       if (!isWorkspaceContextLoaded || !workspaceSettings) return [];
       const requiredKeys = getReferencedValueKeys(tokens);
       const missing: string[] = [];
+      const selectedPersonaSummary = formData.aiPersonaId
+        ? aiPersonas.find((p) => p.id === formData.aiPersonaId)
+        : null;
+      const selectedPersonaDetails = formData.aiPersonaId ? personaDetailsById[formData.aiPersonaId] : null;
+      const resolvedPersonaName =
+        selectedPersonaDetails?.personaName ??
+        selectedPersonaSummary?.personaName ??
+        workspaceSettings.aiPersonaName;
+      const resolvedSignature =
+        selectedPersonaDetails?.signature ??
+        workspaceSettings.aiSignature;
 
-      if (requiredKeys.has("aiPersonaName") && !workspaceSettings.aiPersonaName?.trim()) {
+      if (requiredKeys.has("aiPersonaName") && !resolvedPersonaName?.trim()) {
         missing.push("AI persona name");
+      }
+      if (requiredKeys.has("signature") && !resolvedSignature?.trim()) {
+        missing.push("Signature");
       }
       if (requiredKeys.has("companyName") && !workspaceSettings.companyName?.trim()) {
         missing.push("Company name");
@@ -480,7 +533,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
 
       return missing;
     },
-    [isWorkspaceContextLoaded, workspaceSettings, calendarLinks]
+    [aiPersonas, calendarLinks, formData.aiPersonaId, isWorkspaceContextLoaded, personaDetailsById, workspaceSettings]
   );
 
   if (!clientId) {
@@ -841,6 +894,36 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 rows={2}
               />
+            </div>
+
+            <div className="space-y-2">
+              <Label>AI Persona (optional)</Label>
+              <Select
+                value={formData.aiPersonaId ?? "auto"}
+                onValueChange={(value) =>
+                  setFormData({
+                    ...formData,
+                    aiPersonaId: value === "auto" ? null : value,
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Use campaign/default persona" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">Use campaign/default persona</SelectItem>
+                  {aiPersonas.map((persona) => (
+                    <SelectItem key={persona.id} value={persona.id}>
+                      {persona.name}
+                      {persona.isDefault ? " (Default)" : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] text-muted-foreground">
+                {`{senderName}`} and {`{signature}`} resolve from the selected persona (or campaign/default when set to auto).
+                Missing persona fields will pause follow-ups until configured.
+              </p>
             </div>
 
             <Separator />
