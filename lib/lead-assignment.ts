@@ -6,11 +6,14 @@
  * assigned, a lead stays with that setter).
  */
 
-import { prisma } from "@/lib/prisma";
+import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
 import { ClientMemberRole } from "@prisma/client";
 import { POSITIVE_SENTIMENTS, isPositiveSentiment } from "@/lib/sentiment-shared";
+import { slackPostMessage } from "@/lib/slack-bot";
+import { getPublicAppUrl } from "@/lib/app-url";
 
 export type LeadAssignmentChannel = "sms" | "email" | "linkedin";
+export type LeadAssignmentSource = "round_robin" | "backfill" | "manual";
 
 /**
  * Check if a sentiment tag should trigger lead assignment.
@@ -45,6 +48,22 @@ export function isChannelEligibleForLeadAssignment(opts: {
   return opts.channel === "email";
 }
 
+type RoundRobinSequenceEmptyAlert = {
+  clientId: string;
+  leadId: string;
+  channel?: LeadAssignmentChannel;
+  configuredSequenceLength: number;
+  activeSetterCount: number;
+};
+
+type LeadAssignmentAuditPayload = {
+  clientId: string;
+  leadId: string;
+  assignedToUserId: string;
+  channel?: LeadAssignmentChannel;
+  source: LeadAssignmentSource;
+};
+
 /**
  * Get active setters for a workspace, sorted by createdAt ASC.
  * This ordering ensures deterministic rotation matching stakeholder expectations
@@ -78,12 +97,18 @@ export async function assignLeadRoundRobin({
   leadId,
   clientId,
   channel,
+  source,
 }: {
   leadId: string;
   clientId: string;
   channel?: LeadAssignmentChannel;
+  source?: LeadAssignmentSource;
 }): Promise<string | null> {
-  return prisma.$transaction(async (tx) => {
+  const assignmentSource = source ?? "round_robin";
+  let sequenceEmptyAlert: RoundRobinSequenceEmptyAlert | null = null;
+  let assignmentEvent: LeadAssignmentAuditPayload | null = null;
+
+  const assignedToUserId = await prisma.$transaction(async (tx) => {
     // Concurrency hardening: lock the workspace settings row before reading/updating the pointer.
     // This avoids pointer drift under concurrent assignments.
     await tx.$executeRaw`SELECT 1 FROM "WorkspaceSettings" WHERE "clientId" = ${clientId} FOR UPDATE`;
@@ -141,6 +166,15 @@ export async function assignLeadRoundRobin({
 
     if (effectiveSequence.length === 0) {
       console.warn(`[LeadAssignment] No eligible setters in configured sequence for client ${clientId}`);
+      if (settings.roundRobinSetterSequence.length > 0) {
+        sequenceEmptyAlert = {
+          clientId,
+          leadId,
+          channel,
+          configuredSequenceLength: settings.roundRobinSetterSequence.length,
+          activeSetterCount: activeSetterUserIds.length,
+        };
+      }
       return null;
     }
 
@@ -167,6 +201,14 @@ export async function assignLeadRoundRobin({
         data: { roundRobinLastSetterIndex: nextIndex },
       });
 
+      assignmentEvent = {
+        clientId,
+        leadId,
+        assignedToUserId: nextSetterUserId,
+        channel,
+        source: assignmentSource,
+      };
+
       console.log(
         `[LeadAssignment] Assigned lead ${leadId} to setter ${nextSetterUserId} (index ${nextIndex}, sequence=${
           settings.roundRobinSetterSequence.length > 0 ? "custom" : "fallback"
@@ -184,6 +226,20 @@ export async function assignLeadRoundRobin({
 
     return refreshedLead?.assignedToUserId ?? null;
   });
+
+  if (sequenceEmptyAlert) {
+    notifyRoundRobinSequenceEmpty(sequenceEmptyAlert).catch((error) => {
+      console.error("[LeadAssignment] Failed to send sequence-empty alert:", error);
+    });
+  }
+
+  if (assignmentEvent) {
+    recordLeadAssignmentEvent(assignmentEvent).catch((error) => {
+      console.error("[LeadAssignment] Failed to record assignment event:", error);
+    });
+  }
+
+  return assignedToUserId;
 }
 
 /**
@@ -259,7 +315,12 @@ export async function backfillLeadAssignments(clientId: string): Promise<{
 
   for (const lead of unassignedLeads) {
     try {
-      const result = await assignLeadRoundRobin({ leadId: lead.id, clientId, channel: "email" });
+      const result = await assignLeadRoundRobin({
+        leadId: lead.id,
+        clientId,
+        channel: "email",
+        source: "backfill",
+      });
       if (result) {
         assigned++;
       } else {
@@ -279,4 +340,107 @@ export async function backfillLeadAssignments(clientId: string): Promise<{
   );
 
   return { assigned, skipped, errors };
+}
+
+function formatLeadLabel(lead: { firstName: string | null; lastName: string | null; email: string | null }): string {
+  const name = [lead.firstName, lead.lastName].filter(Boolean).join(" ").trim();
+  if (name) return name;
+  if (lead.email) return lead.email;
+  return "Lead";
+}
+
+function buildLeadUrl(leadId: string): string {
+  const base = getPublicAppUrl();
+  return `${base}/?view=inbox&leadId=${encodeURIComponent(leadId)}`;
+}
+
+async function recordLeadAssignmentEvent(payload: LeadAssignmentAuditPayload): Promise<void> {
+  await prisma.leadAssignmentEvent.create({
+    data: {
+      clientId: payload.clientId,
+      leadId: payload.leadId,
+      assignedToUserId: payload.assignedToUserId,
+      assignedByUserId: null,
+      source: payload.source,
+      channel: payload.channel ?? null,
+    },
+  });
+}
+
+async function logRoundRobinSequenceEmptyOnce(opts: {
+  clientId: string;
+  leadId: string;
+  dedupeKey: string;
+}): Promise<boolean> {
+  try {
+    await prisma.notificationSendLog.create({
+      data: {
+        clientId: opts.clientId,
+        leadId: opts.leadId,
+        kind: "round_robin_sequence_empty",
+        destination: "slack",
+        dedupeKey: opts.dedupeKey,
+      },
+    });
+    return true;
+  } catch (error) {
+    if (isPrismaUniqueConstraintError(error)) return false;
+    console.error("[LeadAssignment] Failed to log sequence-empty alert:", error);
+    return false;
+  }
+}
+
+async function notifyRoundRobinSequenceEmpty(alert: RoundRobinSequenceEmptyAlert): Promise<void> {
+  const [client, settings, lead] = await Promise.all([
+    prisma.client.findUnique({
+      where: { id: alert.clientId },
+      select: { id: true, name: true, slackBotToken: true },
+    }),
+    prisma.workspaceSettings.findUnique({
+      where: { clientId: alert.clientId },
+      select: { slackAlerts: true, notificationSlackChannelIds: true },
+    }),
+    prisma.lead.findUnique({
+      where: { id: alert.leadId },
+      select: { id: true, firstName: true, lastName: true, email: true },
+    }),
+  ]);
+
+  if (!client || !settings) return;
+  if (settings.slackAlerts === false) return;
+
+  const channelIds = (settings.notificationSlackChannelIds ?? [])
+    .map((id) => (id || "").trim())
+    .filter(Boolean);
+
+  if (!client.slackBotToken || channelIds.length === 0) return;
+
+  const dayKey = new Date().toISOString().slice(0, 10);
+  const dedupeKey = `round_robin_sequence_empty:${alert.clientId}:slack:${dayKey}`;
+  const gate = await logRoundRobinSequenceEmptyOnce({
+    clientId: alert.clientId,
+    leadId: alert.leadId,
+    dedupeKey,
+  });
+  if (!gate) return;
+
+  const leadLabel = lead ? formatLeadLabel(lead) : `Lead ${alert.leadId}`;
+  const leadUrl = buildLeadUrl(alert.leadId);
+  const text = [
+    "⚠️ Round-robin sequence empty after filtering",
+    `Workspace: ${client.name}`,
+    `Lead: ${leadLabel}`,
+    `Lead Link: ${leadUrl}`,
+    `Channel: ${alert.channel ?? "unknown"}`,
+    `Configured sequence length: ${alert.configuredSequenceLength}`,
+    `Active setters: ${alert.activeSetterCount}`,
+    "Action: Update sequence in Settings → Integrations → Assignments.",
+  ].join("\n");
+
+  for (const channelId of channelIds) {
+    const res = await slackPostMessage({ token: client.slackBotToken, channelId, text });
+    if (!res.success) {
+      console.error("[LeadAssignment] Slack alert failed:", res.error);
+    }
+  }
 }

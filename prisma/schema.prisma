@@ -200,6 +200,7 @@ model Client {
   backgroundJobs BackgroundJob[]
   notificationEvents NotificationEvent[]
   notificationSendLogs NotificationSendLog[]
+  leadAssignmentEvents LeadAssignmentEvent[]
   insightChatSessions InsightChatSession[]
   insightContextPacks InsightContextPack[]
   insightChatUserPreferences InsightChatUserPreference[]
@@ -466,6 +467,7 @@ model Lead {
   followUps         FollowUpTask[]
   notificationEvents NotificationEvent[]
   notificationSendLogs NotificationSendLog[]
+  assignmentEvents LeadAssignmentEvent[]
   followUpInstances FollowUpInstance[]  // Active follow-up sequences for this lead
   reactivationEnrollments ReactivationEnrollment[]
   aiDrafts          AIDraft[]
@@ -897,6 +899,24 @@ model NotificationSendLog {
   @@index([clientId, createdAt(sort: Desc)])
   @@index([leadId, createdAt(sort: Desc)])
   @@index([clientId, kind, createdAt(sort: Desc)])
+}
+
+// Lead assignment audit trail (Phase 89e)
+model LeadAssignmentEvent {
+  id        String   @id @default(uuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assignedToUserId String
+  assignedByUserId String?
+  source    String   // round_robin | backfill | manual
+  channel   String?  // sms | email | linkedin
+  createdAt DateTime @default(now())
+
+  @@index([clientId, createdAt(sort: Desc)])
+  @@index([leadId, createdAt(sort: Desc)])
+  @@index([assignedToUserId])
 }
 
 // AI-generated draft messages pending approval

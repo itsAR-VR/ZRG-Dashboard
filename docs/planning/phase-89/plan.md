@@ -39,12 +39,14 @@ Update Founders Club lead auto-assignment so Jon no longer receives **new** assi
 - [x] Leads already assigned to Jon remain unchanged.
 - [x] With "Email-only assignment" enabled, SMS/LinkedIn inbound does not trigger assignment.
 - [x] Validation passes: `npm run test`, `npm run lint`, `npm run build`.
+- [x] Follow-ups completed: sequence-empty alert, assignment audit log, and Founders Club runbook (Phase 89e).
 
 ## Subphase Index
 * a — Schema + WorkspaceSettings fields
 * b — Assignment logic update (sequence + email-only gate)
 * c — Admin actions + Settings UI wiring
 * d — Tests + verification runbook
+* e — Follow-ups (alerts + assignment audit log + runbook)
 
 ## Repo Reality Check (RED TEAM)
 
@@ -179,8 +181,13 @@ Safe to implement after Phase 83 is merged. If Phase 86 runs first, coordinate s
 ### Verified
 - `npm run lint`: ✅ pass (0 errors, 22 warnings — pre-existing)
 - `npm run build`: ✅ pass
-- `npm run test`: ✅ pass (102 tests, 0 failures)
+- `npm run test`: ✅ pass (108 tests, 0 failures)
 - `npm run db:push`: ✅ pass (run during 89a)
+
+### Follow-ups (Phase 89e)
+- **Schema:** `LeadAssignmentEvent` model + relations for per-lead assignment audit log
+- **Logic:** assignment events recorded; sequence-empty Slack alert (daily dedupe via `NotificationSendLog`)
+- **Runbook:** `docs/notes/founders-club-round-robin.md`
 
 ### Key Decisions
 1. **Channel-based email detection** over attribution-based — more precise gating
@@ -188,5 +195,5 @@ Safe to implement after Phase 83 is merged. If Phase 86 runs first, coordinate s
 3. **FOR UPDATE lock** for concurrency — prevents pointer drift under concurrent assignments
 
 ### Notes
-- Founders Club production config is a manual follow-up (configure setters, sequence, enable flags)
+- Founders Club production config remains manual; see `docs/notes/founders-club-round-robin.md` for steps
 - See `docs/planning/phase-89/review.md` for detailed evidence mapping
