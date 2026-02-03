@@ -19,16 +19,23 @@ type ProvisionWorkspaceRequest = {
   emailProvider?: string | null;
   emailBisonApiKey?: string;
   emailBisonWorkspaceId?: string; // numeric string
+  emailBisonBaseHostId?: string; // UUID of EmailBisonBaseHost (optional custom base host)
   smartLeadApiKey?: string;
   smartLeadWebhookSecret?: string;
   instantlyApiKey?: string;
   instantlyWebhookSecret?: string;
   unipileAccountId?: string;
+  calendlyAccessToken?: string; // Calendly calendar integration
 
   // Optional assignments (email inputs resolved server-side)
   inboxManagerEmail?: string; // legacy single inbox manager
   inboxManagerEmails?: string[] | string;
   setterEmails?: string[] | string;
+
+  // Optional round-robin settings (email inputs for sequence resolved server-side)
+  roundRobinEnabled?: boolean | string; // true/false or "true"/"false"
+  roundRobinEmailOnly?: boolean | string; // true/false or "true"/"false"
+  roundRobinSequenceEmails?: string[] | string; // emails must be in setterEmails list
 
   // Optional behavior controls
   upsert?: boolean; // if true, update an existing workspace for same ghlLocationId
@@ -200,6 +207,10 @@ function pickWorkspaceSettings(input: Record<string, unknown>): Record<string, u
     "meetingBookingProvider",
     "calendlyEventTypeLink",
     "calendlyEventTypeUri",
+    // Round-robin settings (can be set via settings object OR top-level roundRobin* fields)
+    "roundRobinEnabled",
+    "roundRobinEmailOnly",
+    // Note: roundRobinSetterSequence requires user ID resolution, so it's handled via roundRobinSequenceEmails at top level
   ] as const;
 
   const out: Record<string, unknown> = {};
@@ -261,6 +272,8 @@ function coerceWorkspaceSettings(values: Record<string, unknown>): Record<string
     "emailDigest",
     "slackAlerts",
     "autoBookMeetings",
+    "roundRobinEnabled",
+    "roundRobinEmailOnly",
   ] as const) {
     const raw = values[booleanField];
     if (typeof raw === "string") {
@@ -338,22 +351,60 @@ export async function POST(request: NextRequest) {
   const bodyRaw = (await request.json().catch(() => null)) as unknown;
   const body = bodyRaw as ProvisionWorkspaceRequest | null;
 
+  const upsert = body?.upsert === true;
+
+  // For upsert (update), only ghlLocationId is required to identify the workspace.
+  // For create (new workspace), name, ghlLocationId, and ghlPrivateKey are all required.
+  const nameField = readOptionalStringField(bodyRaw, "name");
+  const nameTouched = nameField.touched && !("error" in nameField) ? nameField.value : undefined;
   const name = normalizeOptionalString(body?.name) ?? "";
+
   const ghlLocationId = normalizeOptionalString(body?.ghlLocationId) ?? "";
+
+  const ghlPrivateKeyField = readOptionalStringField(bodyRaw, "ghlPrivateKey");
+  const ghlPrivateKeyTouched = ghlPrivateKeyField.touched && !("error" in ghlPrivateKeyField) ? ghlPrivateKeyField.value : undefined;
   const ghlPrivateKey = normalizeOptionalString(body?.ghlPrivateKey) ?? "";
+
   const userId = normalizeOptionalString(body?.userId) ?? null;
   const userEmail = normalizeOptionalString(body?.userEmail) ?? null;
 
-  if (!name || !ghlLocationId || !ghlPrivateKey) {
+  // ghlLocationId is ALWAYS required (it's the unique identifier)
+  if (!ghlLocationId) {
     return NextResponse.json(
-      { error: "Missing required fields: name, ghlLocationId, ghlPrivateKey" },
+      { error: "Missing required field: ghlLocationId" },
       { status: 400 }
     );
   }
 
-  const resolvedUser = await resolveUserId({ userId, userEmail });
-  if (!resolvedUser.ok) {
-    return NextResponse.json({ error: resolvedUser.error }, { status: resolvedUser.status });
+  // For upsert, we'll check if the workspace exists first.
+  // If it exists, we can update it. If not, we need full creation fields.
+  const existingWorkspace = await prisma.client.findUnique({ where: { ghlLocationId } });
+
+  // For create (workspace doesn't exist), name and ghlPrivateKey are required
+  if (!existingWorkspace && (!name || !ghlPrivateKey)) {
+    return NextResponse.json(
+      { error: "Missing required fields for new workspace: name, ghlLocationId, ghlPrivateKey" },
+      { status: 400 }
+    );
+  }
+
+  // User resolution: required for create, optional for update (falls back to existing owner)
+  let resolvedUserId: string;
+  if (userId || userEmail) {
+    const resolvedUser = await resolveUserId({ userId, userEmail });
+    if (!resolvedUser.ok) {
+      return NextResponse.json({ error: resolvedUser.error }, { status: resolvedUser.status });
+    }
+    resolvedUserId = resolvedUser.userId;
+  } else if (existingWorkspace) {
+    // For updates without specifying user, use the existing workspace owner
+    resolvedUserId = existingWorkspace.userId;
+  } else {
+    // Creating new workspace without specifying user
+    return NextResponse.json(
+      { error: "Missing required field for new workspace: userId or userEmail" },
+      { status: 400 }
+    );
   }
 
   const emailProviderField = readOptionalStringField(bodyRaw, "emailProvider");
@@ -408,7 +459,21 @@ export async function POST(request: NextRequest) {
   }
   const unipileAccountIdTouched = unipileAccountIdField.touched ? unipileAccountIdField.value : undefined;
 
+  const emailBisonBaseHostIdField = readOptionalStringField(bodyRaw, "emailBisonBaseHostId");
+  if (emailBisonBaseHostIdField.touched && "error" in emailBisonBaseHostIdField) {
+    return NextResponse.json({ error: emailBisonBaseHostIdField.error }, { status: 400 });
+  }
+  const emailBisonBaseHostIdTouched = emailBisonBaseHostIdField.touched ? emailBisonBaseHostIdField.value : undefined;
+
+  const calendlyAccessTokenField = readOptionalStringField(bodyRaw, "calendlyAccessToken");
+  if (calendlyAccessTokenField.touched && "error" in calendlyAccessTokenField) {
+    return NextResponse.json({ error: calendlyAccessTokenField.error }, { status: 400 });
+  }
+  const calendlyAccessTokenTouched = calendlyAccessTokenField.touched ? calendlyAccessTokenField.value : undefined;
+
   const unipileAccountId = unipileAccountIdTouched ?? null;
+  const emailBisonBaseHostId = emailBisonBaseHostIdTouched ?? null;
+  const calendlyAccessToken = calendlyAccessTokenTouched ?? null;
   const inboxManagerEmail = normalizeOptionalString(body?.inboxManagerEmail) ?? null;
   const setterEmails = normalizeEmailList(body?.setterEmails);
   const inboxManagerEmails = [
@@ -421,7 +486,22 @@ export async function POST(request: NextRequest) {
     typeof body === "object" &&
     !Array.isArray(body) &&
     ("setterEmails" in body || "inboxManagerEmails" in body || "inboxManagerEmail" in body);
-  const upsert = body?.upsert === true;
+
+  // Round-robin settings (parsed at top level, stored in WorkspaceSettings)
+  const roundRobinEnabledRaw = body?.roundRobinEnabled;
+  const roundRobinEnabled =
+    roundRobinEnabledRaw === true ||
+    (typeof roundRobinEnabledRaw === "string" && roundRobinEnabledRaw.toLowerCase() === "true");
+  const roundRobinEmailOnlyRaw = body?.roundRobinEmailOnly;
+  const roundRobinEmailOnly =
+    roundRobinEmailOnlyRaw === true ||
+    (typeof roundRobinEmailOnlyRaw === "string" && roundRobinEmailOnlyRaw.toLowerCase() === "true");
+  const roundRobinSequenceEmails = normalizeEmailList(body?.roundRobinSequenceEmails);
+  const roundRobinSpecified =
+    !!body &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    ("roundRobinEnabled" in body || "roundRobinEmailOnly" in body || "roundRobinSequenceEmails" in body);
 
   if (emailBisonWorkspaceIdTouched !== undefined && emailBisonWorkspaceIdTouched !== null) {
     const workspaceIdError = validateEmailBisonWorkspaceId(emailBisonWorkspaceIdTouched);
@@ -478,16 +558,55 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Idempotency / conflict handling.
-    const existing = await prisma.client.findUnique({ where: { ghlLocationId } });
+    // Validate round-robin sequence emails are in setter list
+    const setterEmailsSet = new Set(setterEmails);
+    const invalidSequenceEmails = roundRobinSequenceEmails.filter((email) => !setterEmailsSet.has(email));
+    if (invalidSequenceEmails.length > 0) {
+      return NextResponse.json(
+        { error: `Round robin sequence email(s) must be included in setter list: ${invalidSequenceEmails.join(", ")}` },
+        { status: 400 }
+      );
+    }
+
+    // Resolve round-robin sequence emails to user IDs (preserving order and duplicates for weighting)
+    const roundRobinSequenceUserIds: string[] = [];
+    const emailToUserId = new Map<string, string>();
+    for (let i = 0; i < setterEmails.length; i++) {
+      emailToUserId.set(setterEmails[i], setterUserIds[i]);
+    }
+    for (const email of roundRobinSequenceEmails) {
+      const userId = emailToUserId.get(email);
+      if (userId) roundRobinSequenceUserIds.push(userId);
+    }
+
+    // Validate emailBisonBaseHostId exists if provided
+    if (emailBisonBaseHostId) {
+      const baseHostExists = await prisma.emailBisonBaseHost.findUnique({
+        where: { id: emailBisonBaseHostId },
+        select: { id: true },
+      });
+      if (!baseHostExists) {
+        return NextResponse.json(
+          { error: "emailBisonBaseHostId not found" },
+          { status: 404 }
+        );
+      }
+    }
+
+    // Use existingWorkspace from earlier lookup for idempotency handling.
+    // We reference it as `existing` for brevity in the update logic below.
+    const existing = existingWorkspace;
 
     if (existing) {
       // Don't allow silently reassigning workspaces across owners.
-      if (existing.userId !== resolvedUser.userId) {
-        return NextResponse.json(
-          { error: "Workspace already exists for this locationId under a different user" },
-          { status: 409 }
-        );
+      // If a different user is specified, reject the update.
+      if (userId || userEmail) {
+        if (existing.userId !== resolvedUserId) {
+          return NextResponse.json(
+            { error: "Workspace already exists for this locationId under a different user" },
+            { status: 409 }
+          );
+        }
       }
 
       if (emailBisonWorkspaceIdTouched) {
@@ -510,6 +629,7 @@ export async function POST(request: NextRequest) {
         emailProviderTouched !== undefined ||
         emailBisonApiKeyTouched !== undefined ||
         emailBisonWorkspaceIdTouched !== undefined ||
+        emailBisonBaseHostIdTouched !== undefined ||
         smartLeadApiKeyTouched !== undefined ||
         smartLeadWebhookSecretTouched !== undefined ||
         instantlyApiKeyTouched !== undefined ||
@@ -592,6 +712,11 @@ export async function POST(request: NextRequest) {
               emailProvider: resolvedProvider,
               ...(emailBisonApiKeyTouched !== undefined ? { emailBisonApiKey: emailBisonApiKeyTouched } : {}),
               ...(emailBisonWorkspaceIdTouched !== undefined ? { emailBisonWorkspaceId: emailBisonWorkspaceIdTouched } : {}),
+              ...(emailBisonBaseHostIdTouched !== undefined
+                ? emailBisonBaseHostIdTouched
+                  ? { emailBisonBaseHost: { connect: { id: emailBisonBaseHostIdTouched } } }
+                  : { emailBisonBaseHost: { disconnect: true } }
+                : {}),
               smartLeadApiKey: null,
               smartLeadWebhookSecret: null,
               instantlyApiKey: null,
@@ -602,6 +727,7 @@ export async function POST(request: NextRequest) {
               emailProvider: resolvedProvider,
               emailBisonApiKey: null,
               emailBisonWorkspaceId: null,
+              emailBisonBaseHost: { disconnect: true },
               ...(smartLeadApiKeyTouched !== undefined ? { smartLeadApiKey: smartLeadApiKeyTouched } : {}),
               ...(smartLeadWebhookSecretTouched !== undefined ? { smartLeadWebhookSecret: smartLeadWebhookSecretTouched } : {}),
               instantlyApiKey: null,
@@ -612,6 +738,7 @@ export async function POST(request: NextRequest) {
               emailProvider: resolvedProvider,
               emailBisonApiKey: null,
               emailBisonWorkspaceId: null,
+              emailBisonBaseHost: { disconnect: true },
               smartLeadApiKey: null,
               smartLeadWebhookSecret: null,
               ...(instantlyApiKeyTouched !== undefined ? { instantlyApiKey: instantlyApiKeyTouched } : {}),
@@ -622,6 +749,7 @@ export async function POST(request: NextRequest) {
               emailProvider: null,
               emailBisonApiKey: null,
               emailBisonWorkspaceId: null,
+              emailBisonBaseHost: { disconnect: true },
               smartLeadApiKey: null,
               smartLeadWebhookSecret: null,
               instantlyApiKey: null,
@@ -636,10 +764,24 @@ export async function POST(request: NextRequest) {
 		          const workspace = await tx.client.update({
 	            where: { id: existing.id },
 	            data: {
-	              name,
-	              ghlPrivateKey,
+	              // Only update name/ghlPrivateKey if explicitly provided in the request
+	              ...(nameTouched !== undefined ? { name: nameTouched || existing.name } : {}),
+	              ...(ghlPrivateKeyTouched !== undefined ? { ghlPrivateKey: ghlPrivateKeyTouched || existing.ghlPrivateKey } : {}),
 	              ...emailUpdate,
 	              ...(unipileAccountIdTouched !== undefined ? { unipileAccountId: unipileAccountIdTouched } : {}),
+	              ...(calendlyAccessTokenTouched !== undefined
+	                ? {
+	                    calendlyAccessToken: calendlyAccessTokenTouched,
+	                    ...(calendlyAccessTokenTouched === null
+	                      ? {
+	                          calendlyUserUri: null,
+	                          calendlyOrganizationUri: null,
+	                          calendlyWebhookSubscriptionUri: null,
+	                          calendlyWebhookSigningKey: null,
+	                        }
+	                      : {}),
+	                  }
+	                : {}),
 	            },
 	            select: {
 	              id: true,
@@ -654,10 +796,19 @@ export async function POST(request: NextRequest) {
             },
           });
 
+          const roundRobinSettings = roundRobinSpecified
+            ? {
+                roundRobinEnabled,
+                roundRobinEmailOnly,
+                roundRobinSetterSequence: roundRobinSequenceUserIds,
+                ...(roundRobinSequenceUserIds.length > 0 ? { roundRobinLastSetterIndex: -1 } : {}),
+              }
+            : {};
+
           await tx.workspaceSettings.upsert({
             where: { clientId: existing.id },
-            create: { clientId: existing.id, ...(settings ?? {}) },
-            update: { ...(settings ?? {}) },
+            create: { clientId: existing.id, ...(settings ?? {}), ...roundRobinSettings },
+            update: { ...(settings ?? {}), ...roundRobinSettings },
           });
 
           const reactivationCount = await tx.reactivationCampaign.count({ where: { clientId: existing.id } });
@@ -786,12 +937,16 @@ export async function POST(request: NextRequest) {
           emailProvider: createProvider,
           emailBisonApiKey: createProvider === EmailIntegrationProvider.EMAILBISON ? (createSnapshot.emailBisonApiKey as string | null) : null,
           emailBisonWorkspaceId: createProvider === EmailIntegrationProvider.EMAILBISON ? (createSnapshot.emailBisonWorkspaceId as string | null) : null,
+          ...(createProvider === EmailIntegrationProvider.EMAILBISON && emailBisonBaseHostId
+            ? { emailBisonBaseHost: { connect: { id: emailBisonBaseHostId } } }
+            : {}),
           smartLeadApiKey: createProvider === EmailIntegrationProvider.SMARTLEAD ? (createSnapshot.smartLeadApiKey as string | null) : null,
           smartLeadWebhookSecret: createProvider === EmailIntegrationProvider.SMARTLEAD ? (createSnapshot.smartLeadWebhookSecret as string | null) : null,
           instantlyApiKey: createProvider === EmailIntegrationProvider.INSTANTLY ? (createSnapshot.instantlyApiKey as string | null) : null,
           instantlyWebhookSecret: createProvider === EmailIntegrationProvider.INSTANTLY ? (createSnapshot.instantlyWebhookSecret as string | null) : null,
           unipileAccountId,
-          userId: resolvedUser.userId,
+          calendlyAccessToken,
+          userId: resolvedUserId,
         },
         select: {
           id: true,
@@ -806,10 +961,20 @@ export async function POST(request: NextRequest) {
         },
       });
 
+      const createRoundRobinSettings = roundRobinSpecified
+        ? {
+            roundRobinEnabled,
+            roundRobinEmailOnly,
+            roundRobinSetterSequence: roundRobinSequenceUserIds,
+            ...(roundRobinSequenceUserIds.length > 0 ? { roundRobinLastSetterIndex: -1 } : {}),
+          }
+        : {};
+
       await tx.workspaceSettings.create({
         data: {
           clientId: workspace.id,
           ...(settings ?? {}),
+          ...createRoundRobinSettings,
         },
       });
 
