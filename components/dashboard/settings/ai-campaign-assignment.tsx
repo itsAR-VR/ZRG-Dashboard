@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Bot, ChevronDown, Clock, RefreshCw, Save, Timer, Undo2, User } from "lucide-react"
+import { AlertTriangle, Bot, ChevronDown, Clock, RefreshCw, Save, Timer, Undo2, User } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Slider } from "@/components/ui/slider"
 import { getEmailCampaigns, updateEmailCampaignConfig, assignBookingProcessToCampaign, assignPersonaToCampaign } from "@/actions/email-campaign-actions"
+import { getAutoSendStats, type AutoSendStats } from "@/actions/auto-send-analytics-actions"
 import { listBookingProcesses, type BookingProcessSummary } from "@/actions/booking-process-actions"
 import { listAiPersonas, type AiPersonaSummary } from "@/actions/ai-persona-actions"
 import { EMAIL_CAMPAIGNS_SYNCED_EVENT, type EmailCampaignsSyncedDetail } from "@/lib/client-events"
@@ -150,6 +151,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
   const [savingIds, setSavingIds] = useState<Record<string, boolean>>({})
   const [scheduleDraftsById, setScheduleDraftsById] = useState<Record<string, typeof DEFAULT_SCHEDULE_DRAFT>>({})
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
+  const [autoSendStats, setAutoSendStats] = useState<AutoSendStats | null>(null)
 
   const load = useCallback(async () => {
     if (!activeWorkspace) {
@@ -158,16 +160,18 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       setBookingProcesses([])
       setPersonas([])
       setScheduleDraftsById({})
+      setAutoSendStats(null)
       return
     }
 
     setLoading(true)
 
     // Load campaigns, booking processes, and personas in parallel
-    const [campaignsRes, bookingRes, personasRes] = await Promise.all([
+    const [campaignsRes, bookingRes, personasRes, statsRes] = await Promise.all([
       getEmailCampaigns(activeWorkspace),
       listBookingProcesses(activeWorkspace),
       listAiPersonas(activeWorkspace),
+      getAutoSendStats(activeWorkspace, { days: 30 }),
     ])
 
     if (!campaignsRes.success || !campaignsRes.data) {
@@ -182,6 +186,12 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
 
     if (personasRes.success && personasRes.data) {
       setPersonas(personasRes.data)
+    }
+
+    if (statsRes.success && statsRes.data) {
+      setAutoSendStats(statsRes.data)
+    } else {
+      setAutoSendStats(null)
     }
 
     const nextRows: CampaignRow[] = campaignsRes.data.map((c) => ({
@@ -246,6 +256,14 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       else setter++
     }
     return { ai, setter, total: rows.length }
+  }, [rows])
+
+  const aiResponsesNameMismatchCount = useMemo(() => {
+    return rows.filter(
+      (row) =>
+        row.responseMode !== "AI_AUTO_SEND" &&
+        (row.name || "").toLowerCase().includes("ai responses")
+    ).length
   }, [rows])
 
   const updateRow = (id: string, patch: Partial<CampaignRow>) => {
@@ -369,6 +387,12 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
             <Badge variant={counts.ai > 0 ? "default" : "secondary"} className="whitespace-nowrap">
               AI Auto‑Send: {counts.ai}/{counts.total}
             </Badge>
+            {aiResponsesNameMismatchCount > 0 ? (
+              <Badge variant="outline" className="whitespace-nowrap">
+                <AlertTriangle className="h-3.5 w-3.5 mr-1 text-amber-600" />
+                AI Responses (setter): {aiResponsesNameMismatchCount}
+              </Badge>
+            ) : null}
             <Button variant="outline" size="sm" onClick={load} disabled={!activeWorkspace || loading}>
               <RefreshCw className="h-4 w-4 mr-1.5" />
               Refresh
@@ -376,22 +400,29 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
           </div>
         </div>
 
-        <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
-          <div className="flex flex-col gap-1">
-            <span>
-              <span className="font-medium text-foreground">Setter‑managed</span>: drafts generate, humans send.
-            </span>
-            <span>
-              <span className="font-medium text-foreground">AI auto‑send</span>: drafts generate and auto‑send when evaluator says{" "}
-              <span className="font-mono">safe_to_send</span> and{" "}
-              <span className="font-mono">confidence ≥ threshold</span>; otherwise Jon gets a Slack DM for review.
-            </span>
-            <span className="text-xs">
-              Tip: For the 80/20 experiment, start with ~1 in 5 campaigns set to AI auto‑send.
-            </span>
+          <div className="rounded-lg border bg-muted/30 p-3 text-sm text-muted-foreground">
+            <div className="flex flex-col gap-1">
+              <span>
+                <span className="font-medium text-foreground">Setter‑managed</span>: drafts generate, humans send.
+              </span>
+              <span>
+                <span className="font-medium text-foreground">AI auto‑send</span>: drafts generate and auto‑send when evaluator says{" "}
+                <span className="font-mono">safe_to_send</span> and{" "}
+                <span className="font-mono">confidence ≥ threshold</span>; otherwise Jon gets a Slack DM for review.
+              </span>
+              <span className="text-xs">
+                Tip: For the 80/20 experiment, start with ~1 in 5 campaigns set to AI auto‑send.
+              </span>
+              {autoSendStats ? (
+                <span className="text-xs">
+                  <span className="font-medium text-foreground">Last {autoSendStats.window.days}d:</span>{" "}
+                  Sent {autoSendStats.messages.aiSentEmailOutbound} · Scheduled {autoSendStats.drafts.sendDelayed} · Review{" "}
+                  {autoSendStats.drafts.needsReview} · Unevaluated {autoSendStats.drafts.unevaluated}
+                </span>
+              ) : null}
+            </div>
           </div>
-        </div>
-      </CardHeader>
+        </CardHeader>
 
       <CardContent className="space-y-3">
         {!activeWorkspace ? (
@@ -409,6 +440,9 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
               const saving = Boolean(savingIds[row.id])
               const modeLabel =
                 row.responseMode === "AI_AUTO_SEND" ? "AI auto‑send" : "Setter‑managed"
+
+              const isAiResponsesNamed = (row.name || "").toLowerCase().includes("ai responses")
+              const showNameMismatchWarning = isAiResponsesNamed && row.responseMode !== "AI_AUTO_SEND"
 
               const thresholdDisabled = row.responseMode !== "AI_AUTO_SEND"
               const thresholdPct = Math.round((row.autoSendConfidenceThreshold || 0) * 100)
@@ -441,6 +475,14 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                         <div className="text-xs text-muted-foreground">
                           {row.bisonCampaignId} · {row.leadCount} leads
                         </div>
+                        {showNameMismatchWarning ? (
+                          <div className="flex items-start gap-1.5 text-xs text-amber-600">
+                            <AlertTriangle className="mt-0.5 h-3.5 w-3.5" />
+                            <span>
+                              Named “AI Responses” but mode is Setter-managed. Switch to AI auto‑send to enable sending.
+                            </span>
+                          </div>
+                        ) : null}
                       </div>
                       <div className="flex items-center gap-2">
                         <Badge
