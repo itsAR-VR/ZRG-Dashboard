@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
+import { pauseFollowUpsOnBooking } from "@/lib/followup-engine";
 import { shouldGenerateDraft } from "@/lib/ai-drafts";
 import { isPositiveSentiment, SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared";
 import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
@@ -595,6 +596,8 @@ export async function bookMeeting(
       where: { id: leadId },
       data: { status: "meeting-booked" },
     });
+
+    await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
 
     revalidatePath("/");
     return { success: true };

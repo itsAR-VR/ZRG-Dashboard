@@ -1838,6 +1838,40 @@ export async function resumeFollowUpsOnBookingCanceled(leadId: string): Promise<
 }
 
 /**
+ * Cron backstop: complete any active/paused non-post-booking sequences
+ * for leads that are already "meeting-booked".
+ */
+type FollowUpBackstopClient = Pick<typeof prisma, "followUpInstance">;
+
+export async function completeFollowUpsForMeetingBookedLeads(
+  prismaClient: FollowUpBackstopClient = prisma
+): Promise<{ completedCount: number }> {
+  try {
+    const result = await prismaClient.followUpInstance.updateMany({
+      where: {
+        status: { in: ["active", "paused"] },
+        sequence: { triggerOn: { not: "meeting_selected" } },
+        lead: { status: "meeting-booked" },
+      },
+      data: {
+        status: "completed",
+        completedAt: new Date(),
+        nextStepDue: null,
+      },
+    });
+
+    if (result.count > 0) {
+      console.log(`[Backstop] Completed ${result.count} orphaned instances for meeting-booked leads`);
+    }
+
+    return { completedCount: result.count };
+  } catch (error) {
+    console.error("[Backstop] Failed to complete follow-ups for meeting-booked leads:", error);
+    return { completedCount: 0 };
+  }
+}
+
+/**
  * Pause follow-up instances for a lead until a specific timestamp.
  * Used for "contact me after X" deferrals (snooze).
  *

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createSupabaseAdminClient, resolveSupabaseUserIdByEmail } from "@/lib/supabase/admin";
 import { Prisma } from "@prisma/client";
+import { ensureReengagementFollowUpSequenceForClient } from "@/lib/followup-sequence-reengagement";
 
 type BootstrapWorkspaceRequest = {
   workspaceName?: string;
@@ -226,6 +227,10 @@ export async function POST(request: NextRequest) {
       }
 
       return { existed: existedWorkspace, workspaceId: workspace.id };
+    });
+
+    await ensureReengagementFollowUpSequenceForClient({ prisma, clientId: result.workspaceId }).catch((error) => {
+      console.warn("[Workspace Bootstrap] Failed to seed re-engagement follow-up template:", error);
     });
 
     return NextResponse.json(

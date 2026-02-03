@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 import {
   processFollowUpsDue,
+  completeFollowUpsForMeetingBookedLeads,
   resumeAwaitingEnrichmentFollowUps,
   resumeGhostedFollowUps,
   resumeSnoozedFollowUps,
@@ -13,6 +15,17 @@ import { getDbSchemaMissingColumnsForModels, isPrismaMissingTableOrColumnError }
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
+
+const LOCK_KEY = BigInt("64064064064");
+
+async function tryAcquireLock(): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ locked: boolean }>>`select pg_try_advisory_lock(${LOCK_KEY}) as locked`;
+  return Boolean(rows?.[0]?.locked);
+}
+
+async function releaseLock(): Promise<void> {
+  await prisma.$queryRaw`select pg_advisory_unlock(${LOCK_KEY})`.catch(() => undefined);
+}
 
 const CORE_MODELS_FOR_FOLLOWUPS_CRON = [
   "Client",
@@ -66,6 +79,7 @@ async function runFollowupsCron(request: NextRequest) {
 
   const errors: string[] = [];
 
+  let backstop: unknown = null;
   let snoozed: unknown = null;
   let resumed: unknown = null;
   let enrichmentResumed: unknown = null;
@@ -73,6 +87,18 @@ async function runFollowupsCron(request: NextRequest) {
   let backfill: unknown = null;
   let results: unknown = null;
   let notificationDigests: unknown = null;
+
+  console.log("[Cron] Running booking backstop...");
+  try {
+    backstop = await completeFollowUpsForMeetingBookedLeads();
+    console.log("[Cron] Booking backstop complete:", backstop);
+  } catch (error) {
+    if (isPrismaMissingTableOrColumnError(error)) {
+      return schemaOutOfDateResponse({ path, details: error instanceof Error ? error.message : String(error) });
+    }
+    errors.push(`completeFollowUpsForMeetingBookedLeads: ${error instanceof Error ? error.message : String(error)}`);
+    console.error("[Cron] Failed to run booking backstop:", error);
+  }
 
   console.log("[Cron] Resuming snoozed follow-ups...");
   try {
@@ -164,6 +190,7 @@ async function runFollowupsCron(request: NextRequest) {
     {
       success,
       errors,
+      backstop,
       snoozed,
       resumed,
       enrichmentResumed,
@@ -189,40 +216,48 @@ async function runFollowupsCron(request: NextRequest) {
 export async function GET(request: NextRequest) {
   return withAiTelemetrySource(request.nextUrl.pathname, async () => {
     try {
-	    // Verify cron secret using Vercel's Bearer token pattern
-	    const authHeader = request.headers.get("Authorization");
-	    const expectedSecret = process.env.CRON_SECRET;
+      // Verify cron secret using Vercel's Bearer token pattern
+      const authHeader = request.headers.get("Authorization");
+      const expectedSecret = process.env.CRON_SECRET;
 
-    if (!expectedSecret) {
-      console.warn("[Cron] CRON_SECRET not configured - endpoint disabled");
-      return NextResponse.json(
-        { error: "Cron endpoint not configured" },
-        { status: 503 }
-      );
-    }
+      if (!expectedSecret) {
+        console.warn("[Cron] CRON_SECRET not configured - endpoint disabled");
+        return NextResponse.json({ error: "Cron endpoint not configured" }, { status: 503 });
+      }
 
-	    if (authHeader !== `Bearer ${expectedSecret}`) {
-	      console.warn("[Cron] Invalid authorization attempt");
-	      return NextResponse.json(
-	        { error: "Unauthorized" },
-	        { status: 401 }
-	      );
-	    }
+      if (authHeader !== `Bearer ${expectedSecret}`) {
+        console.warn("[Cron] Invalid authorization attempt");
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
 
-	    return runFollowupsCron(request);
-	    } catch (error) {
-	      console.error("[Cron] Follow-up processing error:", error);
+      const acquired = await tryAcquireLock();
+      if (!acquired) {
+        return NextResponse.json({
+          success: true,
+          skipped: true,
+          reason: "locked",
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      try {
+        return await runFollowupsCron(request);
+      } finally {
+        await releaseLock();
+      }
+    } catch (error) {
+      console.error("[Cron] Follow-up processing error:", error);
         if (isPrismaMissingTableOrColumnError(error)) {
           return schemaOutOfDateResponse({
             path: request.nextUrl.pathname,
             details: error instanceof Error ? error.message : String(error),
           });
         }
-	      return NextResponse.json(
-	        {
-	          error: "Failed to process follow-ups",
-	          message: error instanceof Error ? error.message : "Unknown error",
-	        },
+      return NextResponse.json(
+        {
+          error: "Failed to process follow-ups",
+          message: error instanceof Error ? error.message : "Unknown error",
+        },
         { status: 500 }
       );
     }
@@ -238,45 +273,51 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   return withAiTelemetrySource(request.nextUrl.pathname, async () => {
     try {
-	    // Check both Authorization header (Vercel pattern) and x-cron-secret (legacy)
-	    const authHeader = request.headers.get("Authorization");
-    const legacySecret = request.headers.get("x-cron-secret");
-    const expectedSecret = process.env.CRON_SECRET;
+      // Check both Authorization header (Vercel pattern) and x-cron-secret (legacy)
+      const authHeader = request.headers.get("Authorization");
+      const legacySecret = request.headers.get("x-cron-secret");
+      const expectedSecret = process.env.CRON_SECRET;
 
-    if (!expectedSecret) {
-      console.warn("[Cron] CRON_SECRET not configured - endpoint disabled");
-      return NextResponse.json(
-        { error: "Cron endpoint not configured" },
-        { status: 503 }
-      );
-    }
+      if (!expectedSecret) {
+        console.warn("[Cron] CRON_SECRET not configured - endpoint disabled");
+        return NextResponse.json({ error: "Cron endpoint not configured" }, { status: 503 });
+      }
 
-    const isAuthorized = 
-      authHeader === `Bearer ${expectedSecret}` || 
-      legacySecret === expectedSecret;
+      const isAuthorized = authHeader === `Bearer ${expectedSecret}` || legacySecret === expectedSecret;
 
-	    if (!isAuthorized) {
-	      console.warn("[Cron] Invalid authorization attempt");
-	      return NextResponse.json(
-	        { error: "Unauthorized" },
-	        { status: 401 }
-	      );
-	    }
+      if (!isAuthorized) {
+        console.warn("[Cron] Invalid authorization attempt");
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      }
 
-	    return runFollowupsCron(request);
-	    } catch (error) {
-	      console.error("[Cron] Follow-up processing error:", error);
+      const acquired = await tryAcquireLock();
+      if (!acquired) {
+        return NextResponse.json({
+          success: true,
+          skipped: true,
+          reason: "locked",
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      try {
+        return await runFollowupsCron(request);
+      } finally {
+        await releaseLock();
+      }
+    } catch (error) {
+      console.error("[Cron] Follow-up processing error:", error);
         if (isPrismaMissingTableOrColumnError(error)) {
           return schemaOutOfDateResponse({
             path: request.nextUrl.pathname,
             details: error instanceof Error ? error.message : String(error),
           });
         }
-	      return NextResponse.json(
-	        {
-	          error: "Failed to process follow-ups",
-	          message: error instanceof Error ? error.message : "Unknown error",
-	        },
+      return NextResponse.json(
+        {
+          error: "Failed to process follow-ups",
+          message: error instanceof Error ? error.message : "Unknown error",
+        },
         { status: 500 }
       );
     }

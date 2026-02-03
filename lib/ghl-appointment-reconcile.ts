@@ -23,6 +23,7 @@ import { pauseFollowUpsOnBooking } from "@/lib/followup-engine";
 import { createCancellationTask } from "@/lib/appointment-cancellation-task";
 import { upsertAppointmentWithRollup, mapStringToAppointmentStatus } from "@/lib/appointment-upsert";
 import { AppointmentSource as PrismaAppointmentSource, AppointmentStatus } from "@prisma/client";
+import { resolveGhlContactIdForLead } from "@/lib/ghl-contacts";
 
 export interface GHLReconcileResult {
   leadId: string;
@@ -161,14 +162,22 @@ export async function reconcileGHLAppointmentForLead(
       return { leadId, status: "skipped", error: "No GHL credentials configured" };
     }
 
-    // Skip if no ghlContactId
-    if (!lead.ghlContactId) {
+    // Resolve ghlContactId if missing (search-only, no create)
+    let ghlContactId = lead.ghlContactId;
+    if (!ghlContactId) {
+      const resolved = await resolveGhlContactIdForLead(leadId);
+      if (resolved.success && resolved.ghlContactId) {
+        ghlContactId = resolved.ghlContactId;
+      }
+    }
+
+    if (!ghlContactId) {
       return { leadId, status: "skipped", error: "No ghlContactId" };
     }
 
     // Fetch appointments from GHL
     const appointmentsResult = await getGHLContactAppointments(
-      lead.ghlContactId,
+      ghlContactId,
       lead.client.ghlPrivateKey,
       { locationId: lead.client.ghlLocationId }
     );
@@ -365,6 +374,11 @@ export async function reconcileGHLAppointmentById(
 
     const normalizedStatus = normalizeGHLAppointmentStatus(appointment.appointmentStatus);
     const isCanceled = normalizedStatus === APPOINTMENT_STATUS.CANCELED;
+    const wasBooked =
+      lead.appointmentStatus === APPOINTMENT_STATUS.CONFIRMED ||
+      Boolean(lead.ghlAppointmentId && lead.appointmentStatus !== APPOINTMENT_STATUS.CANCELED);
+    const isNewBooking = !wasBooked && !isCanceled;
+    const isNewCancellation = wasBooked && isCanceled;
 
     const startTime = new Date(appointment.startTime);
     const endTime = new Date(appointment.endTime);
@@ -381,6 +395,22 @@ export async function reconcileGHLAppointmentById(
         status: mapStringToAppointmentStatus(normalizedStatus),
         canceledAt: isCanceled ? new Date() : null,
       });
+
+      if (!opts.skipSideEffects) {
+        if (isNewBooking) {
+          await autoStartPostBookingSequenceIfEligible({ leadId });
+          await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
+        }
+
+        if (isNewCancellation) {
+          await createCancellationTask({
+            leadId,
+            taskType: "meeting-canceled",
+            appointmentStartTime: startTime,
+            provider: "GHL",
+          });
+        }
+      }
     }
 
     // Watermark is advanced as part of upsertAppointmentWithRollup for success case
@@ -391,6 +421,7 @@ export async function reconcileGHLAppointmentById(
       appointmentStatus: normalizedStatus,
       startTime: appointment.startTime,
       endTime: appointment.endTime,
+      wasTransition: isNewBooking || isNewCancellation,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

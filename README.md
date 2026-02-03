@@ -381,6 +381,31 @@ Example shape:
 - `201` on create: `{ "success": true, "existed": false, "workspace": { ... } }`
 - `200` if workspace already exists for the same `ghlLocationId`: `{ "success": true, "existed": true, ... }`
 
+### Follow-Up Template Backfill (Re-engagement)
+
+- **Endpoint:** `/api/admin/followup-sequences/reengagement/backfill`
+- **Methods:** `GET` (dry-run), `POST` (apply)
+- **Auth:** `Authorization: Bearer ${WORKSPACE_PROVISIONING_SECRET}` (fallback to `ADMIN_ACTIONS_SECRET` or `CRON_SECRET`)
+- **Purpose:** Ensures every workspace has the `Re-engagement Follow-up` sequence template.
+  - Workspaces without Unipile configured will be seeded without the LinkedIn step.
+  - Workspaces with `WorkspaceSettings.airtableMode=true` will be seeded without the Email step.
+
+**Dry-run (recommended first)**
+
+```bash
+curl -sS "http://localhost:3000/api/admin/followup-sequences/reengagement/backfill" \
+  -H "Authorization: Bearer $WORKSPACE_PROVISIONING_SECRET"
+```
+
+**Apply to all workspaces**
+
+```bash
+curl -sS -X POST "http://localhost:3000/api/admin/followup-sequences/reengagement/backfill" \
+  -H "Authorization: Bearer $WORKSPACE_PROVISIONING_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{ "apply": true, "allClients": true, "confirmAllClients": "YES" }'
+```
+
 ### Workspace Bootstrap (White-Label / Empty Workspace)
 
 - **Endpoint:** `/api/admin/workspaces/bootstrap`

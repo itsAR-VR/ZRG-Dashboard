@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
+import { pauseFollowUpsOnBooking } from "@/lib/followup-engine";
 import { requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
 
 async function requireFollowUpTaskAccess(taskId: string): Promise<void> {
@@ -492,6 +493,10 @@ export async function updateLeadFollowUpStatus(
       where: { id: leadId },
       data: updateData,
     });
+
+    if (outcome === "meeting-booked") {
+      await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
+    }
 
     revalidatePath("/");
     return {

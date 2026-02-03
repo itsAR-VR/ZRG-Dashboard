@@ -440,6 +440,11 @@ export async function reconcileCalendlyBookingByUri(
 
     const normalizedStatus = normalizeCalendlyStatus(event.status);
     const isCanceled = normalizedStatus === APPOINTMENT_STATUS.CANCELED;
+    const wasBooked =
+      lead.appointmentStatus === APPOINTMENT_STATUS.CONFIRMED ||
+      Boolean(lead.calendlyScheduledEventUri && lead.appointmentStatus !== APPOINTMENT_STATUS.CANCELED);
+    const isNewBooking = !wasBooked && !isCanceled;
+    const isNewCancellation = wasBooked && isCanceled;
 
     const startTime = new Date(event.start_time);
     const endTime = new Date(event.end_time);
@@ -471,9 +476,31 @@ export async function reconcileCalendlyBookingByUri(
             appointmentSource: source,
             appointmentLastCheckedAt: new Date(),
             appointmentCanceledAt: isCanceled ? new Date() : null,
-            status: isCanceled && lead.status === "meeting-booked" ? "qualified" : lead.status,
+            status:
+              isCanceled && lead.status === "meeting-booked"
+                ? "qualified"
+                : isCanceled
+                  ? lead.status
+                  : "meeting-booked",
+            appointmentBookedAt: !isCanceled ? (lead.appointmentBookedAt ?? new Date()) : lead.appointmentBookedAt,
           },
         });
+      }
+
+      if (!opts.skipSideEffects) {
+        if (isNewBooking) {
+          await autoStartPostBookingSequenceIfEligible({ leadId });
+          await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
+        }
+
+        if (isNewCancellation) {
+          await createCancellationTask({
+            leadId,
+            taskType: "meeting-canceled",
+            appointmentStartTime: startTime,
+            provider: "CALENDLY",
+          });
+        }
       }
     }
 
@@ -484,6 +511,7 @@ export async function reconcileCalendlyBookingByUri(
       appointmentStatus: normalizedStatus,
       startTime: event.start_time,
       endTime: event.end_time,
+      wasTransition: isNewBooking || isNewCancellation,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

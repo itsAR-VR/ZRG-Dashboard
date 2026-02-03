@@ -5,14 +5,14 @@
  * Used by both the cron endpoint and CLI backfill scripts.
  *
  * Lead eligibility heuristic (tunable):
- * - Has inbound replies (not just cold outbound)
+ * - Hot leads: active non-post-booking sequences (appointmentLastCheckedAt null or older than hot cutoff)
+ * - Warm leads: inbound replies + stale/backfill conditions (appointmentLastCheckedAt older than cutoff)
  * - Missing provider IDs but sentiment indicates meeting requested/booked
- * - appointmentLastCheckedAt older than cutoff (stale)
  * - appointmentBookedAt present but missing timing/status
  */
 
 import { prisma } from "@/lib/prisma";
-import type { MeetingBookingProvider } from "@prisma/client";
+import type { MeetingBookingProvider, Prisma } from "@prisma/client";
 import {
   reconcileGHLAppointmentForLead,
   reconcileGHLAppointmentById,
@@ -31,6 +31,7 @@ import { APPOINTMENT_SOURCE, type AppointmentSource } from "@/lib/meeting-lifecy
 const DEFAULT_WORKSPACE_LIMIT = 10;
 const DEFAULT_LEADS_PER_WORKSPACE = 50;
 const DEFAULT_STALE_DAYS = 7; // Re-check leads not checked in 7 days
+const DEFAULT_HOT_MINUTES = 1; // Re-check hot leads within N minutes
 
 // Circuit breaker thresholds (Phase 57d)
 const DEFAULT_CIRCUIT_BREAKER_ERROR_RATE = 0.5; // 50% error rate triggers circuit breaker
@@ -46,6 +47,96 @@ function getCircuitBreakerMinChecks(): number {
   const parsed = Number.parseInt(process.env.RECONCILE_CIRCUIT_BREAKER_MIN_CHECKS || "", 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_CIRCUIT_BREAKER_MIN_CHECKS;
   return Math.max(1, Math.trunc(parsed));
+}
+
+export function getReconcileHotMinutes(): number {
+  const parsed = Number.parseInt(process.env.RECONCILE_HOT_MINUTES || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_HOT_MINUTES;
+  return Math.max(1, Math.trunc(parsed));
+}
+
+export function getHotCutoff(now: Date, hotMinutes?: number): Date {
+  const minutes = hotMinutes ?? getReconcileHotMinutes();
+  return new Date(now.getTime() - minutes * 60 * 1000);
+}
+
+export function buildProviderEligibilityWhere(provider: MeetingBookingProvider): Prisma.LeadWhereInput {
+  if (provider === "GHL") {
+    return {
+      OR: [
+        { ghlContactId: { not: null } },
+        { email: { not: null } },
+        { ghlAppointmentId: { not: null } },
+      ],
+    };
+  }
+
+  return { email: { not: null } };
+}
+
+export function buildHotLeadWhere(opts: {
+  clientId: string;
+  provider: MeetingBookingProvider;
+  hotCutoff: Date;
+  excludeIds?: string[];
+}): Prisma.LeadWhereInput {
+  const conditions: Prisma.LeadWhereInput[] = [
+    { clientId: opts.clientId },
+    buildProviderEligibilityWhere(opts.provider),
+    {
+      followUpInstances: {
+        some: {
+          status: "active",
+          sequence: { triggerOn: { not: "meeting_selected" } },
+        },
+      },
+    },
+    {
+      OR: [
+        { appointmentLastCheckedAt: null },
+        { appointmentLastCheckedAt: { lt: opts.hotCutoff } },
+      ],
+    },
+  ];
+
+  if (opts.excludeIds && opts.excludeIds.length > 0) {
+    conditions.push({ id: { notIn: opts.excludeIds } });
+  }
+
+  return { AND: conditions };
+}
+
+export function buildWarmLeadWhere(opts: {
+  clientId: string;
+  provider: MeetingBookingProvider;
+  staleCutoff: Date;
+  excludeIds?: string[];
+}): Prisma.LeadWhereInput {
+  const conditions: Prisma.LeadWhereInput[] = [
+    { clientId: opts.clientId },
+    buildProviderEligibilityWhere(opts.provider),
+    { lastInboundAt: { not: null } },
+    {
+      OR: [
+        { appointmentLastCheckedAt: null },
+        { appointmentLastCheckedAt: { lt: opts.staleCutoff } },
+        {
+          appointmentStatus: null,
+          OR: [
+            { ghlAppointmentId: { not: null } },
+            { calendlyInviteeUri: { not: null } },
+            { calendlyScheduledEventUri: { not: null } },
+          ],
+        },
+      ],
+    },
+  ];
+
+  if (opts.excludeIds && opts.excludeIds.length > 0) {
+    conditions.push({ id: { notIn: opts.excludeIds } });
+  }
+
+  return { AND: conditions };
 }
 
 export interface ReconcileRunnerOptions {
@@ -150,48 +241,15 @@ async function getEligibleWorkspaces(opts: ReconcileRunnerOptions): Promise<
  *    - Checked more than `staleDays` ago
  *    - Has booking evidence but missing status
  */
-async function getEligibleLeads(
+async function getHotLeads(
   clientId: string,
   provider: MeetingBookingProvider,
-  opts: ReconcileRunnerOptions
+  limit: number
 ): Promise<Array<{ id: string; ghlContactId: string | null; email: string | null; ghlAppointmentId: string | null; calendlyScheduledEventUri: string | null }>> {
-  const limit = opts.leadsPerWorkspace ?? DEFAULT_LEADS_PER_WORKSPACE;
-  const staleDays = opts.staleDays ?? DEFAULT_STALE_DAYS;
-  const staleCutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000);
-
-  // Base criteria for both providers
-  const baseWhere = {
-    clientId,
-    // Must have at least one inbound reply
-    lastInboundAt: { not: null },
-    OR: [
-      // Never checked
-      { appointmentLastCheckedAt: null },
-      // Stale (checked more than X days ago)
-      { appointmentLastCheckedAt: { lt: staleCutoff } },
-      // Has booking evidence but missing status
-      {
-        appointmentStatus: null,
-        OR: [
-          { ghlAppointmentId: { not: null } },
-          { calendlyInviteeUri: { not: null } },
-          { calendlyScheduledEventUri: { not: null } },
-        ],
-      },
-    ],
-  };
-
-  // Add provider-specific requirements
-  const providerWhere =
-    provider === "GHL"
-      ? { ghlContactId: { not: null } }
-      : { email: { not: null } };
+  const hotCutoff = getHotCutoff(new Date(), getReconcileHotMinutes());
 
   const leads = await prisma.lead.findMany({
-    where: {
-      ...baseWhere,
-      ...providerWhere,
-    },
+    where: buildHotLeadWhere({ clientId, provider, hotCutoff }),
     select: {
       id: true,
       ghlContactId: true,
@@ -199,10 +257,38 @@ async function getEligibleLeads(
       ghlAppointmentId: true,
       calendlyScheduledEventUri: true,
     },
-    orderBy: [
-      // Prioritize leads never checked
-      { appointmentLastCheckedAt: "asc" },
-    ],
+    orderBy: [{ appointmentLastCheckedAt: "asc" }],
+    take: limit,
+  });
+
+  return leads;
+}
+
+async function getWarmLeads(
+  clientId: string,
+  provider: MeetingBookingProvider,
+  opts: ReconcileRunnerOptions,
+  limit: number,
+  excludeIds: string[]
+): Promise<Array<{ id: string; ghlContactId: string | null; email: string | null; ghlAppointmentId: string | null; calendlyScheduledEventUri: string | null }>> {
+  const staleDays = opts.staleDays ?? DEFAULT_STALE_DAYS;
+  const staleCutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000);
+
+  const leads = await prisma.lead.findMany({
+    where: buildWarmLeadWhere({
+      clientId,
+      provider,
+      staleCutoff,
+      excludeIds,
+    }),
+    select: {
+      id: true,
+      ghlContactId: true,
+      email: true,
+      ghlAppointmentId: true,
+      calendlyScheduledEventUri: true,
+    },
+    orderBy: [{ appointmentLastCheckedAt: "asc" }],
     take: limit,
   });
 
@@ -226,7 +312,12 @@ async function reconcileWorkspace(
   const provider = workspace.provider;
   const source = opts.source ?? APPOINTMENT_SOURCE.RECONCILE_CRON;
 
-  const leads = await getEligibleLeads(workspace.id, provider, opts);
+  const limit = opts.leadsPerWorkspace ?? DEFAULT_LEADS_PER_WORKSPACE;
+  const hotLeads = await getHotLeads(workspace.id, provider, limit);
+  const hotIds = hotLeads.map((lead) => lead.id);
+  const remaining = Math.max(0, limit - hotLeads.length);
+  const warmLeads = remaining > 0 ? await getWarmLeads(workspace.id, provider, opts, remaining, hotIds) : [];
+  const leads = [...hotLeads, ...warmLeads];
 
   const counters = {
     leadsChecked: 0,
@@ -407,9 +498,6 @@ export async function reconcileSingleLead(
   if (provider === "GHL") {
     if (!lead.client.ghlPrivateKey || !lead.client.ghlLocationId) {
       return { leadId, status: "error", error: "No GHL credentials configured" };
-    }
-    if (!lead.ghlContactId) {
-      return { leadId, status: "error", error: "No ghlContactId" };
     }
 
     if (lead.ghlAppointmentId) {

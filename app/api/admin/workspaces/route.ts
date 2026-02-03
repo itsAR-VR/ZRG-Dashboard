@@ -4,6 +4,7 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { ClientMemberRole, EmailIntegrationProvider, Prisma } from "@prisma/client";
 import { ensureDefaultSequencesIncludeLinkedInStepsForClient } from "@/lib/followup-sequence-linkedin";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
+import { ensureReengagementFollowUpSequenceForClient } from "@/lib/followup-sequence-reengagement";
 
 type ProvisionWorkspaceRequest = {
   // Required
@@ -852,6 +853,10 @@ export async function POST(request: NextRequest) {
 	          await ensureDefaultSequencesIncludeLinkedInStepsForClient({ prisma, clientId: updated.id });
 	        }
 
+	        await ensureReengagementFollowUpSequenceForClient({ prisma, clientId: updated.id }).catch((error) => {
+	          console.warn("[Provision Workspace] Failed to seed re-engagement follow-up template:", error);
+	        });
+
 	        return NextResponse.json({ success: true, existed: true, updated: true, workspace: updated }, { status: 200 });
 	      }
 
@@ -1005,6 +1010,10 @@ export async function POST(request: NextRequest) {
 	    if ((created.unipileAccountId ?? "").trim()) {
 	      await ensureDefaultSequencesIncludeLinkedInStepsForClient({ prisma, clientId: created.id });
 	    }
+
+	    await ensureReengagementFollowUpSequenceForClient({ prisma, clientId: created.id }).catch((error) => {
+	      console.warn("[Provision Workspace] Failed to seed re-engagement follow-up template:", error);
+	    });
 
 	    return NextResponse.json({ success: true, existed: false, workspace: created }, { status: 201 });
 	  } catch (error) {
