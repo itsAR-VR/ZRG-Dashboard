@@ -61,8 +61,8 @@ function resolveTemperatureAndReasoning(opts: {
 } {
   const hasTemperature = typeof opts.temperature === "number" && Number.isFinite(opts.temperature);
   if (hasTemperature) {
-    // OpenAI model compatibility: temperature requires reasoning effort = "none" on gpt-5.2.
-    if (opts.model === "gpt-5.2") {
+    // OpenAI model compatibility: temperature requires reasoning effort = "none" on gpt-5.* models.
+    if (opts.model === "gpt-5.2" || opts.model.startsWith("gpt-5")) {
       return { temperature: opts.temperature!, reasoning: { effort: "none" } };
     }
     // For other models, omit reasoning to preserve temperature controls when supported.
