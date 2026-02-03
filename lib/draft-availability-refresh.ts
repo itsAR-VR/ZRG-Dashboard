@@ -6,6 +6,7 @@ import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
 import { buildRefreshCandidates, detectPreferredTimezoneToken } from "@/lib/availability-refresh-candidates";
 import { refreshAvailabilityInDraftViaAi } from "@/lib/availability-refresh-ai";
+import { computeRefreshedOfferedSlots } from "@/lib/offered-slots-refresh";
 import type { AvailabilitySource } from "@prisma/client";
 
 export type RefreshDraftAvailabilityResult = {
@@ -116,6 +117,15 @@ export async function refreshDraftAvailabilityCore(opts: {
     slotUtcIsoList.push(iso);
   }
 
+  const updatedOfferedSlots = computeRefreshedOfferedSlots({
+    existingOfferedSlotsJson: draft.lead.offeredSlots,
+    updatedDraft: refreshResult.updatedDraft,
+    replacementsApplied: refreshResult.replacementsApplied,
+    labelToDatetimeUtcIso: candidatesResult.labelToDatetimeUtcIso,
+    offeredAtIso,
+    availabilitySource: candidatesResult.availabilitySource,
+  });
+
   await prisma.$transaction([
     prisma.aIDraft.update({
       where: { id: draft.id },
@@ -124,14 +134,7 @@ export async function refreshDraftAvailabilityCore(opts: {
     prisma.lead.update({
       where: { id: draft.leadId },
       data: {
-        offeredSlots: JSON.stringify(
-          newSlots.map((label, index) => ({
-            datetime: slotUtcIsoList[index],
-            label,
-            offeredAt: offeredAtIso,
-            availabilitySource: candidatesResult.availabilitySource,
-          }))
-        ),
+        offeredSlots: updatedOfferedSlots.length > 0 ? JSON.stringify(updatedOfferedSlots) : null,
       },
     }),
   ]);

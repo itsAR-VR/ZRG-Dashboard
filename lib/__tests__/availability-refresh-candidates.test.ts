@@ -83,6 +83,40 @@ describe("buildRefreshCandidates", () => {
 
     assert.equal(result.candidates.length, 1);
   });
+
+  it("falls back to returning offered slots when no fresh slots remain", async () => {
+    const now = new Date();
+    const isoTomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    const isoDay2 = new Date(now.getTime() + 2 * 24 * 60 * 60 * 1000).toISOString();
+
+    const deps = {
+      getWorkspaceAvailabilitySlotsUtc: async () => ({
+        slotsUtc: [isoTomorrow, isoDay2],
+        availabilitySource: "DEFAULT" as const,
+        calendarType: "unknown" as const,
+        calendarUrl: "",
+        providerMeta: {},
+        lastError: null,
+      }),
+      getWorkspaceSlotOfferCountsForRange: async () => new Map<string, number>(),
+      ensureLeadTimezone: async () => ({ timezone: "UTC", source: "existing" as const }),
+    };
+
+    const result = await buildRefreshCandidates({
+      clientId: "client-1",
+      leadId: "lead-1",
+      leadOfferedSlotsJson: JSON.stringify([{ datetime: isoTomorrow }, { datetime: isoDay2 }]),
+      snoozedUntil: null,
+      availabilitySource: "DEFAULT",
+      candidateCap: 5,
+      timeZoneOverride: "UTC",
+      deps,
+    });
+
+    const datetimes = result.candidates.map((c) => c.datetimeUtcIso);
+    assert.equal(datetimes.includes(isoTomorrow), true);
+    assert.equal(datetimes.includes(isoDay2), true);
+  });
 });
 
 describe("detectPreferredTimezoneToken", () => {

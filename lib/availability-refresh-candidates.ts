@@ -161,7 +161,8 @@ export async function buildRefreshCandidates(opts: {
     ensureLeadTimezone?: typeof ensureLeadTimezone;
   };
 }): Promise<BuildRefreshCandidatesResult> {
-  const candidateCap = Number.isFinite(opts.candidateCap) && (opts.candidateCap || 0) > 0 ? Math.floor(opts.candidateCap!) : 50;
+  const candidateCap =
+    Number.isFinite(opts.candidateCap) && (opts.candidateCap || 0) > 0 ? Math.floor(opts.candidateCap!) : 50;
   const now = new Date();
   const snoozedUntil = opts.snoozedUntil && opts.snoozedUntil > now ? opts.snoozedUntil : null;
   const anchor = snoozedUntil && snoozedUntil > now ? snoozedUntil : now;
@@ -183,12 +184,17 @@ export async function buildRefreshCandidates(opts: {
 
   const offeredSet = parseOfferedSlotsJson(opts.leadOfferedSlotsJson);
 
-  const filtered = availability.slotsUtc
-    .map(normalizeIso)
-    .filter((iso): iso is string => !!iso)
-    .filter((iso) => !offeredSet.has(iso))
+  const normalizedAvailability = availability.slotsUtc.map(normalizeIso).filter((iso): iso is string => !!iso);
+
+  const future = normalizedAvailability
     .filter((iso) => new Date(iso).getTime() >= anchor.getTime())
     .filter((iso) => !isOnOrBeforeTodayLocal(iso, now, timeZone));
+
+  const notPreviouslyOffered = future.filter((iso) => !offeredSet.has(iso));
+
+  // If we've already offered every available slot in-range, allow returning the offered slots
+  // instead of failing with an empty candidate list.
+  const pool = notPreviouslyOffered.length > 0 ? notPreviouslyOffered : future;
 
   const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
   const getWorkspaceSlotOfferCountsForRangeFn =
@@ -197,7 +203,7 @@ export async function buildRefreshCandidates(opts: {
     availabilitySource: availability.availabilitySource,
   });
 
-  const scored = filtered
+  const scored = pool
     .map((iso) => ({
       iso,
       offeredCount: offerCounts.get(iso) ?? 0,
