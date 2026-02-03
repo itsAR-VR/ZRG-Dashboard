@@ -166,6 +166,10 @@ export async function scoreLeadFromConversation(
       industry?: string | null;
       employeeHeadcount?: string | null;
     };
+    /**
+     * OpenAI SDK request retries for transient 5xx / network errors.
+     * (Not prompt-runner multi-attempt retries.)
+     */
     maxRetries?: number;
   }
 ): Promise<LeadScore | null> {
@@ -188,7 +192,6 @@ export async function scoreLeadFromConversation(
       ? `...[earlier messages truncated]...\n\n${transcript.slice(-maxTranscriptChars)}`
       : transcript;
 
-  const maxRetries = opts.maxRetries ?? 3;
   const model = "gpt-5-nano";
 
   const userPrompt = buildScoringUserPrompt({
@@ -221,9 +224,13 @@ export async function scoreLeadFromConversation(
   } as const;
 
   const timeoutMs = Math.max(5_000, Number.parseInt(process.env.OPENAI_LEAD_SCORING_TIMEOUT_MS || "20000", 10) || 20_000);
-  const attempts = Array.from({ length: Math.max(1, maxRetries) }, (_, attemptIndex) =>
-    Math.min(baseBudget.maxOutputTokens + attemptIndex * 250, 1500)
-  );
+  const maxRetriesEnv = Number.parseInt(process.env.OPENAI_LEAD_SCORING_MAX_RETRIES || "2", 10);
+  const requestMaxRetries =
+    typeof opts.maxRetries === "number" && Number.isFinite(opts.maxRetries)
+      ? Math.max(0, Math.trunc(opts.maxRetries))
+      : Number.isFinite(maxRetriesEnv) && maxRetriesEnv >= 0
+        ? Math.max(0, Math.min(5, Math.trunc(maxRetriesEnv)))
+        : 2;
 
   const result = await runStructuredJsonPrompt<LeadScore>({
     pattern: "structured_json",
@@ -238,13 +245,15 @@ export async function scoreLeadFromConversation(
     schemaName: "lead_score",
     strict: true,
     schema,
-    attempts,
+    attempts: [baseBudget.maxOutputTokens],
+    maxAttempts: 1,
     budget: {
       min: 400,
       max: 1000,
     },
-    timeoutMs: timeoutMs + Math.max(0, maxRetries - 1) * 5_000,
-    maxRetries: 0,
+    timeoutMs,
+    // Use SDK request retries for transient errors; avoid prompt-runner multi-attempt loops for this scorer.
+    maxRetries: requestMaxRetries,
     validate: (value) => {
       const anyValue = value as any;
       if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not an object" };

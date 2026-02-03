@@ -264,7 +264,7 @@ model Message {
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (for webhooks) |
 | `OPENAI_API_KEY` | OpenAI API key |
 | `OPENAI_DRAFT_TIMEOUT_MS` | (Optional) Max time for AI draft generation (default `120000`) |
-| `OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS` | (Optional) Max time for AI draft generation inside webhooks (default `20000`) |
+| `OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS` | (Optional) Max time for AI draft generation inside webhook/background-job contexts (default `30000`) |
 | `OPENAI_DRAFT_TOKEN_BUDGET_MULTIPLIER` | (Optional) Output token budget multiplier for drafts (default `3`) |
 | `OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP` | (Optional) Hard cap for `max_output_tokens` on draft retries (default `12000`) |
 | `OPENAI_DRAFT_PREFER_API_TOKEN_COUNT` | (Optional) Use OpenAI input-tokens count API for sizing draft budgets (default `false`) |
@@ -272,6 +272,13 @@ model Message {
 | `OPENAI_EMAIL_DRAFT_MAX_CHARS` | (Optional) Maximum characters for generated email drafts (default `1200`) |
 | `OPENAI_EMAIL_GENERATION_MAX_ATTEMPTS` | (Optional) Max attempts for the email generation step when output is truncated (default `2`) |
 | `OPENAI_EMAIL_GENERATION_TOKEN_INCREMENT` | (Optional) Output token increment per email generation retry (default `2000`) |
+| `OPENAI_EMAIL_VERIFIER_TIMEOUT_MS_CAP` | (Optional) Cap for Step 3 email draft verification timeout slice (default `45000`) |
+| `OPENAI_EMAIL_VERIFIER_TIMEOUT_MS_MIN` | (Optional) Min for Step 3 email draft verification timeout slice (default `8000`) |
+| `OPENAI_EMAIL_VERIFIER_TIMEOUT_SHARE` | (Optional) Share of overall draft timeout used for Step 3 email verification (default `0.35`) |
+| `OPENAI_SIGNATURE_CONTEXT_TIMEOUT_MS_CAP` | (Optional) Cap for email signature-context extraction timeout slice (default `10000`) |
+| `OPENAI_SIGNATURE_CONTEXT_TIMEOUT_MS_MIN` | (Optional) Min for email signature-context extraction timeout slice (default `3000`) |
+| `OPENAI_SIGNATURE_CONTEXT_TIMEOUT_SHARE` | (Optional) Share of overall draft timeout used for signature-context extraction (default `0.2`) |
+| `OPENAI_LEAD_SCORING_MAX_RETRIES` | (Optional) OpenAI SDK request retries for lead scoring (default `2`) |
 | `SUPABASE_KNOWLEDGE_ASSETS_BUCKET` | (Optional) Supabase Storage bucket name for Knowledge Asset uploads (default `knowledge-assets`) |
 | `KNOWLEDGE_ASSET_MAX_BYTES` | (Optional) Max upload size for Knowledge Asset files (default `12582912` = 12MB) |
 | `CRAWL4AI_SERVICE_URL` | (Optional) Crawl4AI HTTP service URL for best website extraction (recommended for prod) |

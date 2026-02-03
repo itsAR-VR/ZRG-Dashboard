@@ -2380,7 +2380,9 @@ export async function parseProposedTimesFromMessage(
     promptKey: "followup.parse_proposed_times.v1",
     featureId: "followup.parse_proposed_times",
     model,
-    reasoningEffort: "low",
+    // Extraction task: keep reasoning minimal to avoid burning output tokens.
+    reasoningEffort: "minimal",
+    maxAttempts: 4,
     systemFallback: `You extract proposed meeting start times from a message and output UTC ISO datetimes.
 
 Context:
@@ -2399,9 +2401,9 @@ Output JSON.`,
     schemaName: "proposed_times",
     schema,
     budget: {
-      min: 256,
-      max: 800,
-      retryMax: 1400,
+      min: 512,
+      max: 1200,
+      retryMax: 2400,
       overheadTokens: 192,
       outputScale: 0.15,
       preferApiCount: true,

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { processBackgroundJobs } from "@/lib/background-jobs/runner";
 
@@ -19,10 +20,31 @@ function isAuthorized(request: NextRequest): boolean {
   return authHeader === `Bearer ${expectedSecret}` || legacy === expectedSecret;
 }
 
+const LOCK_KEY = BigInt("63063063063");
+
+async function tryAcquireLock(): Promise<boolean> {
+  const rows = await prisma.$queryRaw<Array<{ locked: boolean }>>`select pg_try_advisory_lock(${LOCK_KEY}) as locked`;
+  return Boolean(rows?.[0]?.locked);
+}
+
+async function releaseLock(): Promise<void> {
+  await prisma.$queryRaw`select pg_advisory_unlock(${LOCK_KEY})`.catch(() => undefined);
+}
+
 export async function GET(request: NextRequest) {
   return withAiTelemetrySource(request.nextUrl.pathname, async () => {
     if (!isAuthorized(request)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const acquired = await tryAcquireLock();
+    if (!acquired) {
+      return NextResponse.json({
+        success: true,
+        skipped: true,
+        reason: "locked",
+        timestamp: new Date().toISOString(),
+      });
     }
 
     try {
@@ -41,6 +63,8 @@ export async function GET(request: NextRequest) {
         },
         { status: 500 }
       );
+    } finally {
+      await releaseLock();
     }
   });
 }
@@ -48,4 +72,3 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   return GET(request);
 }
-

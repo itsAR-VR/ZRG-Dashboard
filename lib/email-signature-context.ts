@@ -278,6 +278,14 @@ export async function extractImportantEmailSignatureContext(opts: {
 
   const input = `Expected lead: ${leadName} <${leadEmail}>\n\nSignature/footer candidate (may include junk/disclaimers):\n${signatureFooterCandidate.slice(0, 5000)}\n\nDetected URLs (choose only from these; do not invent):\n${detectedUrls.map((u) => `- ${u}`).join("\n") || "(none)"}`;
 
+  // Phase 94: defaulting to ~10s removes the deterministic ~4.5s timeout cliff when callers
+  // don't pass a timeout. Callers can still pass tighter timeouts (e.g., webhook contexts).
+  const defaultTimeoutMs = Math.max(
+    1_000,
+    Number.parseInt(process.env.OPENAI_SIGNATURE_CONTEXT_TIMEOUT_MS_CAP || "10000", 10) || 10_000
+  );
+  const timeoutMs = typeof opts.timeoutMs === "number" ? Math.max(1_000, Math.trunc(opts.timeoutMs)) : defaultTimeoutMs;
+
   const structured = await runStructuredJsonPrompt<EmailSignatureContextExtraction>({
     pattern: "structured_json",
     clientId: opts.clientId,
@@ -329,7 +337,7 @@ export async function extractImportantEmailSignatureContext(opts: {
       outputScale: 0.15,
       preferApiCount: true,
     },
-    timeoutMs: typeof opts.timeoutMs === "number" ? Math.max(1000, Math.trunc(opts.timeoutMs)) : 4500,
+    timeoutMs,
     maxRetries: 0,
     validate: (value) => {
       const anyValue = value as any;
@@ -430,7 +438,7 @@ export async function extractImportantEmailSignatureContext(opts: {
         templateVars: { leadName, leadEmail },
         input,
         maxOutputTokens: 1600,
-        timeoutMs: typeof opts.timeoutMs === "number" ? Math.max(1000, Math.trunc(opts.timeoutMs)) : 4500,
+        timeoutMs,
         maxRetries: 0,
       });
 

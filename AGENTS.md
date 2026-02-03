@@ -59,6 +59,7 @@ If you change `prisma/schema.prisma`, you **must** run `npm run db:push` against
 Use this when you need “real” Vercel parity or want to pull env vars quickly.
 
 - Link project: `vercel link`
+- Sanity check auth: `vercel whoami`
 - Pull env vars to local file:
   - `vercel env pull .env.local` (or omit filename to write `.env`)
 - If using `vercel dev` / `vercel build`:
@@ -68,6 +69,23 @@ Use this when you need “real” Vercel parity or want to pull env vars quickly
 - Deploy:
   - Preview: `vercel`
   - Prod: `vercel --prod`
+
+### Vercel CLI Debugging (Cron + Logs)
+
+- Find the latest ready production deployment:
+  - `vercel list --environment production --status READY --yes`
+- Stream runtime logs (Vercel CLI is **from now** and **~5 minutes max**):
+  - `vercel logs <deployment-url>`
+  - JSON filter example:
+    - `vercel logs <deployment-url> --json | jq 'select(.level == \"error\")'`
+  - For longer history, use the Vercel dashboard (or a log drain).
+- Pull env vars locally:
+  - `vercel env pull .env.local`
+- Manually invoke cron endpoints (sanity checks):
+  - `curl -H \"Authorization: Bearer $CRON_SECRET\" \"$NEXT_PUBLIC_APP_URL/api/cron/followups\"`
+  - `curl -H \"Authorization: Bearer $CRON_SECRET\" \"$NEXT_PUBLIC_APP_URL/api/cron/background-jobs\"`
+
+Note for automated agents: some `vercel` commands can be interactive; prefer `--yes` where supported and allow longer command timeouts (≈3 minutes+) when running in a tool wrapper.
 
 ---
 
@@ -115,7 +133,8 @@ Use this when you need “real” Vercel parity or want to pull env vars quickly
 - Auto-replies must pass the safety gate (opt-outs, automated replies, “ack-only” responses, etc).
 
 ### 3) Follow-Up Automation (Cron)
-- `vercel.json` schedules `/api/cron/followups` every 10 minutes.
+- `vercel.json` schedules `/api/cron/followups` every minute (`* * * * *`).
+- `vercel.json` also schedules `/api/cron/background-jobs` every minute; the route uses a Postgres advisory lock to prevent overlapping runs.
 - The endpoint requires `Authorization: Bearer <CRON_SECRET>`.
 
 ### 4) Booking & Availability

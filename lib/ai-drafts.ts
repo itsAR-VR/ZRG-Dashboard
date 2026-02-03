@@ -100,6 +100,52 @@ function getEmailDraftCharBoundsFromEnv(): { minChars: number; maxChars: number 
   return { minChars, maxChars };
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  const parsed = Number.parseInt(raw || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.trunc(parsed);
+}
+
+function parsePositiveFloatEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  const parsed = Number.parseFloat(raw || "");
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function computeTimeoutSliceMs(opts: {
+  totalTimeoutMs: number;
+  capEnv: string;
+  minEnv: string;
+  shareEnv: string;
+  defaultCapMs: number;
+  defaultMinMs: number;
+  defaultShare: number;
+}): number {
+  const totalMs = Math.max(1_000, Math.trunc(opts.totalTimeoutMs));
+
+  const capRaw = parsePositiveIntEnv(opts.capEnv, opts.defaultCapMs);
+  const minRaw = parsePositiveIntEnv(opts.minEnv, opts.defaultMinMs);
+  const shareRaw = parsePositiveFloatEnv(opts.shareEnv, opts.defaultShare);
+
+  const share = clampNumber(shareRaw, 0.05, 0.8);
+  const minMs = Math.max(1_000, minRaw);
+  const capMs = Math.max(1_000, capRaw);
+
+  // Never allocate more than the overall draft timeout. (This also prevents misconfigured mins from exceeding the total.)
+  const minEffective = Math.min(minMs, totalMs);
+  const capEffective = Math.min(Math.max(minEffective, capMs), totalMs);
+
+  const shareMs = Math.floor(totalMs * share);
+  return Math.min(capEffective, Math.max(minEffective, shareMs));
+}
+
 function getEmailLengthStatus(
   content: string,
   bounds: { minChars: number; maxChars: number }
@@ -1406,6 +1452,28 @@ export async function generateResponseDraft(
     const envTimeoutMs = Number.parseInt(process.env.OPENAI_DRAFT_TIMEOUT_MS || "120000", 10) || 120_000;
     const timeoutMs = Math.max(5_000, opts.timeoutMs ?? envTimeoutMs);
 
+    // Phase 94: Keep verifier/signature-context timeouts proportional to the overall draft timeout,
+    // but remove the hard ~20s / ~4.5s cliffs that cause deterministic timeouts under load.
+    const signatureContextTimeoutMs = computeTimeoutSliceMs({
+      totalTimeoutMs: timeoutMs,
+      capEnv: "OPENAI_SIGNATURE_CONTEXT_TIMEOUT_MS_CAP",
+      minEnv: "OPENAI_SIGNATURE_CONTEXT_TIMEOUT_MS_MIN",
+      shareEnv: "OPENAI_SIGNATURE_CONTEXT_TIMEOUT_SHARE",
+      defaultCapMs: 10_000,
+      defaultMinMs: 3_000,
+      defaultShare: 0.2,
+    });
+
+    const emailVerifierTimeoutMs = computeTimeoutSliceMs({
+      totalTimeoutMs: timeoutMs,
+      capEnv: "OPENAI_EMAIL_VERIFIER_TIMEOUT_MS_CAP",
+      minEnv: "OPENAI_EMAIL_VERIFIER_TIMEOUT_MS_MIN",
+      shareEnv: "OPENAI_EMAIL_VERIFIER_TIMEOUT_SHARE",
+      defaultCapMs: 45_000,
+      defaultMinMs: 8_000,
+      defaultShare: 0.35,
+    });
+
     const envMultiplier = Number.parseFloat(process.env.OPENAI_DRAFT_TOKEN_BUDGET_MULTIPLIER || "3");
     const tokenBudgetMultiplier = Number.isFinite(opts.tokenBudgetMultiplier)
       ? Math.max(1, Math.min(10, opts.tokenBudgetMultiplier!))
@@ -1495,7 +1563,7 @@ export async function generateResponseDraft(
             leadEmail: expectedSignatureEmail,
             rawText: triggerMessage?.rawText ?? null,
             rawHtml: triggerMessage?.rawHtml ?? null,
-            timeoutMs: Math.min(4500, Math.max(1000, Math.floor(timeoutMs * 0.15))),
+            timeoutMs: signatureContextTimeoutMs,
           });
 
           signatureContextForPrompt = signatureContext ? formatEmailSignatureContextForPrompt(signatureContext) : null;
@@ -2378,7 +2446,7 @@ Generate an appropriate ${channel} response following the guidelines above.
             forbiddenTerms: emailVerifierForbiddenTerms ?? DEFAULT_FORBIDDEN_TERMS,
             serviceDescription,
             knowledgeContext,
-            timeoutMs: Math.min(20_000, Math.max(3_000, Math.floor(timeoutMs * 0.25))),
+            timeoutMs: emailVerifierTimeoutMs,
           });
 
           if (verified) {
