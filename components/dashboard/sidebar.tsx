@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { cn } from "@/lib/utils"
 import {
   Inbox,
@@ -113,6 +113,10 @@ export function Sidebar({
   const [isLoadingCounts, setIsLoadingCounts] = useState(true)
   const [workspaceSearch, setWorkspaceSearch] = useState("")
   const { user } = useUser()
+  const workspaceCollator = useMemo(
+    () => new Intl.Collator(undefined, { sensitivity: "base", numeric: true }),
+    []
+  )
 
   // Fetch counts when workspace changes and periodically
   // Don't fetch until workspace is set to avoid showing all-workspace counts
@@ -163,10 +167,17 @@ export function Sidebar({
   const displayBrandName = (selectedWorkspace?.brandName || selectedWorkspace?.name || "Inbox").trim()
   const displayBrandLogoUrl = normalizeBrandLogoSrc(selectedWorkspace?.brandLogoUrl)
   const workspaceQuery = workspaceSearch.trim().toLowerCase()
+  const sortedWorkspaces = useMemo(
+    () =>
+      [...workspaces].sort((a, b) =>
+        workspaceCollator.compare(a.name.trim(), b.name.trim())
+      ),
+    [workspaces, workspaceCollator]
+  )
   const filteredWorkspaces =
     workspaceQuery.length === 0
-      ? workspaces
-      : workspaces.filter((w) => {
+      ? sortedWorkspaces
+      : sortedWorkspaces.filter((w) => {
           const name = w.name.toLowerCase()
           const locationId = (w.ghlLocationId ?? "").toLowerCase()
           return name.includes(workspaceQuery) || locationId.includes(workspaceQuery)
