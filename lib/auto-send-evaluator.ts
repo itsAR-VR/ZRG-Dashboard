@@ -16,6 +16,25 @@ function clamp01(value: number): number {
   return value;
 }
 
+export function interpretAutoSendEvaluatorOutput(value: {
+  safe_to_send: boolean;
+  requires_human_review: boolean;
+  confidence: number;
+  reason: string;
+}): AutoSendEvaluation {
+  const confidence = clamp01(Number(value.confidence));
+  const requiresHumanReviewFlag = Boolean(value.requires_human_review);
+  const safeToSend = Boolean(value.safe_to_send) && !requiresHumanReviewFlag && confidence >= 0.01;
+  const requiresHumanReview = requiresHumanReviewFlag || !safeToSend;
+
+  return {
+    confidence,
+    safeToSend,
+    requiresHumanReview,
+    reason: String(value.reason || "").slice(0, 320) || "No reason provided",
+  };
+}
+
 function trimForModel(text: string, maxChars = 12000): string {
   const cleaned = (text || "").trim();
   if (!cleaned) return "";
@@ -197,14 +216,5 @@ export async function evaluateAutoSend(opts: {
     };
   }
 
-  const confidence = clamp01(Number(result.data.confidence));
-  const safeToSend = Boolean(result.data.safe_to_send) && confidence >= 0.01;
-  const requiresHumanReview = Boolean(result.data.requires_human_review) || !safeToSend;
-
-  return {
-    confidence,
-    safeToSend,
-    requiresHumanReview,
-    reason: String(result.data.reason || "").slice(0, 320) || "No reason provided",
-  };
+  return interpretAutoSendEvaluatorOutput(result.data);
 }
