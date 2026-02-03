@@ -28,8 +28,11 @@ import { evaluateAutoSend } from "../lib/auto-send-evaluator";
 import { getPublicAppUrl } from "../lib/app-url";
 import { createAutoSendExecutor } from "../lib/auto-send/orchestrator";
 import type { AutoSendDecisionRecord } from "../lib/auto-send/record-auto-send-decision";
+import { getSlackAutoSendApprovalConfig } from "../lib/auto-send/get-approval-recipients";
 import { scheduleDelayedAutoSend, validateDelayedAutoSend } from "../lib/background-jobs/delayed-auto-send";
 import { sendEmailReplyForDraftSystem } from "../lib/email-send";
+import { sendSlackDmByUserIdWithToken } from "../lib/slack-dm";
+import { refreshDraftAvailabilitySystem } from "../lib/draft-availability-refresh";
 
 // Force IPv4 for DNS resolution (some environments have IPv6 issues)
 dns.setDefaultResultOrder("ipv4first");
@@ -50,6 +53,9 @@ type Args = {
   stateFile: string;
   includeDraftPreviewInSlack: boolean;
   forceAutoSend: boolean;
+  refreshAvailabilityOnly: boolean;
+  latestPerLead: boolean;
+  resetRejected: boolean;
 };
 
 type BackfillStateV1 = {
@@ -94,6 +100,9 @@ function parseArgs(argv: string[]): Args {
     stateFile: ".backfill-ai-auto-send.state.json",
     includeDraftPreviewInSlack: true,
     forceAutoSend: false,
+    refreshAvailabilityOnly: false,
+    latestPerLead: false,
+    resetRejected: false,
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -114,6 +123,9 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--state-file") args.stateFile = argv[++i] || args.stateFile;
     else if (a === "--no-draft-preview") args.includeDraftPreviewInSlack = false;
     else if (a === "--force-auto-send") args.forceAutoSend = true;
+    else if (a === "--refresh-availability") args.refreshAvailabilityOnly = true;
+    else if (a === "--latest-per-lead") args.latestPerLead = true;
+    else if (a === "--reset-rejected") args.resetRejected = true;
   }
 
   args.limit = Math.max(1, Math.floor(args.limit));
@@ -214,8 +226,10 @@ async function main(): Promise<void> {
   log(`Mode:      ${args.dryRun ? "DRY RUN (no changes)" : "APPLY"}`);
   log(`Campaigns: ${campaigns.length}${args.campaignId ? ` (filter: ${args.campaignId})` : " (AI_AUTO_SEND)"}`);
   log(`Limit:     ${args.limit}`);
-  log(`Drafts:    ${args.skipDraftGen ? "skip" : args.missingOnly ? "missing-only" : "regenerate-all"}`);
+  log(`Drafts:    ${args.skipDraftGen ? "skip" : args.refreshAvailabilityOnly ? "refresh-availability-only" : args.missingOnly ? "missing-only" : "regenerate-all"}`);
   log(`AutoSend:  ${args.skipAutoSend ? "skip" : "immediate (no delays)"}`);
+  log(`Dedupe:    ${args.latestPerLead ? "latest-per-lead" : "all-messages"}`);
+  log(`Reset:     ${args.resetRejected ? "reset-rejected-to-pending" : "no"}`);
   log(`Batch:     ${args.draftBatchSize} concurrent`);
   log(`Sleep:     ${args.sleepMs}ms`);
   log(`Resume:    ${args.resume ? "yes" : "no"}`);
@@ -270,8 +284,8 @@ async function main(): Promise<void> {
     scheduleDelayedAutoSend,
     scheduleAutoSendAt: async () => ({ scheduled: false, skipReason: "backfill_script" }),
     validateDelayedAutoSend,
-    sendSlackDmByUserIdWithToken: async () => ({ success: true, skipped: true }),
-    getSlackAutoSendApprovalConfig: async () => ({ token: null, recipients: [], skipReason: "no_recipients" }),
+    sendSlackDmByUserIdWithToken,
+    getSlackAutoSendApprovalConfig,
     recordAutoSendDecision: async (record: AutoSendDecisionRecord) => {
       await prisma.aIDraft.update({
         where: { id: record.draftId },
@@ -342,14 +356,25 @@ async function main(): Promise<void> {
 
     if (messages.length === 0) break;
 
+    // Dedupe to latest message per lead if flag is set
+    let processMessages = messages;
+    if (args.latestPerLead) {
+      const latestByLead = new Map<string, typeof messages[number]>();
+      for (const msg of messages) {
+        // Messages are ordered by sentAt ASC, so later entries overwrite earlier ones
+        latestByLead.set(msg.leadId, msg);
+      }
+      processMessages = Array.from(latestByLead.values());
+    }
+
     totals.batches += 1;
     totals.messagesFetched += messages.length;
     batchIndex += 1;
 
     log("");
-    log(`--- Batch ${batchIndex} (${messages.length} messages) ---`);
+    log(`--- Batch ${batchIndex} (${messages.length} messages${args.latestPerLead ? `, ${processMessages.length} unique leads` : ""}) ---`);
 
-    const messageIds = messages.map((m) => m.id);
+    const messageIds = processMessages.map((m) => m.id);
     const existingDrafts = await prisma.aIDraft.findMany({
       where: { triggerMessageId: { in: messageIds }, channel: "email" },
       select: { id: true, triggerMessageId: true, status: true },
@@ -374,7 +399,7 @@ async function main(): Promise<void> {
       existingDraft?: { id: string; status: string } | null;
     }> = [];
 
-    for (const message of messages) {
+    for (const message of processMessages) {
       const lead = message.lead;
       const campaign = lead?.emailCampaign;
       if (!lead || !campaign) {
@@ -475,6 +500,107 @@ async function main(): Promise<void> {
         }
 
         drafted.push({ candidate, draftId: draft.id, draftContent: draft.content });
+      }
+    } else if (args.refreshAvailabilityOnly) {
+      // Refresh availability slots in existing drafts without regenerating
+      for (let i = 0; i < candidates.length; i += args.draftBatchSize) {
+        const batch = candidates.slice(i, i + args.draftBatchSize);
+
+        const results = await Promise.allSettled(
+          batch.map(async (candidate) => {
+            const campaignLabel = candidate.campaign
+              ? `${candidate.campaign.name} (${candidate.campaign.bisonCampaignId || "no-id"})`
+              : "Unknown campaign";
+            const existing = candidate.existingDraft;
+
+            if (!existing) {
+              return { skip: true, reason: "no_existing_draft" };
+            }
+
+            const draft = await prisma.aIDraft.findUnique({
+              where: { id: existing.id },
+              select: { id: true, content: true, status: true },
+            });
+
+            if (!draft || !draft.content) {
+              return { skip: true, reason: "draft_missing_content" };
+            }
+
+            // Reset rejected drafts to pending if flag is set
+            let draftStatus = draft.status;
+            if (draft.status === "rejected" && args.resetRejected) {
+              if (!args.dryRun) {
+                await prisma.aIDraft.update({
+                  where: { id: draft.id },
+                  data: { status: "pending" },
+                });
+                draftStatus = "pending";
+                log(`[Reset] Draft ${draft.id} status: rejected -> pending`);
+              } else {
+                log(`[Reset][DRY RUN] Would reset draft ${draft.id} status: rejected -> pending`);
+                draftStatus = "pending"; // Treat as pending for dry-run logic
+              }
+            }
+
+            if (draftStatus !== "pending") {
+              return { skip: true, reason: `draft_status_${draft.status}` };
+            }
+
+            if (args.dryRun) {
+              log(`[Refresh][DRY RUN] Lead: ${candidate.leadName} (${candidate.leadEmail || "no email"})`);
+              log(`        Message: ${candidate.messageId}`);
+              log(`        Campaign: ${campaignLabel}`);
+              log(`        Draft: ${draft.id}`);
+              log(`        Refreshing availability... SKIPPED (dry-run)`);
+              return null;
+            }
+
+            log(`[Refresh] Lead: ${candidate.leadName} (${candidate.leadEmail || "no email"})`);
+            log(`        Message: ${candidate.messageId}`);
+            log(`        Campaign: ${campaignLabel}`);
+            log(`        Draft: ${draft.id}`);
+            log(`        Refreshing availability...`);
+
+            const refreshResult = await refreshDraftAvailabilitySystem(draft.id, draft.content);
+
+            if (!refreshResult.success) {
+              if (refreshResult.error === "no_availability_section") {
+                // Draft has no availability section, use as-is
+                log(`        No availability section, using existing draft`);
+                return { draftId: draft.id, draftContent: draft.content, refreshed: false };
+              }
+              throw new Error(refreshResult.error || "Refresh failed");
+            }
+
+            log(`        Refreshed: ${refreshResult.oldSlots?.join(", ")} -> ${refreshResult.newSlots?.join(", ")}`);
+            return { draftId: draft.id, draftContent: refreshResult.content!, refreshed: true };
+          })
+        );
+
+        for (let j = 0; j < results.length; j++) {
+          const candidate = batch[j]!;
+          const result = results[j];
+
+          if (result.status === "fulfilled") {
+            const value = result.value;
+            if (!value) continue; // dry-run
+            if ("skip" in value) {
+              totals.skippedNoDraft += 1;
+              log(`[Skip] ${candidate.leadName} (${candidate.leadEmail || "no email"}) - ${value.reason}`);
+              continue;
+            }
+            drafted.push({ candidate, draftId: value.draftId, draftContent: value.draftContent });
+            if (value.refreshed) {
+              totals.draftsGenerated += 1;
+              log(`[Refresh] ${candidate.leadName} (${candidate.leadEmail || "no email"}) - SUCCESS`);
+            }
+          } else {
+            totals.errors += 1;
+            log(
+              `[Refresh][ERROR] ${candidate.leadName} (${candidate.leadEmail || "no email"}) - ${result.reason instanceof Error ? result.reason.message : "unknown error"}`
+            );
+          }
+        }
       }
     } else {
       for (let i = 0; i < candidates.length; i += args.draftBatchSize) {

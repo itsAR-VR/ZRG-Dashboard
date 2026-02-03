@@ -460,6 +460,16 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     const opts = sendSlackDmByEmail.mock.calls[0]?.arguments[0] as { blocks?: Array<{ type: string; text?: { text?: string } }> };
     const hasDraftPreviewBlock = (opts.blocks || []).some((b) => b.type === "section" && (b.text?.text || "").includes("*Draft Preview:*"));
     assert.equal(hasDraftPreviewBlock, true);
+
+    const actionsBlock = (opts.blocks || []).find((b: any) => b.type === "actions");
+    const actionIds = (actionsBlock?.elements || []).map((e: any) => e.action_id);
+    assert.equal(actionIds.includes("regenerate_draft_fast"), true);
+
+    const regenButton = (actionsBlock?.elements || []).find((e: any) => e.action_id === "regenerate_draft_fast");
+    assert.equal(typeof regenButton?.value, "string");
+    const regenValue = JSON.parse(regenButton.value) as { cycleSeed?: string; regenCount?: number };
+    assert.equal(regenValue.cycleSeed, "draft-1");
+    assert.equal(regenValue.regenCount, 0);
   });
 
   it("renders Unknown lead name in Slack blocks when lead info is missing", async () => {

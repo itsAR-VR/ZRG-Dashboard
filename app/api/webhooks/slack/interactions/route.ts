@@ -19,6 +19,8 @@ import crypto from "node:crypto";
 import { prisma } from "@/lib/prisma";
 import { updateSlackMessageWithToken, type SlackBlock } from "@/lib/slack-dm";
 import { sendEmailReplyForDraftSystem } from "@/lib/email-send";
+import { getPublicAppUrl } from "@/lib/app-url";
+import { fastRegenerateDraftContent } from "@/lib/ai-drafts/fast-regenerate";
 
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || "";
 
@@ -78,6 +80,89 @@ type ApproveButtonValue = {
   leadId: string;
   clientId: string;
 };
+
+type RegenerateFastButtonValue = {
+  draftId: string;
+  leadId: string;
+  clientId: string;
+  cycleSeed: string;
+  regenCount: number;
+};
+
+function buildReviewNeededBlocks(opts: {
+  leadName: string;
+  leadEmail?: string | null;
+  campaignLabel: string;
+  sentimentTag: string | null;
+  confidence: number | null;
+  threshold: number | null;
+  reason: string | null;
+  dashboardUrl: string;
+  draftId: string;
+  draftPreview: string;
+  approveValue: string;
+  regenerateValue: string;
+}): SlackBlock[] {
+  const confidenceText =
+    typeof opts.confidence === "number" && typeof opts.threshold === "number"
+      ? `${opts.confidence.toFixed(2)} (thresh ${opts.threshold.toFixed(2)})`
+      : "Unknown";
+
+  return [
+    {
+      type: "header",
+      text: { type: "plain_text", text: "AI Auto-Send: Review Needed", emoji: true },
+    },
+    {
+      type: "section",
+      fields: [
+        {
+          type: "mrkdwn",
+          text: `*Lead:*\n${opts.leadName}${opts.leadEmail ? `\n${opts.leadEmail}` : ""}`,
+        },
+        { type: "mrkdwn", text: `*Campaign:*\n${opts.campaignLabel}` },
+        { type: "mrkdwn", text: `*Sentiment:*\n${opts.sentimentTag || "Unknown"}` },
+        { type: "mrkdwn", text: `*Confidence:*\n${confidenceText}` },
+      ],
+    },
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: `*Reason:*\n${opts.reason || "Review needed"}` },
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: `*Draft Preview:*\n\`\`\`\n${opts.draftPreview.slice(0, 1400)}\n\`\`\``,
+      },
+    },
+    {
+      type: "actions",
+      block_id: `review_actions_${opts.draftId}`,
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Edit in dashboard", emoji: true },
+          url: opts.dashboardUrl,
+          action_id: "view_dashboard",
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Regenerate", emoji: true },
+          action_id: "regenerate_draft_fast",
+          value: opts.regenerateValue,
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Approve & Send", emoji: true },
+          style: "primary",
+          action_id: "approve_send",
+          value: opts.approveValue,
+        },
+      ],
+    },
+  ];
+}
 
 /**
  * Handle the "Approve & Send" button action.
@@ -219,6 +304,215 @@ async function handleApproveSend(params: {
   return { success: true };
 }
 
+async function handleRegenerateFast(params: {
+  value: RegenerateFastButtonValue;
+  channelId: string;
+  messageTs: string;
+  userName: string;
+}): Promise<{ success: boolean; error?: string; newDraftId?: string }> {
+  const { value, channelId, messageTs, userName } = params;
+
+  const draft = await prisma.aIDraft.findUnique({
+    where: { id: value.draftId },
+    select: {
+      id: true,
+      status: true,
+      channel: true,
+      content: true,
+      leadId: true,
+      autoSendConfidence: true,
+      autoSendThreshold: true,
+      autoSendReason: true,
+      autoSendEvaluatedAt: true,
+      autoSendAction: true,
+      autoSendSlackNotified: true,
+      lead: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          sentimentTag: true,
+          externalSchedulingLink: true,
+          emailCampaign: {
+            select: {
+              name: true,
+              bisonCampaignId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!draft) {
+    return { success: false, error: "Draft not found" };
+  }
+
+  const slackToken = await prisma.client.findUnique({
+    where: { id: value.clientId },
+    select: { slackBotToken: true },
+  });
+  const slackTokenValue = (slackToken?.slackBotToken || "").trim();
+  const updateSlackMessageSafe = async (opts: {
+    channelId: string;
+    messageTs: string;
+    text: string;
+    blocks?: SlackBlock[];
+  }) => {
+    if (!slackTokenValue) {
+      console.warn("[SlackInteractions] Slack bot token not configured for client", value.clientId);
+      return;
+    }
+    const result = await updateSlackMessageWithToken({
+      token: slackTokenValue,
+      channelId: opts.channelId,
+      messageTs: opts.messageTs,
+      text: opts.text,
+      blocks: opts.blocks,
+    });
+    if (!result.success) {
+      console.warn("[SlackInteractions] Failed to update Slack message", result.error);
+    }
+  };
+
+  if (draft.status !== "pending") {
+    await updateSlackMessageSafe({
+      channelId,
+      messageTs,
+      text: `This draft has already been ${draft.status}.`,
+      blocks: buildCompletedBlocks({
+        status: "already_processed",
+        draftStatus: draft.status,
+        userName,
+      }),
+    });
+    return { success: false, error: `Draft is already ${draft.status}` };
+  }
+
+  if (draft.channel !== "email") {
+    await updateSlackMessageSafe({
+      channelId,
+      messageTs,
+      text: "Only email drafts can be regenerated via Slack.",
+      blocks: buildCompletedBlocks({
+        status: "blocked",
+        reason: "Only email drafts can be regenerated via Slack",
+        userName,
+      }),
+    });
+    return { success: false, error: "Only email drafts can be regenerated via Slack" };
+  }
+
+  const lead = draft.lead;
+  const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
+  const campaignLabel = lead.emailCampaign
+    ? `${lead.emailCampaign.name} (${lead.emailCampaign.bisonCampaignId})`
+    : "Unknown campaign";
+
+  const latestInbound = await prisma.message.findFirst({
+    where: { leadId: draft.leadId, direction: "inbound", channel: "email" },
+    orderBy: [{ sentAt: "desc" }, { createdAt: "desc" }],
+    select: { subject: true, body: true },
+  });
+
+  const regenResult = await fastRegenerateDraftContent({
+    clientId: value.clientId,
+    leadId: draft.leadId,
+    channel: "email",
+    sentimentTag: lead.sentimentTag || "Neutral",
+    previousDraft: draft.content,
+    latestInbound: latestInbound ? { subject: latestInbound.subject ?? null, body: latestInbound.body } : null,
+    cycleSeed: value.cycleSeed,
+    regenCount: value.regenCount,
+    leadSchedulerLink: lead.externalSchedulingLink ?? null,
+    timeoutMs: 15_000,
+  });
+
+  if (!regenResult.success || typeof regenResult.content !== "string") {
+    await updateSlackMessageSafe({
+      channelId,
+      messageTs,
+      text: `Regenerate failed: ${regenResult.error || "unknown error"}`,
+      blocks: buildCompletedBlocks({
+        status: "error",
+        reason: regenResult.error || "Unknown error",
+        userName,
+      }),
+    });
+    return { success: false, error: regenResult.error || "Failed to regenerate draft" };
+  }
+
+  const newContent = regenResult.content;
+
+  // Reject old pending drafts and create a new draft (triggerMessageId must remain null to avoid collisions).
+  const created = await prisma.$transaction(async (tx) => {
+    await tx.aIDraft.updateMany({
+      where: { leadId: draft.leadId, channel: "email", status: "pending" },
+      data: { status: "rejected" },
+    });
+
+    return tx.aIDraft.create({
+      data: {
+        leadId: draft.leadId,
+        channel: "email",
+        status: "pending",
+        content: newContent,
+        // Preserve evaluation metadata for dashboard visibility.
+        autoSendEvaluatedAt: draft.autoSendEvaluatedAt ?? null,
+        autoSendConfidence: draft.autoSendConfidence ?? null,
+        autoSendThreshold: draft.autoSendThreshold ?? null,
+        autoSendReason: draft.autoSendReason ?? null,
+        autoSendAction: draft.autoSendAction ?? null,
+        autoSendSlackNotified: draft.autoSendSlackNotified ?? false,
+        // Preserve Slack notification metadata so future tooling can find the message.
+        slackNotificationChannelId: channelId,
+        slackNotificationMessageTs: messageTs,
+      },
+      select: { id: true },
+    });
+  });
+
+  const dashboardUrl = `${getPublicAppUrl()}/?view=inbox&clientId=${encodeURIComponent(value.clientId)}&leadId=${encodeURIComponent(draft.leadId)}&draftId=${encodeURIComponent(created.id)}`;
+  const approveValue = JSON.stringify({ draftId: created.id, leadId: draft.leadId, clientId: value.clientId });
+  const regenerateValue = JSON.stringify({
+    draftId: created.id,
+    leadId: draft.leadId,
+    clientId: value.clientId,
+    cycleSeed: value.cycleSeed,
+    regenCount: (value.regenCount ?? 0) + 1,
+  });
+
+  await updateSlackMessageSafe({
+    channelId,
+    messageTs,
+    text: "AI auto-send review needed",
+    blocks: buildReviewNeededBlocks({
+      leadName,
+      leadEmail: lead.email ?? null,
+      campaignLabel,
+      sentimentTag: lead.sentimentTag ?? null,
+      confidence: draft.autoSendConfidence ?? null,
+      threshold: draft.autoSendThreshold ?? null,
+      reason: draft.autoSendReason ?? null,
+      dashboardUrl,
+      draftId: created.id,
+      draftPreview: newContent,
+      approveValue,
+      regenerateValue,
+    }),
+  });
+
+  console.log("[SlackInteractions] Draft regenerated", {
+    oldDraftId: draft.id,
+    newDraftId: created.id,
+    leadId: draft.leadId,
+    by: userName,
+  });
+
+  return { success: true, newDraftId: created.id };
+}
+
 /**
  * Build the updated message blocks after an action is completed.
  */
@@ -349,6 +643,27 @@ export async function POST(request: NextRequest) {
             }
           } catch (parseError) {
             console.error("[SlackInteractions] Failed to parse action value", parseError);
+          }
+        }
+
+        if (action.action_id === "regenerate_draft_fast" && action.value) {
+          try {
+            const value = JSON.parse(action.value) as RegenerateFastButtonValue;
+            const result = await handleRegenerateFast({
+              value,
+              channelId,
+              messageTs,
+              userName,
+            });
+
+            if (!result.success) {
+              console.warn("[SlackInteractions] Regenerate action failed", {
+                error: result.error,
+                draftId: value.draftId,
+              });
+            }
+          } catch (parseError) {
+            console.error("[SlackInteractions] Failed to parse regenerate action value", parseError);
           }
         }
 

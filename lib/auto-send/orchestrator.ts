@@ -105,6 +105,14 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
       clientId: context.clientId,
     });
 
+    const regenerateValue = JSON.stringify({
+      draftId: context.draftId,
+      leadId: context.leadId,
+      clientId: context.clientId,
+      cycleSeed: context.draftId,
+      regenCount: 0,
+    });
+
     const blocks = [
       {
         type: "header",
@@ -150,6 +158,12 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
             text: { type: "plain_text", text: "Edit in dashboard", emoji: true },
             url: dashboardUrl,
             action_id: "view_dashboard",
+          },
+          {
+            type: "button",
+            text: { type: "plain_text", text: "Regenerate", emoji: true },
+            action_id: "regenerate_draft_fast",
+            value: regenerateValue,
           },
           {
             type: "button",
