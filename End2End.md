@@ -302,21 +302,21 @@
   - “Why can’t this user see a workspace?” → `getAccessibleClientIdsForUser()` (owned vs member). (E3)
   - “Why can’t this user change settings?” → `requireClientAdminAccess()` and role precedence. (E4, E5)
 
-## 3) Settings Surface Area (General / Integrations / AI / Team)
+## 3) Settings Surface Area (General / Integrations / AI / Booking / Team)
 
 ### PLAN
 - Enumerate the Settings tabs and what they expose in the UI.
 - Identify which settings are “workspace-level” (stored in DB) vs informational/UI-only.
 - Connect Settings UI to the canonical schema fields that represent “settings”.
-- Identify role gating in Settings (who can edit what).
+- Identify role/capability gating in Settings (who can edit what, and who is read-only).
 
 ### LOCATE
-- `components/dashboard/settings-view.tsx`: keywords `TabsTrigger`, `TabsContent`, `IntegrationsManager`, `AiPersonaManager`, `BookingProcessManager`, `Team Management`
+- `components/dashboard/settings-view.tsx`: keywords `TabsTrigger`, `isClientPortalUser`, `SecretInput`, `AiPersonaManager`, `BookingProcessManager`, `WorkspaceMembersManager`, `ClientPortalUsersManager`
 - `prisma/schema.prisma`: `model WorkspaceSettings` (AI personality, automation, notifications, schedule, booking)
 - `app/page.tsx`: keywords `settingsTabParam` (deep-link tab allowlist)
 
 ### EXTRACT
-- **E1 — `components/dashboard/settings-view.tsx:1798-1806`**
+- **E1 — `components/dashboard/settings-view.tsx:2051-2072`**
   ```tsx
   <Tabs value={activeTab} onValueChange={onTabChange} className="space-y-6">
     <TabsList className="grid w-full max-w-4xl grid-cols-5">
@@ -326,20 +326,37 @@
       <TabsTrigger value="booking">Booking</TabsTrigger>
       <TabsTrigger value="team">Team</TabsTrigger>
     </TabsList>
+
+    {isClientPortalUser ? (
+      <Card className="border-amber-500/30 bg-amber-500/5">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-amber-200">
+            <Lock className="h-5 w-5 text-amber-200" />
+            Read-only settings
+          </CardTitle>
+          <CardDescription className="text-amber-200/70">
+            Settings are read-only for client portal users. Request changes from ZRG.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    ) : null}
   ```
-- **E2 — `components/dashboard/settings-view.tsx:2518-2537`**
+- **E2 — `components/dashboard/settings-view.tsx:3268-3334`**
   ```tsx
   {/* Integrations */}
   <TabsContent value="integrations" className="space-y-6">
+    <fieldset disabled={isClientPortalUser} className="space-y-6">
     {/* GHL Workspaces - Dynamic Multi-Tenancy */}
     <IntegrationsManager onWorkspacesChange={onWorkspacesChange} />
 
     {/* Slack (bot token + channel selector) */}
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <MessageSquare className="h-5 w-5" />
-          Slack Notifications
+        <CardTitle className="flex items-center gap-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[color:var(--brand-slack-bg)]">
+            <MessageSquare className="h-5 w-5 text-[color:var(--brand-slack)]" />
+          </div>
+          <span>Slack Notifications</span>
         </CardTitle>
         <CardDescription>Send notifications to a selected Slack channel using a bot token</CardDescription>
       </CardHeader>
@@ -350,13 +367,57 @@
           <p className="text-sm text-muted-foreground">Only workspace admins can change Slack settings.</p>
         ) : (
           <>
+            <Accordion type="multiple" defaultValue={["bot-config"]} className="w-full">
+              <AccordionItem value="bot-config">
+                <AccordionTrigger>
+                  <div className="flex items-center gap-2">
+                    <Bot className="h-4 w-4" />
+                    <span>Bot Configuration</span>
+                    {slackTokenStatus?.configured ? (
+                      <Badge variant="secondary" className="ml-2">Connected</Badge>
+                    ) : null}
+                  </div>
+                </AccordionTrigger>
+                <AccordionContent>
+                  <div className="space-y-2">
+                    <Label>Slack Bot Token</Label>
+                    <div className="flex gap-2">
+                      <SecretInput
+                        placeholder={slackTokenStatus?.configured ? slackTokenStatus.masked || "Configured" : "xoxb-..."}
+                        value={slackTokenDraft}
+                        onChange={(e) => setSlackTokenDraft(e.target.value)}
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={handleSaveSlackToken}
+                        disabled={isSavingSlackToken || !slackTokenDraft.trim()}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
   ```
-- **E3 — `components/dashboard/settings-view.tsx:3556-3581`**
+- **E3 — `components/dashboard/settings-view.tsx:4457-4517`**
   ```tsx
   {/* AI Personality */}
   <TabsContent value="ai" className="space-y-6">
+    <fieldset disabled={isClientPortalUser} className="space-y-6">
     {/* AI Personas Manager (Phase 39) */}
-    <AiPersonaManager activeWorkspace={activeWorkspace} />
+    {isClientPortalUser ? (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Bot className="h-5 w-5" />
+            AI Personality (Read-only)
+          </CardTitle>
+          <CardDescription>Request changes from ZRG.</CardDescription>
+        </CardHeader>
+      </Card>
+    ) : (
+      <AiPersonaManager activeWorkspace={activeWorkspace} />
+    )}
 
     {/* Workspace-Level Settings Card (Qualification Questions, Knowledge Assets) */}
     <Card>
@@ -369,134 +430,79 @@
           Settings shared across all personas (qualification questions, knowledge assets)
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-6">
-        {/* Qualification Questions */}
-        <div className="space-y-4">
-          <div className="flex items-center gap-2">
-            <HelpCircle className="h-5 w-5 text-primary" />
-            <h4 className="font-semibold">Qualification Questions</h4>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            Questions the AI should ask to qualify leads. These will be woven into conversations naturally.
-          </p>
   ```
-- **E4 — `components/dashboard/settings-view.tsx:5136-5146`**
+- **E4 — `components/dashboard/settings-view.tsx:6144-6173`**
   ```tsx
   {/* Booking Processes (Phase 36) */}
   <TabsContent value="booking" className="space-y-6">
-    <Card>
-      <CardTitle className="flex items-center gap-2">
-        <AlertTriangle className="h-5 w-5" />
-        Booking Notices
-      </CardTitle>
-      <CardDescription>Important reminders and known limitations</CardDescription>
-    </Card>
-  ```
-- **E5 — `components/dashboard/settings-view.tsx:5188-5201`**
-  ```tsx
-  <BookingProcessReference />
+    <fieldset disabled={isClientPortalUser} className="space-y-6">
+    <Alert className="border-amber-500/30 bg-amber-500/5">
+      <AlertTriangle className="h-4 w-4 text-amber-500" />
+      <AlertTitle>Booking configuration notes</AlertTitle>
+      <AlertDescription>
+        <ul className="list-disc list-inside mt-2 space-y-1 text-sm">
+          <li>
+            Process 5 (lead scheduler links) is manual-review for now. We capture the lead&apos;s link and create a task for
+            review with overlap suggestions when possible.
+          </li>
+        </ul>
+      </AlertDescription>
+    </Alert>
 
-  <BookingProcessManager
-    activeWorkspace={activeWorkspace}
-    qualificationQuestions={qualificationQuestions}
-  />
+    {/* Booking Processes Reference (Phase 60) */}
+    <BookingProcessReference />
 
-  <AiCampaignAssignmentPanel activeWorkspace={activeWorkspace} />
-  <BookingProcessAnalytics activeWorkspace={activeWorkspace} />
+    <BookingProcessManager
+      activeWorkspace={activeWorkspace}
+      qualificationQuestions={qualificationQuestions}
+    />
+
+    {/* Campaign Assignment Panel - moved here for booking context */}
+    <AiCampaignAssignmentPanel activeWorkspace={activeWorkspace} />
   ```
-- **E6 — `components/dashboard/settings-view.tsx:5204-5223`**
+- **E5 — `components/dashboard/settings-view.tsx:6177-6189`**
   ```tsx
+  {/* Team Management */}
   <TabsContent value="team" className="space-y-6">
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Users className="h-5 w-5" />
-          Team Members
-        </CardTitle>
-        <CardDescription>Manage who has access to this workspace</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="flex flex-col items-center justify-center py-12 text-center">
-          <div className="rounded-full bg-muted p-4 mb-4">
-            <Lock className="h-8 w-8 text-muted-foreground" />
-          </div>
-          <h3 className="text-lg font-semibold mb-2">Team Management Coming Soon</h3>
-          <p className="text-sm text-muted-foreground max-w-md">
-            Multi-user team management and role-based access control will be available in a future update.
-            Currently, each workspace is tied to your individual account.
-          </p>
-        </div>
-      </CardContent>
-    </Card>
+    <fieldset disabled={isClientPortalUser} className="space-y-6">
+      {!isClientPortalUser ? (
+        <>
+          <WorkspaceMembersManager
+            activeWorkspace={activeWorkspace ?? null}
+            isWorkspaceAdmin={isWorkspaceAdmin}
+          />
+          <ClientPortalUsersManager
+            activeWorkspace={activeWorkspace ?? null}
+            isWorkspaceAdmin={isWorkspaceAdmin}
+          />
+        </>
+      ) : null}
   ```
-- **E7 — `prisma/schema.prisma:234-270`**
+- **E6 — `prisma/schema.prisma:243-276`**
   ```prisma
-  // AI Personality Settings
-  aiPersonaName        String?
-  aiTone               String?  @default("friendly-professional")
-  aiGreeting           String?  // Default greeting for Email channel
-  aiSmsGreeting        String?  // Default greeting for SMS channel (falls back to aiGreeting if null)
-  aiSignature          String?  @db.Text
-  aiGoals              String?  @db.Text
-  chatgptExportDefaults String? @db.Text // JSON string (see lib/chatgpt-export.ts)
-  // Campaign Assistant (read-only v1; action tools are gated by toggles)
-  insightsChatModel String? @default("gpt-5-mini")
-  insightsChatReasoningEffort String? @default("medium") // low | medium | high | extra_high (gpt-5.2 only)
-  insightsChatEnableCampaignChanges Boolean @default(false)
-  insightsChatEnableExperimentWrites Boolean @default(false)
-  insightsChatEnableFollowupPauses Boolean @default(false)
-  // Draft Generation Model Settings (email two-step pipeline)
-  draftGenerationModel           String? @default("gpt-5.1") // gpt-5.1 | gpt-5.2
-  draftGenerationReasoningEffort String? @default("medium")  // low | medium | high | extra_high (gpt-5.2 only)
-  // AI Context Fields (for better AI responses)
-  serviceDescription      String?  @db.Text  // Business/service description for AI context
-  qualificationQuestions  String?  @db.Text  // JSON array of qualification questions
-  idealCustomerProfile    String?  @db.Text  // Ideal Customer Profile for lead scoring (Phase 33)
-  // Company/Outreach Context
-  companyName             String?             // Company name for {company} variable in templates
-  targetResult            String?  @db.Text   // Outcome/result for {result} variable (e.g., "growing your client base")
-  // Automation Rules
-  autoApproveMeetings  Boolean  @default(true)
-  flagUncertainReplies Boolean  @default(true)
-  pauseForOOO          Boolean  @default(true)
-  // Workspace-level follow-up pause (end-of-day in workspace timezone).
-  // When set to a future timestamp, follow-up automation should not auto-enroll or send outbound follow-ups.
-  followUpsPausedUntil DateTime?
-  autoBlacklist        Boolean  @default(true)
-  autoFollowUpsOnReply Boolean  @default(false) // When true, auto-enable follow-ups for leads after a positive inbound EMAIL reply.
-  airtableMode         Boolean  @default(false) // When true, email is handled externally (Airtable/n8n); follow-up sequences should be SMS/LinkedIn only.
+  // Workspace-specific settings (AI personality, automation, etc.)
+  model WorkspaceSettings {
+    id                   String   @id @default(uuid())
+    clientId             String   @unique // Links to workspace
+    // AI Personality Settings
+    aiPersonaName        String?
+    aiTone               String?  @default("friendly-professional")
+    aiGreeting           String?  // Default greeting for Email channel
+    aiSmsGreeting        String?  // Default greeting for SMS channel (falls back to aiGreeting if null)
+    aiSignature          String?  @db.Text
+    aiGoals              String?  @db.Text
+    // AI Context Fields (for better AI responses)
+    serviceDescription      String?  @db.Text  // Business/service description for AI context
+    qualificationQuestions  String?  @db.Text  // JSON array of qualification questions
+    idealCustomerProfile    String?  @db.Text  // Ideal Customer Profile for lead scoring (Phase 33)
+    // Company/Outreach Context
+    companyName             String?             // Company name for {company} variable in templates
+    targetResult            String?  @db.Text   // Outcome/result for {result} variable (e.g., "growing your client base")
+    // Automation Rules
+    autoApproveMeetings  Boolean  @default(true)
+    flagUncertainReplies Boolean  @default(true)
   ```
-- **E8 — `prisma/schema.prisma:274-285`**
-  ```prisma
-  // Notification Settings
-  emailDigest          Boolean  @default(true)
-  slackAlerts          Boolean  @default(true)
-  notificationEmails         String[] @default([])
-  notificationSlackChannelIds String[] @default([])
-  notificationDailyDigestTime String? @default("09:00")
-  // Schedule Settings
-  timezone             String?
-  workStartTime        String?  @default("09:00")
-  workEndTime          String?  @default("17:00")
-  ```
-- **E9 — `prisma/schema.prisma:286-306`**
-  ```prisma
-  // Calendar Settings
-  calendarSlotsToShow    Int?     @default(3)
-  calendarLookAheadDays  Int?     @default(28)
-  // EmailBison first-touch availability_slot injection controls
-  emailBisonFirstTouchAvailabilitySlotEnabled Boolean @default(true)
-  emailBisonAvailabilitySlotTemplate          String?  @db.Text
-  // GHL Meeting Booking Settings
-  ghlDefaultCalendarId   String?
-  autoBookMeetings       Boolean  @default(false)
-  meetingDurationMinutes Int      @default(30)
-  meetingTitle           String?  @default("Intro to {companyName}")
-  meetingBookingProvider MeetingBookingProvider @default(GHL)
-  calendlyEventTypeLink  String?
-  calendlyEventTypeUri   String?
-  ```
-- **E10 — `app/page.tsx:122-130`**
+- **E7 — `app/page.tsx:118-130`**
   ```ts
   if (
     viewParam === "settings" &&
@@ -509,25 +515,26 @@
   }
   ```
 
-### SOLVE (Confidence: 0.85)
+### SOLVE (Confidence: 0.9)
 - The Settings UI is organized into five tabs: **General**, **Integrations**, **AI Personality**, **Booking**, and **Team**. (E1)
-- The Integrations tab includes workspace-level integrations management and a Slack notifications configuration area gated by `activeWorkspace` selection and admin status. (E2)
-- The AI Personality tab includes an **AI Personas Manager** plus workspace-level settings such as **Qualification Questions** and **Knowledge Assets**. (E3)
-- The Booking tab includes booking-process components and a campaign assignment panel plus analytics. (E4, E5)
-- The Team tab explicitly states team management is “coming soon” in the UI and claims workspaces are currently tied to an individual account. (E6)
-- The canonical “settings” data model lives primarily in `WorkspaceSettings`, including AI personality fields, automation toggles, notification settings, schedule/timezone, and booking configuration. (E7, E8, E9)
-- Deep-linking the Settings tab via URL only supports `general|integrations|ai|team` (booking is not included in the allowlist). (E10)
+- Client portal users are treated as **read-only** in Settings: a top-level banner is shown and tab contents are wrapped in `<fieldset disabled={isClientPortalUser}>`. (E1, E3, E4, E5)
+- The Integrations tab includes workspace integrations management and Slack configuration that is gated by workspace selection + admin capability, and uses `SecretInput` + brand tokens for a safer, more recognizable UX. (E2)
+- The AI Personality tab renders a read-only summary card for client portal users, and otherwise renders `AiPersonaManager` + workspace-level settings (qualification questions, knowledge assets). (E3)
+- The Booking tab centralizes booking configuration: booking notices, the booking process editor, and campaign assignment. Booking analytics are in the Analytics view (see Section 18). (E4)
+- The Team tab includes both internal team member provisioning and client portal user provisioning, with admin gating. (E5)
+- The canonical “settings” data model lives primarily in `WorkspaceSettings` (AI persona fields, company context, automation toggles, booking configuration, schedule/timezone, notification settings). (E6)
+- Deep-linking the Settings tab via URL only supports `general|integrations|ai|team` (booking is not included in the allowlist). (E7)
 
 ### VERIFY
-- **Potential mismatch:** the Settings UI has a `booking` tab (E1), but the dashboard deep-link allowlist omits it (E10), so `?view=settings&settingsTab=booking` will not be honored.
-- **Potential mismatch:** the Team tab UI says RBAC is “coming soon” (E6), yet the schema includes `ClientMember` roles and the backend enforces role checks (see Section 2). Treat “team management” as “not self-serve in UI” rather than “roles don’t exist”.
+- **Potential mismatch:** the Settings UI has a `booking` tab (E1), but the dashboard deep-link allowlist omits it (E7), so `?view=settings&settingsTab=booking` will not be honored.
+- Client portal users see both global read-only treatment (banner + disabled fieldsets) and tab-specific read-only UI (AI tab summary card). Ensure `isClientPortalUser` capability is derived consistently server-side and client-side. (E1, E3)
 
 ### SYNTHESIZE
-- **Mental model:** Settings is a mix of (a) workspace-level integration credentials (`Client`), (b) workspace-level behavioral controls (`WorkspaceSettings`), and (c) feature-specific managers (AI Personas, Booking Processes).
+- **Mental model:** Settings is a mix of (a) workspace-level integration credentials (`Client`), (b) workspace-level behavioral controls (`WorkspaceSettings`), and (c) feature-specific managers (AI Personas, Booking Processes, Team provisioning).
 - **Debugging checkpoints:**
   - “Why can’t I edit Slack settings?” → Integrations tab role gating (`settings-view.tsx`), plus admin checks (Section 2). (E2)
-  - “Where is this setting stored?” → `WorkspaceSettings` fields in `prisma/schema.prisma`. (E7–E9)
-  - “Why doesn’t a booking deep link work?” → Settings tab allowlist in `app/page.tsx`. (E10)
+  - “Where is this setting stored?” → `WorkspaceSettings` fields in `prisma/schema.prisma`. (E6)
+  - “Why doesn’t a booking deep link work?” → Settings tab allowlist in `app/page.tsx`. (E7)
 
 ## 4) Integrations Map (Credentials → Storage → Runtime Usage)
 
@@ -4103,3 +4110,670 @@
   1) Close the Supabase RLS/grants exposure (either enable RLS + policies or revoke grants / move tables out of `public`). (Section 15 E2/E4)
   2) Run Phase 71 migration + Phase 72 DB push and confirm with smoke tests. (E1, E2)
   3) Validate follow-up sequences in production: ensure templates + workspace settings resolve, and clear any `missing_*` pauses. (E3)
+
+## 18) Analytics (Windows, Tabs, Workflow Attribution, Reactivation, CRM Sheet)
+
+### PLAN
+- Identify the Analytics UI surface area (tabs) and how it is windowed (7d/30d/90d/custom).
+- Identify how workflow attribution analytics are computed (initial vs workflow attribution).
+- Identify how reactivation KPIs are computed.
+- Identify how the CRM sheet is populated and how inline edits are persisted safely.
+
+### LOCATE
+- `components/dashboard/analytics-view.tsx`: keywords `TabsTrigger`, `datePreset`, `windowRange`, `getWorkflowAttributionAnalytics`, `getReactivationCampaignAnalytics`, `BookingProcessAnalytics`, `AnalyticsCrmTable`
+- `actions/analytics-actions.ts`: keywords `resolveAnalyticsWindow`, `getWorkflowAttributionAnalytics`, `updateCrmSheetCell`
+- `components/dashboard/analytics-crm-table.tsx`: keywords `EditableTextCell`, `handleSave`, `handleBlur`, `updateAutomation`
+
+### EXTRACT
+- **E1 — `components/dashboard/analytics-view.tsx:277-327`**
+  ```tsx
+  return (
+    <Tabs defaultValue="overview" className="flex flex-col h-full overflow-auto">
+      <div className="border-b px-6 py-4 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-bold">Analytics</h1>
+            <p className="text-muted-foreground">Track your outreach performance</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <ChatgptExportControls activeWorkspace={activeWorkspace} />
+            <Select value={datePreset} onValueChange={(value) => setDatePreset(value as typeof datePreset)}>
+              <SelectTrigger className="w-[160px]">
+                <SelectValue placeholder="Select period" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="7d">Last 7 days</SelectItem>
+                <SelectItem value="30d">Last 30 days</SelectItem>
+                <SelectItem value="90d">Last 90 days</SelectItem>
+                <SelectItem value="custom">Custom range</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="workflows">Workflows</TabsTrigger>
+          <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
+          <TabsTrigger value="booking">Booking</TabsTrigger>
+          <TabsTrigger value="crm">CRM</TabsTrigger>
+        </TabsList>
+      </div>
+  ```
+- **E2 — `components/dashboard/analytics-view.tsx:92-193`**
+  ```tsx
+  const windowRange = useMemo(() => {
+    if (datePreset === "custom") {
+      if (!customFrom || !customTo) return null
+      const from = new Date(customFrom)
+      const to = new Date(customTo)
+      if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) return null
+      // Make the end date inclusive by adding a day.
+      to.setDate(to.getDate() + 1)
+      return { from: from.toISOString(), to: to.toISOString() }
+    }
+
+    const now = new Date()
+    const days = datePreset === "7d" ? 7 : datePreset === "30d" ? 30 : 90
+    const from = new Date(now.getTime() - days * 24 * 60 * 60 * 1000)
+    return { from: from.toISOString(), to: now.toISOString() }
+  }, [datePreset, customFrom, customTo])
+
+  const windowParams = useMemo(
+    () => (windowRange ? { from: windowRange.from, to: windowRange.to } : undefined),
+    [windowRange]
+  )
+  const windowKey = windowRange ? `${windowRange.from}:${windowRange.to}` : datePreset
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function fetchWorkflowAnalytics() {
+      setWorkflowLoading(true)
+      const result = await getWorkflowAttributionAnalytics(
+        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
+      )
+      if (!cancelled) {
+        if (result.success && result.data) {
+          setWorkflowData(result.data)
+        } else {
+          setWorkflowData(null)
+        }
+        setWorkflowLoading(false)
+      }
+    }
+
+    fetchWorkflowAnalytics()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeWorkspace, windowKey, windowParams])
+  ```
+- **E3 — `actions/analytics-actions.ts:47-102`**
+  ```ts
+  export async function getWorkflowAttributionAnalytics(opts?: {
+    clientId?: string | null;
+    from?: string;
+    to?: string;
+  }): Promise<{ success: boolean; data?: WorkflowAttributionData; error?: string }> {
+    try {
+      const user = await requireAuthUser();
+      const now = new Date();
+      const windowState = resolveAnalyticsWindow({ from: opts?.from, to: opts?.to });
+      const to = windowState.to ?? now;
+      const from =
+        windowState.from ?? new Date(to.getTime() - DEFAULT_ANALYTICS_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+
+      const { totalsRows } = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL statement_timeout = 10000`;
+
+        const totalsRows = await tx.$queryRaw<
+          Array<{ total_booked: bigint; workflow_booked: bigint }>
+        >`
+          WITH booked AS (
+            SELECT l.id AS lead_id, l."appointmentBookedAt" AS booked_at
+            FROM "Lead" l
+            WHERE l."appointmentBookedAt" >= ${from}
+              AND l."appointmentBookedAt" < ${to}
+          ),
+          matched AS (
+            SELECT
+              b.lead_id,
+              fi."sequenceId" AS sequence_id,
+              fi."lastStepAt" AS last_step_at,
+              ROW_NUMBER() OVER (PARTITION BY b.lead_id ORDER BY fi."lastStepAt" ASC) AS rn
+            FROM booked b
+            JOIN "FollowUpInstance" fi ON fi."leadId" = b.lead_id
+            WHERE fi."lastStepAt" IS NOT NULL
+              AND fi."lastStepAt" < b.booked_at
+          )
+          SELECT
+            (SELECT COUNT(*) FROM booked) AS total_booked,
+            (SELECT COUNT(*) FROM matched WHERE rn = 1) AS workflow_booked
+        `;
+
+        return { totalsRows };
+      });
+  ```
+- **E4 — `actions/analytics-actions.ts:369-400`**
+  ```ts
+  export interface AnalyticsWindow {
+    from?: string; // ISO string (inclusive)
+    to?: string; // ISO string (exclusive)
+  }
+
+  const DEFAULT_ANALYTICS_WINDOW_DAYS = 30;
+
+  function resolveAnalyticsWindow(window?: AnalyticsWindow, fallbackDays = DEFAULT_ANALYTICS_WINDOW_DAYS): {
+    from: Date | null;
+    to: Date | null;
+    key: string;
+  } {
+    if (!window?.from && !window?.to) {
+      return { from: null, to: null, key: "all" };
+    }
+
+    const now = new Date();
+    const to = window?.to ? new Date(window.to) : now;
+    const from = window?.from
+      ? new Date(window.from)
+      : new Date(to.getTime() - fallbackDays * 24 * 60 * 60 * 1000);
+
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
+      return { from: null, to: null, key: "all" };
+    }
+
+    if (from > to) {
+      return { from: to, to: from, key: `${to.toISOString()}_${from.toISOString()}` };
+    }
+
+    return { from, to, key: `${from.toISOString()}_${to.toISOString()}` };
+  }
+  ```
+- **E5 — `actions/analytics-actions.ts:2054-2108`**
+  ```ts
+  export async function updateCrmSheetCell(params: {
+    leadId: string;
+    field: CrmEditableField;
+    value: string | null;
+    updateAutomation?: boolean;
+    expectedUpdatedAt?: string | null;
+  }): Promise<{ success: boolean; error?: string; newValue?: string | null }> {
+    try {
+      const lead = await prisma.lead.findUnique({
+        where: { id: params.leadId },
+        select: { id: true, clientId: true, updatedAt: true, email: true },
+      });
+
+      if (!lead) {
+        return { success: false, error: "Lead not found" };
+      }
+
+      const { capabilities } = await requireWorkspaceCapabilities(lead.clientId);
+      if (capabilities.isClientPortalUser) {
+        return { success: false, error: "Unauthorized" };
+      }
+
+      const expectedUpdatedAt = parseExpectedUpdatedAt(params.expectedUpdatedAt ?? null);
+
+      const assertNotStale = (current: Date | null | undefined) => {
+        if (!expectedUpdatedAt) return;
+        if (!current || current.getTime() !== expectedUpdatedAt.getTime()) {
+          throw new Error("Row was modified by another user");
+        }
+      };
+  ```
+- **E6 — `actions/analytics-actions.ts:2122-2145`**
+  ```ts
+  case "email": {
+    assertNotStale(lead.updatedAt);
+    const normalizedEmail = value ? normalizeEmail(value) : null;
+    if (normalizedEmail === (lead.email ?? null)) {
+      return { success: true, newValue: lead.email ?? null };
+    }
+    if (normalizedEmail) {
+      const duplicate = await prisma.lead.findFirst({
+        where: {
+          clientId: lead.clientId,
+          id: { not: lead.id },
+          email: { equals: normalizedEmail, mode: "insensitive" },
+        },
+        select: { id: true },
+      });
+      if (duplicate) {
+        return { success: false, error: "Email is already used by another lead" };
+      }
+    }
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: { email: normalizedEmail },
+    });
+    return { success: true, newValue: normalizedEmail };
+  }
+  ```
+- **E7 — `components/dashboard/analytics-crm-table.tsx:95-156`**
+  ```tsx
+  const handleSave = async () => {
+    if (isSaving) return
+    const trimmed = multiline ? draftValue : draftValue.trim()
+    const nextValue = trimmed.length > 0 ? trimmed : null
+    setIsSaving(true)
+    const result = await onSave({
+      rowId,
+      leadId,
+      field,
+      value: nextValue,
+      updateAutomation: showAutomationToggle ? updateAutomation : undefined,
+    })
+    setIsSaving(false)
+    if (!result.success) {
+      setError(result.error || "Failed to save")
+      return
+    }
+    setError(null)
+    setIsEditing(false)
+  }
+
+  const handleBlur = (event: FocusEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return
+    if (isEditing) void handleSave()
+  }
+  ```
+
+### SOLVE (Confidence: 0.85)
+- Analytics is a first-class dashboard view with tabs: **Overview**, **Workflows**, **Campaigns**, **Booking**, and **CRM**, and a shared date window selector (7/30/90/custom). (E1)
+- The date window is computed client-side into `{ from, to }` ISO strings; custom end dates are made inclusive by adding one day, and analytics refetch on `windowKey` changes. (E2)
+- Workflow attribution analytics are computed server-side by selecting booked leads within the window and joining `FollowUpInstance` rows that have a `lastStepAt` before the booking time; this supports “booked from workflow” attribution. (E3)
+- CRM sheet edits are persisted via a server action (`updateCrmSheetCell`) that:
+  - blocks client portal users via capabilities,
+  - rejects stale edits via an `expectedUpdatedAt` equality check, and
+  - performs field-specific validations (e.g., normalized email uniqueness per workspace). (E5, E6)
+- CRM inline editing is “spreadsheet-like”: click-to-edit, save on blur/Enter, with an optional “Also update automation” toggle per edit. (E7)
+
+### VERIFY
+- Analytics window semantics are “inclusive start, exclusive end” on the backend (`to` is treated as an exclusive upper bound), while the UI makes custom end dates inclusive by adding one day. Ensure this is the intended contract for reporting. (E2, E4)
+- CRM “stale edit” protection depends on exact `updatedAt` equality; if DB timestamp precision differs from client serialization, conflicts may appear more often than expected. (E5)
+
+### SYNTHESIZE
+- **Mental model:** Analytics is a read-only reporting plane layered over the same unified Lead/Message/FollowUp/Booking data, with a shared window driving all tabs. CRM is a “view + edit” overlay where writes go through strict server actions with RBAC + validation.
+- **Where to debug:**
+  - “Analytics numbers look wrong” → window range logic (`analytics-view.tsx`) and attribution query (`getWorkflowAttributionAnalytics`). (E1–E4)
+  - “CRM edit doesn’t save” → `updateCrmSheetCell` capability check + stale edit check. (E5)
+
+## 19) Lead Assignment (Weighted Round-Robin, Email-Only Gating, Audit Log)
+
+### PLAN
+- Identify how round-robin assignment is configured (settings UI + schema fields).
+- Identify how/when assignment triggers (which inbound paths call it).
+- Identify the core algorithm and its concurrency guarantees.
+- Identify audit trail and operational alerts.
+
+### LOCATE
+- `prisma/schema.prisma`: keywords `roundRobinEnabled`, `roundRobinSetterSequence`, `roundRobinEmailOnly`, `LeadAssignmentEvent`
+- `components/dashboard/settings/integrations-manager.tsx`: keyword `Assignments`
+- `lib/lead-assignment.ts`: keywords `FOR UPDATE`, `computeEffectiveSetterSequence`, `isChannelEligibleForLeadAssignment`, `leadAssignmentEvent`
+- Trigger sites: `lib/inbound-post-process/pipeline.ts`, `lib/background-jobs/*-inbound-post-process.ts`: keyword `maybeAssignLead`
+
+### EXTRACT
+- **E1 — `prisma/schema.prisma:285-290`**
+  ```prisma
+  // Round-robin lead assignment (Phase 43)
+  roundRobinEnabled         Boolean  @default(false)  // When true, new positive leads are assigned to setters in rotation
+  roundRobinLastSetterIndex Int?                      // Index of last assigned setter (for rotation)
+  // Weighted round-robin sequence (Phase 89)
+  roundRobinSetterSequence  String[] @default([])     // Ordered Supabase Auth user IDs; duplicates allowed for weighting
+  roundRobinEmailOnly       Boolean  @default(false)  // When true, only Email inbound triggers assignment
+  ```
+- **E2 — `components/dashboard/settings/integrations-manager.tsx:1622-1683`**
+  ```tsx
+  <div className="space-y-2 border-t pt-2 mt-2">
+    <div className="flex items-center justify-between gap-3">
+      <Label htmlFor={`roundRobinEnabled-${client.id}`} className="text-xs">
+        Round robin enabled
+      </Label>
+      <Switch
+        id={`roundRobinEnabled-${client.id}`}
+        checked={assignmentsForm.roundRobinEnabled}
+        onCheckedChange={(checked) =>
+          setAssignmentsForm({
+            ...assignmentsForm,
+            roundRobinEnabled: checked,
+            roundRobinEmailOnly: checked ? assignmentsForm.roundRobinEmailOnly : false,
+          })
+        }
+      />
+    </div>
+  </div>
+
+  <div className="space-y-2">
+    <div className="flex items-center justify-between gap-3">
+      <Label htmlFor={`roundRobinEmailOnly-${client.id}`} className="text-xs">
+        Email-only assignment
+      </Label>
+      <Switch
+        id={`roundRobinEmailOnly-${client.id}`}
+        checked={assignmentsForm.roundRobinEmailOnly}
+        disabled={!assignmentsForm.roundRobinEnabled}
+        onCheckedChange={(checked) =>
+          setAssignmentsForm({
+            ...assignmentsForm,
+            roundRobinEmailOnly: checked,
+          })
+        }
+      />
+    </div>
+  </div>
+
+  <div className="space-y-2">
+    <Label htmlFor={`roundRobinSequence-${client.id}`} className="text-xs">
+      Round robin sequence (optional)
+    </Label>
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        {parseUniqueEmailList(assignmentsForm.setterEmailsRaw).map((email) => (
+          <Button
+            key={email}
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!assignmentsForm.roundRobinEnabled}
+            onClick={() =>
+              setAssignmentsForm((prev) => ({
+                ...prev,
+                roundRobinSequence: [...prev.roundRobinSequence, email],
+              }))
+            }
+          >
+            + {email}
+          </Button>
+        ))}
+      </div>
+  ```
+- **E3 — `lib/lead-assignment.ts:32-49`**
+  ```ts
+  export function computeEffectiveSetterSequence(opts: {
+    activeSetterUserIds: string[];
+    configuredSequence: string[] | null | undefined;
+  }): string[] {
+    const configured = Array.isArray(opts.configuredSequence) ? opts.configuredSequence : [];
+    if (configured.length === 0) return opts.activeSetterUserIds;
+
+    const activeSet = new Set(opts.activeSetterUserIds);
+    return configured.filter((userId) => activeSet.has(userId));
+  }
+
+  export function isChannelEligibleForLeadAssignment(opts: {
+    emailOnly: boolean;
+    channel?: LeadAssignmentChannel;
+  }): boolean {
+    if (!opts.emailOnly) return true;
+    return opts.channel === "email";
+  }
+  ```
+- **E4 — `lib/lead-assignment.ts:111-195`**
+  ```ts
+  const assignedToUserId = await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT 1 FROM "WorkspaceSettings" WHERE "clientId" = ${clientId} FOR UPDATE`;
+
+    const settings = await tx.workspaceSettings.findUnique({
+      where: { clientId },
+      select: {
+        roundRobinEnabled: true,
+        roundRobinLastSetterIndex: true,
+        roundRobinSetterSequence: true,
+        roundRobinEmailOnly: true,
+      },
+    });
+
+    if (!settings?.roundRobinEnabled) {
+      return null;
+    }
+
+    if (!isChannelEligibleForLeadAssignment({ emailOnly: settings.roundRobinEmailOnly, channel })) {
+      return null;
+    }
+
+    const effectiveSequence = computeEffectiveSetterSequence({
+      activeSetterUserIds,
+      configuredSequence: settings.roundRobinSetterSequence,
+    });
+
+    const nextIndex = getNextRoundRobinIndex(settings.roundRobinLastSetterIndex, effectiveSequence.length);
+    const nextSetterUserId = effectiveSequence[nextIndex];
+
+    const updateResult = await tx.lead.updateMany({
+      where: { id: leadId, assignedToUserId: null },
+      data: { assignedToUserId: nextSetterUserId, assignedAt: now },
+    });
+  });
+  ```
+- **E5 — `prisma/schema.prisma:905-920`**
+  ```prisma
+  // Lead assignment audit trail (Phase 89e)
+  model LeadAssignmentEvent {
+    id        String   @id @default(uuid())
+    clientId  String
+    leadId    String
+    assignedToUserId String
+    assignedByUserId String?
+    source    String   // round_robin | backfill | manual
+    channel   String?  // sms | email | linkedin
+    createdAt DateTime @default(now())
+
+    @@index([clientId, createdAt(sort: Desc)])
+    @@index([leadId, createdAt(sort: Desc)])
+    @@index([assignedToUserId])
+  }
+  ```
+- **E6 — `lib/background-jobs/sms-inbound-post-process.ts:204-216`**
+  ```ts
+  await maybeAssignLead({
+    leadId: lead.id,
+    clientId: client.id,
+    sentimentTag: finalSentiment,
+    channel: "sms",
+  });
+  ```
+
+### SOLVE (Confidence: 0.85)
+- Round-robin assignment is workspace-configured via `WorkspaceSettings`:
+  - enable/disable (`roundRobinEnabled`),
+  - pointer/index (`roundRobinLastSetterIndex`),
+  - weighted sequence list where duplicates are allowed for weighting (`roundRobinSetterSequence`),
+  - and an email-only gate (`roundRobinEmailOnly`). (E1)
+- The settings UI exposes these controls inside the Integrations manager “Assignments” section; the UI explicitly allows duplicates by appending emails into `roundRobinSequence`. (E2)
+- The assignment algorithm:
+  - filters the configured sequence to active setters while preserving ordering/duplicates,
+  - skips non-email channels when `roundRobinEmailOnly=true`,
+  - and assigns only when `assignedToUserId` is still null (idempotency). (E3, E4)
+- Concurrency hardening is done by locking the workspace settings row (`FOR UPDATE`) and using `updateMany` with `assignedToUserId: null` as a guard to prevent double-assign. (E4)
+- Assignment triggers occur from inbound post-process jobs and include an explicit `channel` value (e.g., `"sms"` shown), enabling the email-only gate. (E6)
+- Assignments are auditable via the `LeadAssignmentEvent` model, which records lead/workspace, assignee, source, channel, and timestamp. (E5)
+
+### VERIFY
+- The UI shown uses setter emails as the sequence builder input; the persisted sequence is documented in schema comments as “Supabase Auth user IDs”. Ensure the server action that saves assignments resolves emails → userIds consistently. (E1, E2)
+
+### SYNTHESIZE
+- **Mental model:** inbound sentiment hits “positive” → round-robin may assign the lead to a setter → downstream workflows (human/AI replies, follow-ups) can use `Lead.assignedToUserId` as the primary owner signal.
+- **Where to debug:**
+  - “No leads are being assigned” → check `roundRobinEnabled` + `roundRobinEmailOnly` + sequence emptiness after filtering. (E1, E3, E4)
+  - “Wrong person got assigned” → verify configured sequence order/duplicates in Integrations → Assignments UI. (E2)
+
+## 20) Phase 93 (WIP) Persona-Routed Follow-Up Workflows (Chris + Aaron)
+
+### PLAN
+- Identify the intended routing basis and scope for persona-routed follow-ups.
+- Identify schema and server-action changes that enable persona-bound sequences and a `setter_reply` trigger.
+- Identify the runtime routing behavior (which sequence is picked for a lead).
+- Identify follow-up template token changes required for persona signatures.
+
+### LOCATE
+- `docs/planning/phase-93/plan.md`: keywords `Routing basis`, `Scope`, `routeSequenceByPersona`, `setter_reply`, `meeting_selected`
+- `prisma/schema.prisma`: `FollowUpSequence.aiPersonaId`, `triggerOn` includes `setter_reply`
+- `lib/followup-sequence-router.ts`: keyword `routeSequenceByPersona`
+- `lib/followup-automation.ts`: keyword `Auto-start routing`
+- `components/dashboard/followup-sequence-manager.tsx`: keywords `setter_reply`, `AI Persona (optional)`, `{signature}`
+- `lib/followup-persona.ts`, `lib/followup-template.ts`, `lib/__tests__/followup-template.test.ts`
+
+### EXTRACT
+- **E1 — `docs/planning/phase-93/plan.md:1-28`**
+  ```md
+  # Phase 93 — Persona-Routed Follow-Up Workflows (All Trigger Types)
+
+  Decisions locked from the conversation:
+  * **Routing basis:** by `EmailCampaign.aiPersonaId` (campaign assignment panel).
+  * **Scope:** Persona routing applies to ALL trigger types:
+    - `setter_reply` — On first manual email reply
+    - `no_response` — On outbound email (Day 2/5/7 sequences)
+    - `meeting_selected` — After meeting booked (Post-Booking sequences)
+    - `manual` — Manual trigger only (persona routing still applies to template resolution)
+  * **Signature:** workflow templates should support persona-driven tokens (not hardcoded per-template text), and the UI should clearly explain this.
+  ```
+- **E2 — `prisma/schema.prisma:1133-1144`**
+  ```prisma
+  model FollowUpSequence {
+    id          String   @id @default(uuid())
+    clientId    String
+    isActive    Boolean  @default(true)
+    triggerOn   String   @default("no_response")  // 'no_response' | 'meeting_selected' | 'manual' | 'setter_reply'
+    aiPersonaId String?
+    aiPersona   AiPersona? @relation(fields: [aiPersonaId], references: [id], onDelete: SetNull)
+    steps       FollowUpStep[]
+    instances   FollowUpInstance[]
+  }
+  ```
+- **E3 — `lib/followup-sequence-router.ts:12-44`**
+  ```ts
+  export async function routeSequenceByPersona(opts: {
+    clientId: string;
+    triggerOn: string;
+    routingPersonaId: string | null;
+    fallbackNames?: string[];
+  }): Promise<{ sequence: FollowUpSequenceCandidate | null; reason: string }> {
+    const candidates = await prisma.followUpSequence.findMany({
+      where: {
+        clientId: opts.clientId,
+        isActive: true,
+        triggerOn: opts.triggerOn,
+      },
+      select: { id: true, name: true, aiPersonaId: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (candidates.length > 0) {
+      const personaMatch = opts.routingPersonaId
+        ? candidates.find((seq) => seq.aiPersonaId === opts.routingPersonaId)
+        : null;
+      const generic = candidates.find((seq) => !seq.aiPersonaId);
+      const selected = personaMatch ?? generic ?? candidates[0] ?? null;
+      const reason = personaMatch
+        ? "matched_persona"
+        : generic
+          ? "generic_fallback"
+          : "latest_fallback";
+      return { sequence: selected, reason };
+    }
+  ```
+- **E4 — `lib/followup-automation.ts:468-509`**
+  ```ts
+  const routingPersonaId = lead.emailCampaign?.aiPersonaId ?? lead.client.aiPersonas?.[0]?.id ?? null;
+  const routed = await routeSequenceByPersona({
+    clientId: lead.clientId,
+    triggerOn: "setter_reply",
+    routingPersonaId,
+    fallbackNames: [ZRG_WORKFLOW_V1_SEQUENCE_NAME, MEETING_REQUESTED_SEQUENCE_NAME_LEGACY],
+  });
+
+  if (!routed.sequence) {
+    return { started: false, reason: routed.reason };
+  }
+
+  await startSequenceInstance(lead.id, routed.sequence.id, { startedAt: opts.outboundAt });
+
+  console.log("[FollowUp] Auto-start routing", {
+    triggerOn: "setter_reply",
+    leadId: lead.id,
+    clientId: lead.clientId,
+    emailCampaignId: lead.emailCampaign?.id ?? null,
+    routingPersonaId,
+    sequenceId: routed.sequence.id,
+    sequenceName: routed.sequence.name,
+    reason: routed.reason,
+  });
+  ```
+- **E5 — `components/dashboard/followup-sequence-manager.tsx:899-926`**
+  ```tsx
+  <div className="space-y-2">
+    <Label>AI Persona (optional)</Label>
+    <Select
+      value={formData.aiPersonaId ?? "auto"}
+      onValueChange={(value) =>
+        setFormData({
+          ...formData,
+          aiPersonaId: value === "auto" ? null : value,
+        })
+      }
+    >
+      <SelectTrigger>
+        <SelectValue placeholder="Use campaign/default persona" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="auto">Use campaign/default persona</SelectItem>
+      </SelectContent>
+    </Select>
+    <p className="text-[11px] text-muted-foreground">
+      {`{senderName}`} and {`{signature}`} resolve from the selected persona (or campaign/default when set to auto).
+      Missing persona fields will pause follow-ups until configured.
+    </p>
+  </div>
+  ```
+- **E6 — `lib/followup-persona.ts:44-73`**
+  ```ts
+  const campaignPersona = lead?.emailCampaign?.aiPersona ?? null;
+  const defaultPersona = lead?.client?.aiPersonas?.[0] ?? null;
+
+  const selectedPersona = sequencePersona ?? campaignPersona ?? defaultPersona;
+  const settings = lead?.client?.settings ?? null;
+
+  const senderName = normalize(selectedPersona?.personaName) ?? normalize(settings?.aiPersonaName);
+  const signature = normalize(selectedPersona?.signature) ?? normalize(settings?.aiSignature);
+  ```
+- **E7 — `lib/followup-template.ts:43-47`**
+  ```ts
+  { token: "{senderName}", valueKey: "aiPersonaName", source: "workspace" },
+  { token: "{name}", valueKey: "aiPersonaName", source: "workspace", isAlias: true },
+  { token: "{signature}", valueKey: "signature", source: "workspace" },
+  ```
+- **E8 — `lib/__tests__/followup-template.test.ts:112-123`**
+  ```ts
+  it("blocks rendering when signature is missing", () => {
+    const res = renderFollowUpTemplateStrict({
+      template: "Thanks,{signature}",
+      values: { ...BASE_VALUES, signature: null },
+    });
+    assert.equal(res.ok, false);
+    if (!res.ok) {
+      assert.equal(res.errors.some((e) => e.type === "missing_value" && e.token === "{signature}"), true);
+    }
+  });
+  ```
+
+### SOLVE (Confidence: 0.8)
+- Phase 93’s intended behavior is persona-aware workflow selection based on `EmailCampaign.aiPersonaId`, with persona routing applied across trigger types and persona-driven `{signature}` support. (E1)
+- Schema supports persona-bound sequences via `FollowUpSequence.aiPersonaId`, and introduces `setter_reply` as an explicit trigger value. (E2)
+- Routing is implemented via `routeSequenceByPersona()`:
+  - if persona-specific sequences exist for a trigger, pick the one matching the routing persona id,
+  - else fall back to a generic sequence (`aiPersonaId IS NULL`),
+  - else fall back to the newest sequence. (E3)
+- The “Meeting Requested” auto-start on first manual email reply now uses persona routing and logs its selection decision with `routingPersonaId` and chosen `sequenceId`. (E4)
+- Follow-up template rendering now supports `{signature}` and blocks sends when it’s missing, preserving strict “never send placeholders” policy. (E7, E8)
+- The UI exposes persona binding and explicitly documents `{senderName}` / `{signature}` sourcing behavior for admins. (E5)
+- Runtime token resolution supports precedence: sequence persona → campaign persona → default persona → workspace settings. (E6)
+
+### VERIFY
+- The Phase 93 plan states persona routing should apply to **all trigger types**; the extracts show `setter_reply` routing explicitly, and schema supports trigger-based routing generally, but this section does not prove every trigger path is wired to `routeSequenceByPersona` yet. (E1, E3, E4)
+- `FollowUpSequence.aiPersonaId` is a schema change; production rollout requires DB schema application (`npm run db:push` against the intended DB) before merging. (E2, E1)
+
+### SYNTHESIZE
+- **Mental model:** follow-ups gain a “persona layer”: sequence selection can be persona-specific, and template rendering can pull persona identity/signature from either the selected sequence persona or the campaign persona.
+- **Operational takeaway:** to run Chris + Aaron concurrently, you configure two sequences with the same trigger but different persona bindings; the router selects based on campaign persona at runtime. (E1, E3, E5)

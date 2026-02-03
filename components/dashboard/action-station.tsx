@@ -8,9 +8,9 @@ import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Calendar, ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, AlertTriangle, Moon, Plus } from "lucide-react"
+import { Calendar, ExternalLink, PanelRightOpen, Mail, MapPin, Send, Loader2, Sparkles, RotateCcw, RefreshCw, X, Check, History, MessageSquare, Linkedin, UserCheck, UserPlus, Clock, AlertCircle, AlertTriangle, Moon, Plus, Zap } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { sendMessage, sendEmailMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, refreshDraftAvailability, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
+import { sendMessage, sendEmailMessage, sendLinkedInMessage, getPendingDrafts, approveAndSendDraft, rejectDraft, regenerateDraft, fastRegenerateDraft, refreshDraftAvailability, checkLinkedInStatus, type LinkedInStatusResult } from "@/actions/message-actions"
 import { validateEmail, formatEmailParticipant, normalizeOptionalEmail } from "@/lib/email-participants"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -212,12 +212,15 @@ export function ActionStation({
   const conversationMessagesRef = useRef<Conversation["messages"]>([])
   const [composeMessage, setComposeMessage] = useState("")
   const [isSending, setIsSending] = useState(false)
-  const [isRegenerating, setIsRegenerating] = useState(false)
+  const [isRegeneratingFast, setIsRegeneratingFast] = useState(false)
+  const [isRegeneratingFull, setIsRegeneratingFull] = useState(false)
   const [isRefreshingAvailability, setIsRefreshingAvailability] = useState(false)
   const [drafts, setDrafts] = useState<AIDraft[]>([])
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(false)
   const [hasAiDraft, setHasAiDraft] = useState(false)
   const [originalDraft, setOriginalDraft] = useState("")
+  const [fastRegenCycleSeed, setFastRegenCycleSeed] = useState<string | null>(null)
+  const [fastRegenCount, setFastRegenCount] = useState(0)
   const [activeChannel, setActiveChannel] = useState<Channel>("sms")
   const [linkedInStatus, setLinkedInStatus] = useState<LinkedInStatusResult | null>(null)
   const [isLoadingLinkedInStatus, setIsLoadingLinkedInStatus] = useState(false)
@@ -229,6 +232,8 @@ export function ActionStation({
   const [toEmail, setToEmail] = useState("")
   const [hasEditedTo, setHasEditedTo] = useState(false)
   const { user } = useUser()
+
+  const isRegenerating = isRegeneratingFast || isRegeneratingFull
   
   // Determine current channel type
   const isEmail = activeChannel === "email"
@@ -431,6 +436,8 @@ export function ActionStation({
         setComposeMessage("")
         setHasAiDraft(false)
         setOriginalDraft("")
+        setFastRegenCycleSeed(null)
+        setFastRegenCount(0)
         return
       }
 
@@ -452,6 +459,8 @@ export function ActionStation({
         setComposeMessage(preferredDrafts[0].content)
         setOriginalDraft(preferredDrafts[0].content)
         setHasAiDraft(true)
+        setFastRegenCycleSeed(preferredDrafts[0].id)
+        setFastRegenCount(0)
       } else {
         // No drafts found
         console.log("[ActionStation] No drafts found")
@@ -459,6 +468,8 @@ export function ActionStation({
         setOriginalDraft("")
         setHasAiDraft(false)
         setDrafts([])
+        setFastRegenCycleSeed(null)
+        setFastRegenCount(0)
       }
       setIsLoadingDrafts(false)
     }
@@ -613,34 +624,71 @@ export function ActionStation({
     setOriginalDraft("")
   }
 
-  const handleRegenerateDraft = async () => {
+  const handleFastRegenerateDraft = async () => {
     if (!conversation) return
 
-    setIsRegenerating(true)
-    
-    // Reject existing draft first if any
-    if (drafts.length > 0) {
-      await rejectDraft(drafts[0].id)
-    }
-    
-    const result = await regenerateDraft(conversation.id, activeChannel)
-    
+    setIsRegeneratingFast(true)
+
+    const cycleSeed = fastRegenCycleSeed || drafts[0]?.id || null
+    const regenCount = fastRegenCount
+
+    const result = await fastRegenerateDraft(
+      conversation.id,
+      activeChannel,
+      activeChannel === "email" && cycleSeed ? { cycleSeed, regenCount } : undefined
+    )
+
     if (result.success && result.data) {
-      toast.success("New AI draft generated!")
-      setDrafts([{ 
-        id: result.data.id, 
-        content: result.data.content, 
-        status: "pending", 
-        createdAt: new Date() 
-      }])
+      toast.success("Fast regenerated!")
+      setDrafts([
+        {
+          id: result.data.id,
+          content: result.data.content,
+          status: "pending",
+          createdAt: new Date(),
+        },
+      ])
       setComposeMessage(result.data.content)
       setOriginalDraft(result.data.content)
       setHasAiDraft(true)
+      if (activeChannel === "email" && cycleSeed) {
+        setFastRegenCycleSeed(cycleSeed)
+        setFastRegenCount(regenCount + 1)
+      }
+    } else {
+      toast.error(result.error || "Failed to regenerate draft")
+    }
+
+    setIsRegeneratingFast(false)
+  }
+
+  const handleFullRegenerateDraft = async () => {
+    if (!conversation) return
+
+    setIsRegeneratingFull(true)
+
+    const result = await regenerateDraft(conversation.id, activeChannel)
+
+    if (result.success && result.data) {
+      toast.success("New AI draft generated!")
+      setDrafts([
+        {
+          id: result.data.id,
+          content: result.data.content,
+          status: "pending",
+          createdAt: new Date(),
+        },
+      ])
+      setComposeMessage(result.data.content)
+      setOriginalDraft(result.data.content)
+      setHasAiDraft(true)
+      setFastRegenCycleSeed(result.data.id)
+      setFastRegenCount(0)
     } else {
       toast.error(result.error || "Failed to generate draft")
     }
-    
-    setIsRegenerating(false)
+
+    setIsRegeneratingFull(false)
   }
 
   const handleRefreshAvailability = async () => {
@@ -651,14 +699,23 @@ export function ActionStation({
     const result = await refreshDraftAvailability(drafts[0].id, composeMessage)
 
     if (result.success && result.content) {
-      toast.success(`Refreshed availability: ${result.newSlots?.length || 0} new slots`)
+      const count = result.newSlots?.length || 0
+      if (count === 0) {
+        toast.info("Availability times are already current")
+      } else {
+        toast.success(`Refreshed ${count} time${count === 1 ? "" : "s"}`)
+      }
       setComposeMessage(result.content)
       setOriginalDraft(result.content)
       setDrafts(prev => prev.map(d =>
         d.id === drafts[0].id ? { ...d, content: result.content! } : d
       ))
     } else {
-      toast.error(result.error || "Failed to refresh availability")
+      if (result.error?.includes("No time options found")) {
+        toast.warning(result.error)
+      } else {
+        toast.error(result.error || "Failed to refresh availability")
+      }
     }
 
     setIsRefreshingAvailability(false)
@@ -969,11 +1026,11 @@ export function ActionStation({
             <Button
               variant="outline"
               size="sm"
-              onClick={handleRegenerateDraft}
+              onClick={handleFullRegenerateDraft}
               disabled={isRegenerating}
               className="text-xs"
             >
-              {isRegenerating ? (
+              {isRegeneratingFull ? (
                 <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
               ) : (
                 <Sparkles className="h-3.5 w-3.5 mr-1.5" />
@@ -1156,20 +1213,37 @@ export function ActionStation({
                   <X className="h-4 w-4" />
                 </Button>
 
-                {/* Regenerate button */}
+                {/* Fast regen + full regen */}
                 <Button
                   variant="outline"
-                  size="icon"
-                  onClick={handleRegenerateDraft}
+                  size="sm"
+                  onClick={handleFastRegenerateDraft}
                   disabled={isSending || isRegenerating}
-                  className="h-11 w-11 min-h-[44px] min-w-[44px]"
-                  aria-label="Regenerate draft"
+                  className="h-11 px-3 min-h-[44px]"
+                  title="Fast regenerate (rewrite previous draft)"
                 >
-                  {isRegenerating ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
+                  {isRegeneratingFast ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   ) : (
-                    <RefreshCw className="h-4 w-4" />
+                    <Zap className="h-4 w-4 mr-2" />
                   )}
+                  Fast Regen
+                </Button>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleFullRegenerateDraft}
+                  disabled={isSending || isRegenerating}
+                  className="h-11 px-3 min-h-[44px]"
+                  title="Full regenerate (rebuild full context)"
+                >
+                  {isRegeneratingFull ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                  )}
+                  Full Regen
                 </Button>
                 
                 {/* Approve & Send button */}

@@ -1,6 +1,8 @@
 import "@/lib/server-dns";
 import { prisma } from "@/lib/prisma";
 import type { AvailabilitySource } from "@prisma/client";
+export type { AvailabilitySource };
+
 import {
   detectCalendarType,
   fetchCalendlyAvailabilityWithMeta,
