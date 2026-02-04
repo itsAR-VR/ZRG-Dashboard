@@ -23,11 +23,11 @@ Verify the revert is safe and does not regress functionality.
 
 ## Output
 - Lint: passed with existing repo warnings (no errors).
-- Build: passed after clearing stale `.next/lock` (warnings noted).
-- Manual smoke: not run in this environment (requires UI).
+- Build: passed (warnings noted).
+- Manual smoke: confirmed by user (2026-02-04) — table layout + save/revert behavior OK.
 
 ## Handoff
-If manual smoke confirms UI, Phase 102 is ready to ship.
+Manual smoke confirmed; proceed to Phase 102 review documentation.
 
 ## Progress This Turn (Terminus Maximus)
 - Work done:
@@ -41,3 +41,15 @@ If manual smoke confirms UI, Phase 102 is ready to ship.
   - Manual smoke test requires running the app UI.
 - Next concrete steps:
   - Manually verify Settings → Booking → Campaign Assignment table layout and save/revert behavior.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Recorded user-confirmed manual smoke test for the Booking tab campaign assignment table.
+  - Re-ran `npm run lint` and `npm run build` to capture verification evidence post-confirmation.
+- Commands run:
+  - `npm run lint` — pass (warnings only)
+  - `npm run build` — pass (warnings only)
+- Blockers:
+  - None
+- Next concrete steps:
+  - Write Phase 102 review doc and update root plan success criteria.

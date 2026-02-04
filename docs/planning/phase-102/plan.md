@@ -28,7 +28,7 @@ Uncommitted work exists in the working tree; treat these as integration constrai
 * [x] Identify the minimal revert needed to restore the table layout (no behavior regressions)
 * [x] Update `ai-campaign-assignment.tsx` to use the pre–Phase 92 table structure
 * [x] Preserve Phase 97 functional/insight UI in the header
-* [ ] Validate with lint/build and a small manual smoke test (manual UI check pending)
+* [x] Validate with lint/build and a small manual smoke test
 
 ## Constraints
 - **Scope constraint:** only revert the campaign assignment UI; do not change other Settings → Booking sections or other tabs.
@@ -48,18 +48,18 @@ Uncommitted work exists in the working tree; treat these as integration constrai
   - `components/dashboard/settings/ai-campaign-assignment.tsx` (render branch under `rows.length > 0`)
 
 ## Success Criteria
-- [x] Campaigns render in a **table** again (no collapsible row cards, no slider-based threshold control). *(Code updated; manual UI check pending.)*
-- [ ] Editing Mode/Threshold/Delay/Schedule/Booking Process/Persona still works; dirty rows highlight and Save/Revert behave correctly. *(Manual UI check pending.)*
+- [x] Campaigns render in a **table** again (no collapsible row cards, no slider-based threshold control).
+- [x] Editing Mode/Threshold/Delay/Schedule/Booking Process/Persona still works; dirty rows highlight and Save/Revert behave correctly. *(Manual smoke confirmed.)*
 - [x] Phase 97 header insights remain present (auto-send stats line and mismatch badge).
 - [x] `npm run lint` and `npm run build` pass. *(Warnings noted.)*
 
 ## RED TEAM Findings (Gaps / Weak Spots)
 
 ### Highest-risk failure modes
-- Manual UI regression (table layout not rendering or save/revert broken) → require a quick manual smoke test in Settings → Booking.
+- Manual UI regression (table layout not rendering or save/revert broken) → mitigated by user-confirmed smoke test.
 
 ### Missing or ambiguous requirements
-- Manual confirmation step was not yet executed → treat as a release gate.
+- Manual confirmation step completed (user verified Booking tab UI) → release gate cleared.
 
 ### Performance / timeouts
 - Build can fail if `.next/lock` exists → mitigation: remove `.next/lock` and rerun build.
@@ -69,16 +69,29 @@ Uncommitted work exists in the working tree; treat these as integration constrai
 
 ## Open Questions (Need Human Input)
 
-- [ ] Can you run the Settings → Booking → Campaign Assignment smoke test and confirm table layout + save/revert behavior? (confidence <90%)
+- [x] Can you run the Settings → Booking → Campaign Assignment smoke test and confirm table layout + save/revert behavior? (Resolved 2026-02-04)
   - Why it matters: Final sign-off depends on UI behaving correctly in the browser.
-  - Current assumption in this plan: Code is correct but unverified in UI.
+  - Resolution: User confirmed the UI is good.
 
 ## Phase Summary (running)
 - 2026-02-04 — Restored table layout in campaign assignment panel; lint/build passed with warnings; manual UI smoke pending. (files: `components/dashboard/settings/ai-campaign-assignment.tsx`, `docs/planning/phase-102/*`)
 - 2026-02-04 — Re-ran lint/build after final layout swap; warnings unchanged; manual UI smoke still pending. (files: `components/dashboard/settings/ai-campaign-assignment.tsx`)
 - 2026-02-04 — Prepared Phase 102 changes for commit/push per request; other working-tree changes left untouched. (files: `components/dashboard/settings/ai-campaign-assignment.tsx`, `docs/planning/phase-102/*`)
+- 2026-02-04 — Manual smoke confirmed by user; all success criteria satisfied. (files: `docs/planning/phase-102/*`)
+- 2026-02-04 — Wrote Phase 102 review doc with lint/build evidence. (files: `docs/planning/phase-102/review.md`)
 
 ## Subphase Index
 * a — Audit current UI vs pre–Phase 92 table baseline
 * b — Implement table layout revert (preserve Phase 97 header extras)
 * c — Validate (lint/build + manual smoke)
+
+## Phase Summary
+
+- Shipped:
+  - Table-based Campaign Assignment UI restored with Phase 97 header insights preserved.
+- Verified:
+  - `npm run lint`: pass (warnings only)
+  - `npm run build`: pass (warnings only)
+  - `npm run db:push`: skipped (no schema changes)
+- Notes:
+  - Manual smoke confirmed by user on 2026-02-04.
