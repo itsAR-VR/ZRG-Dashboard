@@ -12,6 +12,7 @@ const TEST_FILES = [
   "lib/__tests__/followups-backstop.test.ts",
   "lib/__tests__/insights-thread-extractor-schema.test.ts",
   "lib/__tests__/email-participants.test.ts",
+  "lib/__tests__/prompt-runner-temperature-reasoning.test.ts",
   "lib/__tests__/emailbison-stop-future-emails.test.ts",
   "lib/__tests__/workspace-capabilities.test.ts",
   "lib/__tests__/lead-assignment.test.ts",

@@ -51,7 +51,27 @@ function expandAttemptsWithMultiplier(opts: {
   return out;
 }
 
-function resolveTemperatureAndReasoning(opts: {
+type ReasoningEffort = NonNullable<StructuredJsonPromptParams<unknown>["reasoningEffort"]>;
+
+function supportsNoneReasoningEffort(model: string): boolean {
+  return model.startsWith("gpt-5.1") || model.startsWith("gpt-5.2");
+}
+
+function coerceReasoningEffortForModel(model: string, effort: ReasoningEffort): ReasoningEffort {
+  // Models before `gpt-5.1` reject `none` and use `minimal` as the lowest effort.
+  if (effort === "none" && model.startsWith("gpt-5") && !supportsNoneReasoningEffort(model)) {
+    return "minimal";
+  }
+
+  // `xhigh` is only supported on `gpt-5.2` in this codebase; degrade safely elsewhere.
+  if (effort === "xhigh" && !model.startsWith("gpt-5.2")) {
+    return "high";
+  }
+
+  return effort;
+}
+
+export function resolveTemperatureAndReasoning(opts: {
   model: string;
   temperature: number | null;
   reasoningEffort: StructuredJsonPromptParams<unknown>["reasoningEffort"] | null;
@@ -60,17 +80,22 @@ function resolveTemperatureAndReasoning(opts: {
   reasoning?: { effort: NonNullable<StructuredJsonPromptParams<unknown>["reasoningEffort"]> };
 } {
   const hasTemperature = typeof opts.temperature === "number" && Number.isFinite(opts.temperature);
+  const coercedReasoningEffort = opts.reasoningEffort ? coerceReasoningEffortForModel(opts.model, opts.reasoningEffort) : null;
+
   if (hasTemperature) {
-    // OpenAI model compatibility: temperature requires reasoning effort = "none" on gpt-5.* models.
-    if (opts.model === "gpt-5.2" || opts.model.startsWith("gpt-5")) {
-      return { temperature: opts.temperature!, reasoning: { effort: "none" } };
+    // GPT-5 family models require specifying the lowest reasoning effort alongside temperature.
+    // - Models before `gpt-5.1` reject `none`; use `minimal` instead.
+    if (opts.model.startsWith("gpt-5")) {
+      const defaultEffort: ReasoningEffort = supportsNoneReasoningEffort(opts.model) ? "none" : "minimal";
+      return { temperature: opts.temperature!, reasoning: { effort: defaultEffort } };
     }
+
     // For other models, omit reasoning to preserve temperature controls when supported.
     return { temperature: opts.temperature! };
   }
 
-  if (opts.reasoningEffort) {
-    return { reasoning: { effort: opts.reasoningEffort } };
+  if (coercedReasoningEffort) {
+    return { reasoning: { effort: coercedReasoningEffort } };
   }
 
   return {};
@@ -284,15 +309,15 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
           rawOutput: text,
           telemetry: buildTelemetryBase({
             traceId: params.traceId,
-            parentSpanId: params.parentSpanId,
-            interactionId,
-            promptKey: promptKeyForTelemetry,
-            featureId: params.featureId || featureId,
-            model: params.model,
-            pattern: "structured_json",
-            attemptCount: attemptIndex + 1,
-          }),
-        };
+          parentSpanId: params.parentSpanId,
+          interactionId,
+          promptKey: promptKeyForTelemetry,
+          featureId: params.featureId || featureId,
+          model: params.model,
+          pattern: "structured_json",
+          attemptCount: attemptIndex + 1,
+        }),
+      };
       }
 
       return {
