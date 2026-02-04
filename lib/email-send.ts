@@ -34,12 +34,24 @@ import {
   validateEmail,
 } from "@/lib/email-participants";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
+import { computeAIDraftResponseDisposition } from "@/lib/ai-drafts/response-disposition";
 
 export interface SendEmailResult {
   success: boolean;
   messageId?: string;
   error?: string;
+  errorCode?: SendEmailErrorCode;
 }
+
+export type SendEmailErrorCode =
+  | "draft_already_sending"
+  /**
+   * The provider send likely succeeded, but we could not fully confirm/persist it.
+   * Callers should NOT retry automatically to avoid duplicate sends.
+   */
+  | "send_outcome_unknown";
+
+const EMAIL_DRAFT_ALREADY_SENDING_ERROR = "Draft is already being sent";
 
 function parseSenderEmailId(value: string | null | undefined): number | null {
   const raw = typeof value === "string" ? value.trim() : "";
@@ -211,141 +223,143 @@ export async function sendEmailReplySystem(params: {
   const lead = params.lead;
   const client = lead.client;
   const provider = params.provider;
+  let providerSendSucceeded = false;
 
-  if (!lead.email) {
-    return { success: false, error: "Lead has no email" };
-  }
+  try {
+    if (!lead.email) {
+      return { success: false, error: "Lead has no email" };
+    }
 
-  const latestInboundEmail = await prisma.message.findFirst({
-    where: {
-      leadId: lead.id,
-      direction: "inbound",
-      ...(provider === EmailIntegrationProvider.SMARTLEAD
-        ? { emailBisonReplyId: { startsWith: "smartlead:" } }
-        : provider === EmailIntegrationProvider.INSTANTLY
-          ? { emailBisonReplyId: { startsWith: "instantly:" } }
-          : {
-              emailBisonReplyId: { not: null },
-              NOT: [
-                { emailBisonReplyId: { startsWith: "smartlead:" } },
-                { emailBisonReplyId: { startsWith: "instantly:" } },
-              ],
-            }),
-    },
-    orderBy: { sentAt: "desc" },
-  });
-
-  const replyKey = latestInboundEmail?.emailBisonReplyId;
-  if (!replyKey) {
-    return { success: false, error: "No inbound email thread to reply to" };
-  }
-
-  const ccResolution = resolveOutboundCc({
-    leadId: lead.id,
-    ccOverride: params.ccOverride,
-    inheritedCc: latestInboundEmail?.cc,
-  });
-
-  if (ccResolution.overrideProvided && ccResolution.invalid.length > 0) {
-    return {
-      success: false,
-      error: `Invalid CC email(s): ${ccResolution.invalid.slice(0, 4).join(", ")}${ccResolution.invalid.length > 4 ? "…" : ""}`,
-    };
-  }
-
-  // Compliance/backstop: refuse to reply if the latest inbound email contains an opt-out request.
-  const latestInboundText = `Subject: ${latestInboundEmail.subject || ""} | ${latestInboundEmail.body || ""}`;
-  if (isOptOutText(latestInboundText)) {
-    await prisma.lead.update({
-      where: { id: lead.id },
-      data: {
-        status: "blacklisted",
-        sentimentTag: "Blacklist",
-      },
-    });
-    await prisma.lead.updateMany({
-      where: { id: lead.id, enrichmentStatus: "pending" },
-      data: { enrichmentStatus: "not_needed" },
-    });
-
-    await prisma.aIDraft.updateMany({
+    const latestInboundEmail = await prisma.message.findFirst({
       where: {
         leadId: lead.id,
-        status: "pending",
+        direction: "inbound",
+        ...(provider === EmailIntegrationProvider.SMARTLEAD
+          ? { emailBisonReplyId: { startsWith: "smartlead:" } }
+          : provider === EmailIntegrationProvider.INSTANTLY
+            ? { emailBisonReplyId: { startsWith: "instantly:" } }
+            : {
+                emailBisonReplyId: { not: null },
+                NOT: [
+                  { emailBisonReplyId: { startsWith: "smartlead:" } },
+                  { emailBisonReplyId: { startsWith: "instantly:" } },
+                ],
+              }),
       },
-      data: { status: "rejected" },
+      orderBy: { sentAt: "desc" },
     });
 
-    return { success: false, error: "Lead requested unsubscribe (opt-out)" };
-  }
-
-  const recipients = resolveOutboundRecipients({
-    lead,
-    latestInboundEmail: latestInboundEmail
-      ? {
-          fromEmail: latestInboundEmail.fromEmail ?? null,
-          fromName: latestInboundEmail.fromName ?? null,
-          cc: latestInboundEmail.cc ?? [],
-        }
-      : null,
-    ccResolution,
-  });
-
-  const rawToOverride = typeof params.toEmailOverride === "string" ? params.toEmailOverride.trim() : "";
-  if (rawToOverride && !validateEmail(rawToOverride)) {
-    return { success: false, error: `Invalid To email: ${rawToOverride}` };
-  }
-
-  // Instantly reply API does not support overriding the To recipient.
-  const allowToOverride = provider !== EmailIntegrationProvider.INSTANTLY;
-
-  const recipientsWithOverride = applyOutboundToOverride({
-    primaryEmail: lead.email,
-    baseToEmail: recipients.toEmail,
-    baseToName: recipients.toName,
-    baseCc: recipients.cc,
-    overrideToEmail: allowToOverride ? rawToOverride || undefined : undefined,
-    overrideToName: allowToOverride ? (params.toNameOverride ?? null) : null,
-  });
-
-  let emailGuardTarget = recipientsWithOverride.toEmail;
-  let smartLeadHandle: ReturnType<typeof decodeSmartLeadReplyHandle> = null;
-  if (provider === EmailIntegrationProvider.SMARTLEAD) {
-    smartLeadHandle = decodeSmartLeadReplyHandle(replyKey);
-    if (!smartLeadHandle) {
-      return { success: false, error: "SmartLead thread handle is invalid or missing" };
+    const replyKey = latestInboundEmail?.emailBisonReplyId;
+    if (!replyKey) {
+      return { success: false, error: "No inbound email thread to reply to" };
     }
-    emailGuardTarget = recipientsWithOverride.overrideApplied
-      ? recipientsWithOverride.toEmail
-      : smartLeadHandle.toEmail || recipientsWithOverride.toEmail;
-  }
 
-  let instantlyHandle: ReturnType<typeof decodeInstantlyReplyHandle> = null;
-  if (provider === EmailIntegrationProvider.INSTANTLY) {
-    instantlyHandle = decodeInstantlyReplyHandle(replyKey);
-    if (!instantlyHandle) {
-      return { success: false, error: "Instantly thread handle is invalid or missing" };
+    const ccResolution = resolveOutboundCc({
+      leadId: lead.id,
+      ccOverride: params.ccOverride,
+      inheritedCc: latestInboundEmail?.cc,
+    });
+
+    if (ccResolution.overrideProvided && ccResolution.invalid.length > 0) {
+      return {
+        success: false,
+        error: `Invalid CC email(s): ${ccResolution.invalid.slice(0, 4).join(", ")}${ccResolution.invalid.length > 4 ? "…" : ""}`,
+      };
     }
-  }
 
-  const guardResult = await validateWithEmailGuard(emailGuardTarget);
-  if (!guardResult.valid) {
-    await prisma.lead.update({
-      where: { id: lead.id },
-      data: {
-        status: "blacklisted",
-        sentimentTag: "Blacklist",
-      },
+    // Compliance/backstop: refuse to reply if the latest inbound email contains an opt-out request.
+    const latestInboundText = `Subject: ${latestInboundEmail.subject || ""} | ${latestInboundEmail.body || ""}`;
+    if (isOptOutText(latestInboundText)) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          status: "blacklisted",
+          sentimentTag: "Blacklist",
+        },
+      });
+      await prisma.lead.updateMany({
+        where: { id: lead.id, enrichmentStatus: "pending" },
+        data: { enrichmentStatus: "not_needed" },
+      });
+
+      await prisma.aIDraft.updateMany({
+        where: {
+          leadId: lead.id,
+          status: "pending",
+        },
+        data: { status: "rejected" },
+      });
+
+      return { success: false, error: "Lead requested unsubscribe (opt-out)" };
+    }
+
+    const recipients = resolveOutboundRecipients({
+      lead,
+      latestInboundEmail: latestInboundEmail
+        ? {
+            fromEmail: latestInboundEmail.fromEmail ?? null,
+            fromName: latestInboundEmail.fromName ?? null,
+            cc: latestInboundEmail.cc ?? [],
+          }
+        : null,
+      ccResolution,
     });
-    await prisma.lead.updateMany({
-      where: { id: lead.id, enrichmentStatus: "pending" },
-      data: { enrichmentStatus: "not_needed" },
+
+    const rawToOverride = typeof params.toEmailOverride === "string" ? params.toEmailOverride.trim() : "";
+    if (rawToOverride && !validateEmail(rawToOverride)) {
+      return { success: false, error: `Invalid To email: ${rawToOverride}` };
+    }
+
+    // Instantly reply API does not support overriding the To recipient.
+    const allowToOverride = provider !== EmailIntegrationProvider.INSTANTLY;
+
+    const recipientsWithOverride = applyOutboundToOverride({
+      primaryEmail: lead.email,
+      baseToEmail: recipients.toEmail,
+      baseToName: recipients.toName,
+      baseCc: recipients.cc,
+      overrideToEmail: allowToOverride ? rawToOverride || undefined : undefined,
+      overrideToName: allowToOverride ? (params.toNameOverride ?? null) : null,
     });
 
-    return { success: false, error: `Email validation failed: ${guardResult.reason}` };
-  }
+    let emailGuardTarget = recipientsWithOverride.toEmail;
+    let smartLeadHandle: ReturnType<typeof decodeSmartLeadReplyHandle> = null;
+    if (provider === EmailIntegrationProvider.SMARTLEAD) {
+      smartLeadHandle = decodeSmartLeadReplyHandle(replyKey);
+      if (!smartLeadHandle) {
+        return { success: false, error: "SmartLead thread handle is invalid or missing" };
+      }
+      emailGuardTarget = recipientsWithOverride.overrideApplied
+        ? recipientsWithOverride.toEmail
+        : smartLeadHandle.toEmail || recipientsWithOverride.toEmail;
+    }
 
-  const subject = latestInboundEmail?.subject || null;
+    let instantlyHandle: ReturnType<typeof decodeInstantlyReplyHandle> = null;
+    if (provider === EmailIntegrationProvider.INSTANTLY) {
+      instantlyHandle = decodeInstantlyReplyHandle(replyKey);
+      if (!instantlyHandle) {
+        return { success: false, error: "Instantly thread handle is invalid or missing" };
+      }
+    }
+
+    const guardResult = await validateWithEmailGuard(emailGuardTarget);
+    if (!guardResult.valid) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          status: "blacklisted",
+          sentimentTag: "Blacklist",
+        },
+      });
+      await prisma.lead.updateMany({
+        where: { id: lead.id, enrichmentStatus: "pending" },
+        data: { enrichmentStatus: "not_needed" },
+      });
+
+      return { success: false, error: `Email validation failed: ${guardResult.reason}` };
+    }
+
+    const subject = latestInboundEmail?.subject || null;
 
   if (provider === EmailIntegrationProvider.EMAILBISON) {
     if (!lead.senderAccountId) {
@@ -444,6 +458,7 @@ export async function sendEmailReplySystem(params: {
     if (!sendResult.success) {
       return { success: false, error: sendResult.error || "Failed to send email reply" };
     }
+    providerSendSucceeded = true;
   } else if (provider === EmailIntegrationProvider.SMARTLEAD) {
     if (!client.smartLeadApiKey) {
       return { success: false, error: "Client missing SmartLead API key" };
@@ -472,6 +487,7 @@ export async function sendEmailReplySystem(params: {
     if (!sendResult.success) {
       return { success: false, error: sendResult.error || "Failed to send SmartLead email reply" };
     }
+    providerSendSucceeded = true;
   } else if (provider === EmailIntegrationProvider.INSTANTLY) {
     if (!client.instantlyApiKey) {
       return { success: false, error: "Client missing Instantly API key" };
@@ -495,6 +511,7 @@ export async function sendEmailReplySystem(params: {
     if (!sendResult.success) {
       return { success: false, error: sendResult.error || "Failed to send Instantly email reply" };
     }
+    providerSendSucceeded = true;
   } else {
     return { success: false, error: "No supported email provider is configured for this workspace" };
   }
@@ -506,23 +523,40 @@ export async function sendEmailReplySystem(params: {
         : smartLeadHandle?.toEmail || recipientsWithOverride.toEmail
       : recipientsWithOverride.toEmail;
 
-  const message = await prisma.message.create({
-    data: {
-      body: params.messageContent,
-      subject,
-      channel: "email",
-      cc: recipientsWithOverride.cc,
-      bcc: latestInboundEmail?.bcc || [],
-      direction: "outbound",
+  let message: { id: string; sentAt: Date; sentByUserId: string | null } | null = null;
+  try {
+    message = await prisma.message.create({
+      data: {
+        body: params.messageContent,
+        subject,
+        channel: "email",
+        cc: recipientsWithOverride.cc,
+        bcc: latestInboundEmail?.bcc || [],
+        direction: "outbound",
+        leadId: lead.id,
+        sentAt: new Date(),
+        sentBy: params.sentBy || undefined,
+        sentByUserId: params.sentByUserId || undefined,
+        ...(params.aiDraftId ? { aiDraftId: params.aiDraftId } : {}),
+        toEmail: messageToEmail || undefined,
+        toName: recipientsWithOverride.toName || undefined,
+      },
+      select: { id: true, sentAt: true, sentByUserId: true },
+    });
+  } catch (error) {
+    const messageError = error instanceof Error ? error.message : "Unknown error";
+    console.error("[Email] Provider send succeeded but message persistence failed:", {
       leadId: lead.id,
-      sentAt: new Date(),
-      sentBy: params.sentBy || undefined,
-      sentByUserId: params.sentByUserId || undefined,
-      ...(params.aiDraftId ? { aiDraftId: params.aiDraftId } : {}),
-      toEmail: messageToEmail || undefined,
-      toName: recipientsWithOverride.toName || undefined,
-    },
-  });
+      provider,
+      aiDraftId: params.aiDraftId ?? null,
+      error: messageError,
+    });
+    return {
+      success: false,
+      error: `Email was sent, but we could not save it to the database: ${messageError}`,
+      errorCode: "send_outcome_unknown",
+    };
+  }
 
   // If the user explicitly selected a To: recipient, persist it as the lead's active replier so
   // future drafts/follow-ups target the right person (Phase 74).
@@ -555,7 +589,9 @@ export async function sendEmailReplySystem(params: {
     }
   }
 
-  await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", source: "zrg", sentAt: message.sentAt });
+  await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", source: "zrg", sentAt: message.sentAt }).catch((error) => {
+    console.error("[Email] Failed to bump lead message rollup:", error);
+  });
 
   // NOTE: revalidatePath("/") is NOT called here - this is intentional.
   // Use sendEmailReplyInternal in actions/email-actions.ts for server actions that need cache invalidation.
@@ -585,6 +621,24 @@ export async function sendEmailReplySystem(params: {
   }
 
   return { success: true, messageId: message.id };
+  } catch (error) {
+    const messageError = error instanceof Error ? error.message : "Unknown error";
+    if (providerSendSucceeded) {
+      console.error("[Email] Provider send succeeded but the send could not be fully confirmed:", {
+        leadId: lead.id,
+        provider,
+        aiDraftId: params.aiDraftId ?? null,
+        error: messageError,
+      });
+    }
+    return providerSendSucceeded
+      ? {
+          success: false,
+          error: `Email send may have succeeded, but we could not fully confirm it: ${messageError}`,
+          errorCode: "send_outcome_unknown",
+        }
+      : { success: false, error: messageError };
+  }
 }
 
 /**
@@ -624,9 +678,13 @@ export async function sendEmailReplyForDraftSystem(
     });
     if (existingMessage) {
       await prisma.aIDraft
-        .updateMany({ where: { id: draftId, status: "pending" }, data: { status: "approved" } })
+        .updateMany({ where: { id: draftId, status: { not: "approved" } }, data: { status: "approved" } })
         .catch(() => undefined);
       return { success: true, messageId: existingMessage.id };
+    }
+
+    if (draft.status === "sending") {
+      return { success: false, error: EMAIL_DRAFT_ALREADY_SENDING_ERROR, errorCode: "draft_already_sending" };
     }
 
     if (draft.status !== "pending") {
@@ -666,7 +724,22 @@ export async function sendEmailReplyForDraftSystem(
 
     const messageContent = editedContent || draft.content;
 
-    const sendResult = await sendEmailReplySystem({
+    const claimed = await prisma.aIDraft.updateMany({
+      where: { id: draftId, status: "pending" },
+      data: { status: "sending" },
+    });
+
+    if (claimed.count !== 1) {
+      const afterClaimMessage = await prisma.message.findFirst({
+        where: { aiDraftId: draftId },
+        select: { id: true },
+      });
+      if (afterClaimMessage) return { success: true, messageId: afterClaimMessage.id };
+      return { success: false, error: EMAIL_DRAFT_ALREADY_SENDING_ERROR, errorCode: "draft_already_sending" };
+    }
+
+    let sendResult: SendEmailResult;
+    sendResult = await sendEmailReplySystem({
       lead,
       provider,
       messageContent,
@@ -677,10 +750,22 @@ export async function sendEmailReplyForDraftSystem(
     });
 
     if (!sendResult.success) {
+      if (sendResult.errorCode === "send_outcome_unknown") {
+        return sendResult;
+      }
+      await prisma.aIDraft.updateMany({ where: { id: draftId, status: "sending" }, data: { status: "pending" } }).catch(() => undefined);
       return sendResult;
     }
 
-    await prisma.aIDraft.update({ where: { id: draftId }, data: { status: "approved" } });
+    const responseDisposition = computeAIDraftResponseDisposition({
+      sentBy: opts.sentBy ?? null,
+      draftContent: draft.content,
+      finalContent: messageContent,
+    });
+
+    await prisma.aIDraft
+      .update({ where: { id: draftId }, data: { status: "approved", responseDisposition } })
+      .catch(() => undefined);
     return sendResult;
   } catch (error) {
     console.error("[Email] Failed to send email reply:", error);

@@ -6,6 +6,9 @@ import type { OutboundSentBy } from "@/lib/system-sender";
 import { EmailIntegrationProvider } from "@prisma/client";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 import { sendEmailReplySystem, type LeadForEmailSend, type SendEmailResult } from "@/lib/email-send";
+import { computeAIDraftResponseDisposition } from "@/lib/ai-drafts/response-disposition";
+
+const EMAIL_DRAFT_ALREADY_SENDING_ERROR = "Draft is already being sent";
 
 /**
  * Internal wrapper for sendEmailReplySystem that adds Next.js cache invalidation.
@@ -26,7 +29,11 @@ async function sendEmailReplyInternal(params: {
 
   // Add Next.js cache invalidation for server actions
   if (result.success) {
-    revalidatePath("/");
+    try {
+      revalidatePath("/");
+    } catch (error) {
+      console.warn("[Email] Failed to revalidate path after send:", error);
+    }
   }
 
   return result;
@@ -73,9 +80,13 @@ export async function sendEmailReply(
     });
     if (existingMessage) {
       await prisma.aIDraft
-        .updateMany({ where: { id: draftId, status: "pending" }, data: { status: "approved" } })
+        .updateMany({ where: { id: draftId, status: { not: "approved" } }, data: { status: "approved" } })
         .catch(() => undefined);
       return { success: true, messageId: existingMessage.id };
+    }
+
+    if (draft.status === "sending") {
+      return { success: false, error: EMAIL_DRAFT_ALREADY_SENDING_ERROR, errorCode: "draft_already_sending" };
     }
 
     if (draft.status !== "pending") {
@@ -115,6 +126,20 @@ export async function sendEmailReply(
 
     const messageContent = editedContent || draft.content;
 
+    const claimed = await prisma.aIDraft.updateMany({
+      where: { id: draftId, status: "pending" },
+      data: { status: "sending" },
+    });
+
+    if (claimed.count !== 1) {
+      const afterClaimMessage = await prisma.message.findFirst({
+        where: { aiDraftId: draftId },
+        select: { id: true },
+      });
+      if (afterClaimMessage) return { success: true, messageId: afterClaimMessage.id };
+      return { success: false, error: EMAIL_DRAFT_ALREADY_SENDING_ERROR, errorCode: "draft_already_sending" };
+    }
+
     const sendResult = await sendEmailReplyInternal({
       lead,
       provider,
@@ -128,10 +153,22 @@ export async function sendEmailReply(
     });
 
     if (!sendResult.success) {
+      if (sendResult.errorCode === "send_outcome_unknown") {
+        return sendResult;
+      }
+      await prisma.aIDraft.updateMany({ where: { id: draftId, status: "sending" }, data: { status: "pending" } }).catch(() => undefined);
       return sendResult;
     }
 
-    await prisma.aIDraft.update({ where: { id: draftId }, data: { status: "approved" } });
+    const responseDisposition = computeAIDraftResponseDisposition({
+      sentBy: opts.sentBy ?? null,
+      draftContent: draft.content,
+      finalContent: messageContent,
+    });
+
+    await prisma.aIDraft
+      .update({ where: { id: draftId }, data: { status: "approved", responseDisposition } })
+      .catch(() => undefined);
     return sendResult;
   } catch (error) {
     console.error("[Email] Failed to send email reply:", error);

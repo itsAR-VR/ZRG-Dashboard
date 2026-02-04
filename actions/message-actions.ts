@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { sendSMS, exportMessages, updateGHLContact, type GHLExportedMessage } from "@/lib/ghl-api";
 import { revalidatePath } from "next/cache";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
+import { computeAIDraftResponseDisposition } from "@/lib/ai-drafts/response-disposition";
 import { fastRegenerateDraftContent } from "@/lib/ai-drafts/fast-regenerate";
 import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, isPositiveSentiment, SENTIMENT_TO_STATUS, type SentimentTag } from "@/lib/sentiment";
 import { sendEmailReply, sendEmailReplyForLead } from "@/actions/email-actions";
@@ -201,7 +202,7 @@ export async function reanalyzeLeadSentiment(leadId: string): Promise<{
 interface SendMessageResult {
   success: boolean;
   messageId?: string;
-  errorCode?: "sms_dnd";
+  errorCode?: "sms_dnd" | "draft_already_sending" | "send_outcome_unknown";
   error?: string;
 }
 
@@ -1182,8 +1183,8 @@ export async function approveAndSendDraftSystem(
     }
 
     // SMS drafts: support multipart (<=3 parts, <=160 chars each)
-    const messageContent = opts.editedContent || draft.content;
-    const { parts } = coerceSmsDraftPartsOrThrow(messageContent, { allowFallbackSplit: true });
+    const finalContent = opts.editedContent ?? draft.content;
+    const { parts } = coerceSmsDraftPartsOrThrow(finalContent, { allowFallbackSplit: true });
 
     // Determine which parts have already been sent (idempotent retries).
     const existing = await prisma.message.findMany({
@@ -1225,9 +1226,18 @@ export async function approveAndSendDraftSystem(
       await recordOutboundForBookingProgress({ leadId: draft.leadId, channel: "sms", smsPartCount: parts.length });
     }
 
+    const responseDisposition = computeAIDraftResponseDisposition({
+      sentBy: opts.sentBy,
+      draftContent: draft.content,
+      finalContent,
+    });
+
     await prisma.aIDraft.update({
       where: { id: draftId },
-      data: { status: "approved" },
+      data: {
+        status: "approved",
+        ...(pendingPartIndexes.length > 0 ? { responseDisposition } : {}),
+      },
     });
 
     return { success: true, messageId: firstMessageId };
@@ -1290,8 +1300,8 @@ export async function approveAndSendDraft(
 
     if (draft.channel === "linkedin") {
       // Send LinkedIn message via Unipile
-      const messageContent = editedContent || draft.content;
-      const linkedInResult = await sendLinkedInMessage(draft.leadId, messageContent, undefined, undefined, {
+      const finalContent = editedContent || draft.content;
+      const linkedInResult = await sendLinkedInMessage(draft.leadId, finalContent, undefined, undefined, {
         sentBy: "setter",
         sentByUserId: user.id,
         aiDraftId: draftId,
@@ -1302,9 +1312,15 @@ export async function approveAndSendDraft(
       }
 
       // Mark draft as approved
+      const responseDisposition = computeAIDraftResponseDisposition({
+        sentBy: "setter",
+        draftContent: draft.content,
+        finalContent,
+      });
+
       await prisma.aIDraft.update({
         where: { id: draftId },
-        data: { status: "approved" },
+        data: { status: "approved", responseDisposition },
       });
 
       revalidatePath("/");

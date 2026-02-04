@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/prisma";
+import { isPrismaUniqueConstraintError, prisma } from "@/lib/prisma";
 import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequence-actions";
 import { runStructuredJsonPrompt, runTextPrompt } from "@/lib/ai/prompt-runner";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
@@ -81,6 +81,8 @@ interface ExecutionResult {
    */
   advance?: boolean;
 }
+
+const EMAIL_DRAFT_ALREADY_SENDING_ERROR = "Draft is already being sent";
 
 // =============================================================================
 // Condition Evaluation
@@ -1242,19 +1244,32 @@ export async function executeFollowUpStep(
 
     // Check if approval is required
     if (step.requiresApproval) {
-      // Create a pending task for approval
-      await prisma.followUpTask.create({
-        data: {
+      const alreadyQueued = await prisma.followUpTask.findFirst({
+        where: {
           leadId: lead.id,
           type: step.channel,
-          dueDate: new Date(),
-          status: "pending",
-          suggestedMessage: content,
-          subject: subject,
           instanceId: instanceId,
           stepOrder: step.stepOrder,
+          status: "pending",
         },
+        select: { id: true },
       });
+
+      if (!alreadyQueued) {
+        // Create a pending task for approval
+        await prisma.followUpTask.create({
+          data: {
+            leadId: lead.id,
+            type: step.channel,
+            dueDate: new Date(),
+            status: "pending",
+            suggestedMessage: content,
+            subject: subject,
+            instanceId: instanceId,
+            stepOrder: step.stepOrder,
+          },
+        });
+      }
 
       // Pause the instance until approved
       await prisma.followUpInstance.update({
@@ -1284,34 +1299,158 @@ export async function executeFollowUpStep(
 
       // Auto-send email when possible (reply-only infrastructure).
       // If no thread exists, create a task and advance.
-      const draft = await prisma.aIDraft.create({
-        data: {
-          leadId: lead.id,
-          content,
-          status: "pending",
-          channel: "email",
+      const followupDraftKey = `followup:${instanceId}:${step.stepOrder}`;
+
+      let draft = await prisma.aIDraft.findUnique({
+        where: {
+          triggerMessageId_channel: {
+            triggerMessageId: followupDraftKey,
+            channel: "email",
+          },
         },
+        select: { id: true, status: true, leadId: true },
       });
+
+      if (!draft) {
+        try {
+          draft = await prisma.aIDraft.create({
+            data: {
+              leadId: lead.id,
+              content,
+              status: "pending",
+              channel: "email",
+              triggerMessageId: followupDraftKey,
+            },
+            select: { id: true, status: true, leadId: true },
+          });
+        } catch (error) {
+          if (isPrismaUniqueConstraintError(error)) {
+            draft = await prisma.aIDraft.findUnique({
+              where: {
+                triggerMessageId_channel: {
+                  triggerMessageId: followupDraftKey,
+                  channel: "email",
+                },
+              },
+              select: { id: true, status: true, leadId: true },
+            });
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      if (!draft) {
+        return { success: false, action: "error", error: "Failed to create follow-up email draft" };
+      }
+
+      if (draft.leadId !== lead.id) {
+        return {
+          success: false,
+          action: "error",
+          error: "Follow-up email draft key collision (lead mismatch)",
+        };
+      }
+
+      if (draft.status === "approved") {
+        return {
+          success: true,
+          action: "sent",
+          message: "Email already sent for this follow-up step",
+        };
+      }
+
+      if (draft.status === "sending") {
+        const inFlightMessage = await prisma.message.findFirst({
+          where: { aiDraftId: draft.id },
+          select: { id: true },
+        });
+
+        if (inFlightMessage) {
+          await prisma.aIDraft
+            .updateMany({ where: { id: draft.id, status: "sending" }, data: { status: "approved" } })
+            .catch(() => undefined);
+
+          return {
+            success: true,
+            action: "sent",
+            message: "Email already sent for this follow-up step",
+          };
+        }
+
+        return {
+          success: true,
+          action: "skipped",
+          message: "Email send already in progress - skipping duplicate follow-up execution",
+        };
+      }
+
+      // Keep the draft content current unless it has already been processed.
+      await prisma.aIDraft
+        .updateMany({ where: { id: draft.id, status: "pending" }, data: { content } })
+        .catch(() => undefined);
 
       const sendResult = await sendEmailReply(draft.id);
 
       if (!sendResult.success) {
+        if (sendResult.errorCode === "draft_already_sending" || sendResult.error === EMAIL_DRAFT_ALREADY_SENDING_ERROR) {
+          return {
+            success: true,
+            action: "skipped",
+            message: "Email send already in progress - skipping duplicate follow-up execution",
+          };
+        }
+
+        if (sendResult.errorCode === "send_outcome_unknown") {
+          console.error("[FollowUp] Pausing follow-up due to uncertain email send outcome:", {
+            instanceId,
+            leadId: lead.id,
+            draftId: draft.id,
+            error: sendResult.error || null,
+          });
+          await prisma.followUpInstance
+            .update({
+              where: { id: instanceId },
+              data: { status: "paused", pausedReason: "email_send_uncertain" },
+            })
+            .catch(() => undefined);
+
+          return {
+            success: true,
+            action: "skipped",
+            message: "Follow-up paused - email send outcome could not be confirmed",
+          };
+        }
+
         await prisma.aIDraft
           .update({ where: { id: draft.id }, data: { status: "rejected" } })
           .catch(() => undefined);
 
-        await prisma.followUpTask.create({
-          data: {
+        const alreadyQueued = await prisma.followUpTask.findFirst({
+          where: {
             leadId: lead.id,
             type: "email",
-            dueDate: new Date(),
-            status: "pending",
-            suggestedMessage: content,
-            subject: subject,
             instanceId: instanceId,
             stepOrder: step.stepOrder,
+            status: { in: ["pending", "completed"] },
           },
+          select: { id: true },
         });
+
+        if (!alreadyQueued) {
+          await prisma.followUpTask.create({
+            data: {
+              leadId: lead.id,
+              type: "email",
+              dueDate: new Date(),
+              status: "pending",
+              suggestedMessage: content,
+              subject: subject,
+              instanceId: instanceId,
+              stepOrder: step.stepOrder,
+            },
+          });
+        }
 
         return {
           success: true,
@@ -1337,18 +1476,31 @@ export async function executeFollowUpStep(
         });
       }
 
-      await prisma.followUpTask.create({
-        data: {
+      const alreadyCompleted = await prisma.followUpTask.findFirst({
+        where: {
           leadId: lead.id,
           type: "email",
-          dueDate: new Date(),
-          status: "completed",
-          suggestedMessage: content,
-          subject: subject,
           instanceId: instanceId,
           stepOrder: step.stepOrder,
+          status: "completed",
         },
+        select: { id: true },
       });
+
+      if (!alreadyCompleted) {
+        await prisma.followUpTask.create({
+          data: {
+            leadId: lead.id,
+            type: "email",
+            dueDate: new Date(),
+            status: "completed",
+            suggestedMessage: content,
+            subject: subject,
+            instanceId: instanceId,
+            stepOrder: step.stepOrder,
+          },
+        });
+      }
 
       return {
         success: true,
