@@ -303,6 +303,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     reasoningEffort: "medium",
   })
 
+  // Email draft verification (Step 3) model setting (Phase 104)
+  const [emailDraftVerificationSettings, setEmailDraftVerificationSettings] = useState({
+    model: "gpt-5.2",
+  })
+
   // Qualification questions state
   const [qualificationQuestions, setQualificationQuestions] = useState<QualificationQuestion[]>([])
   const [newQuestion, setNewQuestion] = useState("")
@@ -640,6 +645,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         setDraftGenerationSettings({
           model: result.data.draftGenerationModel || "gpt-5.1",
           reasoningEffort: result.data.draftGenerationReasoningEffort || "medium",
+        })
+        setEmailDraftVerificationSettings({
+          model: result.data.emailDraftVerificationModel || "gpt-5.2",
         })
         setCompanyContext({
           companyName: result.data.companyName || "",
@@ -1454,6 +1462,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       // Draft generation settings (Phase 30)
       payload.draftGenerationModel = draftGenerationSettings.model
       payload.draftGenerationReasoningEffort = draftGenerationSettings.reasoningEffort
+      // Email draft verification settings (Phase 104)
+      payload.emailDraftVerificationModel = emailDraftVerificationSettings.model
       // Notification Center (Phase 52d)
       payload.notificationEmails = notificationCenter.emails
       payload.notificationPhones = notificationCenter.phones
@@ -5226,6 +5236,67 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </div>
 	              </CardContent>
 	            </Card>
+
+            {/* Email Draft Verification Model (Step 3) (Phase 104) */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Mail className="h-5 w-5" />
+                  Email Draft Verification (Step 3)
+                </CardTitle>
+                <CardDescription>
+                  Configure the AI model used for the final safety/format pass on email drafts (deterministic, low temperature).
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-3">
+                  <div className="space-y-0.5">
+                    <span className="text-sm font-medium">Workspace-wide</span>
+                    <p className="text-xs text-muted-foreground">Only admins can change these settings.</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {!isWorkspaceAdmin ? (
+                      <>
+                        <Lock className="h-4 w-4 text-muted-foreground" />
+                        <Badge variant="outline">Locked</Badge>
+                      </>
+                    ) : (
+                      <Badge variant="secondary">Admin</Badge>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Model</Label>
+                    <Select
+                      value={emailDraftVerificationSettings.model}
+                      onValueChange={(v) => {
+                        setEmailDraftVerificationSettings({ model: v })
+                        handleChange()
+                      }}
+                      disabled={!isWorkspaceAdmin}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="gpt-5.2">GPT-5.2 (Recommended)</SelectItem>
+                        <SelectItem value="gpt-5.1">GPT-5.1</SelectItem>
+                        <SelectItem value="gpt-5-mini">GPT-5 Mini</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Runs with <span className="font-medium">temperature 0</span> and the lowest compatible reasoning effort
+                      (none on GPT-5.1/5.2; minimal on GPT-5 Mini).
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Ops override: <span className="font-mono">OPENAI_EMAIL_VERIFIER_MODEL</span> (env) takes precedence if set.
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
 
             {isWorkspaceAdmin && activeWorkspace && !isClientPortalUser ? (
               <BulkDraftRegenerationCard clientId={activeWorkspace} />

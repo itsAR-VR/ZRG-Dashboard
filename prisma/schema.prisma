@@ -265,6 +265,8 @@ model WorkspaceSettings {
   // Draft Generation Model Settings (email two-step pipeline)
   draftGenerationModel           String? @default("gpt-5.1") // gpt-5.1 | gpt-5.2
   draftGenerationReasoningEffort String? @default("medium")  // low | medium | high | extra_high (gpt-5.2 only)
+  // Email Draft Verification Model Settings (Step 3 verifier)
+  emailDraftVerificationModel    String? @default("gpt-5.2") // gpt-5-mini | gpt-5.1 | gpt-5.2
   // AI Context Fields (for better AI responses)
   serviceDescription      String?  @db.Text  // Business/service description for AI context
   qualificationQuestions  String?  @db.Text  // JSON array of qualification questions

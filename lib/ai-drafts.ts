@@ -18,6 +18,7 @@ import { isPositiveSentiment } from "@/lib/sentiment";
 import {
   coerceDraftGenerationModel,
   coerceDraftGenerationReasoningEffort,
+  coerceEmailDraftVerificationModel,
   buildArchetypeSeed,
   selectArchetypeFromSeed,
   getArchetypeById,
@@ -299,7 +300,17 @@ async function runEmailDraftVerificationStep3(opts: {
       content: applyTemplateVars(m.content),
     }));
 
-  const verifierModel = "gpt-5-mini";
+  const envVerifierModel = (process.env.OPENAI_EMAIL_VERIFIER_MODEL || "").trim() || null;
+  const verifierModel = coerceEmailDraftVerificationModel(
+    envVerifierModel ||
+      (
+        await prisma.workspaceSettings.findUnique({
+          where: { clientId: opts.clientId },
+          select: { emailDraftVerificationModel: true },
+        })
+      )?.emailDraftVerificationModel ||
+      null
+  );
   const verifierReasoningEffort = "low" as const;
   const shouldLogVerifierDetails = process.env.LOG_SLOW_PATHS === "1";
 

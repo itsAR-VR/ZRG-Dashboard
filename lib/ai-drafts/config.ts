@@ -13,6 +13,17 @@ export type DraftGenerationReasoningEffort = (typeof DRAFT_GENERATION_EFFORTS)[n
 
 export type OpenAIReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh";
 
+export const EMAIL_DRAFT_VERIFICATION_MODELS = ["gpt-5-mini", "gpt-5.1", "gpt-5.2"] as const;
+export type EmailDraftVerificationModel = (typeof EMAIL_DRAFT_VERIFICATION_MODELS)[number];
+
+export function coerceEmailDraftVerificationModel(value: string | null | undefined): EmailDraftVerificationModel {
+  const cleaned = (value || "").trim();
+  if ((EMAIL_DRAFT_VERIFICATION_MODELS as readonly string[]).includes(cleaned)) {
+    return cleaned as EmailDraftVerificationModel;
+  }
+  return "gpt-5.2";
+}
+
 export function coerceDraftGenerationModel(value: string | null | undefined): DraftGenerationModel {
   const cleaned = (value || "").trim();
   if ((DRAFT_GENERATION_MODELS as readonly string[]).includes(cleaned)) {

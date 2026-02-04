@@ -33,6 +33,8 @@ export interface UserSettingsData {
   // Draft Generation Model Settings (workspace-level, admin-gated updates)
   draftGenerationModel: string | null;
   draftGenerationReasoningEffort: string | null;
+  // Email Draft Verification (Step 3) Model Settings (workspace-level, admin-gated updates)
+  emailDraftVerificationModel: string | null;
   // AI Context Fields
   serviceDescription: string | null;
   qualificationQuestions: string | null; // JSON array
@@ -150,6 +152,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           insightsChatEnableFollowupPauses: false,
           draftGenerationModel: "gpt-5.1",
           draftGenerationReasoningEffort: "medium",
+          emailDraftVerificationModel: "gpt-5.2",
           serviceDescription: null,
           qualificationQuestions: null,
           companyName: null,
@@ -269,6 +272,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         insightsChatEnableFollowupPauses: settings.insightsChatEnableFollowupPauses ?? false,
         draftGenerationModel: settings.draftGenerationModel ?? "gpt-5.1",
         draftGenerationReasoningEffort: settings.draftGenerationReasoningEffort ?? "medium",
+        emailDraftVerificationModel: settings.emailDraftVerificationModel ?? "gpt-5.2",
         serviceDescription: settings.serviceDescription,
         qualificationQuestions: settings.qualificationQuestions,
         companyName: settings.companyName,
@@ -352,6 +356,8 @@ export async function updateUserSettings(
     const wantsDraftGenerationUpdate =
       data.draftGenerationModel !== undefined ||
       data.draftGenerationReasoningEffort !== undefined;
+    const wantsEmailDraftVerificationUpdate =
+      data.emailDraftVerificationModel !== undefined;
     const wantsNotificationUpdate =
       data.notificationEmails !== undefined ||
       data.notificationPhones !== undefined ||
@@ -377,7 +383,7 @@ export async function updateUserSettings(
         ? Math.max(0, Math.min(500, Math.floor(data.calendarHealthMinSlots)))
         : undefined;
 
-    if (wantsInsightsUpdate || wantsDraftGenerationUpdate || wantsNotificationUpdate) {
+    if (wantsInsightsUpdate || wantsDraftGenerationUpdate || wantsEmailDraftVerificationUpdate || wantsNotificationUpdate) {
       await requireClientAdminAccess(clientId);
     }
     if (wantsEmailBisonAvailabilitySlotUpdate) {
@@ -413,6 +419,7 @@ export async function updateUserSettings(
         insightsChatEnableFollowupPauses: data.insightsChatEnableFollowupPauses,
         draftGenerationModel: data.draftGenerationModel,
         draftGenerationReasoningEffort: data.draftGenerationReasoningEffort,
+        emailDraftVerificationModel: data.emailDraftVerificationModel,
         serviceDescription: data.serviceDescription,
         qualificationQuestions: data.qualificationQuestions,
         companyName: data.companyName,
@@ -477,6 +484,7 @@ export async function updateUserSettings(
         insightsChatEnableFollowupPauses: data.insightsChatEnableFollowupPauses ?? false,
         draftGenerationModel: data.draftGenerationModel,
         draftGenerationReasoningEffort: data.draftGenerationReasoningEffort,
+        emailDraftVerificationModel: data.emailDraftVerificationModel,
         serviceDescription: data.serviceDescription,
         qualificationQuestions: data.qualificationQuestions,
         companyName: data.companyName,
