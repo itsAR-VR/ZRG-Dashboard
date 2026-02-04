@@ -1,23 +1,21 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertTriangle, Bot, ChevronDown, Clock, RefreshCw, Save, Timer, Undo2, User } from "lucide-react"
+import { AlertTriangle, Bot, Clock, RefreshCw, Save, Timer, Undo2, User } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Slider } from "@/components/ui/slider"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { getEmailCampaigns, updateEmailCampaignConfig, assignBookingProcessToCampaign, assignPersonaToCampaign } from "@/actions/email-campaign-actions"
 import { getAutoSendStats, type AutoSendStats } from "@/actions/auto-send-analytics-actions"
 import { listBookingProcesses, type BookingProcessSummary } from "@/actions/booking-process-actions"
 import { listAiPersonas, type AiPersonaSummary } from "@/actions/ai-persona-actions"
 import { EMAIL_CAMPAIGNS_SYNCED_EVENT, type EmailCampaignsSyncedDetail } from "@/lib/client-events"
-import { cn } from "@/lib/utils"
 import type { CampaignResponseMode } from "@prisma/client"
 
 type CampaignRow = {
@@ -150,7 +148,6 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
   const [loading, setLoading] = useState(false)
   const [savingIds, setSavingIds] = useState<Record<string, boolean>>({})
   const [scheduleDraftsById, setScheduleDraftsById] = useState<Record<string, typeof DEFAULT_SCHEDULE_DRAFT>>({})
-  const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({})
   const [autoSendStats, setAutoSendStats] = useState<AutoSendStats | null>(null)
 
   const load = useCallback(async () => {
@@ -434,49 +431,68 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
             No EmailBison campaigns found for this workspace. Use “Sync Email” in Integrations to import campaigns.
           </div>
         ) : (
-          <div className="space-y-3">
-            {rows.map((row) => {
-              const isDirty = dirtyIds.has(row.id)
-              const saving = Boolean(savingIds[row.id])
-              const modeLabel =
-                row.responseMode === "AI_AUTO_SEND" ? "AI auto‑send" : "Setter‑managed"
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Campaign</TableHead>
+                <TableHead className="text-right">Leads</TableHead>
+                <TableHead>Mode</TableHead>
+                <TableHead>
+                  <div className="flex items-center justify-between">
+                    <span>Threshold</span>
+                    <span className="text-xs text-muted-foreground">0–1</span>
+                  </div>
+                </TableHead>
+                <TableHead>
+                  <div className="flex items-center gap-1.5">
+                    <Timer className="h-4 w-4" />
+                    <span>Delay</span>
+                  </div>
+                </TableHead>
+                <TableHead>
+                  <div className="flex items-center gap-1.5">
+                    <Clock className="h-4 w-4" />
+                    <span>Schedule</span>
+                  </div>
+                </TableHead>
+                <TableHead>
+                  <div className="flex items-center gap-1.5">
+                    <Clock className="h-4 w-4" />
+                    <span>Booking Process</span>
+                  </div>
+                </TableHead>
+                <TableHead>
+                  <div className="flex items-center gap-1.5">
+                    <User className="h-4 w-4" />
+                    <span>AI Persona</span>
+                  </div>
+                </TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => {
+                const isDirty = dirtyIds.has(row.id)
+                const saving = Boolean(savingIds[row.id])
+                const modeLabel =
+                  row.responseMode === "AI_AUTO_SEND" ? "AI auto‑send" : "Setter‑managed"
 
-              const isAiResponsesNamed = (row.name || "").toLowerCase().includes("ai responses")
-              const showNameMismatchWarning = isAiResponsesNamed && row.responseMode !== "AI_AUTO_SEND"
+                const isAiResponsesNamed = (row.name || "").toLowerCase().includes("ai responses")
+                const showNameMismatchWarning = isAiResponsesNamed && row.responseMode !== "AI_AUTO_SEND"
 
-              const thresholdDisabled = row.responseMode !== "AI_AUTO_SEND"
-              const thresholdPct = Math.round((row.autoSendConfidenceThreshold || 0) * 100)
-              const scheduleValue = row.autoSendScheduleMode ?? "INHERIT"
-              const scheduleDraft = scheduleDraftsById[row.id] ?? DEFAULT_SCHEDULE_DRAFT
-              const sliderValue = Math.min(100, Math.max(50, thresholdPct))
-              const isOpen = expandedRows[row.id] ?? false
+                const thresholdDisabled = row.responseMode !== "AI_AUTO_SEND"
+                const thresholdPct = Math.round((row.autoSendConfidenceThreshold || 0) * 100)
+                const scheduleValue = row.autoSendScheduleMode ?? "INHERIT"
+                const scheduleDraft = scheduleDraftsById[row.id] ?? DEFAULT_SCHEDULE_DRAFT
 
-              return (
-                <Collapsible
-                  key={row.id}
-                  open={isOpen}
-                  onOpenChange={(open) => setExpandedRows((prev) => ({ ...prev, [row.id]: open }))}
-                  className={cn(
-                    "rounded-lg border",
-                    isDirty ? "border-primary/30 bg-muted/30" : "border-border"
-                  )}
-                >
-                  <div className="space-y-3 p-4">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                      <div className="min-w-0 space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-medium">{row.name}</span>
-                          {isDirty ? (
-                            <Badge variant="secondary" className="text-[10px] uppercase tracking-wide">
-                              Unsaved
-                            </Badge>
-                          ) : null}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {row.bisonCampaignId} · {row.leadCount} leads
-                        </div>
+                return (
+                  <TableRow key={row.id} className={isDirty ? "bg-muted/30" : undefined}>
+                    <TableCell className="font-medium">
+                      <div className="flex flex-col">
+                        <span className="truncate">{row.name}</span>
+                        <span className="text-xs text-muted-foreground">{row.bisonCampaignId}</span>
                         {showNameMismatchWarning ? (
-                          <div className="flex items-start gap-1.5 text-xs text-amber-600">
+                          <div className="mt-1 flex items-start gap-1.5 text-xs text-amber-600">
                             <AlertTriangle className="mt-0.5 h-3.5 w-3.5" />
                             <span>
                               Named “AI Responses” but mode is Setter-managed. Switch to AI auto‑send to enable sending.
@@ -484,461 +500,432 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                           </div>
                         ) : null}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <Badge
-                          variant={row.responseMode === "AI_AUTO_SEND" ? "default" : "secondary"}
-                          className="whitespace-nowrap"
+                    </TableCell>
+                    <TableCell className="text-right">{row.leadCount}</TableCell>
+                    <TableCell className="min-w-[220px]">
+                      <div className="flex flex-col gap-1.5">
+                        <Select
+                          value={row.responseMode}
+                          onValueChange={(v) => updateRow(row.id, { responseMode: v as CampaignResponseMode })}
                         >
-                          {modeLabel}
-                        </Badge>
-                        <Badge variant="outline" className={thresholdDisabled ? "opacity-60" : undefined}>
-                          {thresholdPct}%
-                        </Badge>
-                        <CollapsibleTrigger asChild>
-                          <Button variant="ghost" size="icon" aria-label="Toggle campaign settings">
-                            <ChevronDown
-                              className={cn("h-4 w-4 transition-transform", isOpen && "rotate-180")}
-                            />
-                          </Button>
-                        </CollapsibleTrigger>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center justify-end gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => resetRow(row.id)}
-                        disabled={!isDirty || saving}
-                        title="Revert"
-                      >
-                        <Undo2 className="h-4 w-4 mr-1.5" />
-                        Revert
-                      </Button>
-                      <Button
-                        variant={row.responseMode === "AI_AUTO_SEND" ? "default" : "secondary"}
-                        size="sm"
-                        onClick={() => saveRow(row.id)}
-                        disabled={!isDirty || saving}
-                      >
-                        <Save className="h-4 w-4 mr-1.5" />
-                        Save
-                      </Button>
-                    </div>
-                  </div>
-
-                  <CollapsibleContent className="border-t px-4 pb-4 pt-3">
-                    <div className="space-y-4">
-                      <div className="grid gap-4 lg:grid-cols-2">
-                        <div className="space-y-2">
-                          <Label className="text-sm font-medium">Response mode</Label>
-                          <Select
-                            value={row.responseMode}
-                            onValueChange={(v) => updateRow(row.id, { responseMode: v as CampaignResponseMode })}
-                          >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="SETTER_MANAGED">Setter‑managed</SelectItem>
-                              <SelectItem value="AI_AUTO_SEND">AI auto‑send</SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <p className="text-xs text-muted-foreground">
-                            {row.responseMode === "AI_AUTO_SEND"
-                              ? `Auto‑sends when confident (≥ ${thresholdPct}%).`
-                              : "Drafts only (no auto‑send)."}
-                          </p>
-                        </div>
-
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <Label className="text-sm font-medium">Draft confidence threshold</Label>
-                            <Badge variant="outline" className={thresholdDisabled ? "opacity-60" : undefined}>
-                              {thresholdPct}%
-                            </Badge>
-                          </div>
-                          <Slider
-                            value={[sliderValue]}
-                            min={50}
-                            max={100}
-                            step={5}
-                            disabled={thresholdDisabled}
-                            onValueChange={([v]) => {
-                              const nextValue = clamp01(v / 100)
-                              updateRow(row.id, { autoSendConfidenceThreshold: nextValue })
-                            }}
-                          />
-                          <div className="flex justify-between text-xs text-muted-foreground">
-                            <span>More aggressive (50%)</span>
-                            <span>More conservative (100%)</span>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            {thresholdDisabled ? "Enable AI auto‑send to edit." : "Higher = fewer auto‑sends, more reviews."}
-                          </p>
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label className="flex items-center gap-2 text-sm font-medium">
-                            <Timer className="h-4 w-4 text-muted-foreground" />
-                            Auto-send delay
-                          </Label>
-                          <div className="flex items-center gap-1">
-                            <Input
-                              type="number"
-                              inputMode="numeric"
-                              min={0}
-                              max={60}
-                              step={1}
-                              className="w-16"
-                              value={Math.round(row.autoSendDelayMinSeconds / 60)}
-                              disabled={thresholdDisabled}
-                              onChange={(e) => {
-                                const minutes = Math.max(0, Math.min(60, Number(e.target.value) || 0))
-                                const seconds = minutes * 60
-                                updateRow(row.id, {
-                                  autoSendDelayMinSeconds: seconds,
-                                  autoSendDelayMaxSeconds: Math.max(seconds, row.autoSendDelayMaxSeconds),
-                                })
-                              }}
-                            />
-                            <span className="text-muted-foreground">–</span>
-                            <Input
-                              type="number"
-                              inputMode="numeric"
-                              min={0}
-                              max={60}
-                              step={1}
-                              className="w-16"
-                              value={Math.round(row.autoSendDelayMaxSeconds / 60)}
-                              disabled={thresholdDisabled}
-                              onChange={(e) => {
-                                const minutes = Math.max(0, Math.min(60, Number(e.target.value) || 0))
-                                const seconds = minutes * 60
-                                updateRow(row.id, {
-                                  autoSendDelayMaxSeconds: seconds,
-                                  autoSendDelayMinSeconds: Math.min(seconds, row.autoSendDelayMinSeconds),
-                                })
-                              }}
-                            />
-                            <span className="text-xs text-muted-foreground">min</span>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            {thresholdDisabled
-                              ? "Enable AI auto‑send to edit."
-                              : row.autoSendDelayMinSeconds === 0 && row.autoSendDelayMaxSeconds === 0
-                                ? "Sends immediately (0 delay)."
-                                : `Waits ${Math.round(row.autoSendDelayMinSeconds / 60)}–${Math.round(
-                                    row.autoSendDelayMaxSeconds / 60
-                                  )} min before send.`}
-                          </p>
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label className="text-sm font-medium">Booking process</Label>
-                          <Select
-                            value={row.bookingProcessId ?? "none"}
-                            onValueChange={(v) => {
-                              const processId = v === "none" ? null : v
-                              const process = bookingProcesses.find((p) => p.id === processId)
-                              updateRow(row.id, {
-                                bookingProcessId: processId,
-                                bookingProcessName: process?.name ?? null,
-                              })
-                            }}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="None">
-                                {row.bookingProcessName ?? "None"}
-                              </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="none">None (Manual)</SelectItem>
-                              {bookingProcesses.map((bp) => (
-                                <SelectItem key={bp.id} value={bp.id}>
-                                  {bp.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <p className="text-xs text-muted-foreground">
-                            {row.bookingProcessId ? "Controls how AI offers booking." : "AI drafts without booking guidance."}
-                          </p>
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label className="flex items-center gap-2 text-sm font-medium">
-                            <User className="h-4 w-4 text-muted-foreground" />
-                            AI persona
-                          </Label>
-                          <Select
-                            value={row.aiPersonaId ?? "default"}
-                            onValueChange={(v) => {
-                              const personaId = v === "default" ? null : v
-                              const persona = personas.find((p) => p.id === personaId)
-                              updateRow(row.id, {
-                                aiPersonaId: personaId,
-                                aiPersonaName: persona?.name ?? null,
-                              })
-                            }}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="Default">
-                                {row.aiPersonaName ?? "Default"}
-                              </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="default">Default (Workspace)</SelectItem>
-                              {personas.map((p) => (
-                                <SelectItem key={p.id} value={p.id}>
-                                  {p.name}
-                                  {p.isDefault && " ★"}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <p className="text-xs text-muted-foreground">
-                            {row.aiPersonaId ? "Custom persona for this campaign." : "Uses workspace default persona."}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label className="flex items-center gap-2 text-sm font-medium">
-                          <Clock className="h-4 w-4 text-muted-foreground" />
-                          Auto-send schedule
-                        </Label>
-                        <div className="space-y-2">
-                          <Select
-                            value={scheduleValue}
-                            onValueChange={(v) => {
-                              const nextMode =
-                                v === "INHERIT" ? null : (v as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM")
-                              updateRow(row.id, {
-                                autoSendScheduleMode: nextMode,
-                                autoSendCustomSchedule:
-                                  nextMode === "CUSTOM"
-                                    ? row.autoSendCustomSchedule ?? DEFAULT_CUSTOM_SCHEDULE
-                                    : row.autoSendCustomSchedule,
-                              })
-                            }}
-                          >
-                            <SelectTrigger>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="INHERIT">Inherit workspace</SelectItem>
-                              <SelectItem value="ALWAYS">Always (24/7)</SelectItem>
-                              <SelectItem value="BUSINESS_HOURS">Business hours</SelectItem>
-                              <SelectItem value="CUSTOM">Custom</SelectItem>
-                            </SelectContent>
-                          </Select>
-
-                          {row.autoSendScheduleMode === "CUSTOM" ? (
-                            <div className="space-y-3 rounded-lg border bg-muted/20 p-3">
-                              <div className="flex flex-wrap items-center gap-2">
-                                {SCHEDULE_DAYS.map((day) => (
-                                  <label key={day.value} className="flex items-center gap-2 text-xs">
-                                    <Checkbox
-                                      checked={row.autoSendCustomSchedule.days.includes(day.value)}
-                                      onCheckedChange={(v) => {
-                                        const checked = v === true
-                                        const nextDays = checked
-                                          ? row.autoSendCustomSchedule.days.includes(day.value)
-                                            ? row.autoSendCustomSchedule.days
-                                            : [...row.autoSendCustomSchedule.days, day.value]
-                                          : row.autoSendCustomSchedule.days.filter((d) => d !== day.value)
-                                        updateRow(row.id, {
-                                          autoSendCustomSchedule: {
-                                            ...row.autoSendCustomSchedule,
-                                            days: nextDays,
-                                          },
-                                        })
-                                      }}
-                                    />
-                                    {day.label}
-                                  </label>
-                                ))}
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <Input
-                                  type="time"
-                                  className="w-24"
-                                  value={row.autoSendCustomSchedule.startTime}
-                                  onChange={(e) =>
-                                    updateRow(row.id, {
-                                      autoSendCustomSchedule: {
-                                        ...row.autoSendCustomSchedule,
-                                        startTime: e.target.value,
-                                      },
-                                    })
-                                  }
-                                />
-                                <span className="text-xs text-muted-foreground">–</span>
-                                <Input
-                                  type="time"
-                                  className="w-24"
-                                  value={row.autoSendCustomSchedule.endTime}
-                                  onChange={(e) =>
-                                    updateRow(row.id, {
-                                      autoSendCustomSchedule: {
-                                        ...row.autoSendCustomSchedule,
-                                        endTime: e.target.value,
-                                      },
-                                    })
-                                  }
-                                />
-                              </div>
-
-                              <div className="space-y-1">
-                                <Label className="text-xs text-muted-foreground">
-                                  Additional blackout dates (campaign-only)
-                                </Label>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <Input
-                                    type="date"
-                                    className="w-[140px]"
-                                    value={scheduleDraft.blackoutDate}
-                                    onChange={(e) => updateScheduleDraft(row.id, { blackoutDate: e.target.value })}
-                                  />
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={!scheduleDraft.blackoutDate}
-                                    onClick={() => {
-                                      if (!scheduleDraft.blackoutDate) return
-                                      updateRow(row.id, {
-                                        autoSendCustomSchedule: {
-                                          ...row.autoSendCustomSchedule,
-                                          holidays: {
-                                            ...row.autoSendCustomSchedule.holidays,
-                                            additionalBlackoutDates: normalizeDateList([
-                                              ...row.autoSendCustomSchedule.holidays.additionalBlackoutDates,
-                                              scheduleDraft.blackoutDate,
-                                            ]),
-                                          },
-                                        },
-                                      })
-                                      updateScheduleDraft(row.id, { blackoutDate: "" })
-                                    }}
-                                  >
-                                    Add
-                                  </Button>
-                                </div>
-                                {row.autoSendCustomSchedule.holidays.additionalBlackoutDates.length > 0 ? (
-                                  <div className="flex flex-wrap gap-2">
-                                    {row.autoSendCustomSchedule.holidays.additionalBlackoutDates.map((date) => (
-                                      <Badge key={date} variant="outline" className="text-[10px]">
-                                        {date}
-                                        <button
-                                          type="button"
-                                          className="ml-1 text-muted-foreground hover:text-destructive"
-                                          onClick={() => {
-                                            updateRow(row.id, {
-                                              autoSendCustomSchedule: {
-                                                ...row.autoSendCustomSchedule,
-                                                holidays: {
-                                                  ...row.autoSendCustomSchedule.holidays,
-                                                  additionalBlackoutDates: row.autoSendCustomSchedule.holidays.additionalBlackoutDates.filter(
-                                                    (d) => d !== date
-                                                  ),
-                                                },
-                                              },
-                                            })
-                                          }}
-                                          aria-label="Remove blackout date"
-                                        >
-                                          ×
-                                        </button>
-                                      </Badge>
-                                    ))}
-                                  </div>
-                                ) : null}
-                              </div>
-
-                              <div className="space-y-1">
-                                <Label className="text-xs text-muted-foreground">Additional blackout ranges</Label>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <Input
-                                    type="date"
-                                    className="w-[140px]"
-                                    value={scheduleDraft.rangeStart}
-                                    onChange={(e) => updateScheduleDraft(row.id, { rangeStart: e.target.value })}
-                                  />
-                                  <Input
-                                    type="date"
-                                    className="w-[140px]"
-                                    value={scheduleDraft.rangeEnd}
-                                    onChange={(e) => updateScheduleDraft(row.id, { rangeEnd: e.target.value })}
-                                  />
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    disabled={!scheduleDraft.rangeStart || !scheduleDraft.rangeEnd}
-                                    onClick={() => {
-                                      if (!scheduleDraft.rangeStart || !scheduleDraft.rangeEnd) return
-                                      updateRow(row.id, {
-                                        autoSendCustomSchedule: {
-                                          ...row.autoSendCustomSchedule,
-                                          holidays: {
-                                            ...row.autoSendCustomSchedule.holidays,
-                                            additionalBlackoutDateRanges: normalizeDateRanges([
-                                              ...row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges,
-                                              { start: scheduleDraft.rangeStart, end: scheduleDraft.rangeEnd },
-                                            ]),
-                                          },
-                                        },
-                                      })
-                                      updateScheduleDraft(row.id, { rangeStart: "", rangeEnd: "" })
-                                    }}
-                                  >
-                                    Add
-                                  </Button>
-                                </div>
-                                {row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges.length > 0 ? (
-                                  <div className="flex flex-wrap gap-2">
-                                    {row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges.map((range) => (
-                                      <Badge key={`${range.start}:${range.end}`} variant="outline" className="text-[10px]">
-                                        {range.start} → {range.end}
-                                        <button
-                                          type="button"
-                                          className="ml-1 text-muted-foreground hover:text-destructive"
-                                          onClick={() => {
-                                            updateRow(row.id, {
-                                              autoSendCustomSchedule: {
-                                                ...row.autoSendCustomSchedule,
-                                                holidays: {
-                                                  ...row.autoSendCustomSchedule.holidays,
-                                                  additionalBlackoutDateRanges: row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges.filter(
-                                                    (r) => !(r.start === range.start && r.end === range.end)
-                                                  ),
-                                                },
-                                              },
-                                            })
-                                          }}
-                                          aria-label="Remove blackout range"
-                                        >
-                                          ×
-                                        </button>
-                                      </Badge>
-                                    ))}
-                                  </div>
-                                ) : null}
-                              </div>
-                            </div>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="SETTER_MANAGED">Setter‑managed</SelectItem>
+                            <SelectItem value="AI_AUTO_SEND">AI auto‑send</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <div className="text-xs text-muted-foreground">
+                          {modeLabel === "AI auto‑send" ? (
+                            <span>
+                              Auto‑sends when confident (≥ {thresholdPct}%).
+                            </span>
                           ) : (
-                            <p className="text-xs text-muted-foreground">
-                              {scheduleValue === "INHERIT" ? "Uses workspace schedule." : "Applies to this campaign only."}
-                            </p>
+                            <span>Drafts only (no auto‑send).</span>
                           )}
                         </div>
                       </div>
-                    </div>
-                  </CollapsibleContent>
-                </Collapsible>
-              )
-            })}
-          </div>
+                    </TableCell>
+                    <TableCell className="min-w-[220px]">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            inputMode="decimal"
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            value={Number.isFinite(row.autoSendConfidenceThreshold) ? row.autoSendConfidenceThreshold : 0.9}
+                            disabled={thresholdDisabled}
+                            onChange={(e) => {
+                              const n = clamp01(Number(e.target.value))
+                              updateRow(row.id, { autoSendConfidenceThreshold: n })
+                            }}
+                          />
+                          <Badge variant="outline" className={thresholdDisabled ? "opacity-60" : undefined}>
+                            {thresholdPct}%
+                          </Badge>
+                        </div>
+                        <Label className="text-xs text-muted-foreground">
+                          {thresholdDisabled ? "Enable AI auto‑send to edit." : "Higher = fewer auto‑sends, more reviews."}
+                        </Label>
+                      </div>
+                    </TableCell>
+                    <TableCell className="min-w-[160px]">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={0}
+                            max={60}
+                            step={1}
+                            className="w-16"
+                            value={Math.round(row.autoSendDelayMinSeconds / 60)}
+                            disabled={thresholdDisabled}
+                            onChange={(e) => {
+                              const minutes = Math.max(0, Math.min(60, Number(e.target.value) || 0))
+                              const seconds = minutes * 60
+                              updateRow(row.id, {
+                                autoSendDelayMinSeconds: seconds,
+                                autoSendDelayMaxSeconds: Math.max(seconds, row.autoSendDelayMaxSeconds),
+                              })
+                            }}
+                          />
+                          <span className="text-muted-foreground">–</span>
+                          <Input
+                            type="number"
+                            inputMode="numeric"
+                            min={0}
+                            max={60}
+                            step={1}
+                            className="w-16"
+                            value={Math.round(row.autoSendDelayMaxSeconds / 60)}
+                            disabled={thresholdDisabled}
+                            onChange={(e) => {
+                              const minutes = Math.max(0, Math.min(60, Number(e.target.value) || 0))
+                              const seconds = minutes * 60
+                              updateRow(row.id, {
+                                autoSendDelayMaxSeconds: seconds,
+                                autoSendDelayMinSeconds: Math.min(seconds, row.autoSendDelayMinSeconds),
+                              })
+                            }}
+                          />
+                          <span className="text-xs text-muted-foreground">min</span>
+                        </div>
+                        <Label className="text-xs text-muted-foreground">
+                          {thresholdDisabled
+                            ? "Enable AI auto‑send to edit."
+                            : row.autoSendDelayMinSeconds === 0 && row.autoSendDelayMaxSeconds === 0
+                              ? "Sends immediately (0 delay)."
+                              : `Waits ${Math.round(row.autoSendDelayMinSeconds / 60)}–${Math.round(row.autoSendDelayMaxSeconds / 60)} min before send.`}
+                        </Label>
+                      </div>
+                    </TableCell>
+                    <TableCell className="min-w-[220px]">
+                      <div className="space-y-2">
+                        <Select
+                          value={scheduleValue}
+                          onValueChange={(v) => {
+                            const nextMode =
+                              v === "INHERIT" ? null : (v as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM")
+                            updateRow(row.id, {
+                              autoSendScheduleMode: nextMode,
+                              autoSendCustomSchedule:
+                                nextMode === "CUSTOM"
+                                  ? row.autoSendCustomSchedule ?? DEFAULT_CUSTOM_SCHEDULE
+                                  : row.autoSendCustomSchedule,
+                            })
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="INHERIT">Inherit workspace</SelectItem>
+                            <SelectItem value="ALWAYS">Always (24/7)</SelectItem>
+                            <SelectItem value="BUSINESS_HOURS">Business hours</SelectItem>
+                            <SelectItem value="CUSTOM">Custom</SelectItem>
+                          </SelectContent>
+                        </Select>
+
+                        {row.autoSendScheduleMode === "CUSTOM" ? (
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {SCHEDULE_DAYS.map((day) => (
+                                <label key={day.value} className="flex items-center gap-2 text-xs">
+                                  <Checkbox
+                                    checked={row.autoSendCustomSchedule.days.includes(day.value)}
+                                    onCheckedChange={(v) => {
+                                      const checked = v === true
+                                      const nextDays = checked
+                                        ? row.autoSendCustomSchedule.days.includes(day.value)
+                                          ? row.autoSendCustomSchedule.days
+                                          : [...row.autoSendCustomSchedule.days, day.value]
+                                        : row.autoSendCustomSchedule.days.filter((d) => d !== day.value)
+                                      updateRow(row.id, {
+                                        autoSendCustomSchedule: {
+                                          ...row.autoSendCustomSchedule,
+                                          days: nextDays,
+                                        },
+                                      })
+                                    }}
+                                  />
+                                  {day.label}
+                                </label>
+                              ))}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Input
+                                type="time"
+                                className="w-24"
+                                value={row.autoSendCustomSchedule.startTime}
+                                onChange={(e) =>
+                                  updateRow(row.id, {
+                                    autoSendCustomSchedule: {
+                                      ...row.autoSendCustomSchedule,
+                                      startTime: e.target.value,
+                                    },
+                                  })
+                                }
+                              />
+                              <span className="text-xs text-muted-foreground">–</span>
+                              <Input
+                                type="time"
+                                className="w-24"
+                                value={row.autoSendCustomSchedule.endTime}
+                                onChange={(e) =>
+                                  updateRow(row.id, {
+                                    autoSendCustomSchedule: {
+                                      ...row.autoSendCustomSchedule,
+                                      endTime: e.target.value,
+                                    },
+                                  })
+                                }
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <Label className="text-xs text-muted-foreground">
+                                Additional blackout dates (campaign-only)
+                              </Label>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Input
+                                  type="date"
+                                  className="w-[140px]"
+                                  value={scheduleDraft.blackoutDate}
+                                  onChange={(e) => updateScheduleDraft(row.id, { blackoutDate: e.target.value })}
+                                />
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!scheduleDraft.blackoutDate}
+                                  onClick={() => {
+                                    if (!scheduleDraft.blackoutDate) return
+                                    updateRow(row.id, {
+                                      autoSendCustomSchedule: {
+                                        ...row.autoSendCustomSchedule,
+                                        holidays: {
+                                          ...row.autoSendCustomSchedule.holidays,
+                                          additionalBlackoutDates: normalizeDateList([
+                                            ...row.autoSendCustomSchedule.holidays.additionalBlackoutDates,
+                                            scheduleDraft.blackoutDate,
+                                          ]),
+                                        },
+                                      },
+                                    })
+                                    updateScheduleDraft(row.id, { blackoutDate: "" })
+                                  }}
+                                >
+                                  Add
+                                </Button>
+                              </div>
+                              {row.autoSendCustomSchedule.holidays.additionalBlackoutDates.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {row.autoSendCustomSchedule.holidays.additionalBlackoutDates.map((date) => (
+                                    <Badge key={date} variant="outline" className="text-[10px]">
+                                      {date}
+                                      <button
+                                        type="button"
+                                        className="ml-1 text-muted-foreground hover:text-destructive"
+                                        onClick={() => {
+                                          updateRow(row.id, {
+                                            autoSendCustomSchedule: {
+                                              ...row.autoSendCustomSchedule,
+                                              holidays: {
+                                                ...row.autoSendCustomSchedule.holidays,
+                                                additionalBlackoutDates: row.autoSendCustomSchedule.holidays.additionalBlackoutDates.filter(
+                                                  (d) => d !== date
+                                                ),
+                                              },
+                                            },
+                                          })
+                                        }}
+                                        aria-label="Remove blackout date"
+                                      >
+                                        ×
+                                      </button>
+                                    </Badge>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+
+                            <div className="space-y-1">
+                              <Label className="text-xs text-muted-foreground">Additional blackout ranges</Label>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Input
+                                  type="date"
+                                  className="w-[140px]"
+                                  value={scheduleDraft.rangeStart}
+                                  onChange={(e) => updateScheduleDraft(row.id, { rangeStart: e.target.value })}
+                                />
+                                <Input
+                                  type="date"
+                                  className="w-[140px]"
+                                  value={scheduleDraft.rangeEnd}
+                                  onChange={(e) => updateScheduleDraft(row.id, { rangeEnd: e.target.value })}
+                                />
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!scheduleDraft.rangeStart || !scheduleDraft.rangeEnd}
+                                  onClick={() => {
+                                    if (!scheduleDraft.rangeStart || !scheduleDraft.rangeEnd) return
+                                    updateRow(row.id, {
+                                      autoSendCustomSchedule: {
+                                        ...row.autoSendCustomSchedule,
+                                        holidays: {
+                                          ...row.autoSendCustomSchedule.holidays,
+                                          additionalBlackoutDateRanges: normalizeDateRanges([
+                                            ...row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges,
+                                            { start: scheduleDraft.rangeStart, end: scheduleDraft.rangeEnd },
+                                          ]),
+                                        },
+                                      },
+                                    })
+                                    updateScheduleDraft(row.id, { rangeStart: "", rangeEnd: "" })
+                                  }}
+                                >
+                                  Add
+                                </Button>
+                              </div>
+                              {row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges.map((range) => (
+                                    <Badge key={`${range.start}:${range.end}`} variant="outline" className="text-[10px]">
+                                      {range.start} → {range.end}
+                                      <button
+                                        type="button"
+                                        className="ml-1 text-muted-foreground hover:text-destructive"
+                                        onClick={() => {
+                                          updateRow(row.id, {
+                                            autoSendCustomSchedule: {
+                                              ...row.autoSendCustomSchedule,
+                                              holidays: {
+                                                ...row.autoSendCustomSchedule.holidays,
+                                                additionalBlackoutDateRanges: row.autoSendCustomSchedule.holidays.additionalBlackoutDateRanges.filter(
+                                                  (r) => !(r.start === range.start && r.end === range.end)
+                                                ),
+                                              },
+                                            },
+                                          })
+                                        }}
+                                        aria-label="Remove blackout range"
+                                      >
+                                        ×
+                                      </button>
+                                    </Badge>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : (
+                          <Label className="text-xs text-muted-foreground">
+                            {scheduleValue === "INHERIT" ? "Uses workspace schedule." : "Applies to this campaign only."}
+                          </Label>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="min-w-[200px]">
+                      <Select
+                        value={row.bookingProcessId ?? "none"}
+                        onValueChange={(v) => {
+                          const processId = v === "none" ? null : v
+                          const process = bookingProcesses.find((p) => p.id === processId)
+                          updateRow(row.id, {
+                            bookingProcessId: processId,
+                            bookingProcessName: process?.name ?? null,
+                          })
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="None">
+                            {row.bookingProcessName ?? "None"}
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">None (Manual)</SelectItem>
+                          {bookingProcesses.map((bp) => (
+                            <SelectItem key={bp.id} value={bp.id}>
+                              {bp.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {row.bookingProcessId ? (
+                          <span>Controls how AI offers booking</span>
+                        ) : (
+                          <span>AI drafts without booking guidance</span>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="min-w-[180px]">
+                      <Select
+                        value={row.aiPersonaId ?? "default"}
+                        onValueChange={(v) => {
+                          const personaId = v === "default" ? null : v
+                          const persona = personas.find((p) => p.id === personaId)
+                          updateRow(row.id, {
+                            aiPersonaId: personaId,
+                            aiPersonaName: persona?.name ?? null,
+                          })
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Default">
+                            {row.aiPersonaName ?? "Default"}
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="default">Default (Workspace)</SelectItem>
+                          {personas.map((p) => (
+                            <SelectItem key={p.id} value={p.id}>
+                              {p.name}
+                              {p.isDefault && " ★"}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <div className="text-xs text-muted-foreground mt-1">
+                        {row.aiPersonaId ? (
+                          <span>Custom persona for this campaign</span>
+                        ) : (
+                          <span>Uses workspace default persona</span>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => resetRow(row.id)}
+                          disabled={!isDirty || saving}
+                          title="Revert"
+                        >
+                          <Undo2 className="h-4 w-4 mr-1.5" />
+                          Revert
+                        </Button>
+                        <Button
+                          variant={row.responseMode === "AI_AUTO_SEND" ? "default" : "secondary"}
+                          size="sm"
+                          onClick={() => saveRow(row.id)}
+                          disabled={!isDirty || saving}
+                        >
+                          <Save className="h-4 w-4 mr-1.5" />
+                          Save
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
         )}
       </CardContent>
     </Card>
