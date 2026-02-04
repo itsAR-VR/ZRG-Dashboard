@@ -48,6 +48,12 @@ enum CampaignResponseMode {
   AI_AUTO_SEND
 }
 
+enum AIDraftResponseDisposition {
+  AUTO_SENT
+  APPROVED
+  EDITED
+}
+
 enum AutoSendScheduleMode {
   ALWAYS
   BUSINESS_HOURS
@@ -930,6 +936,7 @@ model AIDraft {
   content   String   @db.Text
   channel   String   @default("sms") // sms | email
   status    String   @default("pending") // pending, approved, rejected
+  responseDisposition AIDraftResponseDisposition?
   // Phase 36: one-to-many for multipart SMS (single draft can produce 1-3 outbound messages)
   sentMessages Message[]
   // Phase 47l: Delayed auto-send jobs referencing this draft
@@ -954,6 +961,7 @@ model AIDraft {
   @@unique([triggerMessageId, channel])
   @@index([channel])
   @@index([status])
+  @@index([responseDisposition], name: "AIDraft_responseDisposition_idx")
   @@index([autoSendAction])
   @@index([autoSendEvaluatedAt])
 }
