@@ -21,6 +21,7 @@ const TEST_FILES = [
   "lib/__tests__/availability-refresh-ai.test.ts",
   "lib/__tests__/availability-refresh-candidates.test.ts",
   "lib/__tests__/offered-slots-refresh.test.ts",
+  "lib/ai-drafts/__tests__/response-disposition.test.ts",
 ];
 
 async function main(): Promise<void> {

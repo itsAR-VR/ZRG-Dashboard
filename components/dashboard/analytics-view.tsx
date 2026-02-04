@@ -34,6 +34,10 @@ import {
   type WorkflowAttributionData,
   type ReactivationAnalyticsData,
 } from "@/actions/analytics-actions"
+import {
+  getAiDraftResponseOutcomeStats,
+  type AiDraftResponseOutcomeStats,
+} from "@/actions/ai-draft-response-analytics-actions"
 
 // Sentiment colors for charts
 const SENTIMENT_COLORS: Record<string, string> = {
@@ -85,6 +89,8 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
   const [workflowLoading, setWorkflowLoading] = useState(true)
   const [reactivationData, setReactivationData] = useState<ReactivationAnalyticsData | null>(null)
   const [reactivationLoading, setReactivationLoading] = useState(true)
+  const [aiDraftOutcomeStats, setAiDraftOutcomeStats] = useState<AiDraftResponseOutcomeStats | null>(null)
+  const [aiDraftOutcomeLoading, setAiDraftOutcomeLoading] = useState(true)
   const [datePreset, setDatePreset] = useState<"7d" | "30d" | "90d" | "custom">("30d")
   const [customFrom, setCustomFrom] = useState("")
   const [customTo, setCustomTo] = useState("")
@@ -182,10 +188,26 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
       }
     }
 
+    async function fetchAiDraftOutcomes() {
+      setAiDraftOutcomeLoading(true)
+      const result = await getAiDraftResponseOutcomeStats(
+        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
+      )
+      if (!cancelled) {
+        if (result.success && result.data) {
+          setAiDraftOutcomeStats(result.data)
+        } else {
+          setAiDraftOutcomeStats(null)
+        }
+        setAiDraftOutcomeLoading(false)
+      }
+    }
+
     fetchAnalytics()
     fetchCampaignAnalytics()
     fetchWorkflowAnalytics()
     fetchReactivationAnalytics()
+    fetchAiDraftOutcomes()
 
     return () => {
       cancelled = true
@@ -856,6 +878,59 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                 <div className="py-8 text-center text-muted-foreground">
                   No campaign data available
                 </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>AI Draft Response Outcomes</CardTitle>
+              <CardDescription>
+                {windowLabel} • Email counts are for AI_AUTO_SEND campaigns only
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {aiDraftOutcomeLoading ? (
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                </div>
+              ) : !aiDraftOutcomeStats || (aiDraftOutcomeStats.total.tracked ?? 0) === 0 ? (
+                <div className="py-8 text-center text-muted-foreground">No tracked outcomes in this window</div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Channel</TableHead>
+                      <TableHead className="text-right">Auto‑Sent</TableHead>
+                      <TableHead className="text-right">Approved</TableHead>
+                      <TableHead className="text-right">Edited</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow>
+                      <TableCell className="font-medium">Email</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.email.AUTO_SENT}</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.email.APPROVED}</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.email.EDITED}</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.email.total}</TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell className="font-medium">SMS</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.sms.AUTO_SENT}</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.sms.APPROVED}</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.sms.EDITED}</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.sms.total}</TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell className="font-medium">LinkedIn</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.linkedin.AUTO_SENT}</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.linkedin.APPROVED}</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.linkedin.EDITED}</TableCell>
+                      <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.linkedin.total}</TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
               )}
             </CardContent>
           </Card>

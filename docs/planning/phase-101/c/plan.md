@@ -53,7 +53,17 @@ Provide a server action that returns counts of AI draft outcomes by channel for 
 
 ## Output
 - Server action returning correct, scoped counts per window
+- File added: `actions/ai-draft-response-analytics-actions.ts`
 
 ## Handoff
 Proceed to Phase 101d to surface these counts in Analytics UI.
 
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Implemented `getAiDraftResponseOutcomeStats` server action using scoped `count(distinct d.id)` grouped by channel + disposition, with email limited to `AI_AUTO_SEND`.
+- Commands run:
+  - None
+- Blockers:
+  - None
+- Next concrete steps:
+  - Wire the new action into `components/dashboard/analytics-view.tsx` and render the Analytics card (Phase 101d).
