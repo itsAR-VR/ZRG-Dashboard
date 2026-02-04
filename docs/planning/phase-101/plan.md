@@ -36,9 +36,9 @@ Working tree currently contains uncommitted work from recent phases; treat these
 ## Objectives
 * [x] Add a durable draft-level outcome enum + field (`AUTO_SENT`, `APPROVED`, `EDITED`)
 * [x] Set outcome on successful send for all channels (email/SMS/LinkedIn) without backfilling historical data
-* [ ] Add a scoped analytics action that counts outcomes per channel and date window (email limited to `AI_AUTO_SEND`)
-* [ ] Add an Analytics card displaying these counts
-* [ ] Add unit tests for the core disposition logic and run repo quality gates
+* [x] Add a scoped analytics action that counts outcomes per channel and date window (email limited to `AI_AUTO_SEND`)
+* [x] Add an Analytics card displaying these counts
+* [x] Add unit tests for the core disposition logic and run repo quality gates
 
 ## Constraints
 - **No secrets/PII:** Analytics must return counts-only; do not return message bodies or evaluator reasons.
@@ -127,3 +127,17 @@ Working tree currently contains uncommitted work from recent phases; treat these
 - 2026-02-04 — Pulled Monday item details; no extra fields/updates found. Logged open questions for counting unit, edited definition, and email scope. (files: `docs/planning/phase-101/plan.md`, `docs/planning/phase-101/b/plan.md`)
 - 2026-02-04 — Decisions confirmed: per‑draft counts, strict compare for edits, email scope limited to AI_AUTO_SEND. Added coordination note with Phase 105. (files: `docs/planning/phase-101/plan.md`)
 - 2026-02-04 — Implemented disposition persistence in SMS, email (server + system), and LinkedIn send paths. (files: `actions/message-actions.ts`, `actions/email-actions.ts`, `lib/email-send.ts`, `docs/planning/phase-101/b/plan.md`)
+- 2026-02-04 — Added outcomes analytics action + Campaigns tab card. (files: `actions/ai-draft-response-analytics-actions.ts`, `components/dashboard/analytics-view.tsx`, `docs/planning/phase-101/c/plan.md`, `docs/planning/phase-101/d/plan.md`)
+- 2026-02-04 — Added disposition unit tests + ran test/lint/build (lint/build warnings noted). (files: `lib/ai-drafts/__tests__/response-disposition.test.ts`, `scripts/test-orchestrator.ts`, `docs/planning/phase-101/e/plan.md`)
+
+## Phase Summary
+
+- Shipped:
+  - Draft outcome persistence on send paths + analytics action and Campaigns tab card.
+  - Disposition unit tests wired into the test orchestrator.
+- Verified:
+  - `npm run lint`: pass (warnings)
+  - `npm run build`: pass (warnings)
+  - `npm run db:push`: skip (schema unchanged in this phase)
+- Notes:
+  - Lint/build warnings are pre-existing; see `docs/planning/phase-101/review.md` for details.
