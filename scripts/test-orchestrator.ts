@@ -9,6 +9,7 @@ const TEST_FILES = [
   "lib/__tests__/phone-normalization.test.ts",
   "lib/__tests__/followup-template.test.ts",
   "lib/__tests__/followups-cron-overlap-lock.test.ts",
+  "lib/__tests__/background-jobs-cron-no-advisory-lock.test.ts",
   "lib/__tests__/followups-backstop.test.ts",
   "lib/__tests__/insights-thread-extractor-schema.test.ts",
   "lib/__tests__/email-participants.test.ts",
