@@ -71,6 +71,7 @@ import { AiPersonaManager } from "./settings/ai-persona-manager"
 import { BulkDraftRegenerationCard } from "./settings/bulk-draft-regeneration"
 import { ClientPortalUsersManager } from "./settings/client-portal-users-manager"
 import { WorkspaceMembersManager } from "./settings/workspace-members-manager"
+import { AdminDashboardTab } from "./admin-dashboard-tab"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { cn } from "@/lib/utils"
 import { getWorkspaceAdminStatus, getWorkspaceCapabilities } from "@/actions/access-actions"
@@ -613,6 +614,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   const isClientPortalUser = Boolean(workspaceCapabilities?.isClientPortalUser)
   const canViewAiObservability = Boolean(workspaceCapabilities?.canViewAiObservability)
+  const showAdminTab = isWorkspaceAdmin && !isClientPortalUser
 
   const resetAiPromptModalState = useCallback(() => {
     setAiPromptTemplates(null)
@@ -2280,12 +2282,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
       <div className="p-6">
         <Tabs value={activeTab} onValueChange={onTabChange} className="space-y-6">
-          <TabsList className="grid w-full max-w-4xl grid-cols-5">
+          <TabsList className={cn("grid w-full max-w-4xl", showAdminTab ? "grid-cols-6" : "grid-cols-5")}>
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="integrations">Integrations</TabsTrigger>
             <TabsTrigger value="ai">AI Personality</TabsTrigger>
             <TabsTrigger value="booking">Booking</TabsTrigger>
             <TabsTrigger value="team">Team</TabsTrigger>
+            {showAdminTab ? <TabsTrigger value="admin">Admin</TabsTrigger> : null}
           </TabsList>
 
           {isClientPortalUser ? (
@@ -6886,6 +6889,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             </Card>
             </fieldset>
           </TabsContent>
+
+          {/* Admin Dashboard (workspace admins only) */}
+          {showAdminTab ? (
+            <TabsContent value="admin" className="space-y-6">
+              <AdminDashboardTab clientId={activeWorkspace ?? null} active={activeTab === "admin"} />
+            </TabsContent>
+          ) : null}
         </Tabs>
 
         {/* Prompt History Dialog */}
