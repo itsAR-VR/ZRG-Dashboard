@@ -1,5 +1,11 @@
 import "server-only";
 
+export function stripNullBytes(text?: string | null): string | undefined {
+  if (typeof text !== "string") return text ?? undefined;
+  if (!text.includes("\u0000")) return text;
+  return text.replace(/\u0000/g, "");
+}
+
 function stripQuotedSections(text: string): string {
   let result = text
     .split("\n")
@@ -112,25 +118,24 @@ export function cleanEmailBody(
   htmlBody?: string | null,
   textBody?: string | null
 ): { cleaned: string; rawText?: string; rawHtml?: string } {
-  const rawText = textBody ?? undefined;
+  const rawText = stripNullBytes(textBody);
   const isHtmlTextBody = typeof textBody === "string" && looksLikeHtml(textBody);
-  const rawHtml = htmlBody ?? (isHtmlTextBody ? textBody ?? undefined : undefined);
+  const rawHtml = stripNullBytes(htmlBody ?? (isHtmlTextBody ? textBody ?? undefined : undefined));
 
-  const source = textBody || htmlBody || "";
+  const source = rawText || rawHtml || "";
   if (!source.trim()) {
     return { cleaned: "", rawText, rawHtml };
   }
 
-  const cleaned = textBody
+  const cleaned = rawText
     ? isHtmlTextBody
-      ? htmlToPlain(textBody)
-      : stripQuotedSections(textBody)
-    : htmlToPlain(htmlBody || "");
+      ? htmlToPlain(rawText)
+      : stripQuotedSections(rawText)
+    : htmlToPlain(rawHtml || "");
 
   return {
-    cleaned: cleaned.trim(),
+    cleaned: stripNullBytes(cleaned.trim()) || "",
     rawText,
     rawHtml,
   };
 }
-

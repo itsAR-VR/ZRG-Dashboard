@@ -10,7 +10,7 @@ import {
   type SentimentTag,
 } from "@/lib/sentiment";
 import { findOrCreateLead } from "@/lib/lead-matching";
-import { cleanEmailBody } from "@/lib/email-cleaning";
+import { cleanEmailBody, stripNullBytes } from "@/lib/email-cleaning";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { pauseFollowUpsOnReply } from "@/lib/followup-engine";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
@@ -131,6 +131,18 @@ function mapEmailInboxClassificationToSentimentTag(classification: string): Sent
     default:
       return "Neutral";
   }
+}
+
+function cleanNullableString(value: string | null | undefined): string | null {
+  const cleaned = stripNullBytes(value)?.trim();
+  if (!cleaned) return null;
+  return cleaned;
+}
+
+function cleanAddressList(entries: { address: string; name: string | null }[] | null | undefined): string[] {
+  return (entries ?? [])
+    .map((entry) => cleanNullableString(entry.address))
+    .filter((entry): entry is string => Boolean(entry));
 }
 
 async function findClient(request: NextRequest, payload?: InboxxiaWebhook): Promise<Client | null> {
@@ -387,7 +399,9 @@ async function upsertLead(
   fromEmail?: string,
   fromName?: string | null
 ) {
-  const email = fromEmail || leadData?.email;
+  const sanitizedFromEmail = cleanNullableString(fromEmail);
+  const sanitizedLeadEmail = cleanNullableString(leadData?.email);
+  const email = sanitizedFromEmail || sanitizedLeadEmail;
   if (!email) return null;
 
   const parseFromName = (full: string | null | undefined) => {
@@ -403,7 +417,7 @@ async function upsertLead(
 
   const emailBisonLeadId = leadData?.id ? String(leadData.id) : undefined;
   const normalizedEmail = email.trim().toLowerCase();
-  const normalizedLeadEmail = (leadData?.email || "").trim().toLowerCase();
+  const normalizedLeadEmail = (sanitizedLeadEmail || "").trim().toLowerCase();
   // IMPORTANT:
   // EmailBison lead IDs are stable identifiers for the campaign lead. Even if a reply comes from a
   // different address (e.g. personal Gmail), we still want to attach the reply to the same lead thread.
@@ -414,13 +428,13 @@ async function upsertLead(
   }
 
   const isSenderDifferentFromCampaignLead = Boolean(normalizedLeadEmail && normalizedEmail !== normalizedLeadEmail);
-  const parsedFromName = parseFromName(fromName);
+  const parsedFromName = parseFromName(cleanNullableString(fromName));
   const firstName = isSenderDifferentFromCampaignLead
     ? parsedFromName.firstName
-    : leadData?.first_name || parsedFromName.firstName || null;
+    : cleanNullableString(leadData?.first_name) || parsedFromName.firstName || null;
   const lastName = isSenderDifferentFromCampaignLead
     ? parsedFromName.lastName
-    : leadData?.last_name || parsedFromName.lastName || null;
+    : cleanNullableString(leadData?.last_name) || parsedFromName.lastName || null;
 
   // Use findOrCreateLead for cross-channel deduplication
   // This will match by email OR phone to find existing leads from SMS channel
@@ -550,14 +564,18 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   // Upsert campaign
   const emailCampaign = await upsertCampaign(client, data?.campaign);
   const senderAccountId = data?.sender_email?.id ? String(data.sender_email.id) : undefined;
-  const fromEmail = reply.from_email_address || data?.lead?.email;
+  const fromEmail = cleanNullableString(reply.from_email_address) || cleanNullableString(data?.lead?.email);
+  const replySubject = cleanNullableString(reply.email_subject);
+  const senderEmail = cleanNullableString(data?.sender_email?.email);
+  const senderName = cleanNullableString(data?.sender_email?.name);
+  const fromName = cleanNullableString(reply.from_name);
 
   if (!fromEmail) {
     return NextResponse.json({ error: "Missing from email" }, { status: 400 });
   }
 
   // Upsert lead
-  const lead = await upsertLead(client, data?.lead ?? null, emailCampaign?.id ?? null, senderAccountId, fromEmail, reply.from_name ?? null);
+  const lead = await upsertLead(client, data?.lead ?? null, emailCampaign?.id ?? null, senderAccountId, fromEmail, fromName);
   if (!lead) {
     return NextResponse.json({ error: "Failed to create/find lead" }, { status: 500 });
   }
@@ -587,7 +605,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
       channel: "email",
       direction: "inbound",
       body: cleaned.cleaned || contentForClassification,
-      subject: reply.email_subject ?? null,
+      subject: replySubject,
     },
   ]);
 
@@ -600,7 +618,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   // Note: Any inbound reply will reclassify sentiment, clearing "Follow Up" or "Snoozed" tags.
   let sentimentTag: SentimentTag;
   const cleanedBodyForStorage: string = cleaned.cleaned || contentForClassification;
-  const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
+  const inboundCombinedForSafety = `Subject: ${replySubject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
   const mustBlacklist =
     isOptOutText(inboundCombinedForSafety) ||
     detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
@@ -623,8 +641,8 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
 
   const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
 
-  const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
-  const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
+  const ccAddresses = cleanAddressList(reply.cc);
+  const bccAddresses = cleanAddressList(reply.bcc);
 
   // Create inbound message - use try/catch to handle P2002 race condition
   // (two concurrent webhook deliveries can both pass the initial dedup check)
@@ -638,14 +656,14 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
         body: cleanedBodyForStorage,
         rawText: cleaned.rawText ?? null,
         rawHtml: cleaned.rawHtml ?? null,
-        subject: reply.email_subject ?? null,
+        subject: replySubject,
         cc: ccAddresses,
         bcc: bccAddresses,
         // Phase 50: Email participant metadata
-        fromEmail: reply.from_email_address ?? null,
-        fromName: reply.from_name ?? null,
-        toEmail: data?.sender_email?.email ?? null,
-        toName: data?.sender_email?.name ?? null,
+        fromEmail,
+        fromName,
+        toEmail: senderEmail,
+        toName: senderName,
         isRead: false,
         direction: "inbound",
         leadId: lead.id,
@@ -683,8 +701,8 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   await updateLeadReplierState({
     leadId: lead.id,
     leadEmail: lead.email ?? null,
-    fromEmail: reply.from_email_address ?? null,
-    fromName: reply.from_name ?? null,
+    fromEmail,
+    fromName,
     logLabel: "LEAD_REPLIED",
   });
 
@@ -881,7 +899,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   if (!autoBook.booked && shouldGenerateDraft(sentimentTag, fromEmail)) {
     const draftResult = await generateResponseDraft(
       lead.id,
-      `Subject: ${reply.email_subject ?? ""}\n\n${contentForClassification}`,
+      `Subject: ${replySubject ?? ""}\n\n${contentForClassification}`,
       sentimentTag,
       "email",
       { timeoutMs: WEBHOOK_DRAFT_TIMEOUT_MS }
@@ -900,7 +918,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
           leadId: lead.id,
           channel: "email",
           latestInbound: cleaned.cleaned || contentForClassification,
-          subject: reply.email_subject ?? null,
+          subject: replySubject,
           conversationHistory: transcript,
           categorization: sentimentTag,
           automatedReply: reply.automated_reply ?? null,
@@ -1005,7 +1023,7 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
           leadId: lead.id,
           channel: "email",
           latestInbound: cleaned.cleaned || contentForClassification,
-          subject: reply.email_subject ?? null,
+          subject: replySubject,
           conversationHistory: transcript,
           categorization: sentimentTag,
           automatedReply: reply.automated_reply ?? null,
@@ -1123,7 +1141,11 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
 
   const emailCampaign = await upsertCampaign(client, data?.campaign);
   const senderAccountId = data?.sender_email?.id ? String(data.sender_email.id) : undefined;
-  const fromEmail = reply.from_email_address || data?.lead?.email;
+  const fromEmail = cleanNullableString(reply.from_email_address) || cleanNullableString(data?.lead?.email);
+  const replySubject = cleanNullableString(reply.email_subject);
+  const senderEmail = cleanNullableString(data?.sender_email?.email);
+  const senderName = cleanNullableString(data?.sender_email?.name);
+  const fromName = cleanNullableString(reply.from_name);
 
   if (!fromEmail) {
     return NextResponse.json({ error: "Missing from email" }, { status: 400 });
@@ -1135,7 +1157,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
     emailCampaign?.id ?? null,
     senderAccountId,
     fromEmail,
-    reply.from_name ?? null
+    fromName
   );
   if (!lead) {
     return NextResponse.json({ error: "Failed to create/find lead" }, { status: 500 });
@@ -1145,7 +1167,7 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   const contentForClassification = cleaned.cleaned || cleaned.rawText || cleaned.rawHtml || "";
   const cleanedBodyForStorage = cleaned.cleaned || contentForClassification;
 
-  const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
+  const inboundCombinedForSafety = `Subject: ${replySubject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
   const mustBlacklist =
     isOptOutText(inboundCombinedForSafety) ||
     detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
@@ -1155,8 +1177,8 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   const previousSentiment = lead.sentimentTag;
 
   const sentAt = parseDate(reply.date_received, reply.created_at);
-  const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
-  const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
+  const ccAddresses = cleanAddressList(reply.cc);
+  const bccAddresses = cleanAddressList(reply.bcc);
 
   // Create inbound message - use try/catch to handle P2002 race condition
   let message: { id: string };
@@ -1169,14 +1191,14 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
         body: cleanedBodyForStorage,
         rawText: cleaned.rawText ?? null,
         rawHtml: cleaned.rawHtml ?? null,
-        subject: reply.email_subject ?? null,
+        subject: replySubject,
         cc: ccAddresses,
         bcc: bccAddresses,
         // Phase 50: Email participant metadata
-        fromEmail: reply.from_email_address ?? null,
-        fromName: reply.from_name ?? null,
-        toEmail: data?.sender_email?.email ?? null,
-        toName: data?.sender_email?.name ?? null,
+        fromEmail,
+        fromName,
+        toEmail: senderEmail,
+        toName: senderName,
         isRead: false,
         direction: "inbound",
         leadId: lead.id,
@@ -1213,8 +1235,8 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
   await updateLeadReplierState({
     leadId: lead.id,
     leadEmail: lead.email ?? null,
-    fromEmail: reply.from_email_address ?? null,
-    fromName: reply.from_name ?? null,
+    fromEmail,
+    fromName,
     logLabel: "LEAD_INTERESTED",
   });
 
@@ -1527,8 +1549,11 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
     });
   }
 
-  const fromEmail = reply.from_email_address;
-  const fromName = reply.from_name;
+  const fromEmail = cleanNullableString(reply.from_email_address);
+  const fromName = cleanNullableString(reply.from_name);
+  const replySubject = cleanNullableString(reply.email_subject);
+  const senderEmail = cleanNullableString(data?.sender_email?.email);
+  const senderName = cleanNullableString(data?.sender_email?.name);
 
   if (!fromEmail) {
     return NextResponse.json({ error: "Missing from_email_address" }, { status: 400 });
@@ -1568,12 +1593,12 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
               body: cleaned.cleaned || `Email delivery failed to ${originalRecipient}`,
               rawText: cleaned.rawText ?? null,
               rawHtml: cleaned.rawHtml ?? null,
-              subject: reply.email_subject ?? "Delivery Status Notification (Failure)",
+              subject: replySubject ?? "Delivery Status Notification (Failure)",
               // Phase 50: Email participant metadata (bounce notification)
-              fromEmail: reply.from_email_address ?? null,
-              fromName: reply.from_name ?? null,
-              toEmail: data?.sender_email?.email ?? null,
-              toName: data?.sender_email?.name ?? null,
+              fromEmail,
+              fromName,
+              toEmail: senderEmail,
+              toName: senderName,
               isRead: false,
               direction: "inbound",
               leadId: originalLead.id,
@@ -1679,7 +1704,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
       channel: "email",
       direction: "inbound",
       body: cleaned.cleaned || contentForClassification,
-      subject: reply.email_subject ?? null,
+      subject: replySubject,
     },
   ]);
 
@@ -1692,7 +1717,7 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   let sentimentTag: SentimentTag;
   const cleanedBodyForStorage: string = cleaned.cleaned || contentForClassification;
 
-  const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
+  const inboundCombinedForSafety = `Subject: ${replySubject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
   const mustBlacklist =
     isOptOutText(inboundCombinedForSafety) ||
     detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
@@ -1715,8 +1740,8 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 
   const leadStatus = SENTIMENT_TO_STATUS[sentimentTag] || lead.status || "new";
 
-  const ccAddresses = reply.cc?.map((entry) => entry.address).filter(Boolean) ?? [];
-  const bccAddresses = reply.bcc?.map((entry) => entry.address).filter(Boolean) ?? [];
+  const ccAddresses = cleanAddressList(reply.cc);
+  const bccAddresses = cleanAddressList(reply.bcc);
 
   // Create inbound message - use try/catch to handle P2002 race condition
   let message: { id: string };
@@ -1729,14 +1754,14 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
         body: cleanedBodyForStorage,
         rawText: cleaned.rawText ?? null,
         rawHtml: cleaned.rawHtml ?? null,
-        subject: reply.email_subject ?? null,
+        subject: replySubject,
         cc: ccAddresses,
         bcc: bccAddresses,
         // Phase 50: Email participant metadata
-        fromEmail: reply.from_email_address ?? null,
-        fromName: reply.from_name ?? null,
-        toEmail: data?.sender_email?.email ?? null,
-        toName: data?.sender_email?.name ?? null,
+        fromEmail,
+        fromName,
+        toEmail: senderEmail,
+        toName: senderName,
         isRead: false,
         direction: "inbound",
         leadId: lead.id,
@@ -1773,8 +1798,8 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   await updateLeadReplierState({
     leadId: lead.id,
     leadEmail: lead.email ?? null,
-    fromEmail: reply.from_email_address ?? null,
-    fromName: reply.from_name ?? null,
+    fromEmail,
+    fromName,
     logLabel: "UNTRACKED_REPLY",
   });
 
@@ -1932,6 +1957,14 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
 async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): Promise<NextResponse> {
   const data = payload.data;
   const scheduledEmail = data?.scheduled_email;
+  const senderEmail = cleanNullableString(data?.sender_email?.email);
+  const senderName = cleanNullableString(data?.sender_email?.name);
+  const leadEmail = cleanNullableString(data?.lead?.email);
+  const leadFirstName = cleanNullableString(data?.lead?.first_name);
+  const leadLastName = cleanNullableString(data?.lead?.last_name);
+  const emailSubject = cleanNullableString(scheduledEmail?.email_subject);
+  const emailBodyHtml = stripNullBytes(scheduledEmail?.email_body) ?? null;
+  const workspaceName = cleanNullableString(payload.event?.workspace_name || payload.event?.name);
 
   if (!scheduledEmail?.id) {
     return NextResponse.json({ error: "Missing scheduled_email.id" }, { status: 400 });
@@ -1965,19 +1998,19 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
           provider: "INBOXXIA",
           eventType: "EMAIL_SENT",
           workspaceId: workspaceIdStr,
-          workspaceName: payload.event?.workspace_name || payload.event?.name || null,
+          workspaceName,
           campaignId: data?.campaign?.id ? String(data.campaign.id) : null,
-          campaignName: data?.campaign?.name || null,
+          campaignName: cleanNullableString(data?.campaign?.name),
           emailBisonLeadId: data?.lead?.id ? String(data.lead.id) : null,
-          leadEmail: data?.lead?.email ?? null,
-          leadFirstName: data?.lead?.first_name ?? null,
-          leadLastName: data?.lead?.last_name ?? null,
+          leadEmail,
+          leadFirstName,
+          leadLastName,
           senderEmailId: data?.sender_email?.id ? String(data.sender_email.id) : null,
-          senderEmail: data?.sender_email?.email ?? null,
-          senderName: data?.sender_email?.name ?? null,
+          senderEmail,
+          senderName,
           scheduledEmailId: inboxxiaScheduledEmailId,
-          emailSubject: scheduledEmail.email_subject ?? null,
-          emailBodyHtml: scheduledEmail.email_body ?? null,
+          emailSubject,
+          emailBodyHtml,
           emailStatus: scheduledEmail.status ?? null,
           emailSentAt: scheduledEmail.sent_at ? parseDate(scheduledEmail.sent_at) : null,
         },
@@ -1988,19 +2021,19 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
           status: "PENDING",
           runAt: new Date(),
           workspaceId: workspaceIdStr,
-          workspaceName: payload.event?.workspace_name || payload.event?.name || null,
+          workspaceName,
           campaignId: data?.campaign?.id ? String(data.campaign.id) : null,
-          campaignName: data?.campaign?.name || null,
+          campaignName: cleanNullableString(data?.campaign?.name),
           emailBisonLeadId: data?.lead?.id ? String(data.lead.id) : null,
-          leadEmail: data?.lead?.email ?? null,
-          leadFirstName: data?.lead?.first_name ?? null,
-          leadLastName: data?.lead?.last_name ?? null,
+          leadEmail,
+          leadFirstName,
+          leadLastName,
           senderEmailId: data?.sender_email?.id ? String(data.sender_email.id) : null,
-          senderEmail: data?.sender_email?.email ?? null,
-          senderName: data?.sender_email?.name ?? null,
+          senderEmail,
+          senderName,
           scheduledEmailId: inboxxiaScheduledEmailId,
-          emailSubject: scheduledEmail.email_subject ?? null,
-          emailBodyHtml: scheduledEmail.email_body ?? null,
+          emailSubject,
+          emailBodyHtml,
           emailStatus: scheduledEmail.status ?? null,
           emailSentAt: scheduledEmail.sent_at ? parseDate(scheduledEmail.sent_at) : null,
         },
@@ -2037,11 +2070,21 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
   const emailCampaign = await upsertCampaign(client, data?.campaign);
   const senderAccountId = data?.sender_email?.id ? String(data.sender_email.id) : undefined;
 
-  if (!data?.lead?.email) {
+  if (!data?.lead || !leadEmail) {
     return NextResponse.json({ error: "Missing lead email" }, { status: 400 });
   }
 
-  const lead = await upsertLead(client, data.lead, emailCampaign?.id ?? null, senderAccountId);
+  const lead = await upsertLead(
+    client,
+    {
+      ...data.lead,
+      email: leadEmail,
+      first_name: leadFirstName,
+      last_name: leadLastName,
+    },
+    emailCampaign?.id ?? null,
+    senderAccountId
+  );
   if (!lead) {
     return NextResponse.json({ error: "Failed to create/find lead" }, { status: 500 });
   }
@@ -2055,12 +2098,12 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
         inboxxiaScheduledEmailId,
         channel: "email",
         source: "inboxxia_campaign",
-        body: scheduledEmail.email_body || "",
-        rawHtml: scheduledEmail.email_body ?? null,
-        subject: scheduledEmail.email_subject ?? null,
+        body: emailBodyHtml || "",
+        rawHtml: emailBodyHtml,
+        subject: emailSubject,
         // Phase 50: Email participant metadata (outbound campaign)
-        fromEmail: data?.sender_email?.email ?? null,
-        fromName: data?.sender_email?.name ?? null,
+        fromEmail: senderEmail,
+        fromName: senderName,
         toEmail: lead.email ?? null,
         toName: [lead.firstName, lead.lastName].filter(Boolean).join(" ") || null,
         isRead: true, // Outbound messages are "read"
@@ -2081,7 +2124,7 @@ async function handleEmailSent(request: NextRequest, payload: InboxxiaWebhook): 
 
   await autoStartNoResponseSequenceOnOutbound({ leadId: lead.id, outboundAt: sentAt });
 
-  console.log(`[EMAIL_SENT] Lead: ${lead.id} (subjectLen=${(scheduledEmail.email_subject || "").length})`);
+  console.log(`[EMAIL_SENT] Lead: ${lead.id} (subjectLen=${(emailSubject || "").length})`);
 
   return NextResponse.json({
     success: true,
@@ -2117,6 +2160,11 @@ async function handleEmailOpened(request: NextRequest, payload: InboxxiaWebhook)
 async function handleEmailBounced(request: NextRequest, payload: InboxxiaWebhook): Promise<NextResponse> {
   const data = payload.data;
   const reply = data?.reply;
+  const replySubject = cleanNullableString(reply?.email_subject);
+  const fromEmail = cleanNullableString(reply?.from_email_address);
+  const fromName = cleanNullableString(reply?.from_name);
+  const senderEmail = cleanNullableString(data?.sender_email?.email);
+  const senderName = cleanNullableString(data?.sender_email?.name);
 
   const client = await findClient(request, payload);
   if (!client) {
@@ -2161,12 +2209,12 @@ async function handleEmailBounced(request: NextRequest, payload: InboxxiaWebhook
       body: `[BOUNCED] ${cleaned.cleaned || bounceBody}`,
       rawHtml: reply?.html_body ?? null,
       rawText: reply?.text_body ?? null,
-      subject: reply?.email_subject ?? "Delivery Status Notification (Failure)",
+      subject: replySubject ?? "Delivery Status Notification (Failure)",
       // Phase 50: Email participant metadata (bounce notification)
-      fromEmail: reply?.from_email_address ?? null,
-      fromName: reply?.from_name ?? null,
-      toEmail: data?.sender_email?.email ?? null,
-      toName: data?.sender_email?.name ?? null,
+      fromEmail,
+      fromName,
+      toEmail: senderEmail,
+      toName: senderName,
       isRead: false,
       direction: "inbound",
       leadId: lead.id,
