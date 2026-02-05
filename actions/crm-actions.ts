@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { pauseFollowUpsOnBooking } from "@/lib/followup-engine";
 import { shouldGenerateDraft } from "@/lib/ai-drafts";
+import { generateDraftsForLeadOnManualSentiment } from "@/lib/manual-draft-generation";
 import { isPositiveSentiment, SENTIMENT_TAGS, type SentimentTag } from "@/lib/sentiment-shared";
 import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById, resolveClientScope } from "@/lib/workspace-access";
 
@@ -184,6 +185,28 @@ export async function updateLeadSentimentTag(
         },
         data: { status: "rejected" },
       });
+    } else {
+      try {
+        const generationSummary = await generateDraftsForLeadOnManualSentiment({
+          leadId,
+          sentimentTag: nextTag,
+          leadEmail: updatedLead.email,
+        });
+
+        if (generationSummary.attempted > 0) {
+          console.log("[CRM] Manual sentiment draft generation summary", {
+            leadId,
+            sentimentTag: nextTag,
+            ...generationSummary,
+          });
+        }
+      } catch (error) {
+        console.error("[CRM] Failed to generate drafts after manual sentiment update:", {
+          leadId,
+          sentimentTag: nextTag,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     revalidatePath("/");
@@ -702,12 +725,16 @@ export async function getCRMLeadsCursor(
 
     if (search && search.trim()) {
       const searchTerm = search.trim();
+      const phoneDigits = searchTerm.replace(/\D/g, "");
       whereConditions.push({
         OR: [
           { firstName: { contains: searchTerm, mode: "insensitive" } },
           { lastName: { contains: searchTerm, mode: "insensitive" } },
           { email: { contains: searchTerm, mode: "insensitive" } },
+          { currentReplierEmail: { contains: searchTerm, mode: "insensitive" } },
           { companyName: { contains: searchTerm, mode: "insensitive" } },
+          { companyWebsite: { contains: searchTerm, mode: "insensitive" } },
+          ...(phoneDigits.length >= 3 ? [{ phone: { contains: phoneDigits } }] : []),
           { smsCampaign: { is: { name: { contains: searchTerm, mode: "insensitive" } } } },
         ],
       });
@@ -823,12 +850,16 @@ export async function getCRMLeadsFromEnd(
 
     if (search && search.trim()) {
       const searchTerm = search.trim();
+      const phoneDigits = searchTerm.replace(/\D/g, "");
       whereConditions.push({
         OR: [
           { firstName: { contains: searchTerm, mode: "insensitive" } },
           { lastName: { contains: searchTerm, mode: "insensitive" } },
           { email: { contains: searchTerm, mode: "insensitive" } },
+          { currentReplierEmail: { contains: searchTerm, mode: "insensitive" } },
           { companyName: { contains: searchTerm, mode: "insensitive" } },
+          { companyWebsite: { contains: searchTerm, mode: "insensitive" } },
+          ...(phoneDigits.length >= 3 ? [{ phone: { contains: phoneDigits } }] : []),
           { smsCampaign: { is: { name: { contains: searchTerm, mode: "insensitive" } } } },
         ],
       });

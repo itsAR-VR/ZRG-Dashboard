@@ -14,6 +14,7 @@ const TEST_FILES = [
   "lib/__tests__/insights-thread-extractor-schema.test.ts",
   "lib/__tests__/email-cleaning.test.ts",
   "lib/__tests__/email-participants.test.ts",
+  "lib/__tests__/manual-draft-generation.test.ts",
   "lib/__tests__/prompt-runner-temperature-reasoning.test.ts",
   "lib/__tests__/emailbison-stop-future-emails.test.ts",
   "lib/__tests__/emailbison-reply-payload.test.ts",
