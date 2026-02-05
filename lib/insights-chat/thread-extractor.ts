@@ -489,8 +489,8 @@ export async function extractConversationInsightForLead(opts: {
     budget: {
       min: 800,
       max: 2400,
-      retryMax: 3200,
-      retryExtraTokens: 900,
+      retryMax: 4800,
+      retryExtraTokens: 1200,
       overheadTokens: 520,
       outputScale: 0.25,
       preferApiCount: true,

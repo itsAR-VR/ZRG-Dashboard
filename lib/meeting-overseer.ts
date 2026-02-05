@@ -266,7 +266,7 @@ export async function runMeetingOverseerExtraction(opts: {
     leadId: opts.leadId,
     featureId: "meeting.overseer.extract",
     promptKey,
-    model: "gpt-5-mini",
+    model: "gpt-5.2",
     reasoningEffort: "low",
     temperature: 0,
     systemFallback: `You are a scheduling overseer. Determine whether the inbound message is about scheduling, and extract timing preferences.

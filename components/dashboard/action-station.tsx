@@ -210,6 +210,8 @@ export function ActionStation({
   const prevConversationIdRef = useRef<string | null>(null)
   const prevMessageCountRef = useRef(0)
   const conversationMessagesRef = useRef<Conversation["messages"]>([])
+  const composeMessageRef = useRef("")
+  const originalDraftRef = useRef("")
   const [composeMessage, setComposeMessage] = useState("")
   const [isSending, setIsSending] = useState(false)
   const [isRegeneratingFast, setIsRegeneratingFast] = useState(false)
@@ -358,6 +360,14 @@ export function ActionStation({
     conversationMessagesRef.current = conversation?.messages || []
   }, [conversation?.messages])
 
+  useEffect(() => {
+    composeMessageRef.current = composeMessage
+  }, [composeMessage])
+
+  useEffect(() => {
+    originalDraftRef.current = originalDraft
+  }, [originalDraft])
+
   // Phase 50: Initialize CC recipients from latest inbound email when channel/conversation/messages change
   // Use conversation?.messages directly (not ref) so CC updates when new emails arrive
   useEffect(() => {
@@ -455,9 +465,13 @@ export function ActionStation({
             : draftData
         console.log("[ActionStation] Found drafts:", preferredDrafts.length, "First draft:", preferredDrafts[0]?.content?.substring(0, 50))
         setDrafts(preferredDrafts)
-        // Auto-populate the compose box with the AI draft
-        setComposeMessage(preferredDrafts[0].content)
-        setOriginalDraft(preferredDrafts[0].content)
+        const nextDraftContent = preferredDrafts[0].content
+        const canAutoPopulate =
+          !composeMessageRef.current.trim() || composeMessageRef.current === originalDraftRef.current
+        if (canAutoPopulate) {
+          setComposeMessage(nextDraftContent)
+          setOriginalDraft(nextDraftContent)
+        }
         setHasAiDraft(true)
         setFastRegenCycleSeed(preferredDrafts[0].id)
         setFastRegenCount(0)
@@ -475,7 +489,7 @@ export function ActionStation({
     }
 
     fetchDrafts()
-  }, [conversation?.id, activeChannel, deepLinkedDraftId])
+  }, [conversation?.id, activeChannel, deepLinkedDraftId, conversation?.lead?.sentimentTag])
 
   const handleSendMessage = async () => {
     if (!composeMessage.trim() || !conversation) return

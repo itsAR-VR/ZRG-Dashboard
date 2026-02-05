@@ -2542,36 +2542,46 @@ Generate an appropriate ${channel} response following the guidelines above.
           triggerMessageId,
         });
       } else {
-        const shouldGate = shouldRunMeetingOverseer({
-          messageText: latestInboundText,
-          sentimentTag,
-          offeredSlotsCount: availability.length,
-        });
-
-        if (shouldGate) {
-          const extraction = await getMeetingOverseerDecision(triggerMessageId, "extract");
-          const extractionDecision =
-            extraction && typeof extraction === "object" && "is_scheduling_related" in extraction
-              ? (extraction as MeetingOverseerExtractDecision)
-              : null;
-          const gateDraft = await runMeetingOverseerGate({
-            clientId: lead.clientId,
-            leadId,
-            messageId: triggerMessageId,
-            channel,
-            latestInbound: latestInboundText,
-            draft: draftContent,
-            availability,
-            bookingLink,
-            extraction: extractionDecision,
-            memoryContext: memoryContext || null,
-            leadSchedulerLink,
-            timeoutMs: emailVerifierTimeoutMs,
+        try {
+          const shouldGate = shouldRunMeetingOverseer({
+            messageText: latestInboundText,
+            sentimentTag,
+            offeredSlotsCount: availability.length,
           });
 
-          if (gateDraft) {
-            draftContent = gateDraft;
+          if (shouldGate) {
+            const extraction = await getMeetingOverseerDecision(triggerMessageId, "extract");
+            const extractionDecision =
+              extraction && typeof extraction === "object" && "is_scheduling_related" in extraction
+                ? (extraction as MeetingOverseerExtractDecision)
+                : null;
+            const gateDraft = await runMeetingOverseerGate({
+              clientId: lead.clientId,
+              leadId,
+              messageId: triggerMessageId,
+              channel,
+              latestInbound: latestInboundText,
+              draft: draftContent,
+              availability,
+              bookingLink,
+              extraction: extractionDecision,
+              memoryContext: memoryContext || null,
+              leadSchedulerLink,
+              timeoutMs: emailVerifierTimeoutMs,
+            });
+
+            if (gateDraft) {
+              draftContent = gateDraft;
+            }
           }
+        } catch (overseerError) {
+          console.warn("[AI Drafts] Meeting overseer failed; continuing with pre-gate draft", {
+            leadId,
+            triggerMessageId,
+            channel,
+            errorType: overseerError instanceof Error ? overseerError.name : "unknown",
+            errorMessage: overseerError instanceof Error ? overseerError.message : String(overseerError),
+          });
         }
       }
     }

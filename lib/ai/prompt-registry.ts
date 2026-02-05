@@ -1113,7 +1113,7 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       featureId: "meeting.overseer.extract",
       name: "Meeting Overseer: Extract",
       description: "Extracts scheduling intent + timing preferences for meeting-related inbounds.",
-      model: "gpt-5-mini",
+      model: "gpt-5.2",
       apiType: "responses",
       messages: [
         { role: "system", content: MEETING_OVERSEER_EXTRACT_SYSTEM_TEMPLATE },
@@ -1125,7 +1125,7 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       featureId: "meeting.overseer.gate",
       name: "Meeting Overseer: Draft Gate",
       description: "Reviews drafts for scheduling correctness + concision after acceptance.",
-      model: "gpt-5-mini",
+      model: "gpt-5.2",
       apiType: "responses",
       messages: [
         { role: "system", content: MEETING_OVERSEER_GATE_SYSTEM_TEMPLATE },
