@@ -74,6 +74,8 @@ export async function sendEmailReply(
       return { success: false, error: "Draft not found" };
     }
 
+    const messageContent = editedContent || draft.content;
+
     const existingMessage = await prisma.message.findFirst({
       where: { aiDraftId: draftId },
       select: { id: true, body: true, sentBy: true },
@@ -86,7 +88,7 @@ export async function sendEmailReply(
       const responseDisposition = computeAIDraftResponseDisposition({
         sentBy,
         draftContent: draft.content,
-        finalContent: existingMessage.body || editedContent || draft.content,
+        finalContent: messageContent,
       });
       await prisma.aIDraft
         .updateMany({
@@ -136,8 +138,6 @@ export async function sendEmailReply(
       return { success: false, error: "No email provider is configured for this workspace" };
     }
 
-    const messageContent = editedContent || draft.content;
-
     const claimed = await prisma.aIDraft.updateMany({
       where: { id: draftId, status: "pending" },
       data: { status: "sending" },
@@ -156,7 +156,7 @@ export async function sendEmailReply(
         const responseDisposition = computeAIDraftResponseDisposition({
           sentBy,
           draftContent: draft.content,
-          finalContent: afterClaimMessage.body || editedContent || draft.content,
+          finalContent: messageContent,
         });
         await prisma.aIDraft
           .updateMany({

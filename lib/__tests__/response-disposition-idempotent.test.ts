@@ -11,11 +11,29 @@ describe("responseDisposition idempotent paths", () => {
   it("persists responseDisposition when email draft already has a message", () => {
     const source = read("actions/email-actions.ts");
     assert.match(source, /existingMessage[\s\S]*responseDisposition/, "expected responseDisposition update in existingMessage path");
+    assert.ok(
+      !source.includes("finalContent: existingMessage.body"),
+      "existingMessage idempotent path should compute disposition from current messageContent, not prior message body"
+    );
+    assert.ok(
+      !source.includes("finalContent: afterClaimMessage.body"),
+      "after-claim idempotent path should compute disposition from current messageContent, not prior message body"
+    );
+    assert.match(source, /finalContent:\s*messageContent/, "expected idempotent paths to use messageContent for disposition");
   });
 
   it("persists responseDisposition for system email idempotent path", () => {
     const source = read("lib/email-send.ts");
     assert.match(source, /existingMessage[\s\S]*responseDisposition/, "expected responseDisposition update in existingMessage path");
+    assert.ok(
+      !source.includes("finalContent: existingMessage.body"),
+      "existingMessage idempotent path should compute disposition from current messageContent, not prior message body"
+    );
+    assert.ok(
+      !source.includes("finalContent: afterClaimMessage.body"),
+      "after-claim idempotent path should compute disposition from current messageContent, not prior message body"
+    );
+    assert.match(source, /finalContent:\s*messageContent/, "expected idempotent paths to use messageContent for disposition");
   });
 
   it("always persists responseDisposition for SMS draft approvals", () => {
