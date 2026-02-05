@@ -1,6 +1,8 @@
 import "@/lib/server-dns";
+import { prisma } from "@/lib/prisma";
 import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { isOptOutText } from "@/lib/sentiment";
+import { buildAutoSendEvaluatorInput, type AutoSendEvaluatorWorkspaceContext } from "@/lib/auto-send-evaluator-input";
 
 export type AutoSendEvaluation = {
   confidence: number;
@@ -35,11 +37,145 @@ export function interpretAutoSendEvaluatorOutput(value: {
   };
 }
 
-function trimForModel(text: string, maxChars = 12000): string {
-  const cleaned = (text || "").trim();
-  if (!cleaned) return "";
-  if (cleaned.length <= maxChars) return cleaned;
-  return cleaned.slice(cleaned.length - maxChars);
+async function loadAutoSendWorkspaceContext(opts: {
+  clientId: string;
+  leadId?: string | null;
+}): Promise<AutoSendEvaluatorWorkspaceContext> {
+  const empty: AutoSendEvaluatorWorkspaceContext = {
+    serviceDescription: null,
+    goals: null,
+    knowledgeAssets: [],
+  };
+
+  const leadId = typeof opts.leadId === "string" && opts.leadId.trim() ? opts.leadId.trim() : null;
+
+  const lead = leadId
+    ? await prisma.lead
+        .findUnique({
+          where: { id: leadId },
+          select: {
+            id: true,
+            clientId: true,
+            client: {
+              select: {
+                name: true,
+                aiPersonas: {
+                  where: { isDefault: true },
+                  take: 1,
+                  select: {
+                    goals: true,
+                    serviceDescription: true,
+                  },
+                },
+                settings: {
+                  select: {
+                    aiGoals: true,
+                    serviceDescription: true,
+                    knowledgeAssets: {
+                      orderBy: { updatedAt: "desc" },
+                      select: {
+                        name: true,
+                        type: true,
+                        originalFileName: true,
+                        mimeType: true,
+                        textContent: true,
+                        updatedAt: true,
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            emailCampaign: {
+              select: {
+                aiPersona: {
+                  select: {
+                    goals: true,
+                    serviceDescription: true,
+                  },
+                },
+              },
+            },
+          },
+        })
+        .catch(() => null)
+    : null;
+
+  if (lead?.clientId && lead.clientId !== opts.clientId) {
+    console.warn("[AutoSendEvaluator] leadId/clientId mismatch; skipping workspace context load", {
+      clientId: opts.clientId,
+      leadClientId: lead.clientId,
+      leadId,
+    });
+    return empty;
+  }
+
+  const client =
+    lead?.client ??
+    (await prisma.client
+      .findUnique({
+        where: { id: opts.clientId },
+        select: {
+          name: true,
+          aiPersonas: {
+            where: { isDefault: true },
+            take: 1,
+            select: {
+              goals: true,
+              serviceDescription: true,
+            },
+          },
+          settings: {
+            select: {
+              aiGoals: true,
+              serviceDescription: true,
+              knowledgeAssets: {
+                orderBy: { updatedAt: "desc" },
+                select: {
+                  name: true,
+                  type: true,
+                  originalFileName: true,
+                  mimeType: true,
+                  textContent: true,
+                  updatedAt: true,
+                },
+              },
+            },
+          },
+        },
+      })
+      .catch(() => null));
+
+  const settings = client?.settings ?? null;
+  const knowledgeAssets = settings?.knowledgeAssets ?? [];
+
+  const campaignPersona = lead?.emailCampaign?.aiPersona ?? null;
+  const defaultPersona = client?.aiPersonas?.[0] ?? null;
+
+  const serviceDescription =
+    (campaignPersona?.serviceDescription || "").trim() ||
+    (defaultPersona?.serviceDescription || "").trim() ||
+    (settings?.serviceDescription || "").trim() ||
+    null;
+
+  const goals =
+    (campaignPersona?.goals || "").trim() ||
+    (defaultPersona?.goals || "").trim() ||
+    (settings?.aiGoals || "").trim() ||
+    null;
+
+  return {
+    serviceDescription,
+    goals,
+    knowledgeAssets: knowledgeAssets.map((a) => ({
+      name: a.name,
+      type: a.type,
+      originalFileName: a.originalFileName,
+      mimeType: a.mimeType,
+      textContent: a.textContent,
+      updatedAt: a.updatedAt,
+    })),
+  };
 }
 
 export async function evaluateAutoSend(opts: {
@@ -106,6 +242,11 @@ export async function evaluateAutoSend(opts: {
     };
   }
 
+  const workspaceContext = await loadAutoSendWorkspaceContext({
+    clientId: opts.clientId,
+    leadId: opts.leadId ?? null,
+  });
+
   const receivedAt =
     typeof opts.replyReceivedAt === "string"
       ? opts.replyReceivedAt
@@ -121,20 +262,17 @@ export async function evaluateAutoSend(opts: {
   "reason": "string"
 }`;
 
-  const user = JSON.stringify(
-    {
-      channel: opts.channel,
-      subject: subject || null,
-      latest_inbound: latestInbound,
-      conversation_history: trimForModel(opts.conversationHistory || ""),
-      reply_categorization: categorization || null,
-      automated_reply: opts.automatedReply ?? null,
-      reply_received_at: receivedAt || null,
-      draft_reply: draft,
-    },
-    null,
-    2
-  );
+  const inputBuild = buildAutoSendEvaluatorInput({
+    channel: opts.channel,
+    subject: subject || null,
+    latestInbound,
+    conversationHistory: opts.conversationHistory || "",
+    categorization: categorization || null,
+    automatedReply: opts.automatedReply ?? null,
+    replyReceivedAtIso: receivedAt || null,
+    draft,
+    workspaceContext,
+  });
 
   const timeoutMs = Math.max(
     5_000,
@@ -155,7 +293,7 @@ export async function evaluateAutoSend(opts: {
     model: "gpt-5-mini",
     reasoningEffort: "low",
     systemFallback,
-    input: [{ role: "user" as const, content: user }],
+    templateVars: { inputJson: inputBuild.inputJson },
     schemaName: "auto_send_evaluator",
     strict: true,
     schema: {
@@ -171,10 +309,10 @@ export async function evaluateAutoSend(opts: {
     },
     budget: {
       min: 256,
-      max: 900,
-      retryMax: 1600,
-      overheadTokens: 256,
-      outputScale: 0.18,
+      max: 1600,
+      retryMax: 2400,
+      overheadTokens: 384,
+      outputScale: 0.22,
       preferApiCount: true,
     },
     timeoutMs,

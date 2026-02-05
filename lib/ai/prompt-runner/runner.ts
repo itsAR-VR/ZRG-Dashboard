@@ -8,6 +8,7 @@ import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/ope
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { categorizePromptRunnerError } from "@/lib/ai/prompt-runner/errors";
 import { resolvePromptTemplate } from "@/lib/ai/prompt-runner/resolve";
+import { substituteTemplateVars } from "@/lib/ai/prompt-runner/template";
 import type { PromptRunnerError, PromptRunnerResult, StructuredJsonPromptParams, TextPromptParams } from "@/lib/ai/prompt-runner/types";
 
 function coerceMaxAttempts(value: unknown, fallback: number): number {
@@ -142,6 +143,24 @@ function normalizeAttempts(attempts: number[]): number[] {
     .filter((n) => n > 0);
 }
 
+function buildInputFromTemplate(opts: {
+  template: { messages: Array<{ role: string; content: string }> } | null;
+  templateVars?: Record<string, string>;
+}): OpenAI.Responses.ResponseCreateParamsNonStreaming["input"] | null {
+  const messages = opts.template?.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+
+  const inputMessages = messages
+    .filter((m) => m && m.role !== "system")
+    .map((m) => ({
+      role: m.role as any,
+      content: substituteTemplateVars(String((m as any).content ?? ""), opts.templateVars),
+    }));
+
+  if (inputMessages.length === 0) return null;
+  return inputMessages as any;
+}
+
 export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptParams<T>): Promise<PromptRunnerResult<T>> {
   const resolved =
     params.resolved ??
@@ -155,6 +174,27 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
   const system = resolved.system;
   const featureId = resolved.featureId;
   const promptKeyForTelemetry = resolved.promptKeyForTelemetry;
+
+  const input =
+    typeof params.input !== "undefined"
+      ? params.input
+      : buildInputFromTemplate({ template: resolved.template ?? null, templateVars: params.templateVars });
+  if (!input) {
+    return {
+      success: false,
+      error: { category: "unknown", message: "Missing prompt input", retryable: false },
+      telemetry: buildTelemetryBase({
+        traceId: params.traceId,
+        parentSpanId: params.parentSpanId,
+        interactionId: null,
+        promptKey: promptKeyForTelemetry,
+        featureId: params.featureId || featureId,
+        model: params.model,
+        pattern: "structured_json",
+        attemptCount: 0,
+      }),
+    };
+  }
 
   const seedAttempts: number[] = Array.isArray(params.attempts) && params.attempts.length > 0 ? normalizeAttempts(params.attempts) : [];
 
@@ -180,7 +220,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
     const budget = await computeAdaptiveMaxOutputTokens({
       model: params.model,
       instructions: system,
-      input: params.input,
+      input,
       min: params.budget.min,
       max: params.budget.max,
       overheadTokens: params.budget.overheadTokens,
@@ -226,6 +266,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
           ...samplingAndReasoning,
           max_output_tokens: maxOutputTokens,
           instructions: system,
+          truncation: "auto",
           text: {
             verbosity: params.verbosity ?? "low",
             format: {
@@ -235,7 +276,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
               schema: params.schema,
             },
           },
-          input: params.input,
+          input,
         } satisfies OpenAI.Responses.ResponseCreateParamsNonStreaming,
         requestOptions: (() => {
           const timeout =
@@ -403,6 +444,27 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
   const featureId = resolved.featureId;
   const promptKeyForTelemetry = resolved.promptKeyForTelemetry;
 
+  const input =
+    typeof params.input !== "undefined"
+      ? params.input
+      : buildInputFromTemplate({ template: resolved.template ?? null, templateVars: params.templateVars });
+  if (!input) {
+    return {
+      success: false,
+      error: { category: "unknown", message: "Missing prompt input", retryable: false },
+      telemetry: buildTelemetryBase({
+        traceId: params.traceId,
+        parentSpanId: params.parentSpanId,
+        interactionId: null,
+        promptKey: promptKeyForTelemetry,
+        featureId: params.featureId || featureId,
+        model: params.model,
+        pattern: "text",
+        attemptCount: 0,
+      }),
+    };
+  }
+
   const fallbackMaxOutputTokens =
     typeof params.maxOutputTokens === "number"
       ? Math.max(1, Math.trunc(params.maxOutputTokens))
@@ -411,7 +473,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
             await computeAdaptiveMaxOutputTokens({
               model: params.model,
               instructions: system,
-              input: params.input,
+              input,
               min: params.budget.min,
               max: params.budget.max,
               overheadTokens: params.budget.overheadTokens,
@@ -485,8 +547,9 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
           ...resolveTemperatureAndReasoning({ model: params.model, temperature, reasoningEffort: effort ?? null }),
           max_output_tokens: maxOutputTokens,
           instructions: system,
+          truncation: "auto",
           ...(params.verbosity ? { text: { verbosity: params.verbosity } } : {}),
-          input: params.input,
+          input,
         } satisfies OpenAI.Responses.ResponseCreateParamsNonStreaming,
         requestOptions: (() => {
           const timeout =

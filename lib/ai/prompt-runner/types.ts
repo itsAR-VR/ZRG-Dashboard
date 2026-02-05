@@ -1,6 +1,7 @@
 import "server-only";
 
 import type OpenAI from "openai";
+import type { AIPromptTemplate } from "@/lib/ai/prompt-registry";
 
 export type AIExecutionPattern = "structured_json" | "text";
 
@@ -36,6 +37,7 @@ export type ResolvedPromptMetadata = {
   system: string;
   featureId: string;
   promptKeyForTelemetry: string;
+  template?: AIPromptTemplate | null;
 };
 
 export type PromptBudgetParams = {
@@ -82,7 +84,7 @@ export type PromptRunnerBaseParams = {
 
 export type StructuredJsonPromptParams<T> = PromptRunnerBaseParams & {
   pattern: "structured_json";
-  input: OpenAI.Responses.ResponseCreateParamsNonStreaming["input"];
+  input?: OpenAI.Responses.ResponseCreateParamsNonStreaming["input"];
   schemaName: string;
   schema: Record<string, unknown>;
   strict?: boolean;
@@ -94,7 +96,7 @@ export type StructuredJsonPromptParams<T> = PromptRunnerBaseParams & {
 
 export type TextPromptParams = PromptRunnerBaseParams & {
   pattern: "text";
-  input: OpenAI.Responses.ResponseCreateParamsNonStreaming["input"];
+  input?: OpenAI.Responses.ResponseCreateParamsNonStreaming["input"];
   budget?: PromptBudgetParams;
   maxOutputTokens?: number;
   attempts?: number[];

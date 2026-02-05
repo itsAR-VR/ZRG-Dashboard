@@ -37,8 +37,8 @@ import { enqueueBackgroundJob } from "@/lib/background-jobs/enqueue";
  * or null if AI classification is needed.
  * 
  * Rules:
- * - If no messages at all → "Neutral"
- * - If lead has never responded (no inbound messages) → "Neutral"
+ * - If no messages at all → "New"
+ * - If lead has never responded (no inbound messages) → "New"
  * - Otherwise → null (always use AI classification when lead has responded)
  * 
  * NOTE: We intentionally DO NOT have a time-based threshold here.
@@ -70,7 +70,7 @@ async function requireLeadAccess(leadId: string): Promise<{ id: string; clientId
       where: { id: leadId },
       select: { id: true, clientId: true },
     }),
-    getAccessibleClientIdsForUser(user.id),
+    getAccessibleClientIdsForUser(user.id, user.email),
   ]);
 
   if (!lead) throw new Error("Lead not found");
@@ -1236,7 +1236,7 @@ export async function approveAndSendDraftSystem(
       where: { id: draftId },
       data: {
         status: "approved",
-        ...(pendingPartIndexes.length > 0 ? { responseDisposition } : {}),
+        responseDisposition,
       },
     });
 
@@ -1258,7 +1258,7 @@ export async function approveAndSendDraft(
 ): Promise<SendMessageResult> {
   try {
     const user = await requireAuthUser();
-    const accessible = await getAccessibleClientIdsForUser(user.id);
+    const accessible = await getAccessibleClientIdsForUser(user.id, user.email);
 
     // Get the draft
     const draft = await prisma.aIDraft.findUnique({
@@ -1355,7 +1355,7 @@ export async function approveAndSendDraft(
 export async function rejectDraft(draftId: string): Promise<{ success: boolean; error?: string }> {
   try {
     const user = await requireAuthUser();
-    const accessible = await getAccessibleClientIdsForUser(user.id);
+    const accessible = await getAccessibleClientIdsForUser(user.id, user.email);
     const draft = await prisma.aIDraft.findUnique({
       where: { id: draftId },
       select: { id: true, leadId: true, lead: { select: { clientId: true } } },

@@ -6,7 +6,7 @@ import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { extractContactFromMessageContent } from "@/lib/signature-extractor";
 import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
-import { pauseFollowUpsOnReply, resumeAwaitingEnrichmentFollowUpsForLead } from "@/lib/followup-engine";
+import { pauseFollowUpsOnReply, processMessageForAutoBooking, resumeAwaitingEnrichmentFollowUpsForLead } from "@/lib/followup-engine";
 import { toStoredPhone } from "@/lib/phone-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
@@ -182,7 +182,16 @@ export async function runLinkedInInboundPostProcessJob(params: {
   // 3. Pause Follow-Ups on Reply
   await pauseFollowUpsOnReply(lead.id);
 
-  // 4. Auto-Start Follow-Up Sequences & Clay Enrichment
+  // 4. Auto-Booking Check
+  const autoBook = await processMessageForAutoBooking(lead.id, messageBody, {
+    channel: "linkedin",
+    messageId: message.id,
+  });
+  if (autoBook.booked) {
+    console.log(`[LinkedIn Post-Process] Auto-booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
+  }
+
+  // 5. Auto-Start Follow-Up Sequences & Clay Enrichment
   // Reload lead to get updated sentiment after classification
   const updatedLead = await prisma.lead.findUnique({
     where: { id: lead.id },
@@ -281,7 +290,7 @@ export async function runLinkedInInboundPostProcessJob(params: {
   }
 
   // 7. AI Draft Generation
-  const shouldDraft = newSentiment && shouldGenerateDraft(newSentiment);
+  const shouldDraft = !autoBook.booked && newSentiment && shouldGenerateDraft(newSentiment);
 
   if (shouldDraft) {
     console.log(`[LinkedIn Post-Process] Generating draft for message ${message.id}`);

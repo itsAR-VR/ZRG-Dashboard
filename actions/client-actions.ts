@@ -96,7 +96,7 @@ function assertProviderRequirements(
 export async function getClients() {
   try {
     const user = await requireAuthUser();
-    const clientIds = await getAccessibleClientIdsForUser(user.id);
+    const clientIds = await getAccessibleClientIdsForUser(user.id, user.email);
     if (clientIds.length === 0) return { success: true, data: [] };
 
     const [clients, adminMemberships] = await Promise.all([
@@ -207,7 +207,7 @@ export async function getClients() {
 export async function createClient(data: ClientData) {
   try {
     const user = await requireAuthUser();
-    const isAdmin = await isGlobalAdminUser(user.id);
+    const isAdmin = await isGlobalAdminUser(user.id, user.email);
     if (!isAdmin) return { success: false, error: "Unauthorized" };
 
     const name = data.name?.trim();

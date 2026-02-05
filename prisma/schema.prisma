@@ -54,6 +54,31 @@ enum AIDraftResponseDisposition {
   EDITED
 }
 
+enum LeadMemorySource {
+  MANUAL
+  SYSTEM
+  INFERENCE
+}
+
+enum MessagePerformanceProposalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  APPLIED
+}
+
+enum MessagePerformanceProposalType {
+  PROMPT_OVERRIDE
+  PROMPT_SNIPPET
+  KNOWLEDGE_ASSET
+}
+
+enum MessagePerformanceEvalStatus {
+  PENDING
+  COMPLETE
+  FAILED
+}
+
 enum AutoSendScheduleMode {
   ALWAYS
   BUSINESS_HOURS
@@ -203,6 +228,7 @@ model Client {
   availabilityCaches WorkspaceAvailabilityCache[]
   offeredSlots   WorkspaceOfferedSlot[]
   aiInteractions AIInteraction[]
+  meetingOverseerDecisions MeetingOverseerDecision[]
   backgroundJobs BackgroundJob[]
   notificationEvents NotificationEvent[]
   notificationSendLogs NotificationSendLog[]
@@ -215,6 +241,12 @@ model Client {
   aiPersonas AiPersona[]           // AI personas for draft generation (Phase 39)
   promptOverrides PromptOverride[] // AI prompt overrides (Phase 47)
   promptSnippetOverrides PromptSnippetOverride[] // AI prompt snippet overrides (Phase 47)
+  promptOverrideRevisions PromptOverrideRevision[]
+  promptSnippetOverrideRevisions PromptSnippetOverrideRevision[]
+  leadMemoryEntries LeadMemoryEntry[]
+  knowledgeAssetRevisions KnowledgeAssetRevision[]
+  messagePerformanceEvalRuns MessagePerformanceEvalRun[]
+  messagePerformanceProposals MessagePerformanceProposal[]
   emailBisonBaseHost EmailBisonBaseHost? @relation(fields: [emailBisonBaseHostId], references: [id], onDelete: SetNull)
 
   @@index([userId])
@@ -268,6 +300,7 @@ model WorkspaceSettings {
   insightsChatEnableCampaignChanges Boolean @default(false)
   insightsChatEnableExperimentWrites Boolean @default(false)
   insightsChatEnableFollowupPauses Boolean @default(false)
+  messagePerformanceWeeklyEnabled Boolean @default(false)
   // Draft Generation Model Settings (email two-step pipeline)
   draftGenerationModel           String? @default("gpt-5.1") // gpt-5.1 | gpt-5.2
   draftGenerationReasoningEffort String? @default("medium")  // low | medium | high | extra_high (gpt-5.2 only)
@@ -344,6 +377,7 @@ model WorkspaceSettings {
   updatedAt            DateTime @updatedAt
   // Relations
   knowledgeAssets      KnowledgeAsset[]
+  knowledgeAssetRevisions KnowledgeAssetRevision[]
 }
 
 // GHL Workflows/Campaigns synced from the API
@@ -480,6 +514,8 @@ model Lead {
   reactivationEnrollments ReactivationEnrollment[]
   aiDrafts          AIDraft[]
   aiInteractions    AIInteraction[]
+  meetingOverseerDecisions MeetingOverseerDecision[]
+  leadMemoryEntries LeadMemoryEntry[]
   conversationInsight LeadConversationInsight?
   appointments      Appointment[]   // Appointment history (Phase 34)
   bookingProgress   LeadCampaignBookingProgress[]  // Booking process wave tracking (Phase 36)
@@ -740,6 +776,62 @@ model InsightContextPack {
   @@index([deletedAt])
 }
 
+model MessagePerformanceEvalRun {
+  id              String   @id @default(uuid())
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  windowFrom      DateTime
+  windowTo        DateTime
+  status          MessagePerformanceEvalStatus @default(PENDING)
+  model           String
+  reasoningEffort String?
+  metricsSnapshot Json?
+  output          Json?
+  error           String?  @db.Text
+  proposalsCreated Int     @default(0)
+  computedAt      DateTime?
+  computedByUserId String?
+  computedByEmail  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([clientId])
+  @@index([status])
+  @@index([computedAt(sort: Desc)])
+}
+
+model MessagePerformanceProposal {
+  id              String   @id @default(uuid())
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  type            MessagePerformanceProposalType
+  status          MessagePerformanceProposalStatus @default(PENDING)
+  title           String
+  summary         String?
+  payload         Json
+  evidence        Json?
+  sourceRunId     String?
+  createdByUserId String?
+  createdByEmail  String?
+  approvedByUserId String?
+  approvedByEmail  String?
+  approvedAt       DateTime?
+  appliedByUserId  String?
+  appliedByEmail   String?
+  appliedAt        DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  promptOverrideRevisions PromptOverrideRevision[]
+  promptSnippetOverrideRevisions PromptSnippetOverrideRevision[]
+  knowledgeAssetRevisions KnowledgeAssetRevision[]
+
+  @@index([clientId])
+  @@index([status])
+  @@index([type])
+  @@index([createdAt(sort: Desc)])
+}
+
 model LeadConversationInsight {
   id               String                     @id @default(uuid())
   leadId           String                     @unique
@@ -832,6 +924,7 @@ model Message {
   lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
   aiDraft   AIDraft? @relation(fields: [aiDraftId], references: [id], onDelete: SetNull)
   backgroundJobs BackgroundJob[]
+  meetingOverseerDecisions MeetingOverseerDecision[]
   // Timestamps
   sentAt    DateTime @default(now()) // Actual timestamp when message was sent/received
   createdAt DateTime @default(now()) // When record was created in our database
@@ -844,6 +937,29 @@ model Message {
   @@index([sentByUserId])    // For per-setter response time aggregation
   @@index([aiDraftId])       // For finding all messages from a draft
   @@index([leadId, direction, source, sentAt(sort: Desc)])
+}
+
+// Meeting overseer decisions (Phase 106)
+model MeetingOverseerDecision {
+  id        String   @id @default(uuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  stage     String   // "extract" | "gate"
+  promptKey String
+  model     String
+  confidence Float?
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([messageId, stage])
+  @@index([clientId])
+  @@index([leadId])
+  @@index([messageId])
 }
 
 // Follow-up tasks for leads (individual scheduled tasks)
@@ -1127,8 +1243,57 @@ model KnowledgeAsset {
   mimeType            String?             // File MIME type
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+  revisions           KnowledgeAssetRevision[]
 
   @@index([workspaceSettingsId])
+}
+
+model KnowledgeAssetRevision {
+  id                  String   @id @default(uuid())
+  clientId            String
+  client              Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  workspaceSettingsId String
+  workspaceSettings   WorkspaceSettings @relation(fields: [workspaceSettingsId], references: [id], onDelete: Cascade)
+  knowledgeAssetId    String
+  knowledgeAsset      KnowledgeAsset @relation(fields: [knowledgeAssetId], references: [id], onDelete: Cascade)
+  proposalId          String?
+  proposal            MessagePerformanceProposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  name                String
+  type                String
+  fileUrl             String?
+  textContent         String?  @db.Text
+  action              String
+  createdByUserId     String?
+  createdByEmail      String?
+  createdAt           DateTime @default(now())
+
+  @@index([clientId])
+  @@index([workspaceSettingsId])
+  @@index([knowledgeAssetId])
+}
+
+// Lead memory entries (Phase 108)
+model LeadMemoryEntry {
+  id              String           @id @default(uuid())
+  clientId        String
+  client          Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leadId          String
+  lead            Lead             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  category        String
+  content         String           @db.Text
+  source          LeadMemorySource @default(MANUAL)
+  createdByUserId String?
+  createdByEmail  String?
+  expiresAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([clientId])
+  @@index([leadId])
+  @@index([clientId, leadId])
+  @@index([expiresAt])
+  @@index([clientId, expiresAt])
+  @@index([createdAt(sort: Desc)])
 }
 
 // =============================================================================
@@ -1532,6 +1697,8 @@ model PromptOverride {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  revisions PromptOverrideRevision[]
+
   @@unique([clientId, promptKey, role, index])
   @@index([clientId])
 }
@@ -1547,8 +1714,53 @@ model PromptSnippetOverride {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
+  revisions PromptSnippetOverrideRevision[]
+
   @@unique([clientId, snippetKey])
   @@index([clientId])
+}
+
+model PromptOverrideRevision {
+  id              String   @id @default(uuid())
+  clientId        String
+  client          Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  promptOverrideId String?
+  promptOverride  PromptOverride? @relation(fields: [promptOverrideId], references: [id], onDelete: SetNull)
+  proposalId      String?
+  proposal        MessagePerformanceProposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  promptKey       String
+  role            String
+  index           Int
+  baseContentHash String?
+  content         String?  @db.Text
+  action          String
+  createdByUserId String?
+  createdByEmail  String?
+  createdAt       DateTime @default(now())
+
+  @@index([clientId])
+  @@index([promptKey])
+  @@index([promptOverrideId])
+}
+
+model PromptSnippetOverrideRevision {
+  id                     String   @id @default(uuid())
+  clientId               String
+  client                 Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  promptSnippetOverrideId String?
+  promptSnippetOverride  PromptSnippetOverride? @relation(fields: [promptSnippetOverrideId], references: [id], onDelete: SetNull)
+  proposalId             String?
+  proposal               MessagePerformanceProposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  snippetKey             String
+  content                String?  @db.Text
+  action                 String
+  createdByUserId        String?
+  createdByEmail         String?
+  createdAt              DateTime @default(now())
+
+  @@index([clientId])
+  @@index([snippetKey])
+  @@index([promptSnippetOverrideId])
 }
 
 // =============================================================================

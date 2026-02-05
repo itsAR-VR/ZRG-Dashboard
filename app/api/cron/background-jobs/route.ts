@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { processBackgroundJobs } from "@/lib/background-jobs/runner";
+import { recoverStaleSendingDrafts } from "@/lib/ai-drafts/stale-sending-recovery";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
@@ -49,9 +50,16 @@ export async function GET(request: NextRequest) {
 
     try {
       const results = await processBackgroundJobs();
+      const staleDraftRecovery = await recoverStaleSendingDrafts().catch((error) => ({
+        checked: 0,
+        recovered: 0,
+        missingMessages: 0,
+        errors: [error instanceof Error ? error.message : "Unknown error"],
+      }));
       return NextResponse.json({
         success: true,
         ...results,
+        staleDraftRecovery,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {

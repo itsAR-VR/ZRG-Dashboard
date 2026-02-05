@@ -7,6 +7,8 @@ import {
   sendEmailBisonReply,
 } from "@/lib/emailbison-api";
 import { emailBisonHtmlFromPlainText } from "@/lib/email-format";
+import { buildEmailBisonReplyPayload } from "@/lib/emailbison-reply-payload";
+import { formatMissingReactivationPrereqs, getMissingReactivationPrereqs } from "@/lib/reactivation-sequence-prereqs";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { searchGHLContactsAdvanced } from "@/lib/ghl-api";
 import { pickReactivationAnchorFromReplies } from "@/lib/reactivation-anchor";
@@ -737,6 +739,8 @@ export async function processReactivationSendsDue(opts?: {
           senderAccountId: true,
           ghlContactId: true,
           firstName: true,
+          phone: true,
+          linkedinUrl: true,
           status: true,
           sentimentTag: true,
         },
@@ -791,6 +795,7 @@ export async function processReactivationSendsDue(opts?: {
           settings: { select: { timezone: true } },
           ghlPrivateKey: true,
           ghlLocationId: true,
+          unipileAccountId: true,
         },
       });
       if (!client?.emailBisonApiKey) {
@@ -1165,13 +1170,11 @@ export async function processReactivationSendsDue(opts?: {
       const sendResult = await sendEmailBisonReply(
         client.emailBisonApiKey,
         anchorReplyId,
-        {
-          message: emailBisonHtmlFromPlainText(content),
-          sender_email_id: senderEmailIdNum,
-          to_emails: [{ name: enrollment.lead.firstName || null, email_address: enrollment.lead.email! }],
-          inject_previous_email_body: true,
-          content_type: "html",
-        },
+        buildEmailBisonReplyPayload({
+          messageHtml: emailBisonHtmlFromPlainText(content),
+          senderEmailId: senderEmailIdNum,
+          toEmails: [{ name: enrollment.lead.firstName || null, email_address: enrollment.lead.email! }],
+        }),
         { baseHost: client.emailBisonBaseHost?.host ?? null }
       );
 
@@ -1223,6 +1226,48 @@ export async function processReactivationSendsDue(opts?: {
       });
 
       if (enrollment.campaign.followUpSequenceId) {
+        const sequence = await prisma.followUpSequence.findUnique({
+          where: { id: enrollment.campaign.followUpSequenceId },
+          select: { isActive: true, steps: { select: { channel: true } } },
+        });
+        const missing = sequence
+          ? getMissingReactivationPrereqs({
+              channels: sequence.steps.map((step) => step.channel),
+              lead: { phone: enrollment.lead.phone, linkedinUrl: enrollment.lead.linkedinUrl },
+              client: {
+                ghlPrivateKey: client.ghlPrivateKey,
+                ghlLocationId: client.ghlLocationId,
+                unipileAccountId: client.unipileAccountId,
+              },
+            })
+          : ["sequence_missing"];
+
+        if (sequence && !sequence.isActive) {
+          missing.push("sequence_inactive");
+        }
+
+        if (missing.length > 0) {
+          const reason =
+            missing.includes("sequence_missing")
+              ? "Missing follow-up sequence configuration"
+              : missing.includes("sequence_inactive")
+                ? "Follow-up sequence is inactive"
+                : formatMissingReactivationPrereqs(missing);
+
+          await prisma.reactivationEnrollment.update({
+            where: { id: enrollment.id },
+            data: {
+              status: "needs_review",
+              needsReviewReason: reason,
+              sentAt: now,
+              lastAttemptAt: now,
+              lastError: null,
+            },
+          });
+          results.needsReview++;
+          continue;
+        }
+
         await startFollowUpSequenceInstance(enrollment.lead.id, enrollment.campaign.followUpSequenceId);
       }
 

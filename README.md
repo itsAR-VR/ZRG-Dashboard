@@ -385,7 +385,7 @@ Example shape:
 
 - **Endpoint:** `/api/admin/followup-sequences/reengagement/backfill`
 - **Methods:** `GET` (dry-run), `POST` (apply)
-- **Auth:** `Authorization: Bearer ${WORKSPACE_PROVISIONING_SECRET}` (fallback to `ADMIN_ACTIONS_SECRET` or `CRON_SECRET`)
+- **Auth:** `Authorization: Bearer ${WORKSPACE_PROVISIONING_SECRET}` (or `ADMIN_ACTIONS_SECRET`)
 - **Purpose:** Ensures every workspace has the `Re-engagement Follow-up` sequence template.
   - Workspaces without Unipile configured will be seeded without the LinkedIn step.
   - Workspaces with `WorkspaceSettings.airtableMode=true` will be seeded without the Email step.

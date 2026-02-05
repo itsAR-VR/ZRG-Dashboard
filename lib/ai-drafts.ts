@@ -32,6 +32,14 @@ import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
 import { extractImportantEmailSignatureContext, type EmailSignatureContextExtraction } from "@/lib/email-signature-context";
 import { emailsMatch, extractFirstName } from "@/lib/email-participants";
+import { PRIMARY_WEBSITE_ASSET_NAME, extractPrimaryWebsiteUrlFromAssets } from "@/lib/knowledge-asset-context";
+import { getLeadMemoryContext } from "@/lib/lead-memory-context";
+import {
+  getMeetingOverseerDecision,
+  runMeetingOverseerGate,
+  shouldRunMeetingOverseer,
+  type MeetingOverseerExtractDecision,
+} from "@/lib/meeting-overseer";
 import type { AvailabilitySource } from "@prisma/client";
 
 type DraftChannel = "sms" | "email" | "linkedin";
@@ -536,6 +544,7 @@ function buildSmsPrompt(opts: {
   serviceDescription?: string | null;
   qualificationQuestions?: string[];
   knowledgeContext?: string;
+  ourWebsiteUrl?: string | null;
   companyName?: string | null;
   targetResult?: string | null;
   availability?: string[];
@@ -566,6 +575,9 @@ function buildSmsPrompt(opts: {
   const knowledgeSection = opts.knowledgeContext
     ? `\nReference Information:\n${opts.knowledgeContext}\n`
     : "";
+  const websiteSection = opts.ourWebsiteUrl
+    ? `\nOUR WEBSITE (use only when explicitly asked for website/link; do not use for generic "more info" requests):\n${opts.ourWebsiteUrl}\n`
+    : "";
 
   const availabilitySection =
     opts.availability && opts.availability.length > 0
@@ -583,11 +595,13 @@ OUTPUT FORMAT (strict):
 ${companyContext}${valueProposition}Tone: ${opts.aiTone}
 Strategy: ${opts.responseStrategy}
 Primary Goal/Strategy: ${opts.aiGoals || "Use good judgment to advance the conversation while respecting user intent."}
-${serviceContext}${qualificationGuidance}${knowledgeSection}${availabilitySection}
+${serviceContext}${qualificationGuidance}${knowledgeSection}${websiteSection}${availabilitySection}
 Guidelines:
 - Keep each SMS part <= 160 characters (hard limit). Total parts max 3.
 - Be professional but personable
 - Don't use emojis unless the lead used them first
+- Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
+- If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
 - TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". If no available times match their preference, ask what works better instead of offering mismatched times.
 - If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works. When the lead expressed a timing preference, only offer times that match it. When no timing preference was expressed, prefer sooner options but never offer same-day (today) times unless the lead explicitly asks for today. If no availability is provided, ask for their availability.
 - For objections, acknowledge and redirect professionally
@@ -608,6 +622,7 @@ function buildLinkedInPrompt(opts: {
   serviceDescription?: string | null;
   qualificationQuestions?: string[];
   knowledgeContext?: string;
+  ourWebsiteUrl?: string | null;
   companyName?: string | null;
   targetResult?: string | null;
   availability?: string[];
@@ -626,6 +641,9 @@ function buildLinkedInPrompt(opts: {
       : "";
 
   const knowledgeSection = opts.knowledgeContext ? `\nReference Information:\n${opts.knowledgeContext}\n` : "";
+  const websiteSection = opts.ourWebsiteUrl
+    ? `\nOUR WEBSITE (use only when explicitly asked for website/link; do not use for generic "more info" requests):\n${opts.ourWebsiteUrl}\n`
+    : "";
 
   const availabilitySection =
     opts.availability && opts.availability.length > 0
@@ -637,12 +655,14 @@ function buildLinkedInPrompt(opts: {
 ${companyContext}${valueProposition}Tone: ${opts.aiTone}
 Strategy: ${opts.responseStrategy}
 Primary Goal/Strategy: ${opts.aiGoals || "Use good judgment to advance the conversation while respecting user intent."}
-${serviceContext}${qualificationGuidance}${knowledgeSection}${availabilitySection}
+${serviceContext}${qualificationGuidance}${knowledgeSection}${websiteSection}${availabilitySection}
 
 Guidelines:
 - Output plain text only (no markdown).
 - Keep it concise and natural (1-3 short paragraphs).
 - Don't use emojis unless the lead used them first.
+- Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
+- If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
 - TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". If no available times match their preference, ask what works better instead of offering mismatched times.
 - If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works. When the lead expressed a timing preference, only offer times that match it. When no timing preference was expressed, prefer sooner options but never offer same-day (today) times unless the lead explicitly asks for today. If no availability is provided, ask for their availability.
 - For objections, acknowledge and redirect professionally.
@@ -663,6 +683,7 @@ function buildEmailPrompt(opts: {
   serviceDescription?: string | null;
   qualificationQuestions?: string[];
   knowledgeContext?: string;
+  ourWebsiteUrl?: string | null;
   companyName?: string | null;
   targetResult?: string | null;
 }) {
@@ -709,6 +730,9 @@ function buildEmailPrompt(opts: {
   const knowledgeSection = opts.knowledgeContext
     ? `\nReference Information (use when relevant to the conversation):\n${opts.knowledgeContext}\n`
     : "";
+  const websiteSection = opts.ourWebsiteUrl
+    ? `\nOUR WEBSITE (use only when explicitly asked for website/link; do not use for generic "more info" requests):\n${opts.ourWebsiteUrl}\n`
+    : "";
 
   return `You are an inbox manager writing replies for ${opts.aiName}${opts.companyName ? ` (${opts.companyName})` : ""}.
 
@@ -726,6 +750,8 @@ OUTPUT RULES:
 - Do not use bold, italics, underline, strikethrough, code, or headings.
 - Do not invent facts. Use only provided context.
 - If the lead opted out/unsubscribed/asked to stop, output an empty reply ("") and nothing else.
+- Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
+- If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
 
 SCHEDULING RULES:
 ${availabilityBlock}
@@ -733,7 +759,7 @@ ${availabilityBlock}
 - A scheduling link in a signature must not affect your response unless the lead explicitly tells you to use it in the body.
 
 COMPANY CONTEXT:
-${companyContext}${valueProposition}
+${companyContext}${valueProposition}${websiteSection}
 
 OFFER:
 ${opts.serviceDescription ? opts.serviceDescription : "No service description provided."}
@@ -920,6 +946,7 @@ function buildEmailDraftStrategyInstructions(opts: {
   serviceDescription: string | null;
   qualificationQuestions: string[];
   knowledgeContext: string;
+  ourWebsiteUrl: string | null;
   availability: string[];
   /** Pre-selected archetype (for regeneration) or null (for AI selection) */
   archetype: EmailDraftArchetype | null;
@@ -963,6 +990,9 @@ function buildEmailDraftStrategyInstructions(opts: {
   const knowledgeSection = opts.knowledgeContext
     ? `\nREFERENCE INFORMATION:\n${opts.knowledgeContext}`
     : "";
+  const websiteSection = opts.ourWebsiteUrl
+    ? `\nOUR WEBSITE (use only when explicitly asked for website/link; do not use for generic "more info" requests):\n${opts.ourWebsiteUrl}`
+    : "";
 
   // Build archetype section based on whether AI should select or use pre-selected
   let archetypeSection: string;
@@ -999,7 +1029,7 @@ ${leadSchedulerLinkSection}
 
 ${opts.serviceDescription ? `OUR OFFER:\n${opts.serviceDescription}\n` : ""}
 ${opts.aiGoals ? `GOALS/STRATEGY:\n${opts.aiGoals}\n` : ""}
-${qualificationSection}${knowledgeSection}${availabilitySection}
+${qualificationSection}${knowledgeSection}${websiteSection}${availabilitySection}
 
 ${archetypeSection}
 
@@ -1013,6 +1043,8 @@ Output a JSON object with your analysis. Focus on:
 4. The email structure (outline) - aligned with ${opts.shouldSelectArchetype ? "your selected archetype" : "the archetype above"}
 5. What to avoid (must_avoid)
 ${archetypeTask}
+
+If the lead asks for more info, ensure the strategy includes concrete details from OUR OFFER and REFERENCE INFORMATION in the intent_summary/outline. Do not treat "more info" as a website request unless the lead explicitly asked for a link.
 
 Be specific and actionable. The strategy will be used to generate the actual email.`;
 }
@@ -1094,6 +1126,7 @@ OUTPUT RULES:
 - Do not invent facts. Use only provided context.
 - If the lead opted out/unsubscribed/asked to stop, output an empty reply ("") and nothing else.
 - NEVER imply a meeting is booked unless the lead explicitly confirmed.
+- If the lead asked for more info, include the concrete details from the strategy. Do not add a website or link unless it appears in the strategy or conversation.
 
 FORBIDDEN TERMS (never use):
 ${forbiddenTerms}
@@ -1175,6 +1208,18 @@ export async function generateResponseDraft(
       }
     }
 
+    let triggerMessageRecord: { body: string; rawText: string | null; rawHtml: string | null } | null = null;
+    if (triggerMessageId) {
+      try {
+        triggerMessageRecord = await prisma.message.findFirst({
+          where: { id: triggerMessageId, leadId },
+          select: { body: true, rawText: true, rawHtml: true },
+        });
+      } catch (error) {
+        console.warn("[AI Drafts] Failed to load trigger message:", error);
+      }
+    }
+
     // Capture timestamp at start for archetype seed (stable within this request)
     const draftRequestStartedAtMs = Date.now();
 
@@ -1208,7 +1253,10 @@ export async function generateResponseDraft(
                   take: 5,
                   select: {
                     name: true,
+                    type: true,
+                    fileUrl: true,
                     textContent: true,
+                    updatedAt: true,
                   },
                 },
               },
@@ -1294,16 +1342,32 @@ export async function generateResponseDraft(
       }
     }
 
+    const knowledgeAssets = settings?.knowledgeAssets ?? [];
+    const primaryWebsiteUrl = extractPrimaryWebsiteUrlFromAssets(knowledgeAssets);
+
     // Build knowledge context from assets (limit to avoid token overflow)
     let knowledgeContext = "";
-    if (settings?.knowledgeAssets && settings.knowledgeAssets.length > 0) {
-      const assetSnippets = settings.knowledgeAssets
-        .filter(a => a.textContent)
+    if (knowledgeAssets.length > 0) {
+      const assetSnippets = knowledgeAssets
+        .filter(a => a.textContent && a.name !== PRIMARY_WEBSITE_ASSET_NAME)
         .map(a => `[${a.name}]: ${a.textContent!.slice(0, 1000)}${a.textContent!.length > 1000 ? "..." : ""}`);
 
       if (assetSnippets.length > 0) {
         knowledgeContext = assetSnippets.join("\n\n");
       }
+    }
+
+    const leadMemoryMaxTokens = parsePositiveIntEnv("LEAD_MEMORY_CONTEXT_MAX_TOKENS", 1200);
+    const leadMemoryMaxEntryTokens = parsePositiveIntEnv("LEAD_MEMORY_CONTEXT_MAX_ENTRY_TOKENS", 400);
+    const leadMemoryResult = await getLeadMemoryContext({
+      leadId,
+      clientId: lead.clientId,
+      maxTokens: leadMemoryMaxTokens,
+      maxEntryTokens: leadMemoryMaxEntryTokens,
+    });
+    const memoryContext = leadMemoryResult.context.trim();
+    if (memoryContext) {
+      knowledgeContext = [knowledgeContext, `LEAD MEMORY:\n${memoryContext}`].filter(Boolean).join("\n\n");
     }
 
     const primaryFirstName = lead?.firstName || "there";
@@ -1559,11 +1623,6 @@ export async function generateResponseDraft(
       let signatureContextForPrompt: string | null = null;
       if (triggerMessageId) {
         try {
-          const triggerMessage = await prisma.message.findUnique({
-            where: { id: triggerMessageId },
-            select: { rawText: true, rawHtml: true },
-          });
-
           const expectedSignatureName = currentReplierName || [lead.firstName, lead.lastName].filter(Boolean).join(" ") || null;
           const expectedSignatureEmail = currentReplierEmail || lead.email || null;
 
@@ -1572,8 +1631,8 @@ export async function generateResponseDraft(
             leadId,
             leadName: expectedSignatureName,
             leadEmail: expectedSignatureEmail,
-            rawText: triggerMessage?.rawText ?? null,
-            rawHtml: triggerMessage?.rawHtml ?? null,
+            rawText: triggerMessageRecord?.rawText ?? null,
+            rawHtml: triggerMessageRecord?.rawHtml ?? null,
             timeoutMs: signatureContextTimeoutMs,
           });
 
@@ -1612,6 +1671,7 @@ export async function generateResponseDraft(
         serviceDescription: serviceDescription || null,
         qualificationQuestions,
         knowledgeContext,
+        ourWebsiteUrl: primaryWebsiteUrl,
         availability,
         archetype: preSelectedArchetype,
         shouldSelectArchetype,
@@ -2020,6 +2080,7 @@ Write the email response now, following the strategy and structure archetype.
 	          serviceDescription,
 	          qualificationQuestions,
 	          knowledgeContext,
+	          ourWebsiteUrl: primaryWebsiteUrl,
 	          companyName,
 	          targetResult,
 	        }) + emailLengthRules + `\n\nSTRUCTURE REQUIREMENT: "${fallbackArchetype.name}"\n${fallbackArchetype.instructions}`;
@@ -2212,6 +2273,7 @@ Generate an appropriate email response following the guidelines and structure ar
         targetResult: safeTargetResult,
         serviceDescription: serviceDescription?.trim() || "None.",
         knowledgeContext: knowledgeContext?.trim() || "None.",
+        ourWebsiteUrl: primaryWebsiteUrl?.trim() || "None.",
         qualificationQuestions: qualificationQuestions.length
           ? qualificationQuestions.map((q) => `- ${q}`).join("\n")
           : "None.",
@@ -2242,6 +2304,7 @@ Generate an appropriate email response following the guidelines and structure ar
               serviceDescription,
               qualificationQuestions,
               knowledgeContext,
+              ourWebsiteUrl: primaryWebsiteUrl,
               companyName,
               targetResult,
               availability,
@@ -2257,6 +2320,7 @@ Generate an appropriate email response following the guidelines and structure ar
               serviceDescription,
               qualificationQuestions,
               knowledgeContext,
+              ourWebsiteUrl: primaryWebsiteUrl,
               companyName,
               targetResult,
               availability,
@@ -2428,17 +2492,17 @@ Generate an appropriate ${channel} response following the guidelines above.
       });
     }
 
-      if (channel === "email" && draftContent) {
-        let bookingLink: string | null = null;
-        let hasPublicBookingLinkOverride = false;
-        try {
-          const resolved = await resolveBookingLink(lead.clientId, settings);
-          bookingLink = resolved.bookingLink;
-          hasPublicBookingLinkOverride = resolved.hasPublicOverride;
-        } catch (error) {
-          console.error("[AI Drafts] Failed to resolve canonical booking link:", error);
-        }
+    let bookingLink: string | null = null;
+    let hasPublicBookingLinkOverride = false;
+    try {
+      const resolved = await resolveBookingLink(lead.clientId, settings);
+      bookingLink = resolved.bookingLink;
+      hasPublicBookingLinkOverride = resolved.hasPublicOverride;
+    } catch (error) {
+      console.error("[AI Drafts] Failed to resolve canonical booking link:", error);
+    }
 
+      if (channel === "email" && draftContent) {
         // Prevent verifier truncations by keeping the draft within our configured bounds.
         const preBounds = emailLengthBoundsForClamp ?? getEmailDraftCharBoundsFromEnv();
         if (draftContent.trim().length > preBounds.maxChars) {
@@ -2467,12 +2531,58 @@ Generate an appropriate ${channel} response following the guidelines above.
           console.error("[AI Drafts] Step 3 verifier threw unexpectedly:", error);
         }
 
-        // Hard post-pass enforcement (even if verifier fails).
-        draftContent = enforceCanonicalBookingLink(draftContent, bookingLink, {
-          replaceAllUrls: hasPublicBookingLinkOverride,
-        });
-        draftContent = replaceEmDashesWithCommaSpace(draftContent);
       }
+
+    if (draftContent && triggerMessageId) {
+      const latestInboundText = triggerMessageRecord?.body?.trim() ?? "";
+
+      if (!latestInboundText) {
+        console.warn("[AI Drafts] Missing trigger message body; skipping meeting overseer gate.", {
+          leadId,
+          triggerMessageId,
+        });
+      } else {
+        const shouldGate = shouldRunMeetingOverseer({
+          messageText: latestInboundText,
+          sentimentTag,
+          offeredSlotsCount: availability.length,
+        });
+
+        if (shouldGate) {
+          const extraction = await getMeetingOverseerDecision(triggerMessageId, "extract");
+          const extractionDecision =
+            extraction && typeof extraction === "object" && "is_scheduling_related" in extraction
+              ? (extraction as MeetingOverseerExtractDecision)
+              : null;
+          const gateDraft = await runMeetingOverseerGate({
+            clientId: lead.clientId,
+            leadId,
+            messageId: triggerMessageId,
+            channel,
+            latestInbound: latestInboundText,
+            draft: draftContent,
+            availability,
+            bookingLink,
+            extraction: extractionDecision,
+            memoryContext: memoryContext || null,
+            leadSchedulerLink,
+            timeoutMs: emailVerifierTimeoutMs,
+          });
+
+          if (gateDraft) {
+            draftContent = gateDraft;
+          }
+        }
+      }
+    }
+
+    if (channel === "email" && draftContent) {
+      // Hard post-pass enforcement (even if verifier or gate fails).
+      draftContent = enforceCanonicalBookingLink(draftContent, bookingLink, {
+        replaceAllUrls: hasPublicBookingLinkOverride,
+      });
+      draftContent = replaceEmDashesWithCommaSpace(draftContent);
+    }
 
     draftContent = sanitizeDraftContent(draftContent, leadId, channel);
 
@@ -2532,7 +2642,8 @@ function getResponseStrategy(sentimentTag: string): string {
     "Meeting Requested": "Confirm interest and propose specific meeting times. Be enthusiastic but professional.",
     "Call Requested": "Acknowledge their request for a call. Confirm the best number to reach them and propose specific call times.",
     "Not Interested": "Acknowledge their decision respectfully. Ask if they'd like to be contacted in the future or if there's anything specific they're looking for.",
-    "Information Requested": "Provide the requested information clearly and concisely. Offer to schedule a call for more details.",
+    "Information Requested":
+      "Provide the requested information clearly and concisely using the service description and relevant knowledge assets. Offer to schedule a call for more details. Do not treat 'send me more info' as a website request unless they explicitly asked for a link.",
     "Follow Up":
       "Acknowledge the timing and keep it low-pressure. Ask a single timeline question (e.g., 6–12 months, 1–2 years, later) and if it’s okay to check back then. Don’t push for a meeting.",
     "Out of Office": "Acknowledge and ask when would be a good time to reconnect. Be understanding.",

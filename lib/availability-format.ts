@@ -17,7 +17,15 @@ export function formatAvailabilitySlotLabel(opts: {
   timeZone: string;
   mode: AvailabilityLabelMode;
 }): { datetime: string; label: string } {
-  const date = new Date(opts.datetimeUtcIso);
+  const raw = (opts.datetimeUtcIso || "").trim();
+  if (!raw) {
+    throw new Error("Missing availability slot datetime");
+  }
+
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Invalid availability slot datetime");
+  }
 
   const dayPart = new Intl.DateTimeFormat("en-US", {
     timeZone: opts.timeZone,
@@ -71,4 +79,3 @@ export function formatAvailabilitySlots(opts: {
 
   return result;
 }
-

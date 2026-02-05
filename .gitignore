@@ -33,6 +33,7 @@ next-env.d.ts
 ZRG Dashboard Logs*.json
 logs_result.csv
 logs_result.json
+logs_result*.json
 logs_result copy*.json
 phase-66g-rollback-*.json
 rollback-sequence-messaging-*.json
@@ -47,6 +48,8 @@ scripts/logs/*.log
 
 # local AI/editor tooling
 .claude/
+.codex/
+.codex-artifacts/
 .cursor/
 .mcp.json
 

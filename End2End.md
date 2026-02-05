@@ -4777,3 +4777,64 @@
 ### SYNTHESIZE
 - **Mental model:** follow-ups gain a “persona layer”: sequence selection can be persona-specific, and template rendering can pull persona identity/signature from either the selected sequence persona or the campaign persona.
 - **Operational takeaway:** to run Chris + Aaron concurrently, you configure two sequences with the same trigger but different persona bindings; the router selects based on campaign persona at runtime. (E1, E3, E5)
+
+## 18) Recent Phase Updates (94–108) + Where Multi‑Agent / Memory / Eval Fit
+
+### PLAN
+- Add a compact, source‑grounded summary of the last 15 phases (94–108) so End2End reflects current platform reality.
+- Use those updates to identify where multi‑agent overseer, memory, and evaluation improvements would plug in to maximize booking + messaging outcomes (and align with Phase 108).
+
+### LOCATE
+- Phase review docs: `docs/planning/phase-94/review.md` through `docs/planning/phase-107/review.md`
+- Phase plan docs where review is absent: `docs/planning/phase-99/plan.md`, `docs/planning/phase-108/plan.md`
+
+### EXTRACT
+- **E94 — `docs/planning/phase-94/review.md:8`**
+  > Phase 94 successfully implemented timeout/budget mitigations for the AI pipeline and added cron hardening. All code changes match the plan, quality gates pass, and documentation is updated.
+- **E95 — `docs/planning/phase-95/review.md:5`**
+  > - **Status**: ✅ **COMPLETE**
+- **E96 — `docs/planning/phase-96/review.md:4`**
+  > - AI-driven availability refresh shipped with all success criteria met
+- **E97 — `docs/planning/phase-97/review.md:5`**
+  > - ✅ **All objectives met** — Evaluator prompt updated, output interpretation tightened, UI warnings added, stats surfaced
+- **E98 — `docs/planning/phase-98/review.md:4`**
+  > - All planned booking-stop functionality implemented across GHL and Calendly reconciliation paths
+- **E99 — `docs/planning/phase-99/plan.md:4`**
+  > Tighten authentication for `/api/admin/followup-sequences/reengagement/backfill` so it only accepts admin/provisioning secrets via headers, handles multiple configured secrets correctly, and removes query-string auth.
+- **E100 — `docs/planning/phase-100/review.md:7`**
+  > - ✅ Fixed OpenAI 400s caused by sending `reasoning.effort="none"` to `gpt-5-mini`
+- **E101 — `docs/planning/phase-101/review.md:4`**
+  > - Outcome tracking added for AI drafts across SMS/email/LinkedIn with per‑draft classification.
+- **E102 — `docs/planning/phase-102/review.md:4`**
+  > - Table-based Campaign Assignment UI restored; Phase 97 header insights preserved.
+- **E103 — `docs/planning/phase-103/review.md:4`**
+  > - Fixed Step 3 verifier 400s by making prompt runner model/effort resolution **model-aware** and applied to the **effective model actually sent** to OpenAI.
+- **E104 — `docs/planning/phase-104/review.md:4`**
+  > - Added per-workspace UI control for Email Draft Verification (Step 3) model selection (admin-gated).
+- **E105 — `docs/planning/phase-105/review.md:4`**
+  > - Shipped deterministic follow-up draft keys + task dedupe to prevent duplicate follow-ups.
+- **E106 — `docs/planning/phase-106/review.md:4`**
+  > - Shipped: primary website asset field + prompt injection, meeting overseer extraction/gate + persistence, inbound-channel auto-booking confirmations, LinkedIn auto-booking wiring, availability blank-slot guard, regression tests, and “more info” response guidance to use offer/knowledge context.
+- **E107 — `docs/planning/phase-107/review.md:4`**
+  > - Shipped EmailBison reply payload change to stop copying lead signatures/links into outbound replies.
+- **E108 — `docs/planning/phase-108/plan.md:4`**
+  > Build a repeatable, workspace-scoped way to compare what outbound messages *work* (book meetings) vs *don’t* across **setters vs AI**, so we can systematically improve confidence gates, drafts, and prompts based on real outcomes.
+
+### SOLVE (Confidence: 0.82)
+- **Core reliability + safety hardening (94, 100, 103–104):** The AI pipeline now has tighter timeouts/budgets (E94), model‑aware prompt runner safeguards (E100, E103), and admin‑gated verifier model selection (E104), reducing 400s and stabilizing drafting.
+- **Booking + availability correctness (96, 98, 105–106):** Availability refresh shipped (E96); meeting‑booked stops are enforced (E98); follow‑up dedupe prevents duplicate outreach (E105); and overseer‑gated auto‑booking plus confirmations and “more info” handling are in place (E106).
+- **Messaging quality + insight readiness (97, 101–102, 107–108):** Evaluator interpretation tightened (E97), AI draft outcome tracking added (E101), and campaign assignment UI restored (E102). Email signature contamination is fixed (E107). Phase 108 defines the measurement layer for “what actually books” (E108).
+- **Security gap queued (99):** Admin auth hardening for re‑engagement backfill is planned but not yet recorded as shipped. (E99)
+
+**Placement + impact for Multi‑Agent Overseer / Memory / Eval (inference):**
+- **Multi‑Agent Overseer** should sit *between* “draft generation” and “auto‑send/booking” and use the existing overseer gate (E106) as the control point; a multi‑agent supervisor can arbitrate between candidate drafts and enforce strict scheduling behavior learned from Phase 108’s performance data (E108).
+- **Memory System** should attach to the same overseer/draft stages and inject lead‑specific history (prior objections, last‑offered slots, timezone, “not now” constraints) to reduce re‑asks and mismatch, directly improving booking conversion on follow‑ups (E96, E98, E106).
+- **Evaluation Improvements** (LLM‑as‑judge) should use Phase 108’s booked/not‑booked labels (E108) to score drafts, and feed back into the evaluator already tightened in Phase 97 (E97), creating a closed loop to improve messaging quality.
+
+### VERIFY
+- Phase 108 is a plan (not shipped), so performance‑data‑driven evaluation and learning loops are not yet implemented. (E108)
+- Phase 99 is a plan (not shipped) and still needs execution. (E99)
+
+### SYNTHESIZE
+- End2End now includes a concise update of phases 94–108, reflecting reliability hardening, booking correctness, messaging quality fixes, and the upcoming performance‑insight layer.
+- The next highest‑leverage AI improvements are **multi‑agent overseer + memory + eval**, but they should be built explicitly **on top of** Phase 106’s gate and **aligned to** Phase 108’s booked/not‑booked outcome labels to maximize booking and response quality. (E106, E108)

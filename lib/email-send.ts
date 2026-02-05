@@ -12,6 +12,7 @@ import { sendEmailBisonReply } from "@/lib/emailbison-api";
 import { sendSmartLeadReplyToThread } from "@/lib/smartlead-api";
 import { sendInstantlyReply } from "@/lib/instantly-api";
 import { syncEmailConversationHistorySystem } from "@/lib/conversation-sync";
+import { buildEmailBisonReplyPayload } from "@/lib/emailbison-reply-payload";
 import {
   autoStartNoResponseSequenceOnOutbound,
   autoStartMeetingRequestedSequenceOnSetterEmailReply,
@@ -413,14 +414,14 @@ export async function sendEmailReplySystem(params: {
     }
 
     const buildPayload = (sender: string) => ({
-      message: htmlMessage,
-      sender_email_id: parseSenderEmailId(sender)!, // validated above
-      to_emails: toEmails,
-      subject: subject || undefined,
-      cc_emails: ccEmails,
-      bcc_emails: bccEmails,
-      inject_previous_email_body: true,
-      content_type: "html" as const,
+      ...buildEmailBisonReplyPayload({
+        messageHtml: htmlMessage,
+        senderEmailId: parseSenderEmailId(sender)!, // validated above
+        toEmails,
+        subject,
+        ccEmails,
+        bccEmails,
+      }),
     });
 
     let sendResult = await sendEmailBisonReply(
@@ -674,11 +675,23 @@ export async function sendEmailReplyForDraftSystem(
 
     const existingMessage = await prisma.message.findFirst({
       where: { aiDraftId: draftId },
-      select: { id: true },
+      select: { id: true, body: true, sentBy: true },
     });
     if (existingMessage) {
+      const sentBy =
+        existingMessage.sentBy === "ai" || existingMessage.sentBy === "setter"
+          ? existingMessage.sentBy
+          : opts.sentBy ?? null;
+      const responseDisposition = computeAIDraftResponseDisposition({
+        sentBy,
+        draftContent: draft.content,
+        finalContent: existingMessage.body || editedContent || draft.content,
+      });
       await prisma.aIDraft
-        .updateMany({ where: { id: draftId, status: { not: "approved" } }, data: { status: "approved" } })
+        .updateMany({
+          where: { id: draftId, status: { not: "approved" } },
+          data: { status: "approved", responseDisposition },
+        })
         .catch(() => undefined);
       return { success: true, messageId: existingMessage.id };
     }
@@ -732,9 +745,26 @@ export async function sendEmailReplyForDraftSystem(
     if (claimed.count !== 1) {
       const afterClaimMessage = await prisma.message.findFirst({
         where: { aiDraftId: draftId },
-        select: { id: true },
+        select: { id: true, body: true, sentBy: true },
       });
-      if (afterClaimMessage) return { success: true, messageId: afterClaimMessage.id };
+      if (afterClaimMessage) {
+        const sentBy =
+          afterClaimMessage.sentBy === "ai" || afterClaimMessage.sentBy === "setter"
+            ? afterClaimMessage.sentBy
+            : opts.sentBy ?? null;
+        const responseDisposition = computeAIDraftResponseDisposition({
+          sentBy,
+          draftContent: draft.content,
+          finalContent: afterClaimMessage.body || editedContent || draft.content,
+        });
+        await prisma.aIDraft
+          .updateMany({
+            where: { id: draftId, status: { not: "approved" } },
+            data: { status: "approved", responseDisposition },
+          })
+          .catch(() => undefined);
+        return { success: true, messageId: afterClaimMessage.id };
+      }
       return { success: false, error: EMAIL_DRAFT_ALREADY_SENDING_ERROR, errorCode: "draft_already_sending" };
     }
 
@@ -751,6 +781,14 @@ export async function sendEmailReplyForDraftSystem(
 
     if (!sendResult.success) {
       if (sendResult.errorCode === "send_outcome_unknown") {
+        const responseDisposition = computeAIDraftResponseDisposition({
+          sentBy: opts.sentBy ?? null,
+          draftContent: draft.content,
+          finalContent: messageContent,
+        });
+        await prisma.aIDraft
+          .updateMany({ where: { id: draftId, status: "sending" }, data: { status: "approved", responseDisposition } })
+          .catch(() => undefined);
         return sendResult;
       }
       await prisma.aIDraft.updateMany({ where: { id: draftId, status: "sending" }, data: { status: "pending" } }).catch(() => undefined);

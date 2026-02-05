@@ -76,11 +76,23 @@ export async function sendEmailReply(
 
     const existingMessage = await prisma.message.findFirst({
       where: { aiDraftId: draftId },
-      select: { id: true },
+      select: { id: true, body: true, sentBy: true },
     });
     if (existingMessage) {
+      const sentBy =
+        existingMessage.sentBy === "ai" || existingMessage.sentBy === "setter"
+          ? existingMessage.sentBy
+          : opts.sentBy ?? null;
+      const responseDisposition = computeAIDraftResponseDisposition({
+        sentBy,
+        draftContent: draft.content,
+        finalContent: existingMessage.body || editedContent || draft.content,
+      });
       await prisma.aIDraft
-        .updateMany({ where: { id: draftId, status: { not: "approved" } }, data: { status: "approved" } })
+        .updateMany({
+          where: { id: draftId, status: { not: "approved" } },
+          data: { status: "approved", responseDisposition },
+        })
         .catch(() => undefined);
       return { success: true, messageId: existingMessage.id };
     }
@@ -134,9 +146,26 @@ export async function sendEmailReply(
     if (claimed.count !== 1) {
       const afterClaimMessage = await prisma.message.findFirst({
         where: { aiDraftId: draftId },
-        select: { id: true },
+        select: { id: true, body: true, sentBy: true },
       });
-      if (afterClaimMessage) return { success: true, messageId: afterClaimMessage.id };
+      if (afterClaimMessage) {
+        const sentBy =
+          afterClaimMessage.sentBy === "ai" || afterClaimMessage.sentBy === "setter"
+            ? afterClaimMessage.sentBy
+            : opts.sentBy ?? null;
+        const responseDisposition = computeAIDraftResponseDisposition({
+          sentBy,
+          draftContent: draft.content,
+          finalContent: afterClaimMessage.body || editedContent || draft.content,
+        });
+        await prisma.aIDraft
+          .updateMany({
+            where: { id: draftId, status: { not: "approved" } },
+            data: { status: "approved", responseDisposition },
+          })
+          .catch(() => undefined);
+        return { success: true, messageId: afterClaimMessage.id };
+      }
       return { success: false, error: EMAIL_DRAFT_ALREADY_SENDING_ERROR, errorCode: "draft_already_sending" };
     }
 
@@ -154,6 +183,14 @@ export async function sendEmailReply(
 
     if (!sendResult.success) {
       if (sendResult.errorCode === "send_outcome_unknown") {
+        const responseDisposition = computeAIDraftResponseDisposition({
+          sentBy: opts.sentBy ?? null,
+          draftContent: draft.content,
+          finalContent: messageContent,
+        });
+        await prisma.aIDraft
+          .updateMany({ where: { id: draftId, status: "sending" }, data: { status: "approved", responseDisposition } })
+          .catch(() => undefined);
         return sendResult;
       }
       await prisma.aIDraft.updateMany({ where: { id: draftId, status: "sending" }, data: { status: "pending" } }).catch(() => undefined);

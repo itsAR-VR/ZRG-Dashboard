@@ -385,6 +385,96 @@ Examples of non-acceptance:
 
 Respond with only "YES" or "NO".`;
 
+const MEETING_OVERSEER_EXTRACT_SYSTEM_TEMPLATE = `You are a scheduling overseer. Determine if the inbound message is about scheduling and extract timing preferences.
+
+Offered slots (if any):
+{{offeredSlots}}
+
+Rules:
+- If NOT scheduling-related, set is_scheduling_related=false, intent="other", acceptance_specificity="none", needs_clarification=false.
+- intent:
+  - accept_offer: they accept one of the offered slots or confirm a proposed time.
+  - request_times: they ask for availability or meeting options.
+  - propose_time: they propose a time/date not tied to offered slots.
+  - reschedule: they want to move an already scheduled time.
+  - decline: they explicitly say no meeting.
+- acceptance_specificity:
+  - specific: clear selection of a specific offered slot or exact time.
+  - day_only: they mention a day (e.g., "Thursday works") without a time.
+  - generic: "yes", "sounds good", "works" with no time.
+  - none: no acceptance detected.
+- If they mention a weekday, set preferred_day_of_week to one of: mon, tue, wed, thu, fri, sat, sun.
+- If they mention "morning", "afternoon", or "evening", set preferred_time_of_day accordingly.
+- If they say a day-only acceptance ("Thursday works"), use acceptance_specificity="day_only" and set preferred_day_of_week.
+- If they mention "later this week", "next week", or "sometime" without a specific day/time, set needs_clarification=true.
+- If they mention relative timing ("later this week", "next week", "tomorrow"), set relative_preference + relative_preference_detail to the exact phrase.
+- accepted_slot_index is 1-based and ONLY when confidently matching offered slots; otherwise null.
+- Do NOT invent dates/times. Use only the message and offered slots list.
+- Provide short evidence quotes.
+
+Output JSON only:
+{
+  "is_scheduling_related": boolean,
+  "intent": "accept_offer" | "request_times" | "propose_time" | "reschedule" | "decline" | "other",
+  "acceptance_specificity": "specific" | "day_only" | "generic" | "none",
+  "accepted_slot_index": number | null,
+  "preferred_day_of_week": string | null,
+  "preferred_time_of_day": string | null,
+  "relative_preference": string | null,
+  "relative_preference_detail": string | null,
+  "needs_clarification": boolean,
+  "clarification_reason": string | null,
+  "confidence": number,
+  "evidence": string[]
+}`;
+
+const MEETING_OVERSEER_GATE_SYSTEM_TEMPLATE = `You are a scheduling overseer reviewing a drafted reply. Decide whether to approve or revise it.
+
+INPUTS
+Channel: {{channel}}
+Latest inbound:
+{{latestInbound}}
+
+Draft reply:
+{{draft}}
+
+Overseer extraction:
+{{extraction}}
+
+Availability (if any):
+{{availability}}
+
+Booking link:
+{{bookingLink}}
+
+Lead scheduler link (if provided):
+{{leadSchedulerLink}}
+
+Memory context (if any):
+{{memoryContext}}
+
+RULES
+- If the lead accepted a time, keep the reply short and acknowledgment-only. Do NOT ask new questions.
+- Never imply a meeting is booked unless the lead explicitly confirmed a time or says they booked/accepted an invite.
+- If extraction.needs_clarification is true, ask ONE concise clarifying question.
+- If the lead requests times and availability is provided, offer exactly 2 options (verbatim) and ask which works.
+- If availability is not provided, ask for their preferred windows.
+- If the lead provided their own scheduling link, do NOT offer our times or our booking link; acknowledge their link.
+- If the draft already complies, decision="approve" and final_draft=null.
+- Respect channel formatting:
+  - sms: 1-2 short sentences, <= 3 parts of 160 chars max, no markdown.
+  - linkedin: plain text, 1-3 short paragraphs.
+  - email: no subject line, plain text, no markdown styling.
+
+Output JSON only:
+{
+  "decision": "approve" | "revise",
+  "final_draft": string | null,
+  "confidence": number,
+  "issues": string[],
+  "rationale": string
+}`;
+
 const INSIGHTS_THREAD_COMPRESS_SYSTEM = `You compress a chunk of a sales outreach conversation transcript.
 
 TASK
@@ -619,6 +709,83 @@ OUTPUT JSON SCHEMA
   "key_takeaways": string[],
   "recommended_experiments": string[],
   "data_gaps": string[]
+}`;
+
+const INSIGHTS_MESSAGE_PERFORMANCE_SYNTHESIZE_SYSTEM = `You analyze message performance metrics and redacted message samples to summarize what correlates with booked meetings.
+
+RULES
+- Do NOT quote raw message text or include any PII.
+- Use only the provided metrics and samples.
+- Highlight differences between booked vs not booked and AI vs setter.
+- Keep recommendations specific and testable.
+
+Output JSON only:
+{
+  "summary": string,
+  "highlights": string[],
+  "patterns": string[],
+  "antiPatterns": string[],
+  "recommendations": Array<{title: string, rationale: string, target: "prompt_override" | "prompt_snippet" | "knowledge_asset" | "process", confidence: number}>,
+  "caveats": string[],
+  "confidence": number
+}`;
+
+const INSIGHTS_MESSAGE_PERFORMANCE_SCORE_SYSTEM = `You score a single outbound message for booking effectiveness.
+
+RULES
+- Do NOT include any PII in output.
+- Use only the provided message and metadata.
+- Scores are 0.0 to 1.0.
+
+Output JSON only:
+{
+  "booking_likelihood": number,
+  "clarity_score": number,
+  "cta_strength": number,
+  "tone_fit": number,
+  "strengths": string[],
+  "issues": string[]
+}`;
+
+const INSIGHTS_MESSAGE_PERFORMANCE_PAIRWISE_SYSTEM = `You compare two outbound messages to explain why one is more likely to lead to a booked meeting.
+
+RULES
+- Do NOT quote raw message text or include PII.
+- Use only the provided pair and metadata.
+
+Output JSON only:
+{
+  "winner": "A" | "B" | "tie",
+  "key_differences": string[],
+  "why_it_matters": string[],
+  "recommended_changes": string[]
+}`;
+
+const INSIGHTS_MESSAGE_PERFORMANCE_PROPOSALS_SYSTEM = `You convert evaluation findings into concrete proposal candidates for prompt overrides, prompt snippets, or knowledge assets.
+
+RULES
+- Only propose changes targeting the allowed keys provided in the input.
+- Do NOT include PII.
+- Keep proposals scoped and actionable.
+
+Output JSON only:
+{
+  "proposals": Array<{
+    "type": "PROMPT_OVERRIDE" | "PROMPT_SNIPPET" | "KNOWLEDGE_ASSET",
+    "title": string,
+    "summary": string,
+    "confidence": number,
+    "target": {
+      "promptKey"?: string,
+      "role"?: "system" | "assistant" | "user",
+      "index"?: number,
+      "snippetKey"?: string,
+      "assetName"?: string,
+      "assetId"?: string
+    },
+    "content": string
+  }>,
+  "notes": string[]
 }`;
 
 const INSIGHTS_CHAT_ANSWER_SYSTEM = `You are a read-only Campaign Strategist for a sales outreach dashboard.
@@ -863,8 +1030,9 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
         { role: "system", content: AUTO_SEND_EVALUATOR_SYSTEM },
         {
           role: "user",
-          content:
-            "{\n  \"channel\": \"{{channel}}\",\n  \"subject\": \"{{subject}}\",\n  \"latest_inbound\": \"{{latestInbound}}\",\n  \"conversation_history\": \"{{conversationHistory}}\",\n  \"reply_categorization\": \"{{categorization}}\",\n  \"automated_reply\": {{automatedReply}},\n  \"reply_received_at\": \"{{replyReceivedAt}}\",\n  \"draft_reply\": \"{{draft}}\"\n}",
+          // NOTE: We pass fully-escaped JSON as a single template var so overrides can safely wrap/annotate it.
+          // Avoid interpolating raw strings into JSON here; many values contain quotes/newlines.
+          content: "{{inputJson}}",
         },
       ],
     },
@@ -941,6 +1109,30 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       ],
     },
     {
+      key: "meeting.overseer.extract.v1",
+      featureId: "meeting.overseer.extract",
+      name: "Meeting Overseer: Extract",
+      description: "Extracts scheduling intent + timing preferences for meeting-related inbounds.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [
+        { role: "system", content: MEETING_OVERSEER_EXTRACT_SYSTEM_TEMPLATE },
+        { role: "user", content: "{{message}}" },
+      ],
+    },
+    {
+      key: "meeting.overseer.gate.v1",
+      featureId: "meeting.overseer.gate",
+      name: "Meeting Overseer: Draft Gate",
+      description: "Reviews drafts for scheduling correctness + concision after acceptance.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [
+        { role: "system", content: MEETING_OVERSEER_GATE_SYSTEM_TEMPLATE },
+        { role: "user", content: "Review the draft and decide if changes are needed." },
+      ],
+    },
+    {
       key: "insights.thread_compress.v1",
       featureId: "insights.thread_compress",
       name: "Insights: Thread Compress",
@@ -1002,6 +1194,42 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       model: "gpt-5-mini",
       apiType: "responses",
       messages: [{ role: "system", content: INSIGHTS_PACK_SYNTHESIZE_V2_SYSTEM }],
+    },
+    {
+      key: "insights.message_performance.synthesize.v1",
+      featureId: "insights.message_performance.synthesize",
+      name: "Insights: Message Performance Synthesis",
+      description: "Summarizes message performance metrics into patterns and recommendations.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [{ role: "system", content: INSIGHTS_MESSAGE_PERFORMANCE_SYNTHESIZE_SYSTEM }],
+    },
+    {
+      key: "insights.message_performance.score.v1",
+      featureId: "insights.message_performance.score",
+      name: "Insights: Message Performance Score",
+      description: "Scores a single outbound message for booking effectiveness.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [{ role: "system", content: INSIGHTS_MESSAGE_PERFORMANCE_SCORE_SYSTEM }],
+    },
+    {
+      key: "insights.message_performance.pairwise.v1",
+      featureId: "insights.message_performance.pairwise",
+      name: "Insights: Message Performance Pairwise",
+      description: "Compares two messages to explain differences in booking effectiveness.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [{ role: "system", content: INSIGHTS_MESSAGE_PERFORMANCE_PAIRWISE_SYSTEM }],
+    },
+    {
+      key: "insights.message_performance.proposals.v1",
+      featureId: "insights.message_performance.proposals",
+      name: "Insights: Message Performance Proposals",
+      description: "Generates proposal candidates from evaluation findings.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [{ role: "system", content: INSIGHTS_MESSAGE_PERFORMANCE_PROPOSALS_SYSTEM }],
     },
     {
       key: "insights.chat_answer.v1",

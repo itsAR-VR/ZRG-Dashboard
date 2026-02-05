@@ -282,7 +282,10 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   }
 
   pushStage("auto_booking");
-  const autoBook = await processMessageForAutoBooking(lead.id, inboundText, { channel: "email" });
+  const autoBook = await processMessageForAutoBooking(lead.id, inboundText, {
+    channel: "email",
+    messageId: message.id,
+  });
   if (autoBook.booked) {
     console.log(prefix, "Auto-booked appointment:", autoBook.appointmentId);
   }

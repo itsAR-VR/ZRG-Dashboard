@@ -21,6 +21,14 @@
       "schedule": "* * * * *"
     },
     {
+      "path": "/api/cron/insights/message-performance",
+      "schedule": "0 8 * * 1"
+    },
+    {
+      "path": "/api/cron/insights/message-performance-eval",
+      "schedule": "0 10 * * 1"
+    },
+    {
       "path": "/api/cron/appointment-reconcile",
       "schedule": "* * * * *"
     },

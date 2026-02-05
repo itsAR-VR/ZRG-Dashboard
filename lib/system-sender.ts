@@ -6,6 +6,8 @@ import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { resolvePhoneE164ForGhl } from "@/lib/phone-normalization";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { recordOutboundForBookingProgress, handleSmsDndForBookingProgress } from "@/lib/booking-progress";
+import { sendLinkedInMessageWithWaterfall } from "@/lib/unipile-api";
+import { updateUnipileConnectionHealth } from "@/lib/workspace-integration-health";
 
 export type OutboundSentBy = "ai" | "setter";
 
@@ -22,6 +24,14 @@ export type SystemSendResult = {
   messageId?: string;
   errorCode?: "sms_dnd";
   error?: string;
+};
+
+export type LinkedInSystemSendResult = {
+  success: boolean;
+  messageId?: string;
+  error?: string;
+  messageType?: "dm" | "inmail" | "connection_request";
+  attemptedMethods?: string[];
 };
 
 function isGhlSmsDndErrorText(errorText: string): boolean {
@@ -248,6 +258,123 @@ export async function sendSmsSystem(
     return { success: true, messageId: savedMessage.id };
   } catch (error) {
     console.error("[sendSmsSystem] Failed:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
+  }
+}
+
+export async function sendLinkedInMessageSystem(
+  leadId: string,
+  body: string,
+  meta: SystemSendMeta = {}
+): Promise<LinkedInSystemSendResult> {
+  try {
+    if (meta.aiDraftId) {
+      const existing = await prisma.message.findFirst({
+        where: { aiDraftId: meta.aiDraftId },
+        select: { id: true },
+      });
+      if (existing) return { success: true, messageId: existing.id };
+    }
+
+    const lead = await prisma.lead.findUnique({
+      where: { id: leadId },
+      include: {
+        client: {
+          select: {
+            id: true,
+            unipileAccountId: true,
+          },
+        },
+      },
+    });
+
+    if (!lead) return { success: false, error: "Lead not found" };
+    if (lead.status === "blacklisted") return { success: false, error: "Lead is blacklisted" };
+
+    if (!lead.linkedinUrl && !lead.linkedinId) {
+      return { success: false, error: "Lead has no LinkedIn profile linked" };
+    }
+
+    if (!lead.linkedinUrl) {
+      return { success: false, error: "Lead has linkedinId but no LinkedIn URL - cannot send message" };
+    }
+
+    if (!lead.client.unipileAccountId) {
+      return { success: false, error: "Workspace has no LinkedIn account configured" };
+    }
+
+    const result = await sendLinkedInMessageWithWaterfall(
+      lead.client.unipileAccountId,
+      lead.linkedinUrl,
+      body,
+      undefined,
+      undefined
+    );
+
+    if (!result.success) {
+      if (result.isDisconnectedAccount) {
+        await updateUnipileConnectionHealth({
+          clientId: lead.client.id,
+          isDisconnected: true,
+          errorDetail: result.error,
+        }).catch(() => undefined);
+      }
+
+      if (result.isUnreachableRecipient && process.env.UNIPILE_HEALTH_GATE === "1") {
+        await prisma.lead
+          .update({
+            where: { id: lead.id },
+            data: {
+              linkedinUnreachableAt: new Date(),
+              linkedinUnreachableReason: result.error || "Recipient cannot be reached",
+            },
+          })
+          .catch(() => undefined);
+      }
+
+      return { success: false, error: result.error, attemptedMethods: result.attemptedMethods };
+    }
+
+    await updateUnipileConnectionHealth({
+      clientId: lead.client.id,
+      isDisconnected: false,
+    }).catch(() => undefined);
+
+    const savedMessage = await prisma.message.create({
+      data: {
+        body,
+        direction: "outbound",
+        channel: "linkedin",
+        source: "zrg",
+        leadId: lead.id,
+        sentAt: new Date(),
+        sentBy: meta.sentBy ?? "ai",
+        sentByUserId: meta.sentByUserId || undefined,
+        aiDraftId: meta.aiDraftId || undefined,
+      },
+    });
+
+    await bumpLeadMessageRollup({ leadId: lead.id, direction: "outbound", source: "zrg", sentAt: savedMessage.sentAt });
+
+    await prisma.lead.update({
+      where: { id: leadId },
+      data: { updatedAt: new Date() },
+    });
+
+    autoStartNoResponseSequenceOnOutbound({ leadId, outboundAt: savedMessage.sentAt }).catch(() => undefined);
+
+    if (!meta.skipBookingProgress) {
+      recordOutboundForBookingProgress({ leadId, channel: "linkedin" }).catch(() => undefined);
+    }
+
+    return {
+      success: true,
+      messageId: savedMessage.id,
+      messageType: result.messageType,
+      attemptedMethods: result.attemptedMethods,
+    };
+  } catch (error) {
+    console.error("[sendLinkedInMessageSystem] Failed:", error);
     return { success: false, error: error instanceof Error ? error.message : "Unknown error" };
   }
 }

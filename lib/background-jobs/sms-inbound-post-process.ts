@@ -221,7 +221,10 @@ export async function runSmsInboundPostProcessJob(params: {
 
   // 5. Auto-Booking Check
   // If message indicates meeting acceptance, process booking
-  const autoBook = await processMessageForAutoBooking(lead.id, messageBody, { channel: "sms" });
+  const autoBook = await processMessageForAutoBooking(lead.id, messageBody, {
+    channel: "sms",
+    messageId: message.id,
+  });
   if (autoBook.booked) {
     console.log(`[SMS Post-Process] Auto-booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);
   }

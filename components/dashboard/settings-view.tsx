@@ -101,6 +101,9 @@ import {
   uploadKnowledgeAssetFile,
   addWebsiteKnowledgeAsset,
   retryWebsiteKnowledgeAssetIngestion,
+  getKnowledgeAssetRevisions,
+  rollbackKnowledgeAssetRevision,
+  updateAssetTextContent,
   deleteKnowledgeAsset,
   getCalendarLinks,
   addCalendarLink,
@@ -112,6 +115,7 @@ import {
   resumeWorkspaceFollowUps,
   type UserSettingsData,
   type KnowledgeAssetData,
+  type KnowledgeAssetRevisionRecord,
   type QualificationQuestion,
   type CalendarLinkData,
 } from "@/actions/settings-actions"
@@ -121,6 +125,8 @@ import {
   getPromptOverrides,
   savePromptOverride,
   resetPromptOverride,
+  getPromptOverrideRevisions,
+  rollbackPromptOverrideRevision,
   getPromptSnippetOverrides,
   savePromptSnippetOverride,
   resetPromptSnippetOverride,
@@ -129,6 +135,7 @@ import {
   type AiPromptTemplatePublic,
   type ObservabilitySummary,
   type PromptOverrideRecord,
+  type PromptOverrideRevisionRecord,
   type PromptSnippetOverrideRecord,
   type SnippetRegistryEntry,
 } from "@/actions/ai-observability-actions"
@@ -267,6 +274,25 @@ function extractCalendlyEventTypeUuidFromUri(input: string | null | undefined): 
   return match?.[1] ?? null
 }
 
+const PRIMARY_WEBSITE_ASSET_NAME = "Primary: Website URL"
+
+function normalizePrimaryWebsiteUrl(value: string): string | null {
+  const raw = value.trim()
+  if (!raw) return null
+
+  const candidate = raw.match(/https?:\/\/[^\s)]+/i)?.[0] ?? raw.match(/\bwww\.[^\s)]+/i)?.[0] ?? raw
+  const withScheme = /^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`
+
+  try {
+    const parsed = new URL(withScheme)
+    if (!["http:", "https:"].includes(parsed.protocol)) return null
+    const normalized = parsed.href
+    return normalized.endsWith("/") && parsed.pathname === "/" ? normalized.slice(0, -1) : normalized
+  } catch {
+    return null
+  }
+}
+
 export function SettingsView({ activeWorkspace, activeTab = "general", onTabChange, onWorkspacesChange }: SettingsViewProps) {
   const { user, isLoading: isUserLoading } = useUser()
   const [isLoading, setIsLoading] = useState(true)
@@ -295,6 +321,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     enableCampaignChanges: false,
     enableExperimentWrites: false,
     enableFollowupPauses: false,
+    messagePerformanceWeeklyEnabled: false,
   })
 
   // Draft generation model settings (Phase 30)
@@ -320,6 +347,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [newAssetType, setNewAssetType] = useState<"text" | "url" | "file">("text")
   const [newAssetFile, setNewAssetFile] = useState<File | null>(null)
   const [addAssetOpen, setAddAssetOpen] = useState(false)
+  const [primaryWebsiteUrl, setPrimaryWebsiteUrl] = useState("")
+  const [primaryWebsiteAssetId, setPrimaryWebsiteAssetId] = useState<string | null>(null)
+  const [isSavingPrimaryWebsite, setIsSavingPrimaryWebsite] = useState(false)
 
   // Company/Outreach context state
   const [companyContext, setCompanyContext] = useState({
@@ -558,6 +588,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   } | null>(null)
   const [editContent, setEditContent] = useState("")
   const [savingOverride, setSavingOverride] = useState(false)
+  const [promptHistoryOpen, setPromptHistoryOpen] = useState(false)
+  const [promptHistoryTarget, setPromptHistoryTarget] = useState<{ promptKey: string; role: string; index: number } | null>(null)
+  const [promptHistoryRows, setPromptHistoryRows] = useState<PromptOverrideRevisionRecord[]>([])
+  const [promptHistoryLoading, setPromptHistoryLoading] = useState(false)
   // Snippet override state (Phase 47f)
   const [snippetOverrides, setSnippetOverrides] = useState<Map<string, string>>(new Map())
   const [expandedSnippets, setExpandedSnippets] = useState<Set<string>>(new Set())
@@ -572,6 +606,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [selectedPersonaId, setSelectedPersonaId] = useState<string | null>(null)
   const [selectedPersonaDetails, setSelectedPersonaDetails] = useState<AiPersonaData | null>(null)
   const [personaLoading, setPersonaLoading] = useState(false)
+  const [assetHistoryOpen, setAssetHistoryOpen] = useState(false)
+  const [assetHistoryTarget, setAssetHistoryTarget] = useState<KnowledgeAssetData | null>(null)
+  const [assetHistoryRows, setAssetHistoryRows] = useState<KnowledgeAssetRevisionRecord[]>([])
+  const [assetHistoryLoading, setAssetHistoryLoading] = useState(false)
 
   const isClientPortalUser = Boolean(workspaceCapabilities?.isClientPortalUser)
   const canViewAiObservability = Boolean(workspaceCapabilities?.canViewAiObservability)
@@ -581,6 +619,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     setPromptOverrides(new Map())
     setEditingPrompt(null)
     setEditContent("")
+    setPromptHistoryRows([])
+    setPromptHistoryOpen(false)
+    setPromptHistoryTarget(null)
     setSnippetOverrides(new Map())
     setExpandedSnippets(new Set())
     setEditingSnippet(null)
@@ -591,6 +632,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     setSelectedPersonaId(null)
     setSelectedPersonaDetails(null)
     setAiPromptsLoading(false)
+    setAssetHistoryRows([])
+    setAssetHistoryOpen(false)
+    setAssetHistoryTarget(null)
   }, [])
 
   // Prevent prompt editor state from leaking across workspaces (Phase 47 follow-up)
@@ -641,6 +685,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           enableCampaignChanges: result.data.insightsChatEnableCampaignChanges ?? false,
           enableExperimentWrites: result.data.insightsChatEnableExperimentWrites ?? false,
           enableFollowupPauses: result.data.insightsChatEnableFollowupPauses ?? false,
+          messagePerformanceWeeklyEnabled: result.data.messagePerformanceWeeklyEnabled ?? false,
         })
         setDraftGenerationSettings({
           model: result.data.draftGenerationModel || "gpt-5.1",
@@ -711,6 +756,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         // Set knowledge assets
         if (result.knowledgeAssets) {
           setKnowledgeAssets(result.knowledgeAssets)
+          const primaryAsset = result.knowledgeAssets.find((asset) => asset.name === PRIMARY_WEBSITE_ASSET_NAME)
+          const primaryUrl = primaryAsset?.textContent || primaryAsset?.fileUrl || ""
+          setPrimaryWebsiteAssetId(primaryAsset?.id || null)
+          setPrimaryWebsiteUrl(primaryUrl)
+        } else {
+          setPrimaryWebsiteAssetId(null)
+          setPrimaryWebsiteUrl("")
         }
         // Set meeting booking settings
         setMeetingBooking({
@@ -1459,6 +1511,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       payload.insightsChatEnableCampaignChanges = insightsChatSettings.enableCampaignChanges
       payload.insightsChatEnableExperimentWrites = insightsChatSettings.enableExperimentWrites
       payload.insightsChatEnableFollowupPauses = insightsChatSettings.enableFollowupPauses
+      payload.messagePerformanceWeeklyEnabled = insightsChatSettings.messagePerformanceWeeklyEnabled
       // Draft generation settings (Phase 30)
       payload.draftGenerationModel = draftGenerationSettings.model
       payload.draftGenerationReasoningEffort = draftGenerationSettings.reasoningEffort
@@ -1598,6 +1651,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   const isFollowUpsPaused =
     Boolean(followUpsPausedUntil) && (followUpsPausedUntil as Date).getTime() > Date.now()
+  const visibleKnowledgeAssets = knowledgeAssets.filter(asset => asset.name !== PRIMARY_WEBSITE_ASSET_NAME)
+  const primaryWebsiteAsset = knowledgeAssets.find(asset => asset.id === primaryWebsiteAssetId) || null
 
   // Qualification question handlers
   const handleAddQuestion = useCallback(() => {
@@ -1625,6 +1680,84 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   }, [])
 
   // Knowledge asset handlers
+  const handleSavePrimaryWebsiteUrl = useCallback(async () => {
+    if (!activeWorkspace) {
+      toast.error("No workspace selected")
+      return
+    }
+
+    const normalized = normalizePrimaryWebsiteUrl(primaryWebsiteUrl)
+    if (!normalized) {
+      toast.error("Enter a valid website URL")
+      return
+    }
+
+    setIsSavingPrimaryWebsite(true)
+    try {
+      if (primaryWebsiteAssetId) {
+        const result = await updateAssetTextContent(primaryWebsiteAssetId, normalized)
+        if (result.success) {
+          setKnowledgeAssets(prev =>
+            prev.map(asset =>
+              asset.id === primaryWebsiteAssetId
+                ? { ...asset, name: PRIMARY_WEBSITE_ASSET_NAME, type: "text", textContent: normalized, updatedAt: new Date() }
+                : asset
+            )
+          )
+          setPrimaryWebsiteUrl(normalized)
+          toast.success("Primary website updated")
+        } else {
+          toast.error(result.error || "Failed to update website")
+        }
+        return
+      }
+
+      const result = await addKnowledgeAsset(activeWorkspace, {
+        name: PRIMARY_WEBSITE_ASSET_NAME,
+        type: "text",
+        textContent: normalized,
+      })
+
+      if (result.success && result.assetId) {
+        setKnowledgeAssets(prev => [{
+          id: result.assetId!,
+          name: PRIMARY_WEBSITE_ASSET_NAME,
+          type: "text",
+          fileUrl: null,
+          textContent: normalized,
+          originalFileName: null,
+          mimeType: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }, ...prev])
+        setPrimaryWebsiteAssetId(result.assetId)
+        setPrimaryWebsiteUrl(normalized)
+        toast.success("Primary website saved")
+      } else {
+        toast.error(result.error || "Failed to save website")
+      }
+    } finally {
+      setIsSavingPrimaryWebsite(false)
+    }
+  }, [activeWorkspace, primaryWebsiteAssetId, primaryWebsiteUrl])
+
+  const handleClearPrimaryWebsiteUrl = useCallback(async () => {
+    if (!primaryWebsiteAssetId) {
+      setPrimaryWebsiteUrl("")
+      return
+    }
+
+    const result = await deleteKnowledgeAsset(primaryWebsiteAssetId)
+    if (result.success) {
+      setKnowledgeAssets(prev => prev.filter(a => a.id !== primaryWebsiteAssetId))
+      setPrimaryWebsiteAssetId(null)
+      setPrimaryWebsiteUrl("")
+      toast.success("Primary website removed")
+    } else {
+      toast.error(result.error || "Failed to remove website")
+    }
+  }, [primaryWebsiteAssetId])
+
   const handleAddAsset = useCallback(async () => {
     if (!newAssetName.trim()) {
       toast.error("Please provide a name for the asset")
@@ -1709,6 +1842,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         originalFileName: null,
         mimeType: null,
         createdAt: new Date(),
+        updatedAt: new Date(),
       }, ...prev])
       setNewAssetName("")
       setNewAssetContent("")
@@ -1738,6 +1872,93 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       toast.error(result.error || "Failed to refresh website")
     }
   }, [])
+
+  const refreshPromptOverrides = useCallback(async () => {
+    if (!activeWorkspace) return
+    const res = await getPromptOverrides(activeWorkspace)
+    if (res.success && res.overrides) {
+      const map = new Map<string, string>()
+      for (const o of res.overrides) {
+        map.set(`${o.promptKey}:${o.role}:${o.index}`, o.content)
+      }
+      setPromptOverrides(map)
+    }
+  }, [activeWorkspace])
+
+  const refreshKnowledgeAssets = useCallback(async () => {
+    if (!activeWorkspace) return
+    const res = await getUserSettings(activeWorkspace)
+    if (res.success && res.knowledgeAssets) {
+      setKnowledgeAssets(res.knowledgeAssets)
+    }
+  }, [activeWorkspace])
+
+  const handleOpenPromptHistory = useCallback(async (promptKey: string, role: string, index: number) => {
+    if (!activeWorkspace) return
+    setPromptHistoryTarget({ promptKey, role, index })
+    setPromptHistoryOpen(true)
+    setPromptHistoryLoading(true)
+    const res = await getPromptOverrideRevisions(activeWorkspace, promptKey, role, index)
+    if (res.success && res.data) {
+      setPromptHistoryRows(res.data)
+    } else {
+      toast.error(res.error || "Failed to load prompt history")
+    }
+    setPromptHistoryLoading(false)
+  }, [activeWorkspace])
+
+  const handleRollbackPromptRevision = useCallback(async (revisionId: string) => {
+    if (!activeWorkspace) return
+    const res = await rollbackPromptOverrideRevision(activeWorkspace, revisionId)
+    if (res.success) {
+      toast.success("Prompt rolled back")
+      await refreshPromptOverrides()
+      if (promptHistoryTarget) {
+        const next = await getPromptOverrideRevisions(
+          activeWorkspace,
+          promptHistoryTarget.promptKey,
+          promptHistoryTarget.role,
+          promptHistoryTarget.index
+        )
+        if (next.success && next.data) {
+          setPromptHistoryRows(next.data)
+        }
+      }
+    } else {
+      toast.error(res.error || "Failed to rollback prompt")
+    }
+  }, [activeWorkspace, promptHistoryTarget, refreshPromptOverrides])
+
+  const handleOpenAssetHistory = useCallback(async (asset: KnowledgeAssetData) => {
+    if (!activeWorkspace) return
+    setAssetHistoryTarget(asset)
+    setAssetHistoryOpen(true)
+    setAssetHistoryLoading(true)
+    const res = await getKnowledgeAssetRevisions(activeWorkspace, asset.id)
+    if (res.success && res.data) {
+      setAssetHistoryRows(res.data)
+    } else {
+      toast.error(res.error || "Failed to load asset history")
+    }
+    setAssetHistoryLoading(false)
+  }, [activeWorkspace])
+
+  const handleRollbackAssetRevision = useCallback(async (revisionId: string) => {
+    if (!activeWorkspace) return
+    const res = await rollbackKnowledgeAssetRevision(activeWorkspace, revisionId)
+    if (res.success) {
+      toast.success("Asset rolled back")
+      await refreshKnowledgeAssets()
+      if (assetHistoryTarget) {
+        const next = await getKnowledgeAssetRevisions(activeWorkspace, assetHistoryTarget.id)
+        if (next.success && next.data) {
+          setAssetHistoryRows(next.data)
+        }
+      }
+    } else {
+      toast.error(res.error || "Failed to rollback asset")
+    }
+  }, [activeWorkspace, assetHistoryTarget, refreshKnowledgeAssets])
 
   // Calendar link handlers
   const handleAddCalendarLink = useCallback(async () => {
@@ -4619,11 +4840,57 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   <p className="text-sm text-muted-foreground">
                     Add documents, text snippets, or URLs that the AI can reference when generating responses.
                   </p>
+
+                  {/* Primary Website URL */}
+                  <div className="rounded-lg border p-4 space-y-3 bg-muted/30">
+                    <div className="flex items-start gap-2">
+                      <Globe className="h-4 w-4 text-muted-foreground mt-0.5" />
+                      <div className="space-y-1">
+                        <Label className="text-sm font-medium">Primary Website URL</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Used by the AI when asked or relevant. Stored as a Knowledge Asset named &quot;{PRIMARY_WEBSITE_ASSET_NAME}&quot;.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <Input
+                        placeholder="https://yourcompany.com"
+                        value={primaryWebsiteUrl}
+                        onChange={(e) => setPrimaryWebsiteUrl(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault()
+                            handleSavePrimaryWebsiteUrl()
+                          }
+                        }}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={handleSavePrimaryWebsiteUrl}
+                          disabled={isSavingPrimaryWebsite || !primaryWebsiteUrl.trim()}
+                        >
+                          {isSavingPrimaryWebsite ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+                          Save
+                        </Button>
+                        {isWorkspaceAdmin && primaryWebsiteAsset ? (
+                          <Button variant="outline" onClick={() => handleOpenAssetHistory(primaryWebsiteAsset)}>
+                            <Clock className="h-4 w-4 mr-2" />
+                            History
+                          </Button>
+                        ) : null}
+                        {primaryWebsiteAssetId ? (
+                          <Button variant="ghost" onClick={handleClearPrimaryWebsiteUrl}>
+                            Clear
+                          </Button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
                   
                   {/* Existing assets */}
-                  {knowledgeAssets.length > 0 && (
+                  {visibleKnowledgeAssets.length > 0 && (
                     <div className="space-y-2">
-                      {knowledgeAssets.map((asset) => (
+                      {visibleKnowledgeAssets.map((asset) => (
                         <div key={asset.id} className="flex items-center gap-3 p-3 rounded-lg border">
                           {asset.type === "url" ? (
                             <Link2 className="h-4 w-4 text-muted-foreground" />
@@ -4665,6 +4932,17 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                               aria-label="Retry website scrape"
                             >
                               <RefreshCcw className="h-4 w-4" />
+                            </Button>
+                          )}
+                          {isWorkspaceAdmin && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                              onClick={() => handleOpenAssetHistory(asset)}
+                              aria-label="View asset history"
+                            >
+                              <Clock className="h-4 w-4" />
                             </Button>
                           )}
                           <Button
@@ -5116,6 +5394,22 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       disabled={!isWorkspaceAdmin}
                       onCheckedChange={(v) => {
                         setInsightsChatSettings((prev) => ({ ...prev, enableFollowupPauses: v }))
+                        handleChange()
+                      }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between p-3 rounded-lg border">
+                    <div className="space-y-0.5">
+                      <span id="enable-message-performance-weekly-label" className="text-sm">Weekly message performance (UTC)</span>
+                      <p className="text-xs text-muted-foreground">Run message performance insights weekly for this workspace.</p>
+                    </div>
+                    <Switch
+                      id="enable-message-performance-weekly-switch"
+                      aria-labelledby="enable-message-performance-weekly-label"
+                      checked={insightsChatSettings.messagePerformanceWeeklyEnabled}
+                      disabled={!isWorkspaceAdmin}
+                      onCheckedChange={(v) => {
+                        setInsightsChatSettings((prev) => ({ ...prev, messagePerformanceWeeklyEnabled: v }))
                         handleChange()
                       }}
                     />
@@ -5922,6 +6216,16 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                     <Pencil className="h-3 w-3" />
                                                   </Button>
                                                 )}
+                                                {!isEditing && isWorkspaceAdmin && activeWorkspace && (
+                                                  <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => handleOpenPromptHistory(t.key, role, i)}
+                                                    title="View history"
+                                                  >
+                                                    <Clock className="h-3 w-3" />
+                                                  </Button>
+                                                )}
                                                 {hasOverride && !isEditing && isWorkspaceAdmin && activeWorkspace && (
                                                   <Button
                                                     variant="ghost"
@@ -6019,6 +6323,288 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                 {displayContent}
                                               </div>
                                             )}
+
+                                            {/* Runtime context preview for Auto-Send Evaluator (Jam fd4cf691) */}
+                                            {t.key === "auto_send.evaluate.v1" && role === "user" ? (() => {
+                                              const encoder = new TextEncoder()
+                                              const decoder = new TextDecoder("utf-8")
+                                              const fatalDecoder = (() => {
+                                                try {
+                                                  return new TextDecoder("utf-8", { fatal: true })
+                                                } catch {
+                                                  return null
+                                                }
+                                              })()
+
+                                              const estimateBytes = (text: string) => {
+                                                try {
+                                                  return encoder.encode(text || "").length
+                                                } catch {
+                                                  return (text || "").length
+                                                }
+                                              }
+                                              const estimateTokensFromBytes = (bytes: number) =>
+                                                Math.max(0, Math.ceil(Math.max(0, bytes || 0) / 4))
+
+                                              const truncateTextToTokenEstimate = (text: string, maxTokens: number) => {
+                                                const raw = text || ""
+                                                const maxBytes = Math.max(0, Math.trunc(maxTokens)) * 4
+                                                if (!raw) {
+                                                  return { text: "", truncated: false, bytes: 0, tokensEstimated: 0 }
+                                                }
+                                                if (maxBytes <= 0) {
+                                                  return { text: "", truncated: true, bytes: 0, tokensEstimated: 0 }
+                                                }
+
+                                                let bytes: Uint8Array
+                                                try {
+                                                  bytes = encoder.encode(raw)
+                                                } catch {
+                                                  const slice = raw.slice(0, maxBytes)
+                                                  const sliceBytes = estimateBytes(slice)
+                                                  return {
+                                                    text: slice,
+                                                    truncated: slice.length < raw.length,
+                                                    bytes: sliceBytes,
+                                                    tokensEstimated: estimateTokensFromBytes(sliceBytes),
+                                                  }
+                                                }
+
+                                                if (bytes.length <= maxBytes) {
+                                                  return {
+                                                    text: raw,
+                                                    truncated: false,
+                                                    bytes: bytes.length,
+                                                    tokensEstimated: estimateTokensFromBytes(bytes.length),
+                                                  }
+                                                }
+
+                                                let end = Math.min(bytes.length, maxBytes)
+                                                let decodedText = ""
+                                                for (let i = 0; i < 4 && end > 0; i += 1) {
+                                                  try {
+                                                    decodedText = fatalDecoder ? fatalDecoder.decode(bytes.slice(0, end)) : decoder.decode(bytes.slice(0, end))
+                                                    break
+                                                  } catch {
+                                                    end -= 1
+                                                  }
+                                                }
+                                                if (!decodedText) {
+                                                  decodedText = decoder.decode(bytes.slice(0, end))
+                                                }
+
+                                                const decodedBytes = estimateBytes(decodedText)
+                                                return {
+                                                  text: decodedText,
+                                                  truncated: true,
+                                                  bytes: decodedBytes,
+                                                  tokensEstimated: estimateTokensFromBytes(decodedBytes),
+                                                }
+                                              }
+
+                                              const serviceDescription = (aiPersona.serviceDescription || "").trim()
+                                              const goals = (aiPersona.goals || "").trim()
+                                              const servicePreview = serviceDescription
+                                                ? `${serviceDescription.slice(0, 220)}${serviceDescription.length > 220 ? "…" : ""}`
+                                                : "—"
+                                              const goalsPreview = goals
+                                                ? `${goals.slice(0, 220)}${goals.length > 220 ? "…" : ""}`
+                                                : "—"
+
+                                              const getTimeMs = (value: unknown) => {
+                                                if (value instanceof Date) return value.getTime()
+                                                if (typeof value === "string") {
+                                                  const parsed = new Date(value)
+                                                  return Number.isFinite(parsed.getTime()) ? parsed.getTime() : 0
+                                                }
+                                                return 0
+                                              }
+
+                                              const assetsSorted = [...knowledgeAssets].sort((a, b) => {
+                                                const aTime = getTimeMs((a as any).updatedAt) || getTimeMs(a.createdAt)
+                                                const bTime = getTimeMs((b as any).updatedAt) || getTimeMs(b.createdAt)
+                                                return bTime - aTime
+                                              })
+
+                                              const knowledgeBudgets = {
+                                                maxTokens: 8000,
+                                                maxAssetTokens: 1600,
+                                              }
+
+                                              let remainingTokens = knowledgeBudgets.maxTokens
+
+                                              const perAsset = assetsSorted.map((asset) => {
+                                                const raw = (asset.textContent || "").trim()
+                                                const bytes = estimateBytes(raw)
+                                                const tokensEstimated = estimateTokensFromBytes(bytes)
+
+                                                const firstLine = raw
+                                                  .split("\n")
+                                                  .map((l) => l.trim())
+                                                  .find(Boolean) || ""
+                                                const summary = firstLine
+                                                  ? firstLine.replace(/^[*-]\s+/, "").slice(0, 240) + (firstLine.length > 240 ? "…" : "")
+                                                  : "—"
+
+                                                const header = `[${asset.name}]`
+                                                const headerTokens = estimateTokensFromBytes(estimateBytes(header)) + 2
+
+                                                let included = false
+                                                let truncated = false
+                                                let includedBytes = 0
+                                                let includedTokensEstimated = 0
+                                                let snippetPreview = ""
+
+                                                if (raw && remainingTokens > 0 && headerTokens < remainingTokens) {
+                                                  const available = Math.max(0, remainingTokens - headerTokens)
+                                                  const perAssetBudget = Math.min(knowledgeBudgets.maxAssetTokens, available)
+                                                  const snippet = truncateTextToTokenEstimate(raw, perAssetBudget)
+                                                  const snippetText = (snippet.text || "").trim()
+                                                  const preview = snippetText ? `${snippetText.slice(0, 260)}${snippetText.length > 260 ? "…" : ""}` : ""
+
+                                                  const consumed = headerTokens + snippet.tokensEstimated
+                                                  remainingTokens = Math.max(0, remainingTokens - consumed)
+
+                                                  included = true
+                                                  truncated = snippet.truncated
+                                                  includedBytes = snippet.bytes
+                                                  includedTokensEstimated = snippet.tokensEstimated
+                                                  snippetPreview = preview
+                                                }
+
+                                                return {
+                                                  id: asset.id,
+                                                  name: asset.name,
+                                                  type: asset.type,
+                                                  originalFileName: asset.originalFileName,
+                                                  mimeType: asset.mimeType,
+                                                  bytes,
+                                                  tokensEstimated,
+                                                  included,
+                                                  includedBytes,
+                                                  includedTokensEstimated,
+                                                  truncated,
+                                                  summary,
+                                                  snippetPreview,
+                                                }
+                                              })
+
+                                              const totalKnowledgeBytes = perAsset.reduce((sum, a) => sum + a.bytes, 0)
+                                              const totalKnowledgeTokens = perAsset.reduce((sum, a) => sum + a.tokensEstimated, 0)
+
+                                              const includedAssets = perAsset.filter((a) => a.included)
+                                              const includedKnowledgeBytes = includedAssets.reduce((sum, a) => sum + a.includedBytes, 0)
+                                              const includedKnowledgeTokens = includedAssets.reduce((sum, a) => sum + a.includedTokensEstimated, 0)
+                                              const truncatedAssets = includedAssets.filter((a) => a.truncated).length
+
+                                              const missingInputPlaceholder =
+                                                !(displayContent.includes("{{inputJson}}") || displayContent.includes("{inputJson}"))
+
+                                              return (
+                                                <Alert className="border-muted-foreground/20 bg-muted/20">
+                                                  <HelpCircle className="h-4 w-4 text-muted-foreground" />
+                                                  <AlertTitle>Runtime Context Preview</AlertTitle>
+                                                  <AlertDescription className="text-xs text-muted-foreground space-y-3">
+                                                    <p>
+                                                      The auto-send confidence gate also receives verified workspace context
+                                                      (AI Personality + Knowledge Assets) at runtime:
+                                                    </p>
+                                                    {missingInputPlaceholder ? (
+                                                      <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-700">
+                                                        <span className="font-medium">Heads up:</span> this user prompt should include{" "}
+                                                        <span className="font-mono">{"{{inputJson}}"}</span> so the evaluator receives
+                                                        the runtime JSON input. If you remove it in an override, the evaluator will be
+                                                        missing critical context.
+                                                      </div>
+                                                    ) : null}
+                                                    <pre className="bg-muted/40 border rounded p-2 text-[11px] whitespace-pre-wrap">
+{`• service_description: ${servicePreview}
+• goals: ${goalsPreview}
+• knowledge_assets: ${knowledgeAssets.length} asset(s) ≈ ${new Intl.NumberFormat().format(totalKnowledgeTokens)} tokens, ${new Intl.NumberFormat().format(totalKnowledgeBytes)} bytes
+• knowledge_context (budgeted): ${includedAssets.length}/${knowledgeAssets.length} asset(s) included ≈ ${new Intl.NumberFormat().format(includedKnowledgeTokens)} tokens, ${new Intl.NumberFormat().format(includedKnowledgeBytes)} bytes${truncatedAssets ? ` (${truncatedAssets} truncated)` : ""}`}
+                                                    </pre>
+                                                    <Collapsible defaultOpen>
+                                                      <div className="flex items-center justify-between gap-3">
+                                                        <div className="text-[11px] font-medium">
+                                                          Knowledge Assets Breakdown (≈tokens/bytes)
+                                                        </div>
+                                                        <CollapsibleTrigger asChild>
+                                                          <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]">
+                                                            Toggle
+                                                          </Button>
+                                                        </CollapsibleTrigger>
+                                                      </div>
+                                                      <CollapsibleContent className="space-y-2 pt-2">
+                                                        {perAsset.length === 0 ? (
+                                                          <div className="text-[11px] text-muted-foreground">No knowledge assets configured.</div>
+                                                        ) : (
+                                                          <div className="space-y-2">
+                                                            {perAsset.map((asset) => (
+                                                              <div key={asset.id} className="rounded border bg-muted/30 p-2 space-y-1">
+                                                                <div className="flex items-start justify-between gap-3">
+                                                                  <div className="min-w-0">
+                                                                    <div className="font-medium truncate">{asset.name}</div>
+                                                                    <div className="text-[11px] text-muted-foreground truncate">
+                                                                      {asset.type}
+                                                                      {asset.originalFileName ? ` · ${asset.originalFileName}` : ""}
+                                                                      {asset.mimeType ? ` · ${asset.mimeType}` : ""}
+                                                                    </div>
+                                                                  </div>
+                                                                  <div className="flex items-center gap-1 shrink-0">
+                                                                    {asset.included ? (
+                                                                      <Badge variant="outline" className="text-[10px] h-4 border-emerald-500/30 text-emerald-700">
+                                                                        Included
+                                                                      </Badge>
+                                                                    ) : (
+                                                                      <Badge variant="outline" className="text-[10px] h-4 border-muted-foreground/30 text-muted-foreground">
+                                                                        Dropped
+                                                                      </Badge>
+                                                                    )}
+                                                                    {asset.truncated ? (
+                                                                      <Badge variant="outline" className="text-[10px] h-4 border-amber-500/30 text-amber-700">
+                                                                        Truncated
+                                                                      </Badge>
+                                                                    ) : null}
+                                                                  </div>
+                                                                </div>
+
+                                                                <div className="text-[11px] text-muted-foreground">
+                                                                  Total: ≈ {new Intl.NumberFormat().format(asset.tokensEstimated)} tokens,{" "}
+                                                                  {new Intl.NumberFormat().format(asset.bytes)} bytes
+                                                                  {asset.included ? (
+                                                                    <>
+                                                                      {" "}
+                                                                      · Included: ≈ {new Intl.NumberFormat().format(asset.includedTokensEstimated)} tokens,{" "}
+                                                                      {new Intl.NumberFormat().format(asset.includedBytes)} bytes
+                                                                    </>
+                                                                  ) : null}
+                                                                </div>
+
+                                                                <div className="text-[11px] text-foreground">
+                                                                  <span className="text-muted-foreground">Summary:</span> {asset.summary}
+                                                                </div>
+
+                                                                {asset.included && asset.snippetPreview ? (
+                                                                  <div className="text-[11px] text-muted-foreground whitespace-pre-wrap">
+                                                                    <span className="font-medium text-muted-foreground">Preview:</span>{" "}
+                                                                    {asset.snippetPreview}
+                                                                  </div>
+                                                                ) : null}
+                                                              </div>
+                                                            ))}
+                                                          </div>
+                                                        )}
+                                                      </CollapsibleContent>
+                                                    </Collapsible>
+                                                    <p>
+                                                      Edit the context in <span className="font-medium">AI Personality</span> /
+                                                      <span className="font-medium"> Knowledge Assets</span>. Edit this prompt to
+                                                      change the evaluator’s system instructions.
+                                                    </p>
+                                                  </AlertDescription>
+                                                </Alert>
+                                              )
+                                            })() : null}
 
                                             {/* Nested Snippet Editor (Phase 47f) */}
                                             {/* Show snippet editor if this message contains {forbiddenTerms} placeholder */}
@@ -6301,6 +6887,98 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             </fieldset>
           </TabsContent>
         </Tabs>
+
+        {/* Prompt History Dialog */}
+        <Dialog open={promptHistoryOpen} onOpenChange={(open) => (!open ? setPromptHistoryOpen(false) : null)}>
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Prompt History</DialogTitle>
+            </DialogHeader>
+            {promptHistoryLoading ? (
+              <div className="text-sm text-muted-foreground">Loading history…</div>
+            ) : (
+              <div className="max-h-[420px] overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>When</TableHead>
+                      <TableHead>Action</TableHead>
+                      <TableHead>By</TableHead>
+                      <TableHead>Preview</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {promptHistoryRows.map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell className="text-xs">{new Date(row.createdAt).toLocaleString()}</TableCell>
+                        <TableCell className="text-xs">{row.action}</TableCell>
+                        <TableCell className="text-xs">{row.createdByEmail || "system"}</TableCell>
+                        <TableCell className="text-xs">
+                          {(row.content || "").slice(0, 120) || "—"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button size="sm" variant="outline" onClick={() => handleRollbackPromptRevision(row.id)}>
+                            Rollback
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {promptHistoryRows.length === 0 && (
+                  <div className="text-xs text-muted-foreground mt-2">No revisions found.</div>
+                )}
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Knowledge Asset History Dialog */}
+        <Dialog open={assetHistoryOpen} onOpenChange={(open) => (!open ? setAssetHistoryOpen(false) : null)}>
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Knowledge Asset History</DialogTitle>
+            </DialogHeader>
+            {assetHistoryLoading ? (
+              <div className="text-sm text-muted-foreground">Loading history…</div>
+            ) : (
+              <div className="max-h-[420px] overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>When</TableHead>
+                      <TableHead>Action</TableHead>
+                      <TableHead>By</TableHead>
+                      <TableHead>Preview</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {assetHistoryRows.map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell className="text-xs">{new Date(row.createdAt).toLocaleString()}</TableCell>
+                        <TableCell className="text-xs">{row.action}</TableCell>
+                        <TableCell className="text-xs">{row.createdByEmail || "system"}</TableCell>
+                        <TableCell className="text-xs">
+                          {(row.textContent || "").slice(0, 120) || "—"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button size="sm" variant="outline" onClick={() => handleRollbackAssetRevision(row.id)}>
+                            Rollback
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {assetHistoryRows.length === 0 && (
+                  <div className="text-xs text-muted-foreground mt-2">No revisions found.</div>
+                )}
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   )

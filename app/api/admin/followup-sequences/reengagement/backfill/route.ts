@@ -1,34 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { backfillReengagementFollowUpSequence } from "@/lib/maintenance/backfill-reengagement-followup";
+import { verifyAdminActionSecret } from "@/lib/admin-actions-auth";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
 
-function getProvidedSecret(request: NextRequest): string | null {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const [scheme, token] = authHeader.split(" ");
-  if (scheme === "Bearer" && token) return token;
-
-  const headerSecret =
-    request.headers.get("x-admin-secret") ??
-    request.headers.get("x-cron-secret") ??
-    request.headers.get("x-workspace-provisioning-secret");
-  if (headerSecret) return headerSecret;
-
-  const url = new URL(request.url);
-  return url.searchParams.get("secret") || null;
-}
-
-function isAuthorized(request: NextRequest): boolean {
-  const expectedSecret =
-    process.env.ADMIN_ACTIONS_SECRET ??
-    process.env.WORKSPACE_PROVISIONING_SECRET ??
-    process.env.CRON_SECRET ??
-    null;
-
-  if (!expectedSecret) return false;
-  return getProvidedSecret(request) === expectedSecret;
+function ensureAuthorized(request: NextRequest): NextResponse | null {
+  const result = verifyAdminActionSecret({ headers: request.headers });
+  if (result.ok) return null;
+  return NextResponse.json({ error: result.reason }, { status: result.status });
 }
 
 function normalizeOptionalString(value: unknown): string | undefined {
@@ -56,9 +37,8 @@ type BackfillRequestBody = {
 const CONFIRM_ALL_CLIENTS = "YES";
 
 export async function GET(request: NextRequest) {
-  if (!isAuthorized(request)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const auth = ensureAuthorized(request);
+  if (auth) return auth;
 
   const url = new URL(request.url);
   const clientId = normalizeOptionalString(url.searchParams.get("clientId"));
@@ -85,9 +65,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  if (!isAuthorized(request)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const auth = ensureAuthorized(request);
+  if (auth) return auth;
 
   let body: BackfillRequestBody = {};
   try {
@@ -153,4 +132,3 @@ export async function POST(request: NextRequest) {
     result,
   });
 }
-

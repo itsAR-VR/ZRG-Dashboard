@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { applyAirtableModeToDefaultSequences } from "@/actions/followup-sequence-actions";
 import { computeWorkspaceFollowUpsPausedUntil } from "@/lib/workspace-followups-pause";
-import { requireClientAccess, requireClientAdminAccess, requireLeadAccessById } from "@/lib/workspace-access";
+import { requireAuthUser, requireClientAccess, requireClientAdminAccess, requireLeadAccessById } from "@/lib/workspace-access";
 import { requireWorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { extractKnowledgeNotesFromFile, extractKnowledgeNotesFromText } from "@/lib/knowledge-asset-extraction";
@@ -30,6 +30,7 @@ export interface UserSettingsData {
   insightsChatEnableCampaignChanges: boolean;
   insightsChatEnableExperimentWrites: boolean;
   insightsChatEnableFollowupPauses: boolean;
+  messagePerformanceWeeklyEnabled: boolean;
   // Draft Generation Model Settings (workspace-level, admin-gated updates)
   draftGenerationModel: string | null;
   draftGenerationReasoningEffort: string | null;
@@ -95,6 +96,7 @@ export interface KnowledgeAssetData {
   originalFileName: string | null;
   mimeType: string | null;
   createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface QualificationQuestion {
@@ -150,6 +152,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           insightsChatEnableCampaignChanges: false,
           insightsChatEnableExperimentWrites: false,
           insightsChatEnableFollowupPauses: false,
+          messagePerformanceWeeklyEnabled: false,
           draftGenerationModel: "gpt-5.1",
           draftGenerationReasoningEffort: "medium",
           emailDraftVerificationModel: "gpt-5.2",
@@ -251,6 +254,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
       originalFileName: asset.originalFileName,
       mimeType: asset.mimeType,
       createdAt: asset.createdAt,
+      updatedAt: asset.updatedAt,
     }));
 
     return {
@@ -270,6 +274,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         insightsChatEnableCampaignChanges: settings.insightsChatEnableCampaignChanges ?? false,
         insightsChatEnableExperimentWrites: settings.insightsChatEnableExperimentWrites ?? false,
         insightsChatEnableFollowupPauses: settings.insightsChatEnableFollowupPauses ?? false,
+        messagePerformanceWeeklyEnabled: settings.messagePerformanceWeeklyEnabled ?? false,
         draftGenerationModel: settings.draftGenerationModel ?? "gpt-5.1",
         draftGenerationReasoningEffort: settings.draftGenerationReasoningEffort ?? "medium",
         emailDraftVerificationModel: settings.emailDraftVerificationModel ?? "gpt-5.2",
@@ -352,7 +357,8 @@ export async function updateUserSettings(
       data.insightsChatReasoningEffort !== undefined ||
       data.insightsChatEnableCampaignChanges !== undefined ||
       data.insightsChatEnableExperimentWrites !== undefined ||
-      data.insightsChatEnableFollowupPauses !== undefined;
+      data.insightsChatEnableFollowupPauses !== undefined ||
+      data.messagePerformanceWeeklyEnabled !== undefined;
     const wantsDraftGenerationUpdate =
       data.draftGenerationModel !== undefined ||
       data.draftGenerationReasoningEffort !== undefined;
@@ -417,6 +423,7 @@ export async function updateUserSettings(
         insightsChatEnableCampaignChanges: data.insightsChatEnableCampaignChanges,
         insightsChatEnableExperimentWrites: data.insightsChatEnableExperimentWrites,
         insightsChatEnableFollowupPauses: data.insightsChatEnableFollowupPauses,
+        messagePerformanceWeeklyEnabled: data.messagePerformanceWeeklyEnabled,
         draftGenerationModel: data.draftGenerationModel,
         draftGenerationReasoningEffort: data.draftGenerationReasoningEffort,
         emailDraftVerificationModel: data.emailDraftVerificationModel,
@@ -482,6 +489,7 @@ export async function updateUserSettings(
         insightsChatEnableCampaignChanges: data.insightsChatEnableCampaignChanges ?? false,
         insightsChatEnableExperimentWrites: data.insightsChatEnableExperimentWrites ?? false,
         insightsChatEnableFollowupPauses: data.insightsChatEnableFollowupPauses ?? false,
+        messagePerformanceWeeklyEnabled: data.messagePerformanceWeeklyEnabled ?? false,
         draftGenerationModel: data.draftGenerationModel,
         draftGenerationReasoningEffort: data.draftGenerationReasoningEffort,
         emailDraftVerificationModel: data.emailDraftVerificationModel,
@@ -798,6 +806,43 @@ export async function resumeWorkspaceFollowUps(
 // Knowledge Asset Management
 // =============================================================================
 
+export type KnowledgeAssetRevisionRecord = {
+  id: string;
+  knowledgeAssetId: string;
+  name: string;
+  type: string;
+  textContent: string | null;
+  action: string;
+  createdAt: Date;
+  createdByEmail: string | null;
+};
+
+async function recordKnowledgeAssetRevision(opts: {
+  clientId: string;
+  workspaceSettingsId: string;
+  asset: { id: string; name: string; type: string; fileUrl: string | null; textContent: string | null };
+  action: string;
+  createdByUserId: string | null;
+  createdByEmail: string | null;
+  proposalId?: string | null;
+}) {
+  await prisma.knowledgeAssetRevision.create({
+    data: {
+      clientId: opts.clientId,
+      workspaceSettingsId: opts.workspaceSettingsId,
+      knowledgeAssetId: opts.asset.id,
+      proposalId: opts.proposalId ?? null,
+      name: opts.asset.name,
+      type: opts.asset.type,
+      fileUrl: opts.asset.fileUrl,
+      textContent: opts.asset.textContent,
+      action: opts.action,
+      createdByUserId: opts.createdByUserId ?? null,
+      createdByEmail: opts.createdByEmail ?? null,
+    },
+  });
+}
+
 /**
  * Add a knowledge asset (text snippet or URL)
  */
@@ -814,6 +859,7 @@ export async function addKnowledgeAsset(
       return { success: false, error: "No workspace selected" };
     }
     await requireSettingsWriteAccess(clientId);
+    const user = await requireAuthUser();
 
     // Ensure settings exist
     const settings = await prisma.workspaceSettings.upsert({
@@ -829,6 +875,21 @@ export async function addKnowledgeAsset(
         type: data.type,
         textContent: data.textContent,
       },
+    });
+
+    await recordKnowledgeAssetRevision({
+      clientId,
+      workspaceSettingsId: settings.id,
+      asset: {
+        id: asset.id,
+        name: asset.name,
+        type: asset.type,
+        fileUrl: asset.fileUrl,
+        textContent: asset.textContent,
+      },
+      action: "CREATE",
+      createdByUserId: user.id,
+      createdByEmail: user.email ?? null,
     });
 
     revalidatePath("/");
@@ -857,6 +918,7 @@ export async function addFileKnowledgeAsset(
       return { success: false, error: "No workspace selected" };
     }
     await requireSettingsWriteAccess(clientId);
+    const user = await requireAuthUser();
 
     // Ensure settings exist
     const settings = await prisma.workspaceSettings.upsert({
@@ -875,6 +937,21 @@ export async function addFileKnowledgeAsset(
         mimeType: data.mimeType,
         textContent: data.textContent,
       },
+    });
+
+    await recordKnowledgeAssetRevision({
+      clientId,
+      workspaceSettingsId: settings.id,
+      asset: {
+        id: asset.id,
+        name: asset.name,
+        type: asset.type,
+        fileUrl: asset.fileUrl,
+        textContent: asset.textContent,
+      },
+      action: "CREATE",
+      createdByUserId: user.id,
+      createdByEmail: user.email ?? null,
     });
 
     revalidatePath("/");
@@ -974,6 +1051,7 @@ export async function uploadKnowledgeAssetFile(
     if (!file) return { success: false, error: "Missing file" };
 
     await requireSettingsWriteAccess(clientId);
+    const user = await requireAuthUser();
 
     const maxBytes = Math.max(1, Number.parseInt(process.env.KNOWLEDGE_ASSET_MAX_BYTES || "12582912", 10) || 12_582_912); // 12MB
     if (file.size > maxBytes) {
@@ -1064,6 +1142,21 @@ export async function uploadKnowledgeAssetFile(
       },
     });
 
+    await recordKnowledgeAssetRevision({
+      clientId,
+      workspaceSettingsId: settings.id,
+      asset: {
+        id: created.id,
+        name: created.name,
+        type: created.type,
+        fileUrl: created.fileUrl,
+        textContent: created.textContent,
+      },
+      action: "CREATE",
+      createdByUserId: user.id,
+      createdByEmail: user.email ?? null,
+    });
+
     revalidatePath("/");
       return {
         success: true,
@@ -1076,6 +1169,7 @@ export async function uploadKnowledgeAssetFile(
           originalFileName: created.originalFileName,
           mimeType: created.mimeType,
           createdAt: created.createdAt,
+          updatedAt: created.updatedAt,
         },
       };
     } catch (error) {
@@ -1121,6 +1215,7 @@ export async function addWebsiteKnowledgeAsset(
     }
 
     await requireSettingsWriteAccess(clientId);
+    const user = await requireAuthUser();
 
     const settings = await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -1161,6 +1256,21 @@ export async function addWebsiteKnowledgeAsset(
       warning = "Website saved, but extraction failed. You can retry scraping later.";
     }
 
+    await recordKnowledgeAssetRevision({
+      clientId,
+      workspaceSettingsId: settings.id,
+      asset: {
+        id: updated.id,
+        name: updated.name,
+        type: updated.type,
+        fileUrl: updated.fileUrl,
+        textContent: updated.textContent,
+      },
+      action: "CREATE",
+      createdByUserId: user.id,
+      createdByEmail: user.email ?? null,
+    });
+
     revalidatePath("/");
       return {
         success: true,
@@ -1174,6 +1284,7 @@ export async function addWebsiteKnowledgeAsset(
           originalFileName: updated.originalFileName,
           mimeType: updated.mimeType,
           createdAt: updated.createdAt,
+          updatedAt: updated.updatedAt,
         },
       };
     } catch (error) {
@@ -1206,6 +1317,7 @@ export async function retryWebsiteKnowledgeAssetIngestion(
       if (asset.type !== "url") return { success: false, error: "Not a website asset" };
 
     await requireSettingsWriteAccess(asset.workspaceSettings.clientId);
+    const user = await requireAuthUser();
 
     const url = (asset.fileUrl || "").trim();
     if (!url) return { success: false, error: "Missing URL" };
@@ -1237,6 +1349,21 @@ export async function retryWebsiteKnowledgeAssetIngestion(
       data: { textContent: notes || null },
     });
 
+    await recordKnowledgeAssetRevision({
+      clientId: asset.workspaceSettings.clientId,
+      workspaceSettingsId: updated.workspaceSettingsId,
+      asset: {
+        id: updated.id,
+        name: updated.name,
+        type: updated.type,
+        fileUrl: updated.fileUrl,
+        textContent: updated.textContent,
+      },
+      action: "UPDATE",
+      createdByUserId: user.id,
+      createdByEmail: user.email ?? null,
+    });
+
     revalidatePath("/");
       return {
         success: true,
@@ -1249,6 +1376,7 @@ export async function retryWebsiteKnowledgeAssetIngestion(
           originalFileName: updated.originalFileName,
           mimeType: updated.mimeType,
           createdAt: updated.createdAt,
+          updatedAt: updated.updatedAt,
         },
       };
     } catch (error) {
@@ -1268,14 +1396,38 @@ export async function updateAssetTextContent(
   try {
     const asset = await prisma.knowledgeAsset.findUnique({
       where: { id: assetId },
-      select: { id: true, workspaceSettings: { select: { clientId: true } } },
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        fileUrl: true,
+        textContent: true,
+        workspaceSettingsId: true,
+        workspaceSettings: { select: { clientId: true } },
+      },
     });
     if (!asset) return { success: false, error: "Asset not found" };
     await requireSettingsWriteAccess(asset.workspaceSettings.clientId);
+    const user = await requireAuthUser();
 
-    await prisma.knowledgeAsset.update({
+    const updated = await prisma.knowledgeAsset.update({
       where: { id: assetId },
       data: { textContent },
+    });
+
+    await recordKnowledgeAssetRevision({
+      clientId: asset.workspaceSettings.clientId,
+      workspaceSettingsId: asset.workspaceSettingsId,
+      asset: {
+        id: updated.id,
+        name: updated.name,
+        type: updated.type,
+        fileUrl: updated.fileUrl,
+        textContent: updated.textContent,
+      },
+      action: "UPDATE",
+      createdByUserId: user.id,
+      createdByEmail: user.email ?? null,
     });
 
     revalidatePath("/");
@@ -1309,6 +1461,86 @@ export async function deleteKnowledgeAsset(
   } catch (error) {
     console.error("Failed to delete knowledge asset:", error);
     return { success: false, error: "Failed to delete asset" };
+  }
+}
+
+export async function getKnowledgeAssetRevisions(
+  clientId: string | null | undefined,
+  assetId: string
+): Promise<{ success: boolean; data?: KnowledgeAssetRevisionRecord[]; error?: string }> {
+  try {
+    if (!clientId) return { success: false, error: "No workspace selected" };
+    await requireClientAdminAccess(clientId);
+
+    const revisions = await prisma.knowledgeAssetRevision.findMany({
+      where: { clientId, knowledgeAssetId: assetId },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        knowledgeAssetId: true,
+        name: true,
+        type: true,
+        textContent: true,
+        action: true,
+        createdAt: true,
+        createdByEmail: true,
+      },
+    });
+
+    return { success: true, data: revisions };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to load asset history" };
+  }
+}
+
+export async function rollbackKnowledgeAssetRevision(
+  clientId: string | null | undefined,
+  revisionId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!clientId) return { success: false, error: "No workspace selected" };
+    const { userId, userEmail } = await requireClientAdminAccess(clientId);
+
+    const revision = await prisma.knowledgeAssetRevision.findFirst({
+      where: { id: revisionId, clientId },
+      select: {
+        knowledgeAssetId: true,
+        name: true,
+        type: true,
+        fileUrl: true,
+        textContent: true,
+        workspaceSettingsId: true,
+      },
+    });
+    if (!revision) return { success: false, error: "Revision not found" };
+
+    const updated = await prisma.knowledgeAsset.update({
+      where: { id: revision.knowledgeAssetId },
+      data: {
+        name: revision.name,
+        textContent: revision.textContent,
+      },
+    });
+
+    await recordKnowledgeAssetRevision({
+      clientId,
+      workspaceSettingsId: revision.workspaceSettingsId,
+      asset: {
+        id: updated.id,
+        name: updated.name,
+        type: updated.type,
+        fileUrl: updated.fileUrl,
+        textContent: updated.textContent,
+      },
+      action: "ROLLBACK",
+      createdByUserId: userId,
+      createdByEmail: userEmail ?? null,
+    });
+
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to rollback asset" };
   }
 }
 

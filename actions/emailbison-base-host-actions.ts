@@ -130,7 +130,7 @@ export async function createEmailBisonBaseHost(input: {
 }): Promise<{ success: boolean; data?: EmailBisonBaseHostRow; error?: string }> {
   try {
     const user = await requireAuthUser();
-    const isAdmin = await isGlobalAdminUser(user.id);
+    const isAdmin = await isGlobalAdminUser(user.id, user.email);
     if (!isAdmin) return { success: false, error: "Unauthorized" };
 
     const host = parseHostOnly(input.host);
@@ -156,7 +156,7 @@ export async function createEmailBisonBaseHost(input: {
 export async function deleteEmailBisonBaseHost(id: string): Promise<{ success: boolean; error?: string }> {
   try {
     const user = await requireAuthUser();
-    const isAdmin = await isGlobalAdminUser(user.id);
+    const isAdmin = await isGlobalAdminUser(user.id, user.email);
     if (!isAdmin) return { success: false, error: "Unauthorized" };
 
     await prisma.emailBisonBaseHost.delete({ where: { id } });

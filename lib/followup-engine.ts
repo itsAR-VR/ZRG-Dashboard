@@ -3,12 +3,12 @@ import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequenc
 import { runStructuredJsonPrompt, runTextPrompt } from "@/lib/ai/prompt-runner";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
 import { updateUnipileConnectionHealth } from "@/lib/workspace-integration-health";
-import { sendSmsSystem } from "@/lib/system-sender";
+import { sendLinkedInMessageSystem, sendSmsSystem } from "@/lib/system-sender";
 import { sendEmailReply } from "@/actions/email-actions";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
-import { formatAvailabilitySlots } from "@/lib/availability-format";
+import { formatAvailabilitySlotLabel, formatAvailabilitySlots } from "@/lib/availability-format";
 import { selectDistributedAvailabilitySlots } from "@/lib/availability-distribution";
 import { getWorkspaceSlotOfferCountsForRange, incrementWorkspaceSlotOffersBatch } from "@/lib/slot-offer-ledger";
 import { computeStepDeltaMs } from "@/lib/followup-schedule";
@@ -24,7 +24,7 @@ import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { getBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
-import type { AvailabilitySource } from "@prisma/client";
+import type { AvailabilitySource, Prisma } from "@prisma/client";
 import { selectBookingTargetForLead } from "@/lib/booking-target-selector";
 import { resolveFollowUpPersonaContext, type FollowUpPersonaContext } from "@/lib/followup-persona";
 import {
@@ -33,6 +33,13 @@ import {
   type FollowUpTemplateValueKey,
   type FollowUpTemplateValues,
 } from "@/lib/followup-template";
+import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
+import { sendEmailReplySystem } from "@/lib/email-send";
+import {
+  runMeetingOverseerExtraction,
+  selectOfferedSlotByPreference,
+  shouldRunMeetingOverseer,
+} from "@/lib/meeting-overseer";
 
 // =============================================================================
 // Types
@@ -69,6 +76,17 @@ interface WorkspaceSettings {
   meetingBookingProvider?: "GHL" | "CALENDLY" | null;
   calendlyEventTypeLink?: string | null;
 }
+
+type LeadForAutoBookingConfirmation = Prisma.LeadGetPayload<{
+  include: {
+    client: {
+      include: {
+        emailBisonBaseHost: { select: { host: true } };
+        settings: true;
+      };
+    };
+  };
+}>;
 
 interface ExecutionResult {
   success: boolean;
@@ -2643,6 +2661,65 @@ export async function detectMeetingAcceptedIntent(
   }
 }
 
+function buildAutoBookingConfirmationMessage(opts: {
+  channel: "sms" | "email" | "linkedin";
+  slotLabel: string;
+  bookingLink: string | null;
+}): string {
+  const base = `You're booked for ${opts.slotLabel}.`;
+  if (!opts.bookingLink) return base;
+  if (opts.channel === "sms") {
+    return `${base} Reschedule: ${opts.bookingLink}`;
+  }
+  return `${base} If you need to reschedule, use ${opts.bookingLink}.`;
+}
+
+async function sendAutoBookingConfirmation(opts: {
+  lead: LeadForAutoBookingConfirmation;
+  channel: "sms" | "email" | "linkedin";
+  slot: OfferedSlot;
+  timeZone: string;
+  bookingLink: string | null;
+}): Promise<{ success: boolean; error?: string }> {
+  if (!opts.lead) return { success: false, error: "Lead not found" };
+
+  const slotLabel = formatAvailabilitySlotLabel({
+    datetimeUtcIso: opts.slot.datetime,
+    timeZone: opts.timeZone,
+    mode: "explicit_tz",
+  }).label;
+
+  const message = buildAutoBookingConfirmationMessage({
+    channel: opts.channel,
+    slotLabel,
+    bookingLink: opts.bookingLink,
+  });
+
+  if (opts.channel === "sms") {
+    const result = await sendSmsSystem(opts.lead.id, message, { sentBy: "ai" });
+    return { success: result.success, error: result.error };
+  }
+
+  if (opts.channel === "linkedin") {
+    const result = await sendLinkedInMessageSystem(opts.lead.id, message, { sentBy: "ai" });
+    return { success: result.success, error: result.error };
+  }
+
+  const provider = resolveEmailIntegrationProvider(opts.lead.client);
+  if (!provider) {
+    return { success: false, error: "No email provider configured" };
+  }
+
+  const result = await sendEmailReplySystem({
+    lead: opts.lead,
+    provider,
+    messageContent: message,
+    sentBy: "ai",
+  });
+
+  return { success: result.success, error: result.error };
+}
+
 /**
  * Process an incoming message for auto-booking
  * Called when a new inbound message is received
@@ -2650,19 +2727,26 @@ export async function detectMeetingAcceptedIntent(
 export async function processMessageForAutoBooking(
   leadId: string,
   messageBody: string,
-  meta?: { channel?: "sms" | "email" | "linkedin" }
+  meta?: { channel?: "sms" | "email" | "linkedin"; messageId?: string | null }
 ): Promise<{
   booked: boolean;
   appointmentId?: string;
   error?: string;
 }> {
   try {
-    const leadMeta = await prisma.lead.findUnique({
+    const lead = await prisma.lead.findUnique({
       where: { id: leadId },
-      select: { id: true, clientId: true },
+      include: {
+        client: {
+          include: {
+            emailBisonBaseHost: { select: { host: true } },
+            settings: true,
+          },
+        },
+      },
     });
 
-    if (!leadMeta) {
+    if (!lead) {
       return { booked: false, error: "Lead not found" };
     }
 
@@ -2675,88 +2759,178 @@ export async function processMessageForAutoBooking(
     // Get offered slots for this lead
     const offeredSlots = await getOfferedSlots(leadId);
     const preferred = meta?.channel;
+    const messageTrimmed = (messageBody || "").trim();
 
     const pickTaskType = async (): Promise<"sms" | "email" | "linkedin" | "call"> => {
-      const lead = await prisma.lead.findUnique({
-        where: { id: leadId },
-        select: { phone: true, email: true, linkedinUrl: true },
-      });
-
       const preferredSendable =
         preferred === "sms"
-          ? Boolean(lead?.phone)
+          ? Boolean(lead.phone)
           : preferred === "email"
-            ? Boolean(lead?.email)
+            ? Boolean(lead.email)
             : preferred === "linkedin"
-              ? Boolean(lead?.linkedinUrl)
+              ? Boolean(lead.linkedinUrl)
               : false;
 
       if (preferredSendable) return preferred!;
-      if (lead?.phone) return "sms";
-      if (lead?.email) return "email";
-      if (lead?.linkedinUrl) return "linkedin";
+      if (lead.phone) return "sms";
+      if (lead.email) return "email";
+      if (lead.linkedinUrl) return "linkedin";
       return "call";
+    };
+
+    const resolveConfirmationChannel = async (): Promise<"sms" | "email" | "linkedin" | "call"> => {
+      if (!preferred) return pickTaskType();
+
+      const preferredSendable =
+        preferred === "sms"
+          ? Boolean(lead.phone)
+          : preferred === "email"
+            ? Boolean(lead.email)
+            : preferred === "linkedin"
+              ? Boolean(lead.linkedinUrl)
+              : false;
+
+      return preferredSendable ? preferred : "call";
+    };
+
+    const shouldOversee = shouldRunMeetingOverseer({
+      messageText: messageTrimmed,
+      sentimentTag: lead.sentimentTag,
+      offeredSlotsCount: offeredSlots.length,
+    });
+
+    const overseerDecision = shouldOversee
+      ? await runMeetingOverseerExtraction({
+          clientId: lead.clientId,
+          leadId: lead.id,
+          messageId: meta?.messageId,
+          messageText: messageTrimmed,
+          offeredSlots,
+        })
+      : null;
+
+    const tzResult = await ensureLeadTimezone(leadId);
+    const timeZone = tzResult.timezone || lead.timezone || lead.client.settings?.timezone || "UTC";
+
+    const createClarificationTask = async (suggestedMessage: string) => {
+      const type = await pickTaskType();
+      await prisma.followUpTask.create({
+        data: {
+          leadId,
+          type,
+          dueDate: new Date(),
+          status: "pending",
+          suggestedMessage,
+        },
+      });
+
+      if (lead.sentimentTag !== "Blacklist") {
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: { sentimentTag: "Follow Up" },
+        });
+      }
     };
 
     // Scenario 1/2: lead accepts one of the offered slots.
     if (offeredSlots.length > 0) {
-      // Detect if the message indicates meeting acceptance
-      const isMeetingAccepted = await detectMeetingAcceptedIntent(messageBody, {
-        clientId: leadMeta.clientId,
-        leadId: leadMeta.id,
-      });
-      if (!isMeetingAccepted) {
+      const shouldAccept = overseerDecision
+        ? overseerDecision.is_scheduling_related && overseerDecision.intent === "accept_offer"
+        : await detectMeetingAcceptedIntent(messageBody, {
+            clientId: lead.clientId,
+            leadId: lead.id,
+          });
+
+      if (!shouldAccept) {
         return { booked: false };
       }
 
-      // Parse which slot they accepted
-      const acceptedSlot = await parseAcceptedTimeFromMessage(messageBody, offeredSlots, {
-        clientId: leadMeta.clientId,
-        leadId: leadMeta.id,
-      });
-      if (!acceptedSlot) {
-        // Ambiguous acceptance (e.g., "yes/sounds good") — do NOT auto-book.
-        // Create a follow-up task with a suggested clarification message.
-        const lead = await prisma.lead.findUnique({
-          where: { id: leadId },
-          select: { id: true, sentimentTag: true },
-        });
+      if (overseerDecision?.needs_clarification) {
+        const clarification =
+          overseerDecision.relative_preference && overseerDecision.relative_preference.includes("week")
+            ? "Got it — which day and time later this week works best for you?"
+            : "Got it — what day and time works best for you?";
+        await createClarificationTask(clarification);
+        return { booked: false };
+      }
 
-        const type = await pickTaskType();
+      let acceptedSlot: OfferedSlot | null = null;
+
+      if (overseerDecision?.accepted_slot_index) {
+        const index = Math.trunc(overseerDecision.accepted_slot_index) - 1;
+        if (index >= 0 && index < offeredSlots.length) {
+          acceptedSlot = offeredSlots[index]!;
+        }
+      }
+
+      if (!acceptedSlot && overseerDecision?.acceptance_specificity === "specific") {
+        acceptedSlot = await parseAcceptedTimeFromMessage(messageBody, offeredSlots, {
+          clientId: lead.clientId,
+          leadId: lead.id,
+        });
+      }
+
+      if (!acceptedSlot && (overseerDecision?.preferred_day_of_week || overseerDecision?.preferred_time_of_day)) {
+        acceptedSlot = selectOfferedSlotByPreference({
+          offeredSlots,
+          timeZone,
+          preferredDayOfWeek: overseerDecision?.preferred_day_of_week ?? null,
+          preferredTimeOfDay: overseerDecision?.preferred_time_of_day ?? null,
+        });
+      }
+
+      if (!acceptedSlot && overseerDecision?.acceptance_specificity === "generic") {
+        acceptedSlot = offeredSlots[0] ?? null;
+      }
+
+      if (!acceptedSlot && !overseerDecision) {
+        acceptedSlot = await parseAcceptedTimeFromMessage(messageBody, offeredSlots, {
+          clientId: lead.clientId,
+          leadId: lead.id,
+        });
+      }
+
+      if (!acceptedSlot) {
         const options = offeredSlots.slice(0, 2);
         const suggestion =
           options.length === 2
             ? `Which works better for you: (1) ${options[0]!.label} or (2) ${options[1]!.label}?`
             : `Which of these works best for you: ${offeredSlots.map((s) => s.label).join(" or ")}?`;
-
-        await prisma.followUpTask.create({
-          data: {
-            leadId,
-            type,
-            dueDate: new Date(),
-            status: "pending",
-            suggestedMessage: suggestion,
-          },
-        });
-
-        // Surface in Follow-ups tab
-        if (lead?.sentimentTag !== "Blacklist") {
-          await prisma.lead.update({
-            where: { id: leadId },
-            data: { sentimentTag: "Follow Up" },
-          });
-        }
-
+        await createClarificationTask(suggestion);
         return { booked: false };
       }
 
-      // Book the accepted slot
       const bookingResult = await bookMeetingForLead(leadId, acceptedSlot.datetime, {
         availabilitySource: acceptedSlot.availabilitySource,
       });
+
       if (bookingResult.success) {
-        // Send Slack notification for auto-booking
         await sendAutoBookingSlackNotification(leadId, acceptedSlot);
+
+        const bookingLink = await getBookingLink(lead.clientId, lead.client.settings);
+        const confirmationChannel = await resolveConfirmationChannel();
+        if (confirmationChannel !== "call") {
+          const confirmResult = await sendAutoBookingConfirmation({
+            lead,
+            channel: confirmationChannel,
+            slot: acceptedSlot,
+            timeZone,
+            bookingLink,
+          });
+          if (!confirmResult.success) {
+            return {
+              booked: true,
+              appointmentId: bookingResult.appointmentId,
+              error: confirmResult.error || "Booked, but failed to send confirmation",
+            };
+          }
+        } else if (preferred) {
+          return {
+            booked: true,
+            appointmentId: bookingResult.appointmentId,
+            error: "Booked, but inbound channel is unavailable for confirmation",
+          };
+        }
 
         return {
           booked: true,
@@ -2768,7 +2942,6 @@ export async function processMessageForAutoBooking(
     }
 
     // Scenario 3: no offered slots; lead proposes their own time.
-    const messageTrimmed = (messageBody || "").trim();
     const looksLikeTimeProposal =
       /\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(day)?\b/i.test(messageTrimmed) ||
       /\b(tomorrow|today|next week|next)\b/i.test(messageTrimmed) ||
@@ -2776,15 +2949,26 @@ export async function processMessageForAutoBooking(
       /\b\d{1,2}\/\d{1,2}\b/.test(messageTrimmed) ||
       /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(messageTrimmed);
 
-    if (!looksLikeTimeProposal) {
+    const shouldParseProposal = overseerDecision
+      ? overseerDecision.is_scheduling_related && overseerDecision.intent === "propose_time"
+      : looksLikeTimeProposal;
+
+    if (!shouldParseProposal) {
       return { booked: false };
     }
 
-    const tzResult = await ensureLeadTimezone(leadId);
+    if (overseerDecision?.needs_clarification) {
+      const clarification =
+        overseerDecision.relative_preference && overseerDecision.relative_preference.includes("week")
+          ? "Got it — which day and time works best for you?"
+          : "Got it — what day and time works best for you?";
+      await createClarificationTask(clarification);
+      return { booked: false };
+    }
 
     const proposed = await parseProposedTimesFromMessage(messageTrimmed, {
-      clientId: leadMeta.clientId,
-      leadId: leadMeta.id,
+      clientId: lead.clientId,
+      leadId: lead.id,
       nowUtcIso: new Date().toISOString(),
       leadTimezone: tzResult.timezone || null,
     });
@@ -2812,13 +2996,13 @@ export async function processMessageForAutoBooking(
     }
 
     const bookingTarget = await selectBookingTargetForLead({
-      clientId: leadMeta.clientId,
-      leadId: leadMeta.id,
+      clientId: lead.clientId,
+      leadId: lead.id,
     });
     const requestedAvailabilitySource: AvailabilitySource =
       bookingTarget.target === "no_questions" ? "DIRECT_BOOK" : "DEFAULT";
 
-    const availability = await getWorkspaceAvailabilitySlotsUtc(leadMeta.clientId, {
+    const availability = await getWorkspaceAvailabilitySlotsUtc(lead.clientId, {
       refreshIfStale: true,
       availabilitySource: requestedAvailabilitySource,
     });
@@ -2833,6 +3017,49 @@ export async function processMessageForAutoBooking(
         availabilitySource: availability.availabilitySource,
       });
       if (bookingResult.success) {
+        const matchLabel = formatAvailabilitySlotLabel({
+          datetimeUtcIso: match,
+          timeZone,
+          mode: "explicit_tz",
+        }).label;
+
+        await sendAutoBookingSlackNotification(leadId, {
+          datetime: match,
+          label: matchLabel,
+          offeredAt: new Date().toISOString(),
+          availabilitySource: availability.availabilitySource,
+        });
+
+        const bookingLink = await getBookingLink(lead.clientId, lead.client.settings);
+        const confirmationChannel = await resolveConfirmationChannel();
+        if (confirmationChannel !== "call") {
+          const confirmResult = await sendAutoBookingConfirmation({
+            lead,
+            channel: confirmationChannel,
+            slot: {
+              datetime: match,
+              label: matchLabel,
+              offeredAt: new Date().toISOString(),
+              availabilitySource: availability.availabilitySource,
+            },
+            timeZone,
+            bookingLink,
+          });
+          if (!confirmResult.success) {
+            return {
+              booked: true,
+              appointmentId: bookingResult.appointmentId,
+              error: confirmResult.error || "Booked, but failed to send confirmation",
+            };
+          }
+        } else if (preferred) {
+          return {
+            booked: true,
+            appointmentId: bookingResult.appointmentId,
+            error: "Booked, but inbound channel is unavailable for confirmation",
+          };
+        }
+
         return { booked: true, appointmentId: bookingResult.appointmentId };
       }
       return { booked: false, error: bookingResult.error };
@@ -2840,12 +3067,11 @@ export async function processMessageForAutoBooking(
 
     // Not safe to auto-book (low confidence or no matching availability). Offer alternatives.
     const type = await pickTaskType();
-    const timeZone = tzResult.timezone || "UTC";
     const mode = "explicit_tz"; // Always show explicit timezone (e.g., "EST", "PST")
 
     const anchor = new Date();
     const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
-    const offerCounts = await getWorkspaceSlotOfferCountsForRange(leadMeta.clientId, anchor, rangeEnd, {
+    const offerCounts = await getWorkspaceSlotOfferCountsForRange(lead.clientId, anchor, rangeEnd, {
       availabilitySource: availability.availabilitySource,
     });
 
@@ -2875,7 +3101,7 @@ export async function processMessageForAutoBooking(
 
       await storeOfferedSlots(leadId, offered);
       incrementWorkspaceSlotOffersBatch({
-        clientId: leadMeta.clientId,
+        clientId: lead.clientId,
         slotUtcIsoList: offered.map((s) => s.datetime),
         offeredAt: new Date(offeredAtIso),
         availabilitySource: availability.availabilitySource,

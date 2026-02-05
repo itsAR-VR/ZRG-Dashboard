@@ -106,7 +106,7 @@ export type ObservabilitySummary = {
   errorSamples: ErrorSampleGroup[];
 };
 
-async function requireWorkspaceAdmin(clientId: string): Promise<{ userId: string }> {
+async function requireWorkspaceAdmin(clientId: string): Promise<{ userId: string; userEmail: string | null }> {
   return requireClientAdminAccess(clientId);
 }
 
@@ -482,7 +482,7 @@ export async function savePromptOverride(
   override: PromptOverrideInput
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await requireWorkspaceAdmin(clientId);
+    const { userId, userEmail } = await requireWorkspaceAdmin(clientId);
 
     // Compute baseContentHash from the current registry template (prevents index drift)
     const baseContentHash = computePromptMessageBaseHash({
@@ -498,7 +498,7 @@ export async function savePromptOverride(
       };
     }
 
-    await prisma.promptOverride.upsert({
+    const saved = await prisma.promptOverride.upsert({
       where: {
         clientId_promptKey_role_index: {
           clientId,
@@ -518,6 +518,22 @@ export async function savePromptOverride(
       update: {
         baseContentHash,
         content: override.content,
+      },
+      select: { id: true },
+    });
+
+    await prisma.promptOverrideRevision.create({
+      data: {
+        clientId,
+        promptOverrideId: saved.id,
+        promptKey: override.promptKey,
+        role: override.role,
+        index: override.index,
+        baseContentHash,
+        content: override.content,
+        action: "UPSERT",
+        createdByUserId: userId,
+        createdByEmail: userEmail ?? null,
       },
     });
 
@@ -541,11 +557,33 @@ export async function resetPromptOverride(
   index: number
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await requireWorkspaceAdmin(clientId);
+    const { userId, userEmail } = await requireWorkspaceAdmin(clientId);
+
+    const existing = await prisma.promptOverride.findFirst({
+      where: { clientId, promptKey, role, index },
+      select: { id: true, baseContentHash: true, content: true },
+    });
 
     await prisma.promptOverride.deleteMany({
       where: { clientId, promptKey, role, index },
     });
+
+    if (existing) {
+      await prisma.promptOverrideRevision.create({
+        data: {
+          clientId,
+          promptOverrideId: existing.id,
+          promptKey,
+          role,
+          index,
+          baseContentHash: existing.baseContentHash,
+          content: existing.content,
+          action: "RESET",
+          createdByUserId: userId,
+          createdByEmail: userEmail ?? null,
+        },
+      });
+    }
 
     return { success: true };
   } catch (error) {
@@ -613,6 +651,133 @@ export async function getPromptOverrides(clientId: string): Promise<{
   }
 }
 
+export type PromptOverrideRevisionRecord = {
+  id: string;
+  promptKey: string;
+  role: string;
+  index: number;
+  content: string | null;
+  action: string;
+  createdAt: Date;
+  createdByEmail: string | null;
+};
+
+export async function getPromptOverrideRevisions(
+  clientId: string,
+  promptKey: string,
+  role: string,
+  index: number
+): Promise<{ success: boolean; data?: PromptOverrideRevisionRecord[]; error?: string }> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    const revisions = await prisma.promptOverrideRevision.findMany({
+      where: { clientId, promptKey, role, index },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        promptKey: true,
+        role: true,
+        index: true,
+        content: true,
+        action: true,
+        createdAt: true,
+        createdByEmail: true,
+      },
+    });
+
+    return { success: true, data: revisions };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to load prompt history" };
+  }
+}
+
+export async function rollbackPromptOverrideRevision(
+  clientId: string,
+  revisionId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { userId, userEmail } = await requireWorkspaceAdmin(clientId);
+
+    const revision = await prisma.promptOverrideRevision.findFirst({
+      where: { id: revisionId, clientId },
+      select: { promptKey: true, role: true, index: true, content: true },
+    });
+    if (!revision) return { success: false, error: "Revision not found" };
+
+    if (!revision.content) {
+      await prisma.promptOverride.deleteMany({
+        where: { clientId, promptKey: revision.promptKey, role: revision.role, index: revision.index },
+      });
+      await prisma.promptOverrideRevision.create({
+        data: {
+          clientId,
+          promptKey: revision.promptKey,
+          role: revision.role,
+          index: revision.index,
+          content: null,
+          action: "ROLLBACK_DELETE",
+          createdByUserId: userId,
+          createdByEmail: userEmail ?? null,
+        },
+      });
+      return { success: true };
+    }
+
+    const baseContentHash = computePromptMessageBaseHash({
+      promptKey: revision.promptKey,
+      role: revision.role as PromptRole,
+      index: revision.index,
+    });
+    if (!baseContentHash) {
+      return { success: false, error: "Prompt target invalid" };
+    }
+
+    const override = await prisma.promptOverride.upsert({
+      where: {
+        clientId_promptKey_role_index: {
+          clientId,
+          promptKey: revision.promptKey,
+          role: revision.role,
+          index: revision.index,
+        },
+      },
+      create: {
+        clientId,
+        promptKey: revision.promptKey,
+        role: revision.role,
+        index: revision.index,
+        baseContentHash,
+        content: revision.content,
+      },
+      update: {
+        baseContentHash,
+        content: revision.content,
+      },
+      select: { id: true },
+    });
+
+    await prisma.promptOverrideRevision.create({
+      data: {
+        clientId,
+        promptOverrideId: override.id,
+        promptKey: revision.promptKey,
+        role: revision.role,
+        index: revision.index,
+        baseContentHash,
+        content: revision.content,
+        action: "ROLLBACK",
+        createdByUserId: userId,
+        createdByEmail: userEmail ?? null,
+      },
+    });
+
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to rollback prompt" };
+  }
+}
+
 // =============================================================================
 // Prompt Snippet Override CRUD (Phase 47e)
 // =============================================================================
@@ -669,12 +834,25 @@ export async function savePromptSnippetOverride(
   content: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await requireWorkspaceAdmin(clientId);
+    const { userId, userEmail } = await requireWorkspaceAdmin(clientId);
 
-    await prisma.promptSnippetOverride.upsert({
+    const saved = await prisma.promptSnippetOverride.upsert({
       where: { clientId_snippetKey: { clientId, snippetKey } },
       create: { clientId, snippetKey, content },
       update: { content },
+      select: { id: true },
+    });
+
+    await prisma.promptSnippetOverrideRevision.create({
+      data: {
+        clientId,
+        promptSnippetOverrideId: saved.id,
+        snippetKey,
+        content,
+        action: "UPSERT",
+        createdByUserId: userId,
+        createdByEmail: userEmail ?? null,
+      },
     });
 
     return { success: true };
@@ -695,11 +873,30 @@ export async function resetPromptSnippetOverride(
   snippetKey: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    await requireWorkspaceAdmin(clientId);
+    const { userId, userEmail } = await requireWorkspaceAdmin(clientId);
+
+    const existing = await prisma.promptSnippetOverride.findFirst({
+      where: { clientId, snippetKey },
+      select: { id: true, content: true },
+    });
 
     await prisma.promptSnippetOverride.deleteMany({
       where: { clientId, snippetKey },
     });
+
+    if (existing) {
+      await prisma.promptSnippetOverrideRevision.create({
+        data: {
+          clientId,
+          promptSnippetOverrideId: existing.id,
+          snippetKey,
+          content: existing.content,
+          action: "RESET",
+          createdByUserId: userId,
+          createdByEmail: userEmail ?? null,
+        },
+      });
+    }
 
     return { success: true };
   } catch (error) {
@@ -708,6 +905,96 @@ export async function resetPromptSnippetOverride(
       success: false,
       error: error instanceof Error ? error.message : "Failed to reset snippet override",
     };
+  }
+}
+
+export type PromptSnippetOverrideRevisionRecord = {
+  id: string;
+  snippetKey: string;
+  content: string | null;
+  action: string;
+  createdAt: Date;
+  createdByEmail: string | null;
+};
+
+export async function getPromptSnippetOverrideRevisions(
+  clientId: string,
+  snippetKey: string
+): Promise<{ success: boolean; data?: PromptSnippetOverrideRevisionRecord[]; error?: string }> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    const revisions = await prisma.promptSnippetOverrideRevision.findMany({
+      where: { clientId, snippetKey },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        snippetKey: true,
+        content: true,
+        action: true,
+        createdAt: true,
+        createdByEmail: true,
+      },
+    });
+
+    return { success: true, data: revisions };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to load snippet history" };
+  }
+}
+
+export async function rollbackPromptSnippetOverrideRevision(
+  clientId: string,
+  revisionId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const { userId, userEmail } = await requireWorkspaceAdmin(clientId);
+
+    const revision = await prisma.promptSnippetOverrideRevision.findFirst({
+      where: { id: revisionId, clientId },
+      select: { snippetKey: true, content: true },
+    });
+    if (!revision) return { success: false, error: "Revision not found" };
+
+    if (!revision.content) {
+      await prisma.promptSnippetOverride.deleteMany({
+        where: { clientId, snippetKey: revision.snippetKey },
+      });
+      await prisma.promptSnippetOverrideRevision.create({
+        data: {
+          clientId,
+          snippetKey: revision.snippetKey,
+          content: null,
+          action: "ROLLBACK_DELETE",
+          createdByUserId: userId,
+          createdByEmail: userEmail ?? null,
+        },
+      });
+      return { success: true };
+    }
+
+    const override = await prisma.promptSnippetOverride.upsert({
+      where: { clientId_snippetKey: { clientId, snippetKey: revision.snippetKey } },
+      create: { clientId, snippetKey: revision.snippetKey, content: revision.content },
+      update: { content: revision.content },
+      select: { id: true },
+    });
+
+    await prisma.promptSnippetOverrideRevision.create({
+      data: {
+        clientId,
+        promptSnippetOverrideId: override.id,
+        snippetKey: revision.snippetKey,
+        content: revision.content,
+        action: "ROLLBACK",
+        createdByUserId: userId,
+        createdByEmail: userEmail ?? null,
+      },
+    });
+
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : "Failed to rollback snippet override" };
   }
 }
 

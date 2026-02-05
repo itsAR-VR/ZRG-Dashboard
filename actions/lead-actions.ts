@@ -789,7 +789,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
 export async function getConversation(leadId: string, channelFilter?: Channel) {
   try {
     const user = await requireAuthUser();
-    const accessible = await getAccessibleClientIdsForUser(user.id);
+    const accessible = await getAccessibleClientIdsForUser(user.id, user.email);
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       include: {
@@ -945,7 +945,7 @@ export async function getLeadWorkspaceId(leadId: string): Promise<{
 }> {
   try {
     const user = await requireAuthUser();
-    const accessible = await getAccessibleClientIdsForUser(user.id);
+    const accessible = await getAccessibleClientIdsForUser(user.id, user.email);
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       select: { clientId: true },

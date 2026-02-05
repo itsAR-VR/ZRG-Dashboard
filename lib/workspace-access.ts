@@ -8,6 +8,36 @@ export type AuthUser = {
   email: string | null;
 };
 
+const DEFAULT_SUPER_ADMIN_EMAILS = ["ar@soramedia.co", "abdur@zeroriskgrowth.com"];
+
+function parseAllowlist(value: string | undefined | null): string[] {
+  return (value || "")
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function getSuperAdminEmails(): string[] {
+  const env = parseAllowlist(process.env.SUPER_ADMIN_EMAILS);
+  return env.length > 0 ? env : DEFAULT_SUPER_ADMIN_EMAILS;
+}
+
+function getSuperAdminUserIds(): string[] {
+  return parseAllowlist(process.env.SUPER_ADMIN_USER_IDS);
+}
+
+export function isTrueSuperAdminUser(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  const email = (user.email || "").trim().toLowerCase();
+  const userId = (user.id || "").trim().toLowerCase();
+  if (!email && !userId) return false;
+  const emailAllowlist = getSuperAdminEmails();
+  const idAllowlist = getSuperAdminUserIds();
+  if (email && emailAllowlist.includes(email)) return true;
+  if (userId && idAllowlist.includes(userId)) return true;
+  return false;
+}
+
 export async function requireAuthUser(): Promise<AuthUser> {
   const supabase = await createSupabaseClient();
 
@@ -29,7 +59,11 @@ export async function requireAuthUser(): Promise<AuthUser> {
   }
 }
 
-export async function getAccessibleClientIdsForUser(userId: string): Promise<string[]> {
+export async function getAccessibleClientIdsForUser(userId: string, userEmail?: string | null): Promise<string[]> {
+  if (isTrueSuperAdminUser({ id: userId, email: userEmail ?? null })) {
+    const all = await prisma.client.findMany({ select: { id: true } });
+    return all.map((row) => row.id);
+  }
   const [owned, member] = await Promise.all([
     prisma.client.findMany({
       where: { userId },
@@ -49,7 +83,10 @@ export async function getAccessibleClientIdsForUser(userId: string): Promise<str
 
 export async function requireClientAccess(clientId: string): Promise<{ userId: string; userEmail: string | null }> {
   const user = await requireAuthUser();
-  const accessible = await getAccessibleClientIdsForUser(user.id);
+  if (isTrueSuperAdminUser(user)) {
+    return { userId: user.id, userEmail: user.email };
+  }
+  const accessible = await getAccessibleClientIdsForUser(user.id, user.email);
   if (!accessible.includes(clientId)) {
     throw new Error("Unauthorized");
   }
@@ -58,6 +95,9 @@ export async function requireClientAccess(clientId: string): Promise<{ userId: s
 
 export async function requireClientAdminAccess(clientId: string): Promise<{ userId: string; userEmail: string | null }> {
   const user = await requireAuthUser();
+  if (isTrueSuperAdminUser(user)) {
+    return { userId: user.id, userEmail: user.email };
+  }
 
   const [client, adminMembership] = await Promise.all([
     prisma.client.findUnique({
@@ -81,7 +121,7 @@ export async function resolveClientScope(clientId?: string | null): Promise<{
   clientIds: string[];
 }> {
   const user = await requireAuthUser();
-  const accessible = await getAccessibleClientIdsForUser(user.id);
+  const accessible = await getAccessibleClientIdsForUser(user.id, user.email);
 
   if (clientId) {
     if (!accessible.includes(clientId)) throw new Error("Unauthorized");
@@ -91,12 +131,8 @@ export async function resolveClientScope(clientId?: string | null): Promise<{
   return { userId: user.id, clientIds: accessible };
 }
 
-export async function isGlobalAdminUser(userId: string): Promise<boolean> {
-  const [ownedCount, adminCount] = await Promise.all([
-    prisma.client.count({ where: { userId } }),
-    prisma.clientMember.count({ where: { userId, role: ClientMemberRole.ADMIN } }),
-  ]);
-  return ownedCount > 0 || adminCount > 0;
+export async function isGlobalAdminUser(userId: string, userEmail?: string | null): Promise<boolean> {
+  return isTrueSuperAdminUser({ id: userId, email: userEmail ?? null });
 }
 
 export async function requireLeadAccessById(leadId: string): Promise<{ userId: string; clientId: string }> {
@@ -106,7 +142,7 @@ export async function requireLeadAccessById(leadId: string): Promise<{ userId: s
       where: { id: leadId },
       select: { clientId: true },
     }),
-    getAccessibleClientIdsForUser(user.id),
+    getAccessibleClientIdsForUser(user.id, user.email),
   ]);
 
   if (!lead) throw new Error("Lead not found");
