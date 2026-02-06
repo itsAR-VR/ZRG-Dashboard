@@ -47,12 +47,12 @@ export async function recoverStaleSendingDrafts(opts?: {
 
       if (!message) result.missingMessages++;
 
-      await prisma.aIDraft.updateMany({
+      const updated = await prisma.aIDraft.updateMany({
         where: { id: draft.id, status: "sending" },
         data: { status: "approved", responseDisposition },
       });
 
-      result.recovered++;
+      if (updated.count > 0) result.recovered++;
     } catch (error) {
       result.errors.push(`${draft.id}: ${error instanceof Error ? error.message : "Unknown error"}`);
     }

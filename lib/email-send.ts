@@ -687,7 +687,7 @@ export async function sendEmailReplyForDraftSystem(
       const responseDisposition = computeAIDraftResponseDisposition({
         sentBy,
         draftContent: draft.content,
-        finalContent: messageContent,
+        finalContent: existingMessage.body,
       });
       await prisma.aIDraft
         .updateMany({
@@ -755,7 +755,7 @@ export async function sendEmailReplyForDraftSystem(
         const responseDisposition = computeAIDraftResponseDisposition({
           sentBy,
           draftContent: draft.content,
-          finalContent: messageContent,
+          finalContent: afterClaimMessage.body,
         });
         await prisma.aIDraft
           .updateMany({

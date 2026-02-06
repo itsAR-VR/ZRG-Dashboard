@@ -40,6 +40,7 @@ import {
   selectOfferedSlotByPreference,
   shouldRunMeetingOverseer,
 } from "@/lib/meeting-overseer";
+import { computeAIDraftResponseDisposition } from "@/lib/ai-drafts/response-disposition";
 
 // =============================================================================
 // Types
@@ -1326,7 +1327,7 @@ export async function executeFollowUpStep(
             channel: "email",
           },
         },
-        select: { id: true, status: true, leadId: true },
+        select: { id: true, status: true, leadId: true, content: true },
       });
 
       if (!draft) {
@@ -1339,7 +1340,7 @@ export async function executeFollowUpStep(
               channel: "email",
               triggerMessageId: followupDraftKey,
             },
-            select: { id: true, status: true, leadId: true },
+            select: { id: true, status: true, leadId: true, content: true },
           });
         } catch (error) {
           if (isPrismaUniqueConstraintError(error)) {
@@ -1350,7 +1351,7 @@ export async function executeFollowUpStep(
                   channel: "email",
                 },
               },
-              select: { id: true, status: true, leadId: true },
+              select: { id: true, status: true, leadId: true, content: true },
             });
           } else {
             throw error;
@@ -1381,12 +1382,21 @@ export async function executeFollowUpStep(
       if (draft.status === "sending") {
         const inFlightMessage = await prisma.message.findFirst({
           where: { aiDraftId: draft.id },
-          select: { id: true },
+          select: { id: true, body: true, sentBy: true },
         });
 
         if (inFlightMessage) {
+          const responseDisposition = computeAIDraftResponseDisposition({
+            sentBy: (inFlightMessage.sentBy as "ai" | "setter") ?? null,
+            draftContent: draft.content ?? "",
+            finalContent: inFlightMessage.body,
+          });
+
           await prisma.aIDraft
-            .updateMany({ where: { id: draft.id, status: "sending" }, data: { status: "approved" } })
+            .updateMany({
+              where: { id: draft.id, status: "sending" },
+              data: { status: "approved", responseDisposition },
+            })
             .catch(() => undefined);
 
           return {

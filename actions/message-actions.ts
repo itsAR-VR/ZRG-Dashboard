@@ -1189,7 +1189,7 @@ export async function approveAndSendDraftSystem(
     // Determine which parts have already been sent (idempotent retries).
     const existing = await prisma.message.findMany({
       where: { aiDraftId: draftId },
-      select: { id: true, aiDraftPartIndex: true },
+      select: { id: true, aiDraftPartIndex: true, body: true },
     });
 
     const sentPartIndexes = new Set<number>();
@@ -1200,6 +1200,20 @@ export async function approveAndSendDraftSystem(
     const pendingPartIndexes: number[] = [];
     for (let i = 0; i < parts.length; i++) {
       if (!sentPartIndexes.has(i)) pendingPartIndexes.push(i);
+    }
+
+    // Derive disposition content from sent bodies when all parts already sent.
+    let dispositionContent = finalContent;
+    if (pendingPartIndexes.length === 0 && existing.length > 0) {
+      const sorted = [...existing].sort(
+        (a, b) => (a.aiDraftPartIndex ?? 0) - (b.aiDraftPartIndex ?? 0)
+      );
+      const sentBodies = sorted
+        .map((m) => m.body)
+        .filter((body): body is string => Boolean(body));
+      if (sentBodies.length > 0) {
+        dispositionContent = sentBodies.join("\n");
+      }
     }
 
     // Send missing parts sequentially.
@@ -1229,7 +1243,7 @@ export async function approveAndSendDraftSystem(
     const responseDisposition = computeAIDraftResponseDisposition({
       sentBy: opts.sentBy,
       draftContent: draft.content,
-      finalContent,
+      finalContent: dispositionContent,
     });
 
     await prisma.aIDraft.update({

@@ -61,17 +61,30 @@ export async function getAiDraftResponseOutcomeStats(opts?: {
 
       return await tx.$queryRaw<Array<{ channel: string; responseDisposition: string; count: number }>>(
         Prisma.sql`
+          with draft_send_time as (
+            select
+              d.id as "aiDraftId",
+              min(m."sentAt") as "sentAt"
+            from "AIDraft" d
+            join "Lead" l on l.id = d."leadId"
+            join "Message" m on m."aiDraftId" = d.id
+            where l."clientId" in (${Prisma.join(scope.clientIds)})
+              and m.direction = 'outbound'
+            group by d.id
+          )
           select
             d.channel as "channel",
             d."responseDisposition" as "responseDisposition",
             count(distinct d.id)::int as "count"
           from "AIDraft" d
           join "Lead" l on l.id = d."leadId"
+          join draft_send_time dst on dst."aiDraftId" = d.id
           left join "EmailCampaign" ec on ec.id = l."emailCampaignId"
           where l."clientId" in (${Prisma.join(scope.clientIds)})
             and d."responseDisposition" is not null
-            and d."updatedAt" >= ${from}
-            and d."updatedAt" < ${to}
+            -- Intentionally excludes drafts without outbound Messages: no stable send-time anchor.
+            and dst."sentAt" >= ${from}
+            and dst."sentAt" < ${to}
             and (d.channel != 'email' or ec."responseMode" = 'AI_AUTO_SEND')
           group by d.channel, d."responseDisposition"
         `
@@ -119,4 +132,3 @@ export async function getAiDraftResponseOutcomeStats(opts?: {
     return { success: false, error: "Failed to fetch AI draft outcomes" };
   }
 }
-

@@ -25,6 +25,8 @@ const TEST_FILES = [
   "lib/__tests__/availability-format.test.ts",
   "lib/__tests__/reactivation-sequence-prereqs.test.ts",
   "lib/__tests__/response-disposition-idempotent.test.ts",
+  "lib/__tests__/followup-engine-disposition.test.ts",
+  "lib/__tests__/analytics-windowing-stable.test.ts",
   "lib/__tests__/send-outcome-unknown-recovery.test.ts",
   "lib/__tests__/stale-sending-recovery.test.ts",
   "lib/__tests__/workspace-capabilities.test.ts",
