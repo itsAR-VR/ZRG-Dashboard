@@ -385,6 +385,54 @@ Examples of non-acceptance:
 
 Respond with only "YES" or "NO".`;
 
+const FOLLOWUP_PARSE_PROPOSED_TIMES_SYSTEM_TEMPLATE = `You extract proposed meeting start times from a message and output UTC ISO datetimes.
+
+Context:
+- now_utc: {{nowUtcIso}}
+- lead_timezone: {{leadTimezone}} (IANA timezone or UNKNOWN)
+- lead_memory_context (redacted): {{leadMemoryContext}}
+
+Rules:
+- Only output proposed_start_times_utc when the message clearly proposes a specific date + time to meet.
+- Use lead_timezone to interpret dates/times. If lead_timezone is UNKNOWN and the message does not include an explicit timezone, set needs_timezone_clarification=true and output an empty list.
+- If times are vague (e.g., "tomorrow morning", "next week", "sometime Tuesday"), output an empty list and set confidence <= 0.5.
+- Output at most 3 start times, sorted ascending, deduped.
+
+Output JSON.`;
+
+const FOLLOWUP_BOOKING_GATE_SYSTEM_TEMPLATE = `You are a safety gate for automatic meeting booking.
+
+Context:
+- now_utc: {{nowUtcIso}}
+- lead_timezone: {{leadTimezone}} (IANA timezone or UNKNOWN)
+- lead_memory_context (redacted): {{leadMemoryContext}}
+- scenario: one of:
+  - accept_offered (lead accepts an offered slot we already showed them)
+  - proposed_time_match (lead proposes a time; we matched it to availability)
+  - day_only (lead gives only a day preference like "Thursday"; we picked a slot on that day)
+
+Task:
+- Decide if it is safe to auto-book the slot based on the inbound message and structured context.
+
+Rules:
+- For proposed_time_match: if lead_timezone is UNKNOWN and the message does not include an explicit timezone, decision MUST be "needs_clarification".
+- For accept_offered: do NOT require lead_timezone. If the accepted slot is clear, prefer "approve" unless the message indicates deferral or non-scheduling.
+- For day_only: do NOT require lead_timezone. If the message clearly indicates booking intent for that day, prefer "approve" unless the message indicates deferral or non-scheduling.
+- If the message is ambiguous or not clearly scheduling-related, decision should be "deny" or "needs_clarification".
+- Do NOT quote the user's message in the output.
+- clarification_message must be a single short sentence question (no links, no PII).
+- rationale must be <= 200 characters.
+- issues must be a short list of categories (no quotes, no PII).
+
+Output JSON only:
+{
+  "decision": "approve" | "needs_clarification" | "deny",
+  "confidence": number,
+  "issues": string[],
+  "clarification_message": string | null,
+  "rationale": string
+}`;
+
 const MEETING_OVERSEER_EXTRACT_SYSTEM_TEMPLATE = `You are a scheduling overseer. Determine if the inbound message is about scheduling and extract timing preferences.
 
 Offered slots (if any):
@@ -1097,6 +1145,18 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       ],
     },
     {
+      key: "followup.parse_proposed_times.v1",
+      featureId: "followup.parse_proposed_times",
+      name: "Follow-up: Parse Proposed Times",
+      description: "Extracts concrete proposed meeting start times (UTC ISO) from a message.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [
+        { role: "system", content: FOLLOWUP_PARSE_PROPOSED_TIMES_SYSTEM_TEMPLATE },
+        { role: "user", content: "{{message}}" },
+      ],
+    },
+    {
       key: "followup.detect_meeting_accept_intent.v1",
       featureId: "followup.detect_meeting_accept_intent",
       name: "Follow-up: Detect Meeting Acceptance Intent",
@@ -1105,6 +1165,18 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       apiType: "responses",
       messages: [
         { role: "system", content: FOLLOWUP_ACCEPT_INTENT_SYSTEM_TEMPLATE },
+        { role: "user", content: "{{message}}" },
+      ],
+    },
+    {
+      key: "followup.booking.gate.v1",
+      featureId: "followup.booking.gate",
+      name: "Follow-up: Booking Gate",
+      description: "Safety gate before auto-booking a matched slot based on the inbound message.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [
+        { role: "system", content: FOLLOWUP_BOOKING_GATE_SYSTEM_TEMPLATE },
         { role: "user", content: "{{message}}" },
       ],
     },

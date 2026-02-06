@@ -1,6 +1,7 @@
 import { isPrismaUniqueConstraintError, prisma } from "@/lib/prisma";
 import type { FollowUpStepData, StepCondition } from "@/actions/followup-sequence-actions";
 import { runStructuredJsonPrompt, runTextPrompt } from "@/lib/ai/prompt-runner";
+import { sanitizeAiInteractionMetadata } from "@/lib/ai/openai-telemetry";
 import { sendLinkedInConnectionRequest, sendLinkedInDM } from "@/lib/unipile-api";
 import { updateUnipileConnectionHealth } from "@/lib/workspace-integration-health";
 import { sendLinkedInMessageSystem, sendSmsSystem } from "@/lib/system-sender";
@@ -39,8 +40,15 @@ import {
   runMeetingOverseerExtraction,
   selectOfferedSlotByPreference,
   shouldRunMeetingOverseer,
+  type MeetingOverseerExtractDecision,
 } from "@/lib/meeting-overseer";
 import { computeAIDraftResponseDisposition } from "@/lib/ai-drafts/response-disposition";
+import {
+  buildLeadContextBundle,
+  buildLeadContextBundleTelemetryMetadata,
+  isLeadContextBundleGloballyDisabled,
+} from "@/lib/lead-context-bundle";
+import { CONFIDENCE_POLICY_KEYS, resolveThreshold } from "@/lib/confidence-policy";
 
 // =============================================================================
 // Types
@@ -67,6 +75,10 @@ interface WorkspaceSettings {
   workEndTime: string | null;
   airtableMode?: boolean | null;
   followUpsPausedUntil?: Date | null;
+  // Phase 112: shared LeadContextBundle rollout toggles (super-admin controlled).
+  leadContextBundleEnabled?: boolean | null;
+  leadContextBundleBudgets?: unknown | null;
+  followupBookingGateEnabled?: boolean | null;
   // New fields for template variables
   aiPersonaName: string | null;
   aiSignature: string | null;
@@ -153,6 +165,19 @@ const WEEKDAY_TO_INDEX: Record<string, number> = {
   Sat: 6,
 };
 
+const WEEKDAY_TOKEN_TO_INDEX: Record<string, number> = {
+  sun: 0,
+  mon: 1,
+  tue: 2,
+  wed: 3,
+  thu: 4,
+  fri: 5,
+  sat: 6,
+};
+
+export type WeekdayToken = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+type TimeOfDayToken = "morning" | "afternoon" | "evening";
+
 function safeTimeZone(timeZone: string | null | undefined, fallback: string): string {
   const tz = timeZone || fallback;
   try {
@@ -162,6 +187,42 @@ function safeTimeZone(timeZone: string | null | undefined, fallback: string): st
   } catch {
     return fallback;
   }
+}
+
+function resolveWeekdayToken(token: string | null | undefined): number | null {
+  if (!token) return null;
+  const normalized = token.trim().toLowerCase();
+  return WEEKDAY_TOKEN_TO_INDEX[normalized] ?? null;
+}
+
+function normalizeTimeOfDayToken(value: string | null | undefined): TimeOfDayToken | null {
+  const raw = (value || "").trim().toLowerCase();
+  if (!raw) return null;
+  if (raw.startsWith("morn")) return "morning";
+  if (raw.startsWith("after")) return "afternoon";
+  if (raw.startsWith("even")) return "evening";
+  return null;
+}
+
+function matchesTimeOfDay(hour: number, pref: TimeOfDayToken): boolean {
+  if (!Number.isFinite(hour)) return false;
+  if (pref === "morning") return hour >= 5 && hour < 12;
+  if (pref === "afternoon") return hour >= 12 && hour < 17;
+  if (pref === "evening") return hour >= 17 && hour < 21;
+  return false;
+}
+
+function detectWeekdayTokenFromText(message: string): WeekdayToken | null {
+  const text = (message || "").toLowerCase();
+  if (!text) return null;
+  if (/\bmon(day)?\b/.test(text)) return "mon";
+  if (/\btue(s|sday)?\b/.test(text) || /\btues(day)?\b/.test(text)) return "tue";
+  if (/\bwed(nesday)?\b/.test(text)) return "wed";
+  if (/\bthu(rs|rsday)?\b/.test(text) || /\bthur(s|sday)?\b/.test(text)) return "thu";
+  if (/\bfri(day)?\b/.test(text)) return "fri";
+  if (/\bsat(urday)?\b/.test(text)) return "sat";
+  if (/\bsun(day)?\b/.test(text)) return "sun";
+  return null;
 }
 
 function getZonedDateTimeParts(date: Date, timeZone: string): {
@@ -206,6 +267,45 @@ function getZonedDateTimeParts(date: Date, timeZone: string): {
     hour: Number.isFinite(hour) ? hour : 0,
     minute: Number.isFinite(minute) ? minute : 0,
   };
+}
+
+/**
+ * Select the earliest UTC slot that falls on the requested weekday in the given timezone.
+ * Returns a normalized UTC ISO string, or null when no matching slot exists.
+ */
+export function selectEarliestSlotForWeekday(opts: {
+  slotsUtcIso: string[];
+  weekdayToken: string;
+  timeZone: string;
+  preferredTimeOfDay?: string | null;
+}): string | null {
+  const weekdayIndex = resolveWeekdayToken(opts.weekdayToken);
+  if (weekdayIndex === null) return null;
+
+  const timeZone = safeTimeZone(opts.timeZone, "UTC");
+  const timePreference = normalizeTimeOfDayToken(opts.preferredTimeOfDay ?? null);
+  let bestUtcAny: Date | null = null;
+  let bestUtcByTimeOfDay: Date | null = null;
+
+  for (const slotUtcIso of opts.slotsUtcIso) {
+    const slotUtc = new Date(slotUtcIso);
+    if (Number.isNaN(slotUtc.getTime())) continue;
+
+    const parts = getZonedDateTimeParts(slotUtc, timeZone);
+    if (parts.weekday !== weekdayIndex) continue;
+
+    if (!bestUtcAny || slotUtc.getTime() < bestUtcAny.getTime()) bestUtcAny = slotUtc;
+    if (
+      timePreference &&
+      matchesTimeOfDay(parts.hour, timePreference) &&
+      (!bestUtcByTimeOfDay || slotUtc.getTime() < bestUtcByTimeOfDay.getTime())
+    ) {
+      bestUtcByTimeOfDay = slotUtc;
+    }
+  }
+
+  const bestUtc = bestUtcByTimeOfDay || bestUtcAny;
+  return bestUtc ? bestUtc.toISOString() : null;
 }
 
 function addDaysToYmd(ymd: { year: number; month: number; day: number }, days: number): {
@@ -2528,6 +2628,19 @@ function normalizeUtcIsoOrNull(value: string): string | null {
   return d.toISOString();
 }
 
+async function updateAiInteractionMetadata(interactionId: string | null, metadata: unknown): Promise<void> {
+  if (!interactionId) return;
+  const sanitized = sanitizeAiInteractionMetadata(metadata);
+  if (!sanitized) return;
+  await prisma.aIInteraction
+    .update({
+      where: { id: interactionId },
+      data: { metadata: sanitized },
+      select: { id: true },
+    })
+    .catch(() => undefined);
+}
+
 export async function parseProposedTimesFromMessage(
   message: string,
   meta: {
@@ -2543,6 +2656,48 @@ export async function parseProposedTimesFromMessage(
   const nowUtcIso = normalizeUtcIsoOrNull(meta.nowUtcIso) || new Date().toISOString();
   const leadTimezone = (meta.leadTimezone || "").trim();
   const tzForPrompt = leadTimezone || "UNKNOWN";
+
+  let leadMemoryContextForPrompt = "";
+  let bundleMetadata: unknown = undefined;
+
+  if (meta.leadId) {
+    const settings = await prisma.workspaceSettings
+      .findUnique({
+        where: { clientId: meta.clientId },
+        select: {
+          clientId: true,
+          serviceDescription: true,
+          aiGoals: true,
+          leadContextBundleEnabled: true,
+          leadContextBundleBudgets: true,
+        },
+      })
+      .catch(() => null);
+
+    const leadContextBundleEnabled =
+      Boolean((settings as any)?.leadContextBundleEnabled) && !isLeadContextBundleGloballyDisabled();
+
+    if (leadContextBundleEnabled) {
+      try {
+        const bundle = await buildLeadContextBundle({
+          clientId: meta.clientId,
+          leadId: meta.leadId,
+          profile: "followup_parse",
+          timeoutMs: 500,
+          settings,
+        });
+
+        leadMemoryContextForPrompt = bundle.leadMemoryContext || "";
+        bundleMetadata = buildLeadContextBundleTelemetryMetadata(bundle);
+      } catch (error) {
+        console.warn("[FollowupEngine] LeadContextBundle build failed for followup parse; continuing without memory context", {
+          clientId: meta.clientId,
+          leadId: meta.leadId,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
 
   const schema = {
     type: "object",
@@ -2602,6 +2757,7 @@ export async function parseProposedTimesFromMessage(
 Context:
 - now_utc: {{nowUtcIso}}
 - lead_timezone: {{leadTimezone}} (IANA timezone or UNKNOWN)
+- lead_memory_context (redacted): {{leadMemoryContext}}
 
 Rules:
 - Only output proposed_start_times_utc when the message clearly proposes a specific date + time to meet.
@@ -2610,7 +2766,8 @@ Rules:
 - Output at most 3 start times, sorted ascending, deduped.
 
 Output JSON.`,
-    templateVars: { nowUtcIso, leadTimezone: tzForPrompt },
+    metadata: bundleMetadata,
+    templateVars: { nowUtcIso, leadTimezone: tzForPrompt, leadMemoryContext: leadMemoryContextForPrompt || "None." },
     input: messageTrimmed,
     schemaName: "proposed_times",
     schema,
@@ -2626,7 +2783,293 @@ Output JSON.`,
   });
 
   if (!result.success) return null;
+
+  void updateAiInteractionMetadata(result.telemetry.interactionId, {
+    ...(bundleMetadata && typeof bundleMetadata === "object" ? (bundleMetadata as any) : {}),
+    followupParse: {
+      confidence: result.data.confidence,
+      proposedTimesCount: result.data.proposedStartTimesUtc.length,
+      needsTimezoneClarification: result.data.needsTimezoneClarification,
+    },
+  });
+
   return result.data;
+}
+
+type FollowupBookingGateDecision = {
+  decision: "approve" | "needs_clarification" | "deny";
+  confidence: number;
+  issues: string[];
+  clarificationMessage: string | null;
+  rationale: string;
+};
+
+type FollowupBookingGateScenario = "accept_offered" | "proposed_time_match" | "day_only";
+
+function formatOfferedSlotsForGate(offeredSlots: OfferedSlot[]): string {
+  const list = Array.isArray(offeredSlots) ? offeredSlots : [];
+  if (list.length === 0) return "None.";
+  return list
+    .slice(0, 8)
+    .map((s, idx) => `${idx + 1}. ${s.label} (${s.datetime})`)
+    .join("\n");
+}
+
+function summarizeOverseerForGate(decision: MeetingOverseerExtractDecision | null | undefined): string {
+  if (!decision) return "None.";
+  return JSON.stringify(
+    {
+      is_scheduling_related: decision.is_scheduling_related,
+      intent: decision.intent,
+      acceptance_specificity: decision.acceptance_specificity,
+      accepted_slot_index: decision.accepted_slot_index,
+      preferred_day_of_week: decision.preferred_day_of_week,
+      preferred_time_of_day: decision.preferred_time_of_day,
+      relative_preference: decision.relative_preference,
+      relative_preference_detail: decision.relative_preference_detail,
+      needs_clarification: decision.needs_clarification,
+      clarification_reason: decision.clarification_reason,
+      confidence: decision.confidence,
+    },
+    null,
+    2
+  );
+}
+
+async function runFollowupBookingGate(opts: {
+  clientId: string;
+  leadId: string;
+  scenario: FollowupBookingGateScenario;
+  messageId?: string | null;
+  messageText: string;
+  matchedSlotUtc: string;
+  parseConfidence?: number;
+  nowUtcIso: string;
+  leadTimezone: string | null;
+  offeredSlots?: OfferedSlot[];
+  acceptedSlot?: OfferedSlot | null;
+  overseerDecision?: MeetingOverseerExtractDecision | null;
+  retryCount?: number;
+  retryContext?: string;
+}): Promise<FollowupBookingGateDecision | null> {
+  const messageTrimmed = (opts.messageText || "").trim();
+  if (!messageTrimmed) return null;
+
+  const tzForPrompt = (opts.leadTimezone || "").trim() || "UNKNOWN";
+
+  let leadMemoryContextForPrompt = "";
+  let bundleMetadata: unknown = undefined;
+
+  try {
+    const bundle = await buildLeadContextBundle({
+      clientId: opts.clientId,
+      leadId: opts.leadId,
+      profile: "followup_booking_gate",
+      timeoutMs: 500,
+    });
+
+    leadMemoryContextForPrompt = bundle.leadMemoryContext || "";
+    bundleMetadata = buildLeadContextBundleTelemetryMetadata(bundle);
+  } catch (error) {
+    console.warn("[FollowupEngine] LeadContextBundle build failed for booking gate; skipping gate", {
+      clientId: opts.clientId,
+      leadId: opts.leadId,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+
+  const retryContext = (opts.retryContext || "").trim().slice(0, 1200);
+
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["decision", "confidence", "issues", "clarification_message", "rationale"],
+    properties: {
+      decision: { type: "string", enum: ["approve", "needs_clarification", "deny"] },
+      confidence: { type: "number", minimum: 0, maximum: 1 },
+      issues: { type: "array", items: { type: "string" }, default: [] },
+      clarification_message: { type: ["string", "null"] },
+      rationale: { type: "string" },
+    },
+  } as const;
+
+  const validate = (
+    value: unknown
+  ): { success: true; data: FollowupBookingGateDecision } | { success: false; error: string } => {
+    if (!value || typeof value !== "object") return { success: false, error: "not_an_object" };
+    const record = value as Record<string, unknown>;
+
+    const decision = record.decision;
+    const confidence = record.confidence;
+    const issues = record.issues;
+    const clarification = record.clarification_message;
+    const rationale = record.rationale;
+
+    if (decision !== "approve" && decision !== "needs_clarification" && decision !== "deny") {
+      return { success: false, error: "invalid_decision" };
+    }
+    if (typeof confidence !== "number" || !Number.isFinite(confidence)) return { success: false, error: "confidence_not_number" };
+    if (!Array.isArray(issues) || !issues.every((i) => typeof i === "string")) return { success: false, error: "issues_not_string_array" };
+    if (!(clarification === null || typeof clarification === "string")) {
+      return { success: false, error: "clarification_message_invalid" };
+    }
+    if (typeof rationale !== "string") return { success: false, error: "rationale_not_string" };
+
+    return {
+      success: true,
+      data: {
+        decision,
+        confidence: Math.max(0, Math.min(1, confidence)),
+        issues: issues.map((s) => s.trim()).filter(Boolean).slice(0, 8),
+        clarificationMessage: typeof clarification === "string" ? clarification.trim().slice(0, 280) : null,
+        rationale: rationale.trim().slice(0, 200),
+      },
+    };
+  };
+
+  const model = "gpt-5-mini";
+  const input = `Inbound message:
+${messageTrimmed}
+
+Scenario:
+${opts.scenario}
+
+Retry context (if any):
+${retryContext || "None."}
+
+Offered slots (if any):
+${formatOfferedSlotsForGate(opts.offeredSlots || [])}
+
+Accepted slot (if any):
+${opts.acceptedSlot ? `${opts.acceptedSlot.label} (${opts.acceptedSlot.datetime})` : "None."}
+
+Matched availability slot (UTC ISO):
+${opts.matchedSlotUtc}
+
+Parse confidence (if any):
+${typeof opts.parseConfidence === "number" ? opts.parseConfidence : "N/A"}
+
+Overseer extraction summary (if any):
+${summarizeOverseerForGate(opts.overseerDecision)}
+
+now_utc:
+${opts.nowUtcIso}
+
+lead_timezone:
+${tzForPrompt}`;
+
+  const result = await runStructuredJsonPrompt<FollowupBookingGateDecision>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    promptKey: "followup.booking.gate.v1",
+    featureId: "followup.booking.gate",
+    model,
+    reasoningEffort: "minimal",
+    maxAttempts: 3,
+    systemFallback: `You are a safety gate for automatic meeting booking.
+
+Context:
+- now_utc: {{nowUtcIso}}
+- lead_timezone: {{leadTimezone}} (IANA timezone or UNKNOWN)
+- lead_memory_context (redacted): {{leadMemoryContext}}
+- scenario: accept_offered | proposed_time_match | day_only
+
+Task:
+- Decide if it is safe to auto-book the slot based on the inbound message and structured context.
+
+Rules:
+- For proposed_time_match: if lead_timezone is UNKNOWN and the message does not include an explicit timezone, decision MUST be "needs_clarification".
+- For accept_offered: do NOT require lead_timezone. Prefer "approve" when the accepted slot is clear unless the message indicates deferral or non-scheduling.
+- For day_only: do NOT require lead_timezone. Prefer "approve" when the message indicates booking intent for that day unless the message indicates deferral or non-scheduling.
+- If the message is ambiguous or not clearly scheduling-related, decision should be "deny" or "needs_clarification".
+- Do NOT quote the user's message in the output.
+- clarification_message must be a single short sentence question (no links, no PII).
+- rationale must be <= 200 characters.
+- issues must be a short list of categories (no quotes, no PII).
+
+Output JSON only:
+{
+  "decision": "approve" | "needs_clarification" | "deny",
+  "confidence": number,
+  "issues": string[],
+  "clarification_message": string | null,
+  "rationale": string
+}`,
+    metadata: bundleMetadata,
+    templateVars: {
+      nowUtcIso: opts.nowUtcIso,
+      leadTimezone: tzForPrompt,
+      leadMemoryContext: leadMemoryContextForPrompt || "None.",
+    },
+    input,
+    schemaName: "followup_booking_gate",
+    schema,
+    budget: { min: 256, max: 900, retryMax: 1600, overheadTokens: 128, outputScale: 0.2, preferApiCount: true },
+    validate,
+  });
+
+  if (!result.success) return null;
+
+  void updateAiInteractionMetadata(result.telemetry.interactionId, {
+    ...(bundleMetadata && typeof bundleMetadata === "object" ? (bundleMetadata as any) : {}),
+    bookingGate: {
+      scenario: opts.scenario,
+      retryCount: Math.max(0, Math.min(1, Math.trunc(opts.retryCount ?? 0))),
+      decision: result.data.decision,
+      confidence: result.data.confidence,
+      issuesCount: result.data.issues.length,
+    },
+  });
+
+  if (opts.messageId) {
+    const payload = {
+      decision: result.data.decision,
+      confidence: result.data.confidence,
+      issues: result.data.issues,
+      clarification_message: result.data.clarificationMessage,
+      rationale: result.data.rationale,
+      scenario: opts.scenario,
+      retry_count: Math.max(0, Math.min(1, Math.trunc(opts.retryCount ?? 0))),
+      matched_slot_utc: opts.matchedSlotUtc,
+      parse_confidence: typeof opts.parseConfidence === "number" ? opts.parseConfidence : null,
+    };
+    await prisma.meetingOverseerDecision
+      .upsert({
+        where: { messageId_stage: { messageId: opts.messageId, stage: "booking_gate" } },
+        create: {
+          messageId: opts.messageId,
+          leadId: opts.leadId,
+          clientId: opts.clientId,
+          stage: "booking_gate",
+          promptKey: "followup.booking.gate.v1",
+          model,
+          confidence: result.data.confidence,
+          payload,
+        },
+        update: {
+          promptKey: "followup.booking.gate.v1",
+          model,
+          confidence: result.data.confidence,
+          payload,
+        },
+        select: { id: true },
+      })
+      .catch(() => undefined);
+  }
+
+  return result.data;
+}
+
+export async function runFollowupBookingGateWithOneRetry(opts: {
+  runAttempt: (retryCount: 0 | 1) => Promise<FollowupBookingGateDecision | null>;
+}): Promise<{ gate: FollowupBookingGateDecision | null; attempts: 1 | 2 }> {
+  const first = await opts.runAttempt(0);
+  if (!first) return { gate: null, attempts: 1 };
+  if (first.decision !== "needs_clarification") return { gate: first, attempts: 1 };
+  const second = await opts.runAttempt(1);
+  return { gate: second, attempts: 2 };
 }
 
 /**
@@ -2822,6 +3265,13 @@ export async function processMessageForAutoBooking(
     const tzResult = await ensureLeadTimezone(leadId);
     const timeZone = tzResult.timezone || lead.timezone || lead.client.settings?.timezone || "UTC";
 
+    const leadContextBundleEnabled =
+      Boolean(lead.client.settings?.leadContextBundleEnabled) && !isLeadContextBundleGloballyDisabled();
+    const bookingGateEnabled =
+      leadContextBundleEnabled &&
+      Boolean(lead.client.settings?.autoBookMeetings) &&
+      Boolean(lead.client.settings?.followupBookingGateEnabled);
+
     const createClarificationTask = async (suggestedMessage: string) => {
       const type = await pickTaskType();
       await prisma.followUpTask.create({
@@ -2900,6 +3350,23 @@ export async function processMessageForAutoBooking(
         });
       }
 
+      const weekdayTokenForAcceptance =
+        overseerDecision?.preferred_day_of_week || detectWeekdayTokenFromText(messageTrimmed);
+
+      // Day-only: if the lead indicates a weekday preference, try to map it to an offered slot first.
+      // This covers cases where overseer wasn't run but offered slots include that weekday.
+      if (!acceptedSlot && weekdayTokenForAcceptance) {
+        const offeredMatch = selectOfferedSlotByPreference({
+          offeredSlots,
+          timeZone,
+          preferredDayOfWeek: weekdayTokenForAcceptance,
+          preferredTimeOfDay: null,
+        });
+        if (offeredMatch) {
+          acceptedSlot = offeredMatch;
+        }
+      }
+
       if (!acceptedSlot) {
         const options = offeredSlots.slice(0, 2);
         const suggestion =
@@ -2908,6 +3375,71 @@ export async function processMessageForAutoBooking(
             : `Which of these works best for you: ${offeredSlots.map((s) => s.label).join(" or ")}?`;
         await createClarificationTask(suggestion);
         return { booked: false };
+      }
+
+      if (bookingGateEnabled) {
+        const nowUtcIsoForGate = new Date().toISOString();
+        const acceptedSlotLabel = formatAvailabilitySlotLabel({
+          datetimeUtcIso: acceptedSlot.datetime,
+          timeZone,
+          mode: "explicit_tz",
+        }).label;
+
+        const { gate, attempts } = await runFollowupBookingGateWithOneRetry({
+          runAttempt: (retryCount) =>
+            runFollowupBookingGate({
+              clientId: lead.clientId,
+              leadId: lead.id,
+              scenario: "accept_offered",
+              messageId: meta?.messageId ?? null,
+              messageText: messageTrimmed,
+              matchedSlotUtc: acceptedSlot.datetime,
+              parseConfidence: undefined,
+              nowUtcIso: nowUtcIsoForGate,
+              leadTimezone: tzResult.timezone || null,
+              offeredSlots,
+              acceptedSlot,
+              overseerDecision,
+              retryCount,
+              retryContext:
+                retryCount === 1
+                  ? `accepted_slot_label_explicit_tz: ${acceptedSlotLabel}\noffered_slots_count: ${offeredSlots.length}`
+                  : undefined,
+            }),
+        });
+
+        if (!gate) {
+          await createClarificationTask(`Just to confirm, does ${acceptedSlot.label} work for you?`);
+          await sendAutoBookingBlockedSlackAlert({
+            leadId,
+            scenario: "accept_offered",
+            matchedSlotLabel: acceptedSlotLabel,
+            gateDecision: "error",
+            gateConfidence: null,
+            issues: null,
+            retryCount: attempts - 1,
+          });
+          return { booked: false };
+        }
+
+        if (gate.decision === "needs_clarification") {
+          await createClarificationTask(gate.clarificationMessage || "Got it — which time works best for you?");
+          await sendAutoBookingBlockedSlackAlert({
+            leadId,
+            scenario: "accept_offered",
+            matchedSlotLabel: acceptedSlotLabel,
+            gateDecision: gate.decision,
+            gateConfidence: gate.confidence,
+            issues: gate.issues,
+            retryCount: attempts - 1,
+          });
+          return { booked: false };
+        }
+
+        if (gate.decision === "deny") {
+          await createClarificationTask(`Just to confirm, does ${acceptedSlot.label} work for you?`);
+          return { booked: false };
+        }
       }
 
       const bookingResult = await bookMeetingForLead(leadId, acceptedSlot.datetime, {
@@ -2976,10 +3508,11 @@ export async function processMessageForAutoBooking(
       return { booked: false };
     }
 
+    const nowUtcIsoForParse = new Date().toISOString();
     const proposed = await parseProposedTimesFromMessage(messageTrimmed, {
       clientId: lead.clientId,
       leadId: lead.id,
-      nowUtcIso: new Date().toISOString(),
+      nowUtcIso: nowUtcIsoForParse,
       leadTimezone: tzResult.timezone || null,
     });
 
@@ -3001,10 +3534,6 @@ export async function processMessageForAutoBooking(
       return { booked: false };
     }
 
-    if (proposed.proposedStartTimesUtc.length === 0) {
-      return { booked: false };
-    }
-
     const bookingTarget = await selectBookingTargetForLead({
       clientId: lead.clientId,
       leadId: lead.id,
@@ -3020,9 +3549,87 @@ export async function processMessageForAutoBooking(
 
     const match = proposed.proposedStartTimesUtc.find((iso) => availabilitySet.has(iso)) ?? null;
 
-    const HIGH_CONFIDENCE_THRESHOLD = 0.9;
+    let highConfidenceThreshold = 0.9;
+    try {
+      highConfidenceThreshold = await resolveThreshold(
+        lead.clientId,
+        CONFIDENCE_POLICY_KEYS.followupAutoBook,
+        "proposed_times_match_threshold"
+      );
+    } catch (error) {
+      console.warn("[FollowupEngine] Failed to resolve followup auto-book threshold; falling back to 0.9", {
+        clientId: lead.clientId,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      highConfidenceThreshold = 0.9;
+    }
 
-    if (match && proposed.confidence >= HIGH_CONFIDENCE_THRESHOLD) {
+    let shouldAutoBookMatched = Boolean(match) && proposed.confidence >= highConfidenceThreshold;
+
+    if (shouldAutoBookMatched && bookingGateEnabled) {
+      const matchLabel = formatAvailabilitySlotLabel({
+        datetimeUtcIso: match!,
+        timeZone,
+        mode: "explicit_tz",
+      }).label;
+
+      const { gate, attempts } = await runFollowupBookingGateWithOneRetry({
+        runAttempt: (retryCount) =>
+          runFollowupBookingGate({
+            clientId: lead.clientId,
+            leadId: lead.id,
+            scenario: "proposed_time_match",
+            messageId: meta?.messageId ?? null,
+            messageText: messageTrimmed,
+            matchedSlotUtc: match!,
+            parseConfidence: proposed.confidence,
+            nowUtcIso: nowUtcIsoForParse,
+            leadTimezone: tzResult.timezone || null,
+            offeredSlots,
+            acceptedSlot: null,
+            overseerDecision,
+            retryCount,
+            retryContext:
+              retryCount === 1
+                ? `matched_slot_label_explicit_tz: ${matchLabel}\nparse_confidence: ${proposed.confidence.toFixed(3)}`
+                : undefined,
+          }),
+      });
+
+      if (!gate) {
+        await createClarificationTask(`Just to confirm, does ${matchLabel} work for you?`);
+        await sendAutoBookingBlockedSlackAlert({
+          leadId,
+          scenario: "proposed_time_match",
+          matchedSlotLabel: matchLabel,
+          gateDecision: "error",
+          gateConfidence: null,
+          issues: null,
+          retryCount: attempts - 1,
+        });
+        return { booked: false };
+      }
+
+      if (gate.decision === "needs_clarification") {
+        await createClarificationTask(gate.clarificationMessage || "What timezone are you in for that time?");
+        await sendAutoBookingBlockedSlackAlert({
+          leadId,
+          scenario: "proposed_time_match",
+          matchedSlotLabel: matchLabel,
+          gateDecision: gate.decision,
+          gateConfidence: gate.confidence,
+          issues: gate.issues,
+          retryCount: attempts - 1,
+        });
+        return { booked: false };
+      }
+
+      if (gate.decision === "deny") {
+        shouldAutoBookMatched = false;
+      }
+    }
+
+    if (match && shouldAutoBookMatched) {
       const bookingResult = await bookMeetingForLead(leadId, match, {
         availabilitySource: availability.availabilitySource,
       });
@@ -3075,6 +3682,128 @@ export async function processMessageForAutoBooking(
       return { booked: false, error: bookingResult.error };
     }
 
+    // Day-only fallback: lead gives a weekday preference without an exact time (e.g., "Thursday works").
+    if (!match && proposed.proposedStartTimesUtc.length === 0) {
+      const weekdayToken = overseerDecision?.preferred_day_of_week || detectWeekdayTokenFromText(messageTrimmed);
+      if (weekdayToken) {
+        const dayOnlyUtcIso = selectEarliestSlotForWeekday({
+          slotsUtcIso: availability.slotsUtc,
+          weekdayToken,
+          timeZone,
+          preferredTimeOfDay: overseerDecision?.preferred_time_of_day ?? null,
+        });
+
+        if (dayOnlyUtcIso) {
+          const dayOnlyLabel = formatAvailabilitySlotLabel({
+            datetimeUtcIso: dayOnlyUtcIso,
+            timeZone,
+            mode: "explicit_tz",
+          }).label;
+
+          const dayOnlySlot: OfferedSlot = {
+            datetime: dayOnlyUtcIso,
+            label: dayOnlyLabel,
+            offeredAt: new Date().toISOString(),
+            availabilitySource: availability.availabilitySource,
+          };
+
+          if (bookingGateEnabled) {
+            const { gate, attempts } = await runFollowupBookingGateWithOneRetry({
+              runAttempt: (retryCount) =>
+                runFollowupBookingGate({
+                  clientId: lead.clientId,
+                  leadId: lead.id,
+                  scenario: "day_only",
+                  messageId: meta?.messageId ?? null,
+                  messageText: messageTrimmed,
+                  matchedSlotUtc: dayOnlyUtcIso,
+                  parseConfidence: undefined,
+                  nowUtcIso: nowUtcIsoForParse,
+                  leadTimezone: tzResult.timezone || null,
+                  offeredSlots,
+                  acceptedSlot: null,
+                  overseerDecision,
+                  retryCount,
+                  retryContext:
+                    retryCount === 1
+                      ? `requested_weekday_token: ${weekdayToken}\nmatched_slot_label_explicit_tz: ${dayOnlyLabel}`
+                      : undefined,
+                }),
+            });
+
+            if (!gate) {
+              await createClarificationTask(`Just to confirm, does ${dayOnlyLabel} work for you?`);
+              await sendAutoBookingBlockedSlackAlert({
+                leadId,
+                scenario: "day_only",
+                matchedSlotLabel: dayOnlyLabel,
+                gateDecision: "error",
+                gateConfidence: null,
+                issues: null,
+                retryCount: attempts - 1,
+              });
+              return { booked: false };
+            }
+
+            if (gate.decision === "needs_clarification") {
+              await createClarificationTask(gate.clarificationMessage || "Got it — what time works best for you on that day?");
+              await sendAutoBookingBlockedSlackAlert({
+                leadId,
+                scenario: "day_only",
+                matchedSlotLabel: dayOnlyLabel,
+                gateDecision: gate.decision,
+                gateConfidence: gate.confidence,
+                issues: gate.issues,
+                retryCount: attempts - 1,
+              });
+              return { booked: false };
+            }
+
+            if (gate.decision === "deny") {
+              await createClarificationTask("Got it — what time works best for you on that day?");
+              return { booked: false };
+            }
+          }
+
+          const bookingResult = await bookMeetingForLead(leadId, dayOnlyUtcIso, {
+            availabilitySource: availability.availabilitySource,
+          });
+          if (bookingResult.success) {
+            await sendAutoBookingSlackNotification(leadId, dayOnlySlot);
+
+            const bookingLink = await getBookingLink(lead.clientId, lead.client.settings);
+            const confirmationChannel = await resolveConfirmationChannel();
+            if (confirmationChannel !== "call") {
+              const confirmResult = await sendAutoBookingConfirmation({
+                lead,
+                channel: confirmationChannel,
+                slot: dayOnlySlot,
+                timeZone,
+                bookingLink,
+              });
+              if (!confirmResult.success) {
+                return {
+                  booked: true,
+                  appointmentId: bookingResult.appointmentId,
+                  error: confirmResult.error || "Booked, but failed to send confirmation",
+                };
+              }
+            } else if (preferred) {
+              return {
+                booked: true,
+                appointmentId: bookingResult.appointmentId,
+                error: "Booked, but inbound channel is unavailable for confirmation",
+              };
+            }
+
+            return { booked: true, appointmentId: bookingResult.appointmentId };
+          }
+
+          return { booked: false, error: bookingResult.error };
+        }
+      }
+    }
+
     // Not safe to auto-book (low confidence or no matching availability). Offer alternatives.
     const type = await pickTaskType();
     const mode = "explicit_tz"; // Always show explicit timezone (e.g., "EST", "PST")
@@ -3117,10 +3846,15 @@ export async function processMessageForAutoBooking(
         availabilitySource: availability.availabilitySource,
       }).catch(() => undefined);
 
+      const hasExactProposal = proposed.proposedStartTimesUtc.length > 0;
       const suggestion =
         offered.length === 2
-          ? `I don’t have that exact time available — does (1) ${offered[0]!.label} or (2) ${offered[1]!.label} work instead?`
-          : `I don’t have that exact time available — does ${offered[0]!.label} work instead?`;
+          ? hasExactProposal
+            ? `I don’t have that exact time available — does (1) ${offered[0]!.label} or (2) ${offered[1]!.label} work instead?`
+            : `Does (1) ${offered[0]!.label} or (2) ${offered[1]!.label} work for you?`
+          : hasExactProposal
+            ? `I don’t have that exact time available — does ${offered[0]!.label} work instead?`
+            : `Does ${offered[0]!.label} work for you?`;
 
       await prisma.followUpTask.create({
         data: {
@@ -3207,5 +3941,63 @@ async function sendAutoBookingSlackNotification(
     });
   } catch (error) {
     console.error("Failed to send auto-booking Slack notification:", error);
+  }
+}
+
+async function sendAutoBookingBlockedSlackAlert(opts: {
+  leadId: string;
+  scenario: FollowupBookingGateScenario;
+  matchedSlotLabel: string;
+  gateDecision: "approve" | "needs_clarification" | "deny" | "error";
+  gateConfidence: number | null;
+  issues: string[] | null;
+  retryCount: number;
+}): Promise<void> {
+  try {
+    const lead = await prisma.lead.findUnique({
+      where: { id: opts.leadId },
+      include: { client: { include: { settings: true } } },
+    });
+
+    if (!lead || !lead.client.settings?.slackAlerts) return;
+
+    const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown Lead";
+
+    await sendSlackNotification({
+      text: `⚠️ Auto-Booking Blocked`,
+      blocks: [
+        {
+          type: "header",
+          text: {
+            type: "plain_text",
+            text: "⚠️ Auto-Booking Blocked",
+            emoji: true,
+          },
+        },
+        {
+          type: "section",
+          fields: [
+            { type: "mrkdwn", text: `*Lead:*\n${leadName}` },
+            { type: "mrkdwn", text: `*Workspace:*\n${lead.client.name}` },
+            { type: "mrkdwn", text: `*Scenario:*\n${opts.scenario}` },
+            { type: "mrkdwn", text: `*Slot:*\n${opts.matchedSlotLabel}` },
+            { type: "mrkdwn", text: `*Gate:*\n${opts.gateDecision}` },
+            {
+              type: "mrkdwn",
+              text: `*Confidence:*\n${
+                typeof opts.gateConfidence === "number" ? opts.gateConfidence.toFixed(2) : "N/A"
+              }`,
+            },
+            { type: "mrkdwn", text: `*Retry Count:*\n${Math.max(0, Math.trunc(opts.retryCount))}` },
+            {
+              type: "mrkdwn",
+              text: `*Issues:*\n${Array.isArray(opts.issues) && opts.issues.length > 0 ? opts.issues.join(", ").slice(0, 200) : "None"}`,
+            },
+          ],
+        },
+      ],
+    });
+  } catch (error) {
+    console.error("Failed to send auto-booking blocked Slack alert:", error);
   }
 }
