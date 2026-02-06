@@ -55,6 +55,7 @@ export type PromptRunnerBaseParams = {
   clientId: string;
   leadId?: string | null;
   source?: string | null;
+  metadata?: unknown;
   promptKey: string;
   featureId?: string;
   model: string;

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { buildKnowledgeContextFromAssets, type KnowledgeAssetForContext } from "@/lib/knowledge-asset-context";
+import { PRIMARY_WEBSITE_ASSET_NAME, buildKnowledgeContextFromAssets, type KnowledgeAssetForContext } from "@/lib/knowledge-asset-context";
 import { estimateTokensFromText, truncateTextToTokenEstimate } from "@/lib/ai/token-estimate";
 
 export type AutoSendEvaluatorWorkspaceContext = {
@@ -15,6 +15,7 @@ export type AutoSendEvaluatorInputBuildResult = {
     conversationHistory: { tokensEstimated: number; truncated: boolean };
     latestInbound: { tokensEstimated: number };
     draft: { tokensEstimated: number };
+    leadMemoryContext: { tokensEstimated: number };
     serviceDescription: { tokensEstimated: number; truncated: boolean };
     goals: { tokensEstimated: number; truncated: boolean };
     knowledgeContext: { tokensEstimated: number; truncatedAssets: number; totalAssets: number; includedAssets: number };
@@ -31,6 +32,7 @@ export function buildAutoSendEvaluatorInput(params: {
   automatedReply: boolean | null;
   replyReceivedAtIso: string | null;
   draft: string;
+  leadMemoryContext?: string | null;
   workspaceContext: AutoSendEvaluatorWorkspaceContext;
   budgets?: {
     conversationHistoryTokens?: number;
@@ -72,10 +74,14 @@ export function buildAutoSendEvaluatorInput(params: {
   const goals = truncateTextToTokenEstimate((params.workspaceContext.goals || "").trim(), goalsMaxTokens);
 
   const knowledge = buildKnowledgeContextFromAssets({
-    assets: params.workspaceContext.knowledgeAssets,
+    assets: params.workspaceContext.knowledgeAssets.filter(
+      (asset) => (asset.name || "").trim().toLowerCase() !== PRIMARY_WEBSITE_ASSET_NAME.toLowerCase()
+    ),
     maxTokens: knowledgeContextMaxTokens,
     maxAssetTokens: knowledgeAssetMaxTokens,
   });
+
+  const leadMemoryContext = (params.leadMemoryContext || "").trim();
 
   const payload = {
     channel: params.channel,
@@ -92,6 +98,7 @@ export function buildAutoSendEvaluatorInput(params: {
     service_description: serviceDescription.text.trim() || null,
     goals: goals.text.trim() || null,
     knowledge_context: knowledge.context.trim() || null,
+    lead_memory_context: leadMemoryContext || null,
 
     // Instruction hint (kept in payload so we don't have to bump system prompt versions and break overrides).
     verified_context_instructions:
@@ -102,6 +109,7 @@ export function buildAutoSendEvaluatorInput(params: {
 
   const latestInboundTokensEstimated = estimateTokensFromText(payload.latest_inbound);
   const draftTokensEstimated = estimateTokensFromText(payload.draft_reply);
+  const leadMemoryTokensEstimated = leadMemoryContext ? estimateTokensFromText(leadMemoryContext) : 0;
 
   const totalTokensEstimated = estimateTokensFromText(JSON.stringify(payload));
 
@@ -111,6 +119,7 @@ export function buildAutoSendEvaluatorInput(params: {
       conversationHistory: { tokensEstimated: conversationHistory.tokensEstimated, truncated: conversationHistory.truncated },
       latestInbound: { tokensEstimated: latestInboundTokensEstimated },
       draft: { tokensEstimated: draftTokensEstimated },
+      leadMemoryContext: { tokensEstimated: leadMemoryTokensEstimated },
       serviceDescription: { tokensEstimated: serviceDescription.tokensEstimated, truncated: serviceDescription.truncated },
       goals: { tokensEstimated: goals.tokensEstimated, truncated: goals.truncated },
       knowledgeContext: {

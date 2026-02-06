@@ -350,6 +350,7 @@ export async function runMeetingOverseerGate(opts: {
   bookingLink: string | null;
   extraction: MeetingOverseerExtractDecision | null;
   memoryContext?: string | null;
+  metadata?: unknown;
   leadSchedulerLink: string | null;
   timeoutMs: number;
 }): Promise<string | null> {
@@ -385,6 +386,7 @@ export async function runMeetingOverseerGate(opts: {
     leadId: opts.leadId,
     featureId: "meeting.overseer.gate",
     promptKey,
+    metadata: opts.metadata,
     model: verifierModel,
     reasoningEffort: "low",
     temperature: 0,

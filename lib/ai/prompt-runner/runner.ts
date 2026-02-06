@@ -259,6 +259,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
         clientId: params.clientId,
         leadId: params.leadId,
         source: params.source,
+        metadata: params.metadata,
         featureId: params.featureId || featureId,
         promptKey: promptKeyForTelemetry + attemptSuffix,
         params: {
@@ -540,6 +541,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
         clientId: params.clientId,
         leadId: params.leadId,
         source: params.source,
+        metadata: params.metadata,
         featureId: params.featureId || featureId,
         promptKey: promptKeyForTelemetry + attemptSuffix,
         params: {

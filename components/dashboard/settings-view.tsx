@@ -548,7 +548,6 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [aiObsWindow, setAiObsWindow] = useState<AiObservabilityWindow>("24h")
   const [aiObs, setAiObs] = useState<ObservabilitySummary | null>(null)
   const [aiObsLoading, setAiObsLoading] = useState(false)
-  const [canViewAiObs, setCanViewAiObs] = useState(false)
   const [aiObsError, setAiObsError] = useState<string | null>(null)
 
   // EmailBison base host (per active workspace)
@@ -613,7 +612,6 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [assetHistoryLoading, setAssetHistoryLoading] = useState(false)
 
   const isClientPortalUser = Boolean(workspaceCapabilities?.isClientPortalUser)
-  const canViewAiObservability = Boolean(workspaceCapabilities?.canViewAiObservability)
   const showAdminTab = isWorkspaceAdmin && !isClientPortalUser
 
   const resetAiPromptModalState = useCallback(() => {
@@ -992,14 +990,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const refreshAiObservability = useCallback(async () => {
     if (!activeWorkspace) {
       setAiObs(null)
-      setCanViewAiObs(false)
       setAiObsError(null)
       return
     }
 
-    if (isClientPortalUser || !canViewAiObservability) {
+    if (isClientPortalUser || !isWorkspaceAdmin) {
       setAiObs(null)
-      setCanViewAiObs(false)
       setAiObsError(null)
       return
     }
@@ -1009,18 +1005,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       const result = await getAiObservabilitySummary(activeWorkspace, aiObsWindow)
       if (result.success && result.data) {
         setAiObs(result.data)
-        setCanViewAiObs(true)
         setAiObsError(null)
       } else {
         setAiObs(null)
-        const errorMessage = result.error || "Failed to load AI metrics"
-        const isAuthError =
-          errorMessage.toLowerCase().includes("unauthorized") ||
-          errorMessage.toLowerCase().includes("not authenticated")
-        if (isAuthError) {
-          setCanViewAiObs(false)
-        }
-        setAiObsError(errorMessage)
+        setAiObsError(result.error || "Failed to load AI metrics")
       }
     } catch (error) {
       setAiObs(null)
@@ -1028,7 +1016,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     } finally {
       setAiObsLoading(false)
     }
-  }, [activeWorkspace, aiObsWindow, canViewAiObservability, isClientPortalUser])
+  }, [activeWorkspace, aiObsWindow, isClientPortalUser, isWorkspaceAdmin])
 
   useEffect(() => {
     refreshAiObservability()
@@ -1036,7 +1024,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   useEffect(() => {
     if (!aiPromptsOpen) return
-    if (isClientPortalUser || !canViewAiObservability) return
+    if (isClientPortalUser || !isWorkspaceAdmin) return
     if (!activeWorkspace) return
     if (aiPromptTemplates) return
 
@@ -1100,7 +1088,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     return () => {
       cancelled = true
     }
-  }, [aiPromptsOpen, activeWorkspace, aiPromptTemplates, canViewAiObservability, isClientPortalUser])
+  }, [aiPromptsOpen, activeWorkspace, aiPromptTemplates, isClientPortalUser, isWorkspaceAdmin])
 
   useEffect(() => {
     if (!isClientPortalUser) return
@@ -2245,6 +2233,223 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const emailBisonBaseHostLabel = currentEmailBisonBaseHost
     ? `${currentEmailBisonBaseHost.host}${currentEmailBisonBaseHost.label ? ` — ${currentEmailBisonBaseHost.label}` : ""}`
     : "Default (EMAILBISON_BASE_URL / send.meetinboxxia.com)"
+
+  const aiDashboardCard = showAdminTab ? (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5" />
+              AI Dashboard
+            </CardTitle>
+            <CardDescription>
+              Token usage + cost estimates across all AI calls (by route/job + feature; 30-day retention)
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <Select value={aiObsWindow} onValueChange={(v) => setAiObsWindow(v as AiObservabilityWindow)}>
+              <SelectTrigger className="w-[110px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="24h">24h</SelectItem>
+                <SelectItem value="7d">7d</SelectItem>
+                <SelectItem value="30d">30d</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button variant="outline" size="sm" onClick={refreshAiObservability} disabled={aiObsLoading}>
+              <RefreshCcw className="h-4 w-4 mr-2" />
+              Refresh
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setAiPromptsOpen(true)}>
+              <Eye className="h-4 w-4 mr-2" />
+              View Prompts
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {aiObsError ? <div className="text-sm text-destructive">{aiObsError}</div> : null}
+
+        {aiObsLoading ? (
+          <div className="flex items-center justify-center py-10">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        ) : aiObs ? (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-3 rounded-lg border">
+                <p className="text-xs text-muted-foreground">Calls</p>
+                <p className="text-xl font-semibold">{new Intl.NumberFormat().format(aiObs.totals.calls)}</p>
+              </div>
+              <div className="p-3 rounded-lg border">
+                <p className="text-xs text-muted-foreground">Tokens</p>
+                <p className="text-xl font-semibold">
+                  {new Intl.NumberFormat(undefined, { notation: "compact" }).format(aiObs.totals.totalTokens)}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {new Intl.NumberFormat(undefined, { notation: "compact" }).format(aiObs.totals.inputTokens)} in /{" "}
+                  {new Intl.NumberFormat(undefined, { notation: "compact" }).format(aiObs.totals.outputTokens)} out
+                </p>
+              </div>
+              <div className="p-3 rounded-lg border">
+                <p className="text-xs text-muted-foreground">Estimated Cost</p>
+                <p className="text-xl font-semibold flex items-center gap-2">
+                  <DollarSign className="h-4 w-4 text-muted-foreground" />
+                  {aiObs.totals.estimatedCostUsd.toLocaleString("en-US", {
+                    style: "currency",
+                    currency: "USD",
+                  })}
+                </p>
+                {!aiObs.totals.costComplete ? <p className="text-xs text-muted-foreground">Partial (unknown model rates)</p> : null}
+              </div>
+              <div className="p-3 rounded-lg border">
+                <p className="text-xs text-muted-foreground">Errors</p>
+                <p className="text-xl font-semibold">
+                  {aiObs.totals.calls ? `${Math.round((aiObs.totals.errors / aiObs.totals.calls) * 100)}%` : "0%"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {new Intl.NumberFormat().format(aiObs.totals.errors)} errors ·{" "}
+                  {aiObs.totals.avgLatencyMs ? `${aiObs.totals.avgLatencyMs}ms avg` : "—"}
+                </p>
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">By Route/Job</p>
+                <p className="text-xs text-muted-foreground">
+                  Window: {aiObs.window} · Updated: {new Date(aiObs.rangeEnd).toLocaleString()}
+                </p>
+              </div>
+
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Route/Job</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead>Calls</TableHead>
+                    <TableHead>Tokens</TableHead>
+                    <TableHead>Cost</TableHead>
+                    <TableHead>Errors</TableHead>
+                    <TableHead>Latency</TableHead>
+                    <TableHead>Last Used</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {aiObs.sources.map((s) => (
+                    <TableRow key={`${s.source || "unattributed"}:${s.model}`}>
+                      <TableCell className="font-medium">{s.name}</TableCell>
+                      <TableCell className="text-muted-foreground">{s.model}</TableCell>
+                      <TableCell>{new Intl.NumberFormat().format(s.calls)}</TableCell>
+                      <TableCell>{new Intl.NumberFormat(undefined, { notation: "compact" }).format(s.totalTokens)}</TableCell>
+                      <TableCell>
+                        {s.estimatedCostUsd === null
+                          ? "—"
+                          : s.estimatedCostUsd.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                      </TableCell>
+                      <TableCell>{new Intl.NumberFormat().format(s.errors)}</TableCell>
+                      <TableCell>{s.avgLatencyMs ? `${s.avgLatencyMs}ms` : "—"}</TableCell>
+                      <TableCell>{s.lastUsedAt ? new Date(s.lastUsedAt).toLocaleString() : "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">By Feature</p>
+              </div>
+
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Feature</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead>Calls</TableHead>
+                    <TableHead>Tokens</TableHead>
+                    <TableHead>Cost</TableHead>
+                    <TableHead>Errors</TableHead>
+                    <TableHead>Latency</TableHead>
+                    <TableHead>Last Used</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {aiObs.features.map((f) => (
+                    <TableRow key={`${f.featureId}:${f.model}`}>
+                      <TableCell className="font-medium">{f.name}</TableCell>
+                      <TableCell className="text-muted-foreground">{f.model}</TableCell>
+                      <TableCell>{new Intl.NumberFormat().format(f.calls)}</TableCell>
+                      <TableCell>{new Intl.NumberFormat(undefined, { notation: "compact" }).format(f.totalTokens)}</TableCell>
+                      <TableCell>
+                        {f.estimatedCostUsd === null
+                          ? "—"
+                          : f.estimatedCostUsd.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                      </TableCell>
+                      <TableCell>{new Intl.NumberFormat().format(f.errors)}</TableCell>
+                      <TableCell>{f.avgLatencyMs ? `${f.avgLatencyMs}ms` : "—"}</TableCell>
+                      <TableCell>{f.lastUsedAt ? new Date(f.lastUsedAt).toLocaleString() : "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">Recent Errors</p>
+                <p className="text-xs text-muted-foreground">Samples only (not a full log)</p>
+              </div>
+
+              {aiObs.errorSamples?.length ? (
+                <Accordion type="single" collapsible className="w-full">
+                  {aiObs.errorSamples.map((group) => (
+                    <AccordionItem key={`${group.featureId}:${group.model}`} value={`${group.featureId}:${group.model}`}>
+                      <AccordionTrigger>
+                        <div className="flex flex-col text-left">
+                          <span className="font-medium">{group.name}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {group.model} · {new Intl.NumberFormat().format(group.errors)} errors
+                          </span>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="space-y-2">
+                        {group.samples.map((sample, index) => {
+                          const message =
+                            sample.message.length > 240 ? `${sample.message.slice(0, 240)}…` : sample.message
+                          return (
+                            <div
+                              key={`${group.featureId}:${group.model}:${index}`}
+                              className="rounded-lg border bg-muted/30 p-3 text-xs whitespace-pre-wrap"
+                            >
+                              <div className="text-muted-foreground">{new Date(sample.at).toLocaleString()}</div>
+                              <div className="mt-1">{message}</div>
+                            </div>
+                          )
+                        })}
+                      </AccordionContent>
+                    </AccordionItem>
+                  ))}
+                </Accordion>
+              ) : (
+                <div className="text-sm text-muted-foreground">No errors in this window.</div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="text-sm text-muted-foreground">No AI activity in this window yet.</div>
+        )}
+      </CardContent>
+    </Card>
+  ) : null
 
   if (isLoading || isUserLoading) {
     return (
@@ -5599,1204 +5804,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               <BulkDraftRegenerationCard clientId={activeWorkspace} />
             ) : null}
 
-            {!isClientPortalUser && canViewAiObs ? (
-              <>
-	                <Card>
-	                  <CardHeader>
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <CardTitle className="flex items-center gap-2">
-                          <Activity className="h-5 w-5" />
-                          AI Dashboard
-                        </CardTitle>
-                        <CardDescription>
-                          Token usage + cost estimates across all AI calls (by route/job + feature; 30-day retention)
-                        </CardDescription>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Select
-                          value={aiObsWindow}
-                          onValueChange={(v) => setAiObsWindow(v as AiObservabilityWindow)}
-                        >
-                          <SelectTrigger className="w-[110px]">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="24h">24h</SelectItem>
-                            <SelectItem value="7d">7d</SelectItem>
-                            <SelectItem value="30d">30d</SelectItem>
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={refreshAiObservability}
-                          disabled={aiObsLoading}
-                        >
-                          <RefreshCcw className="h-4 w-4 mr-2" />
-                          Refresh
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setAiPromptsOpen(true)}
-                        >
-                          <Eye className="h-4 w-4 mr-2" />
-                          View Prompts
-                        </Button>
-                      </div>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {aiObsError ? (
-                      <div className="text-sm text-destructive">{aiObsError}</div>
-                    ) : null}
-
-                    {aiObsLoading ? (
-                      <div className="flex items-center justify-center py-10">
-                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                      </div>
-                    ) : aiObs ? (
-                      <>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                          <div className="p-3 rounded-lg border">
-                            <p className="text-xs text-muted-foreground">Calls</p>
-                            <p className="text-xl font-semibold">
-                              {new Intl.NumberFormat().format(aiObs.totals.calls)}
-                            </p>
-                          </div>
-                          <div className="p-3 rounded-lg border">
-                            <p className="text-xs text-muted-foreground">Tokens</p>
-                            <p className="text-xl font-semibold">
-                              {new Intl.NumberFormat(undefined, { notation: "compact" }).format(aiObs.totals.totalTokens)}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {new Intl.NumberFormat(undefined, { notation: "compact" }).format(aiObs.totals.inputTokens)} in /{" "}
-                              {new Intl.NumberFormat(undefined, { notation: "compact" }).format(aiObs.totals.outputTokens)} out
-                            </p>
-                          </div>
-                          <div className="p-3 rounded-lg border">
-                            <p className="text-xs text-muted-foreground">Estimated Cost</p>
-                            <p className="text-xl font-semibold flex items-center gap-2">
-                              <DollarSign className="h-4 w-4 text-muted-foreground" />
-                              {aiObs.totals.estimatedCostUsd.toLocaleString("en-US", {
-                                style: "currency",
-                                currency: "USD",
-                              })}
-                            </p>
-                            {!aiObs.totals.costComplete ? (
-                              <p className="text-xs text-muted-foreground">Partial (unknown model rates)</p>
-                            ) : null}
-                          </div>
-                          <div className="p-3 rounded-lg border">
-                            <p className="text-xs text-muted-foreground">Errors</p>
-                            <p className="text-xl font-semibold">
-                              {aiObs.totals.calls
-                                ? `${Math.round((aiObs.totals.errors / aiObs.totals.calls) * 100)}%`
-                                : "0%"}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {new Intl.NumberFormat().format(aiObs.totals.errors)} errors ·{" "}
-                              {aiObs.totals.avgLatencyMs ? `${aiObs.totals.avgLatencyMs}ms avg` : "—"}
-                            </p>
-                          </div>
-                        </div>
-
-                        <Separator />
-
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm font-medium">By Route/Job</p>
-                            <p className="text-xs text-muted-foreground">
-                              Window: {aiObs.window} · Updated:{" "}
-                              {new Date(aiObs.rangeEnd).toLocaleString()}
-                            </p>
-                          </div>
-
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Route/Job</TableHead>
-                                <TableHead>Model</TableHead>
-                                <TableHead>Calls</TableHead>
-                                <TableHead>Tokens</TableHead>
-                                <TableHead>Cost</TableHead>
-                                <TableHead>Errors</TableHead>
-                                <TableHead>Latency</TableHead>
-                                <TableHead>Last Used</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {aiObs.sources.map((s) => (
-                                <TableRow key={`${s.source || "unattributed"}:${s.model}`}>
-                                  <TableCell className="font-medium">{s.name}</TableCell>
-                                  <TableCell className="text-muted-foreground">{s.model}</TableCell>
-                                  <TableCell>{new Intl.NumberFormat().format(s.calls)}</TableCell>
-                                  <TableCell>
-                                    {new Intl.NumberFormat(undefined, { notation: "compact" }).format(s.totalTokens)}
-                                  </TableCell>
-                                  <TableCell>
-                                    {s.estimatedCostUsd === null
-                                      ? "—"
-                                      : s.estimatedCostUsd.toLocaleString("en-US", {
-                                          style: "currency",
-                                          currency: "USD",
-                                        })}
-                                  </TableCell>
-                                  <TableCell>{new Intl.NumberFormat().format(s.errors)}</TableCell>
-                                  <TableCell>{s.avgLatencyMs ? `${s.avgLatencyMs}ms` : "—"}</TableCell>
-                                  <TableCell>
-                                    {s.lastUsedAt ? new Date(s.lastUsedAt).toLocaleString() : "—"}
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        </div>
-
-                        <Separator />
-
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm font-medium">By Feature</p>
-                          </div>
-
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Feature</TableHead>
-                                <TableHead>Model</TableHead>
-                                <TableHead>Calls</TableHead>
-                                <TableHead>Tokens</TableHead>
-                                <TableHead>Cost</TableHead>
-                                <TableHead>Errors</TableHead>
-                                <TableHead>Latency</TableHead>
-                                <TableHead>Last Used</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {aiObs.features.map((f) => (
-                                <TableRow key={`${f.featureId}:${f.model}`}>
-                                  <TableCell className="font-medium">{f.name}</TableCell>
-                                  <TableCell className="text-muted-foreground">{f.model}</TableCell>
-                                  <TableCell>{new Intl.NumberFormat().format(f.calls)}</TableCell>
-                                  <TableCell>
-                                    {new Intl.NumberFormat(undefined, { notation: "compact" }).format(f.totalTokens)}
-                                  </TableCell>
-                                  <TableCell>
-                                    {f.estimatedCostUsd === null
-                                      ? "—"
-                                      : f.estimatedCostUsd.toLocaleString("en-US", {
-                                          style: "currency",
-                                          currency: "USD",
-                                        })}
-                                  </TableCell>
-                                  <TableCell>{new Intl.NumberFormat().format(f.errors)}</TableCell>
-                                  <TableCell>{f.avgLatencyMs ? `${f.avgLatencyMs}ms` : "—"}</TableCell>
-                                  <TableCell>
-                                    {f.lastUsedAt ? new Date(f.lastUsedAt).toLocaleString() : "—"}
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        </div>
-
-                        <Separator />
-
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm font-medium">Recent Errors</p>
-                            <p className="text-xs text-muted-foreground">Samples only (not a full log)</p>
-                          </div>
-
-                          {aiObs.errorSamples?.length ? (
-                            <Accordion type="single" collapsible className="w-full">
-                              {aiObs.errorSamples.map((group) => (
-                                <AccordionItem
-                                  key={`${group.featureId}:${group.model}`}
-                                  value={`${group.featureId}:${group.model}`}
-                                >
-                                  <AccordionTrigger>
-                                    <div className="flex flex-col text-left">
-                                      <span className="font-medium">{group.name}</span>
-                                      <span className="text-xs text-muted-foreground">
-                                        {group.model} · {new Intl.NumberFormat().format(group.errors)} errors
-                                      </span>
-                                    </div>
-                                  </AccordionTrigger>
-                                  <AccordionContent className="space-y-2">
-                                    {group.samples.map((sample, index) => {
-                                      const message =
-                                        sample.message.length > 240
-                                          ? `${sample.message.slice(0, 240)}…`
-                                          : sample.message;
-                                      return (
-                                        <div
-                                          key={`${group.featureId}:${group.model}:${index}`}
-                                          className="rounded-lg border bg-muted/30 p-3 text-xs whitespace-pre-wrap"
-                                        >
-                                          <div className="text-muted-foreground">
-                                            {new Date(sample.at).toLocaleString()}
-                                          </div>
-                                          <div className="mt-1">{message}</div>
-                                        </div>
-                                      );
-                                    })}
-                                  </AccordionContent>
-                                </AccordionItem>
-                              ))}
-                            </Accordion>
-                          ) : (
-                            <div className="text-sm text-muted-foreground">No errors in this window.</div>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <div className="text-sm text-muted-foreground">No AI activity in this window yet.</div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                <Dialog open={aiPromptsOpen} onOpenChange={(open) => {
-                  setAiPromptsOpen(open)
-                  if (!open) {
-                    resetAiPromptModalState()
-                  }
-                }}>
-                  <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
-                    <DialogHeader>
-                      <DialogTitle>Backend Prompts</DialogTitle>
-                      <DialogDescription>
-                        View and customize AI prompt templates and variables. Changes apply to this workspace only.
-                      </DialogDescription>
-                    </DialogHeader>
-
-                    {/* Tab navigation (Phase 47h) */}
-                    <div className="flex gap-2 border-b">
-                      <button
-                        type="button"
-                        className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                          promptModalTab === "prompts"
-                            ? "border-primary text-primary"
-                            : "border-transparent text-muted-foreground hover:text-foreground"
-                        }`}
-                        onClick={() => setPromptModalTab("prompts")}
-                      >
-                        Prompts
-                      </button>
-                      <button
-                        type="button"
-                        className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                          promptModalTab === "variables"
-                            ? "border-primary text-primary"
-                            : "border-transparent text-muted-foreground hover:text-foreground"
-                        }`}
-                        onClick={() => setPromptModalTab("variables")}
-                      >
-                        Variables
-                      </button>
-                    </div>
-
-                    {aiPromptsLoading ? (
-                      <div className="flex items-center justify-center py-10">
-                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                      </div>
-                    ) : promptModalTab === "variables" ? (
-                      /* Variables Tab Content (Phase 47h + 47j) */
-                      <div className="space-y-6 py-4">
-                        {/* Persona Context Selector (Phase 47j) */}
-                        <div className="border rounded-lg p-4 space-y-3 bg-muted/30">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="font-medium text-sm">AI Persona Context</p>
-                              <p className="text-xs text-muted-foreground">
-                                Drafts use these persona fields: tone, greeting, signature, goals.
-                              </p>
-                            </div>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                setAiPromptsOpen(false)
-                                onTabChange?.("ai")
-                              }}
-                            >
-                              Edit in AI Personality
-                            </Button>
-                          </div>
-                          {personaList && personaList.length > 0 && (
-                            <div className="flex items-center gap-3">
-                              <Label className="text-xs">Preview persona:</Label>
-                              <Select
-                                value={selectedPersonaId || ""}
-                                onValueChange={(v) => setSelectedPersonaId(v)}
-                              >
-                                <SelectTrigger className="w-[250px]">
-                                  <SelectValue placeholder="Select persona..." />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {personaList.map((p) => (
-                                    <SelectItem key={p.id} value={p.id}>
-                                      {p.name} {p.isDefault && "(Default)"}
-                                    </SelectItem>
-                                  ))}
-                                </SelectContent>
-                              </Select>
-                            </div>
-                          )}
-                          {personaLoading ? (
-                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                              Loading persona details...
-                            </div>
-                          ) : selectedPersonaDetails ? (
-                            <div className="grid grid-cols-2 gap-2 text-xs">
-                              <div>
-                                <span className="text-muted-foreground">Name:</span>{" "}
-                                <span className="font-medium">{selectedPersonaDetails.personaName || "-"}</span>
-                              </div>
-                              <div>
-                                <span className="text-muted-foreground">Tone:</span>{" "}
-                                <span className="font-medium">{selectedPersonaDetails.tone}</span>
-                              </div>
-                              <div className="col-span-2">
-                                <span className="text-muted-foreground">Greeting:</span>{" "}
-                                <span className="font-mono text-xs">{selectedPersonaDetails.greeting || "-"}</span>
-                              </div>
-                              <div className="col-span-2">
-                                <span className="text-muted-foreground">Signature:</span>{" "}
-                                <span className="font-mono text-xs">{selectedPersonaDetails.signature || "-"}</span>
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-
-                        <Separator />
-
-                        <p className="text-sm text-muted-foreground">
-                          Configure global variables used in AI prompt templates.
-                        </p>
-                        {snippetRegistry && snippetRegistry.length > 0 ? (
-                          <div className="space-y-4">
-                            {snippetRegistry.map((entry) => (
-                              <div key={entry.key} className="border rounded-lg p-4 space-y-2">
-                                <div className="flex items-center justify-between">
-                                  <div>
-                                    <p className="font-medium text-sm">{entry.label}</p>
-                                    <p className="text-xs text-muted-foreground">{entry.description}</p>
-                                  </div>
-                                  {entry.currentValue !== null && (
-                                    <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
-                                      Customized
-                                    </Badge>
-                                  )}
-                                </div>
-
-                                {editingSnippet === entry.key ? (
-                                  <div className="space-y-2">
-                                    {entry.type === "number" ? (
-                                      <Input
-                                        type="number"
-                                        value={snippetEditContent}
-                                        onChange={(e) => setSnippetEditContent(e.target.value)}
-                                        className="font-mono"
-                                      />
-                                    ) : (
-                                      <Textarea
-                                        value={snippetEditContent}
-                                        onChange={(e) => setSnippetEditContent(e.target.value)}
-                                        className={`font-mono text-xs ${
-                                          entry.type === "list" || entry.type === "text" || entry.type === "template"
-                                            ? "min-h-[150px]"
-                                            : "min-h-[100px]"
-                                        }`}
-                                        placeholder={entry.type === "list" ? "One item per line..." : undefined}
-                                      />
-                                    )}
-                                    {entry.placeholders && entry.placeholders.length > 0 && (
-                                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                        <span>Placeholders:</span>
-                                        {entry.placeholders.map((p) => (
-                                          <code key={p} className="bg-muted px-1 rounded">{p}</code>
-                                        ))}
-                                      </div>
-                                    )}
-                                    <div className="flex justify-end gap-2">
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => {
-                                          setEditingSnippet(null)
-                                          setSnippetEditContent("")
-                                        }}
-                                      >
-                                        Cancel
-                                      </Button>
-                                      <Button
-                                        size="sm"
-                                        disabled={savingSnippet || !activeWorkspace}
-                                        onClick={async () => {
-                                          if (!activeWorkspace) return
-                                          setSavingSnippet(true)
-                                          const result = await savePromptSnippetOverride(
-                                            activeWorkspace,
-                                            entry.key,
-                                            snippetEditContent
-                                          )
-                                          if (result.success) {
-                                            setSnippetOverrides((prev) => {
-                                              const next = new Map(prev)
-                                              next.set(entry.key, snippetEditContent)
-                                              return next
-                                            })
-                                            // Update registry
-                                            setSnippetRegistry((prev) =>
-                                              prev?.map((e) =>
-                                                e.key === entry.key
-                                                  ? { ...e, currentValue: snippetEditContent }
-                                                  : e
-                                              ) ?? null
-                                            )
-                                            setEditingSnippet(null)
-                                            setSnippetEditContent("")
-                                            toast.success("Variable saved", {
-                                              description: `${entry.label} has been updated.`,
-                                            })
-                                          } else {
-                                            toast.error("Error", {
-                                              description: result.error || "Failed to save variable",
-                                            })
-                                          }
-                                          setSavingSnippet(false)
-                                        }}
-                                      >
-                                        {savingSnippet ? (
-                                          <Loader2 className="h-4 w-4 animate-spin" />
-                                        ) : (
-                                          "Save"
-                                        )}
-                                      </Button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="space-y-2">
-                                    <div className="rounded border bg-muted/20 p-2 text-xs max-h-[80px] overflow-y-auto">
-                                      <div className="text-muted-foreground whitespace-pre-wrap font-mono">
-                                        {entry.currentValue ?? entry.defaultValue}
-                                      </div>
-                                    </div>
-                                    {isWorkspaceAdmin && activeWorkspace && (
-                                      <div className="flex items-center gap-1">
-                                        <Button
-                                          variant="ghost"
-                                          size="sm"
-                                          onClick={() => {
-                                            setEditingSnippet(entry.key)
-                                            setSnippetEditContent(entry.currentValue ?? entry.defaultValue)
-                                          }}
-                                        >
-                                          <Pencil className="h-3 w-3 mr-1" />
-                                          Edit
-                                        </Button>
-                                        {entry.currentValue !== null && (
-                                          <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={async () => {
-                                              if (!activeWorkspace) return
-                                              const result = await resetPromptSnippetOverride(
-                                                activeWorkspace,
-                                                entry.key
-                                              )
-                                              if (result.success) {
-                                                setSnippetOverrides((prev) => {
-                                                  const next = new Map(prev)
-                                                  next.delete(entry.key)
-                                                  return next
-                                                })
-                                                setSnippetRegistry((prev) =>
-                                                  prev?.map((e) =>
-                                                    e.key === entry.key
-                                                      ? { ...e, currentValue: null }
-                                                      : e
-                                                  ) ?? null
-                                                )
-                                                toast.success("Reset to default", {
-                                                  description: `${entry.label} restored to default.`,
-                                                })
-                                              } else {
-                                                toast.error("Error", {
-                                                  description: result.error || "Failed to reset variable",
-                                                })
-                                              }
-                                            }}
-                                          >
-                                            <RotateCcw className="h-3 w-3 mr-1" />
-                                            Reset
-                                          </Button>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="text-sm text-muted-foreground">No variables available.</div>
-                        )}
-                      </div>
-                    ) : aiPromptTemplates && aiPromptTemplates.length > 0 ? (
-                      /* Prompts Tab Content */
-                      <Accordion type="single" collapsible className="w-full">
-                        {aiPromptTemplates.map((t) => {
-                          // Check if this prompt has any overrides
-                          const hasAnyOverride = Array.from(promptOverrides.keys()).some(
-                            (key) => key.startsWith(`${t.key}:`)
-                          )
-                          return (
-                            <AccordionItem key={t.key} value={t.key}>
-                              <AccordionTrigger>
-                                <div className="flex flex-col text-left">
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-medium">{t.name}</span>
-                                    {hasAnyOverride && (
-                                      <Badge variant="secondary" className="text-xs">
-                                        Modified
-                                      </Badge>
-                                    )}
-                                  </div>
-                                  <span className="text-xs text-muted-foreground">
-                                    {t.featureId} · {t.model} · {t.apiType}
-                                  </span>
-                                </div>
-                              </AccordionTrigger>
-                              <AccordionContent className="space-y-4">
-                                {t.description ? (
-                                  <p className="text-sm text-muted-foreground">{t.description}</p>
-                                ) : null}
-
-                                {(["system", "assistant", "user"] as const).map((role) => {
-                                  const parts = t.messages.filter((m) => m.role === role)
-                                  if (parts.length === 0) return null
-                                  return (
-                                    <div key={role} className="space-y-2">
-                                      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                                        {role}
-                                      </p>
-                                      {parts.map((p, i) => {
-                                        const overrideKey = `${t.key}:${role}:${i}`
-                                        const hasOverride = promptOverrides.has(overrideKey)
-                                        const displayContent = hasOverride
-                                          ? promptOverrides.get(overrideKey)!
-                                          : p.content
-                                        const isEditing =
-                                          editingPrompt?.promptKey === t.key &&
-                                          editingPrompt?.role === role &&
-                                          editingPrompt?.index === i
-
-                                        return (
-                                          <div key={overrideKey} className="space-y-2">
-                                            <div className="flex items-center justify-between">
-                                              <div className="flex items-center gap-2">
-                                                {hasOverride && (
-                                                  <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
-                                                    Customized
-                                                  </Badge>
-                                                )}
-                                              </div>
-                                              <div className="flex items-center gap-1">
-                                                {!isEditing && isWorkspaceAdmin && activeWorkspace && (
-                                                  <Button
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    onClick={() => {
-                                                      setEditingPrompt({ promptKey: t.key, role, index: i })
-                                                      setEditContent(displayContent)
-                                                    }}
-                                                  >
-                                                    <Pencil className="h-3 w-3" />
-                                                  </Button>
-                                                )}
-                                                {!isEditing && isWorkspaceAdmin && activeWorkspace && (
-                                                  <Button
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    onClick={() => handleOpenPromptHistory(t.key, role, i)}
-                                                    title="View history"
-                                                  >
-                                                    <Clock className="h-3 w-3" />
-                                                  </Button>
-                                                )}
-                                                {hasOverride && !isEditing && isWorkspaceAdmin && activeWorkspace && (
-                                                  <Button
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    onClick={async () => {
-                                                      if (!activeWorkspace) return
-                                                      const result = await resetPromptOverride(
-                                                        activeWorkspace,
-                                                        t.key,
-                                                        role,
-                                                        i
-                                                      )
-                                                      if (result.success) {
-                                                        setPromptOverrides((prev) => {
-                                                          const next = new Map(prev)
-                                                          next.delete(overrideKey)
-                                                          return next
-                                                        })
-                                                        toast.success("Reset to default", {
-                                                          description: "Prompt restored to original content.",
-                                                        })
-                                                      } else {
-                                                        toast.error("Error", {
-                                                          description: result.error || "Failed to reset prompt",
-                                                        })
-                                                      }
-                                                    }}
-                                                    title="Reset to default"
-                                                  >
-                                                    <RotateCcw className="h-3 w-3" />
-                                                  </Button>
-                                                )}
-                                              </div>
-                                            </div>
-
-                                            {isEditing ? (
-                                              <div className="space-y-2">
-                                                <Textarea
-                                                  value={editContent}
-                                                  onChange={(e) => setEditContent(e.target.value)}
-                                                  className="min-h-[200px] font-mono text-xs"
-                                                />
-                                                <div className="flex justify-end gap-2">
-                                                  <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    onClick={() => {
-                                                      setEditingPrompt(null)
-                                                      setEditContent("")
-                                                    }}
-                                                  >
-                                                    Cancel
-                                                  </Button>
-                                                  <Button
-                                                    size="sm"
-                                                    disabled={savingOverride || !activeWorkspace}
-                                                    onClick={async () => {
-                                                      if (!activeWorkspace) return
-                                                      setSavingOverride(true)
-                                                      const result = await savePromptOverride(activeWorkspace, {
-                                                        promptKey: t.key,
-                                                        role: role as "system" | "assistant" | "user",
-                                                        index: i,
-                                                        content: editContent,
-                                                      })
-                                                      if (result.success) {
-                                                        setPromptOverrides((prev) => {
-                                                          const next = new Map(prev)
-                                                          next.set(overrideKey, editContent)
-                                                          return next
-                                                        })
-                                                        setEditingPrompt(null)
-                                                        setEditContent("")
-                                                        toast.success("Prompt saved", {
-                                                          description: "Your changes have been saved.",
-                                                        })
-                                                      } else {
-                                                        toast.error("Error", {
-                                                          description: result.error || "Failed to save prompt",
-                                                        })
-                                                      }
-                                                      setSavingOverride(false)
-                                                    }}
-                                                  >
-                                                    {savingOverride ? (
-                                                      <Loader2 className="h-4 w-4 animate-spin" />
-                                                    ) : (
-                                                      "Save"
-                                                    )}
-                                                  </Button>
-                                                </div>
-                                              </div>
-                                            ) : (
-                                              <div className="rounded-lg border bg-muted/30 p-3 text-xs whitespace-pre-wrap">
-                                                {displayContent}
-                                              </div>
-                                            )}
-
-                                            {/* Runtime context preview for Auto-Send Evaluator (Jam fd4cf691) */}
-                                            {t.key === "auto_send.evaluate.v1" && role === "user" ? (() => {
-                                              const encoder = new TextEncoder()
-                                              const decoder = new TextDecoder("utf-8")
-                                              const fatalDecoder = (() => {
-                                                try {
-                                                  return new TextDecoder("utf-8", { fatal: true })
-                                                } catch {
-                                                  return null
-                                                }
-                                              })()
-
-                                              const estimateBytes = (text: string) => {
-                                                try {
-                                                  return encoder.encode(text || "").length
-                                                } catch {
-                                                  return (text || "").length
-                                                }
-                                              }
-                                              const estimateTokensFromBytes = (bytes: number) =>
-                                                Math.max(0, Math.ceil(Math.max(0, bytes || 0) / 4))
-
-                                              const truncateTextToTokenEstimate = (text: string, maxTokens: number) => {
-                                                const raw = text || ""
-                                                const maxBytes = Math.max(0, Math.trunc(maxTokens)) * 4
-                                                if (!raw) {
-                                                  return { text: "", truncated: false, bytes: 0, tokensEstimated: 0 }
-                                                }
-                                                if (maxBytes <= 0) {
-                                                  return { text: "", truncated: true, bytes: 0, tokensEstimated: 0 }
-                                                }
-
-                                                let bytes: Uint8Array
-                                                try {
-                                                  bytes = encoder.encode(raw)
-                                                } catch {
-                                                  const slice = raw.slice(0, maxBytes)
-                                                  const sliceBytes = estimateBytes(slice)
-                                                  return {
-                                                    text: slice,
-                                                    truncated: slice.length < raw.length,
-                                                    bytes: sliceBytes,
-                                                    tokensEstimated: estimateTokensFromBytes(sliceBytes),
-                                                  }
-                                                }
-
-                                                if (bytes.length <= maxBytes) {
-                                                  return {
-                                                    text: raw,
-                                                    truncated: false,
-                                                    bytes: bytes.length,
-                                                    tokensEstimated: estimateTokensFromBytes(bytes.length),
-                                                  }
-                                                }
-
-                                                let end = Math.min(bytes.length, maxBytes)
-                                                let decodedText = ""
-                                                for (let i = 0; i < 4 && end > 0; i += 1) {
-                                                  try {
-                                                    decodedText = fatalDecoder ? fatalDecoder.decode(bytes.slice(0, end)) : decoder.decode(bytes.slice(0, end))
-                                                    break
-                                                  } catch {
-                                                    end -= 1
-                                                  }
-                                                }
-                                                if (!decodedText) {
-                                                  decodedText = decoder.decode(bytes.slice(0, end))
-                                                }
-
-                                                const decodedBytes = estimateBytes(decodedText)
-                                                return {
-                                                  text: decodedText,
-                                                  truncated: true,
-                                                  bytes: decodedBytes,
-                                                  tokensEstimated: estimateTokensFromBytes(decodedBytes),
-                                                }
-                                              }
-
-                                              const serviceDescription = (aiPersona.serviceDescription || "").trim()
-                                              const goals = (aiPersona.goals || "").trim()
-                                              const servicePreview = serviceDescription
-                                                ? `${serviceDescription.slice(0, 220)}${serviceDescription.length > 220 ? "…" : ""}`
-                                                : "—"
-                                              const goalsPreview = goals
-                                                ? `${goals.slice(0, 220)}${goals.length > 220 ? "…" : ""}`
-                                                : "—"
-
-                                              const getTimeMs = (value: unknown) => {
-                                                if (value instanceof Date) return value.getTime()
-                                                if (typeof value === "string") {
-                                                  const parsed = new Date(value)
-                                                  return Number.isFinite(parsed.getTime()) ? parsed.getTime() : 0
-                                                }
-                                                return 0
-                                              }
-
-                                              const assetsSorted = [...knowledgeAssets].sort((a, b) => {
-                                                const aTime = getTimeMs((a as any).updatedAt) || getTimeMs(a.createdAt)
-                                                const bTime = getTimeMs((b as any).updatedAt) || getTimeMs(b.createdAt)
-                                                return bTime - aTime
-                                              })
-
-                                              const knowledgeBudgets = {
-                                                maxTokens: 8000,
-                                                maxAssetTokens: 1600,
-                                              }
-
-                                              let remainingTokens = knowledgeBudgets.maxTokens
-
-                                              const perAsset = assetsSorted.map((asset) => {
-                                                const raw = (asset.textContent || "").trim()
-                                                const bytes = estimateBytes(raw)
-                                                const tokensEstimated = estimateTokensFromBytes(bytes)
-
-                                                const firstLine = raw
-                                                  .split("\n")
-                                                  .map((l) => l.trim())
-                                                  .find(Boolean) || ""
-                                                const summary = firstLine
-                                                  ? firstLine.replace(/^[*-]\s+/, "").slice(0, 240) + (firstLine.length > 240 ? "…" : "")
-                                                  : "—"
-
-                                                const header = `[${asset.name}]`
-                                                const headerTokens = estimateTokensFromBytes(estimateBytes(header)) + 2
-
-                                                let included = false
-                                                let truncated = false
-                                                let includedBytes = 0
-                                                let includedTokensEstimated = 0
-                                                let snippetPreview = ""
-
-                                                if (raw && remainingTokens > 0 && headerTokens < remainingTokens) {
-                                                  const available = Math.max(0, remainingTokens - headerTokens)
-                                                  const perAssetBudget = Math.min(knowledgeBudgets.maxAssetTokens, available)
-                                                  const snippet = truncateTextToTokenEstimate(raw, perAssetBudget)
-                                                  const snippetText = (snippet.text || "").trim()
-                                                  const preview = snippetText ? `${snippetText.slice(0, 260)}${snippetText.length > 260 ? "…" : ""}` : ""
-
-                                                  const consumed = headerTokens + snippet.tokensEstimated
-                                                  remainingTokens = Math.max(0, remainingTokens - consumed)
-
-                                                  included = true
-                                                  truncated = snippet.truncated
-                                                  includedBytes = snippet.bytes
-                                                  includedTokensEstimated = snippet.tokensEstimated
-                                                  snippetPreview = preview
-                                                }
-
-                                                return {
-                                                  id: asset.id,
-                                                  name: asset.name,
-                                                  type: asset.type,
-                                                  originalFileName: asset.originalFileName,
-                                                  mimeType: asset.mimeType,
-                                                  bytes,
-                                                  tokensEstimated,
-                                                  included,
-                                                  includedBytes,
-                                                  includedTokensEstimated,
-                                                  truncated,
-                                                  summary,
-                                                  snippetPreview,
-                                                }
-                                              })
-
-                                              const totalKnowledgeBytes = perAsset.reduce((sum, a) => sum + a.bytes, 0)
-                                              const totalKnowledgeTokens = perAsset.reduce((sum, a) => sum + a.tokensEstimated, 0)
-
-                                              const includedAssets = perAsset.filter((a) => a.included)
-                                              const includedKnowledgeBytes = includedAssets.reduce((sum, a) => sum + a.includedBytes, 0)
-                                              const includedKnowledgeTokens = includedAssets.reduce((sum, a) => sum + a.includedTokensEstimated, 0)
-                                              const truncatedAssets = includedAssets.filter((a) => a.truncated).length
-
-                                              const missingInputPlaceholder =
-                                                !(displayContent.includes("{{inputJson}}") || displayContent.includes("{inputJson}"))
-
-                                              return (
-                                                <Alert className="border-muted-foreground/20 bg-muted/20">
-                                                  <HelpCircle className="h-4 w-4 text-muted-foreground" />
-                                                  <AlertTitle>Runtime Context Preview</AlertTitle>
-                                                  <AlertDescription className="text-xs text-muted-foreground space-y-3">
-                                                    <p>
-                                                      The auto-send confidence gate also receives verified workspace context
-                                                      (AI Personality + Knowledge Assets) at runtime:
-                                                    </p>
-                                                    {missingInputPlaceholder ? (
-                                                      <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-700">
-                                                        <span className="font-medium">Heads up:</span> this user prompt should include{" "}
-                                                        <span className="font-mono">{"{{inputJson}}"}</span> so the evaluator receives
-                                                        the runtime JSON input. If you remove it in an override, the evaluator will be
-                                                        missing critical context.
-                                                      </div>
-                                                    ) : null}
-                                                    <pre className="bg-muted/40 border rounded p-2 text-[11px] whitespace-pre-wrap">
-{`• service_description: ${servicePreview}
-• goals: ${goalsPreview}
-• knowledge_assets: ${knowledgeAssets.length} asset(s) ≈ ${new Intl.NumberFormat().format(totalKnowledgeTokens)} tokens, ${new Intl.NumberFormat().format(totalKnowledgeBytes)} bytes
-• knowledge_context (budgeted): ${includedAssets.length}/${knowledgeAssets.length} asset(s) included ≈ ${new Intl.NumberFormat().format(includedKnowledgeTokens)} tokens, ${new Intl.NumberFormat().format(includedKnowledgeBytes)} bytes${truncatedAssets ? ` (${truncatedAssets} truncated)` : ""}`}
-                                                    </pre>
-                                                    <Collapsible defaultOpen>
-                                                      <div className="flex items-center justify-between gap-3">
-                                                        <div className="text-[11px] font-medium">
-                                                          Knowledge Assets Breakdown (≈tokens/bytes)
-                                                        </div>
-                                                        <CollapsibleTrigger asChild>
-                                                          <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]">
-                                                            Toggle
-                                                          </Button>
-                                                        </CollapsibleTrigger>
-                                                      </div>
-                                                      <CollapsibleContent className="space-y-2 pt-2">
-                                                        {perAsset.length === 0 ? (
-                                                          <div className="text-[11px] text-muted-foreground">No knowledge assets configured.</div>
-                                                        ) : (
-                                                          <div className="space-y-2">
-                                                            {perAsset.map((asset) => (
-                                                              <div key={asset.id} className="rounded border bg-muted/30 p-2 space-y-1">
-                                                                <div className="flex items-start justify-between gap-3">
-                                                                  <div className="min-w-0">
-                                                                    <div className="font-medium truncate">{asset.name}</div>
-                                                                    <div className="text-[11px] text-muted-foreground truncate">
-                                                                      {asset.type}
-                                                                      {asset.originalFileName ? ` · ${asset.originalFileName}` : ""}
-                                                                      {asset.mimeType ? ` · ${asset.mimeType}` : ""}
-                                                                    </div>
-                                                                  </div>
-                                                                  <div className="flex items-center gap-1 shrink-0">
-                                                                    {asset.included ? (
-                                                                      <Badge variant="outline" className="text-[10px] h-4 border-emerald-500/30 text-emerald-700">
-                                                                        Included
-                                                                      </Badge>
-                                                                    ) : (
-                                                                      <Badge variant="outline" className="text-[10px] h-4 border-muted-foreground/30 text-muted-foreground">
-                                                                        Dropped
-                                                                      </Badge>
-                                                                    )}
-                                                                    {asset.truncated ? (
-                                                                      <Badge variant="outline" className="text-[10px] h-4 border-amber-500/30 text-amber-700">
-                                                                        Truncated
-                                                                      </Badge>
-                                                                    ) : null}
-                                                                  </div>
-                                                                </div>
-
-                                                                <div className="text-[11px] text-muted-foreground">
-                                                                  Total: ≈ {new Intl.NumberFormat().format(asset.tokensEstimated)} tokens,{" "}
-                                                                  {new Intl.NumberFormat().format(asset.bytes)} bytes
-                                                                  {asset.included ? (
-                                                                    <>
-                                                                      {" "}
-                                                                      · Included: ≈ {new Intl.NumberFormat().format(asset.includedTokensEstimated)} tokens,{" "}
-                                                                      {new Intl.NumberFormat().format(asset.includedBytes)} bytes
-                                                                    </>
-                                                                  ) : null}
-                                                                </div>
-
-                                                                <div className="text-[11px] text-foreground">
-                                                                  <span className="text-muted-foreground">Summary:</span> {asset.summary}
-                                                                </div>
-
-                                                                {asset.included && asset.snippetPreview ? (
-                                                                  <div className="text-[11px] text-muted-foreground whitespace-pre-wrap">
-                                                                    <span className="font-medium text-muted-foreground">Preview:</span>{" "}
-                                                                    {asset.snippetPreview}
-                                                                  </div>
-                                                                ) : null}
-                                                              </div>
-                                                            ))}
-                                                          </div>
-                                                        )}
-                                                      </CollapsibleContent>
-                                                    </Collapsible>
-                                                    <p>
-                                                      Edit the context in <span className="font-medium">AI Personality</span> /
-                                                      <span className="font-medium"> Knowledge Assets</span>. Edit this prompt to
-                                                      change the evaluator’s system instructions.
-                                                    </p>
-                                                  </AlertDescription>
-                                                </Alert>
-                                              )
-                                            })() : null}
-
-                                            {/* Nested Snippet Editor (Phase 47f) */}
-                                            {/* Show snippet editor if this message contains {forbiddenTerms} placeholder */}
-                                            {displayContent.includes("{forbiddenTerms}") && (
-                                              <div className="mt-2 ml-4 border-l-2 border-muted-foreground/20 pl-3">
-                                                <button
-                                                  type="button"
-                                                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                                                  onClick={() => {
-                                                    setExpandedSnippets((prev) => {
-                                                      const next = new Set(prev)
-                                                      const key = `${t.key}:forbiddenTerms`
-                                                      if (next.has(key)) {
-                                                        next.delete(key)
-                                                      } else {
-                                                        next.add(key)
-                                                      }
-                                                      return next
-                                                    })
-                                                  }}
-                                                >
-                                                  {expandedSnippets.has(`${t.key}:forbiddenTerms`) ? (
-                                                    <ChevronDown className="h-3 w-3" />
-                                                  ) : (
-                                                    <ChevronRight className="h-3 w-3" />
-                                                  )}
-                                                  <span className="font-mono">{"{forbiddenTerms}"}</span>
-                                                  {snippetOverrides.has("forbiddenTerms") && (
-                                                    <Badge variant="outline" className="text-[10px] h-4 ml-1 text-amber-600 border-amber-300">
-                                                      Customized
-                                                    </Badge>
-                                                  )}
-                                                </button>
-
-                                                {expandedSnippets.has(`${t.key}:forbiddenTerms`) && (
-                                                  <div className="mt-2 space-y-2">
-                                                    {editingSnippet === "forbiddenTerms" ? (
-                                                      <div className="space-y-2">
-                                                        <Textarea
-                                                          value={snippetEditContent}
-                                                          onChange={(e) => setSnippetEditContent(e.target.value)}
-                                                          className="min-h-[150px] font-mono text-xs"
-                                                          placeholder="One term per line..."
-                                                        />
-                                                        <div className="flex justify-end gap-2">
-                                                          <Button
-                                                            variant="outline"
-                                                            size="sm"
-                                                            onClick={() => {
-                                                              setEditingSnippet(null)
-                                                              setSnippetEditContent("")
-                                                            }}
-                                                          >
-                                                            Cancel
-                                                          </Button>
-                                                          <Button
-                                                            size="sm"
-                                                            disabled={savingSnippet || !activeWorkspace}
-                                                            onClick={async () => {
-                                                              if (!activeWorkspace) return
-                                                              setSavingSnippet(true)
-                                                              const result = await savePromptSnippetOverride(
-                                                                activeWorkspace,
-                                                                "forbiddenTerms",
-                                                                snippetEditContent
-                                                              )
-                                                              if (result.success) {
-                                                                setSnippetOverrides((prev) => {
-                                                                  const next = new Map(prev)
-                                                                  next.set("forbiddenTerms", snippetEditContent)
-                                                                  return next
-                                                                })
-                                                                setSnippetRegistry((prev) =>
-                                                                  prev?.map((e) =>
-                                                                    e.key === "forbiddenTerms"
-                                                                      ? { ...e, currentValue: snippetEditContent }
-                                                                      : e
-                                                                  ) ?? null
-                                                                )
-                                                                setEditingSnippet(null)
-                                                                setSnippetEditContent("")
-                                                                toast.success("Snippet saved", {
-                                                                  description: "Forbidden terms updated.",
-                                                                })
-                                                              } else {
-                                                                toast.error("Error", {
-                                                                  description: result.error || "Failed to save snippet",
-                                                                })
-                                                              }
-                                                              setSavingSnippet(false)
-                                                            }}
-                                                          >
-                                                            {savingSnippet ? (
-                                                              <Loader2 className="h-4 w-4 animate-spin" />
-                                                            ) : (
-                                                              "Save"
-                                                            )}
-                                                          </Button>
-                                                        </div>
-                                                      </div>
-                                                    ) : (
-                                                      <div className="space-y-2">
-                                                        <div className="rounded border bg-muted/20 p-2 text-xs max-h-[100px] overflow-y-auto">
-                                                          <div className="text-muted-foreground whitespace-pre-wrap">
-                                                            {snippetOverrides.get("forbiddenTerms") ||
-                                                              snippetRegistry?.find((e) => e.key === "forbiddenTerms")?.defaultValue ||
-                                                              "Default forbidden terms not loaded."}
-                                                          </div>
-                                                        </div>
-                                                        {isWorkspaceAdmin && activeWorkspace && (
-                                                          <div className="flex items-center gap-1">
-                                                            <Button
-                                                              variant="ghost"
-                                                              size="sm"
-                                                              onClick={() => {
-                                                                setEditingSnippet("forbiddenTerms")
-                                                                setSnippetEditContent(
-                                                                  snippetOverrides.get("forbiddenTerms") ||
-                                                                    snippetRegistry?.find((e) => e.key === "forbiddenTerms")?.defaultValue ||
-                                                                    ""
-                                                                )
-                                                              }}
-                                                            >
-                                                              <Pencil className="h-3 w-3 mr-1" />
-                                                              Edit
-                                                            </Button>
-                                                            {snippetOverrides.has("forbiddenTerms") && (
-                                                              <Button
-                                                                variant="ghost"
-                                                                size="sm"
-                                                                onClick={async () => {
-                                                                  if (!activeWorkspace) return
-                                                                  const result = await resetPromptSnippetOverride(
-                                                                    activeWorkspace,
-                                                                    "forbiddenTerms"
-                                                                  )
-                                                                  if (result.success) {
-                                                                    setSnippetOverrides((prev) => {
-                                                                      const next = new Map(prev)
-                                                                      next.delete("forbiddenTerms")
-                                                                      return next
-                                                                    })
-                                                                    setSnippetRegistry((prev) =>
-                                                                      prev?.map((e) =>
-                                                                        e.key === "forbiddenTerms"
-                                                                          ? { ...e, currentValue: null }
-                                                                          : e
-                                                                      ) ?? null
-                                                                    )
-                                                                    toast.success("Reset to default", {
-                                                                      description: "Forbidden terms restored to default.",
-                                                                    })
-                                                                  } else {
-                                                                    toast.error("Error", {
-                                                                      description: result.error || "Failed to reset snippet",
-                                                                    })
-                                                                  }
-                                                                }}
-                                                              >
-                                                                <RotateCcw className="h-3 w-3 mr-1" />
-                                                                Reset
-                                                              </Button>
-                                                            )}
-                                                          </div>
-                                                        )}
-                                                      </div>
-                                                    )}
-                                                  </div>
-                                                )}
-                                              </div>
-                                            )}
-                                          </div>
-                                        )
-                                      })}
-                                    </div>
-                                  )
-                                })}
-                              </AccordionContent>
-                            </AccordionItem>
-                          )
-                        })}
-                      </Accordion>
-                    ) : (
-                      <div className="text-sm text-muted-foreground">No prompt templates available.</div>
-                    )}
-                  </DialogContent>
-                </Dialog>
-              </>
-            ) : null}
+            {aiDashboardCard}
             </fieldset>
           </TabsContent>
 
@@ -6893,10 +5901,952 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           {/* Admin Dashboard (workspace admins only) */}
           {showAdminTab ? (
             <TabsContent value="admin" className="space-y-6">
+              {aiDashboardCard}
               <AdminDashboardTab clientId={activeWorkspace ?? null} active={activeTab === "admin"} />
             </TabsContent>
           ) : null}
         </Tabs>
+
+        {/* Backend Prompts Dialog */}
+        {showAdminTab ? (
+                          <Dialog open={aiPromptsOpen} onOpenChange={(open) => {
+                            setAiPromptsOpen(open)
+                            if (!open) {
+                              resetAiPromptModalState()
+                            }
+                          }}>
+                            <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+                              <DialogHeader>
+                                <DialogTitle>Backend Prompts</DialogTitle>
+                                <DialogDescription>
+                                  View and customize AI prompt templates and variables. Changes apply to this workspace only.
+                                </DialogDescription>
+                              </DialogHeader>
+
+                              {/* Tab navigation (Phase 47h) */}
+                              <div className="flex gap-2 border-b">
+                                <button
+                                  type="button"
+                                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                                    promptModalTab === "prompts"
+                                      ? "border-primary text-primary"
+                                      : "border-transparent text-muted-foreground hover:text-foreground"
+                                  }`}
+                                  onClick={() => setPromptModalTab("prompts")}
+                                >
+                                  Prompts
+                                </button>
+                                <button
+                                  type="button"
+                                  className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                                    promptModalTab === "variables"
+                                      ? "border-primary text-primary"
+                                      : "border-transparent text-muted-foreground hover:text-foreground"
+                                  }`}
+                                  onClick={() => setPromptModalTab("variables")}
+                                >
+                                  Variables
+                                </button>
+                              </div>
+
+                              {aiPromptsLoading ? (
+                                <div className="flex items-center justify-center py-10">
+                                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                                </div>
+                              ) : promptModalTab === "variables" ? (
+                                /* Variables Tab Content (Phase 47h + 47j) */
+                                <div className="space-y-6 py-4">
+                                  {/* Persona Context Selector (Phase 47j) */}
+                                  <div className="border rounded-lg p-4 space-y-3 bg-muted/30">
+                                    <div className="flex items-center justify-between">
+                                      <div>
+                                        <p className="font-medium text-sm">AI Persona Context</p>
+                                        <p className="text-xs text-muted-foreground">
+                                          Drafts use these persona fields: tone, greeting, signature, goals.
+                                        </p>
+                                      </div>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                          setAiPromptsOpen(false)
+                                          onTabChange?.("ai")
+                                        }}
+                                      >
+                                        Edit in AI Personality
+                                      </Button>
+                                    </div>
+                                    {personaList && personaList.length > 0 && (
+                                      <div className="flex items-center gap-3">
+                                        <Label className="text-xs">Preview persona:</Label>
+                                        <Select
+                                          value={selectedPersonaId || ""}
+                                          onValueChange={(v) => setSelectedPersonaId(v)}
+                                        >
+                                          <SelectTrigger className="w-[250px]">
+                                            <SelectValue placeholder="Select persona..." />
+                                          </SelectTrigger>
+                                          <SelectContent>
+                                            {personaList.map((p) => (
+                                              <SelectItem key={p.id} value={p.id}>
+                                                {p.name} {p.isDefault && "(Default)"}
+                                              </SelectItem>
+                                            ))}
+                                          </SelectContent>
+                                        </Select>
+                                      </div>
+                                    )}
+                                    {personaLoading ? (
+                                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                        Loading persona details...
+                                      </div>
+                                    ) : selectedPersonaDetails ? (
+                                      <div className="grid grid-cols-2 gap-2 text-xs">
+                                        <div>
+                                          <span className="text-muted-foreground">Name:</span>{" "}
+                                          <span className="font-medium">{selectedPersonaDetails.personaName || "-"}</span>
+                                        </div>
+                                        <div>
+                                          <span className="text-muted-foreground">Tone:</span>{" "}
+                                          <span className="font-medium">{selectedPersonaDetails.tone}</span>
+                                        </div>
+                                        <div className="col-span-2">
+                                          <span className="text-muted-foreground">Greeting:</span>{" "}
+                                          <span className="font-mono text-xs">{selectedPersonaDetails.greeting || "-"}</span>
+                                        </div>
+                                        <div className="col-span-2">
+                                          <span className="text-muted-foreground">Signature:</span>{" "}
+                                          <span className="font-mono text-xs">{selectedPersonaDetails.signature || "-"}</span>
+                                        </div>
+                                      </div>
+                                    ) : null}
+                                  </div>
+
+                                  <Separator />
+
+                                  <p className="text-sm text-muted-foreground">
+                                    Configure global variables used in AI prompt templates.
+                                  </p>
+                                  {snippetRegistry && snippetRegistry.length > 0 ? (
+                                    <div className="space-y-4">
+                                      {snippetRegistry.map((entry) => (
+                                        <div key={entry.key} className="border rounded-lg p-4 space-y-2">
+                                          <div className="flex items-center justify-between">
+                                            <div>
+                                              <p className="font-medium text-sm">{entry.label}</p>
+                                              <p className="text-xs text-muted-foreground">{entry.description}</p>
+                                            </div>
+                                            {entry.currentValue !== null && (
+                                              <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
+                                                Customized
+                                              </Badge>
+                                            )}
+                                          </div>
+
+                                          {editingSnippet === entry.key ? (
+                                            <div className="space-y-2">
+                                              {entry.type === "number" ? (
+                                                <Input
+                                                  type="number"
+                                                  value={snippetEditContent}
+                                                  onChange={(e) => setSnippetEditContent(e.target.value)}
+                                                  className="font-mono"
+                                                />
+                                              ) : (
+                                                <Textarea
+                                                  value={snippetEditContent}
+                                                  onChange={(e) => setSnippetEditContent(e.target.value)}
+                                                  className={`font-mono text-xs ${
+                                                    entry.type === "list" || entry.type === "text" || entry.type === "template"
+                                                      ? "min-h-[150px]"
+                                                      : "min-h-[100px]"
+                                                  }`}
+                                                  placeholder={entry.type === "list" ? "One item per line..." : undefined}
+                                                />
+                                              )}
+                                              {entry.placeholders && entry.placeholders.length > 0 && (
+                                                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                                  <span>Placeholders:</span>
+                                                  {entry.placeholders.map((p) => (
+                                                    <code key={p} className="bg-muted px-1 rounded">{p}</code>
+                                                  ))}
+                                                </div>
+                                              )}
+                                              <div className="flex justify-end gap-2">
+                                                <Button
+                                                  variant="outline"
+                                                  size="sm"
+                                                  onClick={() => {
+                                                    setEditingSnippet(null)
+                                                    setSnippetEditContent("")
+                                                  }}
+                                                >
+                                                  Cancel
+                                                </Button>
+                                                <Button
+                                                  size="sm"
+                                                  disabled={savingSnippet || !activeWorkspace}
+                                                  onClick={async () => {
+                                                    if (!activeWorkspace) return
+                                                    setSavingSnippet(true)
+                                                    const result = await savePromptSnippetOverride(
+                                                      activeWorkspace,
+                                                      entry.key,
+                                                      snippetEditContent
+                                                    )
+                                                    if (result.success) {
+                                                      setSnippetOverrides((prev) => {
+                                                        const next = new Map(prev)
+                                                        next.set(entry.key, snippetEditContent)
+                                                        return next
+                                                      })
+                                                      // Update registry
+                                                      setSnippetRegistry((prev) =>
+                                                        prev?.map((e) =>
+                                                          e.key === entry.key
+                                                            ? { ...e, currentValue: snippetEditContent }
+                                                            : e
+                                                        ) ?? null
+                                                      )
+                                                      setEditingSnippet(null)
+                                                      setSnippetEditContent("")
+                                                      toast.success("Variable saved", {
+                                                        description: `${entry.label} has been updated.`,
+                                                      })
+                                                    } else {
+                                                      toast.error("Error", {
+                                                        description: result.error || "Failed to save variable",
+                                                      })
+                                                    }
+                                                    setSavingSnippet(false)
+                                                  }}
+                                                >
+                                                  {savingSnippet ? (
+                                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                                  ) : (
+                                                    "Save"
+                                                  )}
+                                                </Button>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div className="space-y-2">
+                                              <div className="rounded border bg-muted/20 p-2 text-xs max-h-[80px] overflow-y-auto">
+                                                <div className="text-muted-foreground whitespace-pre-wrap font-mono">
+                                                  {entry.currentValue ?? entry.defaultValue}
+                                                </div>
+                                              </div>
+                                              {isWorkspaceAdmin && activeWorkspace && (
+                                                <div className="flex items-center gap-1">
+                                                  <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => {
+                                                      setEditingSnippet(entry.key)
+                                                      setSnippetEditContent(entry.currentValue ?? entry.defaultValue)
+                                                    }}
+                                                  >
+                                                    <Pencil className="h-3 w-3 mr-1" />
+                                                    Edit
+                                                  </Button>
+                                                  {entry.currentValue !== null && (
+                                                    <Button
+                                                      variant="ghost"
+                                                      size="sm"
+                                                      onClick={async () => {
+                                                        if (!activeWorkspace) return
+                                                        const result = await resetPromptSnippetOverride(
+                                                          activeWorkspace,
+                                                          entry.key
+                                                        )
+                                                        if (result.success) {
+                                                          setSnippetOverrides((prev) => {
+                                                            const next = new Map(prev)
+                                                            next.delete(entry.key)
+                                                            return next
+                                                          })
+                                                          setSnippetRegistry((prev) =>
+                                                            prev?.map((e) =>
+                                                              e.key === entry.key
+                                                                ? { ...e, currentValue: null }
+                                                                : e
+                                                            ) ?? null
+                                                          )
+                                                          toast.success("Reset to default", {
+                                                            description: `${entry.label} restored to default.`,
+                                                          })
+                                                        } else {
+                                                          toast.error("Error", {
+                                                            description: result.error || "Failed to reset variable",
+                                                          })
+                                                        }
+                                                      }}
+                                                    >
+                                                      <RotateCcw className="h-3 w-3 mr-1" />
+                                                      Reset
+                                                    </Button>
+                                                  )}
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="text-sm text-muted-foreground">No variables available.</div>
+                                  )}
+                                </div>
+                              ) : aiPromptTemplates && aiPromptTemplates.length > 0 ? (
+                                /* Prompts Tab Content */
+                                <Accordion type="single" collapsible className="w-full">
+                                  {aiPromptTemplates.map((t) => {
+                                    // Check if this prompt has any overrides
+                                    const hasAnyOverride = Array.from(promptOverrides.keys()).some(
+                                      (key) => key.startsWith(`${t.key}:`)
+                                    )
+                                    return (
+                                      <AccordionItem key={t.key} value={t.key}>
+                                        <AccordionTrigger>
+                                          <div className="flex flex-col text-left">
+                                            <div className="flex items-center gap-2">
+                                              <span className="font-medium">{t.name}</span>
+                                              {hasAnyOverride && (
+                                                <Badge variant="secondary" className="text-xs">
+                                                  Modified
+                                                </Badge>
+                                              )}
+                                            </div>
+                                            <span className="text-xs text-muted-foreground">
+                                              {t.featureId} · {t.model} · {t.apiType}
+                                            </span>
+                                          </div>
+                                        </AccordionTrigger>
+                                        <AccordionContent className="space-y-4">
+                                          {t.description ? (
+                                            <p className="text-sm text-muted-foreground">{t.description}</p>
+                                          ) : null}
+
+                                          {(["system", "assistant", "user"] as const).map((role) => {
+                                            const parts = t.messages.filter((m) => m.role === role)
+                                            if (parts.length === 0) return null
+                                            return (
+                                              <div key={role} className="space-y-2">
+                                                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                                  {role}
+                                                </p>
+                                                {parts.map((p, i) => {
+                                                  const overrideKey = `${t.key}:${role}:${i}`
+                                                  const hasOverride = promptOverrides.has(overrideKey)
+                                                  const displayContent = hasOverride
+                                                    ? promptOverrides.get(overrideKey)!
+                                                    : p.content
+                                                  const isEditing =
+                                                    editingPrompt?.promptKey === t.key &&
+                                                    editingPrompt?.role === role &&
+                                                    editingPrompt?.index === i
+
+                                                  return (
+                                                    <div key={overrideKey} className="space-y-2">
+                                                      <div className="flex items-center justify-between">
+                                                        <div className="flex items-center gap-2">
+                                                          {hasOverride && (
+                                                            <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
+                                                              Customized
+                                                            </Badge>
+                                                          )}
+                                                        </div>
+                                                        <div className="flex items-center gap-1">
+                                                          {!isEditing && isWorkspaceAdmin && activeWorkspace && (
+                                                            <Button
+                                                              variant="ghost"
+                                                              size="sm"
+                                                              onClick={() => {
+                                                                setEditingPrompt({ promptKey: t.key, role, index: i })
+                                                                setEditContent(displayContent)
+                                                              }}
+                                                            >
+                                                              <Pencil className="h-3 w-3" />
+                                                            </Button>
+                                                          )}
+                                                          {!isEditing && isWorkspaceAdmin && activeWorkspace && (
+                                                            <Button
+                                                              variant="ghost"
+                                                              size="sm"
+                                                              onClick={() => handleOpenPromptHistory(t.key, role, i)}
+                                                              title="View history"
+                                                            >
+                                                              <Clock className="h-3 w-3" />
+                                                            </Button>
+                                                          )}
+                                                          {hasOverride && !isEditing && isWorkspaceAdmin && activeWorkspace && (
+                                                            <Button
+                                                              variant="ghost"
+                                                              size="sm"
+                                                              onClick={async () => {
+                                                                if (!activeWorkspace) return
+                                                                const result = await resetPromptOverride(
+                                                                  activeWorkspace,
+                                                                  t.key,
+                                                                  role,
+                                                                  i
+                                                                )
+                                                                if (result.success) {
+                                                                  setPromptOverrides((prev) => {
+                                                                    const next = new Map(prev)
+                                                                    next.delete(overrideKey)
+                                                                    return next
+                                                                  })
+                                                                  toast.success("Reset to default", {
+                                                                    description: "Prompt restored to original content.",
+                                                                  })
+                                                                } else {
+                                                                  toast.error("Error", {
+                                                                    description: result.error || "Failed to reset prompt",
+                                                                  })
+                                                                }
+                                                              }}
+                                                              title="Reset to default"
+                                                            >
+                                                              <RotateCcw className="h-3 w-3" />
+                                                            </Button>
+                                                          )}
+                                                        </div>
+                                                      </div>
+
+                                                      {isEditing ? (
+                                                        <div className="space-y-2">
+                                                          <Textarea
+                                                            value={editContent}
+                                                            onChange={(e) => setEditContent(e.target.value)}
+                                                            className="min-h-[200px] font-mono text-xs"
+                                                          />
+                                                          <div className="flex justify-end gap-2">
+                                                            <Button
+                                                              variant="outline"
+                                                              size="sm"
+                                                              onClick={() => {
+                                                                setEditingPrompt(null)
+                                                                setEditContent("")
+                                                              }}
+                                                            >
+                                                              Cancel
+                                                            </Button>
+                                                            <Button
+                                                              size="sm"
+                                                              disabled={savingOverride || !activeWorkspace}
+                                                              onClick={async () => {
+                                                                if (!activeWorkspace) return
+                                                                setSavingOverride(true)
+                                                                const result = await savePromptOverride(activeWorkspace, {
+                                                                  promptKey: t.key,
+                                                                  role: role as "system" | "assistant" | "user",
+                                                                  index: i,
+                                                                  content: editContent,
+                                                                })
+                                                                if (result.success) {
+                                                                  setPromptOverrides((prev) => {
+                                                                    const next = new Map(prev)
+                                                                    next.set(overrideKey, editContent)
+                                                                    return next
+                                                                  })
+                                                                  setEditingPrompt(null)
+                                                                  setEditContent("")
+                                                                  toast.success("Prompt saved", {
+                                                                    description: "Your changes have been saved.",
+                                                                  })
+                                                                } else {
+                                                                  toast.error("Error", {
+                                                                    description: result.error || "Failed to save prompt",
+                                                                  })
+                                                                }
+                                                                setSavingOverride(false)
+                                                              }}
+                                                            >
+                                                              {savingOverride ? (
+                                                                <Loader2 className="h-4 w-4 animate-spin" />
+                                                              ) : (
+                                                                "Save"
+                                                              )}
+                                                            </Button>
+                                                          </div>
+                                                        </div>
+                                                      ) : (
+                                                        <div className="rounded-lg border bg-muted/30 p-3 text-xs whitespace-pre-wrap">
+                                                          {displayContent}
+                                                        </div>
+                                                      )}
+
+                                                      {/* Runtime context preview for Auto-Send Evaluator (Jam fd4cf691) */}
+                                                      {t.key === "auto_send.evaluate.v1" && role === "user" ? (() => {
+                                                        const encoder = new TextEncoder()
+                                                        const decoder = new TextDecoder("utf-8")
+                                                        const fatalDecoder = (() => {
+                                                          try {
+                                                            return new TextDecoder("utf-8", { fatal: true })
+                                                          } catch {
+                                                            return null
+                                                          }
+                                                        })()
+
+                                                        const estimateBytes = (text: string) => {
+                                                          try {
+                                                            return encoder.encode(text || "").length
+                                                          } catch {
+                                                            return (text || "").length
+                                                          }
+                                                        }
+                                                        const estimateTokensFromBytes = (bytes: number) =>
+                                                          Math.max(0, Math.ceil(Math.max(0, bytes || 0) / 4))
+
+                                                        const truncateTextToTokenEstimate = (text: string, maxTokens: number) => {
+                                                          const raw = text || ""
+                                                          const maxBytes = Math.max(0, Math.trunc(maxTokens)) * 4
+                                                          if (!raw) {
+                                                            return { text: "", truncated: false, bytes: 0, tokensEstimated: 0 }
+                                                          }
+                                                          if (maxBytes <= 0) {
+                                                            return { text: "", truncated: true, bytes: 0, tokensEstimated: 0 }
+                                                          }
+
+                                                          let bytes: Uint8Array
+                                                          try {
+                                                            bytes = encoder.encode(raw)
+                                                          } catch {
+                                                            const slice = raw.slice(0, maxBytes)
+                                                            const sliceBytes = estimateBytes(slice)
+                                                            return {
+                                                              text: slice,
+                                                              truncated: slice.length < raw.length,
+                                                              bytes: sliceBytes,
+                                                              tokensEstimated: estimateTokensFromBytes(sliceBytes),
+                                                            }
+                                                          }
+
+                                                          if (bytes.length <= maxBytes) {
+                                                            return {
+                                                              text: raw,
+                                                              truncated: false,
+                                                              bytes: bytes.length,
+                                                              tokensEstimated: estimateTokensFromBytes(bytes.length),
+                                                            }
+                                                          }
+
+                                                          let end = Math.min(bytes.length, maxBytes)
+                                                          let decodedText = ""
+                                                          for (let i = 0; i < 4 && end > 0; i += 1) {
+                                                            try {
+                                                              decodedText = fatalDecoder ? fatalDecoder.decode(bytes.slice(0, end)) : decoder.decode(bytes.slice(0, end))
+                                                              break
+                                                            } catch {
+                                                              end -= 1
+                                                            }
+                                                          }
+                                                          if (!decodedText) {
+                                                            decodedText = decoder.decode(bytes.slice(0, end))
+                                                          }
+
+                                                          const decodedBytes = estimateBytes(decodedText)
+                                                          return {
+                                                            text: decodedText,
+                                                            truncated: true,
+                                                            bytes: decodedBytes,
+                                                            tokensEstimated: estimateTokensFromBytes(decodedBytes),
+                                                          }
+                                                        }
+
+                                                        const serviceDescription = (aiPersona.serviceDescription || "").trim()
+                                                        const goals = (aiPersona.goals || "").trim()
+                                                        const servicePreview = serviceDescription
+                                                          ? `${serviceDescription.slice(0, 220)}${serviceDescription.length > 220 ? "…" : ""}`
+                                                          : "—"
+                                                        const goalsPreview = goals
+                                                          ? `${goals.slice(0, 220)}${goals.length > 220 ? "…" : ""}`
+                                                          : "—"
+
+                                                        const getTimeMs = (value: unknown) => {
+                                                          if (value instanceof Date) return value.getTime()
+                                                          if (typeof value === "string") {
+                                                            const parsed = new Date(value)
+                                                            return Number.isFinite(parsed.getTime()) ? parsed.getTime() : 0
+                                                          }
+                                                          return 0
+                                                        }
+
+                                                        const assetsSorted = [...knowledgeAssets].sort((a, b) => {
+                                                          const aTime = getTimeMs((a as any).updatedAt) || getTimeMs(a.createdAt)
+                                                          const bTime = getTimeMs((b as any).updatedAt) || getTimeMs(b.createdAt)
+                                                          return bTime - aTime
+                                                        })
+
+                                                        const knowledgeBudgets = {
+                                                          maxTokens: 8000,
+                                                          maxAssetTokens: 1600,
+                                                        }
+
+                                                        let remainingTokens = knowledgeBudgets.maxTokens
+
+                                                        const perAsset = assetsSorted.map((asset) => {
+                                                          const raw = (asset.textContent || "").trim()
+                                                          const bytes = estimateBytes(raw)
+                                                          const tokensEstimated = estimateTokensFromBytes(bytes)
+
+                                                          const firstLine = raw
+                                                            .split("\n")
+                                                            .map((l) => l.trim())
+                                                            .find(Boolean) || ""
+                                                          const summary = firstLine
+                                                            ? firstLine.replace(/^[*-]\s+/, "").slice(0, 240) + (firstLine.length > 240 ? "…" : "")
+                                                            : "—"
+
+                                                          const header = `[${asset.name}]`
+                                                          const headerTokens = estimateTokensFromBytes(estimateBytes(header)) + 2
+
+                                                          let included = false
+                                                          let truncated = false
+                                                          let includedBytes = 0
+                                                          let includedTokensEstimated = 0
+                                                          let snippetPreview = ""
+
+                                                          if (raw && remainingTokens > 0 && headerTokens < remainingTokens) {
+                                                            const available = Math.max(0, remainingTokens - headerTokens)
+                                                            const perAssetBudget = Math.min(knowledgeBudgets.maxAssetTokens, available)
+                                                            const snippet = truncateTextToTokenEstimate(raw, perAssetBudget)
+                                                            const snippetText = (snippet.text || "").trim()
+                                                            const preview = snippetText ? `${snippetText.slice(0, 260)}${snippetText.length > 260 ? "…" : ""}` : ""
+
+                                                            const consumed = headerTokens + snippet.tokensEstimated
+                                                            remainingTokens = Math.max(0, remainingTokens - consumed)
+
+                                                            included = true
+                                                            truncated = snippet.truncated
+                                                            includedBytes = snippet.bytes
+                                                            includedTokensEstimated = snippet.tokensEstimated
+                                                            snippetPreview = preview
+                                                          }
+
+                                                          return {
+                                                            id: asset.id,
+                                                            name: asset.name,
+                                                            type: asset.type,
+                                                            originalFileName: asset.originalFileName,
+                                                            mimeType: asset.mimeType,
+                                                            bytes,
+                                                            tokensEstimated,
+                                                            included,
+                                                            includedBytes,
+                                                            includedTokensEstimated,
+                                                            truncated,
+                                                            summary,
+                                                            snippetPreview,
+                                                          }
+                                                        })
+
+                                                        const totalKnowledgeBytes = perAsset.reduce((sum, a) => sum + a.bytes, 0)
+                                                        const totalKnowledgeTokens = perAsset.reduce((sum, a) => sum + a.tokensEstimated, 0)
+
+                                                        const includedAssets = perAsset.filter((a) => a.included)
+                                                        const includedKnowledgeBytes = includedAssets.reduce((sum, a) => sum + a.includedBytes, 0)
+                                                        const includedKnowledgeTokens = includedAssets.reduce((sum, a) => sum + a.includedTokensEstimated, 0)
+                                                        const truncatedAssets = includedAssets.filter((a) => a.truncated).length
+
+                                                        const missingInputPlaceholder =
+                                                          !(displayContent.includes("{{inputJson}}") || displayContent.includes("{inputJson}"))
+
+                                                        return (
+                                                          <Alert className="border-muted-foreground/20 bg-muted/20">
+                                                            <HelpCircle className="h-4 w-4 text-muted-foreground" />
+                                                            <AlertTitle>Runtime Context Preview</AlertTitle>
+                                                            <AlertDescription className="text-xs text-muted-foreground space-y-3">
+                                                              <p>
+                                                                The auto-send confidence gate also receives verified workspace context
+                                                                (AI Personality + Knowledge Assets) at runtime:
+                                                              </p>
+                                                              {missingInputPlaceholder ? (
+                                                                <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-700">
+                                                                  <span className="font-medium">Heads up:</span> this user prompt should include{" "}
+                                                                  <span className="font-mono">{"{{inputJson}}"}</span> so the evaluator receives
+                                                                  the runtime JSON input. If you remove it in an override, the evaluator will be
+                                                                  missing critical context.
+                                                                </div>
+                                                              ) : null}
+                                                              <pre className="bg-muted/40 border rounded p-2 text-[11px] whitespace-pre-wrap">
+          {`• service_description: ${servicePreview}
+          • goals: ${goalsPreview}
+          • knowledge_assets: ${knowledgeAssets.length} asset(s) ≈ ${new Intl.NumberFormat().format(totalKnowledgeTokens)} tokens, ${new Intl.NumberFormat().format(totalKnowledgeBytes)} bytes
+          • knowledge_context (budgeted): ${includedAssets.length}/${knowledgeAssets.length} asset(s) included ≈ ${new Intl.NumberFormat().format(includedKnowledgeTokens)} tokens, ${new Intl.NumberFormat().format(includedKnowledgeBytes)} bytes${truncatedAssets ? ` (${truncatedAssets} truncated)` : ""}`}
+                                                              </pre>
+                                                              <Collapsible defaultOpen>
+                                                                <div className="flex items-center justify-between gap-3">
+                                                                  <div className="text-[11px] font-medium">
+                                                                    Knowledge Assets Breakdown (≈tokens/bytes)
+                                                                  </div>
+                                                                  <CollapsibleTrigger asChild>
+                                                                    <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]">
+                                                                      Toggle
+                                                                    </Button>
+                                                                  </CollapsibleTrigger>
+                                                                </div>
+                                                                <CollapsibleContent className="space-y-2 pt-2">
+                                                                  {perAsset.length === 0 ? (
+                                                                    <div className="text-[11px] text-muted-foreground">No knowledge assets configured.</div>
+                                                                  ) : (
+                                                                    <div className="space-y-2">
+                                                                      {perAsset.map((asset) => (
+                                                                        <div key={asset.id} className="rounded border bg-muted/30 p-2 space-y-1">
+                                                                          <div className="flex items-start justify-between gap-3">
+                                                                            <div className="min-w-0">
+                                                                              <div className="font-medium truncate">{asset.name}</div>
+                                                                              <div className="text-[11px] text-muted-foreground truncate">
+                                                                                {asset.type}
+                                                                                {asset.originalFileName ? ` · ${asset.originalFileName}` : ""}
+                                                                                {asset.mimeType ? ` · ${asset.mimeType}` : ""}
+                                                                              </div>
+                                                                            </div>
+                                                                            <div className="flex items-center gap-1 shrink-0">
+                                                                              {asset.included ? (
+                                                                                <Badge variant="outline" className="text-[10px] h-4 border-emerald-500/30 text-emerald-700">
+                                                                                  Included
+                                                                                </Badge>
+                                                                              ) : (
+                                                                                <Badge variant="outline" className="text-[10px] h-4 border-muted-foreground/30 text-muted-foreground">
+                                                                                  Dropped
+                                                                                </Badge>
+                                                                              )}
+                                                                              {asset.truncated ? (
+                                                                                <Badge variant="outline" className="text-[10px] h-4 border-amber-500/30 text-amber-700">
+                                                                                  Truncated
+                                                                                </Badge>
+                                                                              ) : null}
+                                                                            </div>
+                                                                          </div>
+
+                                                                          <div className="text-[11px] text-muted-foreground">
+                                                                            Total: ≈ {new Intl.NumberFormat().format(asset.tokensEstimated)} tokens,{" "}
+                                                                            {new Intl.NumberFormat().format(asset.bytes)} bytes
+                                                                            {asset.included ? (
+                                                                              <>
+                                                                                {" "}
+                                                                                · Included: ≈ {new Intl.NumberFormat().format(asset.includedTokensEstimated)} tokens,{" "}
+                                                                                {new Intl.NumberFormat().format(asset.includedBytes)} bytes
+                                                                              </>
+                                                                            ) : null}
+                                                                          </div>
+
+                                                                          <div className="text-[11px] text-foreground">
+                                                                            <span className="text-muted-foreground">Summary:</span> {asset.summary}
+                                                                          </div>
+
+                                                                          {asset.included && asset.snippetPreview ? (
+                                                                            <div className="text-[11px] text-muted-foreground whitespace-pre-wrap">
+                                                                              <span className="font-medium text-muted-foreground">Preview:</span>{" "}
+                                                                              {asset.snippetPreview}
+                                                                            </div>
+                                                                          ) : null}
+                                                                        </div>
+                                                                      ))}
+                                                                    </div>
+                                                                  )}
+                                                                </CollapsibleContent>
+                                                              </Collapsible>
+                                                              <p>
+                                                                Edit the context in <span className="font-medium">AI Personality</span> /
+                                                                <span className="font-medium"> Knowledge Assets</span>. Edit this prompt to
+                                                                change the evaluator’s system instructions.
+                                                              </p>
+                                                            </AlertDescription>
+                                                          </Alert>
+                                                        )
+                                                      })() : null}
+
+                                                      {/* Nested Snippet Editor (Phase 47f) */}
+                                                      {/* Show snippet editor if this message contains {forbiddenTerms} placeholder */}
+                                                      {displayContent.includes("{forbiddenTerms}") && (
+                                                        <div className="mt-2 ml-4 border-l-2 border-muted-foreground/20 pl-3">
+                                                          <button
+                                                            type="button"
+                                                            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                                                            onClick={() => {
+                                                              setExpandedSnippets((prev) => {
+                                                                const next = new Set(prev)
+                                                                const key = `${t.key}:forbiddenTerms`
+                                                                if (next.has(key)) {
+                                                                  next.delete(key)
+                                                                } else {
+                                                                  next.add(key)
+                                                                }
+                                                                return next
+                                                              })
+                                                            }}
+                                                          >
+                                                            {expandedSnippets.has(`${t.key}:forbiddenTerms`) ? (
+                                                              <ChevronDown className="h-3 w-3" />
+                                                            ) : (
+                                                              <ChevronRight className="h-3 w-3" />
+                                                            )}
+                                                            <span className="font-mono">{"{forbiddenTerms}"}</span>
+                                                            {snippetOverrides.has("forbiddenTerms") && (
+                                                              <Badge variant="outline" className="text-[10px] h-4 ml-1 text-amber-600 border-amber-300">
+                                                                Customized
+                                                              </Badge>
+                                                            )}
+                                                          </button>
+
+                                                          {expandedSnippets.has(`${t.key}:forbiddenTerms`) && (
+                                                            <div className="mt-2 space-y-2">
+                                                              {editingSnippet === "forbiddenTerms" ? (
+                                                                <div className="space-y-2">
+                                                                  <Textarea
+                                                                    value={snippetEditContent}
+                                                                    onChange={(e) => setSnippetEditContent(e.target.value)}
+                                                                    className="min-h-[150px] font-mono text-xs"
+                                                                    placeholder="One term per line..."
+                                                                  />
+                                                                  <div className="flex justify-end gap-2">
+                                                                    <Button
+                                                                      variant="outline"
+                                                                      size="sm"
+                                                                      onClick={() => {
+                                                                        setEditingSnippet(null)
+                                                                        setSnippetEditContent("")
+                                                                      }}
+                                                                    >
+                                                                      Cancel
+                                                                    </Button>
+                                                                    <Button
+                                                                      size="sm"
+                                                                      disabled={savingSnippet || !activeWorkspace}
+                                                                      onClick={async () => {
+                                                                        if (!activeWorkspace) return
+                                                                        setSavingSnippet(true)
+                                                                        const result = await savePromptSnippetOverride(
+                                                                          activeWorkspace,
+                                                                          "forbiddenTerms",
+                                                                          snippetEditContent
+                                                                        )
+                                                                        if (result.success) {
+                                                                          setSnippetOverrides((prev) => {
+                                                                            const next = new Map(prev)
+                                                                            next.set("forbiddenTerms", snippetEditContent)
+                                                                            return next
+                                                                          })
+                                                                          setSnippetRegistry((prev) =>
+                                                                            prev?.map((e) =>
+                                                                              e.key === "forbiddenTerms"
+                                                                                ? { ...e, currentValue: snippetEditContent }
+                                                                                : e
+                                                                            ) ?? null
+                                                                          )
+                                                                          setEditingSnippet(null)
+                                                                          setSnippetEditContent("")
+                                                                          toast.success("Snippet saved", {
+                                                                            description: "Forbidden terms updated.",
+                                                                          })
+                                                                        } else {
+                                                                          toast.error("Error", {
+                                                                            description: result.error || "Failed to save snippet",
+                                                                          })
+                                                                        }
+                                                                        setSavingSnippet(false)
+                                                                      }}
+                                                                    >
+                                                                      {savingSnippet ? (
+                                                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                                                      ) : (
+                                                                        "Save"
+                                                                      )}
+                                                                    </Button>
+                                                                  </div>
+                                                                </div>
+                                                              ) : (
+                                                                <div className="space-y-2">
+                                                                  <div className="rounded border bg-muted/20 p-2 text-xs max-h-[100px] overflow-y-auto">
+                                                                    <div className="text-muted-foreground whitespace-pre-wrap">
+                                                                      {snippetOverrides.get("forbiddenTerms") ||
+                                                                        snippetRegistry?.find((e) => e.key === "forbiddenTerms")?.defaultValue ||
+                                                                        "Default forbidden terms not loaded."}
+                                                                    </div>
+                                                                  </div>
+                                                                  {isWorkspaceAdmin && activeWorkspace && (
+                                                                    <div className="flex items-center gap-1">
+                                                                      <Button
+                                                                        variant="ghost"
+                                                                        size="sm"
+                                                                        onClick={() => {
+                                                                          setEditingSnippet("forbiddenTerms")
+                                                                          setSnippetEditContent(
+                                                                            snippetOverrides.get("forbiddenTerms") ||
+                                                                              snippetRegistry?.find((e) => e.key === "forbiddenTerms")?.defaultValue ||
+                                                                              ""
+                                                                          )
+                                                                        }}
+                                                                      >
+                                                                        <Pencil className="h-3 w-3 mr-1" />
+                                                                        Edit
+                                                                      </Button>
+                                                                      {snippetOverrides.has("forbiddenTerms") && (
+                                                                        <Button
+                                                                          variant="ghost"
+                                                                          size="sm"
+                                                                          onClick={async () => {
+                                                                            if (!activeWorkspace) return
+                                                                            const result = await resetPromptSnippetOverride(
+                                                                              activeWorkspace,
+                                                                              "forbiddenTerms"
+                                                                            )
+                                                                            if (result.success) {
+                                                                              setSnippetOverrides((prev) => {
+                                                                                const next = new Map(prev)
+                                                                                next.delete("forbiddenTerms")
+                                                                                return next
+                                                                              })
+                                                                              setSnippetRegistry((prev) =>
+                                                                                prev?.map((e) =>
+                                                                                  e.key === "forbiddenTerms"
+                                                                                    ? { ...e, currentValue: null }
+                                                                                    : e
+                                                                                ) ?? null
+                                                                              )
+                                                                              toast.success("Reset to default", {
+                                                                                description: "Forbidden terms restored to default.",
+                                                                              })
+                                                                            } else {
+                                                                              toast.error("Error", {
+                                                                                description: result.error || "Failed to reset snippet",
+                                                                              })
+                                                                            }
+                                                                          }}
+                                                                        >
+                                                                          <RotateCcw className="h-3 w-3 mr-1" />
+                                                                          Reset
+                                                                        </Button>
+                                                                      )}
+                                                                    </div>
+                                                                  )}
+                                                                </div>
+                                                              )}
+                                                            </div>
+                                                          )}
+                                                        </div>
+                                                      )}
+                                                    </div>
+                                                  )
+                                                })}
+                                              </div>
+                                            )
+                                          })}
+                                        </AccordionContent>
+                                      </AccordionItem>
+                                    )
+                                  })}
+                                </Accordion>
+                              ) : (
+                                <div className="text-sm text-muted-foreground">No prompt templates available.</div>
+                              )}
+                            </DialogContent>
+                          </Dialog>
+        ) : null}
 
         {/* Prompt History Dialog */}
         <Dialog open={promptHistoryOpen} onOpenChange={(open) => (!open ? setPromptHistoryOpen(false) : null)}>

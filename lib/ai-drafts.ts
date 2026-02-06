@@ -32,6 +32,11 @@ import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
 import { extractImportantEmailSignatureContext, type EmailSignatureContextExtraction } from "@/lib/email-signature-context";
 import { emailsMatch, extractFirstName } from "@/lib/email-participants";
+import {
+  buildLeadContextBundle,
+  buildLeadContextBundleTelemetryMetadata,
+  isLeadContextBundleGloballyDisabled,
+} from "@/lib/lead-context-bundle";
 import { PRIMARY_WEBSITE_ASSET_NAME, extractPrimaryWebsiteUrlFromAssets } from "@/lib/knowledge-asset-context";
 import { getLeadMemoryContext } from "@/lib/lead-memory-context";
 import {
@@ -258,6 +263,7 @@ async function runEmailDraftVerificationStep3(opts: {
   serviceDescription: string | null;
   knowledgeContext: string;
   timeoutMs: number;
+  metadata?: unknown;
 }): Promise<string | null> {
   const promptKey = "draft.verify.email.step3.v1";
   const latestInbound = await getLatestInboundEmailTextForVerifier({
@@ -332,6 +338,7 @@ async function runEmailDraftVerificationStep3(opts: {
       leadId: opts.leadId,
       featureId: promptTemplate.featureId || "draft.verify.email.step3",
       promptKey,
+      metadata: opts.metadata,
       model: verifierModel,
       reasoningEffort: verifierReasoningEffort,
       temperature: 0,
@@ -1343,31 +1350,70 @@ export async function generateResponseDraft(
     }
 
     const knowledgeAssets = settings?.knowledgeAssets ?? [];
-    const primaryWebsiteUrl = extractPrimaryWebsiteUrlFromAssets(knowledgeAssets);
-
-    // Build knowledge context from assets (limit to avoid token overflow)
+    let primaryWebsiteUrl = extractPrimaryWebsiteUrlFromAssets(knowledgeAssets);
     let knowledgeContext = "";
-    if (knowledgeAssets.length > 0) {
-      const assetSnippets = knowledgeAssets
-        .filter(a => a.textContent && a.name !== PRIMARY_WEBSITE_ASSET_NAME)
-        .map(a => `[${a.name}]: ${a.textContent!.slice(0, 1000)}${a.textContent!.length > 1000 ? "..." : ""}`);
+    let draftPromptMetadata: unknown = undefined;
 
-      if (assetSnippets.length > 0) {
-        knowledgeContext = assetSnippets.join("\n\n");
+    const leadContextBundleEnabled =
+      Boolean(settings?.leadContextBundleEnabled) && !isLeadContextBundleGloballyDisabled();
+    let usedLeadContextBundle = false;
+
+    if (leadContextBundleEnabled) {
+      try {
+        const bundle = await buildLeadContextBundle({
+          clientId: lead.clientId,
+          leadId,
+          profile: "draft",
+          timeoutMs: 500,
+          settings: settings ?? null,
+          knowledgeAssets,
+          serviceDescription: serviceDescription || null,
+          goals: aiGoals || null,
+        });
+
+        usedLeadContextBundle = true;
+        draftPromptMetadata = buildLeadContextBundleTelemetryMetadata(bundle);
+        primaryWebsiteUrl = bundle.primaryWebsiteUrl;
+
+        knowledgeContext = (bundle.knowledgeContext || "").trim();
+        const memoryContext = (bundle.leadMemoryContext || "").trim();
+        if (memoryContext) {
+          knowledgeContext = [knowledgeContext, `LEAD MEMORY:\n${memoryContext}`].filter(Boolean).join("\n\n");
+        }
+      } catch (error) {
+        console.warn("[AI Drafts] LeadContextBundle build failed; falling back to legacy context assembly", {
+          leadId,
+          clientId: lead.clientId,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
-    const leadMemoryMaxTokens = parsePositiveIntEnv("LEAD_MEMORY_CONTEXT_MAX_TOKENS", 1200);
-    const leadMemoryMaxEntryTokens = parsePositiveIntEnv("LEAD_MEMORY_CONTEXT_MAX_ENTRY_TOKENS", 400);
-    const leadMemoryResult = await getLeadMemoryContext({
-      leadId,
-      clientId: lead.clientId,
-      maxTokens: leadMemoryMaxTokens,
-      maxEntryTokens: leadMemoryMaxEntryTokens,
-    });
-    const memoryContext = leadMemoryResult.context.trim();
-    if (memoryContext) {
-      knowledgeContext = [knowledgeContext, `LEAD MEMORY:\n${memoryContext}`].filter(Boolean).join("\n\n");
+    if (!usedLeadContextBundle) {
+      // Legacy knowledge context assembly (kept as a safe fallback).
+      if (knowledgeAssets.length > 0) {
+        const assetSnippets = knowledgeAssets
+          .filter((a) => a.textContent && a.name !== PRIMARY_WEBSITE_ASSET_NAME)
+          .map((a) => `[${a.name}]: ${a.textContent!.slice(0, 1000)}${a.textContent!.length > 1000 ? "..." : ""}`);
+
+        if (assetSnippets.length > 0) {
+          knowledgeContext = assetSnippets.join("\n\n");
+        }
+      }
+
+      const leadMemoryMaxTokens = parsePositiveIntEnv("LEAD_MEMORY_CONTEXT_MAX_TOKENS", 1200);
+      const leadMemoryMaxEntryTokens = parsePositiveIntEnv("LEAD_MEMORY_CONTEXT_MAX_ENTRY_TOKENS", 400);
+      const leadMemoryResult = await getLeadMemoryContext({
+        leadId,
+        clientId: lead.clientId,
+        maxTokens: leadMemoryMaxTokens,
+        maxEntryTokens: leadMemoryMaxEntryTokens,
+        redact: false,
+      });
+      const draftMemoryContext = leadMemoryResult.context.trim();
+      if (draftMemoryContext) {
+        knowledgeContext = [knowledgeContext, `LEAD MEMORY:\n${draftMemoryContext}`].filter(Boolean).join("\n\n");
+      }
     }
 
     const primaryFirstName = lead?.firstName || "there";
@@ -1741,6 +1787,7 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
           leadId,
           featureId: "draft.generate.email.strategy",
           promptKey: attemptPromptKey,
+          metadata: draftPromptMetadata,
           model: draftModel,
           reasoningEffort:
             strategyReasoningApi === "none" ? undefined : strategyReasoningApi === "xhigh" ? "high" : strategyReasoningApi,
@@ -1914,6 +1961,7 @@ Write the email response now, following the strategy and structure archetype.
                   leadId,
                   featureId: "draft.generate.email.length_rewrite",
                   promptKey: rewritePromptKey,
+                  metadata: draftPromptMetadata,
                   model: draftModel,
                   systemFallback: rewriteInstructions,
                   input: [
@@ -1966,6 +2014,7 @@ Write the email response now, following the strategy and structure archetype.
                 leadId,
                 featureId: "draft.generate.email.generation",
                 promptKey: generationPromptKey,
+                metadata: draftPromptMetadata,
                 model: draftModel,
                 systemFallback: generationInstructions,
                 input: [{ role: "user" as const, content: generationInput }],
@@ -2146,6 +2195,7 @@ Generate an appropriate email response following the guidelines and structure ar
               leadId,
               featureId: "draft.generate.email",
               promptKey: attemptPromptKey,
+              metadata: draftPromptMetadata,
               model: draftModel,
               reasoningEffort:
                 strategyReasoningApi === "none"
@@ -2398,6 +2448,7 @@ Generate an appropriate ${channel} response following the guidelines above.
         leadId,
         featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
         promptKey: promptTemplate?.key || promptKey,
+        metadata: draftPromptMetadata,
         model: primaryModel,
         reasoningEffort,
         retryReasoningEffort: "minimal",
@@ -2441,6 +2492,7 @@ Generate an appropriate ${channel} response following the guidelines above.
             leadId,
             featureId: promptTemplate?.featureId || `draft.generate.${channel}`,
             promptKey: promptTemplate?.key || promptKey,
+            metadata: draftPromptMetadata,
             model: primaryModel,
             reasoningEffort,
             retryReasoningEffort: "minimal",
@@ -2522,6 +2574,7 @@ Generate an appropriate ${channel} response following the guidelines above.
             serviceDescription,
             knowledgeContext,
             timeoutMs: emailVerifierTimeoutMs,
+            metadata: draftPromptMetadata,
           });
 
           if (verified) {
@@ -2555,6 +2608,39 @@ Generate an appropriate ${channel} response following the guidelines above.
               extraction && typeof extraction === "object" && "is_scheduling_related" in extraction
                 ? (extraction as MeetingOverseerExtractDecision)
                 : null;
+
+            let gateMemoryContext: string | null = null;
+            let gatePromptMetadata: unknown = undefined;
+
+            try {
+              if (leadContextBundleEnabled) {
+                const gateBundle = await buildLeadContextBundle({
+                  clientId: lead.clientId,
+                  leadId,
+                  profile: "meeting_overseer_gate",
+                  timeoutMs: 500,
+                  settings: settings ?? null,
+                });
+                gateMemoryContext = (gateBundle.leadMemoryContext || "").trim() || null;
+                gatePromptMetadata = buildLeadContextBundleTelemetryMetadata(gateBundle);
+              } else {
+                const leadMemoryResult = await getLeadMemoryContext({
+                  leadId,
+                  clientId: lead.clientId,
+                  maxTokens: 600,
+                  maxEntryTokens: 300,
+                  redact: true,
+                });
+                gateMemoryContext = leadMemoryResult.context.trim() || null;
+              }
+            } catch (error) {
+              console.warn("[AI Drafts] Failed to build meeting overseer memory context; continuing without memory", {
+                leadId,
+                triggerMessageId,
+                errorMessage: error instanceof Error ? error.message : String(error),
+              });
+            }
+
             const gateDraft = await runMeetingOverseerGate({
               clientId: lead.clientId,
               leadId,
@@ -2565,7 +2651,8 @@ Generate an appropriate ${channel} response following the guidelines above.
               availability,
               bookingLink,
               extraction: extractionDecision,
-              memoryContext: memoryContext || null,
+              memoryContext: gateMemoryContext,
+              metadata: gatePromptMetadata,
               leadSchedulerLink,
               timeoutMs: emailVerifierTimeoutMs,
             });

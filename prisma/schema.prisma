@@ -79,6 +79,20 @@ enum MessagePerformanceEvalStatus {
   FAILED
 }
 
+enum ConfidenceCalibrationRunStatus {
+  PENDING
+  RUNNING
+  COMPLETE
+  FAILED
+}
+
+enum ConfidencePolicyProposalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  APPLIED
+}
+
 enum AutoSendScheduleMode {
   ALWAYS
   BUSINESS_HOURS
@@ -247,6 +261,10 @@ model Client {
   knowledgeAssetRevisions KnowledgeAssetRevision[]
   messagePerformanceEvalRuns MessagePerformanceEvalRun[]
   messagePerformanceProposals MessagePerformanceProposal[]
+  confidenceCalibrationRuns ConfidenceCalibrationRun[]
+  confidencePolicies ConfidencePolicy[]
+  confidencePolicyProposals ConfidencePolicyProposal[]
+  confidencePolicyRevisions ConfidencePolicyRevision[]
   emailBisonBaseHost EmailBisonBaseHost? @relation(fields: [emailBisonBaseHostId], references: [id], onDelete: SetNull)
 
   @@index([userId])
@@ -310,6 +328,10 @@ model WorkspaceSettings {
   serviceDescription      String?  @db.Text  // Business/service description for AI context
   qualificationQuestions  String?  @db.Text  // JSON array of qualification questions
   idealCustomerProfile    String?  @db.Text  // Ideal Customer Profile for lead scoring (Phase 33)
+  // Phase 112: Shared lead context bundle + followup booking gate (super-admin controlled)
+  leadContextBundleEnabled Boolean @default(false)
+  leadContextBundleBudgets Json?
+  followupBookingGateEnabled Boolean @default(false)
   // Company/Outreach Context
   companyName             String?             // Company name for {company} variable in templates
   targetResult            String?  @db.Text   // Outcome/result for {result} variable (e.g., "growing your client base")
@@ -832,6 +854,103 @@ model MessagePerformanceProposal {
   @@index([createdAt(sort: Desc)])
 }
 
+// Confidence calibration runs (Phase 112)
+model ConfidenceCalibrationRun {
+  id               String                        @id @default(uuid())
+  clientId         String
+  client           Client                        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  windowFrom       DateTime
+  windowTo         DateTime
+  status           ConfidenceCalibrationRunStatus @default(PENDING)
+  model            String
+  reasoningEffort  String?
+  metricsSnapshot  Json?
+  output           Json?
+  error            String?                       @db.Text
+  proposalsCreated Int                           @default(0)
+  computedAt       DateTime?
+  computedByUserId String?
+  computedByEmail  String?
+  createdAt        DateTime                      @default(now())
+  updatedAt        DateTime                      @updatedAt
+
+  proposals ConfidencePolicyProposal[]
+
+  @@index([clientId])
+  @@index([status])
+  @@index([computedAt(sort: Desc)])
+}
+
+// Active per-feature confidence policy (Phase 112)
+model ConfidencePolicy {
+  id        String   @id @default(uuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  policyKey String
+  config    Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  revisions ConfidencePolicyRevision[]
+
+  @@unique([clientId, policyKey])
+  @@index([clientId])
+  @@index([policyKey])
+}
+
+// Proposed confidence policy changes (Phase 112)
+model ConfidencePolicyProposal {
+  id               String                      @id @default(uuid())
+  clientId         String
+  client           Client                      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  policyKey        String
+  status           ConfidencePolicyProposalStatus @default(PENDING)
+  title            String
+  summary          String?
+  payload          Json
+  evidence         Json?
+  sourceRunId      String?
+  sourceRun        ConfidenceCalibrationRun?   @relation(fields: [sourceRunId], references: [id], onDelete: SetNull)
+  createdByUserId  String?
+  createdByEmail   String?
+  approvedByUserId String?
+  approvedByEmail  String?
+  approvedAt       DateTime?
+  appliedByUserId  String?
+  appliedByEmail   String?
+  appliedAt        DateTime?
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+
+  policyRevisions ConfidencePolicyRevision[]
+
+  @@index([clientId])
+  @@index([policyKey])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+}
+
+// Immutable audit trail for confidence policy changes (Phase 112)
+model ConfidencePolicyRevision {
+  id                 String   @id @default(uuid())
+  clientId           String
+  client             Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  confidencePolicyId String?
+  confidencePolicy   ConfidencePolicy? @relation(fields: [confidencePolicyId], references: [id], onDelete: SetNull)
+  proposalId         String?
+  proposal           ConfidencePolicyProposal? @relation(fields: [proposalId], references: [id], onDelete: SetNull)
+  policyKey          String
+  config             Json?
+  action             String
+  createdByUserId    String?
+  createdByEmail     String?
+  createdAt          DateTime @default(now())
+
+  @@index([clientId])
+  @@index([policyKey])
+  @@index([confidencePolicyId])
+}
+
 model LeadConversationInsight {
   id               String                     @id @default(uuid())
   leadId           String                     @unique
@@ -958,6 +1077,7 @@ model MeetingOverseerDecision {
 
   @@unique([messageId, stage])
   @@index([clientId])
+  @@index([clientId, createdAt(sort: Desc)])
   @@index([leadId])
   @@index([messageId])
 }
@@ -1184,6 +1304,7 @@ model AIInteraction {
   latencyMs    Int?
   status       String   @default("success") // success | error
   errorMessage String?  @db.Text
+  metadata     Json?
   createdAt    DateTime @default(now())
 
   @@index([clientId])

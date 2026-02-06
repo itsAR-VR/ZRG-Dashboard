@@ -2,6 +2,7 @@ import "server-only";
 
 import "@/lib/server-dns";
 import type OpenAI from "openai";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { estimateCostUsd } from "@/lib/ai/pricing";
 import { pruneOldAIInteractionsMaybe } from "@/lib/ai/retention";
@@ -61,6 +62,70 @@ function extractUsageFromResponseApi(resp: any): UsageSnapshot {
   };
 }
 
+const AI_INTERACTION_METADATA_TOP_LEVEL_ALLOWLIST = new Set(["leadContextBundle", "followupParse", "bookingGate"]);
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function sanitizeMetadataValue(value: unknown, depth: number): unknown | undefined {
+  const MAX_DEPTH = 6;
+  const MAX_STRING_CHARS = 200;
+  const MAX_ARRAY_LENGTH = 200;
+  const MAX_OBJECT_KEYS = 200;
+
+  if (depth > MAX_DEPTH) return undefined;
+  if (value === null) return null;
+
+  switch (typeof value) {
+    case "string":
+      return value.length <= MAX_STRING_CHARS ? value : undefined;
+    case "number":
+      return Number.isFinite(value) ? value : undefined;
+    case "boolean":
+      return value;
+    case "object": {
+      if (Array.isArray(value)) {
+        const out: unknown[] = [];
+        for (const item of value.slice(0, MAX_ARRAY_LENGTH)) {
+          const sanitized = sanitizeMetadataValue(item, depth + 1);
+          if (typeof sanitized !== "undefined") out.push(sanitized);
+        }
+        return out;
+      }
+
+      if (!isPlainObject(value)) return undefined;
+
+      const out: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(value).slice(0, MAX_OBJECT_KEYS)) {
+        if (typeof key !== "string" || key.length > 80) continue;
+        const sanitized = sanitizeMetadataValue(child, depth + 1);
+        if (typeof sanitized !== "undefined") out[key] = sanitized;
+      }
+      return out;
+    }
+    default:
+      return undefined;
+  }
+}
+
+export function sanitizeAiInteractionMetadata(metadata: unknown): Prisma.InputJsonValue | undefined {
+  if (!isPlainObject(metadata)) return undefined;
+
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(metadata)) {
+    if (!AI_INTERACTION_METADATA_TOP_LEVEL_ALLOWLIST.has(key)) continue;
+    const sanitized = sanitizeMetadataValue(metadata[key], 0);
+    if (typeof sanitized !== "undefined") out[key] = sanitized;
+  }
+
+  if (Object.keys(out).length === 0) return undefined;
+  return out as Prisma.InputJsonValue;
+}
+
 async function recordInteraction(opts: {
   clientId: string;
   leadId?: string | null;
@@ -73,6 +138,7 @@ async function recordInteraction(opts: {
   latencyMs: number;
   status: "success" | "error";
   errorMessage?: string | null;
+  metadata?: unknown;
 }): Promise<string> {
   const costUsd = estimateCostUsd({
     model: opts.model,
@@ -80,6 +146,7 @@ async function recordInteraction(opts: {
     outputTokens: opts.usage.outputTokens,
   });
 
+  const sanitizedMetadata = sanitizeAiInteractionMetadata(opts.metadata);
   const created = await prisma.aIInteraction.create({
     data: {
       clientId: opts.clientId,
@@ -96,6 +163,7 @@ async function recordInteraction(opts: {
       latencyMs: Number.isFinite(opts.latencyMs) ? Math.max(0, Math.trunc(opts.latencyMs)) : null,
       status: opts.status,
       errorMessage: opts.errorMessage ? String(opts.errorMessage).slice(0, 10_000) : null,
+      ...(sanitizedMetadata ? { metadata: sanitizedMetadata } : {}),
     },
   });
 
@@ -127,6 +195,7 @@ export async function runResponseWithInteraction(opts: {
   promptKey?: string | null;
   params: OpenAI.Responses.ResponseCreateParamsNonStreaming;
   requestOptions?: OpenAI.RequestOptions;
+  metadata?: unknown;
 }): Promise<{ response: OpenAI.Responses.Response; interactionId: string | null }> {
   const start = Date.now();
   try {
@@ -164,6 +233,7 @@ export async function runResponseWithInteraction(opts: {
         usage,
         latencyMs,
         status: "success",
+        metadata: opts.metadata,
       });
     } catch (logError) {
       console.error("[AI Telemetry] Failed to record response interaction:", logError);
@@ -187,6 +257,7 @@ export async function runResponseWithInteraction(opts: {
         latencyMs,
         status: "error",
         errorMessage: message,
+        metadata: opts.metadata,
       });
     } catch (logError) {
       console.error("[AI Telemetry] Failed to record response error:", logError);

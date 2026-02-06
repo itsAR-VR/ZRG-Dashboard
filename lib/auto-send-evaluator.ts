@@ -3,6 +3,11 @@ import { prisma } from "@/lib/prisma";
 import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { isOptOutText } from "@/lib/sentiment";
 import { buildAutoSendEvaluatorInput, type AutoSendEvaluatorWorkspaceContext } from "@/lib/auto-send-evaluator-input";
+import {
+  buildLeadContextBundle,
+  buildLeadContextBundleTelemetryMetadata,
+  isLeadContextBundleGloballyDisabled,
+} from "@/lib/lead-context-bundle";
 
 export type AutoSendEvaluation = {
   confidence: number;
@@ -247,6 +252,49 @@ export async function evaluateAutoSend(opts: {
     leadId: opts.leadId ?? null,
   });
 
+  const settings = await prisma.workspaceSettings
+    .findUnique({
+      where: { clientId: opts.clientId },
+      select: {
+        clientId: true,
+        serviceDescription: true,
+        aiGoals: true,
+        leadContextBundleEnabled: true,
+        leadContextBundleBudgets: true,
+      },
+    })
+    .catch(() => null);
+
+  const leadContextBundleEnabled =
+    Boolean(settings?.leadContextBundleEnabled) && !isLeadContextBundleGloballyDisabled();
+
+  let leadMemoryContext: string | null = null;
+  let promptMetadata: unknown = undefined;
+
+  if (leadContextBundleEnabled && opts.leadId) {
+    try {
+      const bundle = await buildLeadContextBundle({
+        clientId: opts.clientId,
+        leadId: opts.leadId,
+        profile: "auto_send_evaluator",
+        timeoutMs: 500,
+        settings,
+        knowledgeAssets: workspaceContext.knowledgeAssets,
+        serviceDescription: workspaceContext.serviceDescription,
+        goals: workspaceContext.goals,
+      });
+
+      leadMemoryContext = bundle.leadMemoryContext;
+      promptMetadata = buildLeadContextBundleTelemetryMetadata(bundle);
+    } catch (error) {
+      console.warn("[AutoSendEvaluator] LeadContextBundle build failed; continuing without lead memory context", {
+        clientId: opts.clientId,
+        leadId: opts.leadId,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   const receivedAt =
     typeof opts.replyReceivedAt === "string"
       ? opts.replyReceivedAt
@@ -271,6 +319,7 @@ export async function evaluateAutoSend(opts: {
     automatedReply: opts.automatedReply ?? null,
     replyReceivedAtIso: receivedAt || null,
     draft,
+    leadMemoryContext,
     workspaceContext,
   });
 
@@ -290,6 +339,7 @@ export async function evaluateAutoSend(opts: {
     leadId: opts.leadId,
     featureId: "auto_send.evaluate",
     promptKey: "auto_send.evaluate.v1",
+    metadata: promptMetadata,
     model: "gpt-5-mini",
     reasoningEffort: "low",
     systemFallback,

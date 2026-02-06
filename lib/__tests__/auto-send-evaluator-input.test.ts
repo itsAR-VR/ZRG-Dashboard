@@ -47,6 +47,7 @@ describe("buildAutoSendEvaluatorInput", () => {
       automatedReply: null,
       replyReceivedAtIso: "2026-02-05T00:00:00Z",
       draft: "It costs $791 per month.",
+      leadMemoryContext: "Prior context: test@example.com",
       workspaceContext: {
         serviceDescription: "Service description ".repeat(200),
         goals: "Goals ".repeat(200),
@@ -70,11 +71,16 @@ describe("buildAutoSendEvaluatorInput", () => {
       },
     });
 
+    const payload = JSON.parse(input.inputJson) as any;
     assert.equal(input.stats.conversationHistory.truncated, true);
     assert.equal(input.stats.serviceDescription.truncated, true);
     assert.equal(input.stats.goals.truncated, true);
     assert.ok(input.inputJson.includes("verified_context_instructions"));
     assert.ok(input.inputJson.includes("knowledge_context"));
+    assert.ok("lead_memory_context" in payload);
+    assert.equal(payload.lead_memory_context, "Prior context: test@example.com");
+    assert.ok("service_description" in payload);
+    assert.ok("goals" in payload);
+    assert.ok("knowledge_context" in payload);
   });
 });
-

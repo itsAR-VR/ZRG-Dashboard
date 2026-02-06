@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getAdminDashboardSnapshot, type AdminDashboardSnapshot } from "@/actions/admin-dashboard-actions";
+import { ConfidenceControlPlane } from "@/components/dashboard/confidence-control-plane";
 
 type Props = {
   clientId: string | null;
@@ -577,7 +578,8 @@ export function AdminDashboardTab({ clientId, active }: Props) {
           )}
         </CardContent>
       </Card>
+
+      <ConfidenceControlPlane clientId={clientId} />
     </div>
   );
 }
-
