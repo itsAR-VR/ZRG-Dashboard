@@ -30,6 +30,8 @@ const TEST_FILES = [
   "lib/__tests__/response-disposition-idempotent.test.ts",
   "lib/__tests__/followup-engine-disposition.test.ts",
   "lib/__tests__/followup-booking-gate-retry.test.ts",
+  "lib/__tests__/followup-engine-dayonly-slot.test.ts",
+  "lib/__tests__/ai-ops-feed.test.ts",
   "lib/__tests__/analytics-windowing-stable.test.ts",
   "lib/__tests__/send-outcome-unknown-recovery.test.ts",
   "lib/__tests__/stale-sending-recovery.test.ts",

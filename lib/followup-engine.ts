@@ -3367,11 +3367,163 @@ export async function processMessageForAutoBooking(
         }
       }
 
+      // If offered slots exist but the lead requests a weekday we didn't offer (e.g. "Thursday works"),
+      // attempt to auto-book the earliest available slot on that weekday (gate-approved only).
+      if (!acceptedSlot && weekdayTokenForAcceptance) {
+        const bookingTarget = await selectBookingTargetForLead({
+          clientId: lead.clientId,
+          leadId: lead.id,
+        });
+        const requestedAvailabilitySource: AvailabilitySource =
+          bookingTarget.target === "no_questions" ? "DIRECT_BOOK" : "DEFAULT";
+
+        const availability = await getWorkspaceAvailabilitySlotsUtc(lead.clientId, {
+          refreshIfStale: true,
+          availabilitySource: requestedAvailabilitySource,
+        });
+
+        const weekdaySlotUtcIso = selectEarliestSlotForWeekday({
+          slotsUtcIso: availability.slotsUtc,
+          weekdayToken: weekdayTokenForAcceptance,
+          timeZone,
+          preferredTimeOfDay: overseerDecision?.preferred_time_of_day ?? null,
+        });
+
+        if (weekdaySlotUtcIso) {
+          const weekdaySlotLabel = formatAvailabilitySlotLabel({
+            datetimeUtcIso: weekdaySlotUtcIso,
+            timeZone,
+            mode: "explicit_tz",
+          }).label;
+
+          const weekdaySlot: OfferedSlot = {
+            datetime: weekdaySlotUtcIso,
+            label: weekdaySlotLabel,
+            offeredAt: new Date().toISOString(),
+            availabilitySource: availability.availabilitySource,
+          };
+
+          if (bookingGateEnabled) {
+            const nowUtcIsoForGate = new Date().toISOString();
+            const { gate, attempts } = await runFollowupBookingGateWithOneRetry({
+              runAttempt: (retryCount) =>
+                runFollowupBookingGate({
+                  clientId: lead.clientId,
+                  leadId: lead.id,
+                  scenario: "day_only",
+                  messageId: meta?.messageId ?? null,
+                  messageText: messageTrimmed,
+                  matchedSlotUtc: weekdaySlotUtcIso,
+                  parseConfidence: undefined,
+                  nowUtcIso: nowUtcIsoForGate,
+                  leadTimezone: tzResult.timezone || null,
+                  offeredSlots,
+                  acceptedSlot: null,
+                  overseerDecision,
+                  retryCount,
+                  retryContext:
+                    retryCount === 1
+                      ? `requested_weekday_token: ${weekdayTokenForAcceptance}\nmatched_slot_label_explicit_tz: ${weekdaySlotLabel}\noffered_slots_count: ${offeredSlots.length}`
+                      : undefined,
+                }),
+            });
+
+            if (!gate) {
+              await createClarificationTask(`Just to confirm, does ${weekdaySlotLabel} work for you?`);
+              await sendAutoBookingBlockedSlackAlert({
+                leadId,
+                scenario: "day_only",
+                matchedSlotLabel: weekdaySlotLabel,
+                gateDecision: "error",
+                gateConfidence: null,
+                issues: null,
+                retryCount: attempts - 1,
+              });
+              return { booked: false };
+            }
+
+            if (gate.decision === "needs_clarification") {
+              await createClarificationTask(gate.clarificationMessage || "Got it — what time works best for you on that day?");
+              await sendAutoBookingBlockedSlackAlert({
+                leadId,
+                scenario: "day_only",
+                matchedSlotLabel: weekdaySlotLabel,
+                gateDecision: gate.decision,
+                gateConfidence: gate.confidence,
+                issues: gate.issues,
+                retryCount: attempts - 1,
+              });
+              return { booked: false };
+            }
+
+            if (gate.decision === "deny") {
+              await createClarificationTask("Got it — what time works best for you on that day?");
+              return { booked: false };
+            }
+          }
+
+          const bookingResult = await bookMeetingForLead(leadId, weekdaySlotUtcIso, {
+            availabilitySource: availability.availabilitySource,
+          });
+
+          if (bookingResult.success) {
+            await sendAutoBookingSlackNotification(leadId, weekdaySlot);
+
+            const bookingLink = await getBookingLink(lead.clientId, lead.client.settings);
+            const confirmationChannel = await resolveConfirmationChannel();
+            if (confirmationChannel !== "call") {
+              const confirmResult = await sendAutoBookingConfirmation({
+                lead,
+                channel: confirmationChannel,
+                slot: weekdaySlot,
+                timeZone,
+                bookingLink,
+              });
+              if (!confirmResult.success) {
+                return {
+                  booked: true,
+                  appointmentId: bookingResult.appointmentId,
+                  error: confirmResult.error || "Booked, but failed to send confirmation",
+                };
+              }
+            } else if (preferred) {
+              return {
+                booked: true,
+                appointmentId: bookingResult.appointmentId,
+                error: "Booked, but inbound channel is unavailable for confirmation",
+              };
+            }
+
+            return { booked: true, appointmentId: bookingResult.appointmentId };
+          }
+
+          return { booked: false, error: bookingResult.error };
+        }
+      }
+
       if (!acceptedSlot) {
         const options = offeredSlots.slice(0, 2);
+        const weekdayLabel =
+          weekdayTokenForAcceptance === "mon"
+            ? "Monday"
+            : weekdayTokenForAcceptance === "tue"
+              ? "Tuesday"
+              : weekdayTokenForAcceptance === "wed"
+                ? "Wednesday"
+                : weekdayTokenForAcceptance === "thu"
+                  ? "Thursday"
+                  : weekdayTokenForAcceptance === "fri"
+                    ? "Friday"
+                    : weekdayTokenForAcceptance === "sat"
+                      ? "Saturday"
+                      : weekdayTokenForAcceptance === "sun"
+                        ? "Sunday"
+                        : null;
         const suggestion =
           options.length === 2
-            ? `Which works better for you: (1) ${options[0]!.label} or (2) ${options[1]!.label}?`
+            ? weekdayLabel
+              ? `I don’t have any availability on ${weekdayLabel} — does (1) ${options[0]!.label} or (2) ${options[1]!.label} work instead?`
+              : `Which works better for you: (1) ${options[0]!.label} or (2) ${options[1]!.label}?`
             : `Which of these works best for you: ${offeredSlots.map((s) => s.label).join(" or ")}?`;
         await createClarificationTask(suggestion);
         return { booked: false };

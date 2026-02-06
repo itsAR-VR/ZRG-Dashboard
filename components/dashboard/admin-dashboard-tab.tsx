@@ -10,6 +10,7 @@ import { Separator } from "@/components/ui/separator";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getAdminDashboardSnapshot, type AdminDashboardSnapshot } from "@/actions/admin-dashboard-actions";
 import { ConfidenceControlPlane } from "@/components/dashboard/confidence-control-plane";
+import { AiOpsPanel } from "@/components/dashboard/ai-ops-panel";
 
 type Props = {
   clientId: string | null;
@@ -580,6 +581,7 @@ export function AdminDashboardTab({ clientId, active }: Props) {
       </Card>
 
       <ConfidenceControlPlane clientId={clientId} />
+      <AiOpsPanel clientId={clientId} active={active} />
     </div>
   );
 }
