@@ -123,9 +123,12 @@ function findRefreshToken(session: SupabaseSessionLike, depth = 0): string | nul
 }
 
 export async function updateSession(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
+
   // Middleware runs for every request matched by `middleware.ts`. Avoid doing network work
   // for API routes (webhooks/cron), which can be hot paths and don't need browser session refresh.
-  if (request.nextUrl.pathname.startsWith("/api")) {
+  // Also skip our auth/session redirect logic for the Sentry tunnel route (configured in `next.config.mjs`).
+  if (pathname.startsWith("/api") || pathname.startsWith("/monitoring")) {
     return NextResponse.next({ request });
   }
 
@@ -135,11 +138,12 @@ export async function updateSession(request: NextRequest) {
 
   // Fast-path: if there is no Supabase auth cookie, skip creating a client and any network calls.
   // This avoids noisy auth refresh attempts for signed-out users (e.g. refresh_token_not_found).
-  const isAuthPage = request.nextUrl.pathname.startsWith("/auth");
-  const isApiRoute = request.nextUrl.pathname.startsWith("/api");
-  const isPublicRoute = isAuthPage || isApiRoute;
-  const isAuthCallbackRoute = request.nextUrl.pathname === "/auth/callback";
-  const isResetPasswordRoute = request.nextUrl.pathname === "/auth/reset-password";
+  const isAuthPage = pathname.startsWith("/auth");
+  const isApiRoute = pathname.startsWith("/api");
+  const isMonitoringRoute = pathname.startsWith("/monitoring");
+  const isPublicRoute = isAuthPage || isApiRoute || isMonitoringRoute;
+  const isAuthCallbackRoute = pathname === "/auth/callback";
+  const isResetPasswordRoute = pathname === "/auth/reset-password";
 
   if (!hasSupabaseAuthCookie(request)) {
     if (!isPublicRoute) {

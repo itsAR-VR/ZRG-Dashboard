@@ -60,3 +60,6 @@ Founders Club CRM*.xlsx
 # planning artifacts that may contain sensitive data (keep local-only)
 docs/planning/**/artifacts/*.csv
 docs/planning/**/artifacts/*.xlsx
+
+# Sentry Config File
+.env.sentry-build-plugin
