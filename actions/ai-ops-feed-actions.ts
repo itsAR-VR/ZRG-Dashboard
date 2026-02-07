@@ -31,6 +31,8 @@ const AI_OPS_FEATURE_IDS = [
   "meeting.overseer.gate",
   "followup.parse_proposed_times",
   "auto_send.evaluate",
+  "auto_send.context_select",
+  "auto_send.revise",
 ] as const;
 
 const AI_OPS_OVERSEER_STAGES = ["extract", "gate", "booking_gate"] as const;
@@ -91,6 +93,31 @@ function extractAiInteractionSummary(meta: unknown): {
 } {
   const obj = readPlainObject(meta);
   if (!obj) return { decision: null, confidence: null, issuesCount: null };
+
+  const autoSendRevision = readPlainObject(obj.autoSendRevision);
+  if (autoSendRevision) {
+    const stage = readString(autoSendRevision.stage);
+    const stageConfidence = readNumber(autoSendRevision.selectorConfidence);
+    const originalConfidence = readNumber(autoSendRevision.originalConfidence);
+    const revisedConfidence = readNumber(autoSendRevision.revisedConfidence);
+
+    // Provide a stable, non-PII summary: decision indicates whether it improved.
+    if (stage === "revise" && typeof originalConfidence === "number" && typeof revisedConfidence === "number") {
+      return {
+        decision: revisedConfidence > originalConfidence ? "revise" : null,
+        confidence: revisedConfidence,
+        issuesCount: null,
+      };
+    }
+
+    if (stage === "context_select") {
+      return {
+        decision: null,
+        confidence: typeof stageConfidence === "number" ? stageConfidence : null,
+        issuesCount: null,
+      };
+    }
+  }
 
   const bookingGate = readPlainObject(obj.bookingGate);
   if (!bookingGate) return { decision: null, confidence: null, issuesCount: null };

@@ -47,3 +47,23 @@ test("AI telemetry metadata: strips non-plain objects and sanitizes arrays", () 
   );
 });
 
+test("AI telemetry metadata: allows autoSendRevision top-level key (stats-only)", () => {
+  assert.deepEqual(
+    sanitizeAiInteractionMetadata({
+      autoSendRevision: {
+        stage: "revise",
+        originalConfidence: 0.4,
+        revisedConfidence: 0.9,
+        // Too long, should be dropped.
+        note: "x".repeat(999),
+      },
+    }),
+    {
+      autoSendRevision: {
+        stage: "revise",
+        originalConfidence: 0.4,
+        revisedConfidence: 0.9,
+      },
+    }
+  );
+});

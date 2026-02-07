@@ -82,12 +82,31 @@ Implement the revision agent that:
      - does not apply when confidence does not improve
 
 ## Output
-- Prompt registry entries for `auto_send.revise.v1`
-- New helper module `lib/auto-send/revision-agent.ts`
-- Unit tests under `lib/__tests__/auto-send-revision-agent.test.ts`
+- `lib/ai/prompt-registry.ts`:
+  - new prompt key `auto_send.revise.v1` (featureId `auto_send.revise`)
+- `lib/auto-send/revision-agent.ts`:
+  - bounded revise-once flow: (optional) context select → revise → re-evaluate
+  - fail-closed + aggregate deadline (default 35s)
+  - kill-switch `AUTO_SEND_REVISION_DISABLED=1`
+  - persists improved draft to `AIDraft.content` (only when confidence improves)
+- `lib/__tests__/auto-send-revision-agent.test.ts`:
+  - unit tests for gating + persistence rules
 
 ## Handoff
 Expose a single call the auto-send orchestrator can use:
 `{ revisedDraft, revisedEvaluation, telemetry } = maybeReviseAutoSendDraft(...)`
 so Phase 115c can integrate it into the send/schedule decision.
 
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Added revision prompt + helper (`lib/ai/prompt-registry.ts`, `lib/auto-send/revision-agent.ts`).
+  - Ensured revised drafts preserve existing URLs/contact details (no PII mutation; only metadata is sanitized).
+  - Added unit tests (`lib/__tests__/auto-send-revision-agent.test.ts`).
+- Commands run:
+  - `npm test` — pass
+  - `npm run lint` — pass (warnings only, pre-existing)
+  - `npm run build` — pass
+- Blockers:
+  - None
+- Next concrete steps:
+  - Integrate into `executeAutoSend()` AI_AUTO_SEND path + extend telemetry/AI Ops visibility (Phase 115c).

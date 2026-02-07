@@ -14,6 +14,14 @@ export type AutoSendEvaluation = {
   safeToSend: boolean;
   requiresHumanReview: boolean;
   reason: string;
+  source?: "hard_block" | "model";
+  hardBlockCode?:
+    | "empty_draft"
+    | "opt_out"
+    | "blacklist"
+    | "automated_reply"
+    | "missing_openai_key"
+    | "other";
 };
 
 function clamp01(value: number): number {
@@ -39,6 +47,7 @@ export function interpretAutoSendEvaluatorOutput(value: {
     safeToSend,
     requiresHumanReview,
     reason: String(value.reason || "").slice(0, 320) || "No reason provided",
+    source: "model",
   };
 }
 
@@ -206,6 +215,8 @@ export async function evaluateAutoSend(opts: {
       safeToSend: false,
       requiresHumanReview: true,
       reason: "Draft is empty",
+      source: "hard_block",
+      hardBlockCode: "empty_draft",
     };
   }
 
@@ -216,6 +227,8 @@ export async function evaluateAutoSend(opts: {
       safeToSend: false,
       requiresHumanReview: true,
       reason: "Opt-out/unsubscribe request detected",
+      source: "hard_block",
+      hardBlockCode: "opt_out",
     };
   }
 
@@ -225,6 +238,8 @@ export async function evaluateAutoSend(opts: {
       safeToSend: false,
       requiresHumanReview: true,
       reason: `Categorized as ${categorization}`,
+      source: "hard_block",
+      hardBlockCode: categorization === "Automated Reply" ? "automated_reply" : "blacklist",
     };
   }
 
@@ -234,6 +249,8 @@ export async function evaluateAutoSend(opts: {
       safeToSend: false,
       requiresHumanReview: true,
       reason: "Provider flagged as automated reply",
+      source: "hard_block",
+      hardBlockCode: "automated_reply",
     };
   }
 
@@ -244,6 +261,8 @@ export async function evaluateAutoSend(opts: {
       safeToSend: false,
       requiresHumanReview: true,
       reason: "OPENAI_API_KEY not configured",
+      source: "hard_block",
+      hardBlockCode: "missing_openai_key",
     };
   }
 
@@ -394,6 +413,8 @@ export async function evaluateAutoSend(opts: {
         safeToSend: false,
         requiresHumanReview: true,
         reason: "Evaluation error",
+        source: "hard_block",
+        hardBlockCode: "other",
       };
     }
     return {
@@ -401,6 +422,8 @@ export async function evaluateAutoSend(opts: {
       safeToSend: false,
       requiresHumanReview: true,
       reason: "No evaluation returned",
+      source: "hard_block",
+      hardBlockCode: "other",
     };
   }
 

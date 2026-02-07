@@ -71,6 +71,8 @@ const EVENT_TYPE_OPTIONS: EventTypeOption[] = [
   { key: "feature:followup.booking.gate", label: "AI: followup.booking.gate" },
   { key: "feature:followup.parse_proposed_times", label: "AI: followup.parse_proposed_times" },
   { key: "feature:auto_send.evaluate", label: "AI: auto_send.evaluate" },
+  { key: "feature:auto_send.context_select", label: "AI: auto_send.context_select" },
+  { key: "feature:auto_send.revise", label: "AI: auto_send.revise" },
   { key: "feature:meeting.overseer.extract", label: "AI: meeting.overseer.extract" },
   { key: "feature:meeting.overseer.gate", label: "AI: meeting.overseer.gate" },
   { key: "stage:extract", label: "Decision: extract" },

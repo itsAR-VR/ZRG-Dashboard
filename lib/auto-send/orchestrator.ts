@@ -13,6 +13,7 @@ import {
 } from "@/lib/background-jobs/delayed-auto-send";
 import { sendSlackDmByUserIdWithToken } from "@/lib/slack-dm";
 import { sanitizeSlackCodeBlockText, truncateSlackText } from "@/lib/slack-format";
+import { maybeReviseAutoSendDraft } from "@/lib/auto-send/revision-agent";
 import {
   getNextAutoSendWindow,
   isWithinAutoSendSchedule,
@@ -62,6 +63,7 @@ export type AutoSendDependencies = {
   approveAndSendDraftSystem: typeof approveAndSendDraftSystem;
   decideShouldAutoReply: typeof decideShouldAutoReply;
   evaluateAutoSend: typeof evaluateAutoSend;
+  maybeReviseAutoSendDraft?: typeof maybeReviseAutoSendDraft;
   getPublicAppUrl: typeof getPublicAppUrl;
   getCampaignDelayConfig: typeof getCampaignDelayConfig;
   scheduleAutoSendAt: typeof scheduleAutoSendAt;
@@ -272,7 +274,7 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
 
     const threshold = context.emailCampaign?.autoSendConfidenceThreshold ?? AUTO_SEND_CONSTANTS.DEFAULT_CONFIDENCE_THRESHOLD;
 
-    const evaluation = await deps.evaluateAutoSend({
+    let evaluation = await deps.evaluateAutoSend({
       clientId: context.clientId,
       leadId: context.leadId,
       channel: context.channel,
@@ -284,6 +286,55 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
       replyReceivedAt: context.messageSentAt,
       draft: context.draftContent,
     });
+
+    // Optional: revision attempt when below threshold, bounded + fail-closed inside the revision agent.
+    if (
+      deps.maybeReviseAutoSendDraft &&
+      (evaluation.source ?? "model") !== "hard_block" &&
+      typeof evaluation.confidence === "number" &&
+      evaluation.confidence < threshold
+    ) {
+      try {
+        const revision = await deps.maybeReviseAutoSendDraft({
+          clientId: context.clientId,
+          leadId: context.leadId,
+          emailCampaignId: context.emailCampaign?.id ?? null,
+          draftId: context.draftId,
+          channel: context.channel,
+          subject: context.subject ?? null,
+          latestInbound: context.latestInbound,
+          conversationHistory: context.conversationHistory,
+          draft: context.draftContent,
+          evaluation,
+          threshold,
+          reEvaluate: async (draft) =>
+            deps.evaluateAutoSend({
+              clientId: context.clientId,
+              leadId: context.leadId,
+              channel: context.channel,
+              latestInbound: context.latestInbound,
+              subject: context.subject ?? null,
+              conversationHistory: context.conversationHistory,
+              categorization: context.sentimentTag,
+              automatedReply: context.automatedReply ?? null,
+              replyReceivedAt: context.messageSentAt,
+              draft,
+            }),
+        });
+
+        if (revision.revisedDraft && revision.revisedEvaluation) {
+          context.draftContent = revision.revisedDraft;
+          evaluation = revision.revisedEvaluation;
+        }
+      } catch (error) {
+        console.warn("[AutoSend] Revision attempt failed; continuing without revision", {
+          clientId: context.clientId,
+          leadId: context.leadId,
+          draftId: context.draftId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
 
     const evaluationTimeMs = Date.now() - startTimeMs;
     const evaluatedAt = new Date();
@@ -686,6 +737,7 @@ const defaultExecutor = createAutoSendExecutor({
   approveAndSendDraftSystem,
   decideShouldAutoReply,
   evaluateAutoSend,
+  maybeReviseAutoSendDraft,
   getPublicAppUrl,
   getCampaignDelayConfig,
   scheduleAutoSendAt,

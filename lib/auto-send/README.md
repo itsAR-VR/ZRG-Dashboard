@@ -47,6 +47,19 @@ If the AI evaluation is not safe or is below threshold, we send a Slack DM for r
 - The Slack `blocks` structure is treated as a “golden master” to avoid behavior drift.
 - Some jobs include a draft preview in the Slack message (`includeDraftPreviewInSlack`), matching historical behavior.
 
+## Revision Loop (AI_AUTO_SEND only)
+
+When the auto-send evaluator returns a confidence below the campaign threshold (and the evaluation is model-based, not a deterministic hard block), the system may attempt a **single** bounded revision:
+
+- Step 1: select relevant optimization learnings (Message Performance + Insights packs) via `auto_send.context_select.v1`
+- Step 2: revise the draft via `auto_send.revise.v1`
+- Step 3: re-run `auto_send.evaluate.v1` once on the revised draft
+
+Guardrails:
+- Fail-closed: any selector/reviser error falls back to the normal Slack review flow.
+- Persistence: revised draft is only persisted when it improves evaluator confidence.
+- Kill-switch: set `AUTO_SEND_REVISION_DISABLED=1` to disable selector/reviser while leaving evaluation unchanged.
+
 ## API
 
 Main entrypoint:

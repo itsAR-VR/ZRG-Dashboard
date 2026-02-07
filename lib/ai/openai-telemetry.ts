@@ -62,7 +62,12 @@ function extractUsageFromResponseApi(resp: any): UsageSnapshot {
   };
 }
 
-const AI_INTERACTION_METADATA_TOP_LEVEL_ALLOWLIST = new Set(["leadContextBundle", "followupParse", "bookingGate"]);
+const AI_INTERACTION_METADATA_TOP_LEVEL_ALLOWLIST = new Set([
+  "leadContextBundle",
+  "followupParse",
+  "bookingGate",
+  "autoSendRevision",
+]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object") return false;

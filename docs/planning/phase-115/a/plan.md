@@ -76,10 +76,28 @@ then using an LLM selector step ("agentic search") to pick only the most similar
      - excludes `Message Performance` pack from Insights pack retrieval
 
 ## Output
-- New helper module (proposed): `lib/auto-send/optimization-context.ts` (fetch + chunk + prefilter)
-- New prompt registry entries for `auto_send.context_select.v1`
-- Tests under `lib/__tests__/auto-send-optimization-context.test.ts` (or similar)
+- `lib/auto-send/optimization-context.ts`:
+  - loads latest Message Performance synthesis + latest Insights pack synthesis (structured fields only)
+  - builds redacted candidate chunks
+  - deterministic lexical prefilter + LLM selector (`auto_send.context_select.v1`)
+- `lib/ai/prompt-registry.ts`:
+  - new prompt key `auto_send.context_select.v1` (featureId `auto_send.context_select`)
+- `lib/__tests__/auto-send-optimization-context.test.ts`:
+  - unit tests for deterministic ranking behavior
 
 ## Handoff
 Provide `selected_context_markdown` + apply/avoid bullets to Phase 115b as the optimization context for the reviser prompt.
 
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Implemented optimization context loader + chunking + selector prompt (`lib/auto-send/optimization-context.ts`).
+  - Registered selector prompt template (`lib/ai/prompt-registry.ts`).
+  - Added unit tests for ranking behavior (`lib/__tests__/auto-send-optimization-context.test.ts`).
+- Commands run:
+  - `npm test` — pass
+  - `npm run lint` — pass (warnings only, pre-existing)
+  - `npm run build` — pass
+- Blockers:
+  - None
+- Next concrete steps:
+  - Wire selection output into revision agent prompt input (Phase 115b).

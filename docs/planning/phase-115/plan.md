@@ -14,7 +14,7 @@ Add a bounded "revision agent" to the AI auto-send path: when the evaluator conf
 - Requirement from user: the revision should use "agentic search" to select only the most relevant parts of the packs to the current lead/draft, rather than stuffing entire packs into the prompt.
 
 ## Concurrent Phases
-Phases 112-114 are all committed to `main` (commits `c681af1`, `0841635`, `72ca136`). No uncommitted changes exist. Phase 115 builds on stable infrastructure.
+Phases 112-114 are all committed to `main` (commits `c681af1`, `0841635`, `72ca136`). Phase 115 builds on that stable infrastructure; the working tree may be dirty while implementing Phase 115.
 
 | Phase | Status | Overlap | Coordination |
 |-------|--------|---------|--------------|
@@ -61,31 +61,23 @@ Phases 112-114 are all committed to `main` (commits `c681af1`, `0841635`, `72ca1
 | RT-09 | HIGH | Revised draft must be persisted to `AIDraft.content` in DB BEFORE `approveAndSendDraftSystem()` reads it | DB update → context update → threshold check → send |
 | RT-10 | HIGH | 4 sequential LLM calls (eval + selector + revise + re-eval) can take 60s+; starves job queue | 10s timeout per new prompt; 35s aggregate revision-path timeout |
 | RT-12 | HIGH | Insights `pack_markdown` may contain PII (evidence quotes) | Use only structured fields for v1; skip raw `pack_markdown` |
-| RT-17 | HIGH | AIDraft lacks revision tracking fields | Add `autoSendRevised Boolean`, `autoSendOriginalConfidence Float?` to schema |
+| RT-17 | HIGH | AIDraft lacks revision tracking fields | **Deferred for v1**; rely on AI Ops featureId events + existing `AIDraft.autoSend*` fields |
 | RT-13 | MEDIUM | Prompt injection risk via `latestInbound` in revision prompt | Add explicit anti-injection system instruction |
 | RT-14 | MEDIUM | Kill-switch check location unspecified | Check at top of `maybeReviseAutoSendDraft()`, not orchestrator |
-| RT-15 | MEDIUM | Adding DI dep breaks 12+ existing orchestrator tests | Add `createDefaultMocks()` helper to test file |
+| RT-15 | MEDIUM | Adding a revision DI dep could break existing orchestrator tests | Make dep optional + add targeted orchestrator tests for revision gating |
 | RT-19/20 | MEDIUM | `AutoSendEvaluation` type changes must be backward-compatible | Make `source`, `hardBlockCode` optional with defaults |
 
 ## Open Questions (Need Human Input)
 
-### Q1: Skip `pack_markdown` chunking for v1?
-**Why it matters:** Raw `pack_markdown` may contain PII. Using only structured fields is safer but less granular.
-**Assumption (90%):** Yes, skip for v1. Enable with PII scrubber in future phase.
-
-### Q2: AIDraft schema fields for revision tracking?
-**Why it matters:** Without them, operators can't distinguish "sent after revision" from "sent on first eval" in dashboard.
-**Assumption (95%):** Yes, add `autoSendRevised` and `autoSendOriginalConfidence`.
-
-### Q3: Aggregate timeout for revision path?
-**Why it matters:** Background job cron has 240s budget. 4 LLM calls can take 60s+ worst-case.
-**Assumption (90%):** 35s aggregate. Any timeout → fail-closed to needs_review.
+- [ ] Add `AIDraft` revision tracking fields (`autoSendRevised`, `autoSendOriginalConfidence`)? (confidence < 90%)
+  - Why it matters: Without schema-level tracking, operators can see revision activity in AI Ops, but can’t filter drafts by “sent after revision” inside the inbox/draft views.
+  - Current assumption in this phase: **defer** schema changes for v1; rely on AI Ops featureId events + existing `AIDraft.autoSend*` fields.
 
 ## Objectives
-* [ ] Add context retrieval + "agentic selection" (Message Performance + Insights pack) for a single auto-send attempt.
-* [ ] Add revision prompt + orchestration helper (revise -> re-evaluate once).
-* [ ] Integrate into auto-send execution paths (orchestrator only — email webhook already uses `executeAutoSend` via background jobs), fail-closed, bounded, and telemetry-safe.
-* [ ] Add unit tests and verify `npm test`, `npm run lint`, `npm run build`.
+* [x] Add context retrieval + "agentic selection" (Message Performance + Insights pack) for a single auto-send attempt.
+* [x] Add revision prompt + orchestration helper (revise -> re-evaluate once).
+* [x] Integrate into auto-send execution paths (orchestrator only — email webhook already uses `executeAutoSend` via background jobs), fail-closed, bounded, and telemetry-safe.
+* [x] Add unit tests and verify `npm test`, `npm run lint`, `npm run build`.
 
 ## Constraints
 - Scope: **AI_AUTO_SEND only** (campaign mode). No changes to LEGACY_AUTO_REPLY.
@@ -101,17 +93,27 @@ Phases 112-114 are all committed to `main` (commits `c681af1`, `0841635`, `72ca1
 - Fail closed: any selector/reviser failure falls back to existing `needs_review` behavior (Slack DM + dashboard review).
 
 ## Success Criteria
-1. When `auto_send.evaluate.v1` returns `confidence < threshold` (and not a hard safety block), the system attempts a single revision and then re-evaluates:
-   - if revised confidence >= threshold (and safe), proceed with existing send/schedule logic
-   - else fall back to `needs_review`
-2. Revised draft content is persisted only when it demonstrably improves quality:
-   - prefer `revised_confidence > original_confidence` as the primary criterion
-   - never persist an empty/invalid revision
-3. Operators can see revision activity in the Admin "AI Ops (Last 3 Days)" feed without raw text exposure (event-only visibility).
-4. Unit tests cover: trigger gating, hard-block bypass, confidence-delta persistence rule, and "max one revision" behavior.
+- [x] When `auto_send.evaluate.v1` returns `confidence < threshold` (and not a hard safety block), the system attempts a single revision and then re-evaluates once.
+- [x] Revised draft content is persisted only when it demonstrably improves quality (`revised_confidence > original_confidence`) and is non-empty.
+- [x] Operators can see revision activity in the Admin "AI Ops (Last 3 Days)" feed without raw text exposure (event-only visibility).
+- [x] Unit tests cover: trigger gating, hard-block bypass, confidence-delta persistence rule, and "max one revision" behavior.
 
 ## Subphase Index
 * a - Context sources + agentic selector prompt
 * b - Revision prompt + orchestration helper
 * c - Integration into auto-send paths + telemetry + tests + AI Ops visibility
 
+## Phase Summary (running)
+- 2026-02-07 03:18 EST — Implemented confidence-driven auto-send revision loop (context select + revise + re-eval) and integrated into AI auto-send orchestrator (files: `lib/auto-send/optimization-context.ts`, `lib/auto-send/revision-agent.ts`, `lib/auto-send/orchestrator.ts`, `lib/auto-send-evaluator.ts`, `lib/ai/prompt-registry.ts`)
+- 2026-02-07 03:18 EST — Added stats-only telemetry allowlist + AI Ops visibility for selector/reviser prompts (files: `lib/ai/openai-telemetry.ts`, `actions/ai-ops-feed-actions.ts`, `components/dashboard/ai-ops-panel.tsx`)
+
+## Phase Summary
+
+- Shipped: bounded auto-send revision loop (selector → reviser → re-evaluate once).
+- Shipped: evaluator hard-block tagging to skip revision on deterministic safety blocks.
+- Shipped: AI Ops visibility for `auto_send.context_select` + `auto_send.revise` (no raw text).
+- Verified: `npm test` (pass)
+- Verified: `npm run lint` (pass; warnings only, pre-existing)
+- Verified: `npm run build` (pass)
+- Verified: `npm run db:push` (skip; no schema changes)
+- Notes: deferred `AIDraft` schema revision tracking fields to a follow-up phase (requires DB push + rollout).
