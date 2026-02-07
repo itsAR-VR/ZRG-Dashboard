@@ -365,6 +365,9 @@ model WorkspaceSettings {
   workEndTime          String?  @default("17:00")
   autoSendScheduleMode   AutoSendScheduleMode @default(ALWAYS)
   autoSendCustomSchedule Json?
+  // Phase 116: Per-workspace rollout toggle for the Phase 115 auto-send revision loop.
+  // Global kill-switch `AUTO_SEND_REVISION_DISABLED=1` still overrides this.
+  autoSendRevisionEnabled Boolean @default(false)
   // AI Auto-Send Approval Recipients (Phase 81)
   // JSON array: [{ id: string, displayName: string, avatarUrl?: string, email?: string }]
   slackAutoSendApprovalRecipients Json?
@@ -1188,6 +1191,13 @@ model AIDraft {
   autoSendAction        String?   // send_immediate | send_delayed | needs_review | skip | error
   autoSendSlackNotified Boolean   @default(false)
 
+  // Phase 116: Auto-send revision tracking (bounded at-most-once attempt per draft).
+  autoSendRevisionAttemptedAt DateTime?
+  autoSendOriginalConfidence  Float?
+  autoSendRevisionConfidence  Float?
+  autoSendRevisionApplied     Boolean @default(false)
+  autoSendRevisionSelectorUsed Boolean?
+
   // Phase 70: Slack notification tracking (for interactive button updates).
   slackNotificationChannelId String?
   slackNotificationMessageTs String?
@@ -1200,6 +1210,7 @@ model AIDraft {
   @@index([responseDisposition], name: "AIDraft_responseDisposition_idx")
   @@index([autoSendAction])
   @@index([autoSendEvaluatedAt])
+  @@index([autoSendRevisionAttemptedAt])
 }
 
 model BackgroundJob {

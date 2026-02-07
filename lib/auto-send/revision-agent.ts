@@ -161,6 +161,34 @@ export async function maybeReviseAutoSendDraft(opts: {
   const db = opts.db ?? prisma;
   const selectOptimization = opts.selectOptimizationContext ?? selectAutoSendOptimizationContext;
 
+  // Retry-safety: claim a one-time revision attempt up front so job retries don't repeatedly
+  // burn tokens/latency attempting selector+reviser calls.
+  try {
+    const claimRes = await db.aIDraft.updateMany({
+      where: { id: opts.draftId, status: "pending", autoSendRevisionAttemptedAt: null },
+      data: {
+        autoSendRevisionAttemptedAt: new Date(),
+        autoSendOriginalConfidence: originalConfidence,
+        autoSendRevisionApplied: false,
+      },
+    });
+
+    if (!claimRes || typeof (claimRes as any).count !== "number" || (claimRes as any).count <= 0) {
+      return {
+        revisedDraft: null,
+        revisedEvaluation: null,
+        telemetry: { attempted: false, selectorUsed: false, improved: false, originalConfidence, revisedConfidence: null, threshold },
+      };
+    }
+  } catch {
+    // Fail closed: if we can't persist the attempt claim, don't attempt revision.
+    return {
+      revisedDraft: null,
+      revisedEvaluation: null,
+      telemetry: { attempted: false, selectorUsed: false, improved: false, originalConfidence, revisedConfidence: null, threshold },
+    };
+  }
+
   let selection: AutoSendOptimizationSelection | null = null;
   let selectorUsed = false;
 
@@ -187,6 +215,16 @@ export async function maybeReviseAutoSendDraft(opts: {
     }
   } catch {
     // Fail closed: selector is best-effort; proceed without optimization context.
+  }
+
+  // Best-effort persistence for operator visibility (no raw text).
+  try {
+    await db.aIDraft.updateMany({
+      where: { id: opts.draftId, status: "pending" },
+      data: { autoSendRevisionSelectorUsed: selectorUsed },
+    });
+  } catch {
+    // ignore
   }
 
   const inputJson = JSON.stringify(
@@ -290,11 +328,26 @@ export async function maybeReviseAutoSendDraft(opts: {
   const revisedConfidence = clamp01(Number(revisedEvaluation.confidence));
   const improved = revisedConfidence > originalConfidence;
 
+  // Best-effort persistence for operator visibility (no raw text).
+  try {
+    await db.aIDraft.updateMany({
+      where: { id: opts.draftId, status: "pending" },
+      data: { autoSendRevisionConfidence: revisedConfidence },
+    });
+  } catch {
+    // ignore
+  }
+
   if (improved) {
     // Persist the improved draft so downstream send paths read the updated content.
     const updateRes = await db.aIDraft.updateMany({
       where: { id: opts.draftId, status: "pending" },
-      data: { content: revisedDraft },
+      data: {
+        content: revisedDraft,
+        autoSendRevisionApplied: true,
+        autoSendRevisionConfidence: revisedConfidence,
+        autoSendRevisionSelectorUsed: selectorUsed,
+      },
     });
     if (!updateRes || typeof (updateRes as any).count !== "number" || (updateRes as any).count <= 0) {
       return {

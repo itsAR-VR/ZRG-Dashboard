@@ -11,6 +11,11 @@ import {
   type LeadContextBundleRolloutSettings,
 } from "@/actions/lead-context-bundle-rollout-actions";
 import {
+  getAutoSendRevisionRolloutSettings,
+  updateAutoSendRevisionRolloutSettings,
+  type AutoSendRevisionRolloutSettings,
+} from "@/actions/auto-send-revision-rollout-actions";
+import {
   getConfidenceCalibrationRun,
   listConfidenceCalibrationRuns,
   runConfidenceCalibrationRun,
@@ -73,6 +78,7 @@ export function ConfidenceControlPlane({ clientId }: Props) {
   const [loading, setLoading] = useState(false);
 
   const [rollout, setRollout] = useState<LeadContextBundleRolloutSettings | null>(null);
+  const [autoSendRevisionRollout, setAutoSendRevisionRollout] = useState<AutoSendRevisionRolloutSettings | null>(null);
   const [budgetsText, setBudgetsText] = useState("");
   const [savingBudgets, setSavingBudgets] = useState(false);
 
@@ -113,6 +119,14 @@ export function ConfidenceControlPlane({ clientId }: Props) {
     if (res.success && res.data) {
       setRollout(res.data);
       setBudgetsText(res.data.leadContextBundleBudgets ? JSON.stringify(res.data.leadContextBundleBudgets, null, 2) : "");
+    }
+  }, [clientId, isSuperAdmin]);
+
+  const refreshAutoSendRevisionRollout = useCallback(async () => {
+    if (!clientId || !isSuperAdmin) return;
+    const res = await getAutoSendRevisionRolloutSettings(clientId);
+    if (res.success && res.data) {
+      setAutoSendRevisionRollout(res.data);
     }
   }, [clientId, isSuperAdmin]);
 
@@ -158,10 +172,19 @@ export function ConfidenceControlPlane({ clientId }: Props) {
   useEffect(() => {
     if (!clientId || !isSuperAdmin) return;
     void refreshRollout();
+    void refreshAutoSendRevisionRollout();
     void refreshRuns();
     void refreshProposals();
     void refreshInteractions();
-  }, [clientId, isSuperAdmin, refreshRollout, refreshRuns, refreshProposals, refreshInteractions]);
+  }, [
+    clientId,
+    isSuperAdmin,
+    refreshRollout,
+    refreshAutoSendRevisionRollout,
+    refreshRuns,
+    refreshProposals,
+    refreshInteractions,
+  ]);
 
   const rolloutSummary = useMemo(() => {
     if (!rollout) return null;
@@ -178,6 +201,17 @@ export function ConfidenceControlPlane({ clientId }: Props) {
     if (res.success) {
       toast.success("Updated rollout settings");
       await refreshRollout();
+    } else {
+      toast.error("Failed to update", { description: res.error || "Unknown error" });
+    }
+  };
+
+  const handleAutoSendRevisionToggle = async (value: boolean) => {
+    if (!clientId) return;
+    const res = await updateAutoSendRevisionRolloutSettings(clientId, { autoSendRevisionEnabled: value });
+    if (res.success) {
+      toast.success("Updated rollout settings");
+      await refreshAutoSendRevisionRollout();
     } else {
       toast.error("Failed to update", { description: res.error || "Unknown error" });
     }
@@ -325,6 +359,11 @@ export function ConfidenceControlPlane({ clientId }: Props) {
               {rolloutSummary.note}
             </div>
           ) : null}
+          {autoSendRevisionRollout?.globallyDisabled ? (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+              Global kill-switch is ON (AUTO_SEND_REVISION_DISABLED=1)
+            </div>
+          ) : null}
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="space-y-3">
@@ -346,6 +385,16 @@ export function ConfidenceControlPlane({ clientId }: Props) {
               <Switch
                 checked={Boolean(rollout?.followupBookingGateEnabled)}
                 onCheckedChange={(v) => void handleToggle("followupBookingGateEnabled", v)}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">Auto-Send Revision</div>
+                <div className="text-xs text-muted-foreground">Per-workspace DB toggle (global kill-switch overrides).</div>
+              </div>
+              <Switch
+                checked={Boolean(autoSendRevisionRollout?.autoSendRevisionEnabled)}
+                onCheckedChange={(v) => void handleAutoSendRevisionToggle(v)}
               />
             </div>
           </div>
@@ -689,4 +738,3 @@ export function ConfidenceControlPlane({ clientId }: Props) {
     </div>
   );
 }
-

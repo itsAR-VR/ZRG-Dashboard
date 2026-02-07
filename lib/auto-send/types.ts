@@ -69,6 +69,7 @@ export interface AutoSendContext {
     workEndTime?: string | null;
     autoSendScheduleMode?: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
     autoSendCustomSchedule?: unknown;
+    autoSendRevisionEnabled?: boolean | null;
   } | null;
 
   // Behavior toggles to preserve per-job semantics

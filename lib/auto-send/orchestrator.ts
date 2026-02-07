@@ -290,6 +290,7 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
     // Optional: revision attempt when below threshold, bounded + fail-closed inside the revision agent.
     if (
       deps.maybeReviseAutoSendDraft &&
+      Boolean(context.workspaceSettings?.autoSendRevisionEnabled) &&
       (evaluation.source ?? "model") !== "hard_block" &&
       typeof evaluation.confidence === "number" &&
       evaluation.confidence < threshold

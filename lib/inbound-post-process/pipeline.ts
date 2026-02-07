@@ -105,6 +105,7 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
                   workEndTime: true,
                   autoSendScheduleMode: true,
                   autoSendCustomSchedule: true,
+                  autoSendRevisionEnabled: true,
                 },
               },
             },

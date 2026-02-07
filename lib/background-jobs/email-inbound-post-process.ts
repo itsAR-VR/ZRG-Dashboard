@@ -562,6 +562,7 @@ export async function runEmailInboundPostProcessJob(opts: {
             workEndTime: true,
             autoSendScheduleMode: true,
             autoSendCustomSchedule: true,
+            autoSendRevisionEnabled: true,
           },
         },
       },

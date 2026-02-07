@@ -31,6 +31,7 @@ test("maybeReviseAutoSendDraft: skips when kill-switch is enabled", async () => 
 
 test("maybeReviseAutoSendDraft: persists revised draft when confidence improves", async () => {
   let updatedContent: string | null = null;
+  const updateManyCalls: any[] = [];
 
   const res = await maybeReviseAutoSendDraft({
     clientId: "c1",
@@ -74,7 +75,10 @@ test("maybeReviseAutoSendDraft: persists revised draft when confidence improves"
     db: {
       aIDraft: {
         updateMany: async (args: any) => {
-          updatedContent = args?.data?.content ?? null;
+          updateManyCalls.push(args);
+          if (typeof args?.data?.content === "string") {
+            updatedContent = args.data.content;
+          }
           return { count: 1 };
         },
       },
@@ -85,10 +89,16 @@ test("maybeReviseAutoSendDraft: persists revised draft when confidence improves"
   assert.equal(res.telemetry.improved, true);
   assert.equal(res.revisedDraft?.includes("clarify"), true);
   assert.equal(updatedContent, res.revisedDraft);
+
+  // First DB write should be the one-time attempt claim.
+  assert.equal(updateManyCalls.length >= 1, true);
+  assert.equal(updateManyCalls[0]?.where?.autoSendRevisionAttemptedAt, null);
+  assert.equal(updateManyCalls[0]?.data?.autoSendOriginalConfidence, 0.4);
 });
 
 test("maybeReviseAutoSendDraft: does not persist when confidence does not improve", async () => {
-  let updateCalls = 0;
+  const updateManyCalls: any[] = [];
+  let updatedContent: string | null = null;
 
   const res = await maybeReviseAutoSendDraft({
     clientId: "c1",
@@ -120,8 +130,11 @@ test("maybeReviseAutoSendDraft: does not persist when confidence does not improv
     })) as any,
     db: {
       aIDraft: {
-        updateMany: async () => {
-          updateCalls += 1;
+        updateMany: async (args: any) => {
+          updateManyCalls.push(args);
+          if (typeof args?.data?.content === "string") {
+            updatedContent = args.data.content;
+          }
           return { count: 1 };
         },
       },
@@ -131,6 +144,43 @@ test("maybeReviseAutoSendDraft: does not persist when confidence does not improv
   assert.equal(res.telemetry.attempted, true);
   assert.equal(res.telemetry.improved, false);
   assert.equal(res.revisedDraft, null);
-  assert.equal(updateCalls, 0);
+  assert.equal(updatedContent, null);
+  assert.equal(updateManyCalls.length >= 1, true);
 });
 
+test("maybeReviseAutoSendDraft: skips when revision attempt is already claimed", async () => {
+  let updateCalls = 0;
+
+  const res = await maybeReviseAutoSendDraft({
+    clientId: "c1",
+    leadId: "l1",
+    emailCampaignId: "ec1",
+    draftId: "d1",
+    channel: "email",
+    subject: "Hello",
+    latestInbound: "Inbound",
+    conversationHistory: "History",
+    draft: "Original draft",
+    evaluation: { confidence: 0.2, safeToSend: true, requiresHumanReview: false, reason: "Low confidence", source: "model" },
+    threshold: 0.9,
+    reEvaluate: async () => ({ confidence: 0, safeToSend: false, requiresHumanReview: true, reason: "n/a", source: "model" }),
+    runPrompt: (async () => {
+      throw new Error("runPrompt should not be called when claim fails");
+    }) as any,
+    selectOptimizationContext: async () => {
+      throw new Error("selectOptimizationContext should not be called when claim fails");
+    },
+    db: {
+      aIDraft: {
+        updateMany: async () => {
+          updateCalls += 1;
+          return { count: 0 }; // Simulate "already claimed" / no-op update
+        },
+      },
+    } as any,
+  });
+
+  assert.equal(updateCalls, 1);
+  assert.equal(res.telemetry.attempted, false);
+  assert.equal(res.revisedDraft, null);
+});

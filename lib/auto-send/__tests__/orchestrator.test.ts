@@ -269,6 +269,7 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
       createContext({
         emailCampaign: createCampaign({ autoSendConfidenceThreshold: 0.9 }),
         includeDraftPreviewInSlack: true,
+        workspaceSettings: { autoSendRevisionEnabled: true },
       })
     );
 
@@ -332,6 +333,65 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     const result = await executeAutoSend(
       createContext({
         emailCampaign: createCampaign({ autoSendConfidenceThreshold: 0.9 }),
+        workspaceSettings: { autoSendRevisionEnabled: true },
+      })
+    );
+
+    assert.equal(result.mode, "AI_AUTO_SEND");
+    assert.equal(result.outcome.action, "needs_review");
+    assert.equal(maybeReviseAutoSendDraft.mock.calls.length, 0);
+    assert.equal(sendSlackDmByEmail.mock.calls.length, 1);
+  });
+
+  it("does not attempt revision when workspace toggle is disabled", async () => {
+    const evaluateAutoSend = mock.fn(async () => ({
+      confidence: 0.4,
+      safeToSend: true,
+      requiresHumanReview: false,
+      reason: "Below threshold",
+      source: "model" as const,
+    }));
+
+    const maybeReviseAutoSendDraft = mock.fn(async () => ({
+      revisedDraft: "should not be used",
+      revisedEvaluation: {
+        confidence: 0.95,
+        safeToSend: true,
+        requiresHumanReview: false,
+        reason: "unused",
+        source: "model" as const,
+      },
+      telemetry: {
+        attempted: true,
+        selectorUsed: false,
+        improved: true,
+        originalConfidence: 0.4,
+        revisedConfidence: 0.95,
+        threshold: 0.9,
+      },
+    }));
+
+    const sendSlackDmByEmail = mock.fn(async (_opts: unknown) => ({ success: true }));
+
+    const { executeAutoSend } = createAutoSendExecutor({
+      approveAndSendDraftSystem: mock.fn(async () => ({ success: true, messageId: "sent-1" })),
+      decideShouldAutoReply: mock.fn(async () => ({ shouldReply: false, reason: "unused" })),
+      evaluateAutoSend,
+      maybeReviseAutoSendDraft,
+      getPublicAppUrl: () => "https://app.example.com",
+      getCampaignDelayConfig: mock.fn(async () => null),
+      scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
+      recordAutoSendDecision: mock.fn(async () => undefined),
+    });
+
+    const result = await executeAutoSend(
+      createContext({
+        emailCampaign: createCampaign({ autoSendConfidenceThreshold: 0.9 }),
+        workspaceSettings: { autoSendRevisionEnabled: false },
       })
     );
 
@@ -579,7 +639,12 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     const recordArg = (recordAutoSendDecision.mock.calls as unknown[])[0] as { arguments: [{ action?: string }] };
     assert.equal(recordArg?.arguments[0]?.action, "needs_review");
 
-    const opts = sendSlackDmByEmail.mock.calls[0]?.arguments[0] as { blocks?: Array<{ type: string; text?: { text?: string } }> };
+    type SlackBlock = {
+      type: string;
+      text?: { text?: string };
+      elements?: Array<{ action_id?: string; value?: string }>;
+    };
+    const opts = sendSlackDmByEmail.mock.calls[0]?.arguments[0] as { blocks?: SlackBlock[] };
     const hasDraftPreviewBlock = (opts.blocks || []).some((b) => b.type === "section" && (b.text?.text || "").includes("*Draft Preview:*"));
     assert.equal(hasDraftPreviewBlock, true);
 
@@ -595,9 +660,12 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     const actionIds = (actionsBlock?.elements || []).map((e: any) => e.action_id);
     assert.equal(actionIds.includes("regenerate_draft_fast"), true);
 
-    const regenButton = (actionsBlock?.elements || []).find((e: any) => e.action_id === "regenerate_draft_fast");
-    assert.equal(typeof regenButton?.value, "string");
-    const regenValue = JSON.parse(regenButton.value) as { cycleSeed?: string; regenCount?: number };
+    const regenButton = (actionsBlock?.elements || []).find(
+      (e) => e.action_id === "regenerate_draft_fast"
+    ) as { value?: string } | undefined;
+    assert.ok(regenButton, "Expected regenerate_draft_fast button");
+    assert.equal(typeof regenButton.value, "string");
+    const regenValue = JSON.parse(regenButton.value as string) as { cycleSeed?: string; regenCount?: number };
     assert.equal(regenValue.cycleSeed, "draft-1");
     assert.equal(regenValue.regenCount, 0);
   });

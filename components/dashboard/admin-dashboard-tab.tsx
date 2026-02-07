@@ -155,6 +155,10 @@ export function AdminDashboardTab({ clientId, active }: Props) {
                 label={snapshot.env.autoSendDisabled ? "Auto-send disabled" : "Auto-send enabled"}
               />
               <HealthPill
+                status={snapshot.env.autoSendRevisionDisabled ? "warn" : "ok"}
+                label={snapshot.env.autoSendRevisionDisabled ? "Revision kill-switch ON" : "Revision kill-switch OFF"}
+              />
+              <HealthPill
                 status={snapshot.drafts.needsReview.slackMissing > 0 ? "warn" : "ok"}
                 label={`Needs-review Slack missing: ${snapshot.drafts.needsReview.slackMissing}`}
               />
@@ -330,6 +334,46 @@ export function AdminDashboardTab({ clientId, active }: Props) {
                   {snapshot.env.autoSendDisabled ? (
                     <div className="text-xs text-amber-200">
                       Auto-send is globally disabled via `AUTO_SEND_DISABLED=1`.
+                    </div>
+                  ) : null}
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Auto-send revision (last 72h)</div>
+                  <div className="text-sm text-muted-foreground">
+                    Attempted:{" "}
+                    <span className="text-foreground font-medium">
+                      {snapshot.drafts.autoSendRevision.attemptedLast72h}
+                    </span>
+                    {"  "}Applied:{" "}
+                    <span className="text-foreground font-medium">
+                      {snapshot.drafts.autoSendRevision.appliedLast72h}
+                    </span>
+                    {"  "}Applied rate:{" "}
+                    <span className="text-foreground font-medium">
+                      {snapshot.drafts.autoSendRevision.attemptedLast72h > 0
+                        ? `${Math.round(
+                            (snapshot.drafts.autoSendRevision.appliedLast72h / snapshot.drafts.autoSendRevision.attemptedLast72h) *
+                              100
+                          )}%`
+                        : "-"}
+                    </span>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Workspace toggle:{" "}
+                    <span className="font-medium text-foreground">
+                      {snapshot.workspaceSettings?.autoSendRevisionEnabled ? "ON" : "OFF"}
+                    </span>
+                    {"  "}Global kill-switch:{" "}
+                    <span className="font-medium text-foreground">
+                      {snapshot.env.autoSendRevisionDisabled ? "ON" : "OFF"}
+                    </span>
+                  </div>
+                  {snapshot.env.autoSendRevisionDisabled ? (
+                    <div className="text-xs text-amber-200">
+                      Revision is globally disabled via `AUTO_SEND_REVISION_DISABLED=1`.
                     </div>
                   ) : null}
                 </div>

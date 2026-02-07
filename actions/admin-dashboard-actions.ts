@@ -50,6 +50,7 @@ export type AdminDashboardSnapshot = {
     cronSecretConfigured: boolean;
     openAiKeyConfigured: boolean;
     autoSendDisabled: boolean;
+    autoSendRevisionDisabled: boolean;
   };
 
   workspaceSettings: {
@@ -62,6 +63,7 @@ export type AdminDashboardSnapshot = {
     notificationSlackChannelsCount: number;
     autoSendScheduleMode: string | null;
     autoSendCustomScheduleConfigured: boolean;
+    autoSendRevisionEnabled: boolean;
     slackAutoSendApproversConfigured: boolean;
   } | null;
 
@@ -119,6 +121,10 @@ export type AdminDashboardSnapshot = {
       sampledDraftsForMissingJobCheck: number;
     };
     sendingStaleCount: number;
+    autoSendRevision: {
+      attemptedLast72h: number;
+      appliedLast72h: number;
+    };
   };
 
   enrichment: {
@@ -150,6 +156,7 @@ export async function getAdminDashboardSnapshot(
 
     const now = new Date();
     const staleQueueAlertMinutes = getStaleQueueAlertMinutes();
+    const revisionWindowStart = new Date(now.getTime() - 72 * 60 * 60_000);
 
     const client = await prisma.client.findUnique({
       where: { id: clientId },
@@ -188,6 +195,7 @@ export async function getAdminDashboardSnapshot(
             notificationSlackChannelIds: true,
             autoSendScheduleMode: true,
             autoSendCustomSchedule: true,
+            autoSendRevisionEnabled: true,
             slackAutoSendApprovalRecipients: true,
           },
         }),
@@ -335,6 +343,8 @@ export async function getAdminDashboardSnapshot(
       sendDelayedTotal,
       sendDelayedOldest,
       staleSendingDrafts,
+      revisionAttemptedLast72h,
+      revisionAppliedLast72h,
     ] = await Promise.all([
       prisma.aIDraft.count({ where: { status: "pending", lead: { clientId } } }),
 
@@ -387,6 +397,21 @@ export async function getAdminDashboardSnapshot(
           status: "sending",
           updatedAt: { lt: new Date(now.getTime() - 10 * 60_000) },
           lead: { clientId },
+        },
+      }),
+
+      prisma.aIDraft.count({
+        where: {
+          lead: { clientId },
+          autoSendRevisionAttemptedAt: { gte: revisionWindowStart },
+        },
+      }),
+
+      prisma.aIDraft.count({
+        where: {
+          lead: { clientId },
+          autoSendRevisionAttemptedAt: { gte: revisionWindowStart },
+          autoSendRevisionApplied: true,
         },
       }),
     ]);
@@ -504,6 +529,7 @@ export async function getAdminDashboardSnapshot(
         cronSecretConfigured: Boolean(process.env.CRON_SECRET),
         openAiKeyConfigured: Boolean(process.env.OPENAI_API_KEY),
         autoSendDisabled: process.env.AUTO_SEND_DISABLED === "1",
+        autoSendRevisionDisabled: process.env.AUTO_SEND_REVISION_DISABLED === "1",
       },
       workspaceSettings: settings
         ? {
@@ -516,6 +542,7 @@ export async function getAdminDashboardSnapshot(
             notificationSlackChannelsCount: settings.notificationSlackChannelIds?.length ?? 0,
             autoSendScheduleMode: settings.autoSendScheduleMode ? String(settings.autoSendScheduleMode) : null,
             autoSendCustomScheduleConfigured: Boolean(settings.autoSendCustomSchedule),
+            autoSendRevisionEnabled: Boolean(settings.autoSendRevisionEnabled),
             slackAutoSendApproversConfigured: Boolean(settings.slackAutoSendApprovalRecipients),
           }
         : null,
@@ -567,6 +594,10 @@ export async function getAdminDashboardSnapshot(
           sampledDraftsForMissingJobCheck: sampledDraftIds.length,
         },
         sendingStaleCount: staleSendingDrafts,
+        autoSendRevision: {
+          attemptedLast72h: revisionAttemptedLast72h,
+          appliedLast72h: revisionAppliedLast72h,
+        },
       },
       enrichment: {
         pending: enrichmentPending,
@@ -594,4 +625,3 @@ export async function getAdminDashboardSnapshot(
     };
   }
 }
-
