@@ -461,6 +461,14 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     const hasDraftPreviewBlock = (opts.blocks || []).some((b) => b.type === "section" && (b.text?.text || "").includes("*Draft Preview:*"));
     assert.equal(hasDraftPreviewBlock, true);
 
+    const inboundBlock = (opts.blocks || []).find(
+      (b) => b.type === "section" && (b.text?.text || "").includes("*Lead Message Preview:*")
+    );
+    assert.equal(Boolean(inboundBlock), true);
+    const inboundText = inboundBlock?.text?.text || "";
+    assert.equal(inboundText.includes("Re: Subject"), true);
+    assert.equal(inboundText.includes("Inbound message body"), true);
+
     const actionsBlock = (opts.blocks || []).find((b: any) => b.type === "actions");
     const actionIds = (actionsBlock?.elements || []).map((e: any) => e.action_id);
     assert.equal(actionIds.includes("regenerate_draft_fast"), true);
@@ -554,6 +562,11 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     const opts = sendSlackDmByEmail.mock.calls[0]?.arguments[0] as { blocks?: Array<{ type: string; text?: { text?: string } }> };
     const hasDraftPreviewBlock = (opts.blocks || []).some((b) => b.type === "section" && (b.text?.text || "").includes("*Draft Preview:*"));
     assert.equal(hasDraftPreviewBlock, false);
+
+    const hasInboundPreviewBlock = (opts.blocks || []).some(
+      (b) => b.type === "section" && (b.text?.text || "").includes("*Lead Message Preview:*")
+    );
+    assert.equal(hasInboundPreviewBlock, true);
   });
 });
 

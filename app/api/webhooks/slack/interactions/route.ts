@@ -21,6 +21,7 @@ import { updateSlackMessageWithToken, type SlackBlock } from "@/lib/slack-dm";
 import { sendEmailReplyForDraftSystem } from "@/lib/email-send";
 import { getPublicAppUrl } from "@/lib/app-url";
 import { fastRegenerateDraftContent } from "@/lib/ai-drafts/fast-regenerate";
+import { sanitizeSlackCodeBlockText, truncateSlackText } from "@/lib/slack-format";
 
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET || "";
 
@@ -99,6 +100,7 @@ function buildReviewNeededBlocks(opts: {
   reason: string | null;
   dashboardUrl: string;
   draftId: string;
+  inboundPreview?: string | null;
   draftPreview: string;
   approveValue: string;
   regenerateValue: string;
@@ -107,6 +109,9 @@ function buildReviewNeededBlocks(opts: {
     typeof opts.confidence === "number" && typeof opts.threshold === "number"
       ? `${opts.confidence.toFixed(2)} (thresh ${opts.threshold.toFixed(2)})`
       : "Unknown";
+
+  const safeInboundPreview = truncateSlackText(sanitizeSlackCodeBlockText(opts.inboundPreview || ""), 1400).trim();
+  const safeDraftPreview = truncateSlackText(sanitizeSlackCodeBlockText(opts.draftPreview), 1400).trim();
 
   return [
     {
@@ -129,11 +134,22 @@ function buildReviewNeededBlocks(opts: {
       type: "section",
       text: { type: "mrkdwn", text: `*Reason:*\n${opts.reason || "Review needed"}` },
     },
+    ...(safeInboundPreview
+      ? ([
+          {
+            type: "section",
+            text: {
+              type: "mrkdwn",
+              text: `*Lead Message Preview:*\n\`\`\`\n${safeInboundPreview}\n\`\`\``,
+            },
+          },
+        ] as const)
+      : ([] as const)),
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*Draft Preview:*\n\`\`\`\n${opts.draftPreview.slice(0, 1400)}\n\`\`\``,
+        text: `*Draft Preview:*\n\`\`\`\n${safeDraftPreview}\n\`\`\``,
       },
     },
     {
@@ -483,6 +499,15 @@ async function handleRegenerateFast(params: {
     regenCount: (value.regenCount ?? 0) + 1,
   });
 
+  const inboundPreview = latestInbound
+    ? [
+        latestInbound.subject ? `Subject: ${latestInbound.subject}` : null,
+        latestInbound.body ? (latestInbound.subject ? `\n\n${latestInbound.body}` : latestInbound.body) : null,
+      ]
+        .filter((p): p is string => Boolean(p))
+        .join("")
+    : null;
+
   await updateSlackMessageSafe({
     channelId,
     messageTs,
@@ -497,6 +522,7 @@ async function handleRegenerateFast(params: {
       reason: draft.autoSendReason ?? null,
       dashboardUrl,
       draftId: created.id,
+      inboundPreview,
       draftPreview: newContent,
       approveValue,
       regenerateValue,

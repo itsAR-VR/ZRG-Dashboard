@@ -12,6 +12,7 @@ import {
   validateDelayedAutoSend,
 } from "@/lib/background-jobs/delayed-auto-send";
 import { sendSlackDmByUserIdWithToken } from "@/lib/slack-dm";
+import { sanitizeSlackCodeBlockText, truncateSlackText } from "@/lib/slack-format";
 import {
   getNextAutoSendWindow,
   isWithinAutoSendSchedule,
@@ -98,6 +99,15 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
     const dashboardUrl = `${deps.getPublicAppUrl()}/?view=inbox&clientId=${encodeURIComponent(context.clientId)}&leadId=${encodeURIComponent(context.leadId)}&draftId=${encodeURIComponent(context.draftId)}`;
     const confidenceText = `${confidence.toFixed(2)} < ${threshold.toFixed(2)}`;
 
+    const subjectLine = (context.subject || "").trim();
+    const latestInbound = (context.latestInbound || "").trim();
+    const inboundCombined =
+      subjectLine && !/^\s*subject:/i.test(latestInbound)
+        ? `Subject: ${subjectLine}\n\n${latestInbound}`
+        : latestInbound || (subjectLine ? `Subject: ${subjectLine}` : "");
+    const inboundPreview = truncateSlackText(sanitizeSlackCodeBlockText(inboundCombined), 1400).trim();
+    const draftPreview = truncateSlackText(sanitizeSlackCodeBlockText(context.draftContent), 1400).trim();
+
     // Phase 70: Build button action value with IDs needed for approval webhook
     const buttonValue = JSON.stringify({
       draftId: context.draftId,
@@ -137,13 +147,24 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
         type: "section",
         text: { type: "mrkdwn", text: `*Reason:*\n${reason}` },
       },
+      ...(inboundPreview
+        ? ([
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: `*Lead Message Preview:*\n\`\`\`\n${inboundPreview}\n\`\`\``,
+              },
+            },
+          ] as const)
+        : ([] as const)),
       ...(context.includeDraftPreviewInSlack
         ? ([
             {
               type: "section",
               text: {
                 type: "mrkdwn",
-                text: `*Draft Preview:*\n\`\`\`\n${context.draftContent.slice(0, 1400)}\n\`\`\``,
+                text: `*Draft Preview:*\n\`\`\`\n${draftPreview}\n\`\`\``,
               },
             },
           ] as const)
