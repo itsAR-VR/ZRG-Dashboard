@@ -1,23 +1,23 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { __aiOpsFeedInternals } from "@/actions/ai-ops-feed-actions";
+import { extractAiInteractionSummary, extractOverseerPayloadSummary, parseCursorDate } from "@/lib/ai-ops-feed-internals";
 
 describe("AI ops feed internals", () => {
   it("parseCursorDate returns null for invalid input", () => {
-    assert.equal(__aiOpsFeedInternals.parseCursorDate(null), null);
-    assert.equal(__aiOpsFeedInternals.parseCursorDate(""), null);
-    assert.equal(__aiOpsFeedInternals.parseCursorDate("not-a-date"), null);
+    assert.equal(parseCursorDate(null), null);
+    assert.equal(parseCursorDate(""), null);
+    assert.equal(parseCursorDate("not-a-date"), null);
   });
 
   it("parseCursorDate parses a valid ISO timestamp", () => {
-    const d = __aiOpsFeedInternals.parseCursorDate("2026-02-06T12:34:56.789Z");
+    const d = parseCursorDate("2026-02-06T12:34:56.789Z");
     assert.ok(d instanceof Date);
     assert.equal(d?.toISOString(), "2026-02-06T12:34:56.789Z");
   });
 
   it("extractAiInteractionSummary reads bookingGate summaries only", () => {
-    const summary = __aiOpsFeedInternals.extractAiInteractionSummary({
+    const summary = extractAiInteractionSummary({
       bookingGate: {
         decision: "approve",
         confidence: 0.83,
@@ -32,7 +32,7 @@ describe("AI ops feed internals", () => {
   });
 
   it("extractOverseerPayloadSummary omits evidence and returns intent/status for extract", () => {
-    const summary = __aiOpsFeedInternals.extractOverseerPayloadSummary("extract", {
+    const summary = extractOverseerPayloadSummary("extract", {
       intent: "accept_offer",
       is_scheduling_related: true,
       evidence: ["quoted message should not be surfaced"],
@@ -43,7 +43,7 @@ describe("AI ops feed internals", () => {
   });
 
   it("extractOverseerPayloadSummary returns decision + issuesCount for gate/booking_gate", () => {
-    const gate = __aiOpsFeedInternals.extractOverseerPayloadSummary("gate", {
+    const gate = extractOverseerPayloadSummary("gate", {
       decision: "revise",
       issues: ["too_long", "too_pushy"],
       rationale: "should not be surfaced",
@@ -51,7 +51,7 @@ describe("AI ops feed internals", () => {
 
     assert.deepEqual(gate, { status: null, decision: "revise", issuesCount: 2 });
 
-    const bookingGate = __aiOpsFeedInternals.extractOverseerPayloadSummary("booking_gate", {
+    const bookingGate = extractOverseerPayloadSummary("booking_gate", {
       decision: "needs_clarification",
       issues: ["timezone_unknown"],
       clarification_message: "What timezone are you in?",
@@ -60,4 +60,3 @@ describe("AI ops feed internals", () => {
     assert.deepEqual(bookingGate, { status: null, decision: "needs_clarification", issuesCount: 1 });
   });
 });
-

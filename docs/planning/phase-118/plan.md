@@ -51,6 +51,7 @@ Ship v1.16 safely by landing the Phase 117 Inbox fix (Jam “Error loading conve
   - Master Inbox renders without “Error loading conversations”.
   - Selecting a workspace loads conversations.
   - **All Workspaces** loads combined conversations without a polling-driven 500 loop.
+  - No Server Action 500s with digest suffix `@E352` (invalid `"use server"` exports).
 - [ ] `SERVER_ACTIONS_ALLOWED_ORIGINS` is documented and (when a custom domain is introduced) configured so Server Actions continue to work on both the Vercel domain and the custom domain.
 - [ ] Cron endpoints require `Authorization: Bearer <CRON_SECRET>` and return 401 without it.
 - [ ] Webhooks have required secrets; Calendly webhook signature enforcement risk is explicitly resolved (enforced or accepted with mitigation).
@@ -67,6 +68,8 @@ Ship v1.16 safely by landing the Phase 117 Inbox fix (Jam “Error loading conve
   - Mitigation: Phase 118c documents `SERVER_ACTIONS_ALLOWED_ORIGINS` format and requires setting it in Vercel Production before DNS cutover.
 - Calendly webhook unsigned acceptance remains ambiguous.
   - Mitigation: Phase 118d forces an explicit decision (enforce signing key vs accept risk with mitigations).
+- A `"use server"` module exports a non-function value → Next.js throws `E352` and **all** Server Actions for `/` fail with digest-only 500s (Jam symptom).
+  - Mitigation: keep the regression test `lib/__tests__/use-server-exports.test.ts` and add a pre-deploy sanity check (`rg '^export (const|let|var|class|default)' actions` should be empty).
 
 ## Open Questions (Need Human Input)
 - [x] What is the intended custom domain (or domain family) we should support via `SERVER_ACTIONS_ALLOWED_ORIGINS`?
@@ -85,3 +88,4 @@ Ship v1.16 safely by landing the Phase 117 Inbox fix (Jam “Error loading conve
 
 ## Phase Summary (running)
 - 2026-02-08 — Loaded Jam via MCP and confirmed repeated Server Action 500s with invalid placeholders. Enforced Calendly webhook signature verification in production, required `NEXT_PUBLIC_APP_URL` for production link/webhook URL generation, and updated custom-domain allowlist docs for `cold2close.ai` + `app.codex.ai`. (files: `app/api/webhooks/calendly/[clientId]/route.ts`, `actions/calendly-actions.ts`, `app/api/admin/fix-calendly-webhooks/route.ts`, `lib/app-url.ts`, `next.config.mjs`, `README.md`, `components/dashboard/settings/integrations-manager.tsx`, `docs/planning/phase-117/*`, `docs/planning/phase-118/*`)
+- 2026-02-08 — Root-caused the production Server Action digest suffix `@E352` to a non-function export in a `"use server"` module. Removed the offending export from `actions/ai-ops-feed-actions.ts` by moving test-only helpers into `lib/ai-ops-feed-internals.ts`, and added a regression test to prevent `"use server"` export violations. This unblocks all Server Actions on `/` (workspaces + Inbox). (files: `actions/ai-ops-feed-actions.ts`, `lib/ai-ops-feed-internals.ts`, `lib/__tests__/ai-ops-feed.test.ts`, `lib/__tests__/use-server-exports.test.ts`, `docs/planning/phase-118/b/plan.md`)

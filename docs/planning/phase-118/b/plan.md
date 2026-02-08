@@ -35,9 +35,29 @@ Deploy the Phase 117 fixes to production and validate, using the Jam repro as th
      - `vercel list --environment production --status READY --yes`
      - `vercel logs <deployment-url>`
    - If `ref: <debugId>` is shown in UI, search logs for that debugId.
+   - If the digest suffix includes `@E352`, immediately check for invalid exports in `"use server"` modules:
+     - `rg '^export (const|let|var|class|default)' actions` (should return nothing)
 
 ## Output
 - Evidence that the Jam repro is resolved in production and Inbox is stable.
 
 ## Handoff
 - Proceed to Phase 118c/118d for custom-domain readiness + security/ops audit.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Pulled Jam network evidence and extracted the production digest suffix `@E352`.
+  - Located `E352` in Next.js `action-validate` runtime checks and confirmed it corresponds to exporting a non-function value from a `"use server"` module.
+  - Fixed the only offending export: removed `export const __aiOpsFeedInternals` from `actions/ai-ops-feed-actions.ts` (this export breaks Server Actions for the entire `/` action worker, including Inbox/workspace actions).
+  - Moved the pure helper functions into `lib/ai-ops-feed-internals.ts` and updated `lib/__tests__/ai-ops-feed.test.ts` to import from `lib/` instead of `actions/`.
+  - Added a regression test to prevent re-introducing non-function exports in `"use server"` action modules (`lib/__tests__/use-server-exports.test.ts`).
+- Commands run:
+  - `npm test` — pass
+  - `npm run typecheck` — pass
+  - `npm run lint` — pass (warnings only)
+  - `npm run build` — pass
+- Blockers:
+  - Git commit/push is blocked inside the tool sandbox (`.git/index.lock` cannot be created). This must be committed + pushed from a normal terminal session.
+- Next concrete steps:
+  - Commit + push the changes (`actions/ai-ops-feed-actions.ts`, `lib/ai-ops-feed-internals.ts`, `lib/__tests__/ai-ops-feed.test.ts`).
+  - Verify production: the Jam repro should no longer show Server Action 500s with `@E352`, and Inbox/workspaces should load normally.
