@@ -34,19 +34,31 @@ function DashboardPageInner() {
   const [activeFilter, setActiveFilter] = useState("")
   // If a deep-link includes clientId, initialize the workspace immediately so the inbox
   // doesn't briefly load "All Workspaces" (which can be slow and can lose lead selection).
+  const [workspaceSelectionMode, setWorkspaceSelectionMode] = useState<"auto" | "manual">(() => {
+    return searchParams.get("clientId") ? "manual" : "auto"
+  })
   const [activeWorkspace, setActiveWorkspace] = useState<string | null>(() => {
     const clientIdParam = searchParams.get("clientId")
     return clientIdParam ? clientIdParam : null
   })
   const [workspaces, setWorkspaces] = useState<Client[]>([])
+  const [workspacesReady, setWorkspacesReady] = useState(false)
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null)
+  const [workspaceFetchNonce, setWorkspaceFetchNonce] = useState(0)
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const [settingsTab, setSettingsTab] = useState("general")
   const [dismissedUnipileBanner, setDismissedUnipileBanner] = useState<string | null>(null)
+
+  const handleWorkspaceChange = (nextWorkspace: string | null) => {
+    setWorkspaceSelectionMode("manual")
+    setActiveWorkspace(nextWorkspace)
+  }
 
   const syncWorkspaces = (nextWorkspaces: Client[]) => {
     setWorkspaces(nextWorkspaces)
     setActiveWorkspace((prev) => {
       if (nextWorkspaces.length === 0) return null
+      if (workspaceSelectionMode === "manual" && prev === null) return null
       if (!prev) return nextWorkspaces[0].id
       if (nextWorkspaces.some((w) => w.id === prev)) return prev
       return nextWorkspaces[0].id
@@ -69,13 +81,24 @@ function DashboardPageInner() {
   // Fetch workspaces on mount
   useEffect(() => {
     async function fetchWorkspaces() {
-      const result = await getClients()
-      if (result.success && result.data) {
-        syncWorkspaces(result.data as Client[])
+      setWorkspacesReady(false)
+      setWorkspaceError(null)
+
+      try {
+        const result = await getClients()
+        if (result.success && result.data) {
+          syncWorkspaces(result.data as Client[])
+        } else {
+          setWorkspaceError(result.error || "Failed to load workspaces")
+        }
+      } catch {
+        setWorkspaceError("Failed to load workspaces")
+      } finally {
+        setWorkspacesReady(true)
       }
     }
     fetchWorkspaces()
-  }, [])
+  }, [workspaceFetchNonce])
 
   // Sync view/lead selection from URL params (used by Follow-ups deep links)
   useEffect(() => {
@@ -92,6 +115,7 @@ function DashboardPageInner() {
 
       // Prefer explicit workspace selection from the deep-link.
       if (clientIdParam) {
+        setWorkspaceSelectionMode("manual")
         setActiveWorkspace(clientIdParam)
       } else {
         // Back-compat: resolve the workspace from the leadId.
@@ -99,6 +123,7 @@ function DashboardPageInner() {
         getLeadWorkspaceId(leadIdParam)
           .then((result) => {
             if (result.success && result.workspaceId) {
+              setWorkspaceSelectionMode("manual")
               setActiveWorkspace(result.workspaceId)
             }
           })
@@ -156,6 +181,8 @@ function DashboardPageInner() {
             activeChannels={activeChannels}
             activeFilter={activeFilter}
             activeWorkspace={activeWorkspace}
+            workspacesReady={workspacesReady}
+            hasWorkspaces={workspaces.length > 0}
             workspaceHasConnectedAccounts={Boolean(
               workspaces.find((w) => w.id === activeWorkspace)?.hasConnectedAccounts
             )}
@@ -193,10 +220,31 @@ function DashboardPageInner() {
         activeView={activeView}
         onViewChange={setActiveView}
         activeWorkspace={activeWorkspace}
-        onWorkspaceChange={setActiveWorkspace}
+        onWorkspaceChange={handleWorkspaceChange}
         workspaces={workspaces}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
+        {workspaceError && (
+          <div className="flex items-center gap-3 bg-destructive/10 border-b border-destructive/20 px-4 py-2.5 text-destructive">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span className="flex-1 text-sm">{workspaceError}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-destructive/40 text-destructive hover:bg-destructive/10"
+              onClick={() => setWorkspaceFetchNonce((n) => n + 1)}
+            >
+              Retry
+            </Button>
+            <button
+              onClick={() => setWorkspaceError(null)}
+              className="p-1 hover:bg-destructive/20 rounded"
+              aria-label="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
         {showUnipileBanner && (
           <div className="flex items-center gap-3 bg-amber-500/10 border-b border-amber-500/20 px-4 py-2.5 text-amber-700 dark:text-amber-400">
             <AlertTriangle className="h-4 w-4 shrink-0" />

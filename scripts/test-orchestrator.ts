@@ -54,6 +54,12 @@ async function main(): Promise<void> {
     stdio: "inherit",
     env: {
       ...process.env,
+      // Many modules import `lib/prisma.ts` which initializes Prisma at module-load time.
+      // Unit tests mock DB access, but we still need syntactically valid URLs so imports
+      // don't throw when DATABASE_URL/DIRECT_URL aren't set in the test environment.
+      DATABASE_URL:
+        process.env.DATABASE_URL || "postgresql://test:test@localhost:5432/test?schema=public",
+      DIRECT_URL: process.env.DIRECT_URL || "postgresql://test:test@localhost:5432/test?schema=public",
       // `lib/ai/openai-client.ts` constructs the OpenAI client at import-time.
       // Unit tests mock the downstream callers, but we still need a non-empty key
       // to avoid the OpenAI SDK throwing during module initialization.

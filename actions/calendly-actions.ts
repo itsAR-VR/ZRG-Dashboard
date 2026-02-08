@@ -98,6 +98,9 @@ export async function ensureCalendlyWebhookSubscriptionForWorkspace(clientId: st
   error?: string;
 }> {
   try {
+    const vercelEnv = process.env.VERCEL_ENV;
+    const isProduction = vercelEnv ? vercelEnv === "production" : process.env.NODE_ENV === "production";
+
     await requireClientAdminAccess(clientId);
 
     const client = await prisma.client.findUnique({
@@ -171,6 +174,31 @@ export async function ensureCalendlyWebhookSubscriptionForWorkspace(clientId: st
       }
     }
 
+    // Enforce signing keys in production so webhook ingestion is verifiable.
+    if (isProduction && !signingKey) {
+      // Avoid leaving a subscription that we can't validate.
+      if (subscriptionUri) {
+        await deleteCalendlyWebhookSubscription(client.calendlyAccessToken, subscriptionUri).catch(() => undefined);
+        subscriptionUri = null;
+      }
+
+      await prisma.client.update({
+        where: { id: clientId },
+        data: {
+          calendlyUserUri: me.data.userUri,
+          calendlyOrganizationUri: me.data.organizationUri,
+          calendlyWebhookSubscriptionUri: null,
+          calendlyWebhookSigningKey: null,
+        },
+      });
+
+      return {
+        success: false,
+        error:
+          "Calendly webhook signing key missing. In production, a signing key is required to verify webhooks. Reconnect Calendly using an OAuth app / signing-key-enabled webhook subscription.",
+      };
+    }
+
     await prisma.client.update({
       where: { id: clientId },
       data: {
@@ -194,4 +222,3 @@ export async function ensureCalendlyWebhookSubscriptionForWorkspace(clientId: st
     return { success: false, error: error instanceof Error ? error.message : "Failed to ensure webhook subscription" };
   }
 }
-

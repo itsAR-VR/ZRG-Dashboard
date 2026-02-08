@@ -4,6 +4,7 @@ import { getPublicAppUrl } from "@/lib/app-url";
 import { addToAlternateEmails, emailsMatch, normalizeOptionalEmail, validateEmail } from "@/lib/email-participants";
 import { getAvailableChannels } from "@/lib/lead-matching";
 import { prisma } from "@/lib/prisma";
+import { toSafeActionError } from "@/lib/safe-action-error";
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
 import {
@@ -30,7 +31,7 @@ export interface ConversationData {
     alternateEmails: string[];
     currentReplierEmail: string | null;
     currentReplierName: string | null;
-    currentReplierSince: Date | null;
+    currentReplierSince: string | null;
     phone: string | null;
     company: string;
     title: string;
@@ -55,11 +56,11 @@ export interface ConversationData {
     ghlLocationId: string | null;
     // Lead scoring (Phase 33)
     overallScore: number | null;
-    scoredAt: Date | null;
+    scoredAt: string | null;
     // Lead assignment (Phase 43)
     assignedToUserId: string | null;
     assignedToEmail: string | null;
-    assignedAt: Date | null;
+    assignedAt: string | null;
   };
   channels: Channel[];           // All channels this lead has messages on
   availableChannels: Channel[];  // Channels available based on contact info
@@ -67,7 +68,7 @@ export interface ConversationData {
   classification: string;
   lastMessage: string;
   lastSubject?: string | null;
-  lastMessageTime: Date;
+  lastMessageTime: string;
   hasAiDraft: boolean;
   requiresAttention: boolean;
   sentimentTag: string | null;
@@ -414,7 +415,7 @@ export async function getConversations(clientId?: string | null): Promise<{
           alternateEmails: lead.alternateEmails ?? [],
           currentReplierEmail: lead.currentReplierEmail ?? null,
           currentReplierName: lead.currentReplierName ?? null,
-          currentReplierSince: lead.currentReplierSince ?? null,
+          currentReplierSince: lead.currentReplierSince ? lead.currentReplierSince.toISOString() : null,
           phone: lead.phone,
           company: lead.client.name,
           title: "", // Not stored in current schema
@@ -439,13 +440,13 @@ export async function getConversations(clientId?: string | null): Promise<{
           ghlLocationId: lead.client.ghlLocationId,
           // Lead scoring (Phase 33)
           overallScore: lead.overallScore,
-          scoredAt: lead.scoredAt,
+          scoredAt: lead.scoredAt ? lead.scoredAt.toISOString() : null,
           // Lead assignment (Phase 43)
           assignedToUserId: lead.assignedToUserId ?? null,
           assignedToEmail: lead.assignedToUserId
             ? setterEmailMap.get(lead.assignedToUserId) ?? null
             : null,
-          assignedAt: lead.assignedAt ?? null,
+          assignedAt: lead.assignedAt ? lead.assignedAt.toISOString() : null,
         },
         channels,
         availableChannels,
@@ -453,7 +454,7 @@ export async function getConversations(clientId?: string | null): Promise<{
         classification: mapSentimentToClassification(lead.sentimentTag),
         lastMessage: toPlainTextIfHtml(latestMessage?.body) || "No messages yet",
         lastSubject: latestMessage?.subject || null,
-        lastMessageTime: latestMessage?.sentAt || lead.createdAt, // Use sentAt for actual message time
+        lastMessageTime: (latestMessage?.sentAt || lead.createdAt).toISOString(), // Use sentAt for actual message time
         // Hide drafts for blacklisted/unqualified leads
         hasAiDraft:
           lead.status !== "blacklisted" &&
@@ -469,11 +470,18 @@ export async function getConversations(clientId?: string | null): Promise<{
 
     return { success: true, data: conversations };
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    console.error("Failed to fetch conversations:", errorMessage, error);
+    const safe = toSafeActionError(error, { defaultPublicMessage: "Failed to load conversations" });
+    if (safe.errorClass === "not_authenticated" || safe.errorClass === "unauthorized") {
+      return { success: false, error: safe.publicMessage };
+    }
+
+    console.error("Failed to fetch conversations:", {
+      debugId: safe.debugId,
+      errorClass: safe.errorClass,
+    }, error);
     return {
       success: false,
-      error: `Failed to fetch conversations: ${errorMessage}`
+      error: `${safe.publicMessage} (ref: ${safe.debugId})`,
     };
   }
 }
@@ -864,7 +872,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           alternateEmails: lead.alternateEmails ?? [],
           currentReplierEmail: lead.currentReplierEmail ?? null,
           currentReplierName: lead.currentReplierName ?? null,
-          currentReplierSince: lead.currentReplierSince ?? null,
+          currentReplierSince: lead.currentReplierSince ? lead.currentReplierSince.toISOString() : null,
           phone: lead.phone,
           company: lead.client.name,
           title: "",
@@ -890,11 +898,11 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           ghlLocationId: lead.client.ghlLocationId,
           // Lead scoring (Phase 33)
           overallScore: lead.overallScore,
-          scoredAt: lead.scoredAt,
+          scoredAt: lead.scoredAt ? lead.scoredAt.toISOString() : null,
           // Lead assignment (Phase 43)
           assignedToUserId: lead.assignedToUserId ?? null,
           assignedToEmail,
-          assignedAt: lead.assignedAt ?? null,
+          assignedAt: lead.assignedAt ? lead.assignedAt.toISOString() : null,
         },
         channels,
         availableChannels,
@@ -923,7 +931,7 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
             emailBisonReplyId: msg.emailBisonReplyId || undefined,
             channel: (msg.channel || "sms") as Channel,
             direction: msg.direction as "inbound" | "outbound",
-            timestamp: msg.sentAt, // Use sentAt for actual message time
+            timestamp: msg.sentAt.toISOString(), // Use sentAt for actual message time
           };
         }),
       },
@@ -1028,7 +1036,7 @@ function transformLeadToConversation(
       alternateEmails: lead.alternateEmails ?? [],
       currentReplierEmail: lead.currentReplierEmail ?? null,
       currentReplierName: lead.currentReplierName ?? null,
-      currentReplierSince: lead.currentReplierSince ?? null,
+      currentReplierSince: lead.currentReplierSince ? lead.currentReplierSince.toISOString() : null,
       phone: lead.phone,
       company: lead.client.name,
       title: "",
@@ -1051,13 +1059,13 @@ function transformLeadToConversation(
       ghlLocationId: lead.client.ghlLocationId,
       // Lead scoring (Phase 33)
       overallScore: lead.overallScore,
-      scoredAt: lead.scoredAt,
+      scoredAt: lead.scoredAt ? lead.scoredAt.toISOString() : null,
       // Lead assignment (Phase 43)
       assignedToUserId: lead.assignedToUserId ?? null,
       assignedToEmail: lead.assignedToUserId
         ? opts?.setterEmailMap?.get(lead.assignedToUserId) ?? null
         : null,
-      assignedAt: lead.assignedAt ?? null,
+      assignedAt: lead.assignedAt ? lead.assignedAt.toISOString() : null,
     },
     channels,
     availableChannels,
@@ -1065,7 +1073,7 @@ function transformLeadToConversation(
     classification: mapSentimentToClassification(lead.sentimentTag),
     lastMessage: toPlainTextIfHtml(latestMessage?.body) || "No messages yet",
     lastSubject: latestMessage?.subject || null,
-    lastMessageTime: latestMessage?.sentAt || lead.createdAt,
+    lastMessageTime: (latestMessage?.sentAt || lead.createdAt).toISOString(),
     hasAiDraft:
       lead.status !== "blacklisted" &&
       lead.status !== "unqualified" &&
@@ -1407,14 +1415,27 @@ export async function getConversationsCursor(
       hasMore,
     };
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    console.error("Failed to fetch conversations with cursor:", errorMessage, error);
+    const safe = toSafeActionError(error, { defaultPublicMessage: "Failed to load conversations" });
+    if (safe.errorClass === "not_authenticated" || safe.errorClass === "unauthorized") {
+      return {
+        success: false,
+        conversations: [],
+        nextCursor: null,
+        hasMore: false,
+        error: safe.publicMessage,
+      };
+    }
+
+    console.error("Failed to fetch conversations with cursor:", {
+      debugId: safe.debugId,
+      errorClass: safe.errorClass,
+    }, error);
     return {
       success: false,
       conversations: [],
       nextCursor: null,
       hasMore: false,
-      error: `Failed to fetch conversations: ${errorMessage}`,
+      error: `${safe.publicMessage} (ref: ${safe.debugId})`,
     };
   }
 }
@@ -1656,14 +1677,27 @@ export async function getConversationsFromEnd(
       hasMore: leads.length === limit,
     };
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : "Unknown error";
-    console.error("Failed to fetch conversations from end:", errorMessage, error);
+    const safe = toSafeActionError(error, { defaultPublicMessage: "Failed to load conversations" });
+    if (safe.errorClass === "not_authenticated" || safe.errorClass === "unauthorized") {
+      return {
+        success: false,
+        conversations: [],
+        nextCursor: null,
+        hasMore: false,
+        error: safe.publicMessage,
+      };
+    }
+
+    console.error("Failed to fetch conversations from end:", {
+      debugId: safe.debugId,
+      errorClass: safe.errorClass,
+    }, error);
     return {
       success: false,
       conversations: [],
       nextCursor: null,
       hasMore: false,
-      error: `Failed to fetch conversations: ${errorMessage}`,
+      error: `${safe.publicMessage} (ref: ${safe.debugId})`,
     };
   }
 }

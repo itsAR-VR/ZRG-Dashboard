@@ -70,7 +70,6 @@ interface Client {
   hasCalendlyAccessToken?: boolean;
   hasCalendlyWebhookSubscription?: boolean;
   isWorkspaceAdmin: boolean;
-  createdAt: Date;
   _count: {
     leads: number;
     campaigns?: number;
@@ -113,6 +112,13 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
   const [isLoadingEmailBisonBaseHosts, setIsLoadingEmailBisonBaseHosts] = useState(true);
   const [newEmailBisonHost, setNewEmailBisonHost] = useState("");
   const [newEmailBisonHostLabel, setNewEmailBisonHostLabel] = useState("");
+  const [publicAppUrl, setPublicAppUrl] = useState<string>(() => (process.env.NEXT_PUBLIC_APP_URL || "").replace(/\/+$/, ""));
+
+  useEffect(() => {
+    if (!process.env.NEXT_PUBLIC_APP_URL && typeof window !== "undefined") {
+      setPublicAppUrl(window.location.origin.replace(/\/+$/, ""));
+    }
+  }, []);
 
   function inferEmailProvider(client: Client): EmailIntegrationProvider | null {
     if (client.emailProvider) return client.emailProvider;
@@ -1493,7 +1499,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                   <p className="text-[10px] text-muted-foreground">
                                     Webhook URL:{" "}
                                     <code className="bg-background px-1 rounded break-all">
-                                      {(process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app") + `/api/webhooks/smartlead?clientId=${client.id}`}
+                                      {publicAppUrl + `/api/webhooks/smartlead?clientId=${client.id}`}
                                     </code>
                                   </p>
                                 </div>
@@ -1530,7 +1536,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                                   <p className="text-[10px] text-muted-foreground">
                                     Webhook URL:{" "}
                                     <code className="bg-background px-1 rounded break-all">
-                                      {(process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app") + `/api/webhooks/instantly?clientId=${client.id}`}
+                                      {publicAppUrl + `/api/webhooks/instantly?clientId=${client.id}`}
                                     </code>
                                   </p>
                                 </div>
@@ -1849,7 +1855,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                   Webhook URL for GHL (SMS)
                 </p>
                 <code className="block text-xs bg-background p-2 rounded border break-all">
-                  {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/ghl/sms
+                  {publicAppUrl}/api/webhooks/ghl/sms
                 </code>
                 <p className="text-xs text-muted-foreground">
                   Configure this URL in GHL → Automation → Webhooks to receive inbound SMS notifications.
@@ -1866,19 +1872,19 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                   <div className="space-y-1">
                     <p className="text-xs text-muted-foreground">EmailBison</p>
                     <code className="block text-xs bg-background p-2 rounded border break-all">
-                      {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/email
+                      {publicAppUrl}/api/webhooks/email
                     </code>
                   </div>
                   <div className="space-y-1">
                     <p className="text-xs text-muted-foreground">SmartLead (requires clientId)</p>
                     <code className="block text-xs bg-background p-2 rounded border break-all">
-                      {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/smartlead?clientId=&lt;workspaceId&gt;
+                      {publicAppUrl}/api/webhooks/smartlead?clientId=&lt;workspaceId&gt;
                     </code>
                   </div>
                   <div className="space-y-1">
                     <p className="text-xs text-muted-foreground">Instantly (requires clientId)</p>
                     <code className="block text-xs bg-background p-2 rounded border break-all">
-                      {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/instantly?clientId=&lt;workspaceId&gt;
+                      {publicAppUrl}/api/webhooks/instantly?clientId=&lt;workspaceId&gt;
                     </code>
                   </div>
                 </div>
@@ -1894,7 +1900,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                   Webhook URL for LinkedIn (Unipile)
                 </p>
                 <code className="block text-xs bg-background p-2 rounded border break-all">
-                  {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/linkedin
+                  {publicAppUrl}/api/webhooks/linkedin
                 </code>
                 <p className="text-xs text-muted-foreground">
                   Configure this URL in Unipile when creating webhooks for message_received and new_relation events.
@@ -1911,7 +1917,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                   Webhook URL for Calendly (per workspace)
                 </p>
                 <code className="block text-xs bg-background p-2 rounded border break-all">
-                  {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/webhooks/calendly/&lt;workspaceId&gt;
+                  {publicAppUrl}/api/webhooks/calendly/&lt;workspaceId&gt;
                 </code>
                 <p className="text-xs text-muted-foreground">
                   Calendly webhook subscriptions are created automatically when Calendly is connected. The webhook endpoint includes the workspace ID so we can verify and route events.
@@ -1925,7 +1931,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                   Webhook URL for Workspace Provisioning (monday.com)
                 </p>
                 <code className="block text-xs bg-background p-2 rounded border break-all">
-                  {process.env.NEXT_PUBLIC_APP_URL || "https://zrg-dashboard.vercel.app"}/api/admin/workspaces
+                  {publicAppUrl}/api/admin/workspaces
                 </code>
                 <p className="text-xs text-muted-foreground">
                   Configure a monday.com HTTP request automation to <strong>POST</strong> to this endpoint to create workspaces automatically.

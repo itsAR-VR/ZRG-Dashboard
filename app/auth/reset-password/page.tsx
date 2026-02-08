@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2, Lock, CheckCircle, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
+import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 
 export default function ResetPasswordPage() {
   const [password, setPassword] = useState("");
@@ -30,7 +31,7 @@ export default function ResetPasswordPage() {
 
     // Listen for auth state changes (handles the hash fragment tokens)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
+      async (event: AuthChangeEvent, session: Session | null) => {
         if (event === "PASSWORD_RECOVERY") {
           setIsValidSession(true);
         } else if (session) {

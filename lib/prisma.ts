@@ -3,7 +3,10 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 
 // Create adapter with connection string
-const connectionString = process.env.DATABASE_URL!;
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  throw new Error("[prisma] DATABASE_URL is not set");
+}
 const adapter = new PrismaPg({ connectionString });
 
 // Prevent multiple instances of Prisma Client in development

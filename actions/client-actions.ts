@@ -121,7 +121,6 @@ export async function getClients() {
           unipileConnectionStatus: true,
           calendlyAccessToken: true,
           calendlyWebhookSubscriptionUri: true,
-          createdAt: true,
           settings: {
             select: {
               brandName: true,

@@ -27,6 +27,8 @@ interface InboxViewProps {
   activeChannels: Channel[];
   activeFilter: string;
   activeWorkspace: string | null;
+  workspacesReady?: boolean;
+  hasWorkspaces?: boolean;
   workspaceHasConnectedAccounts?: boolean;
   initialConversationId?: string | null;
   initialCrmOpen?: boolean;
@@ -43,6 +45,16 @@ type ConversationWithSentiment = Conversation & {
 };
 
 // Convert DB conversation to component format
+function toDateOrNull(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value === "string" || typeof value === "number") {
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+  return null;
+}
+
 function convertToComponentFormat(conv: ConversationData): ConversationWithSentiment {
   return {
     id: conv.id,
@@ -55,7 +67,7 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
       alternateEmails: conv.lead.alternateEmails ?? [],
       currentReplierEmail: conv.lead.currentReplierEmail ?? null,
       currentReplierName: conv.lead.currentReplierName ?? null,
-      currentReplierSince: conv.lead.currentReplierSince ?? null,
+      currentReplierSince: toDateOrNull(conv.lead.currentReplierSince),
       phone: conv.lead.phone || "",
       company: conv.lead.company,
       title: conv.lead.title || "",
@@ -91,11 +103,11 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
       sentimentTag: conv.sentimentTag,
       // Lead scoring (Phase 33)
       overallScore: conv.lead.overallScore,
-      scoredAt: conv.lead.scoredAt,
+      scoredAt: toDateOrNull(conv.lead.scoredAt),
       // Lead assignment (Phase 43)
       assignedToUserId: conv.lead.assignedToUserId,
       assignedToEmail: conv.lead.assignedToEmail,
-      assignedAt: conv.lead.assignedAt,
+      assignedAt: toDateOrNull(conv.lead.assignedAt),
     },
     channels: conv.channels,
     availableChannels: conv.availableChannels,
@@ -116,6 +128,8 @@ export function InboxView({
   activeChannels,
   activeFilter,
   activeWorkspace,
+  workspacesReady = true,
+  hasWorkspaces = true,
   workspaceHasConnectedAccounts = false,
   initialConversationId,
   initialCrmOpen,
@@ -262,7 +276,9 @@ export function InboxView({
         ? activeSmsClient
         : undefined,
     smsCampaignUnattributed: activeSmsClient === "unattributed" ? true : undefined,
-    filter: activeFilter as "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "ai_sent" | "ai_review" | "all" | undefined,
+    filter: activeFilter
+      ? (activeFilter as "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "ai_sent" | "ai_review" | "all")
+      : undefined,
     scoreFilter: activeScoreFilter !== "all" ? activeScoreFilter : undefined,
     limit: 50,
   }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter, activeScoreFilter]);
@@ -286,6 +302,7 @@ export function InboxView({
     refetch,
   } = useInfiniteQuery({
     queryKey: ["conversations", baseQueryOptions, queryOptions.search ?? ""],
+    enabled: workspacesReady && hasWorkspaces,
     queryFn: async ({ pageParam }) => {
       const result = await getConversationsCursor({
         ...queryOptions,
@@ -305,7 +322,11 @@ export function InboxView({
       return previousData;
     },
     staleTime: 30000,
-    refetchInterval: 30000, // Poll every 30 seconds as fallback
+    refetchInterval: (query) => {
+      if (!(workspacesReady && hasWorkspaces)) return false;
+      if (query.state.status === "error") return false;
+      return POLLING_INTERVAL;
+    },
   });
 
   // Manage delayed loading spinner (only show after 300ms)
@@ -394,16 +415,19 @@ export function InboxView({
 
     // Fetch full messages in background
 	    const result = await getConversation(conversationId);
-	    if (result.success && result.data) {
-	      const { messages } = result.data;
+		    if (result.success && result.data) {
+		      const messages = (result.data.messages ?? []).map((m) => ({
+		        ...m,
+		        timestamp: toDateOrNull(m.timestamp) ?? new Date(),
+		      }));
 
 	      if (baseConv) {
 	        // Keep lead automation flags in sync with server-side updates (e.g. enabling follow-ups on first setter reply).
 	        setActiveConversation({
 	          ...baseConv,
 	          viewerRole: result.data.viewerRole ?? baseConv.viewerRole ?? null,
-	          lead: {
-	            ...baseConv.lead,
+		          lead: {
+		            ...baseConv.lead,
 	            firstName: result.data.lead.firstName ?? baseConv.lead.firstName ?? null,
 	            lastName: result.data.lead.lastName ?? baseConv.lead.lastName ?? null,
 	            autoReplyEnabled: result.data.lead.autoReplyEnabled,
@@ -413,13 +437,13 @@ export function InboxView({
 	            status: result.data.lead.status as Lead["status"],
 	            sentimentTag: result.data.lead.sentimentTag,
 	            alternateEmails: result.data.lead.alternateEmails ?? baseConv.lead.alternateEmails ?? [],
-	            currentReplierEmail: result.data.lead.currentReplierEmail ?? null,
-	            currentReplierName: result.data.lead.currentReplierName ?? null,
-	            currentReplierSince: result.data.lead.currentReplierSince ?? null,
-	            followUpBlockedReason: result.data.lead.followUpBlockedReason ?? baseConv.lead.followUpBlockedReason ?? null,
-	          },
-	          messages,
-	        });
+		            currentReplierEmail: result.data.lead.currentReplierEmail ?? null,
+		            currentReplierName: result.data.lead.currentReplierName ?? null,
+		            currentReplierSince: toDateOrNull(result.data.lead.currentReplierSince),
+		            followUpBlockedReason: result.data.lead.followUpBlockedReason ?? baseConv.lead.followUpBlockedReason ?? null,
+		          },
+		          messages,
+		        });
 	      } else {
 	        const lastMessage = messages[messages.length - 1];
 	        const sentimentTag = result.data.lead.sentimentTag ?? null;
@@ -427,17 +451,17 @@ export function InboxView({
         setActiveConversation({
           id: result.data.id,
           viewerRole: result.data.viewerRole ?? null,
-          lead: {
+	          lead: {
             id: result.data.lead.id,
             name: result.data.lead.name,
             firstName: result.data.lead.firstName ?? null,
             lastName: result.data.lead.lastName ?? null,
             email: result.data.lead.email || "",
             alternateEmails: result.data.lead.alternateEmails ?? [],
-            currentReplierEmail: result.data.lead.currentReplierEmail ?? null,
-            currentReplierName: result.data.lead.currentReplierName ?? null,
-            currentReplierSince: result.data.lead.currentReplierSince ?? null,
-            phone: result.data.lead.phone || "",
+	            currentReplierEmail: result.data.lead.currentReplierEmail ?? null,
+	            currentReplierName: result.data.lead.currentReplierName ?? null,
+	            currentReplierSince: toDateOrNull(result.data.lead.currentReplierSince),
+	            phone: result.data.lead.phone || "",
             company: result.data.lead.company,
             title: result.data.lead.title || "",
             website: result.data.lead.companyWebsite || "",

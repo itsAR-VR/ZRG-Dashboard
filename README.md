@@ -4,7 +4,7 @@ A scalable, full-stack application designed to manage high-volume sales outreach
 
 **Current Status:** Phases I–IV complete for core operations (SMS + Email inbox, follow-up automation, LinkedIn outbound via Unipile, calendar availability + booking). LinkedIn inbound ingestion is still pending.
 
-**Live Demo:** [https://zrg-dashboard.vercel.app/](https://zrg-dashboard.vercel.app/)
+**Live Demo:** [https://app.codex.ai/](https://app.codex.ai/)
 
 ---
 
@@ -258,7 +258,8 @@ model Message {
 
 | Variable | Description |
 |----------|-------------|
-| `NEXT_PUBLIC_APP_URL` | Production URL (e.g., `https://zrg-dashboard.vercel.app/`) |
+| `NEXT_PUBLIC_APP_URL` | Canonical public app URL (used for internal links + webhook callbacks) (e.g., `https://app.codex.ai`) |
+| `SERVER_ACTIONS_ALLOWED_ORIGINS` | (Optional) Comma-separated hostnames (and `*.example.com` wildcards) allowed to call Next Server Actions when you have multiple domains (e.g., `app.codex.ai,cold2close.ai,zrg-dashboard.vercel.app`) |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anonymous key |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (for webhooks) |
@@ -292,6 +293,7 @@ model Message {
 | `DIRECT_URL` | Direct DB connection (port 5432) used for Prisma CLI (`db push`, migrations) |
 | `SLACK_WEBHOOK_URL` | (Optional) Slack notifications for meetings booked |
 | `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |
+| `CALENDLY_WEBHOOK_SIGNING_KEY` | (Optional) Global Calendly webhook signing key fallback. In production, a signing key is required for verification; per-workspace keys are stored in the DB when available. |
 | `INBOXXIA_EMAIL_SENT_ASYNC` | (Optional) Enqueue Inboxxia `EMAIL_SENT` webhook events to the `WebhookEvent` queue for burst resilience (Phase 53) (default off) |
 | `WEBHOOK_EVENT_CRON_LIMIT` | (Optional) Max `WebhookEvent` rows processed per cron tick (default `25`, max `200`) |
 | `WEBHOOK_EVENT_CRON_TIME_BUDGET_MS` | (Optional) Time budget for `WebhookEvent` processing per cron tick (default `45000`) |
@@ -720,7 +722,7 @@ npm run dev
 ### EmailBison (Inboxxia) Webhook Setup
 
 1. Go to Inboxxia Settings → Webhooks
-2. Add webhook URL: `https://zrg-dashboard.vercel.app/api/webhooks/email?clientId={YOUR_CLIENT_ID}`
+2. Add webhook URL: `${NEXT_PUBLIC_APP_URL}/api/webhooks/email?clientId={YOUR_CLIENT_ID}` (e.g., `https://app.codex.ai/api/webhooks/email?clientId={YOUR_CLIENT_ID}`)
 3. Enable events:
    - ✅ Lead Replied (LEAD_REPLIED)
    - ✅ Lead Interested (LEAD_INTERESTED)
@@ -732,7 +734,7 @@ npm run dev
 
 ### SmartLead Webhook Setup
 
-1. Configure a webhook URL: `https://zrg-dashboard.vercel.app/api/webhooks/smartlead?clientId={YOUR_CLIENT_ID}`
+1. Configure a webhook URL: `${NEXT_PUBLIC_APP_URL}/api/webhooks/smartlead?clientId={YOUR_CLIENT_ID}` (e.g., `https://app.codex.ai/api/webhooks/smartlead?clientId={YOUR_CLIENT_ID}`)
 2. Set the webhook `secret_key` to match the workspace’s `Client.smartLeadWebhookSecret`
 3. Enable events (recommended minimum):
    - ✅ Email Reply (EMAIL_REPLY)
@@ -741,7 +743,7 @@ npm run dev
 
 ### Instantly Webhook Setup
 
-1. Configure a webhook URL: `https://zrg-dashboard.vercel.app/api/webhooks/instantly?clientId={YOUR_CLIENT_ID}`
+1. Configure a webhook URL: `${NEXT_PUBLIC_APP_URL}/api/webhooks/instantly?clientId={YOUR_CLIENT_ID}` (e.g., `https://app.codex.ai/api/webhooks/instantly?clientId={YOUR_CLIENT_ID}`)
 2. Add a custom header:
    - `Authorization: Bearer {Client.instantlyWebhookSecret}` (or `x-instantly-secret`)
 3. Enable events (recommended minimum):
@@ -752,7 +754,7 @@ npm run dev
 ### GoHighLevel Webhook Setup
 
 1. Go to GHL Settings → Integrations → Webhooks
-2. Add webhook URL: `https://zrg-dashboard.vercel.app/api/webhooks/ghl/sms?locationId={GHL_LOCATION_ID}`
+2. Add webhook URL: `${NEXT_PUBLIC_APP_URL}/api/webhooks/ghl/sms?locationId={GHL_LOCATION_ID}` (e.g., `https://app.codex.ai/api/webhooks/ghl/sms?locationId={GHL_LOCATION_ID}`)
 3. Select "Inbound Message" trigger
 
 ---

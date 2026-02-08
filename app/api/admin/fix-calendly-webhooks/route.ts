@@ -50,6 +50,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const vercelEnv = process.env.VERCEL_ENV;
+  const isProduction = vercelEnv ? vercelEnv === "production" : process.env.NODE_ENV === "production";
+
   // Find all clients with Calendly access tokens but missing signing keys
   const clientsToFix = await prisma.client.findMany({
     where: {
@@ -147,6 +150,31 @@ export async function POST(request: NextRequest) {
       subscriptionUri = created.data.uri;
       if (typeof created.data.signing_key === "string" && created.data.signing_key.trim()) {
         signingKey = created.data.signing_key.trim();
+      }
+
+      // Enforce signing key presence in production. If Calendly doesn't return one,
+      // delete the subscription to avoid leaving an unverifiable webhook in place.
+      if (!signingKey && isProduction) {
+        if (subscriptionUri) {
+          await deleteCalendlyWebhookSubscription(client.calendlyAccessToken, subscriptionUri).catch(() => undefined);
+          subscriptionUri = null;
+        }
+
+        await prisma.client.update({
+          where: { id: client.id },
+          data: {
+            calendlyUserUri: me.data.userUri,
+            calendlyOrganizationUri: me.data.organizationUri,
+            calendlyWebhookSubscriptionUri: null,
+            calendlyWebhookSigningKey: null,
+          },
+        });
+
+        result.error = "Webhook created but Calendly did not return signing key (deleted subscription; cannot enforce verification in production)";
+        result.action = "recreated";
+        result.hasSigningKey = false;
+        results.push(result);
+        continue;
       }
 
       // Update the client record
