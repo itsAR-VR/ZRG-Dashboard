@@ -10,7 +10,7 @@ import {
   type SentimentTag,
 } from "@/lib/sentiment";
 import { findOrCreateLead } from "@/lib/lead-matching";
-import { cleanEmailBody, stripNullBytes } from "@/lib/email-cleaning";
+import { cleanEmailBody, stripEmailQuotedSectionsForAutomation, stripNullBytes } from "@/lib/email-cleaning";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { pauseFollowUpsOnReply } from "@/lib/followup-engine";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
@@ -143,6 +143,34 @@ function cleanAddressList(entries: { address: string; name: string | null }[] | 
   return (entries ?? [])
     .map((entry) => cleanNullableString(entry.address))
     .filter((entry): entry is string => Boolean(entry));
+}
+
+function buildInboundCombinedForSafety(opts: {
+  subject: string | null | undefined;
+  cleaned: { cleaned: string; rawText?: string; rawHtml?: string };
+}): string {
+  const subject = opts.subject ?? "";
+  const htmlToPlainForSafety = (html: string): string =>
+    html
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n")
+      .replace(/<\/div>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replaceAll("&nbsp;", " ")
+      .replaceAll("&amp;", "&")
+      .replaceAll("&lt;", "<")
+      .replaceAll("&gt;", ">")
+      .replaceAll("&quot;", '"')
+      .replaceAll("&#39;", "'")
+      .replaceAll("&#x27;", "'");
+
+  const body =
+    (opts.cleaned.cleaned || "").trim() ||
+    stripEmailQuotedSectionsForAutomation((opts.cleaned.rawText || "").trim()).trim() ||
+    stripEmailQuotedSectionsForAutomation(htmlToPlainForSafety((opts.cleaned.rawHtml || "").trim())).trim();
+  return `Subject: ${subject} | ${body}`;
 }
 
 async function findClient(request: NextRequest, payload?: InboxxiaWebhook): Promise<Client | null> {
@@ -617,8 +645,8 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
   // This prevents webhook timeouts by avoiding slow AI calls on the critical path.
   // Note: Any inbound reply will reclassify sentiment, clearing "Follow Up" or "Snoozed" tags.
   let sentimentTag: SentimentTag;
-  const cleanedBodyForStorage: string = cleaned.cleaned || contentForClassification;
-  const inboundCombinedForSafety = `Subject: ${replySubject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
+  const cleanedBodyForStorage: string = cleaned.cleaned;
+  const inboundCombinedForSafety = buildInboundCombinedForSafety({ subject: replySubject, cleaned });
   const mustBlacklist =
     isOptOutText(inboundCombinedForSafety) ||
     detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
@@ -1165,9 +1193,9 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
 
   const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
   const contentForClassification = cleaned.cleaned || cleaned.rawText || cleaned.rawHtml || "";
-  const cleanedBodyForStorage = cleaned.cleaned || contentForClassification;
+  const cleanedBodyForStorage = cleaned.cleaned;
 
-  const inboundCombinedForSafety = `Subject: ${replySubject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
+  const inboundCombinedForSafety = buildInboundCombinedForSafety({ subject: replySubject, cleaned });
   const mustBlacklist =
     isOptOutText(inboundCombinedForSafety) ||
     detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
@@ -1397,8 +1425,8 @@ async function handleLeadInterested(request: NextRequest, payload: InboxxiaWebho
 
   const cleaned = cleanEmailBody(reply.html_body, reply.text_body);
   const contentForClassification = cleaned.cleaned || cleaned.rawText || cleaned.rawHtml || "";
-  const cleanedBodyForStorage = cleaned.cleaned || contentForClassification;
-  const inboundCombinedForSafety = `Subject: ${reply.email_subject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
+  const cleanedBodyForStorage = cleaned.cleaned;
+  const inboundCombinedForSafety = buildInboundCombinedForSafety({ subject: reply.email_subject ?? "", cleaned });
   const mustBlacklist =
     isOptOutText(inboundCombinedForSafety) ||
     detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);
@@ -1715,9 +1743,9 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
   // FAST PATH: Use quick heuristics for immediate response, defer AI classification to background job.
   // This prevents webhook timeouts by avoiding slow AI calls on the critical path.
   let sentimentTag: SentimentTag;
-  const cleanedBodyForStorage: string = cleaned.cleaned || contentForClassification;
+  const cleanedBodyForStorage: string = cleaned.cleaned;
 
-  const inboundCombinedForSafety = `Subject: ${replySubject ?? ""} | ${cleaned.cleaned || contentForClassification}`;
+  const inboundCombinedForSafety = buildInboundCombinedForSafety({ subject: replySubject, cleaned });
   const mustBlacklist =
     isOptOutText(inboundCombinedForSafety) ||
     detectBounce([{ body: inboundCombinedForSafety, direction: "inbound", channel: "email" }]);

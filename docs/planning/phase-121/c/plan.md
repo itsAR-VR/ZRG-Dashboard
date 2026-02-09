@@ -67,7 +67,8 @@ Prevent auto-booking from misinterpreting inbound emails as acceptance when they
    - "next week works" → `looksLikeTimeProposal` is true (`next week` still matches)
 
 ## Validation (RED TEAM)
-- `npx jest` — new gating tests pass.
+- `node --import tsx --test lib/__tests__/followup-generic-acceptance.test.ts` — pass
+- `npm test` — pass
 - Verify: generic "Yes" after 8-day-old offered slots does NOT auto-book.
 - Verify: "next steps" does NOT trigger Scenario 3 time proposal parsing.
 - Verify: short "Sounds good" after fresh offered slots still auto-books (happy path preserved).
@@ -79,3 +80,15 @@ Prevent auto-booking from misinterpreting inbound emails as acceptance when they
 
 ## Handoff
 Proceed to Phase 121d to apply defense-in-depth in the inbound post-process pipeline by re-stripping quoted sections right before auto-booking, and run validation.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Tightened generic acceptance auto-booking to require a short acknowledgement and a fresh offered slot (<= 7 days).
+  - Added `looksLikeTimeProposalText(...)` and removed bare `next` from the Scenario 3 heuristic (prevents “next steps” false triggers).
+  - Added unit tests for generic acceptance gating and the time-proposal heuristic, and wired them into `scripts/test-orchestrator.ts`.
+- Commands run:
+  - `npm test` — pass (includes `lib/__tests__/followup-generic-acceptance.test.ts`)
+- Blockers:
+  - None.
+- Next concrete steps:
+  - Phase 121d: ensure automation-time re-cleaning is applied so legacy stored bodies cannot trigger booking.

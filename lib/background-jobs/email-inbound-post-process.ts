@@ -34,7 +34,7 @@ import {
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
-import { cleanEmailBody } from "@/lib/email-cleaning";
+import { cleanEmailBody, stripEmailQuotedSectionsForAutomation } from "@/lib/email-cleaning";
 import { buildSentimentTranscriptFromMessages, detectBounce, isOptOutText } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { executeAutoSend } from "@/lib/auto-send";
@@ -707,6 +707,7 @@ export async function runEmailInboundPostProcessJob(opts: {
   }
 
   const inboundText = (message.body || "").trim();
+  const inboundReplyOnly = stripEmailQuotedSectionsForAutomation(inboundText).trim();
   const schedulerLink = extractSchedulerLinkFromText(message.rawText || message.rawHtml || inboundText);
   if (schedulerLink) {
     prisma.lead
@@ -733,7 +734,7 @@ export async function runEmailInboundPostProcessJob(opts: {
       const subject = message.subject ?? null;
 
       // Double-check safety before AI call
-      const combined = `Subject: ${subject ?? ""} | ${inboundText}`;
+      const combined = `Subject: ${subject ?? ""} | ${inboundReplyOnly || inboundText}`;
       const mustBlacklist = isOptOutText(combined) || detectBounce([{ body: combined, direction: "inbound", channel: "email" }]);
 
       if (mustBlacklist) {
@@ -781,7 +782,7 @@ export async function runEmailInboundPostProcessJob(opts: {
           },
           subject,
           body_text: message.rawText ?? null,
-          provider_cleaned_text: inboundText,
+          provider_cleaned_text: inboundReplyOnly || inboundText,
           entire_conversation_thread_html: message.rawHtml ?? null,
           automated_reply: null,
           conversation_transcript: transcript,
@@ -847,7 +848,7 @@ export async function runEmailInboundPostProcessJob(opts: {
     previousSentimentTag: previousSentiment,
     newSentimentTag: lead.sentimentTag,
     messageId: message.id,
-    latestInboundText: inboundText,
+    latestInboundText: inboundReplyOnly || inboundText,
   }).catch(() => undefined);
 
   upsertLeadCrmRowOnInterest({
@@ -871,13 +872,13 @@ export async function runEmailInboundPostProcessJob(opts: {
 
   // Snooze detection: if the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
   const snoozeKeywordHit =
-    /\b(after|until|from)\b/i.test(inboundText) &&
-    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
+    /\b(after|until|from)\b/i.test(inboundReplyOnly) &&
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundReplyOnly);
 
   if (snoozeKeywordHit) {
     const tzResult = await ensureLeadTimezone(lead.id);
     const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
-      messageText: inboundText,
+      messageText: inboundReplyOnly,
       timeZone: tzResult.timezone || "UTC",
     });
 
@@ -891,8 +892,8 @@ export async function runEmailInboundPostProcessJob(opts: {
   }
 
   // Auto-booking: only books when the lead clearly accepts one of the offered slots.
-  const autoBook = inboundText
-    ? await processMessageForAutoBooking(lead.id, inboundText, {
+  const autoBook = inboundReplyOnly
+    ? await processMessageForAutoBooking(lead.id, inboundReplyOnly, {
         channel: "email",
         messageId: message.id,
       })

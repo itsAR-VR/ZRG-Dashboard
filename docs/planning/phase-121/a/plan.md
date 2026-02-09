@@ -31,7 +31,8 @@ Harden email cleaning so the "reply-only" body reliably strips quoted threads (e
    This thin wrapper allows pipeline code to re-clean without depending on `cleanEmailBody()` (which expects HTML/text inputs, not pre-cleaned text).
 
 ## Validation (RED TEAM)
-- `npx jest lib/__tests__/email-cleaning.test.ts` — all tests pass including new ones.
+- `node --import tsx --test lib/__tests__/email-cleaning.test.ts` — pass
+- `npm test` — pass
 - New tests must FAIL if the multi-line `On...wrote:` fix is reverted.
 - Verify: `stripEmailQuotedSectionsForAutomation("Hello\n\nOn Mon wrote:\nquoted text")` returns `"Hello"`.
 
@@ -41,3 +42,15 @@ Harden email cleaning so the "reply-only" body reliably strips quoted threads (e
 
 ## Handoff
 Proceed to Phase 121b to ensure ingestion/storage never falls back to raw HTML/text in `message.body` when cleaned reply-only content is empty.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Hardened quoted-thread boundary detection to handle Gmail multi-line `On ... wrote:` and forwarded-message markers.
+  - Added the exported helper `stripEmailQuotedSectionsForAutomation(...)` for defense-in-depth in automation paths.
+  - Added regression tests for multi-line quote stripping and forwarded message stripping.
+- Commands run:
+  - `npm test` — pass (includes `lib/__tests__/email-cleaning.test.ts`)
+- Blockers:
+  - None.
+- Next concrete steps:
+  - Phase 121b (webhook storage semantics) and Phase 121d (automation-time re-cleaning) ensure quoted content cannot re-enter automation via legacy DB content.

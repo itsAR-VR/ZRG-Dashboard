@@ -34,6 +34,8 @@ const TEST_FILES = [
   "lib/__tests__/followup-engine-disposition.test.ts",
   "lib/__tests__/followup-booking-gate-retry.test.ts",
   "lib/__tests__/followup-engine-dayonly-slot.test.ts",
+  "lib/__tests__/followup-booking-signal.test.ts",
+  "lib/__tests__/followup-generic-acceptance.test.ts",
   "lib/__tests__/ai-ops-feed.test.ts",
   "lib/__tests__/analytics-windowing-stable.test.ts",
   "lib/__tests__/ai-draft-booking-conversion-windowing.test.ts",

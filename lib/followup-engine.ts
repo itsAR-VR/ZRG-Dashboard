@@ -39,7 +39,6 @@ import { sendEmailReplySystem } from "@/lib/email-send";
 import {
   runMeetingOverseerExtraction,
   selectOfferedSlotByPreference,
-  shouldRunMeetingOverseer,
   type MeetingOverseerExtractDecision,
 } from "@/lib/meeting-overseer";
 import { computeAIDraftResponseDisposition } from "@/lib/ai-drafts/response-disposition";
@@ -3114,6 +3113,87 @@ export async function detectMeetingAcceptedIntent(
   }
 }
 
+type BookingRoute = "accept_offered" | "day_only" | "proposed_time" | "none";
+
+type BookingSignal = {
+  wantsToBook: boolean;
+  route: BookingRoute;
+  preferredDayOfWeek: string | null;
+  preferredTimeOfDay: string | null;
+};
+
+export function deriveBookingSignal(opts: {
+  overseerDecision: MeetingOverseerExtractDecision | null;
+  hasOfferedSlots: boolean;
+}): BookingSignal {
+  const preferredDayOfWeek = opts.overseerDecision?.preferred_day_of_week ?? null;
+  const preferredTimeOfDay = opts.overseerDecision?.preferred_time_of_day ?? null;
+
+  if (!opts.overseerDecision) {
+    return { wantsToBook: false, route: "none", preferredDayOfWeek, preferredTimeOfDay };
+  }
+
+  if (!opts.overseerDecision.is_scheduling_related) {
+    return { wantsToBook: false, route: "none", preferredDayOfWeek, preferredTimeOfDay };
+  }
+
+  if (
+    opts.overseerDecision.intent === "decline" ||
+    opts.overseerDecision.intent === "other" ||
+    opts.overseerDecision.intent === "request_times" ||
+    opts.overseerDecision.intent === "reschedule"
+  ) {
+    return { wantsToBook: false, route: "none", preferredDayOfWeek, preferredTimeOfDay };
+  }
+
+  if (opts.overseerDecision.intent === "accept_offer") {
+    if (!opts.hasOfferedSlots) {
+      // Shouldn't happen in normal flows; fail closed.
+      return { wantsToBook: false, route: "none", preferredDayOfWeek, preferredTimeOfDay };
+    }
+    return { wantsToBook: true, route: "accept_offered", preferredDayOfWeek, preferredTimeOfDay };
+  }
+
+  if (opts.overseerDecision.intent === "propose_time") {
+    if (
+      !opts.hasOfferedSlots &&
+      opts.overseerDecision.acceptance_specificity === "day_only" &&
+      opts.overseerDecision.preferred_day_of_week
+    ) {
+      return { wantsToBook: true, route: "day_only", preferredDayOfWeek, preferredTimeOfDay };
+    }
+    return { wantsToBook: true, route: "proposed_time", preferredDayOfWeek, preferredTimeOfDay };
+  }
+
+  // Includes reschedule and any future intents; fail closed.
+  return { wantsToBook: false, route: "none", preferredDayOfWeek, preferredTimeOfDay };
+}
+
+export function isLowRiskGenericAcceptance(opts: {
+  offeredSlot: OfferedSlot | null | undefined;
+  nowMs?: number;
+}): boolean {
+  const offeredAtRaw = (opts.offeredSlot?.offeredAt || "").trim();
+  if (!offeredAtRaw) return false;
+  const offeredAtMs = Date.parse(offeredAtRaw);
+  if (!Number.isFinite(offeredAtMs)) return false;
+  const nowMs = typeof opts.nowMs === "number" ? opts.nowMs : Date.now();
+  const freshnessWindowMs = 7 * 24 * 60 * 60 * 1000;
+  return nowMs - offeredAtMs <= freshnessWindowMs;
+}
+
+export function looksLikeTimeProposalText(messageText: string): boolean {
+  const messageTrimmed = (messageText || "").trim();
+  if (!messageTrimmed) return false;
+  return (
+    /\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(day)?\b/i.test(messageTrimmed) ||
+    /\b(tomorrow|today|next week)\b/i.test(messageTrimmed) ||
+    /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i.test(messageTrimmed) ||
+    /\b\d{1,2}\/\d{1,2}\b/.test(messageTrimmed) ||
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(messageTrimmed)
+  );
+}
+
 function buildAutoBookingConfirmationMessage(opts: {
   channel: "sms" | "email" | "linkedin";
   slotLabel: string;
@@ -3246,21 +3326,30 @@ export async function processMessageForAutoBooking(
       return preferredSendable ? preferred : "call";
     };
 
-    const shouldOversee = shouldRunMeetingOverseer({
-      messageText: messageTrimmed,
-      sentimentTag: lead.sentimentTag,
-      offeredSlotsCount: offeredSlots.length,
-    });
+    let overseerDecision: MeetingOverseerExtractDecision | null = null;
+    try {
+      overseerDecision = await runMeetingOverseerExtraction({
+        clientId: lead.clientId,
+        leadId: lead.id,
+        messageId: meta?.messageId,
+        messageText: messageTrimmed,
+        offeredSlots,
+      });
+    } catch (error) {
+      console.warn("[FollowupEngine] Meeting overseer extraction failed; failing closed (no auto-book)", {
+        clientId: lead.clientId,
+        leadId: lead.id,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      overseerDecision = null;
+    }
 
-    const overseerDecision = shouldOversee
-      ? await runMeetingOverseerExtraction({
-          clientId: lead.clientId,
-          leadId: lead.id,
-          messageId: meta?.messageId,
-          messageText: messageTrimmed,
-          offeredSlots,
-        })
-      : null;
+    // Fail closed if we can't get an overseer extraction (no heuristic fallbacks).
+    if (!overseerDecision) {
+      return { booked: false };
+    }
+
+    const signal = deriveBookingSignal({ overseerDecision, hasOfferedSlots: offeredSlots.length > 0 });
 
     const tzResult = await ensureLeadTimezone(leadId);
     const timeZone = tzResult.timezone || lead.timezone || lead.client.settings?.timezone || "UTC";
@@ -3292,16 +3381,11 @@ export async function processMessageForAutoBooking(
       }
     };
 
-    // Scenario 1/2: lead accepts one of the offered slots.
-    if (offeredSlots.length > 0) {
-      const shouldAccept = overseerDecision
-        ? overseerDecision.is_scheduling_related && overseerDecision.intent === "accept_offer"
-        : await detectMeetingAcceptedIntent(messageBody, {
-            clientId: lead.clientId,
-            leadId: lead.id,
-          });
+    const route: BookingRoute = signal.route;
 
-      if (!shouldAccept) {
+    // Scenario 1/2: lead accepts one of the offered slots.
+    if (route === "accept_offered") {
+      if (offeredSlots.length === 0) {
         return { booked: false };
       }
 
@@ -3340,21 +3424,17 @@ export async function processMessageForAutoBooking(
       }
 
       if (!acceptedSlot && overseerDecision?.acceptance_specificity === "generic") {
-        acceptedSlot = offeredSlots[0] ?? null;
-      }
-
-      if (!acceptedSlot && !overseerDecision) {
-        acceptedSlot = await parseAcceptedTimeFromMessage(messageBody, offeredSlots, {
-          clientId: lead.clientId,
-          leadId: lead.id,
-        });
+        const slot = offeredSlots.length === 1 ? offeredSlots[0] : null;
+        if (slot && isLowRiskGenericAcceptance({ offeredSlot: slot })) {
+          acceptedSlot = slot;
+        }
       }
 
       const weekdayTokenForAcceptance =
         overseerDecision?.preferred_day_of_week || detectWeekdayTokenFromText(messageTrimmed);
 
       // Day-only: if the lead indicates a weekday preference, try to map it to an offered slot first.
-      // This covers cases where overseer wasn't run but offered slots include that weekday.
+      // This covers cases where overseer didn't populate `preferred_day_of_week` but the message contains it.
       if (!acceptedSlot && weekdayTokenForAcceptance) {
         const offeredMatch = selectOfferedSlotByPreference({
           offeredSlots,
@@ -3635,17 +3715,11 @@ export async function processMessageForAutoBooking(
       return { booked: false, error: bookingResult.error };
     }
 
-    // Scenario 3: no offered slots; lead proposes their own time.
-    const looksLikeTimeProposal =
-      /\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(day)?\b/i.test(messageTrimmed) ||
-      /\b(tomorrow|today|next week|next)\b/i.test(messageTrimmed) ||
-      /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i.test(messageTrimmed) ||
-      /\b\d{1,2}\/\d{1,2}\b/.test(messageTrimmed) ||
-      /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(messageTrimmed);
-
-    const shouldParseProposal = overseerDecision
-      ? overseerDecision.is_scheduling_related && overseerDecision.intent === "propose_time"
-      : looksLikeTimeProposal;
+    // Scenario 3: lead proposes their own time (or a day-only preference).
+    const shouldParseProposal =
+      route === "proposed_time" || route === "day_only"
+        ? true
+        : overseerDecision.is_scheduling_related && overseerDecision.intent === "propose_time";
 
     if (!shouldParseProposal) {
       return { booked: false };
@@ -3661,14 +3735,18 @@ export async function processMessageForAutoBooking(
     }
 
     const nowUtcIsoForParse = new Date().toISOString();
-    const proposed = await parseProposedTimesFromMessage(messageTrimmed, {
-      clientId: lead.clientId,
-      leadId: lead.id,
-      nowUtcIso: nowUtcIsoForParse,
-      leadTimezone: tzResult.timezone || null,
-    });
+    const proposed =
+      route === "day_only"
+        ? { proposedStartTimesUtc: [], confidence: 0, needsTimezoneClarification: false }
+        : await parseProposedTimesFromMessage(messageTrimmed, {
+            clientId: lead.clientId,
+            leadId: lead.id,
+            nowUtcIso: nowUtcIsoForParse,
+            leadTimezone: tzResult.timezone || null,
+          });
 
     if (!proposed) {
+      await createClarificationTask("Got it — what day and time works best for you?");
       return { booked: false };
     }
 

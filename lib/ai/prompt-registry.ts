@@ -505,20 +505,26 @@ Rules:
 - intent:
   - accept_offer: they accept one of the offered slots or confirm a proposed time.
   - request_times: they ask for availability or meeting options.
-  - propose_time: they propose a time/date not tied to offered slots.
+  - propose_time: they propose a time/date not explicitly tied to offered slots.
   - reschedule: they want to move an already scheduled time.
-  - decline: they explicitly say no meeting.
+  - decline: they explicitly say no meeting (e.g., "not interested", "no thanks", "stop", "cancel").
 - acceptance_specificity:
   - specific: clear selection of a specific offered slot or exact time.
   - day_only: they mention a day (e.g., "Thursday works") without a time.
-  - generic: "yes", "sounds good", "works" with no time.
+  - generic: standalone scheduling acknowledgement with no time (e.g., "yes", "sounds good", "that works") in response to offered slots.
   - none: no acceptance detected.
+- Do NOT set acceptance_specificity="generic" for:
+  - Non-scheduling replies ("Thanks", "I'll review this", "Send details")
+  - Requests for more information ("Can you send details?")
+  - Long messages that are not clearly accepting a meeting time
 - If they mention a weekday, set preferred_day_of_week to one of: mon, tue, wed, thu, fri, sat, sun.
 - If they mention "morning", "afternoon", or "evening", set preferred_time_of_day accordingly.
 - If they say a day-only acceptance ("Thursday works"), use acceptance_specificity="day_only" and set preferred_day_of_week.
+- If offered slots are "None." and they give a weekday-only preference ("Thursday works"), set intent="propose_time" and acceptance_specificity="day_only".
 - If they mention "later this week", "next week", or "sometime" without a specific day/time, set needs_clarification=true.
 - If they mention relative timing ("later this week", "next week", "tomorrow"), set relative_preference + relative_preference_detail to the exact phrase.
 - accepted_slot_index is 1-based and ONLY when confidently matching offered slots; otherwise null.
+- If the message is ambiguous about scheduling intent, prefer is_scheduling_related=false and intent="other" (fail closed).
 - Do NOT invent dates/times. Use only the message and offered slots list.
 - Provide short evidence quotes.
 

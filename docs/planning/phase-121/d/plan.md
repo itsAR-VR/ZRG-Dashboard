@@ -52,3 +52,18 @@ Apply a second layer of protection so legacy messages (already stored with quote
 
 ## Handoff
 After validation, proceed to implementation and ship. If any regression is detected in email display, keep `Message.body` as reply-only (possibly empty) and do not expose rawHtml/rawText in UI.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Re-stripped quoted sections immediately before snooze detection + auto-booking in both:
+    - `lib/inbound-post-process/pipeline.ts` (SmartLead/Instantly delegate here)
+    - `lib/background-jobs/email-inbound-post-process.ts` (Inboxxia email inbound)
+  - Skipped auto-booking when the reply-only body becomes empty after stripping.
+- Commands run:
+  - `npm test` — pass
+  - `npm run lint` — pass (warnings only)
+  - `npm run build` — pass
+- Blockers:
+  - None.
+- Next concrete steps:
+  - Deploy and monitor auto-book Slack notifications for 24h; spot-check inbound email threads with quoted availability to confirm no spurious bookings.

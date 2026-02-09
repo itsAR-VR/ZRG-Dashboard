@@ -30,6 +30,7 @@ import { ensureCallRequestedTask } from "@/lib/call-requested";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
+import { stripEmailQuotedSectionsForAutomation } from "@/lib/email-cleaning";
 import type { InboundPostProcessParams, InboundPostProcessResult, InboundPostProcessPipelineStage } from "@/lib/inbound-post-process/types";
 
 function mapInboxClassificationToSentimentTag(classification: string): SentimentTag {
@@ -265,15 +266,17 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
 
   pushStage("snooze_detection");
   const inboundText = messageBody.trim();
+  const inboundReplyOnly = stripEmailQuotedSectionsForAutomation(inboundText).trim();
   const snoozeKeywordHit =
-    /\b(after|until|from)\b/i.test(inboundText) && /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
+    /\b(after|until|from)\b/i.test(inboundReplyOnly) &&
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundReplyOnly);
 
   if (snoozeKeywordHit) {
-    const tzResult = await ensureLeadTimezone(lead.id);
-    const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
-      messageText: inboundText,
-      timeZone: tzResult.timezone || "UTC",
-    });
+      const tzResult = await ensureLeadTimezone(lead.id);
+      const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
+        messageText: inboundReplyOnly,
+        timeZone: tzResult.timezone || "UTC",
+      });
 
     if (snoozedUntilUtc && confidence >= 0.95) {
       await prisma.lead.update({ where: { id: lead.id }, data: { snoozedUntil: snoozedUntilUtc } });
@@ -283,10 +286,12 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   }
 
   pushStage("auto_booking");
-  const autoBook = await processMessageForAutoBooking(lead.id, inboundText, {
-    channel: "email",
-    messageId: message.id,
-  });
+  const autoBook = inboundReplyOnly
+    ? await processMessageForAutoBooking(lead.id, inboundReplyOnly, {
+        channel: "email",
+        messageId: message.id,
+      })
+    : { booked: false as const };
   if (autoBook.booked) {
     console.log(prefix, "Auto-booked appointment:", autoBook.appointmentId);
   }

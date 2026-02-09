@@ -41,3 +41,15 @@ Ensure inbound email storage never writes raw HTML/text (including quoted thread
 
 ## Handoff
 Proceed to Phase 121c to harden auto-booking gating so generic acceptance cannot book based on long/non-scheduling messages.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Updated all inbound email webhook ingestion paths to store `Message.body = cleaned.cleaned` (no raw fallback; can be empty).
+  - Added `buildInboundCombinedForSafety(...)` so opt-out/bounce checks still have a safe “latest reply” string even when `cleaned.cleaned` is empty.
+- Commands run:
+  - `npm run build` — pass
+  - `npm test` — pass
+- Blockers:
+  - None.
+- Next concrete steps:
+  - Phase 121c: tighten generic acceptance + time-proposal triggers to fail closed on non-ack messages.

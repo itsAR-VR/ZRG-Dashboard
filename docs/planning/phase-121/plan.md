@@ -25,16 +25,18 @@ Overlaps detected by scanning recent phases (120 -> 110) and current repo state 
 | Phase 114 | Complete | `lib/followup-engine.ts` auto-booking scenario logic | Keep booking-gate semantics intact; changes must be additive and regression-tested. |
 | Phase 113 | Complete | `lib/followup-engine.ts` booking gate + day-only behavior | Do not weaken fail-closed gate behavior; focus only on preventing false triggers. |
 | Phase 109 | Complete | `lib/email-cleaning.ts` changes (null-byte + cleaning tests) | Extend cleaning safely; add tests for Gmail-style quoted headers without breaking existing cases. |
-| Phase 120 | Active (untracked in working tree) | Analytics only | No file overlap expected; do not modify Phase 120 artifacts. |
+| Phase 116 | Complete | `lib/inbound-post-process/pipeline.ts`, `lib/background-jobs/email-inbound-post-process.ts` | Preserve inbound post-process semantics; keep changes scoped to email quote-stripping and auto-book inputs. |
+| Phase 115 | Complete | `app/api/webhooks/email/route.ts` | Preserve webhook behavior and safety checks; apply storage semantics changes consistently across all inbound paths. |
+| Phase 120 | Complete | Analytics only | No file overlap expected. |
 
-Repo state note: working tree currently includes untracked `docs/planning/phase-120/` and an untracked image file. This phase should not delete or alter them.
+Repo state note (2026-02-09): Phase 121 has uncommitted changes plus an untracked test file (`lib/__tests__/followup-generic-acceptance.test.ts`). Phase 120 artifacts are unchanged.
 
 ## Objectives
-- [ ] Ensure inbound email text used for automation is "latest reply only" (quoted thread removed) and stored safely.
-- [ ] Prevent `processMessageForAutoBooking()` from booking based on quoted times or non-scheduling messages.
-- [ ] Keep generic acceptance enabled, but constrain it to low-risk cases.
-- [ ] Add regression tests that reproduce the failure mode and prevent recurrence.
-- [ ] Validate with `npm test`, `npm run lint`, `npm run build`.
+- [x] Ensure inbound email text used for automation is "latest reply only" (quoted thread removed) and stored safely.
+- [x] Prevent `processMessageForAutoBooking()` from booking based on quoted times or non-scheduling messages.
+- [x] Keep generic acceptance enabled, but constrain it to low-risk cases.
+- [x] Add regression tests that reproduce the failure mode and prevent recurrence.
+- [x] Validate with `npm test`, `npm run lint`, `npm run build`.
 
 ## Constraints
 - Never display raw HTML/raw email in the UI.
@@ -43,16 +45,19 @@ Repo state note: working tree currently includes untracked `docs/planning/phase-
 - Keep changes scoped to: email cleaning/storage, auto-booking trigger/gating, and tests.
 
 ## Success Criteria
-- Quoted thread content (including offered times) cannot trigger auto-booking.
-- Non-scheduling inbound replies like "not looking to sell" or "not interested" never auto-book.
-- Generic acceptance (e.g. "Yes", "Sounds good") can still auto-book only when it is a short acknowledgement to a recent offered-slot message.
-- New unit tests cover:
+- [x] Quoted thread content (including offered times) cannot trigger auto-booking.
+- [x] Non-scheduling inbound replies like "not looking to sell" or "not interested" never auto-book.
+- [x] Generic acceptance (e.g. "Yes", "Sounds good") can still auto-book only when it is a short acknowledgement to a recent offered-slot message.
+- [x] New unit tests cover:
   - Gmail-style "On ... wrote:" split across lines
-  - no raw fallback into `message.body`
-  - generic acceptance gating
-- `npm test`, `npm run lint`, `npm run build` pass.
+  - generic acceptance gating + proposed-time heuristic (`looksLikeTimeProposalText`)
+  - automation quote stripping helper (`stripEmailQuotedSectionsForAutomation`)
+- [x] Ingestion stores `Message.body` as reply-only cleaned text (no raw fallback; can be empty). (Verified via code change in `app/api/webhooks/email/route.ts`.)
+- [x] `npm test`, `npm run lint`, `npm run build` pass.
 
-## Repo Reality Check (RED TEAM)
+## Repo Reality Check (RED TEAM, pre-implementation)
+
+Captured before Phase 121 changes landed (for final state, see `docs/planning/phase-121/review.md`).
 
 - What exists today:
   - `lib/email-cleaning.ts`: `stripQuotedSections()` (PRIVATE, not exported), `cleanEmailBody()` (exported), `stripNullBytes()` (exported)
@@ -119,3 +124,16 @@ Repo state note: working tree currently includes untracked `docs/planning/phase-
 - d — Defense in depth: re-clean inbound email before auto-book in post-process pipelines (incl. SmartLead/Instantly check) + validation notes
 
 Note (RED TEAM): No new subphases required. Existing a-d coverage is sufficient when expanded per findings above.
+
+## Phase Summary
+- Shipped:
+  - Hardened email quote stripping; added `stripEmailQuotedSectionsForAutomation(...)` for automation defense-in-depth.
+  - Webhook storage semantics: `Message.body` stores reply-only cleaned text (no raw fallback; can be empty).
+  - Auto-book gating hardening for generic acceptance; tightened time-proposal heuristic to avoid “next steps” false triggers.
+  - Re-cleaned inbound email text immediately before snooze detection + auto-booking in post-process pipelines.
+- Verified:
+  - `npm test` — pass
+  - `npm run lint` — pass (warnings only)
+  - `npm run build` — pass
+- Review:
+  - `docs/planning/phase-121/review.md`

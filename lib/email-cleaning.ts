@@ -12,25 +12,34 @@ function stripQuotedSections(text: string): string {
     .filter((line) => !line.trim().startsWith(">"))
     .join("\n");
 
-  // Common thread separators / quoted headers across clients
-  const threadMarkers: RegExp[] = [
-    /On .*wrote:/i,
-    /^From:\s.+$/im,
-    /^Sent:\s.+$/im,
-    /^To:\s.+$/im,
-    /^Subject:\s.+$/im,
-    /^-----Original Message-----$/im,
-  ];
+  // Common thread separators / quoted headers across clients.
+  // Note: don't use `/On .*wrote:/` here because `.` does not match newlines and
+  // many clients split "On ... wrote:" across multiple lines.
+  const linesForThreadScan = result.split("\n");
+  const threadBoundaryLineIndex = (() => {
+    for (let i = 0; i < linesForThreadScan.length; i++) {
+      const trimmed = (linesForThreadScan[i] || "").trim();
+      if (!trimmed) continue;
 
-  let earliestMarkerIndex = -1;
-  for (const marker of threadMarkers) {
-    const idx = result.search(marker);
-    if (idx !== -1 && (earliestMarkerIndex === -1 || idx < earliestMarkerIndex)) {
-      earliestMarkerIndex = idx;
+      if (/^-----Original Message-----$/i.test(trimmed)) return i;
+      if (/^Begin forwarded message:/i.test(trimmed)) return i;
+      if (/^-{5,}\s*Forwarded message\s*-{5,}$/i.test(trimmed)) return i;
+
+      if (/^(From|Sent|To|Subject):/i.test(trimmed)) return i;
+
+      // Multi-line "On ... wrote:" (Gmail often breaks this across lines).
+      if (/^On\b/i.test(trimmed)) {
+        if (/\bwrote:\s*$/i.test(trimmed)) return i;
+        const next1 = (linesForThreadScan[i + 1] || "").trim();
+        const next2 = (linesForThreadScan[i + 2] || "").trim();
+        if (/\bwrote:\s*$/i.test(next1) || /\bwrote:\s*$/i.test(next2)) return i;
+      }
     }
-  }
-  if (earliestMarkerIndex !== -1) {
-    result = result.slice(0, earliestMarkerIndex);
+    return -1;
+  })();
+
+  if (threadBoundaryLineIndex !== -1) {
+    result = linesForThreadScan.slice(0, threadBoundaryLineIndex).join("\n");
   }
 
   // Standard signature delimiter
@@ -78,6 +87,11 @@ function stripQuotedSections(text: string): string {
   }
 
   return lines.join("\n").trim();
+}
+
+// Use in automation paths that need "reply-only" text for safe processing.
+export function stripEmailQuotedSectionsForAutomation(text: string): string {
+  return stripQuotedSections(text);
 }
 
 function decodeBasicHtmlEntities(input: string): string {
