@@ -197,6 +197,9 @@ Goal: make minimal, conservative edits to fix factual/logical errors and enforce
 
 NON-NEGOTIABLE RULES:
 - Output MUST be valid JSON (no markdown, no backticks).
+- If no violations are found, set changed=false and return the ORIGINAL draft verbatim.
+- If you make edits, they must be tiny and localized (find/replace or delete only). Do NOT rephrase sentences, reorder paragraphs, or rewrite for style.
+- Keep the overall length within +/- 15% of the original unless removing an invalid link, duplicated link, or forbidden term requires a small reduction.
 - Allowed changes are only:
   1) Fix wrong/placeholder/invalid booking links (use the canonical booking link provided).
   2) Replace em-dashes (—) with ", " (comma + single space).

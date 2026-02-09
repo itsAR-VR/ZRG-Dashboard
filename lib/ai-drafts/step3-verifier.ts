@@ -20,6 +20,50 @@ const ANY_HTTP_URL_REGEX = /\bhttps?:\/\/[^\s)<>\]]*[^\s)<>\].,!?]/gi;
 const MARKDOWN_LINK_WITH_URL_TEXT_REGEX =
   /\[(https?:\/\/[^\]]+)\]\((https?:\/\/[^)]+)\)/gi;
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildForbiddenTermRegex(term: string): RegExp | null {
+  const trimmed = term.trim();
+  if (!trimmed) return null;
+  const escaped = escapeRegExp(trimmed);
+  if (/\s/.test(trimmed)) {
+    return new RegExp(escaped, "gi");
+  }
+  // Single-word terms should remove common trailing punctuation (e.g., "However, ").
+  // Avoid consuming newlines so we don't collapse paragraphs.
+  return new RegExp(`\\b${escaped}\\b(?:[ \\t]*[,.;:!?])?[ \\t]*`, "gi");
+}
+
+export function removeForbiddenTerms(input: string, terms: string[]): { output: string; removed: string[] } {
+  if (!input.trim() || !Array.isArray(terms) || terms.length === 0) {
+    return { output: input, removed: [] };
+  }
+
+  const removed: string[] = [];
+  let result = input;
+
+  for (const term of terms) {
+    const regex = buildForbiddenTermRegex(term);
+    if (!regex) continue;
+    if (regex.test(result)) {
+      result = result.replace(regex, "");
+      removed.push(term);
+    }
+  }
+
+  if (removed.length === 0) return { output: input, removed };
+
+  result = result.replace(/[ \t]{2,}/g, " ");
+  result = result.replace(/[ \t]+([,.;:!?])/g, "$1");
+  // If a term removal leaves a line starting with punctuation (e.g., ", hello"), strip it.
+  result = result.replace(/(^|\n)[,.;:!?]+[ \t]*/g, "$1");
+  result = result.replace(/\n{3,}/g, "\n\n");
+
+  return { output: result.trim(), removed };
+}
+
 export function enforceCanonicalBookingLink(
   draft: string,
   canonicalBookingLink: string | null,
@@ -65,6 +109,13 @@ export function enforceCanonicalBookingLink(
   // If the canonical link appears multiple times, keep only the first occurrence.
   if (hasCanonical) {
     result = deduplicateBookingLink(result, trimmedCanonical);
+    // Deduping can leave artifacts like "and ." when a duplicated URL was removed.
+    // Clean up the most common case: "<canonical> and <removed>."
+    const escapedCanonical = trimmedCanonical.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const orphanConjunction = new RegExp(`${escapedCanonical}\\s+(?:and|or)\\s+([,.;:!?])`, "gi");
+    result = result.replace(orphanConjunction, `${trimmedCanonical}$1`);
+    result = result.replace(/[ \t]{2,}/g, " ");
+    result = result.replace(/[ \t]+([,.;:!?])/g, "$1");
   }
 
   return result;

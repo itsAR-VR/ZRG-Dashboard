@@ -7,6 +7,7 @@ import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import { markAiInteractionError, runResponseWithInteraction } from "@/lib/ai/openai-telemetry";
 import { extractJsonObjectFromText, getTrimmedOutputText, summarizeResponseForTelemetry } from "@/lib/ai/response-utils";
 import { categorizePromptRunnerError } from "@/lib/ai/prompt-runner/errors";
+import { expandOutputTokenAttempts } from "@/lib/ai/prompt-runner/attempts";
 import { resolvePromptTemplate } from "@/lib/ai/prompt-runner/resolve";
 import { substituteTemplateVars } from "@/lib/ai/prompt-runner/template";
 import type { PromptRunnerError, PromptRunnerResult, StructuredJsonPromptParams, TextPromptParams } from "@/lib/ai/prompt-runner/types";
@@ -35,21 +36,36 @@ function getDefaultRetryMultiplier(): number {
   return 1.2;
 }
 
-function expandAttemptsWithMultiplier(opts: {
-  attempts: number[];
-  maxAttempts: number;
-  multiplier: number;
-  cap: number;
-}): number[] {
-  const out = [...opts.attempts];
-  while (out.length < opts.maxAttempts) {
-    const prev = out[out.length - 1] ?? 0;
-    const nextRaw = Math.ceil(prev * opts.multiplier);
-    const next = Math.min(opts.cap, Math.max(prev + 1, nextRaw));
-    if (!Number.isFinite(next) || next <= prev) break;
-    out.push(next);
-  }
-  return out;
+function coerceRetryDelayMs(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : null;
+  if (typeof parsed === "number") return Math.max(0, Math.min(30_000, parsed));
+  return fallback;
+}
+
+function getDefaultRetryDelayMs(): number {
+  const parsed = Number.parseInt(process.env.OPENAI_PROMPT_RETRY_DELAY_MS || "0", 10);
+  if (Number.isFinite(parsed) && parsed >= 0) return Math.max(0, Math.min(30_000, parsed));
+  return 0;
+}
+
+function coerceRetryDelayMultiplier(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" && Number.isFinite(value) ? value : null;
+  if (typeof parsed === "number" && parsed >= 1) return Math.max(1, Math.min(10, parsed));
+  return fallback;
+}
+
+function getDefaultRetryDelayMultiplier(): number {
+  const parsed = Number.parseFloat(process.env.OPENAI_PROMPT_RETRY_DELAY_MULTIPLIER || "2");
+  if (Number.isFinite(parsed) && parsed >= 1) return Math.max(1, Math.min(10, parsed));
+  return 2;
+}
+
+async function maybeWaitBeforeRetry(opts: { attemptIndex: number; delayMs: number; multiplier: number }): Promise<void> {
+  if (opts.attemptIndex <= 0) return;
+  if (!Number.isFinite(opts.delayMs) || opts.delayMs <= 0) return;
+  const waitMs = Math.trunc(opts.delayMs * Math.pow(opts.multiplier, Math.max(0, opts.attemptIndex - 1)));
+  if (waitMs <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
 }
 
 type ReasoningEffort = NonNullable<StructuredJsonPromptParams<unknown>["reasoningEffort"]>;
@@ -201,6 +217,8 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
   const envMaxAttempts = getDefaultMaxAttempts();
   const maxAttempts = coerceMaxAttempts(params.maxAttempts, Math.max(seedAttempts.length, envMaxAttempts));
   const multiplier = coerceRetryMultiplier(params.retryOutputTokensMultiplier, getDefaultRetryMultiplier());
+  const retryDelayMs = coerceRetryDelayMs(params.retryDelayMs, getDefaultRetryDelayMs());
+  const retryDelayMultiplier = coerceRetryDelayMultiplier(params.retryDelayMultiplier, getDefaultRetryDelayMultiplier());
 
   const cap = (() => {
     const retryMax =
@@ -232,11 +250,12 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
   }
 
   // Auto-expand attempts with a percentage-based increase (default +20%).
-  const expandedAttempts = expandAttemptsWithMultiplier({
+  const expandedAttempts = expandOutputTokenAttempts({
     attempts,
     maxAttempts: Math.max(attempts.length, maxAttempts),
     multiplier,
     cap: Math.max(cap, ...attempts),
+    retryExtraTokens: params.budget.retryExtraTokens,
   });
 
   const samplingAndReasoning = resolveTemperatureAndReasoning({
@@ -246,15 +265,21 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
   });
 
   let lastInteractionId: string | null = null;
-  let lastError: { category: "parse_error" | "schema_violation" | "incomplete_output"; message: string; raw?: string } | null = null;
+  let lastError:
+    | { category: "parse_error" | "schema_violation" | "incomplete_output"; message: string; raw?: string }
+    | null = null;
   let lastRaw: string | null = null;
   let lastRequestError: ReturnType<typeof categorizePromptRunnerError> | null = null;
+  let lastPostProcessAttemptCount = 0;
 
   for (let attemptIndex = 0; attemptIndex < expandedAttempts.length; attemptIndex++) {
     const maxOutputTokens = expandedAttempts[attemptIndex]!;
     const attemptSuffix = attemptIndex === 0 ? "" : `.retry${attemptIndex + 1}`;
 
     try {
+      if (attemptIndex > 0) {
+        await maybeWaitBeforeRetry({ attemptIndex, delayMs: retryDelayMs, multiplier: retryDelayMultiplier });
+      }
       const { response, interactionId } = await runResponseWithInteraction({
         clientId: params.clientId,
         leadId: params.leadId,
@@ -302,6 +327,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
         const details = summarizeResponseForTelemetry(response);
         const message = `Post-process error: hit max_output_tokens${details ? ` (${details})` : ""}`;
         lastError = { category: "incomplete_output", message, ...(text ? { raw: text } : {}) };
+        lastPostProcessAttemptCount = attemptIndex + 1;
         if (attemptIndex < expandedAttempts.length - 1) {
           continue;
         }
@@ -311,6 +337,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
         const details = summarizeResponseForTelemetry(response);
         const message = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
         lastError = { category: "incomplete_output", message };
+        lastPostProcessAttemptCount = attemptIndex + 1;
         if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < expandedAttempts.length - 1) {
           continue;
         }
@@ -328,6 +355,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
           details ? ` (${details})` : ""
         }`;
         lastError = { category: "parse_error", message: msg, raw: text };
+        lastPostProcessAttemptCount = attemptIndex + 1;
         if (attemptIndex < expandedAttempts.length - 1) {
           continue;
         }
@@ -339,6 +367,7 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
         if (!validated.success) {
           const msg = `Post-process error: schema violation (${validated.error})`;
           lastError = { category: "schema_violation", message: msg, raw: text };
+          lastPostProcessAttemptCount = attemptIndex + 1;
           if (attemptIndex < expandedAttempts.length - 1) {
             continue;
           }
@@ -399,10 +428,16 @@ export async function runStructuredJsonPrompt<T>(params: StructuredJsonPromptPar
         }),
       };
     }
+
   }
 
   if (lastInteractionId && lastError) {
-    await markAiInteractionError(lastInteractionId, lastError.message);
+    const severity = params.failureSeverity === "warning" ? "warning" : "error";
+    await markAiInteractionError(lastInteractionId, lastError.message, {
+      severity,
+      attempts: lastPostProcessAttemptCount || expandedAttempts.length,
+      maxOutputTokens: expandedAttempts[expandedAttempts.length - 1] ?? null,
+    });
   }
 
   const finalError: PromptRunnerError = lastRequestError
@@ -491,6 +526,8 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
   const envMaxAttempts = getDefaultMaxAttempts();
   const maxAttempts = coerceMaxAttempts(params.maxAttempts, Math.max(attempts.length, envMaxAttempts));
   const multiplier = coerceRetryMultiplier(params.retryOutputTokensMultiplier, getDefaultRetryMultiplier());
+  const retryDelayMs = coerceRetryDelayMs(params.retryDelayMs, getDefaultRetryDelayMs());
+  const retryDelayMultiplier = coerceRetryDelayMultiplier(params.retryDelayMultiplier, getDefaultRetryDelayMultiplier());
   const cap = (() => {
     if (params.budget) {
       const retryMax =
@@ -513,11 +550,12 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
     return Math.ceil(baseMax * Math.pow(multiplier, Math.max(0, maxAttempts - 1)));
   })();
 
-  const expandedAttempts = expandAttemptsWithMultiplier({
+  const expandedAttempts = expandOutputTokenAttempts({
     attempts,
     maxAttempts: Math.max(attempts.length, maxAttempts),
     multiplier,
     cap: Math.max(cap, ...attempts),
+    retryExtraTokens: params.budget?.retryExtraTokens,
   });
 
   const temperature = typeof params.temperature === "number" && Number.isFinite(params.temperature) ? params.temperature : null;
@@ -529,6 +567,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
   let lastInteractionId: string | null = null;
   let lastError: { category: "incomplete_output"; message: string; raw?: string } | null = null;
   let lastRaw: string | null = null;
+  let lastPostProcessAttemptCount = 0;
 
   for (let attemptIndex = 0; attemptIndex < expandedAttempts.length; attemptIndex++) {
     const maxOutputTokens = expandedAttempts[attemptIndex]!;
@@ -537,6 +576,9 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
       attemptIndex > 0 && params.retryReasoningEffort ? params.retryReasoningEffort : params.reasoningEffort;
 
     try {
+      if (attemptIndex > 0) {
+        await maybeWaitBeforeRetry({ attemptIndex, delayMs: retryDelayMs, multiplier: retryDelayMultiplier });
+      }
       const { response, interactionId } = await runResponseWithInteraction({
         clientId: params.clientId,
         leadId: params.leadId,
@@ -576,6 +618,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
         const details = summarizeResponseForTelemetry(response);
         const msg = `Post-process error: hit max_output_tokens${details ? ` (${details})` : ""}`;
         lastError = { category: "incomplete_output", message: msg, ...(text ? { raw: text } : {}) };
+        lastPostProcessAttemptCount = attemptIndex + 1;
         if (attemptIndex < expandedAttempts.length - 1) {
           continue;
         }
@@ -585,6 +628,7 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
         const details = summarizeResponseForTelemetry(response);
         const msg = `Post-process error: empty output_text${details ? ` (${details})` : ""}`;
         lastError = { category: "incomplete_output", message: msg };
+        lastPostProcessAttemptCount = attemptIndex + 1;
         if (response.incomplete_details?.reason === "max_output_tokens" && attemptIndex < expandedAttempts.length - 1) {
           continue;
         }
@@ -632,7 +676,12 @@ export async function runTextPrompt(params: TextPromptParams): Promise<PromptRun
   }
 
   if (lastInteractionId && lastError) {
-    await markAiInteractionError(lastInteractionId, lastError.message);
+    const severity = params.failureSeverity === "warning" ? "warning" : "error";
+    await markAiInteractionError(lastInteractionId, lastError.message, {
+      severity,
+      attempts: lastPostProcessAttemptCount || expandedAttempts.length,
+      maxOutputTokens: expandedAttempts[expandedAttempts.length - 1] ?? null,
+    });
   }
 
   return {

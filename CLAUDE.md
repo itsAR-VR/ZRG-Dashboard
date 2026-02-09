@@ -47,6 +47,44 @@ vercel --prod                  # Deploy production
   - `DATABASE_URL` = pooled/transaction connection (pgbouncer, port 6543)
   - `DIRECT_URL` = non-pooled/session connection (port 5432, for Prisma CLI)
 
+## AI Environment Knobs
+
+These environment variables tune AI reliability/cost without code changes. Defaults are defined in code.
+
+### Prompt Runner (Retries/Backoff)
+
+- `OPENAI_PROMPT_MAX_ATTEMPTS` (default: `2`)  
+  Number of prompt attempts for post-process failures like `max_output_tokens` (separate from OpenAI SDK network retries).
+- `OPENAI_RETRY_OUTPUT_TOKENS_MULTIPLIER` (default: `1.2`)  
+  Each retry increases `max_output_tokens` by this multiplier (bounded by any per-prompt `retryMax`).
+- `OPENAI_PROMPT_RETRY_DELAY_MS` (default: `0`)  
+  Optional delay between attempts.
+- `OPENAI_PROMPT_RETRY_DELAY_MULTIPLIER` (default: `2`)  
+  Backoff multiplier applied to `OPENAI_PROMPT_RETRY_DELAY_MS`.
+
+### Insights (Thread Extract / Chat Answer)
+
+- `OPENAI_INSIGHTS_MAX_RETRIES` (default: `5`, range: 0–10)  
+  OpenAI SDK `maxRetries` for network/API failures.
+- `OPENAI_INSIGHTS_THREAD_CHUNK_CONCURRENCY` (default: `3`, range: 1–6)
+- `OPENAI_INSIGHTS_THREAD_TIMEOUT_MS` (default: `90000`)
+- `OPENAI_INSIGHTS_ANSWER_TIMEOUT_MS` (default: `90000`)
+
+### Email Draft Verification Step 3 (Rewrite Guardrail)
+
+- `OPENAI_EMAIL_STEP3_REWRITE_RATIO` (default: `0.45`)
+- `OPENAI_EMAIL_STEP3_REWRITE_MIN_DELTA` (default: `250`)
+- `OPENAI_EMAIL_STEP3_REWRITE_MAX_DELTA` (default: `900`)
+- `OPENAI_EMAIL_STEP3_REWRITE_LINE_RATIO` (default: `0.5`)
+- `OPENAI_EMAIL_STEP3_REWRITE_MIN_LINE_DELTA` (default: `3`)
+
+### Common Error Signatures
+
+- `Post-process error: hit max_output_tokens (...)`  
+  The OpenAI Responses API returned `status=incomplete` due to hitting the output token budget. Fixes: raise per-prompt output budgets and/or increase `OPENAI_PROMPT_MAX_ATTEMPTS`.
+- `email_step3_rewrite_guardrail`  
+  Step 3 verifier rewrote the draft too aggressively. Fixes: tighten the Step 3 prompt rules, or tune the env thresholds above.
+
 ## Architecture
 
 ### Directory Layout

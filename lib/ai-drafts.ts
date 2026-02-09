@@ -26,7 +26,8 @@ import {
   EMAIL_DRAFT_STRUCTURE_ARCHETYPES,
   type EmailDraftArchetype,
 } from "@/lib/ai-drafts/config";
-import { enforceCanonicalBookingLink, replaceEmDashesWithCommaSpace } from "@/lib/ai-drafts/step3-verifier";
+import { enforceCanonicalBookingLink, removeForbiddenTerms, replaceEmDashesWithCommaSpace } from "@/lib/ai-drafts/step3-verifier";
+import { evaluateStep3RewriteGuardrail, normalizeDraftForCompare } from "@/lib/ai-drafts/step3-guardrail";
 import { getBookingProcessInstructions } from "@/lib/booking-process-instructions";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
@@ -237,18 +238,26 @@ async function getLatestInboundEmailTextForVerifier(opts: {
   return `${subject}${latest.body}`.trim();
 }
 
-function isLikelyRewrite(before: string, after: string): boolean {
-  const beforeTrimmed = before.trim();
-  const afterTrimmed = after.trim();
-  if (!beforeTrimmed || !afterTrimmed) return false;
-
-  const beforeLen = beforeTrimmed.length;
-  const afterLen = afterTrimmed.length;
-  const delta = Math.abs(afterLen - beforeLen);
-  const ratio = delta / Math.max(1, beforeLen);
-
-  // Conservative: allow small edits, but reject large rewrites.
-  return (ratio > 0.45 && delta > 250) || delta > 900;
+function formatGuardrailStatsForLog(stats: {
+  beforeLen: number;
+  afterLen: number;
+  delta: number;
+  ratio: number;
+  beforeLines: number;
+  afterLines: number;
+  lineDelta: number;
+  lineRatio: number;
+}): string {
+  return [
+    `beforeLen=${stats.beforeLen}`,
+    `afterLen=${stats.afterLen}`,
+    `delta=${stats.delta}`,
+    `ratio=${stats.ratio.toFixed(2)}`,
+    `beforeLines=${stats.beforeLines}`,
+    `afterLines=${stats.afterLines}`,
+    `lineDelta=${stats.lineDelta}`,
+    `lineRatio=${stats.lineRatio.toFixed(2)}`,
+  ].join(" ");
 }
 
 async function runEmailDraftVerificationStep3(opts: {
@@ -342,13 +351,14 @@ async function runEmailDraftVerificationStep3(opts: {
       model: verifierModel,
       reasoningEffort: verifierReasoningEffort,
       temperature: 0,
+      failureSeverity: "warning",
       systemFallback: instructions,
       input: inputMessages,
       schemaName: "email_draft_verification_step3",
       strict: true,
       schema: EMAIL_DRAFT_VERIFY_STEP3_JSON_SCHEMA,
-      attempts: [1400],
-      budget: { min: 1400, max: 1400 },
+      attempts: [1600],
+      budget: { min: 1600, max: 2000 },
       timeoutMs: Math.max(5000, opts.timeoutMs),
       maxRetries: 0,
       resolved: {
@@ -385,7 +395,7 @@ async function runEmailDraftVerificationStep3(opts: {
             : result.error.category === "parse_error" || result.error.category === "schema_violation"
               ? "email_step3_invalid_json"
               : "email_step3_error";
-        await markAiInteractionError(interactionId, `${kind}: ${result.error.message.slice(0, 500)}`);
+        await markAiInteractionError(interactionId, `${kind}: ${result.error.message.slice(0, 500)}`, { severity: "warning" });
       }
 
       return null;
@@ -396,16 +406,34 @@ async function runEmailDraftVerificationStep3(opts: {
     const finalDraft = parsed.finalDraft.trim();
     if (!finalDraft) return null;
 
-    if (isLikelyRewrite(opts.draft, finalDraft)) {
+    const normalizedFinal = normalizeDraftForCompare(finalDraft);
+    const normalizedBefore = normalizeDraftForCompare(opts.draft);
+    if (!parsed.changed && normalizedFinal !== normalizedBefore) {
       if (shouldLogVerifierDetails) {
-        console.warn(`[AI Drafts] Step 3 verifier produced a likely rewrite; discarding output`, {
+        console.warn(`[AI Drafts] Step 3 verifier returned changed=false but output differs; discarding`, {
           leadId: opts.leadId,
-          beforeLen: opts.draft.trim().length,
-          afterLen: finalDraft.length,
+          beforeLen: normalizedBefore.length,
+          afterLen: normalizedFinal.length,
         });
       }
       if (interactionId) {
-        await markAiInteractionError(interactionId, "email_step3_rewrite_guardrail");
+        await markAiInteractionError(interactionId, "email_step3_changed_flag_mismatch", { severity: "warning" });
+      }
+      return null;
+    }
+
+    const guardrail = evaluateStep3RewriteGuardrail(opts.draft, finalDraft);
+    if (guardrail.isRewrite) {
+      const statsLine = formatGuardrailStatsForLog(guardrail.stats);
+      if (shouldLogVerifierDetails) {
+        console.warn(`[AI Drafts] Step 3 verifier produced a likely rewrite; discarding output`, {
+          leadId: opts.leadId,
+          stats: guardrail.stats,
+          config: guardrail.config,
+        });
+      }
+      if (interactionId) {
+        await markAiInteractionError(interactionId, `email_step3_rewrite_guardrail: ${statsLine}`, { severity: "warning" });
       }
       return null;
     }
@@ -428,7 +456,7 @@ async function runEmailDraftVerificationStep3(opts: {
       console.warn("[AI Drafts] Step 3 verifier failed:", message);
     }
     if (interactionId) {
-      await markAiInteractionError(interactionId, `email_step3_error: ${message.slice(0, 200)}`);
+      await markAiInteractionError(interactionId, `email_step3_error: ${message.slice(0, 200)}`, { severity: "warning" });
     }
     return null;
   }
@@ -2679,6 +2707,9 @@ Generate an appropriate ${channel} response following the guidelines above.
         replaceAllUrls: hasPublicBookingLinkOverride,
       });
       draftContent = replaceEmDashesWithCommaSpace(draftContent);
+      const forbiddenTerms = emailVerifierForbiddenTerms ?? DEFAULT_FORBIDDEN_TERMS;
+      const forbiddenResult = removeForbiddenTerms(draftContent, forbiddenTerms);
+      draftContent = forbiddenResult.output;
     }
 
     draftContent = sanitizeDraftContent(draftContent, leadId, channel);

@@ -177,14 +177,42 @@ async function recordInteraction(opts: {
   return created.id;
 }
 
-export async function markAiInteractionError(interactionId: string, errorMessage: string): Promise<void> {
+type MarkErrorOptions = {
+  severity?: "error" | "warning";
+  attempts?: number;
+  maxOutputTokens?: number | null;
+};
+
+function formatErrorMetadataSuffix(opts?: MarkErrorOptions): string {
+  if (!opts) return "";
+  const meta: Record<string, unknown> = {};
+  if (opts.severity) meta.severity = opts.severity;
+  if (typeof opts.attempts === "number" && Number.isFinite(opts.attempts)) meta.attempts = Math.max(1, Math.trunc(opts.attempts));
+  if (typeof opts.maxOutputTokens === "number" && Number.isFinite(opts.maxOutputTokens)) {
+    meta.max_output_tokens = Math.max(1, Math.trunc(opts.maxOutputTokens));
+  }
+  const keys = Object.keys(meta);
+  if (keys.length === 0) return "";
+  try {
+    return ` meta=${JSON.stringify(meta)}`;
+  } catch {
+    return "";
+  }
+}
+
+export async function markAiInteractionError(
+  interactionId: string,
+  errorMessage: string,
+  opts?: MarkErrorOptions
+): Promise<void> {
   if (!interactionId) return;
   try {
+    const suffix = formatErrorMetadataSuffix(opts);
     await prisma.aIInteraction.update({
       where: { id: interactionId },
       data: {
         status: "error",
-        errorMessage: String(errorMessage || "Post-process error").slice(0, 10_000),
+        errorMessage: String(`${errorMessage || "Post-process error"}${suffix}`).slice(0, 10_000),
       },
     });
   } catch (error) {

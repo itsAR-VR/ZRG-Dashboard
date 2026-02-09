@@ -107,6 +107,7 @@ OUTPUT:
     reasoningEffort:
       opts.reasoningEffort === "none" ? undefined : opts.reasoningEffort === "xhigh" ? "high" : opts.reasoningEffort,
     systemFallback: system,
+    failureSeverity: "warning",
     input,
     schemaName: "insights_chat_answer",
     strict: true,
@@ -131,10 +132,10 @@ OUTPUT:
       required: ["answer_markdown", "citations"],
     },
     budget: {
-      min: 700,
-      max: 2400,
-      overheadTokens: 520,
-      outputScale: 0.22,
+      min: 900,
+      max: 2800,
+      overheadTokens: 620,
+      outputScale: 0.24,
       preferApiCount: true,
     },
     timeoutMs: Math.max(8_000, Number.parseInt(process.env.OPENAI_INSIGHTS_ANSWER_TIMEOUT_MS || "90000", 10) || 90_000),

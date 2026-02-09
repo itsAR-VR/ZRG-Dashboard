@@ -78,6 +78,21 @@ export type PromptRunnerBaseParams = {
    * Defaults to `OPENAI_RETRY_OUTPUT_TOKENS_MULTIPLIER` (or 1.2).
    */
   retryOutputTokensMultiplier?: number;
+  /**
+   * Optional delay between prompt attempts (ms). Enables backoff between retries.
+   * Defaults to `OPENAI_PROMPT_RETRY_DELAY_MS` (or 0).
+   */
+  retryDelayMs?: number;
+  /**
+   * Backoff multiplier applied to `retryDelayMs` for each retry attempt.
+   * Defaults to `OPENAI_PROMPT_RETRY_DELAY_MULTIPLIER` (or 2).
+   */
+  retryDelayMultiplier?: number;
+  /**
+   * Controls whether failures should be recorded as errors in telemetry.
+   * Defaults to "error".
+   */
+  failureSeverity?: "error" | "warning";
   traceId?: string;
   parentSpanId?: string | null;
   resolved?: ResolvedPromptMetadata;

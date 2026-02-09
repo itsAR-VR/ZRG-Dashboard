@@ -18,6 +18,7 @@ const TEST_FILES = [
   "lib/__tests__/email-participants.test.ts",
   "lib/__tests__/manual-draft-generation.test.ts",
   "lib/__tests__/prompt-runner-temperature-reasoning.test.ts",
+  "lib/__tests__/prompt-runner-attempt-expansion.test.ts",
   "lib/__tests__/openai-telemetry-metadata.test.ts",
   "lib/__tests__/emailbison-stop-future-emails.test.ts",
   "lib/__tests__/emailbison-reply-payload.test.ts",
@@ -44,6 +45,8 @@ const TEST_FILES = [
   "lib/__tests__/availability-refresh-ai.test.ts",
   "lib/__tests__/availability-refresh-candidates.test.ts",
   "lib/__tests__/offered-slots-refresh.test.ts",
+  "lib/ai-drafts/__tests__/step3-verifier.test.ts",
+  "lib/ai-drafts/__tests__/step3-guardrail.test.ts",
   "lib/ai-drafts/__tests__/response-disposition.test.ts",
 ];
 

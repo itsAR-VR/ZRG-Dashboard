@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { enforceCanonicalBookingLink, replaceEmDashesWithCommaSpace } from "../step3-verifier";
+import { enforceCanonicalBookingLink, removeForbiddenTerms, replaceEmDashesWithCommaSpace } from "../step3-verifier";
 
 test("replaceEmDashesWithCommaSpace replaces em-dash with comma+space", () => {
   const input = "Closest slot is Jan 24—could you do that?";
@@ -47,11 +47,25 @@ test("enforceCanonicalBookingLink replaces any http(s) URL when replaceAllUrls i
   const canonical = "https://book.example.com/meeting";
   const input = "Links: https://example.com/docs and https://another.example/path.";
   const output = enforceCanonicalBookingLink(input, canonical, { replaceAllUrls: true });
-  assert.equal(output, `Links: ${canonical} and ${canonical}.`);
+  assert.equal(output, `Links: ${canonical}.`);
 });
 
 test("enforceCanonicalBookingLink removes booking widget links when canonical is missing", () => {
   const input = "Book here: https://old-domain.example/widget/booking/xyz987.";
   const output = enforceCanonicalBookingLink(input, null);
   assert.equal(output, "Book here: .");
+});
+
+test("removeForbiddenTerms strips forbidden words with word boundaries", () => {
+  const input = "However, we can help you optimize processes.";
+  const result = removeForbiddenTerms(input, ["However", "Optimization"]);
+  assert.equal(result.output, "we can help you optimize processes.");
+  assert.deepEqual(result.removed.sort(), ["However"]);
+});
+
+test("removeForbiddenTerms strips forbidden phrases case-insensitively", () => {
+  const input = "We can help. It's important to note that you get support.";
+  const result = removeForbiddenTerms(input, ["it's important to note that"]);
+  assert.equal(result.output, "We can help. you get support.");
+  assert.deepEqual(result.removed, ["it's important to note that"]);
 });
