@@ -93,6 +93,17 @@ export async function refreshDraftAvailabilityCore(opts: {
   });
 
   if (!refreshResult.success) {
+    // Debug-only identifiers/meta (no draft content, no slot labels).
+    console.warn("[availability_refresh] Failed to refresh availability in draft", {
+      clientId: draft.lead.clientId,
+      leadId: draft.leadId,
+      draftId: draft.id,
+      requestedAvailabilitySource,
+      availabilitySource: candidatesResult.availabilitySource,
+      candidateCount: candidatesResult.candidates.length,
+      hasTimeOffers: refreshResult.hasTimeOffers,
+      error: refreshResult.error,
+    });
     return { success: false, error: mapRefreshError(refreshResult.error) };
   }
 

@@ -60,6 +60,11 @@ enum LeadMemorySource {
   INFERENCE
 }
 
+enum MemoryEntryStatus {
+  APPROVED
+  PENDING
+}
+
 enum MessagePerformanceProposalStatus {
   PENDING
   APPROVED
@@ -244,6 +249,7 @@ model Client {
   aiInteractions AIInteraction[]
   meetingOverseerDecisions MeetingOverseerDecision[]
   backgroundJobs BackgroundJob[]
+  draftPipelineRuns DraftPipelineRun[]
   notificationEvents NotificationEvent[]
   notificationSendLogs NotificationSendLog[]
   leadAssignmentEvents LeadAssignmentEvent[]
@@ -258,6 +264,7 @@ model Client {
   promptOverrideRevisions PromptOverrideRevision[]
   promptSnippetOverrideRevisions PromptSnippetOverrideRevision[]
   leadMemoryEntries LeadMemoryEntry[]
+  workspaceMemoryEntries WorkspaceMemoryEntry[]
   knowledgeAssetRevisions KnowledgeAssetRevision[]
   messagePerformanceEvalRuns MessagePerformanceEvalRun[]
   messagePerformanceProposals MessagePerformanceProposal[]
@@ -368,6 +375,19 @@ model WorkspaceSettings {
   // Phase 116: Per-workspace rollout toggle for the Phase 115 auto-send revision loop.
   // Global kill-switch `AUTO_SEND_REVISION_DISABLED=1` still overrides this.
   autoSendRevisionEnabled Boolean @default(false)
+  // Phase 123: Auto-send revision loop model tuning (super-admin controlled).
+  autoSendRevisionModel            String? @default("gpt-5.2") // gpt-5-mini | gpt-5.1 | gpt-5.2
+  autoSendRevisionReasoningEffort  String? @default("high") // low | medium | high | extra_high (gpt-5.2 only)
+  autoSendRevisionMaxIterations    Int?    @default(3)
+  // Phase 127: Auto-send evaluator model tuning (super-admin controlled).
+  // NOTE: If null/unset, code should fall back to env vars or defaults.
+  autoSendEvaluatorModel           String? // gpt-5-mini | gpt-5.1 | gpt-5.2
+  autoSendEvaluatorReasoningEffort String? // low | medium | high | extra_high
+  // Phase 127: Governed durable memory policy (super-admin controlled).
+  memoryAllowlistCategories String[] @default([])
+  memoryMinConfidence      Float    @default(0.7)
+  memoryMinTtlDays         Int      @default(1)
+  memoryTtlCapDays         Int      @default(90)
   // AI Auto-Send Approval Recipients (Phase 81)
   // JSON array: [{ id: string, displayName: string, avatarUrl?: string, email?: string }]
   slackAutoSendApprovalRecipients Json?
@@ -540,6 +560,7 @@ model Lead {
   aiDrafts          AIDraft[]
   aiInteractions    AIInteraction[]
   meetingOverseerDecisions MeetingOverseerDecision[]
+  draftPipelineRuns DraftPipelineRun[]
   leadMemoryEntries LeadMemoryEntry[]
   conversationInsight LeadConversationInsight?
   appointments      Appointment[]   // Appointment history (Phase 34)
@@ -670,6 +691,9 @@ model Appointment {
   ghlAppointmentId          String?   @unique  // GHL appointment ID (idempotency key)
   calendlyInviteeUri        String?   @unique  // Calendly invitee URI (idempotency key)
   calendlyScheduledEventUri String?            // Calendly event URI (may be shared across invitees)
+  // Calendar attribution (Phase 126) - used for capacity/utilization analytics
+  ghlCalendarId          String?   // GHL calendarId (matches availability cache meta / settings calendar IDs)
+  calendlyEventTypeUri   String?   // Calendly event_type URI (e.g. https://api.calendly.com/event_types/<uuid>)
 
   // Timing (nullable to support migrating Phase 28 partial rollups safely)
   startAt               DateTime?
@@ -697,9 +721,12 @@ model Appointment {
 
   @@index([leadId])
   @@index([leadId, status])
+  @@index([leadId, status, startAt], name: "idx_appointment_capacity_query")
   @@index([startAt])
   @@index([status])
   @@index([provider])
+  @@index([ghlCalendarId])
+  @@index([calendlyEventTypeUri])
   @@index([createdAt(sort: Desc)])
 }
 
@@ -1171,6 +1198,8 @@ model AIDraft {
   id        String   @id @default(uuid())
   leadId    String
   lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  // Phase 123: Optional back-reference to the draft pipeline run that produced this draft.
+  draftPipelineRun DraftPipelineRun? @relation("DraftPipelineRunDraft")
   triggerMessageId String? // Inbound Message.id that triggered this draft (idempotency key)
   content   String   @db.Text
   channel   String   @default("sms") // sms | email
@@ -1197,6 +1226,8 @@ model AIDraft {
   autoSendRevisionConfidence  Float?
   autoSendRevisionApplied     Boolean @default(false)
   autoSendRevisionSelectorUsed Boolean?
+  // Phase 123: Auto-send revision loop iteration tracking.
+  autoSendRevisionIterations  Int?     @default(0)
 
   // Phase 70: Slack notification tracking (for interactive button updates).
   slackNotificationChannelId String?
@@ -1211,6 +1242,48 @@ model AIDraft {
   @@index([autoSendAction])
   @@index([autoSendEvaluatedAt])
   @@index([autoSendRevisionAttemptedAt])
+}
+
+// Phase 123: Run-scoped draft pipeline persistence (cross-agent context + iteration artifacts).
+model DraftPipelineRun {
+  id               String   @id @default(uuid())
+  clientId         String
+  client           Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leadId           String
+  lead             Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  triggerMessageId String?
+  draftId          String?  @unique
+  draft            AIDraft? @relation("DraftPipelineRunDraft", fields: [draftId], references: [id], onDelete: SetNull)
+  channel          String   // email | sms | linkedin
+  status           String   @default("RUNNING") // RUNNING | COMPLETED | FAILED | ABORTED
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  artifacts DraftPipelineArtifact[]
+
+  @@unique([triggerMessageId, channel])
+  @@index([draftId])
+  @@index([clientId, createdAt(sort: Desc)])
+  @@index([leadId, createdAt(sort: Desc)])
+}
+
+model DraftPipelineArtifact {
+  id           String          @id @default(uuid())
+  runId        String
+  run          DraftPipelineRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  stage        String
+  iteration    Int             @default(0) // 0 = baseline, 1-3 = loop iterations
+  promptKey    String?
+  model        String?
+  payload      Json?
+  text         String?         @db.Text
+  inputTokens  Int?
+  outputTokens Int?
+  latencyMs    Int?
+  createdAt    DateTime        @default(now())
+
+  @@unique([runId, stage, iteration])
+  @@index([runId, createdAt])
 }
 
 model BackgroundJob {
@@ -1414,6 +1487,9 @@ model LeadMemoryEntry {
   category        String
   content         String           @db.Text
   source          LeadMemorySource @default(MANUAL)
+  status          MemoryEntryStatus @default(APPROVED)
+  proposedByDraftPipelineRunId String?
+  proposedByDraftId            String?
   createdByUserId String?
   createdByEmail  String?
   expiresAt       DateTime?
@@ -1423,9 +1499,35 @@ model LeadMemoryEntry {
   @@index([clientId])
   @@index([leadId])
   @@index([clientId, leadId])
+  @@index([clientId, status])
   @@index([expiresAt])
   @@index([clientId, expiresAt])
   @@index([createdAt(sort: Desc)])
+  @@index([proposedByDraftPipelineRunId])
+}
+
+model WorkspaceMemoryEntry {
+  id              String           @id @default(uuid())
+  clientId        String
+  client          Client           @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  category        String
+  content         String           @db.Text
+  source          LeadMemorySource @default(MANUAL)
+  status          MemoryEntryStatus @default(APPROVED)
+  proposedByDraftPipelineRunId String?
+  proposedByDraftId            String?
+  createdByUserId String?
+  createdByEmail  String?
+  expiresAt       DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([clientId])
+  @@index([clientId, status])
+  @@index([expiresAt])
+  @@index([clientId, expiresAt])
+  @@index([createdAt(sort: Desc)])
+  @@index([proposedByDraftPipelineRunId])
 }
 
 // =============================================================================

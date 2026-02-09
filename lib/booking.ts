@@ -305,6 +305,7 @@ export async function bookMeetingOnGHL(
       provider: "GHL",
       source: AppointmentSource.AUTO_BOOK,
       ghlAppointmentId: appointmentResult.data.id,
+      ghlCalendarId: calendarId,
       startAt: startTime,
       endAt: endTime,
       status: AppointmentStatus.CONFIRMED,
@@ -517,8 +518,9 @@ export async function bookMeetingOnCalendly(
     const inviteeName = [lead.firstName, lead.lastName].filter(Boolean).join(" ").trim() || "Lead";
     const inviteeTz = lead.timezone || settings?.timezone || "UTC";
 
+    let usedEventTypeUri = selectedEventTypeUri;
     let invitee = await createCalendlyInvitee(calendlyAccessToken, {
-      eventTypeUri: selectedEventTypeUri,
+      eventTypeUri: usedEventTypeUri,
       startTimeIso,
       invitee: {
         email: inviteeEmail,
@@ -529,8 +531,9 @@ export async function bookMeetingOnCalendly(
     });
 
     if (!invitee.success && tryQuestionsEnabled && directBookEventTypeUri) {
+      usedEventTypeUri = directBookEventTypeUri;
       invitee = await createCalendlyInvitee(calendlyAccessToken, {
-        eventTypeUri: directBookEventTypeUri,
+        eventTypeUri: usedEventTypeUri,
         startTimeIso,
         invitee: {
           email: inviteeEmail,
@@ -554,6 +557,7 @@ export async function bookMeetingOnCalendly(
       source: AppointmentSource.AUTO_BOOK,
       calendlyInviteeUri: invitee.data.inviteeUri,
       calendlyScheduledEventUri: invitee.data.scheduledEventUri,
+      calendlyEventTypeUri: usedEventTypeUri,
       startAt: meetingStartTime,
       endAt: meetingEndTime,
       status: AppointmentStatus.CONFIRMED,

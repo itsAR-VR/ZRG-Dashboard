@@ -117,7 +117,7 @@ export interface CalendarLinkData {
 
 async function requireSettingsWriteAccess(clientId: string): Promise<void> {
   const { capabilities } = await requireWorkspaceCapabilities(clientId);
-  if (capabilities.isClientPortalUser) {
+  if (!capabilities.canEditSettings) {
     throw new Error("Unauthorized");
   }
 }
@@ -695,7 +695,7 @@ export async function getAutoFollowUpsOnReply(
     if (!clientId) {
       return { success: false, error: "No workspace selected" };
     }
-    await requireSettingsWriteAccess(clientId);
+    await requireClientAccess(clientId);
 
     const settings = await prisma.workspaceSettings.findUnique({
       where: { clientId },

@@ -31,6 +31,19 @@ import {
   type ConfidencePolicyRevisionRecord,
 } from "@/actions/confidence-policy-actions";
 import { getAiInteraction, listAiInteractions, type AiInteractionListRow } from "@/actions/ai-interaction-inspector-actions";
+import {
+  approvePendingMemoryEntry,
+  getMemoryGovernanceSettings,
+  listPendingMemoryEntries,
+  rejectPendingMemoryEntry,
+  updateMemoryGovernanceSettings,
+  type MemoryGovernanceSettings,
+  type PendingMemoryEntryRow,
+} from "@/actions/memory-governance-actions";
+import {
+  listAutoSendRevisionLoopSummaries,
+  type AutoSendRevisionLoopRow,
+} from "@/actions/auto-send-loop-observability-actions";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -101,6 +114,18 @@ export function ConfidenceControlPlane({ clientId }: Props) {
   const [selectedInteractionId, setSelectedInteractionId] = useState<string | null>(null);
   const [selectedInteractionDetail, setSelectedInteractionDetail] = useState<any | null>(null);
 
+  const [memorySettings, setMemorySettings] = useState<MemoryGovernanceSettings | null>(null);
+  const [memoryAllowlistText, setMemoryAllowlistText] = useState("");
+  const [memoryMinConfidenceText, setMemoryMinConfidenceText] = useState("0.7");
+  const [memoryMinTtlDaysText, setMemoryMinTtlDaysText] = useState("1");
+  const [memoryTtlCapDaysText, setMemoryTtlCapDaysText] = useState("90");
+  const [evaluatorModel, setEvaluatorModel] = useState<string>("");
+  const [evaluatorEffort, setEvaluatorEffort] = useState<string>("");
+  const [savingMemorySettings, setSavingMemorySettings] = useState(false);
+
+  const [pendingMemoryEntries, setPendingMemoryEntries] = useState<PendingMemoryEntryRow[]>([]);
+  const [loopSummaries, setLoopSummaries] = useState<AutoSendRevisionLoopRow[]>([]);
+
   useEffect(() => {
     if (!clientId) {
       setIsSuperAdmin(false);
@@ -169,6 +194,42 @@ export function ConfidenceControlPlane({ clientId }: Props) {
     }
   }, [clientId, isSuperAdmin, interactionFilters]);
 
+  const refreshMemorySettings = useCallback(async () => {
+    if (!clientId || !isSuperAdmin) return;
+    const res = await getMemoryGovernanceSettings(clientId);
+    if (res.success && res.data) {
+      setMemorySettings(res.data);
+      setMemoryAllowlistText(res.data.allowlistCategories.join("\n"));
+      setMemoryMinConfidenceText(String(res.data.minConfidence));
+      setMemoryMinTtlDaysText(String(res.data.minTtlDays));
+      setMemoryTtlCapDaysText(String(res.data.ttlCapDays));
+      setEvaluatorModel(res.data.autoSendEvaluatorModel ?? "");
+      setEvaluatorEffort(res.data.autoSendEvaluatorReasoningEffort ?? "");
+    } else {
+      toast.error("Failed to load memory governance", { description: res.error || "Unknown error" });
+    }
+  }, [clientId, isSuperAdmin]);
+
+  const refreshPendingMemory = useCallback(async () => {
+    if (!clientId || !isSuperAdmin) return;
+    const res = await listPendingMemoryEntries(clientId, { limit: 50 });
+    if (res.success && res.data) {
+      setPendingMemoryEntries(res.data.entries);
+    } else {
+      toast.error("Failed to load pending memory", { description: res.error || "Unknown error" });
+    }
+  }, [clientId, isSuperAdmin]);
+
+  const refreshLoopSummaries = useCallback(async () => {
+    if (!clientId || !isSuperAdmin) return;
+    const res = await listAutoSendRevisionLoopSummaries(clientId, { limit: 50 });
+    if (res.success && res.data) {
+      setLoopSummaries(res.data.rows);
+    } else {
+      toast.error("Failed to load loop summaries", { description: res.error || "Unknown error" });
+    }
+  }, [clientId, isSuperAdmin]);
+
   useEffect(() => {
     if (!clientId || !isSuperAdmin) return;
     void refreshRollout();
@@ -176,6 +237,9 @@ export function ConfidenceControlPlane({ clientId }: Props) {
     void refreshRuns();
     void refreshProposals();
     void refreshInteractions();
+    void refreshMemorySettings();
+    void refreshPendingMemory();
+    void refreshLoopSummaries();
   }, [
     clientId,
     isSuperAdmin,
@@ -184,6 +248,9 @@ export function ConfidenceControlPlane({ clientId }: Props) {
     refreshRuns,
     refreshProposals,
     refreshInteractions,
+    refreshMemorySettings,
+    refreshPendingMemory,
+    refreshLoopSummaries,
   ]);
 
   const rolloutSummary = useMemo(() => {
@@ -234,6 +301,77 @@ export function ConfidenceControlPlane({ clientId }: Props) {
       toast.error("Invalid JSON", { description: error instanceof Error ? error.message : "Failed to parse JSON" });
     } finally {
       setSavingBudgets(false);
+    }
+  };
+
+  const handleSaveMemoryGovernance = async () => {
+    if (!clientId) return;
+    setSavingMemorySettings(true);
+    try {
+      const allowlistCategories = Array.from(
+        new Set(
+          memoryAllowlistText
+            .split("\n")
+            .map((l) => l.trim())
+            .filter(Boolean)
+        )
+      );
+      const minConfidence = Number.parseFloat(memoryMinConfidenceText.trim());
+      const minTtlDays = Number.parseInt(memoryMinTtlDaysText.trim(), 10);
+      const ttlCapDays = Number.parseInt(memoryTtlCapDaysText.trim(), 10);
+
+      if (!Number.isFinite(minConfidence) || minConfidence < 0 || minConfidence > 1) {
+        toast.error("Invalid min confidence", { description: "Must be a number between 0 and 1." });
+        return;
+      }
+      if (!Number.isFinite(minTtlDays) || minTtlDays < 1) {
+        toast.error("Invalid min TTL", { description: "Must be an integer >= 1." });
+        return;
+      }
+      if (!Number.isFinite(ttlCapDays) || ttlCapDays < 1) {
+        toast.error("Invalid TTL cap", { description: "Must be an integer >= 1." });
+        return;
+      }
+
+      const res = await updateMemoryGovernanceSettings(clientId, {
+        allowlistCategories,
+        minConfidence,
+        minTtlDays,
+        ttlCapDays,
+        autoSendEvaluatorModel: evaluatorModel.trim() ? evaluatorModel.trim() : null,
+        autoSendEvaluatorReasoningEffort: evaluatorEffort.trim() ? evaluatorEffort.trim() : null,
+      });
+
+      if (res.success) {
+        toast.success("Memory governance updated");
+        await refreshMemorySettings();
+      } else {
+        toast.error("Failed to update memory governance", { description: res.error || "Unknown error" });
+      }
+    } finally {
+      setSavingMemorySettings(false);
+    }
+  };
+
+  const handleApproveMemory = async (row: PendingMemoryEntryRow) => {
+    if (!clientId) return;
+    const res = await approvePendingMemoryEntry(clientId, { scope: row.scope, id: row.id });
+    if (res.success) {
+      toast.success("Approved");
+      await refreshPendingMemory();
+    } else {
+      toast.error("Failed to approve", { description: res.error || "Unknown error" });
+    }
+  };
+
+  const handleRejectMemory = async (row: PendingMemoryEntryRow) => {
+    if (!clientId) return;
+    const res = await rejectPendingMemoryEntry(clientId, { scope: row.scope, id: row.id });
+    if (res.success) {
+      toast.success("Rejected");
+      await refreshPendingMemory();
+    } else {
+      toast.error("Failed to reject", { description: res.error || "Unknown error" });
     }
   };
 
@@ -353,7 +491,9 @@ export function ConfidenceControlPlane({ clientId }: Props) {
             <Shield className="h-4 w-4" />
             Confidence Control Plane
           </CardTitle>
-          <CardDescription>Super-admin only. No raw messages or lead memory is shown here.</CardDescription>
+          <CardDescription>
+            Super-admin only. No raw inbound/outbound messages are shown here; inferred memory is scrubbed for emails/phones.
+          </CardDescription>
           {rolloutSummary?.note ? (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">
               {rolloutSummary.note}
@@ -439,6 +579,226 @@ export function ConfidenceControlPlane({ clientId }: Props) {
               </Button>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-muted/60">
+        <CardHeader className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">Memory Governance</CardTitle>
+              <CardDescription>Super-admin policy for inferred durable memory (allowlist + thresholds + approvals).</CardDescription>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                void refreshMemorySettings();
+                void refreshPendingMemory();
+              }}
+              disabled={!clientId}
+            >
+              <RefreshCcw className="h-3 w-3 mr-2" />
+              Refresh
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div className="space-y-2">
+              <div className="text-sm font-medium">Allowlist categories (one per line)</div>
+              <Textarea
+                value={memoryAllowlistText}
+                onChange={(e) => setMemoryAllowlistText(e.target.value)}
+                placeholder="timezone_preference\nscheduling_preference\ncommunication_preference\navailability_pattern"
+                className="font-mono text-xs min-h-32"
+              />
+              <div className="text-xs text-muted-foreground">
+                Empty allowlist will fall back to the default set (shown). Categories longer than 64 chars are ignored.
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">Min confidence</div>
+                  <Input value={memoryMinConfidenceText} onChange={(e) => setMemoryMinConfidenceText(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">Min TTL (days)</div>
+                  <Input value={memoryMinTtlDaysText} onChange={(e) => setMemoryMinTtlDaysText(e.target.value)} />
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">TTL cap (days)</div>
+                  <Input value={memoryTtlCapDaysText} onChange={(e) => setMemoryTtlCapDaysText(e.target.value)} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">Evaluator model</div>
+                  <Select value={evaluatorModel} onValueChange={(v) => setEvaluatorModel(v)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Default (env/code)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">Default (env/code)</SelectItem>
+                      <SelectItem value="gpt-5-mini">gpt-5-mini</SelectItem>
+                      <SelectItem value="gpt-5.1">gpt-5.1</SelectItem>
+                      <SelectItem value="gpt-5.2">gpt-5.2</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-muted-foreground">Evaluator reasoning effort</div>
+                  <Select value={evaluatorEffort} onValueChange={(v) => setEvaluatorEffort(v)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Default (env/code)" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">Default (env/code)</SelectItem>
+                      <SelectItem value="low">low</SelectItem>
+                      <SelectItem value="medium">medium</SelectItem>
+                      <SelectItem value="high">high</SelectItem>
+                      <SelectItem value="extra_high">extra_high</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button size="sm" onClick={() => void handleSaveMemoryGovernance()} disabled={savingMemorySettings}>
+                  {savingMemorySettings ? <RefreshCcw className="h-3 w-3 mr-2 animate-spin" /> : null}
+                  Save
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => void refreshMemorySettings()}>
+                  Reload
+                </Button>
+                {memorySettings ? (
+                  <div className="ml-auto text-xs text-muted-foreground">
+                    Allowlist: {memorySettings.allowlistCategories.length} · Pending: {pendingMemoryEntries.length}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+
+          <Separator />
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">Pending Memory</div>
+                <div className="text-xs text-muted-foreground">Emails/phones are scrubbed before persistence.</div>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => void refreshPendingMemory()}>
+                <RefreshCcw className="h-3 w-3 mr-2" />
+                Refresh list
+              </Button>
+            </div>
+
+            {pendingMemoryEntries.length === 0 ? (
+              <div className="text-sm text-muted-foreground">No pending memory entries.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>When</TableHead>
+                      <TableHead>Scope</TableHead>
+                      <TableHead>Lead</TableHead>
+                      <TableHead>Category</TableHead>
+                      <TableHead>Content</TableHead>
+                      <TableHead>Expires</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pendingMemoryEntries.slice(0, 50).map((row) => {
+                      const preview = row.content.length > 120 ? `${row.content.slice(0, 117)}...` : row.content;
+                      return (
+                        <TableRow key={`${row.scope}:${row.id}`}>
+                          <TableCell className="text-xs whitespace-nowrap">{formatWhen(row.createdAt)}</TableCell>
+                          <TableCell className="text-xs font-mono whitespace-nowrap">{row.scope}</TableCell>
+                          <TableCell className="text-xs whitespace-nowrap">{row.leadLabel || (row.leadId ? row.leadId.slice(0, 8) : "-")}</TableCell>
+                          <TableCell className="text-xs font-mono whitespace-nowrap">{row.category}</TableCell>
+                          <TableCell className="text-xs">{preview}</TableCell>
+                          <TableCell className="text-xs whitespace-nowrap">{formatWhen(row.expiresAt)}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap">
+                            <div className="flex justify-end gap-2">
+                              <Button size="sm" variant="outline" onClick={() => void handleApproveMemory(row)}>
+                                Approve
+                              </Button>
+                              <Button size="sm" variant="destructive" onClick={() => void handleRejectMemory(row)}>
+                                Reject
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-muted/60">
+        <CardHeader className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">Auto-Send Revision Loop (Recent)</CardTitle>
+              <CardDescription>Stop reasons, iteration deltas, cache hits. Stored on DraftPipelineRun artifacts.</CardDescription>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => void refreshLoopSummaries()}>
+              <RefreshCcw className="h-3 w-3 mr-2" />
+              Refresh
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {loopSummaries.length === 0 ? (
+            <div className="text-sm text-muted-foreground">No loop summaries yet.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>When</TableHead>
+                    <TableHead>Lead</TableHead>
+                    <TableHead>Stop</TableHead>
+                    <TableHead className="text-right">Iters</TableHead>
+                    <TableHead className="text-right">ΔConf</TableHead>
+                    <TableHead className="text-right">Cache</TableHead>
+                    <TableHead className="text-right">Elapsed</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {loopSummaries.slice(0, 50).map((row) => {
+                    const s: any = row.summary && typeof row.summary === "object" ? row.summary : null;
+                    const stopReason = s?.stopReason ?? "-";
+                    const iters = typeof s?.iterationsUsed === "number" ? s.iterationsUsed : null;
+                    const delta = typeof s?.deltaConfidence === "number" ? s.deltaConfidence : null;
+                    const cacheHits = typeof s?.cacheHits === "number" ? s.cacheHits : null;
+                    const elapsedMs = typeof s?.elapsedMs === "number" ? s.elapsedMs : null;
+                    return (
+                      <TableRow key={row.id}>
+                        <TableCell className="text-xs whitespace-nowrap">{formatWhen(row.createdAt)}</TableCell>
+                        <TableCell className="text-xs font-mono whitespace-nowrap">{row.leadId.slice(0, 8)}</TableCell>
+                        <TableCell className="text-xs font-mono whitespace-nowrap">{stopReason}</TableCell>
+                        <TableCell className="text-right text-xs">{iters ?? "-"}</TableCell>
+                        <TableCell className="text-right text-xs">{delta !== null ? delta.toFixed(2) : "-"}</TableCell>
+                        <TableCell className="text-right text-xs">{cacheHits ?? "-"}</TableCell>
+                        <TableCell className="text-right text-xs">{elapsedMs !== null ? `${Math.round(elapsedMs)}ms` : "-"}</TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </CardContent>
       </Card>
 

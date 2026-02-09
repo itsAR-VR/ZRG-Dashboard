@@ -16,6 +16,7 @@ import { formatDurationMs } from "@/lib/business-hours";
 import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
 import { accessibleClientWhere, accessibleLeadWhere } from "@/lib/workspace-access-filters";
 import { requireWorkspaceCapabilities } from "@/lib/workspace-capabilities";
+import { getWorkspaceCapacityUtilization, type CapacityUtilization } from "@/lib/calendar-capacity-metrics";
 import { Prisma, type ClientMemberRole, type MeetingBookingProvider, type CrmResponseMode } from "@prisma/client";
 
 // Simple in-memory cache for analytics with TTL (5 minutes)
@@ -431,6 +432,7 @@ export interface AnalyticsData {
     avgResponseTime: string; // Backward compatibility - same as setterResponseTime
     setterResponseTime: string;
     clientResponseTime: string;
+    capacity?: CapacityUtilization;
   };
   sentimentBreakdown: {
     sentiment: string;
@@ -1158,6 +1160,13 @@ export async function getAnalytics(
         })
       : [];
 
+    const capacity = clientId
+      ? await getWorkspaceCapacityUtilization({ clientId, windowDays: 30 }).catch((error) => {
+          console.warn("[Analytics] Failed to compute workspace capacity utilization:", error);
+          return null;
+        })
+      : null;
+
     const analyticsData: AnalyticsData = {
       overview: {
         totalLeads,
@@ -1168,6 +1177,7 @@ export async function getAnalytics(
         avgResponseTime: responseTimeMetrics.setterResponseTime.formatted, // Backward compatibility
         setterResponseTime: responseTimeMetrics.setterResponseTime.formatted,
         clientResponseTime: responseTimeMetrics.clientResponseTime.formatted,
+        capacity: capacity || undefined,
       },
       sentimentBreakdown,
       weeklyStats,

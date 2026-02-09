@@ -300,6 +300,7 @@ export async function runSmsInboundPostProcessJob(params: {
         triggerMessageId: message.id,
         draftId,
         draftContent,
+        draftPipelineRunId: draftResult.runId ?? null,
         channel: "sms",
         latestInbound: messageBody,
         subject: null,

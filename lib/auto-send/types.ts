@@ -33,6 +33,7 @@ export interface AutoSendContext {
   triggerMessageId: string;
   draftId: string;
   draftContent: string;
+  draftPipelineRunId?: string | null;
 
   // Channel context
   channel: "email" | "sms" | "linkedin";
@@ -70,6 +71,9 @@ export interface AutoSendContext {
     autoSendScheduleMode?: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
     autoSendCustomSchedule?: unknown;
     autoSendRevisionEnabled?: boolean | null;
+    autoSendRevisionModel?: string | null;
+    autoSendRevisionReasoningEffort?: string | null;
+    autoSendRevisionMaxIterations?: number | null;
   } | null;
 
   // Behavior toggles to preserve per-job semantics

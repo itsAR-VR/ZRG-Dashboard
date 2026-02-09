@@ -14,6 +14,8 @@
 import { prisma } from "@/lib/prisma";
 import { AppointmentStatus, AppointmentSource, type MeetingBookingProvider } from "@prisma/client";
 import { selectPrimaryAppointment, buildLeadRollupFromAppointment, type AppointmentForRollup } from "@/lib/appointment-rollup";
+import { getGHLAppointment } from "@/lib/ghl-api";
+import { getCalendlyScheduledEvent } from "@/lib/calendly-api";
 
 export interface UpsertAppointmentInput {
   leadId: string;
@@ -24,6 +26,9 @@ export interface UpsertAppointmentInput {
   ghlAppointmentId?: string | null;
   calendlyInviteeUri?: string | null;
   calendlyScheduledEventUri?: string | null;
+  // Calendar attribution (Phase 126) - enables capacity utilization analytics
+  ghlCalendarId?: string | null;
+  calendlyEventTypeUri?: string | null;
 
   // Timing
   startAt?: Date | null;
@@ -139,6 +144,8 @@ export async function upsertAppointmentWithRollup(
     ghlAppointmentId,
     calendlyInviteeUri,
     calendlyScheduledEventUri,
+    ghlCalendarId,
+    calendlyEventTypeUri,
     startAt,
     endAt,
     timezone,
@@ -218,6 +225,8 @@ export async function upsertAppointmentWithRollup(
       ghlAppointmentId: provider === "GHL" ? ghlAppointmentId : null,
       calendlyInviteeUri: provider === "CALENDLY" ? calendlyInviteeUri : null,
       calendlyScheduledEventUri: provider === "CALENDLY" ? calendlyScheduledEventUri : null,
+      ghlCalendarId: provider === "GHL" ? (ghlCalendarId ?? undefined) : undefined,
+      calendlyEventTypeUri: provider === "CALENDLY" ? (calendlyEventTypeUri ?? undefined) : undefined,
       startAt,
       endAt,
       timezone,
@@ -365,4 +374,143 @@ export async function findAppointmentByProviderKey(opts: {
   }
 
   return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Backfill calendar attribution fields for historical appointments.
+ *
+ * This is an on-demand utility (not invoked automatically in reconcile hot paths) to avoid
+ * adding extra DB reads to reconciliation early-return branches.
+ */
+export async function backfillAppointmentAttribution(
+  clientId: string,
+  opts?: { limit?: number; batchSize?: number; batchDelayMs?: number }
+): Promise<{ ghlUpdated: number; calendlyUpdated: number; errors: string[] }> {
+  const limit = Math.max(1, Math.min(5_000, Math.trunc(opts?.limit ?? 500)));
+  const batchSize = Math.max(1, Math.min(50, Math.trunc(opts?.batchSize ?? 10)));
+  const batchDelayMs = Math.max(0, Math.min(30_000, Math.trunc(opts?.batchDelayMs ?? 500)));
+
+  const errors: string[] = [];
+  let ghlUpdated = 0;
+  let calendlyUpdated = 0;
+
+  const client = await prisma.client.findUnique({
+    where: { id: clientId },
+    select: {
+      id: true,
+      ghlLocationId: true,
+      ghlPrivateKey: true,
+      calendlyAccessToken: true,
+    },
+  });
+
+  if (!client) {
+    return { ghlUpdated: 0, calendlyUpdated: 0, errors: ["Client not found"] };
+  }
+
+  const ghlKey = client.ghlPrivateKey?.trim() || "";
+  const ghlLocationId = client.ghlLocationId?.trim() || "";
+  const calendlyAccessToken = client.calendlyAccessToken?.trim() || "";
+
+  if (ghlKey && ghlLocationId) {
+    const ghlTargets = await prisma.appointment.findMany({
+      where: {
+        provider: "GHL",
+        ghlAppointmentId: { not: null },
+        ghlCalendarId: null,
+        lead: { clientId },
+      },
+      select: { id: true, ghlAppointmentId: true },
+      take: limit,
+      orderBy: { createdAt: "desc" },
+    });
+
+    for (let i = 0; i < ghlTargets.length; i += batchSize) {
+      const batch = ghlTargets.slice(i, i + batchSize);
+      for (const appt of batch) {
+        const eventId = (appt.ghlAppointmentId || "").trim();
+        if (!eventId) continue;
+        const res = await getGHLAppointment(eventId, ghlKey, { locationId: ghlLocationId });
+        if (!res.success || !res.data?.calendarId) {
+          errors.push(`GHL appointment lookup failed for appointmentId=${appt.id}`);
+          continue;
+        }
+
+        await prisma.appointment
+          .update({
+            where: { id: appt.id },
+            data: { ghlCalendarId: res.data.calendarId },
+          })
+          .then(() => {
+            ghlUpdated += 1;
+          })
+          .catch((error) => {
+            console.warn("[Appointment Backfill] Failed to update GHL calendarId:", appt.id, error);
+            errors.push(`Failed to update GHL calendarId for appointmentId=${appt.id}`);
+          });
+      }
+
+      if (batchDelayMs > 0 && i + batchSize < ghlTargets.length) {
+        await sleep(batchDelayMs);
+      }
+    }
+  } else {
+    errors.push("GHL credentials not configured for this workspace");
+  }
+
+  if (calendlyAccessToken) {
+    const calendlyTargets = await prisma.appointment.findMany({
+      where: {
+        provider: "CALENDLY",
+        calendlyScheduledEventUri: { not: null },
+        calendlyEventTypeUri: null,
+        lead: { clientId },
+      },
+      select: { id: true, calendlyScheduledEventUri: true },
+      take: limit,
+      orderBy: { createdAt: "desc" },
+    });
+
+    for (let i = 0; i < calendlyTargets.length; i += batchSize) {
+      const batch = calendlyTargets.slice(i, i + batchSize);
+      for (const appt of batch) {
+        const uri = (appt.calendlyScheduledEventUri || "").trim();
+        if (!uri) continue;
+        const res = await getCalendlyScheduledEvent(calendlyAccessToken, uri);
+        const eventTypeUri =
+          res.success && res.data && typeof res.data.event_type === "string" && res.data.event_type.trim()
+            ? res.data.event_type.trim()
+            : "";
+        if (!eventTypeUri) {
+          errors.push(`Calendly event lookup missing event_type for appointmentId=${appt.id}`);
+          continue;
+        }
+
+        await prisma.appointment
+          .update({
+            where: { id: appt.id },
+            data: { calendlyEventTypeUri: eventTypeUri },
+          })
+          .then(() => {
+            calendlyUpdated += 1;
+          })
+          .catch((error) => {
+            console.warn("[Appointment Backfill] Failed to update Calendly eventTypeUri:", appt.id, error);
+            errors.push(`Failed to update Calendly eventTypeUri for appointmentId=${appt.id}`);
+          });
+      }
+
+      if (batchDelayMs > 0 && i + batchSize < calendlyTargets.length) {
+        await sleep(batchDelayMs);
+      }
+    }
+  } else {
+    errors.push("Calendly access token not configured for this workspace");
+  }
+
+  return { ghlUpdated, calendlyUpdated, errors };
 }

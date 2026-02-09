@@ -9,6 +9,11 @@ export type AvailabilityReplacement = {
   newText: string;
 };
 
+type AvailabilityReplacementPair = {
+  oldText: string;
+  newText: string;
+};
+
 export type AvailabilityRefreshResult =
   | {
       success: true;
@@ -24,7 +29,7 @@ export type AvailabilityRefreshResult =
     };
 
 type AvailabilityRefreshAiResponse = {
-  replacements: AvailabilityReplacement[];
+  replacements: AvailabilityReplacementPair[];
   hasTimeOffers: boolean;
   done: boolean;
 };
@@ -63,7 +68,7 @@ export function applyValidatedReplacements(draft: string, replacements: Availabi
 
 export function validateAvailabilityReplacements(opts: {
   draft: string;
-  replacements: AvailabilityReplacement[];
+  replacements: AvailabilityReplacementPair[];
   candidateLabels: Set<string>;
   usedNewTexts: Set<string>;
   chunkSize: number;
@@ -81,23 +86,36 @@ export function validateAvailabilityReplacements(opts: {
   const normalized: AvailabilityReplacement[] = [];
   const seenNewTexts = new Set<string>(usedNewTexts);
   for (const r of replacements) {
-    if (!Number.isInteger(r.startIndex) || !Number.isInteger(r.endIndex)) {
-      return { ok: false, error: "invalid_indices" };
+    if (!r || typeof r !== "object") {
+      return { ok: false, error: "invalid_replacement" };
     }
-    if (r.startIndex < 0 || r.endIndex > draft.length || r.startIndex >= r.endIndex) {
-      return { ok: false, error: "out_of_bounds" };
+    const oldText = typeof r.oldText === "string" ? r.oldText : "";
+    const newText = typeof r.newText === "string" ? r.newText : "";
+    if (!oldText) {
+      return { ok: false, error: "invalid_old_text" };
     }
-    if (draft.slice(r.startIndex, r.endIndex) !== r.oldText) {
-      return { ok: false, error: "old_text_mismatch" };
+    if (!newText) {
+      return { ok: false, error: "invalid_new_text" };
     }
-    if (!candidateLabels.has(r.newText)) {
+
+    const startIndex = draft.indexOf(oldText);
+    if (startIndex === -1) {
+      return { ok: false, error: "old_text_not_found" };
+    }
+    const nextIndex = draft.indexOf(oldText, startIndex + Math.max(1, oldText.length));
+    if (nextIndex !== -1) {
+      return { ok: false, error: "old_text_not_unique" };
+    }
+    const endIndex = startIndex + oldText.length;
+
+    if (!candidateLabels.has(newText)) {
       return { ok: false, error: "new_text_not_candidate" };
     }
-    if (seenNewTexts.has(r.newText)) {
+    if (seenNewTexts.has(newText)) {
       return { ok: false, error: "duplicate_new_text" };
     }
-    seenNewTexts.add(r.newText);
-    normalized.push(r);
+    seenNewTexts.add(newText);
+    normalized.push({ startIndex, endIndex, oldText, newText });
   }
 
   const sorted = [...normalized].sort((a, b) => a.startIndex - b.startIndex);
@@ -169,8 +187,9 @@ Rules:
 2. For each time offer that needs replacement, select a replacement VERBATIM from AVAILABLE_SLOTS.
 3. Do NOT change any text except the time offer strings themselves.
 4. Return only up to CHUNK_SIZE replacements per response.
-5. If you find no time offers in the draft at all, set hasTimeOffers to false.
-6. If all time offers are already valid (present in AVAILABLE_SLOTS and in the future), return empty replacements with done=true.
+5. Each replacement MUST be an object with "oldText" and "newText" (no indices). "oldText" MUST match text that appears in DRAFT exactly.
+6. If you find no time offers in the draft at all, set hasTimeOffers to false.
+7. If all time offers are already valid (present in AVAILABLE_SLOTS and in the future), return empty replacements with done=true.
 
 Match the timezone abbreviation style already used in the draft (e.g., if the draft uses "EST", use "EST" from the candidate labels).
 
@@ -184,12 +203,10 @@ Output ONLY valid JSON. No explanation.`;
         items: {
           type: "object",
           properties: {
-            startIndex: { type: "integer", minimum: 0 },
-            endIndex: { type: "integer", minimum: 0 },
             oldText: { type: "string" },
             newText: { type: "string" },
           },
-          required: ["startIndex", "endIndex", "oldText", "newText"],
+          required: ["oldText", "newText"],
           additionalProperties: false,
         },
       },

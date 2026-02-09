@@ -310,6 +310,9 @@ interface SequenceInstanceCardProps {
 function SequenceInstanceCard({ instance, onPause, onResume, onCancel, actionInProgress }: SequenceInstanceCardProps) {
   const progress = (instance.currentStep / instance.totalSteps) * 100
   const isActionInProgress = actionInProgress === instance.id
+  const isSmsDndBlocked = Boolean(instance.pausedReason?.startsWith("blocked_sms_dnd"))
+  const smsTaskWarning =
+    instance.latestTask?.type === "sms" ? (instance.latestTask.suggestedMessage || null) : null
   const pausedReasonCopy = (() => {
     const reason = instance.pausedReason
     if (!reason) return null
@@ -317,6 +320,15 @@ function SequenceInstanceCard({ instance, onPause, onResume, onCancel, actionInP
     if (reason === "lead_replied") return "Lead replied — paused until you reply"
     if (reason === "awaiting_approval") return "Awaiting approval"
     if (reason === "awaiting_enrichment") return "Awaiting enrichment"
+    if (reason === "blocked_missing_phone") return "Missing phone number — enrich or add manually"
+    if (reason === "blocked_sms_config") return "SMS blocked — GoHighLevel not configured"
+    if (reason === "blocked_sms_error") return "SMS failed — check GoHighLevel and retry"
+    if (reason.startsWith("blocked_sms_dnd")) {
+      const match = reason.match(/attempt:(\d+)/i)
+      const attempt = match ? Number(match[1]) : NaN
+      if (Number.isFinite(attempt) && attempt > 0) return `SMS blocked — DND active (retry ${attempt}/24)`
+      return "SMS blocked — DND active (retrying hourly)"
+    }
     if (reason === "unipile_disconnected") return "LinkedIn integration disconnected — reconnect in Settings"
     if (reason === "linkedin_unreachable") return "LinkedIn recipient unreachable"
     if (reason === "lead_snoozed") return "Lead snoozed"
@@ -347,7 +359,7 @@ function SequenceInstanceCard({ instance, onPause, onResume, onCancel, actionInP
   return (
     <Card className={cn(
       "transition-colors",
-      instance.status === "paused" && "border-amber-500/30 bg-amber-500/5"
+      (instance.status === "paused" || isSmsDndBlocked) && "border-amber-500/30 bg-amber-500/5"
     )}>
       <CardContent className="p-4">
         <div className="flex items-start gap-4">
@@ -391,8 +403,12 @@ function SequenceInstanceCard({ instance, onPause, onResume, onCancel, actionInP
               </div>
             </div>
 
-            {instance.status === "paused" && pausedReasonCopy && (
+            {(instance.status === "paused" || isSmsDndBlocked) && pausedReasonCopy && (
               <p className="text-xs text-amber-500 mt-2">{pausedReasonCopy}</p>
+            )}
+
+            {instance.status === "active" && !isSmsDndBlocked && smsTaskWarning && (
+              <p className="text-xs text-amber-500 mt-2">{smsTaskWarning}</p>
             )}
 
             {/* Actions */}

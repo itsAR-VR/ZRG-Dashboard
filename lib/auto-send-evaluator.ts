@@ -8,6 +8,7 @@ import {
   buildLeadContextBundleTelemetryMetadata,
   isLeadContextBundleGloballyDisabled,
 } from "@/lib/lead-context-bundle";
+import { coerceAutoSendEvaluatorModel, coerceAutoSendEvaluatorReasoningEffort } from "@/lib/auto-send/evaluator-config";
 
 export type AutoSendEvaluation = {
   confidence: number;
@@ -280,9 +281,19 @@ export async function evaluateAutoSend(opts: {
         aiGoals: true,
         leadContextBundleEnabled: true,
         leadContextBundleBudgets: true,
+        autoSendEvaluatorModel: true,
+        autoSendEvaluatorReasoningEffort: true,
       },
     })
     .catch(() => null);
+
+  const evaluatorModel = coerceAutoSendEvaluatorModel(
+    settings?.autoSendEvaluatorModel ?? process.env.AUTO_SEND_EVALUATOR_MODEL ?? null
+  );
+  const { api: evaluatorReasoningEffort } = coerceAutoSendEvaluatorReasoningEffort({
+    model: evaluatorModel,
+    storedValue: settings?.autoSendEvaluatorReasoningEffort ?? process.env.AUTO_SEND_EVALUATOR_REASONING_EFFORT ?? null,
+  });
 
   const leadContextBundleEnabled =
     Boolean(settings?.leadContextBundleEnabled) && !isLeadContextBundleGloballyDisabled();
@@ -359,8 +370,8 @@ export async function evaluateAutoSend(opts: {
     featureId: "auto_send.evaluate",
     promptKey: "auto_send.evaluate.v1",
     metadata: promptMetadata,
-    model: "gpt-5-mini",
-    reasoningEffort: "low",
+    model: evaluatorModel,
+    reasoningEffort: evaluatorReasoningEffort,
     systemFallback,
     templateVars: { inputJson: inputBuild.inputJson },
     schemaName: "auto_send_evaluator",

@@ -46,6 +46,8 @@ import {
   shouldRunMeetingOverseer,
   type MeetingOverseerExtractDecision,
 } from "@/lib/meeting-overseer";
+import { DRAFT_PIPELINE_STAGES, type DraftPipelineStage } from "@/lib/draft-pipeline/types";
+import { validateArtifactPayload } from "@/lib/draft-pipeline/validate-payload";
 import type { AvailabilitySource } from "@prisma/client";
 
 type DraftChannel = "sms" | "email" | "linkedin";
@@ -54,6 +56,7 @@ interface DraftGenerationResult {
   success: boolean;
   draftId?: string;
   content?: string;
+  runId?: string | null;
   error?: string;
 }
 
@@ -93,6 +96,10 @@ const BOOKING_LINK_PLACEHOLDER_GLOBAL_REGEX =
 // Matches truncated URLs like "https://c" or "https://cal." (but not "https://cal.com/user").
 const TRUNCATED_URL_REGEX = /https?:\/\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.?(?=\s|$)/i;
 const TRUNCATED_URL_GLOBAL_REGEX = /https?:\/\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.?(?=\s|$)/gi;
+
+// Pricing placeholders like "${PRICE}" or "$X-$Y" (avoid matching real prices like "$5,000").
+const PRICING_PLACEHOLDER_REGEX = /\$\{[A-Z_]+\}|\$[A-Z](?:\s*-\s*\$[A-Z])?(?![A-Za-z0-9])/;
+const PRICING_PLACEHOLDER_GLOBAL_REGEX = /\$\{[A-Z_]+\}|\$[A-Z](?:\s*-\s*\$[A-Z])?(?![A-Za-z0-9])/g;
 
 function isMaxOutputTokensIncomplete(response: any): boolean {
   return response?.status === "incomplete" && response?.incomplete_details?.reason === "max_output_tokens";
@@ -174,7 +181,7 @@ function getEmailLengthStatus(
 
 function detectDraftIssues(content: string): { hasPlaceholders: boolean; hasTruncatedUrl: boolean } {
   return {
-    hasPlaceholders: BOOKING_LINK_PLACEHOLDER_REGEX.test(content),
+    hasPlaceholders: BOOKING_LINK_PLACEHOLDER_REGEX.test(content) || PRICING_PLACEHOLDER_REGEX.test(content),
     hasTruncatedUrl: TRUNCATED_URL_REGEX.test(content),
   };
 }
@@ -188,6 +195,11 @@ export function sanitizeDraftContent(content: string, leadId: string, channel: D
     result = result.replace(BOOKING_LINK_PLACEHOLDER_GLOBAL_REGEX, "");
   }
 
+  const hadPricingPlaceholders = PRICING_PLACEHOLDER_REGEX.test(result);
+  if (hadPricingPlaceholders) {
+    result = result.replace(PRICING_PLACEHOLDER_GLOBAL_REGEX, "");
+  }
+
   const hadTruncatedUrl = TRUNCATED_URL_REGEX.test(result);
   if (hadTruncatedUrl) {
     result = result.replace(TRUNCATED_URL_GLOBAL_REGEX, "");
@@ -196,9 +208,10 @@ export function sanitizeDraftContent(content: string, leadId: string, channel: D
   // Avoid mutating formatting too aggressively (newlines matter for email).
   result = result.replace(/[ \t]{2,}/g, " ").trim();
 
-  if (hadPlaceholders || hadTruncatedUrl) {
+  if (hadPlaceholders || hadPricingPlaceholders || hadTruncatedUrl) {
     console.warn(`[AI Drafts] Sanitized draft for lead ${leadId} (${channel})`, {
       hadPlaceholders,
+      hadPricingPlaceholders,
       hadTruncatedUrl,
       changed: result !== before,
     });
@@ -273,7 +286,16 @@ async function runEmailDraftVerificationStep3(opts: {
   knowledgeContext: string;
   timeoutMs: number;
   metadata?: unknown;
-}): Promise<string | null> {
+}): Promise<{
+  finalDraft: string;
+  interactionId: string | null;
+  model: string;
+  promptKey: string;
+  promptKeyForTelemetry: string;
+  changed: boolean;
+  violationsDetected: string[];
+  changes: string[];
+} | null> {
   const promptKey = "draft.verify.email.step3.v1";
   const latestInbound = await getLatestInboundEmailTextForVerifier({
     leadId: opts.leadId,
@@ -449,7 +471,16 @@ async function runEmailDraftVerificationStep3(opts: {
       }
     }
 
-    return finalDraft;
+    return {
+      finalDraft,
+      interactionId,
+      model: verifierModel,
+      promptKey,
+      promptKeyForTelemetry,
+      changed: parsed.changed,
+      violationsDetected: parsed.violationsDetected,
+      changes: parsed.changes,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (shouldLogVerifierDetails) {
@@ -559,6 +590,32 @@ function resolvePersona(
   };
 }
 
+export function mergeServiceDescriptions(
+  primary: string | null | undefined,
+  secondary: string | null | undefined
+): string | null {
+  const a = (primary || "").trim();
+  const b = (secondary || "").trim();
+
+  if (!a && !b) return null;
+  if (!a) return b;
+  if (!b) return a;
+
+  const normalize = (value: string): string => value.toLowerCase().replace(/\s+/g, " ").trim();
+  const aNorm = normalize(a);
+  const bNorm = normalize(b);
+
+  if (aNorm.includes(bNorm)) {
+    return a.length >= b.length ? a : b;
+  }
+
+  if (bNorm.includes(aNorm)) {
+    return b.length >= a.length ? b : a;
+  }
+
+  return `${a}\n\n${b}`;
+}
+
 function isPrismaUniqueConstraintError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   return "code" in error && (error as { code?: unknown }).code === "P2002";
@@ -636,6 +693,7 @@ Guidelines:
 - Be professional but personable
 - Don't use emojis unless the lead used them first
 - Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
+- Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If pricing isn't explicitly present in About Our Business or Reference Information, ask one clarifying question and offer a quick call.
 - If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
 - TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". If no available times match their preference, ask what works better instead of offering mismatched times.
 - If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works. When the lead expressed a timing preference, only offer times that match it. When no timing preference was expressed, prefer sooner options but never offer same-day (today) times unless the lead explicitly asks for today. If no availability is provided, ask for their availability.
@@ -697,6 +755,7 @@ Guidelines:
 - Keep it concise and natural (1-3 short paragraphs).
 - Don't use emojis unless the lead used them first.
 - Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
+- Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If pricing isn't explicitly present in About Our Business or Reference Information, ask one clarifying question and offer a quick call.
 - If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
 - TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". If no available times match their preference, ask what works better instead of offering mismatched times.
 - If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works. When the lead expressed a timing preference, only offer times that match it. When no timing preference was expressed, prefer sooner options but never offer same-day (today) times unless the lead explicitly asks for today. If no availability is provided, ask for their availability.
@@ -784,6 +843,7 @@ OUTPUT RULES:
 - Output the email reply in Markdown-friendly plain text (paragraphs and "-" bullets allowed).
 - Do not use bold, italics, underline, strikethrough, code, or headings.
 - Do not invent facts. Use only provided context.
+- Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If pricing isn't explicitly present in OFFER or Reference Information, ask one clarifying question and offer a quick call.
 - If the lead opted out/unsubscribed/asked to stop, output an empty reply ("") and nothing else.
 - Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
 - If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
@@ -1239,7 +1299,20 @@ export async function generateResponseDraft(
           );
         }
 
-        return { success: true, draftId: existing.id, content: existing.content };
+        let runId: string | null = null;
+        try {
+          runId =
+            (
+              await prisma.draftPipelineRun.findUnique({
+                where: { triggerMessageId_channel: { triggerMessageId, channel } },
+                select: { id: true },
+              })
+            )?.id ?? null;
+        } catch {
+          // ignore
+        }
+
+        return { success: true, draftId: existing.id, content: existing.content, runId };
       }
     }
 
@@ -1345,6 +1418,84 @@ export async function generateResponseDraft(
     const settings = lead?.client?.settings;
 
     // ---------------------------------------------------------------------------
+    // Phase 123: Draft pipeline run + artifact persistence (fail-open)
+    // ---------------------------------------------------------------------------
+    let draftPipelineRunId: string | null = null;
+    if (triggerMessageId) {
+      try {
+        const run = await prisma.draftPipelineRun.upsert({
+          where: { triggerMessageId_channel: { triggerMessageId, channel } },
+          create: {
+            clientId: lead.clientId,
+            leadId,
+            triggerMessageId,
+            channel,
+            status: "RUNNING",
+          },
+          update: {},
+          select: { id: true },
+        });
+        draftPipelineRunId = run.id;
+      } catch (error) {
+        console.warn("[AI Drafts] Failed to create DraftPipelineRun; continuing without run artifacts", {
+          leadId,
+          triggerMessageId,
+          channel,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const persistDraftPipelineArtifact = async (opts: {
+      stage: DraftPipelineStage;
+      iteration?: number;
+      promptKey?: string | null;
+      model?: string | null;
+      payload?: unknown;
+      text?: string | null;
+    }): Promise<void> => {
+      if (!draftPipelineRunId) return;
+      const iteration = typeof opts.iteration === "number" && Number.isFinite(opts.iteration) ? Math.trunc(opts.iteration) : 0;
+
+      const payload = validateArtifactPayload(opts.payload);
+      const createOrUpdate = {
+        ...(opts.promptKey ? { promptKey: opts.promptKey } : {}),
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(payload !== null ? { payload } : {}),
+        ...(opts.text ? { text: opts.text } : {}),
+      };
+
+      try {
+        await prisma.draftPipelineArtifact.upsert({
+          where: {
+            runId_stage_iteration: {
+              runId: draftPipelineRunId,
+              stage: opts.stage,
+              iteration,
+            },
+          },
+          create: {
+            runId: draftPipelineRunId,
+            stage: opts.stage,
+            iteration,
+            ...createOrUpdate,
+          },
+          update: createOrUpdate,
+          select: { id: true },
+        });
+      } catch (error) {
+        console.warn("[AI Drafts] Failed to persist DraftPipelineArtifact; continuing", {
+          leadId,
+          triggerMessageId,
+          channel,
+          stage: opts.stage,
+          iteration,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    // ---------------------------------------------------------------------------
     // Resolve AI Persona (Phase 39)
     // Priority: campaign persona > default persona > workspace settings
     // ---------------------------------------------------------------------------
@@ -1354,7 +1505,10 @@ export async function generateResponseDraft(
     const aiGreeting = persona.greeting;
     const aiGoals = persona.goals;
     const aiSignature = persona.signature;
-    const serviceDescription = persona.serviceDescription;
+    const serviceDescription = mergeServiceDescriptions(
+      persona.serviceDescription,
+      settings?.serviceDescription?.trim() || null
+    );
 
     // Log persona source for debugging (can be removed once stable)
     console.log(
@@ -1563,6 +1717,7 @@ export async function generateResponseDraft(
     // Booking Process Instructions (Phase 36)
     // ---------------------------------------------------------------------------
     let bookingProcessInstructions: string | null = null;
+    let bookingEscalationReason: string | null = null;
 
     try {
       const bookingResult = await getBookingProcessInstructions({
@@ -1573,27 +1728,37 @@ export async function generateResponseDraft(
         availableSlots: availability, // Pass the already-loaded availability
       });
 
-      if (bookingResult.requiresHumanReview) {
-        console.log(
-          `[AI Drafts] Lead ${leadId} requires human review: ${bookingResult.escalationReason}`
-        );
-        return {
-          success: false,
-          error: `Human review required: ${bookingResult.escalationReason}`,
-        };
-      }
+      if (bookingResult.requiresHumanReview || bookingResult.escalationReason) {
+        bookingEscalationReason =
+          (bookingResult.escalationReason || "").trim() || "requires_human_review";
 
-      bookingProcessInstructions = bookingResult.instructions;
+        console.log("[AI Drafts] Booking escalation active; suppressing booking instructions", {
+          leadId,
+          channel,
+          escalationReason: bookingEscalationReason,
+        });
 
-      if (bookingProcessInstructions) {
-        console.log(
-          `[AI Drafts] Using booking process stage ${bookingResult.stageNumber} (wave ${bookingResult.waveNumber}) for ${channel}`
-        );
+        // Escalation should never block drafting; it just suppresses booking nudges.
+        bookingProcessInstructions = null;
+        availability = [];
+      } else {
+        bookingProcessInstructions = bookingResult.instructions;
+
+        if (bookingProcessInstructions) {
+          console.log(
+            `[AI Drafts] Using booking process stage ${bookingResult.stageNumber} (wave ${bookingResult.waveNumber}) for ${channel}`
+          );
+        }
       }
     } catch (error) {
       console.error("[AI Drafts] Failed to get booking process instructions:", error);
       // Continue without booking instructions on error
     }
+
+    const bookingEscalationPromptAppendix =
+      bookingEscalationReason && !leadSchedulerLink
+        ? `\nBOOKING ESCALATION OVERRIDE (${bookingEscalationReason}):\nSCHEDULING: Do not propose specific meeting times or include any booking links. If scheduling comes up, ask for their preferred times/timezone and note a human will coordinate.\n`
+        : "";
 
     // ---------------------------------------------------------------------------
     // Shared config
@@ -1723,6 +1888,7 @@ export async function generateResponseDraft(
       // Step 1: Strategy
       let strategy: EmailDraftStrategy | null = null;
       let strategyInteractionId: string | null = null;
+      let strategyPromptKeyUsed: string | null = null;
 
       let strategyInstructions = buildEmailDraftStrategyInstructions({
         aiName,
@@ -1756,6 +1922,10 @@ export async function generateResponseDraft(
       // Append booking process instructions if available (Phase 36)
       if (bookingProcessInstructions) {
         strategyInstructions += bookingProcessInstructions;
+      }
+
+      if (bookingEscalationPromptAppendix) {
+        strategyInstructions += bookingEscalationPromptAppendix;
       }
 
       // Lead-scheduler-link override (Phase 79): prevent booking-process templates from suggesting our times/link
@@ -1839,6 +2009,7 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
 
         if (strategyResult.success) {
           strategy = strategyResult.data;
+          strategyPromptKeyUsed = attemptPromptKey;
 
           // If AI selected an archetype, resolve it and apply workspace overrides
           if (shouldSelectArchetype && strategy.recommended_archetype_id) {
@@ -1900,8 +2071,22 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
         break;
       }
 
-	      // Step 2: Generation (if strategy succeeded and archetype is resolved)
-	      if (strategy) {
+      if (strategy) {
+        await persistDraftPipelineArtifact({
+          stage: DRAFT_PIPELINE_STAGES.draftStrategyStep1,
+          promptKey: strategyPromptKeyUsed,
+          model: draftModel,
+          payload: {
+            strategy,
+            interactionId: strategyInteractionId,
+            archetypeId: archetype?.id || null,
+            shouldSelectArchetype,
+          },
+        });
+      }
+
+      // Step 2: Generation (if strategy succeeded and archetype is resolved)
+      if (strategy) {
           // Ensure archetype is set (fallback if AI selection failed or wasn't requested)
           if (!archetype) {
             console.warn("[AI Drafts] No archetype set after strategy, using default");
@@ -2167,6 +2352,10 @@ Write the email response now, following the strategy and structure archetype.
           fallbackSystemPrompt += bookingProcessInstructions;
         }
 
+        if (bookingEscalationPromptAppendix) {
+          fallbackSystemPrompt += bookingEscalationPromptAppendix;
+        }
+
         // Lead-scheduler-link override (Phase 79): prevent fallback prompt from suggesting our times/link
         // when the lead explicitly provided their own scheduling link.
         if (leadSchedulerLink) {
@@ -2413,6 +2602,10 @@ Generate an appropriate email response following the guidelines and structure ar
         instructions += bookingProcessInstructions;
       }
 
+      if (bookingEscalationPromptAppendix) {
+        instructions += bookingEscalationPromptAppendix;
+      }
+
       // Lead-scheduler-link override (Phase 79): prevent SMS/LinkedIn drafts from suggesting our times/link
       // when the lead explicitly provided their own scheduling link.
       if (leadSchedulerLink) {
@@ -2572,6 +2765,16 @@ Generate an appropriate ${channel} response following the guidelines above.
       });
     }
 
+    await persistDraftPipelineArtifact({
+      stage: DRAFT_PIPELINE_STAGES.draftGenerationStep2,
+      text: draftContent,
+      payload: {
+        channel,
+        usedLeadContextBundle,
+        hasAvailability: availability.length > 0,
+      },
+    });
+
     let bookingLink: string | null = null;
     let hasPublicBookingLinkOverride = false;
     try {
@@ -2582,6 +2785,11 @@ Generate an appropriate ${channel} response following the guidelines above.
       console.error("[AI Drafts] Failed to resolve canonical booking link:", error);
     }
 
+    if (bookingEscalationReason) {
+      bookingLink = null;
+      hasPublicBookingLinkOverride = false;
+    }
+
       if (channel === "email" && draftContent) {
         // Prevent verifier truncations by keeping the draft within our configured bounds.
         const preBounds = emailLengthBoundsForClamp ?? getEmailDraftCharBoundsFromEnv();
@@ -2590,7 +2798,7 @@ Generate an appropriate ${channel} response following the guidelines above.
         }
 
         try {
-          const verified = await runEmailDraftVerificationStep3({
+          const verification = await runEmailDraftVerificationStep3({
             clientId: lead.clientId,
             leadId,
             triggerMessageId,
@@ -2605,8 +2813,22 @@ Generate an appropriate ${channel} response following the guidelines above.
             metadata: draftPromptMetadata,
           });
 
-          if (verified) {
-            draftContent = verified;
+          if (verification?.finalDraft) {
+            draftContent = verification.finalDraft;
+            await persistDraftPipelineArtifact({
+              stage: DRAFT_PIPELINE_STAGES.draftVerifierStep3,
+              promptKey: verification.promptKeyForTelemetry,
+              model: verification.model,
+              payload: {
+                interactionId: verification.interactionId,
+                promptKey: verification.promptKey,
+                promptKeyForTelemetry: verification.promptKeyForTelemetry,
+                changed: verification.changed,
+                violationsDetected: verification.violationsDetected,
+                changes: verification.changes,
+              },
+              text: verification.finalDraft,
+            });
           }
         } catch (error) {
           console.error("[AI Drafts] Step 3 verifier threw unexpectedly:", error);
@@ -2636,6 +2858,11 @@ Generate an appropriate ${channel} response following the guidelines above.
               extraction && typeof extraction === "object" && "is_scheduling_related" in extraction
                 ? (extraction as MeetingOverseerExtractDecision)
                 : null;
+
+            await persistDraftPipelineArtifact({
+              stage: DRAFT_PIPELINE_STAGES.meetingOverseerExtract,
+              payload: { extraction: extractionDecision },
+            });
 
             let gateMemoryContext: string | null = null;
             let gatePromptMetadata: unknown = undefined;
@@ -2688,6 +2915,13 @@ Generate an appropriate ${channel} response following the guidelines above.
             if (gateDraft) {
               draftContent = gateDraft;
             }
+
+            const gateDecision = await getMeetingOverseerDecision(triggerMessageId, "gate");
+            await persistDraftPipelineArtifact({
+              stage: DRAFT_PIPELINE_STAGES.meetingOverseerGate,
+              payload: gateDecision,
+              text: gateDraft,
+            });
           }
         } catch (overseerError) {
           console.warn("[AI Drafts] Meeting overseer failed; continuing with pre-gate draft", {
@@ -2726,6 +2960,12 @@ Generate an appropriate ${channel} response following the guidelines above.
       }
     }
 
+    await persistDraftPipelineArtifact({
+      stage: DRAFT_PIPELINE_STAGES.finalDraft,
+      text: draftContent,
+      payload: { bookingLink, channel },
+    });
+
     try {
       const draft = await prisma.aIDraft.create({
         data: {
@@ -2737,10 +2977,28 @@ Generate an appropriate ${channel} response following the guidelines above.
         },
       });
 
+      if (draftPipelineRunId) {
+        try {
+          await prisma.draftPipelineRun.update({
+            where: { id: draftPipelineRunId },
+            data: { draftId: draft.id, status: "COMPLETED" },
+            select: { id: true },
+          });
+        } catch (error) {
+          console.warn("[AI Drafts] Failed to link DraftPipelineRun to AIDraft; continuing", {
+            leadId,
+            triggerMessageId,
+            channel,
+            errorMessage: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       return {
         success: true,
         draftId: draft.id,
         content: draftContent,
+        runId: draftPipelineRunId,
       };
     } catch (error) {
       // If multiple workers raced, return the already-created draft instead of failing.
@@ -2750,7 +3008,18 @@ Generate an appropriate ${channel} response following the guidelines above.
           select: { id: true, content: true },
         });
         if (existing) {
-          return { success: true, draftId: existing.id, content: existing.content };
+          if (draftPipelineRunId) {
+            try {
+              await prisma.draftPipelineRun.update({
+                where: { id: draftPipelineRunId },
+                data: { draftId: existing.id, status: "COMPLETED" },
+                select: { id: true },
+              });
+            } catch {
+              // fail-open
+            }
+          }
+          return { success: true, draftId: existing.id, content: existing.content, runId: draftPipelineRunId };
         }
       }
 

@@ -5,6 +5,9 @@ import { isTrueSuperAdminUser, requireAuthUser } from "@/lib/workspace-access";
 
 export type AutoSendRevisionRolloutSettings = {
   autoSendRevisionEnabled: boolean;
+  autoSendRevisionModel: string;
+  autoSendRevisionReasoningEffort: string;
+  autoSendRevisionMaxIterations: number;
   globallyDisabled: boolean;
 };
 
@@ -28,13 +31,22 @@ export async function getAutoSendRevisionRolloutSettings(
 
     const settings = await prisma.workspaceSettings.findUnique({
       where: { clientId },
-      select: { autoSendRevisionEnabled: true },
+      select: {
+        autoSendRevisionEnabled: true,
+        autoSendRevisionModel: true,
+        autoSendRevisionReasoningEffort: true,
+        autoSendRevisionMaxIterations: true,
+      },
     });
 
     return {
       success: true,
       data: {
         autoSendRevisionEnabled: Boolean(settings?.autoSendRevisionEnabled),
+        autoSendRevisionModel: settings?.autoSendRevisionModel || process.env.AUTO_SEND_REVISION_MODEL || "gpt-5.2",
+        autoSendRevisionReasoningEffort:
+          settings?.autoSendRevisionReasoningEffort || process.env.AUTO_SEND_REVISION_REASONING_EFFORT || "high",
+        autoSendRevisionMaxIterations: settings?.autoSendRevisionMaxIterations ?? 3,
         globallyDisabled: isAutoSendRevisionGloballyDisabled(),
       },
     };
@@ -45,7 +57,12 @@ export async function getAutoSendRevisionRolloutSettings(
 
 export async function updateAutoSendRevisionRolloutSettings(
   clientId: string | null | undefined,
-  patch: Partial<Pick<AutoSendRevisionRolloutSettings, "autoSendRevisionEnabled">>
+  patch: Partial<
+    Pick<
+      AutoSendRevisionRolloutSettings,
+      "autoSendRevisionEnabled" | "autoSendRevisionModel" | "autoSendRevisionReasoningEffort" | "autoSendRevisionMaxIterations"
+    >
+  >
 ): Promise<{ success: boolean; error?: string }> {
   try {
     if (!clientId) return { success: false, error: "No workspace selected" };
@@ -56,10 +73,24 @@ export async function updateAutoSendRevisionRolloutSettings(
       create: {
         clientId,
         autoSendRevisionEnabled: Boolean(patch.autoSendRevisionEnabled ?? false),
+        ...(patch.autoSendRevisionModel ? { autoSendRevisionModel: patch.autoSendRevisionModel } : {}),
+        ...(patch.autoSendRevisionReasoningEffort
+          ? { autoSendRevisionReasoningEffort: patch.autoSendRevisionReasoningEffort }
+          : {}),
+        ...(patch.autoSendRevisionMaxIterations !== undefined
+          ? { autoSendRevisionMaxIterations: patch.autoSendRevisionMaxIterations }
+          : {}),
       },
       update: {
         ...(patch.autoSendRevisionEnabled !== undefined
           ? { autoSendRevisionEnabled: Boolean(patch.autoSendRevisionEnabled) }
+          : {}),
+        ...(patch.autoSendRevisionModel ? { autoSendRevisionModel: patch.autoSendRevisionModel } : {}),
+        ...(patch.autoSendRevisionReasoningEffort
+          ? { autoSendRevisionReasoningEffort: patch.autoSendRevisionReasoningEffort }
+          : {}),
+        ...(patch.autoSendRevisionMaxIterations !== undefined
+          ? { autoSendRevisionMaxIterations: patch.autoSendRevisionMaxIterations }
           : {}),
       },
       select: { id: true },
@@ -70,4 +101,3 @@ export async function updateAutoSendRevisionRolloutSettings(
     return { success: false, error: error instanceof Error ? error.message : "Failed to update settings" };
   }
 }
-

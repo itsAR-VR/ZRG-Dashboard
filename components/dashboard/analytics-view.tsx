@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect, useMemo } from "react"
-import { Users, MessageSquare, Calendar, ArrowUpRight, ArrowDownRight, Loader2, BarChart3, Send, Inbox, Info } from "lucide-react"
+import { Users, MessageSquare, Calendar, CalendarClock, ArrowUpRight, ArrowDownRight, Loader2, BarChart3, Send, Inbox, Info } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -76,6 +76,43 @@ function formatPercent(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0%"
   if (value < 1) return `${value.toFixed(1)}%`
   return `${value.toFixed(0)}%`
+}
+
+function formatPct01(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—"
+  return `${Math.round(value * 100)}%`
+}
+
+function buildCapacityTooltip(capacity: AnalyticsData["overview"]["capacity"] | undefined): string | undefined {
+  if (!capacity) return undefined
+
+  const defaultRow = capacity.breakdown?.find((row) => row.source === "DEFAULT")
+  const directRow = capacity.breakdown?.find((row) => row.source === "DIRECT_BOOK")
+  const anyStale = capacity.cacheMeta?.some((row) => row.isStale) ?? false
+  const firstError = capacity.cacheMeta?.map((row) => row.lastError).find((value) => Boolean(value)) ?? null
+
+  const lines: string[] = [
+    `Window: next ${capacity.windowDays} days`,
+    `Booked: ${capacity.bookedSlots} | Available: ${capacity.availableSlots} | Total: ${capacity.totalSlots}`,
+    defaultRow
+      ? `Default: ${formatPct01(defaultRow.bookedPct)} (B ${defaultRow.bookedSlots} / A ${defaultRow.availableSlots})`
+      : "Default: —",
+    directRow
+      ? `Direct Book: ${formatPct01(directRow.bookedPct)} (B ${directRow.bookedSlots} / A ${directRow.availableSlots})`
+      : "Direct Book: —",
+  ]
+
+  if (capacity.unattributedBookedSlots > 0) {
+    lines.push(`Unattributed booked: ${capacity.unattributedBookedSlots}`)
+  }
+  if (anyStale) {
+    lines.push("WARNING: availability cache is stale")
+  }
+  if (firstError) {
+    lines.push(`Cache error: ${firstError}`)
+  }
+
+  return lines.join("\n")
 }
 
 interface AnalyticsViewProps {
@@ -252,6 +289,12 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
       icon: Inbox,
       tooltip: "How fast clients reply to our messages (9am-5pm EST, weekdays)"
     },
+    {
+      label: "Capacity (30d)",
+      value: data?.overview.capacity?.bookedPct != null ? formatPct01(data.overview.capacity.bookedPct) : "—",
+      icon: CalendarClock,
+      tooltip: buildCapacityTooltip(data?.overview.capacity),
+    },
   ]
 
   const workflowCards = workflowData
@@ -393,7 +436,7 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
         ) : (
           <div className="p-6 space-y-6">
         {/* KPI Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {kpiCards.map((kpi) => (
             <Card key={kpi.label}>
               <CardContent className="p-4">

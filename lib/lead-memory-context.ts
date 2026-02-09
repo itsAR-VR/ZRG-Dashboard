@@ -212,24 +212,56 @@ export async function getLeadMemoryContext(opts: {
   }
 
   const now = new Date();
-  const entries = await prisma.leadMemoryEntry.findMany({
-    where: {
-      leadId: opts.leadId,
-      clientId: opts.clientId,
-      ...(opts.includeExpired
-        ? {}
-        : {
-            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-          }),
-    },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-    select: {
-      category: true,
-      content: true,
-      createdAt: true,
-    },
-  });
+  const [leadEntriesRaw, workspaceEntriesRaw] = await Promise.all([
+    prisma.leadMemoryEntry.findMany({
+      where: {
+        leadId: opts.leadId,
+        clientId: opts.clientId,
+        status: "APPROVED",
+        ...(opts.includeExpired
+          ? {}
+          : {
+              OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+            }),
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      select: {
+        category: true,
+        content: true,
+        createdAt: true,
+      },
+    }),
+    prisma.workspaceMemoryEntry
+      .findMany({
+        where: {
+          clientId: opts.clientId,
+          status: "APPROVED",
+          ...(opts.includeExpired
+            ? {}
+            : {
+                OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+              }),
+        },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+        select: {
+          category: true,
+          content: true,
+          createdAt: true,
+        },
+      })
+      .catch(() => []),
+  ]);
+
+  const entries: LeadMemoryEntryForContext[] = [
+    ...leadEntriesRaw,
+    ...workspaceEntriesRaw.map((e) => ({
+      category: e.category ? `workspace:${e.category}` : "workspace",
+      content: e.content,
+      createdAt: e.createdAt,
+    })),
+  ];
 
   return buildLeadMemoryContextFromEntries({
     entries,

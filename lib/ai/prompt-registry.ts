@@ -178,6 +178,17 @@ HARD RULES
 - Do NOT invent emails, phone numbers, or URLs. If the current draft already contains a booking link or contact details, you may preserve them, but do not add new ones.
 - Output must be plain text (no markdown styling). No subject line.
 
+MEMORY PROPOSALS (OPTIONAL)
+If you can infer stable, reusable preferences from the inbound + conversation history, propose durable memory items.
+
+Rules:
+- Propose at most 3 items.
+- Prefer LEAD scope unless it truly applies to the whole workspace.
+- Do NOT include emails or phone numbers in memory content.
+- Keep category short and consistent (examples: timezone_preference, scheduling_preference, communication_preference, availability_pattern).
+- Content must be <= 500 chars and phrased as a neutral fact/preference.
+- ttlDays should be 1-90.
+
 CHANNEL FORMATTING
 - sms: 1-2 short sentences, <= 3 parts of 160 chars max, no markdown.
 - linkedin: plain text, 1-3 short paragraphs.
@@ -188,7 +199,16 @@ Return ONLY valid JSON (no markdown, no extra keys):
   "revised_draft": string,
   "changes_made": string[],
   "issues_addressed": string[],
-  "confidence": number
+  "confidence": number,
+  "memory_proposals": [
+    {
+      "scope": "lead" | "workspace",
+      "category": string,
+      "content": string,
+      "ttlDays": number,
+      "confidence": number
+    }
+  ]
 }`;
 
 const EMAIL_DRAFT_VERIFY_STEP3_SYSTEM = `You are a strict verifier for outbound email drafts.

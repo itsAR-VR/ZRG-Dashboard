@@ -184,3 +184,58 @@ test("maybeReviseAutoSendDraft: skips when revision attempt is already claimed",
   assert.equal(res.telemetry.attempted, false);
   assert.equal(res.revisedDraft, null);
 });
+
+test("maybeReviseAutoSendDraft: allows repeat attempts in loop mode (iteration>0) even if already claimed", async () => {
+  const updateManyCalls: any[] = [];
+  let updatedContent: string | null = null;
+
+  const res = await maybeReviseAutoSendDraft({
+    clientId: "c1",
+    leadId: "l1",
+    emailCampaignId: "ec1",
+    draftId: "d1",
+    channel: "email",
+    iteration: 1,
+    subject: "Hello",
+    latestInbound: "Inbound asks about pricing",
+    conversationHistory: "History",
+    draft: "Original draft",
+    evaluation: { confidence: 0.4, safeToSend: true, requiresHumanReview: false, reason: "Below threshold", source: "model" },
+    threshold: 0.9,
+    reEvaluate: async () => ({
+      confidence: 0.95,
+      safeToSend: true,
+      requiresHumanReview: false,
+      reason: "Improved",
+      source: "model",
+    }),
+    runPrompt: (async () => ({
+      success: true,
+      data: {
+        revised_draft: "Revised draft content",
+        changes_made: ["Added context"],
+        issues_addressed: ["Pricing"],
+        confidence: 0.7,
+      },
+    })) as any,
+    db: {
+      aIDraft: {
+        updateMany: async (args: any) => {
+          updateManyCalls.push(args);
+          if (updateManyCalls.length === 1) {
+            return { count: 0 }; // Simulate "already claimed" on the first claim attempt
+          }
+          if (typeof args?.data?.content === "string") {
+            updatedContent = args.data.content;
+          }
+          return { count: 1 };
+        },
+      },
+    } as any,
+  });
+
+  assert.equal(res.telemetry.attempted, true);
+  assert.equal(res.telemetry.improved, true);
+  assert.equal(res.revisedDraft, "Revised draft content");
+  assert.equal(updatedContent, "Revised draft content");
+});

@@ -110,7 +110,7 @@ export async function getBookingProcessInstructions(
   if (shouldEscalate) {
     return {
       instructions: null,
-      requiresHumanReview: true,
+      requiresHumanReview: false,
       escalationReason: "max_booking_attempts_exceeded",
     };
   }

@@ -23,6 +23,7 @@ import {
 import { sendSlackNotification } from "@/lib/slack-notifications";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
+import { resolveGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { getBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
 import type { AvailabilitySource, Prisma } from "@prisma/client";
@@ -731,6 +732,73 @@ export async function generateFollowUpMessage(
   };
 }
 
+function parseBlockedSmsDndAttempt(pausedReason: string | null | undefined): number {
+  const reason = (pausedReason || "").trim();
+  if (!reason) return 0;
+  const match = reason.match(/^blocked_sms_dnd:attempt:(\d+)$/i);
+  if (!match) return 0;
+  const attempt = Number(match[1]);
+  if (!Number.isFinite(attempt) || attempt < 0) return 0;
+  return attempt;
+}
+
+async function ensureFollowUpTaskRecorded(opts: {
+  leadId: string;
+  type: "email" | "sms" | "linkedin";
+  instanceId: string;
+  stepOrder: number;
+  status: "pending" | "completed" | "skipped";
+  suggestedMessage?: string | null;
+  subject?: string | null;
+}): Promise<void> {
+  const existing = await prisma.followUpTask
+    .findFirst({
+      where: {
+        leadId: opts.leadId,
+        type: opts.type,
+        instanceId: opts.instanceId,
+        stepOrder: opts.stepOrder,
+      },
+      select: { id: true, status: true },
+    })
+    .catch(() => null);
+
+  // Keep completed records immutable (do not overwrite successful sends).
+  if (existing?.status === "completed") return;
+
+  if (existing?.id) {
+    await prisma.followUpTask
+      .update({
+        where: { id: existing.id },
+        data: {
+          status: opts.status,
+          dueDate: new Date(),
+          suggestedMessage: opts.suggestedMessage ?? null,
+          subject: opts.subject ?? null,
+        },
+        select: { id: true },
+      })
+      .catch(() => undefined);
+    return;
+  }
+
+  await prisma.followUpTask
+    .create({
+      data: {
+        leadId: opts.leadId,
+        type: opts.type,
+        dueDate: new Date(),
+        status: opts.status,
+        suggestedMessage: opts.suggestedMessage ?? null,
+        subject: opts.subject ?? null,
+        instanceId: opts.instanceId,
+        stepOrder: opts.stepOrder,
+      },
+      select: { id: true },
+    })
+    .catch(() => undefined);
+}
+
 // =============================================================================
 // Step Execution
 // =============================================================================
@@ -742,7 +810,8 @@ export async function executeFollowUpStep(
   instanceId: string,
   step: FollowUpStepData,
   lead: LeadContext,
-  sequencePersonaId?: string | null
+  sequencePersonaId?: string | null,
+  sequenceTriggerOn?: string | null
 ): Promise<ExecutionResult> {
   try {
     if (process.env.FOLLOWUPS_DRY_RUN === "true") {
@@ -794,8 +863,14 @@ export async function executeFollowUpStep(
       };
     }
 
-    // Check business hours
-    if (!isWithinBusinessHours(settings)) {
+    const isSetterReplyTrigger = (sequenceTriggerOn || "").trim().toLowerCase() === "setter_reply";
+    // Operator decision (Phase 124): for setter-reply sequences, bypass business-hours rescheduling
+    // only for the first step so "+2 minutes" semantics are preserved without making the whole
+    // sequence ignore business hours.
+    const bypassBusinessHours = isSetterReplyTrigger && step.stepOrder === 1;
+
+    // Check business hours (except for the first step of setter-reply triggered sequences, which should execute on schedule)
+    if (!bypassBusinessHours && !isWithinBusinessHours(settings)) {
       const nextBusinessHour = getNextBusinessHour(settings);
       // Reschedule to next business hour
       await prisma.followUpInstance.update({
@@ -831,80 +906,131 @@ export async function executeFollowUpStep(
       };
     }
 
-    // For SMS channel: check if lead has phone number
-    // If phone is missing and enrichment is pending, wait or pause
+    // For SMS channel: check if we can actually send (phone + GHL configuration).
+    // Important: a lead may have a phone number in GoHighLevel even when our DB phone is missing.
+    // We attempt a fast-path hydration before blocking/pause decisions.
     if (step.channel === "sms" && !lead.phone) {
-      // Fetch latest lead data to check enrichment status
-      const currentLead = await prisma.lead.findUnique({ where: { id: lead.id } });
-      
-      if (currentLead?.enrichmentStatus === "pending") {
-        // Check how long enrichment has been pending
-        // Use enrichedAt as baseline or createdAt if not available
-        const enrichmentStarted = currentLead.enrichmentLastRetry || currentLead.updatedAt;
-        const pendingDuration = Date.now() - enrichmentStarted.getTime();
-        const ENRICHMENT_WAIT_MS = 5 * 60 * 1000; // 5 minutes
-        
-        if (pendingDuration < ENRICHMENT_WAIT_MS) {
-          // Still within wait window - skip this execution, will retry on next cron run
-          console.log(`[FollowUp] SMS step skipped for lead ${lead.id} - waiting for enrichment (${Math.round(pendingDuration / 1000)}s / ${ENRICHMENT_WAIT_MS / 1000}s)`);
-          return {
-            success: true,
-            action: "skipped",
-            message: `Waiting for phone enrichment (${Math.round(pendingDuration / 1000)}s elapsed, ${ENRICHMENT_WAIT_MS / 1000}s max)`,
-          };
-        } else {
-          // Exceeded wait window - pause the sequence
+      // Fetch latest lead data to check enrichment status.
+      // (LeadContext comes from a cached include on the instance query and may be stale.)
+      let currentLead = await prisma.lead.findUnique({
+        where: { id: lead.id },
+        select: {
+          id: true,
+          phone: true,
+          enrichmentStatus: true,
+          enrichmentLastRetry: true,
+          updatedAt: true,
+        },
+      });
+
+      // Best-effort hydration from GHL by email (no create).
+      if (!currentLead?.phone) {
+        const resolve = await resolveGhlContactIdForLead(lead.id).catch(() => null);
+        const resolveError = (resolve?.success === false ? resolve.error : null) || "";
+        if ((resolveError || "").toLowerCase().includes("missing ghl configuration")) {
           await prisma.followUpInstance.update({
             where: { id: instanceId },
             data: {
               status: "paused",
-              pausedReason: "awaiting_enrichment",
+              pausedReason: "blocked_sms_config",
+              nextStepDue: null,
             },
           });
-          
-          console.log(`[FollowUp] SMS step paused for lead ${lead.id} - enrichment timeout (${Math.round(pendingDuration / 1000)}s)`);
+
+          await ensureFollowUpTaskRecorded({
+            leadId: lead.id,
+            type: "sms",
+            instanceId,
+            stepOrder: step.stepOrder,
+            status: "pending",
+            suggestedMessage: "SMS blocked — GoHighLevel is not configured for this workspace.",
+          });
+
           return {
             success: true,
             action: "skipped",
-            message: "Sequence paused - phone enrichment timeout. Manual intervention required.",
+            message: "SMS blocked — GoHighLevel not configured",
           };
         }
-      } else {
-        // No phone and enrichment is not pending (failed, not_found, or not_needed).
-        // Try the full phone enrichment pipeline before permanently skipping the SMS step.
-        const includeSignatureAi = process.env.PHONE_ENRICHMENT_SIGNATURE_AI_ENABLED === "true";
-        const enriched = await enrichPhoneThenSyncToGhl(lead.id, { includeSignatureAi });
 
-        console.log(
-          `[FollowUp] SMS step missing phone for lead ${lead.id} (enrichment: ${currentLead?.enrichmentStatus || "none"}). ` +
-            `Pipeline result: ${enriched.success ? enriched.source || "unknown" : "error"}`
-        );
+        currentLead =
+          (await prisma.lead
+            .findUnique({
+              where: { id: lead.id },
+              select: {
+                id: true,
+                phone: true,
+                enrichmentStatus: true,
+                enrichmentLastRetry: true,
+                updatedAt: true,
+              },
+            })
+            .catch(() => null)) || currentLead;
+      }
 
-        // If we triggered Clay, do NOT advance; let the sequence wait/pause.
-        if (enriched.source === "clay_triggered") {
+      // Still no phone after hydration: best-effort trigger enrichment for future steps, but do not block the sequence.
+      if (currentLead && !currentLead.phone) {
+        const enrichmentStatus = (currentLead.enrichmentStatus || "").trim().toLowerCase();
+        const enrichmentPending = enrichmentStatus === "pending";
+        const enrichmentTerminal = enrichmentStatus === "failed" || enrichmentStatus === "not_found";
+
+        let pipelineSource: string | null = null;
+        if (!enrichmentPending && !enrichmentTerminal) {
+          const includeSignatureAi = process.env.PHONE_ENRICHMENT_SIGNATURE_AI_ENABLED === "true";
+          const enriched = await enrichPhoneThenSyncToGhl(lead.id, { includeSignatureAi }).catch(() => null);
+          pipelineSource = enriched?.source ?? null;
+
+          if (enriched?.phoneFound) {
+            currentLead =
+              (await prisma.lead
+                .findUnique({
+                  where: { id: lead.id },
+                  select: {
+                    id: true,
+                    phone: true,
+                    enrichmentStatus: true,
+                    enrichmentLastRetry: true,
+                    updatedAt: true,
+                  },
+                })
+                .catch(() => null)) || currentLead;
+          }
+        }
+
+        if (!currentLead.phone) {
+          // If the step condition is explicitly "phone_provided", skipping is expected when we cannot find a phone.
+          if (step.condition?.type === "phone_provided") {
+            return {
+              success: true,
+              action: "skipped",
+              message: "SMS skipped — phone not available",
+              advance: true,
+            };
+          }
+
+          const detailParts = [
+            currentLead.enrichmentStatus ? `enrichment: ${currentLead.enrichmentStatus}` : null,
+            pipelineSource ? `pipeline: ${pipelineSource}` : null,
+          ].filter(Boolean);
+          const detail = detailParts.length > 0 ? ` (${detailParts.join(", ")})` : "";
+          const suggestedMessage = `SMS skipped — missing phone${detail}.`;
+
+          await ensureFollowUpTaskRecorded({
+            leadId: lead.id,
+            type: "sms",
+            instanceId,
+            stepOrder: step.stepOrder,
+            status: "pending",
+            suggestedMessage,
+          });
+
           return {
             success: true,
             action: "skipped",
-            message: "Waiting for phone enrichment (Clay triggered)",
+            message: suggestedMessage,
+            advance: true,
           };
         }
-
-        // If we found a phone (or tried to sync) we still retry on a later cron run.
-        if (enriched.phoneFound) {
-          return {
-            success: true,
-            action: "skipped",
-            message: "Phone discovered; retrying SMS on next cron run",
-          };
-        }
-
-        // Otherwise permanently skip this SMS step and advance the sequence.
-        return {
-          success: true,
-          action: "skipped",
-          message: `SMS skipped - no phone number available (enrichment: ${currentLead?.enrichmentStatus || "none"})`,
-          advance: true,
-        };
       }
     }
 
@@ -1643,32 +1769,72 @@ export async function executeFollowUpStep(
         const lower = msg.toLowerCase();
 
         // Contact is in SMS DND in GHL. Marked on the lead by sendSmsSystem().
-        // Treat as non-retriable for follow-up sequences so cron doesn't loop on permanent DND.
+        // Retry hourly for up to 24 business-hour attempts; then skip with an audit artifact.
         if (
           sendResult.errorCode === "sms_dnd" ||
           lower.includes("dnd is active for sms") ||
           (lower.includes("dnd is active") && lower.includes("sms"))
         ) {
-          await prisma.followUpTask
-            .create({
-              data: {
-                leadId: lead.id,
-                type: "sms",
-                dueDate: new Date(),
-                status: "skipped",
-                suggestedMessage: content,
-                instanceId: instanceId,
-                stepOrder: step.stepOrder,
-              },
+          const instance = await prisma.followUpInstance
+            .findUnique({
+              where: { id: instanceId },
+              select: { pausedReason: true },
             })
-            .catch(() => undefined);
+            .catch(() => null);
 
-          console.log(`[FollowUp] SMS step skipped for lead ${lead.id} - DND active in GHL`);
+          const previousAttempts = parseBlockedSmsDndAttempt(instance?.pausedReason);
+          const nextAttempt = previousAttempts + 1;
+          const maxAttempts = 24;
+
+          await ensureFollowUpTaskRecorded({
+            leadId: lead.id,
+            type: "sms",
+            instanceId: instanceId,
+            stepOrder: step.stepOrder,
+            status: "pending",
+            suggestedMessage: "SMS blocked — DND active in GoHighLevel (retrying hourly; up to 24 attempts).",
+          });
+
+          if (nextAttempt >= maxAttempts) {
+            // Give up: skip this step and advance, but keep an audit trail.
+            await prisma.followUpInstance
+              .updateMany({
+                where: { id: instanceId, pausedReason: { startsWith: "blocked_sms_dnd" } },
+                data: { pausedReason: null },
+              })
+              .catch(() => undefined);
+
+            await ensureFollowUpTaskRecorded({
+              leadId: lead.id,
+              type: "sms",
+              instanceId: instanceId,
+              stepOrder: step.stepOrder,
+              status: "pending",
+              suggestedMessage: `SMS skipped — DND active after ${maxAttempts} retry attempts.`,
+            });
+
+            console.log(`[FollowUp] SMS step skipped for lead ${lead.id} - DND active after ${maxAttempts} attempts`);
+            return {
+              success: true,
+              action: "skipped",
+              message: `SMS skipped — DND active after ${maxAttempts} retry attempts`,
+              advance: true,
+            };
+          }
+
+          await prisma.followUpInstance.update({
+            where: { id: instanceId },
+            data: {
+              pausedReason: `blocked_sms_dnd:attempt:${nextAttempt}`,
+              nextStepDue: new Date(Date.now() + 60 * 60 * 1000),
+            },
+          });
+
+          console.log(`[FollowUp] SMS blocked for lead ${lead.id} - DND active in GHL (attempt ${nextAttempt}/${maxAttempts})`);
           return {
             success: true,
             action: "skipped",
-            message: "SMS skipped - DND active in GoHighLevel",
-            advance: true,
+            message: `SMS blocked — DND active (retry ${nextAttempt}/${maxAttempts})`,
           };
         }
 
@@ -1679,19 +1845,72 @@ export async function executeFollowUpStep(
           lower.includes("no usable phone") ||
           lower.includes("no phone")
         ) {
-          console.log(`[FollowUp] SMS step skipped for lead ${lead.id} - ${msg}`);
+          await ensureFollowUpTaskRecorded({
+            leadId: lead.id,
+            type: "sms",
+            instanceId: instanceId,
+            stepOrder: step.stepOrder,
+            status: "pending",
+            suggestedMessage: `SMS skipped — ${msg}`,
+          });
+
+          console.log(`[FollowUp] SMS skipped for lead ${lead.id} - ${msg}`);
           return {
             success: true,
             action: "skipped",
-            message: `SMS skipped - ${msg}`,
+            message: `SMS skipped — ${msg}`,
             advance: true,
           };
         }
 
+        if (lower.includes("no ghl api key") || lower.includes("missing ghl configuration")) {
+          await prisma.followUpInstance.update({
+            where: { id: instanceId },
+            data: {
+              status: "paused",
+              pausedReason: "blocked_sms_config",
+              nextStepDue: null,
+            },
+          });
+
+          await ensureFollowUpTaskRecorded({
+            leadId: lead.id,
+            type: "sms",
+            instanceId: instanceId,
+            stepOrder: step.stepOrder,
+            status: "pending",
+            suggestedMessage: `SMS blocked — ${msg}`,
+          });
+
+          return {
+            success: true,
+            action: "skipped",
+            message: "SMS blocked — GoHighLevel not configured",
+          };
+        }
+
+        await prisma.followUpInstance.update({
+          where: { id: instanceId },
+          data: {
+            status: "paused",
+            pausedReason: "blocked_sms_error",
+            nextStepDue: null,
+          },
+        });
+
+        await ensureFollowUpTaskRecorded({
+          leadId: lead.id,
+          type: "sms",
+          instanceId: instanceId,
+          stepOrder: step.stepOrder,
+          status: "pending",
+          suggestedMessage: `SMS failed — ${msg}`,
+        });
+
         return {
-          success: false,
-          action: "error",
-          error: msg,
+          success: true,
+          action: "skipped",
+          message: `SMS failed — ${msg}`,
         };
       }
 
@@ -1711,17 +1930,22 @@ export async function executeFollowUpStep(
         });
       }
 
-      await prisma.followUpTask.create({
-        data: {
-          leadId: lead.id,
-          type: "sms",
-          dueDate: new Date(),
-          status: "completed",
-          suggestedMessage: content,
-          instanceId: instanceId,
-          stepOrder: step.stepOrder,
-        },
+      await ensureFollowUpTaskRecorded({
+        leadId: lead.id,
+        type: "sms",
+        instanceId: instanceId,
+        stepOrder: step.stepOrder,
+        status: "completed",
+        suggestedMessage: content,
       });
+
+      // Clear DND retry state after a successful send (if it was set earlier).
+      await prisma.followUpInstance
+        .updateMany({
+          where: { id: instanceId, pausedReason: { startsWith: "blocked_sms_dnd" } },
+          data: { pausedReason: null },
+        })
+        .catch(() => undefined);
 
       return {
         success: true,
@@ -1895,7 +2119,8 @@ export async function processFollowUpsDue(): Promise<{
         instance.id,
         stepData,
         leadContext,
-        instance.sequence.aiPersonaId ?? null
+        instance.sequence.aiPersonaId ?? null,
+        instance.sequence.triggerOn ?? null
       );
 
       if (result.success) {
@@ -2403,10 +2628,17 @@ export async function resumeAwaitingEnrichmentFollowUps(opts?: {
     if (channel === "linkedin" && !instance.lead.linkedinUrl) continue;
 
     try {
-      // If we timed out enrichment and still don't have phone, advance past the SMS step so the sequence doesn't get stuck.
       if (channel === "sms" && !instance.lead.phone && enrichmentTerminal) {
-        const nextNextStep = instance.sequence.steps.find((s) => s.stepOrder > nextStep.stepOrder);
+        await ensureFollowUpTaskRecorded({
+          leadId: instance.lead.id,
+          type: "sms",
+          instanceId: instance.id,
+          stepOrder: nextStep.stepOrder,
+          status: "pending",
+          suggestedMessage: "SMS skipped — missing phone after enrichment completed/failed.",
+        });
 
+        const nextNextStep = instance.sequence.steps.find((s) => s.stepOrder > nextStep.stepOrder);
         if (nextNextStep) {
           const deltaMs = computeStepDeltaMs(nextStep, nextNextStep);
           const nextDue = new Date(Date.now() + deltaMs);
@@ -2502,8 +2734,16 @@ export async function resumeAwaitingEnrichmentFollowUpsForLead(
       if (channel === "linkedin" && !instance.lead.linkedinUrl) continue;
 
       if (channel === "sms" && !instance.lead.phone && enrichmentTerminal) {
-        const nextNextStep = instance.sequence.steps.find((s) => s.stepOrder > nextStep.stepOrder);
+        await ensureFollowUpTaskRecorded({
+          leadId: leadId,
+          type: "sms",
+          instanceId: instance.id,
+          stepOrder: nextStep.stepOrder,
+          status: "pending",
+          suggestedMessage: "SMS skipped — missing phone after enrichment completed/failed.",
+        });
 
+        const nextNextStep = instance.sequence.steps.find((s) => s.stepOrder > nextStep.stepOrder);
         if (nextNextStep) {
           const deltaMs = computeStepDeltaMs(nextStep, nextNextStep);
           const nextDue = new Date(Date.now() + deltaMs);

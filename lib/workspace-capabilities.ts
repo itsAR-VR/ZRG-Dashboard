@@ -1,4 +1,9 @@
-import { getUserRoleForClient, requireClientAccess, type UserRole } from "@/lib/workspace-access";
+import {
+  getUserRoleForClient,
+  isTrueSuperAdminUser,
+  requireClientAccess,
+  type UserRole,
+} from "@/lib/workspace-access";
 
 export type WorkspaceCapabilities = {
   role: UserRole;
@@ -32,6 +37,18 @@ export async function requireWorkspaceCapabilities(clientId: string): Promise<{
   capabilities: WorkspaceCapabilities;
 }> {
   const { userId, userEmail } = await requireClientAccess(clientId);
+
+  // Global admins can access any workspace via `requireClientAccess()`, but they might not be explicit owners/members.
+  // Treat them as OWNER for capabilities so RBAC-gated actions/settings work consistently.
+  if (isTrueSuperAdminUser({ id: userId, email: userEmail })) {
+    return {
+      userId,
+      userEmail,
+      role: "OWNER",
+      capabilities: getCapabilitiesForRole("OWNER"),
+    };
+  }
+
   const role = await getUserRoleForClient(userId, clientId);
   if (!role) {
     throw new Error("Unauthorized");

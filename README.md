@@ -306,6 +306,12 @@ model Message {
 | `UNIPILE_HEALTH_GATE` | (Optional) Enable Unipile health gating (auto-pauses LinkedIn follow-ups on disconnected accounts / unreachable recipients) (Phase 53) (default off) |
 | `EMAIL_GUARD_API_KEY` | (Optional) EmailGuard API key for email validation before sending |
 | `LOG_SLOW_PATHS` | (Optional) Enable extra slow-path logging for draft verification / AI flows (default off) |
+| `AUTO_SEND_EVALUATOR_MODEL` | (Optional) Auto-send evaluator model override (fallback when workspace setting is unset) |
+| `AUTO_SEND_EVALUATOR_REASONING_EFFORT` | (Optional) Auto-send evaluator reasoning effort override (fallback when workspace setting is unset) |
+| `AUTO_SEND_REVISION_MODEL` | (Optional) Auto-send revision model override (fallback when workspace setting is unset) |
+| `AUTO_SEND_REVISION_REASONING_EFFORT` | (Optional) Auto-send revision reasoning effort override (fallback when workspace setting is unset) |
+| `AUTO_SEND_REVISION_LOOP_TIMEOUT_MS` | (Optional) Total wall-clock budget for the auto-send revision loop (default `60000`) |
+| `DRAFT_PIPELINE_RUN_RETENTION_DAYS` | (Optional) Retention days for draft pipeline runs/artifacts pruned in `/api/cron/background-jobs` (default `30`) |
 | `GHL_DEFAULT_COUNTRY_CALLING_CODE` | (Optional) Default calling code for phone normalization (commonly `1`) |
 | `GHL_REQUESTS_PER_10S` | (Optional) Throttle cap for GHL API requests per 10s window (default `90`, documented burst is `100`) |
 | `GHL_MAX_429_RETRIES` | (Optional) Max retries when GHL returns `429` with `Retry-After` (default `3`) |

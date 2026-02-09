@@ -81,6 +81,17 @@ export interface FollowUpInstanceData {
   startedAt: Date;
   lastStepAt: Date | null;
   nextStepDue: Date | null;
+  /**
+   * Latest pending FollowUpTask linked to this instance (used to surface non-delivery warnings).
+   * Null when no pending task exists.
+   */
+  latestTask: {
+    id: string;
+    type: string;
+    dueDate: Date;
+    suggestedMessage: string | null;
+    stepOrder: number | null;
+  } | null;
 }
 
 // =============================================================================
@@ -811,6 +822,37 @@ export async function getLeadFollowUpInstances(
       orderBy: { startedAt: "desc" },
     });
 
+    const instanceIds = instances.map((inst) => inst.id);
+    const latestTaskByInstance = new Map<string, FollowUpInstanceData["latestTask"]>();
+
+    if (instanceIds.length > 0) {
+      const pendingTasks = await prisma.followUpTask.findMany({
+        where: { instanceId: { in: instanceIds }, status: "pending" },
+        select: {
+          id: true,
+          instanceId: true,
+          type: true,
+          dueDate: true,
+          suggestedMessage: true,
+          stepOrder: true,
+          updatedAt: true,
+        },
+        orderBy: { updatedAt: "desc" },
+      });
+
+      for (const task of pendingTasks) {
+        if (!task.instanceId) continue;
+        if (latestTaskByInstance.has(task.instanceId)) continue;
+        latestTaskByInstance.set(task.instanceId, {
+          id: task.id,
+          type: task.type,
+          dueDate: task.dueDate,
+          suggestedMessage: task.suggestedMessage,
+          stepOrder: task.stepOrder,
+        });
+      }
+    }
+
     const formattedInstances: FollowUpInstanceData[] = instances.map((inst) => ({
       id: inst.id,
       leadId: inst.leadId,
@@ -825,6 +867,7 @@ export async function getLeadFollowUpInstances(
       startedAt: inst.startedAt,
       lastStepAt: inst.lastStepAt,
       nextStepDue: inst.nextStepDue,
+      latestTask: latestTaskByInstance.get(inst.id) ?? null,
     }));
 
     return { success: true, data: formattedInstances };
@@ -873,6 +916,37 @@ export async function getWorkspaceFollowUpInstances(
       ],
     });
 
+    const instanceIds = instances.map((inst) => inst.id);
+    const latestTaskByInstance = new Map<string, FollowUpInstanceData["latestTask"]>();
+
+    if (instanceIds.length > 0) {
+      const pendingTasks = await prisma.followUpTask.findMany({
+        where: { instanceId: { in: instanceIds }, status: "pending" },
+        select: {
+          id: true,
+          instanceId: true,
+          type: true,
+          dueDate: true,
+          suggestedMessage: true,
+          stepOrder: true,
+          updatedAt: true,
+        },
+        orderBy: { updatedAt: "desc" },
+      });
+
+      for (const task of pendingTasks) {
+        if (!task.instanceId) continue;
+        if (latestTaskByInstance.has(task.instanceId)) continue;
+        latestTaskByInstance.set(task.instanceId, {
+          id: task.id,
+          type: task.type,
+          dueDate: task.dueDate,
+          suggestedMessage: task.suggestedMessage,
+          stepOrder: task.stepOrder,
+        });
+      }
+    }
+
     const formattedInstances: FollowUpInstanceData[] = instances.map((inst) => ({
       id: inst.id,
       leadId: inst.leadId,
@@ -887,6 +961,7 @@ export async function getWorkspaceFollowUpInstances(
       startedAt: inst.startedAt,
       lastStepAt: inst.lastStepAt,
       nextStepDue: inst.nextStepDue,
+      latestTask: latestTaskByInstance.get(inst.id) ?? null,
     }));
 
     return { success: true, data: formattedInstances };

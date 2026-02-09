@@ -11,6 +11,7 @@ import { buildEmailBisonReplyPayload } from "@/lib/emailbison-reply-payload";
 import { formatMissingReactivationPrereqs, getMissingReactivationPrereqs } from "@/lib/reactivation-sequence-prereqs";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { searchGHLContactsAdvanced } from "@/lib/ghl-api";
+import { resolveGhlContactIdForLead } from "@/lib/ghl-contacts";
 import { pickReactivationAnchorFromReplies } from "@/lib/reactivation-anchor";
 import { computeStepOffsetMs } from "@/lib/followup-schedule";
 
@@ -1230,10 +1231,27 @@ export async function processReactivationSendsDue(opts?: {
           where: { id: enrollment.campaign.followUpSequenceId },
           select: { isActive: true, steps: { select: { channel: true } } },
         });
+
+        // If the sequence contains SMS steps and the DB phone is missing, attempt a fast-path hydrate from GHL
+        // (phone often exists on the provider contact but is missing in our DB).
+        let leadPhone = enrollment.lead.phone;
+        let leadLinkedinUrl = enrollment.lead.linkedinUrl;
+        if (sequence && sequence.steps.some((step) => step.channel === "sms") && !leadPhone) {
+          await resolveGhlContactIdForLead(enrollment.lead.id).catch(() => undefined);
+          const refreshed = await prisma.lead
+            .findUnique({
+              where: { id: enrollment.lead.id },
+              select: { phone: true, linkedinUrl: true },
+            })
+            .catch(() => null);
+          if (refreshed?.phone) leadPhone = refreshed.phone;
+          if (refreshed?.linkedinUrl) leadLinkedinUrl = refreshed.linkedinUrl;
+        }
+
         const missing = sequence
           ? getMissingReactivationPrereqs({
               channels: sequence.steps.map((step) => step.channel),
-              lead: { phone: enrollment.lead.phone, linkedinUrl: enrollment.lead.linkedinUrl },
+              lead: { phone: leadPhone, linkedinUrl: leadLinkedinUrl },
               client: {
                 ghlPrivateKey: client.ghlPrivateKey,
                 ghlLocationId: client.ghlLocationId,
@@ -1246,13 +1264,17 @@ export async function processReactivationSendsDue(opts?: {
           missing.push("sequence_inactive");
         }
 
-        if (missing.length > 0) {
+        // Policy: do not block reactivation sends solely due to missing lead phone.
+        // Follow-up engine will skip SMS steps with an explicit FollowUpTask warning when phone is absent.
+        const missingForReview = missing.filter((key) => key !== "lead.phone");
+
+        if (missingForReview.length > 0) {
           const reason =
-            missing.includes("sequence_missing")
+            missingForReview.includes("sequence_missing")
               ? "Missing follow-up sequence configuration"
-              : missing.includes("sequence_inactive")
+              : missingForReview.includes("sequence_inactive")
                 ? "Follow-up sequence is inactive"
-                : formatMissingReactivationPrereqs(missing);
+                : formatMissingReactivationPrereqs(missingForReview);
 
           await prisma.reactivationEnrollment.update({
             where: { id: enrollment.id },

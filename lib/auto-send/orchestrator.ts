@@ -14,6 +14,7 @@ import {
 import { sendSlackDmByUserIdWithToken } from "@/lib/slack-dm";
 import { sanitizeSlackCodeBlockText, truncateSlackText } from "@/lib/slack-format";
 import { maybeReviseAutoSendDraft } from "@/lib/auto-send/revision-agent";
+import { persistAutoSendRevisionLoopSummary } from "@/lib/auto-send/loop-observability";
 import {
   getNextAutoSendWindow,
   isWithinAutoSendSchedule,
@@ -64,6 +65,7 @@ export type AutoSendDependencies = {
   decideShouldAutoReply: typeof decideShouldAutoReply;
   evaluateAutoSend: typeof evaluateAutoSend;
   maybeReviseAutoSendDraft?: typeof maybeReviseAutoSendDraft;
+  persistAutoSendRevisionLoopSummary?: typeof persistAutoSendRevisionLoopSummary;
   getPublicAppUrl: typeof getPublicAppUrl;
   getCampaignDelayConfig: typeof getCampaignDelayConfig;
   scheduleAutoSendAt: typeof scheduleAutoSendAt;
@@ -287,7 +289,8 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
       draft: context.draftContent,
     });
 
-    // Optional: revision attempt when below threshold, bounded + fail-closed inside the revision agent.
+    // Optional: bounded overseer↔revision loop (max 3 iterations).
+    // NOTE: "Overseer" here is the evaluator; we loop evaluate -> revise -> re-evaluate until threshold is met.
     if (
       deps.maybeReviseAutoSendDraft &&
       Boolean(context.workspaceSettings?.autoSendRevisionEnabled) &&
@@ -295,45 +298,136 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
       typeof evaluation.confidence === "number" &&
       evaluation.confidence < threshold
     ) {
-      try {
-        const revision = await deps.maybeReviseAutoSendDraft({
-          clientId: context.clientId,
-          leadId: context.leadId,
-          emailCampaignId: context.emailCampaign?.id ?? null,
-          draftId: context.draftId,
-          channel: context.channel,
-          subject: context.subject ?? null,
-          latestInbound: context.latestInbound,
-          conversationHistory: context.conversationHistory,
-          draft: context.draftContent,
-          evaluation,
-          threshold,
-          reEvaluate: async (draft) =>
-            deps.evaluateAutoSend({
-              clientId: context.clientId,
-              leadId: context.leadId,
-              channel: context.channel,
-              latestInbound: context.latestInbound,
-              subject: context.subject ?? null,
-              conversationHistory: context.conversationHistory,
-              categorization: context.sentimentTag,
-              automatedReply: context.automatedReply ?? null,
-              replyReceivedAt: context.messageSentAt,
-              draft,
-            }),
-        });
+      const maxIterationsStored = context.workspaceSettings?.autoSendRevisionMaxIterations;
+      const maxIterationsRaw =
+        typeof maxIterationsStored === "number" && Number.isFinite(maxIterationsStored) ? Math.trunc(maxIterationsStored) : 3;
+      const maxIterations = Math.max(1, Math.min(3, maxIterationsRaw));
 
-        if (revision.revisedDraft && revision.revisedEvaluation) {
-          context.draftContent = revision.revisedDraft;
-          evaluation = revision.revisedEvaluation;
+      const loopTimeoutMs = (() => {
+        const raw = Number.parseInt(process.env.AUTO_SEND_REVISION_LOOP_TIMEOUT_MS || "60000", 10);
+        if (!Number.isFinite(raw) || raw <= 0) return 60_000;
+        return Math.max(15_000, Math.min(120_000, Math.trunc(raw)));
+      })();
+
+      const loopStartMs = Date.now();
+      const shouldLoop = context.channel === "email";
+      const loopStartConfidence =
+        typeof evaluation.confidence === "number" && Number.isFinite(evaluation.confidence) ? evaluation.confidence : 0;
+      let loopStopReason: "threshold_met" | "hard_block" | "no_improvement" | "timeout" | "exhausted" | "error" =
+        "exhausted";
+      let loopIterationsUsed = 0;
+      let loopCacheHits = 0;
+
+      try {
+        // Loop iterations start at 1. Iteration 0 is the baseline evaluation.
+        for (let iteration = shouldLoop ? 1 : 0; iteration <= maxIterations; iteration += 1) {
+          loopIterationsUsed = iteration;
+          const elapsedMs = Date.now() - loopStartMs;
+          const remainingMs = loopTimeoutMs - elapsedMs;
+          if (remainingMs < 5_000) {
+            loopStopReason = "timeout";
+            break;
+          }
+
+          const revision = await deps.maybeReviseAutoSendDraft({
+            clientId: context.clientId,
+            leadId: context.leadId,
+            emailCampaignId: context.emailCampaign?.id ?? null,
+            draftId: context.draftId,
+            channel: context.channel,
+            draftPipelineRunId: context.draftPipelineRunId ?? null,
+            iteration,
+            subject: context.subject ?? null,
+            latestInbound: context.latestInbound,
+            conversationHistory: context.conversationHistory,
+            draft: context.draftContent,
+            evaluation,
+            threshold,
+            timeoutMs: Math.min(remainingMs, 20_000),
+            selectorTimeoutMs: Math.min(remainingMs, 7_500),
+            reviserTimeoutMs: Math.min(remainingMs, 12_000),
+            model: context.workspaceSettings?.autoSendRevisionModel ?? undefined,
+            reEvaluate: async (draft) =>
+              deps.evaluateAutoSend({
+                clientId: context.clientId,
+                leadId: context.leadId,
+                channel: context.channel,
+                latestInbound: context.latestInbound,
+                subject: context.subject ?? null,
+                conversationHistory: context.conversationHistory,
+                categorization: context.sentimentTag,
+                automatedReply: context.automatedReply ?? null,
+                replyReceivedAt: context.messageSentAt,
+                draft,
+              }),
+          });
+
+          if (revision.telemetry?.attempted === false) {
+            loopCacheHits += 1;
+          }
+
+          if (revision.revisedDraft && revision.revisedEvaluation) {
+            context.draftContent = revision.revisedDraft;
+            evaluation = revision.revisedEvaluation;
+
+            if (evaluation.safeToSend && evaluation.confidence >= threshold) {
+              loopStopReason = "threshold_met";
+              break;
+            }
+
+            const revisedSource = evaluation.source ?? "model";
+            if (revisedSource === "hard_block" || evaluation.hardBlockCode) {
+              loopStopReason = "hard_block";
+              break;
+            }
+
+            if (!shouldLoop) {
+              break; // Single-pass fallback for non-email channels
+            }
+
+            // Continue to the next bounded iteration.
+            continue;
+          }
+
+          // No revision improvement (or revision disabled/failed). Stop the loop.
+          loopStopReason = "no_improvement";
+          break;
         }
       } catch (error) {
-        console.warn("[AutoSend] Revision attempt failed; continuing without revision", {
+        loopStopReason = "error";
+        console.warn("[AutoSend] Revision loop failed; continuing without revision", {
           clientId: context.clientId,
           leadId: context.leadId,
           draftId: context.draftId,
           error: error instanceof Error ? error.message : String(error),
         });
+      } finally {
+        if (shouldLoop && deps.persistAutoSendRevisionLoopSummary && context.draftPipelineRunId && loopIterationsUsed > 0) {
+          try {
+            const endConfidence =
+              typeof evaluation.confidence === "number" && Number.isFinite(evaluation.confidence) ? evaluation.confidence : 0;
+            const deltaConfidence = endConfidence - loopStartConfidence;
+            await deps.persistAutoSendRevisionLoopSummary({
+              clientId: context.clientId,
+              leadId: context.leadId,
+              draftId: context.draftId,
+              runId: context.draftPipelineRunId,
+              summary: {
+                stopReason: loopStopReason,
+                iterationsUsed: Math.max(0, Math.trunc(loopIterationsUsed)),
+                threshold,
+                startConfidence: loopStartConfidence,
+                endConfidence,
+                deltaConfidence,
+                cacheHits: loopCacheHits,
+                elapsedMs: Math.max(0, Date.now() - loopStartMs),
+                channel: context.channel,
+              },
+            });
+          } catch {
+            // ignore
+          }
+        }
       }
     }
 
@@ -739,6 +833,7 @@ const defaultExecutor = createAutoSendExecutor({
   decideShouldAutoReply,
   evaluateAutoSend,
   maybeReviseAutoSendDraft,
+  persistAutoSendRevisionLoopSummary,
   getPublicAppUrl,
   getCampaignDelayConfig,
   scheduleAutoSendAt,

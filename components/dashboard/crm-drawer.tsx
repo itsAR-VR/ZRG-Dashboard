@@ -1329,15 +1329,54 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
                             <span>Step {instance.currentStep + 1}/{instance.totalSteps}</span>
                             <span>Started: {new Date(instance.startedAt).toLocaleDateString()}</span>
                           </div>
-                          <div className="flex items-center justify-between">
-                            {instance.nextStepDue && instance.status === "active" && (
-                              <span>Next: {new Date(instance.nextStepDue).toLocaleDateString()}</span>
-                            )}
-	                            {instance.pausedReason === "lead_replied" && (
-	                              <span className="text-amber-500">Paused: Lead replied (reply to resume)</span>
+	                          <div className="flex items-center justify-between">
+	                            {instance.nextStepDue && instance.status === "active" && (
+	                              <span>Next: {new Date(instance.nextStepDue).toLocaleDateString()}</span>
 	                            )}
-                          </div>
-                        </div>
+	                            {(() => {
+	                              const reason = instance.pausedReason
+	                              if (!reason) return null
+
+	                              const isSmsDndBlocked = reason.startsWith("blocked_sms_dnd")
+	                              const shouldShow = instance.status === "paused" || isSmsDndBlocked
+	                              if (!shouldShow) return null
+
+	                              if (reason === "lead_replied") {
+	                                return <span className="text-amber-500">Paused: Lead replied (reply to resume)</span>
+	                              }
+	                              if (reason === "awaiting_enrichment") {
+	                                return <span className="text-amber-500">Paused: Awaiting enrichment</span>
+	                              }
+	                              if (reason === "blocked_missing_phone") {
+	                                return <span className="text-amber-500">Blocked: Missing phone number</span>
+	                              }
+	                              if (reason === "blocked_sms_config") {
+	                                return <span className="text-amber-500">Blocked: GoHighLevel not configured</span>
+	                              }
+	                              if (reason === "blocked_sms_error") {
+	                                return <span className="text-amber-500">Blocked: SMS failed (check GoHighLevel)</span>
+	                              }
+	                              if (reason.startsWith("blocked_sms_dnd")) {
+	                                const match = reason.match(/attempt:(\d+)/i)
+	                                const attempt = match ? Number(match[1]) : NaN
+	                                const copy =
+	                                  Number.isFinite(attempt) && attempt > 0
+	                                    ? `Blocked: SMS DND active (retry ${attempt}/24)`
+	                                    : "Blocked: SMS DND active (retrying hourly)"
+	                                return <span className="text-amber-500">{copy}</span>
+	                              }
+
+	                              return <span className="text-amber-500">Paused: {reason}</span>
+	                            })()}
+	                          </div>
+	                          {instance.status === "active" &&
+	                          instance.latestTask?.type === "sms" &&
+	                          instance.latestTask.suggestedMessage ? (
+	                            <div className="text-amber-500 text-[11px]">
+	                              {instance.latestTask.suggestedMessage}
+	                            </div>
+	                          ) : null}
+	                        </div>
                         {/* Progress bar */}
                         <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
                           <div

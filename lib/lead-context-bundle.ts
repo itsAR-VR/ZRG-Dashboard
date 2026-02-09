@@ -19,6 +19,7 @@ export const LEAD_CONTEXT_BUNDLE_VERSION = "lead_context_bundle.v1";
 
 export type LeadContextProfile =
   | "draft"
+  | "revision"
   | "auto_send_evaluator"
   | "meeting_overseer_gate"
   | "followup_parse"
@@ -69,6 +70,10 @@ const DEFAULT_BUDGETS_BY_PROFILE: Record<LeadContextProfile, BudgetSpec> = {
     knowledge: { maxTokens: 4000, maxAssetTokens: 1200 },
     memory: { maxTokens: 1200, maxEntryTokens: 400 },
   },
+  revision: {
+    knowledge: { maxTokens: 3000, maxAssetTokens: 1200 },
+    memory: { maxTokens: 800, maxEntryTokens: 300 },
+  },
   auto_send_evaluator: {
     knowledge: { maxTokens: 8000, maxAssetTokens: 1600 },
     memory: { maxTokens: 600, maxEntryTokens: 300 },
@@ -103,6 +108,7 @@ function parseBudgetsOverride(value: unknown): Partial<Record<LeadContextProfile
   const out: Partial<Record<LeadContextProfile, BudgetSpec>> = {};
   const profiles: LeadContextProfile[] = [
     "draft",
+    "revision",
     "auto_send_evaluator",
     "meeting_overseer_gate",
     "followup_parse",
@@ -176,7 +182,7 @@ export function buildLeadContextBundleTelemetryMetadata(bundle: LeadContextBundl
 }
 
 function shouldIncludeKnowledge(profile: LeadContextProfile): boolean {
-  return profile === "draft" || profile === "auto_send_evaluator";
+  return profile === "draft" || profile === "revision" || profile === "auto_send_evaluator";
 }
 
 function shouldRedactMemory(profile: LeadContextProfile): boolean {
