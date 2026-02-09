@@ -37,6 +37,8 @@ import {
 import {
   getAiDraftResponseOutcomeStats,
   type AiDraftResponseOutcomeStats,
+  getAiDraftBookingConversionStats,
+  type AiDraftBookingConversionStats,
 } from "@/actions/ai-draft-response-analytics-actions"
 
 // Sentiment colors for charts
@@ -91,6 +93,8 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
   const [reactivationLoading, setReactivationLoading] = useState(true)
   const [aiDraftOutcomeStats, setAiDraftOutcomeStats] = useState<AiDraftResponseOutcomeStats | null>(null)
   const [aiDraftOutcomeLoading, setAiDraftOutcomeLoading] = useState(true)
+  const [aiDraftBookingStats, setAiDraftBookingStats] = useState<AiDraftBookingConversionStats | null>(null)
+  const [aiDraftBookingLoading, setAiDraftBookingLoading] = useState(true)
   const [datePreset, setDatePreset] = useState<"7d" | "30d" | "90d" | "custom">("30d")
   const [customFrom, setCustomFrom] = useState("")
   const [customTo, setCustomTo] = useState("")
@@ -203,11 +207,27 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
       }
     }
 
+    async function fetchAiDraftBookingConversions() {
+      setAiDraftBookingLoading(true)
+      const result = await getAiDraftBookingConversionStats(
+        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
+      )
+      if (!cancelled) {
+        if (result.success && result.data) {
+          setAiDraftBookingStats(result.data)
+        } else {
+          setAiDraftBookingStats(null)
+        }
+        setAiDraftBookingLoading(false)
+      }
+    }
+
     fetchAnalytics()
     fetchCampaignAnalytics()
     fetchWorkflowAnalytics()
     fetchReactivationAnalytics()
     fetchAiDraftOutcomes()
+    fetchAiDraftBookingConversions()
 
     return () => {
       cancelled = true
@@ -929,6 +949,73 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
                       <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.linkedin.EDITED}</TableCell>
                       <TableCell className="text-right">{aiDraftOutcomeStats.byChannel.linkedin.total}</TableCell>
                     </TableRow>
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>AI Draft Booking Conversion</CardTitle>
+              <CardDescription>
+                {windowLabel} • Email stats are for AI_AUTO_SEND campaigns only • Booked within{" "}
+                {aiDraftBookingStats?.attributionWindowDays ?? 30}d of send • Pending excludes last{" "}
+                {aiDraftBookingStats?.maturityBufferDays ?? 7}d
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {aiDraftBookingLoading ? (
+                <div className="h-[120px] flex items-center justify-center text-muted-foreground">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                </div>
+              ) : !aiDraftBookingStats ||
+                aiDraftBookingStats.total.all.booked +
+                  aiDraftBookingStats.total.all.notBooked +
+                  aiDraftBookingStats.total.all.pending +
+                  aiDraftBookingStats.total.all.bookedNoTimestamp ===
+                  0 ? (
+                <div className="py-8 text-center text-muted-foreground">No tracked sends in this window</div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Channel</TableHead>
+                      <TableHead>Disposition</TableHead>
+                      <TableHead className="text-right">Eligible</TableHead>
+                      <TableHead className="text-right">Booked</TableHead>
+                      <TableHead className="text-right">Booking Rate</TableHead>
+                      <TableHead className="text-right">Pending</TableHead>
+                      <TableHead className="text-right">No Timestamp</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(["email", "sms", "linkedin"] as const).flatMap((channel) =>
+                      (["AUTO_SENT", "APPROVED", "EDITED"] as const).map((disposition) => {
+                        const bucket = aiDraftBookingStats.byChannel[channel][disposition]
+                        const channelLabel = channel === "email" ? "Email" : channel === "sms" ? "SMS" : "LinkedIn"
+                        const dispositionLabel =
+                          disposition === "AUTO_SENT"
+                            ? "Auto‑Sent"
+                            : disposition === "APPROVED"
+                              ? "Approved"
+                              : "Edited"
+
+                        return (
+                          <TableRow key={`${channel}-${disposition}`}>
+                            <TableCell className="font-medium">{channelLabel}</TableCell>
+                            <TableCell>{dispositionLabel}</TableCell>
+                            <TableCell className="text-right">{bucket.eligible}</TableCell>
+                            <TableCell className="text-right">{bucket.booked}</TableCell>
+                            <TableCell className="text-right">
+                              {bucket.bookingRate == null ? "—" : formatPercent(bucket.bookingRate * 100)}
+                            </TableCell>
+                            <TableCell className="text-right">{bucket.pending}</TableCell>
+                            <TableCell className="text-right">{bucket.bookedNoTimestamp}</TableCell>
+                          </TableRow>
+                        )
+                      })
+                    )}
                   </TableBody>
                 </Table>
               )}

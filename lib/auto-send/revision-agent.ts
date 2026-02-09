@@ -204,7 +204,7 @@ export async function maybeReviseAutoSendDraft(opts: {
         draft: opts.draft,
         evaluatorReason: opts.evaluation.reason,
         timeoutMs: Math.max(1_000, Math.trunc(opts.selectorTimeoutMs ?? 10_000)),
-        model: opts.model ?? "gpt-5-mini",
+        model: opts.model ?? "gpt-5.2",
       }).then((res) => res.selection),
       deadlineMs
     );
@@ -261,7 +261,7 @@ export async function maybeReviseAutoSendDraft(opts: {
       leadId: opts.leadId ?? null,
       featureId: "auto_send.revise",
       promptKey: "auto_send.revise.v1",
-      model: opts.model ?? "gpt-5-mini",
+      model: opts.model ?? "gpt-5.2",
       reasoningEffort: "low",
       temperature: 0,
       systemFallback: "Return ONLY valid JSON with keys: revised_draft, changes_made, issues_addressed, confidence.",

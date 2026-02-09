@@ -36,6 +36,7 @@ const TEST_FILES = [
   "lib/__tests__/followup-engine-dayonly-slot.test.ts",
   "lib/__tests__/ai-ops-feed.test.ts",
   "lib/__tests__/analytics-windowing-stable.test.ts",
+  "lib/__tests__/ai-draft-booking-conversion-windowing.test.ts",
   "lib/__tests__/send-outcome-unknown-recovery.test.ts",
   "lib/__tests__/stale-sending-recovery.test.ts",
   "lib/__tests__/workspace-capabilities.test.ts",
