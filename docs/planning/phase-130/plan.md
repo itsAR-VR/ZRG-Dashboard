@@ -73,6 +73,7 @@ When `safeToSend = false`, the threshold is completely bypassed — `false && tr
 
 ## Phase Summary (running)
 - 2026-02-10 — Added per-campaign `autoSendSkipHumanReview` toggle for AI auto-send (schema + orchestrator + pipeline + UI + tests); verified with `npm run db:push`, `npm test`, `npm run lint`, `npm run build`. (files: `prisma/schema.prisma`, `lib/auto-send/types.ts`, `lib/auto-send/orchestrator.ts`, `actions/email-campaign-actions.ts`, `lib/inbound-post-process/pipeline.ts`, `lib/background-jobs/email-inbound-post-process.ts`, `lib/background-jobs/sms-inbound-post-process.ts`, `components/dashboard/settings/ai-campaign-assignment.tsx`, `lib/auto-send/__tests__/orchestrator.test.ts`)
+- 2026-02-10 — Hotfix: fixed `ROLLBACK_DELETE` system prompt/snippet revision rows to include parent override IDs where available; verified `npm run lint` + `npm run build`. (files: `actions/system-prompt-actions.ts`)
 
 ## Phase Summary
 - Shipped:

@@ -70,3 +70,8 @@
 
 ## Follow-ups
 - (Optional) If the decision log is needed in non-debug observability, promote the `skipHumanReview` metadata into a persisted decision record (instead of `AUTO_SEND_DEBUG` logging).
+
+## Post-Review Hotfixes (2026-02-10)
+- Fixed `ROLLBACK_DELETE` revision creation for system prompt/snippet rollbacks to include `systemPromptOverrideId` / `systemPromptSnippetOverrideId` when an override exists at rollback time (prevents orphaned audit rows). (`actions/system-prompt-actions.ts`)
+- Build health: `npm run lint` (warnings only) and `npm run build` both passed after the hotfix.
+- Verified: `handleRollbackSnippetRevision` already includes `snippetHistoryTarget` in its `useCallback` dependency array in `components/dashboard/settings-view.tsx` (no stale-closure bug found in the current code).

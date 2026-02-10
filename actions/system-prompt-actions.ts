@@ -145,10 +145,6 @@ export async function resetSystemPromptOverride(params: {
       select: { id: true, baseContentHash: true, content: true },
     });
 
-    await prisma.systemPromptOverride.deleteMany({
-      where: { promptKey: params.promptKey, role: params.role, index: params.index },
-    });
-
     if (existing) {
       await prisma.systemPromptOverrideRevision.create({
         data: {
@@ -164,6 +160,10 @@ export async function resetSystemPromptOverride(params: {
         },
       });
     }
+
+    await prisma.systemPromptOverride.deleteMany({
+      where: { promptKey: params.promptKey, role: params.role, index: params.index },
+    });
 
     return { success: true };
   } catch (error) {
@@ -213,21 +213,31 @@ export async function rollbackSystemPromptOverrideRevision(params: {
     });
     if (!revision) return { success: false, error: "Revision not found" };
 
-    if (!revision.content) {
-      await prisma.systemPromptOverride.deleteMany({
-        where: { promptKey: revision.promptKey, role: revision.role, index: revision.index },
+    if (revision.content == null) {
+      await prisma.$transaction(async (tx) => {
+        const existing = await tx.systemPromptOverride.findFirst({
+          where: { promptKey: revision.promptKey, role: revision.role, index: revision.index },
+          select: { id: true },
+        });
+
+        await tx.systemPromptOverrideRevision.create({
+          data: {
+            systemPromptOverrideId: existing?.id ?? null,
+            promptKey: revision.promptKey,
+            role: revision.role,
+            index: revision.index,
+            content: null,
+            action: "ROLLBACK_DELETE",
+            createdByUserId: userId,
+            createdByEmail: userEmail ?? null,
+          },
+        });
+
+        await tx.systemPromptOverride.deleteMany({
+          where: { promptKey: revision.promptKey, role: revision.role, index: revision.index },
+        });
       });
-      await prisma.systemPromptOverrideRevision.create({
-        data: {
-          promptKey: revision.promptKey,
-          role: revision.role,
-          index: revision.index,
-          content: null,
-          action: "ROLLBACK_DELETE",
-          createdByUserId: userId,
-          createdByEmail: userEmail ?? null,
-        },
-      });
+
       return { success: true };
     }
 
@@ -369,10 +379,6 @@ export async function resetSystemSnippetOverride(params: {
       select: { id: true, content: true },
     });
 
-    await prisma.systemPromptSnippetOverride.deleteMany({
-      where: { snippetKey: params.snippetKey },
-    });
-
     if (existing) {
       await prisma.systemPromptSnippetOverrideRevision.create({
         data: {
@@ -385,6 +391,10 @@ export async function resetSystemSnippetOverride(params: {
         },
       });
     }
+
+    await prisma.systemPromptSnippetOverride.deleteMany({
+      where: { snippetKey: params.snippetKey },
+    });
 
     return { success: true };
   } catch (error) {
@@ -430,19 +440,29 @@ export async function rollbackSystemSnippetOverrideRevision(params: {
     });
     if (!revision) return { success: false, error: "Revision not found" };
 
-    if (!revision.content) {
-      await prisma.systemPromptSnippetOverride.deleteMany({
-        where: { snippetKey: revision.snippetKey },
+    if (revision.content == null) {
+      await prisma.$transaction(async (tx) => {
+        const existing = await tx.systemPromptSnippetOverride.findFirst({
+          where: { snippetKey: revision.snippetKey },
+          select: { id: true },
+        });
+
+        await tx.systemPromptSnippetOverrideRevision.create({
+          data: {
+            systemPromptSnippetOverrideId: existing?.id ?? null,
+            snippetKey: revision.snippetKey,
+            content: null,
+            action: "ROLLBACK_DELETE",
+            createdByUserId: userId,
+            createdByEmail: userEmail ?? null,
+          },
+        });
+
+        await tx.systemPromptSnippetOverride.deleteMany({
+          where: { snippetKey: revision.snippetKey },
+        });
       });
-      await prisma.systemPromptSnippetOverrideRevision.create({
-        data: {
-          snippetKey: revision.snippetKey,
-          content: null,
-          action: "ROLLBACK_DELETE",
-          createdByUserId: userId,
-          createdByEmail: userEmail ?? null,
-        },
-      });
+
       return { success: true };
     }
 
@@ -478,4 +498,3 @@ export async function rollbackSystemSnippetOverrideRevision(params: {
     return { success: false, error: error instanceof Error ? error.message : "Failed to rollback system snippet override" };
   }
 }
-
