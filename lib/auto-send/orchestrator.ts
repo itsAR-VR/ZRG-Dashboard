@@ -258,6 +258,7 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
   }
 
   async function executeAiAutoSendPath(context: AutoSendContext, startTimeMs: number): Promise<AutoSendResult> {
+    const debug = process.env.AUTO_SEND_DEBUG === "1";
     if (!context.draftContent.trim()) {
       await safeRecord({
         draftId: context.draftId,
@@ -275,6 +276,7 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
     }
 
     const threshold = context.emailCampaign?.autoSendConfidenceThreshold ?? AUTO_SEND_CONSTANTS.DEFAULT_CONFIDENCE_THRESHOLD;
+    const skipHumanReview = context.emailCampaign?.autoSendSkipHumanReview === true;
 
     let evaluation = await deps.evaluateAutoSend({
       clientId: context.clientId,
@@ -370,13 +372,17 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
             context.draftContent = revision.revisedDraft;
             evaluation = revision.revisedEvaluation;
 
-            if (evaluation.safeToSend && evaluation.confidence >= threshold) {
+            const revisedSource = evaluation.source ?? "model";
+            const isHardBlock = revisedSource === "hard_block" || Boolean(evaluation.hardBlockCode);
+            const passesConfidence = evaluation.confidence >= threshold;
+            const passesSafety = evaluation.safeToSend || (skipHumanReview && !isHardBlock);
+
+            if (passesSafety && passesConfidence) {
               loopStopReason = "threshold_met";
               break;
             }
 
-            const revisedSource = evaluation.source ?? "model";
-            if (revisedSource === "hard_block" || evaluation.hardBlockCode) {
+            if (isHardBlock) {
               loopStopReason = "hard_block";
               break;
             }
@@ -434,7 +440,29 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
     const evaluationTimeMs = Date.now() - startTimeMs;
     const evaluatedAt = new Date();
 
-    if (evaluation.safeToSend && evaluation.confidence >= threshold) {
+    const finalSource = evaluation.source ?? "model";
+    const isHardBlock = finalSource === "hard_block" || Boolean(evaluation.hardBlockCode);
+    const passesConfidence = evaluation.confidence >= threshold;
+    const passesSafety = evaluation.safeToSend || (skipHumanReview && !isHardBlock);
+
+    if (debug) {
+      console.log("[AutoSend] Decision", {
+        clientId: context.clientId,
+        leadId: context.leadId,
+        draftId: context.draftId,
+        threshold,
+        confidence: evaluation.confidence,
+        safeToSend: evaluation.safeToSend,
+        requiresHumanReview: evaluation.requiresHumanReview,
+        skipHumanReview,
+        passesSafety,
+        passesConfidence,
+        source: finalSource,
+        hardBlockCode: evaluation.hardBlockCode ?? null,
+      });
+    }
+
+    if (passesSafety && passesConfidence) {
       const scheduleConfig = resolveAutoSendScheduleConfig(
         context.workspaceSettings ?? null,
         context.emailCampaign ?? null,

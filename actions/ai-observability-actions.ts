@@ -94,6 +94,9 @@ export type PromptOverrideRecord = {
   index: number;
   content: string;
   baseContentHash: string;
+  updatedAt: string;
+  codeBaseHash: string | null;
+  isDrifted: boolean;
 };
 
 export type ObservabilitySummary = {
@@ -638,15 +641,94 @@ export async function getPromptOverrides(clientId: string): Promise<{
         index: true,
         baseContentHash: true,
         content: true,
+        updatedAt: true,
       },
     });
 
-    return { success: true, overrides };
+    return {
+      success: true,
+      overrides: overrides.map((o) => {
+        const codeBaseHash = computePromptMessageBaseHash({
+          promptKey: o.promptKey,
+          role: o.role as PromptRole,
+          index: o.index,
+        });
+        return {
+          promptKey: o.promptKey,
+          role: o.role,
+          index: o.index,
+          baseContentHash: o.baseContentHash,
+          content: o.content,
+          updatedAt: o.updatedAt.toISOString(),
+          codeBaseHash,
+          isDrifted: codeBaseHash !== o.baseContentHash,
+        };
+      }),
+    };
   } catch (error) {
     console.error("[getPromptOverrides] Error:", error);
     return {
       success: false,
       error: error instanceof Error ? error.message : "Failed to load overrides",
+    };
+  }
+}
+
+export type SystemPromptOverrideRecord = {
+  promptKey: string;
+  role: string;
+  index: number;
+  content: string;
+  baseContentHash: string;
+  updatedAt: string;
+  codeBaseHash: string | null;
+  isDrifted: boolean;
+};
+
+export async function getSystemPromptOverridesForWorkspace(clientId: string): Promise<{
+  success: boolean;
+  overrides?: SystemPromptOverrideRecord[];
+  error?: string;
+}> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    const overrides = await prisma.systemPromptOverride.findMany({
+      select: {
+        promptKey: true,
+        role: true,
+        index: true,
+        baseContentHash: true,
+        content: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      success: true,
+      overrides: overrides.map((o) => {
+        const codeBaseHash = computePromptMessageBaseHash({
+          promptKey: o.promptKey,
+          role: o.role as PromptRole,
+          index: o.index,
+        });
+        return {
+          promptKey: o.promptKey,
+          role: o.role,
+          index: o.index,
+          baseContentHash: o.baseContentHash,
+          content: o.content,
+          updatedAt: o.updatedAt.toISOString(),
+          codeBaseHash,
+          isDrifted: codeBaseHash !== o.baseContentHash,
+        };
+      }),
+    };
+  } catch (error) {
+    console.error("[getSystemPromptOverridesForWorkspace] Error:", error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to load system overrides",
     };
   }
 }
@@ -1007,9 +1089,18 @@ export type SnippetRegistryEntry = {
   label: string;
   description: string;
   type: "text" | "list" | "number" | "template";
+  // Baseline default for this workspace (system default override, or code default).
   defaultValue: string;
-  currentValue: string | null; // null means using default
+  // Workspace override value (null means using the baseline default).
+  currentValue: string | null;
   placeholders?: string[]; // for template type
+  // Additional metadata for UI badges and diffing.
+  codeDefaultValue?: string;
+  systemDefaultValue?: string | null;
+  systemUpdatedAt?: string | null;
+  workspaceUpdatedAt?: string | null;
+  source?: "workspace" | "system" | "code";
+  isStale?: boolean;
 };
 
 /**
@@ -1095,12 +1186,21 @@ export async function getSnippetRegistry(clientId: string): Promise<{
       return [9, 0, snippetKey];
     };
 
-    // Fetch current overrides
-    const overrides = await prisma.promptSnippetOverride.findMany({
-      where: { clientId },
-      select: { snippetKey: true, content: true },
-    });
-    const overrideMap = new Map(overrides.map((o) => [o.snippetKey, o.content]));
+    const [workspaceOverrides, systemOverrides] = await Promise.all([
+      prisma.promptSnippetOverride.findMany({
+        where: { clientId },
+        select: { snippetKey: true, content: true, updatedAt: true },
+      }),
+      prisma.systemPromptSnippetOverride.findMany({
+        select: { snippetKey: true, content: true, updatedAt: true },
+      }),
+    ]);
+    const workspaceOverrideMap = new Map(
+      workspaceOverrides.map((o) => [o.snippetKey, { content: o.content, updatedAt: o.updatedAt }])
+    );
+    const systemOverrideMap = new Map(
+      systemOverrides.map((o) => [o.snippetKey, { content: o.content, updatedAt: o.updatedAt }])
+    );
 
     // Build entries with current values
     const keys = Object.keys(SNIPPET_DEFAULTS).sort((a, b) => {
@@ -1111,12 +1211,44 @@ export async function getSnippetRegistry(clientId: string): Promise<{
       return aa[2].localeCompare(bb[2]);
     });
 
-    const entries: SnippetRegistryEntry[] = keys.map((key) => ({
-      key,
-      ...buildRegistryMeta(key),
-      defaultValue: SNIPPET_DEFAULTS[key] ?? "",
-      currentValue: overrideMap.get(key) ?? null,
-    }));
+    const entries: SnippetRegistryEntry[] = keys.map((key) => {
+      const codeDefaultValue = SNIPPET_DEFAULTS[key] ?? "";
+      const system = systemOverrideMap.get(key) ?? null;
+      const workspace = workspaceOverrideMap.get(key) ?? null;
+
+      const hasSystemOverride = Boolean(system);
+      const hasWorkspaceOverride = Boolean(workspace);
+
+      // Note: overrides can intentionally set content to an empty string. Use existence checks, not truthiness.
+      const systemDefaultValue = hasSystemOverride ? system!.content : null;
+      const workspaceDefaultValue = hasWorkspaceOverride ? workspace!.content : null;
+
+      const source: "workspace" | "system" | "code" = hasWorkspaceOverride
+        ? "workspace"
+        : hasSystemOverride
+          ? "system"
+          : "code";
+
+      const systemUpdatedAt = hasSystemOverride ? system!.updatedAt.toISOString() : null;
+      const workspaceUpdatedAt = hasWorkspaceOverride ? workspace!.updatedAt.toISOString() : null;
+      const isStale = Boolean(hasWorkspaceOverride && hasSystemOverride && workspace!.updatedAt < system!.updatedAt);
+
+      // Baseline default shown in the workspace editor (system override, else code).
+      const baselineDefault = systemDefaultValue ?? codeDefaultValue;
+
+      return {
+        key,
+        ...buildRegistryMeta(key),
+        defaultValue: baselineDefault,
+        currentValue: workspaceDefaultValue ?? null,
+        codeDefaultValue,
+        systemDefaultValue,
+        systemUpdatedAt,
+        workspaceUpdatedAt,
+        source,
+        isStale,
+      };
+    });
 
     return { success: true, entries };
   } catch (error) {

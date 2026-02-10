@@ -57,6 +57,7 @@ export interface AutoSendContext {
     bisonCampaignId: string | null;
     responseMode: string | null;
     autoSendConfidenceThreshold: number;
+    autoSendSkipHumanReview?: boolean;
     autoSendScheduleMode?: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
     autoSendCustomSchedule?: unknown;
   } | null;

@@ -21,6 +21,14 @@ export type AIPromptTemplate = {
   messages: PromptMessageTemplate[];
 };
 
+type PromptOverrideLike = {
+  role: string;
+  index: number;
+  content: string;
+  baseContentHash: string;
+  updatedAt: Date;
+};
+
 const SENTIMENT_SYSTEM = SENTIMENT_CLASSIFY_V1_SYSTEM;
 
 const EMAIL_INBOX_MANAGER_ANALYZE_SYSTEM = `Output your response in the following strict JSON format:
@@ -1588,8 +1596,12 @@ export async function getPromptOverrideMap(
 }
 
 /**
- * Get a prompt template with workspace-specific overrides applied.
- * Falls back to code defaults for any messages without overrides.
+ * Get a prompt template with system defaults + workspace-specific overrides applied.
+ *
+ * Precedence (flat drift model):
+ * 1) Workspace override (if baseContentHash matches code default)
+ * 2) System default override (if baseContentHash matches code default)
+ * 3) Code default
  *
  * Also returns an "overrideVersion" suffix for telemetry tracking.
  *
@@ -1609,79 +1621,97 @@ export async function getPromptWithOverrides(
   const base = getAIPromptTemplate(promptKey);
   if (!base) return null;
 
-  // Fetch overrides for this workspace + prompt
-  const overrides = await prisma.promptOverride.findMany({
-    where: { clientId, promptKey },
-    orderBy: { updatedAt: "desc" },
+  const [workspaceOverrides, systemOverrides] = await Promise.all([
+    prisma.promptOverride.findMany({
+      where: { clientId, promptKey },
+      orderBy: { updatedAt: "desc" },
+    }),
+    prisma.systemPromptOverride.findMany({
+      where: { promptKey },
+      orderBy: { updatedAt: "desc" },
+    }),
+  ]);
+
+  const applied = applyFlatPromptOverrides({
+    base,
+    workspaceOverrides: workspaceOverrides as PromptOverrideLike[],
+    systemOverrides: systemOverrides as PromptOverrideLike[],
   });
 
-  if (overrides.length === 0) {
-    return {
-      template: base,
-      overrideVersion: null,
-      hasOverrides: false,
-    };
+  return { template: applied.template, overrideVersion: applied.overrideVersion, hasOverrides: applied.hasWorkspaceOverrides };
+}
+
+export function applyFlatPromptOverrides(opts: {
+  base: AIPromptTemplate;
+  workspaceOverrides: PromptOverrideLike[];
+  systemOverrides: PromptOverrideLike[];
+}): {
+  template: AIPromptTemplate;
+  overrideVersion: string | null;
+  hasWorkspaceOverrides: boolean;
+  appliedWorkspaceCount: number;
+  appliedSystemCount: number;
+} {
+  const workspaceOverrideMap = new Map<string, PromptOverrideLike>();
+  for (const o of opts.workspaceOverrides) {
+    workspaceOverrideMap.set(`${o.role}:${o.index}`, o);
   }
 
-  // Build override lookup map: `${role}:${index}` -> { content, baseContentHash }
-  const overrideMap = new Map<
-    string,
-    { content: string; baseContentHash: string; updatedAt: Date }
-  >();
-  for (const o of overrides) {
-    overrideMap.set(`${o.role}:${o.index}`, {
-      content: o.content,
-      baseContentHash: o.baseContentHash,
-      updatedAt: o.updatedAt,
-    });
+  const systemOverrideMap = new Map<string, PromptOverrideLike>();
+  for (const o of opts.systemOverrides) {
+    systemOverrideMap.set(`${o.role}:${o.index}`, o);
   }
 
-  // Track which overrides were actually applied (for version suffix)
-  let appliedCount = 0;
-  let newestAppliedUpdatedAt: Date | null = null;
+  let appliedWorkspaceCount = 0;
+  let appliedSystemCount = 0;
+  let newestWorkspaceUpdatedAt: Date | null = null;
+  let newestSystemUpdatedAt: Date | null = null;
 
-  // Apply overrides to messages (only if base content still matches)
-  const messages: typeof base.messages = [];
+  const messages: typeof opts.base.messages = [];
   const roleCounts = new Map<string, number>();
 
-  for (const msg of base.messages) {
+  for (const msg of opts.base.messages) {
     const roleIndex = roleCounts.get(msg.role) ?? 0;
     roleCounts.set(msg.role, roleIndex + 1);
 
     const key = `${msg.role}:${roleIndex}`;
-    const override = overrideMap.get(key);
+    const codeBaseHash = hashPromptContent(msg.content);
 
-    if (!override) {
-      messages.push(msg);
+    const workspaceOverride = workspaceOverrideMap.get(key);
+    if (workspaceOverride && workspaceOverride.baseContentHash === codeBaseHash) {
+      appliedWorkspaceCount++;
+      if (!newestWorkspaceUpdatedAt || workspaceOverride.updatedAt > newestWorkspaceUpdatedAt) {
+        newestWorkspaceUpdatedAt = workspaceOverride.updatedAt;
+      }
+      messages.push({ ...msg, content: workspaceOverride.content });
       continue;
     }
 
-    // Prevent index drift: only apply if the base message content hash matches
-    const currentBaseHash = hashPromptContent(msg.content);
-    if (currentBaseHash !== override.baseContentHash) {
-      // Hash mismatch - base template changed, ignore this override
-      messages.push(msg);
+    const systemOverride = systemOverrideMap.get(key);
+    if (systemOverride && systemOverride.baseContentHash === codeBaseHash) {
+      appliedSystemCount++;
+      if (!newestSystemUpdatedAt || systemOverride.updatedAt > newestSystemUpdatedAt) {
+        newestSystemUpdatedAt = systemOverride.updatedAt;
+      }
+      messages.push({ ...msg, content: systemOverride.content });
       continue;
     }
 
-    appliedCount++;
-    if (!newestAppliedUpdatedAt || override.updatedAt > newestAppliedUpdatedAt) {
-      newestAppliedUpdatedAt = override.updatedAt;
-    }
-
-    messages.push({ ...msg, content: override.content });
+    messages.push(msg);
   }
 
-  // Generate stable override version suffix for telemetry
-  // Format: ovr_<shortTimestamp> (to distinguish from default)
   const overrideVersion =
-    appliedCount > 0 && newestAppliedUpdatedAt
-      ? `ovr_${newestAppliedUpdatedAt.toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
-      : null;
+    appliedWorkspaceCount > 0 && newestWorkspaceUpdatedAt
+      ? `ws_${newestWorkspaceUpdatedAt.toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
+      : appliedSystemCount > 0 && newestSystemUpdatedAt
+        ? `sys_${newestSystemUpdatedAt.toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
+        : null;
 
   return {
-    template: { ...base, messages },
+    template: { ...opts.base, messages },
     overrideVersion,
-    hasOverrides: appliedCount > 0,
+    hasWorkspaceOverrides: appliedWorkspaceCount > 0,
+    appliedWorkspaceCount,
+    appliedSystemCount,
   };
 }

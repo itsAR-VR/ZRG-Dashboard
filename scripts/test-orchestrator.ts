@@ -19,6 +19,7 @@ const TEST_FILES = [
   "lib/__tests__/manual-draft-generation.test.ts",
   "lib/__tests__/ai-drafts-service-description-merge.test.ts",
   "lib/__tests__/ai-drafts-pricing-placeholders.test.ts",
+  "lib/__tests__/prompt-system-defaults.test.ts",
   "lib/__tests__/prompt-runner-temperature-reasoning.test.ts",
   "lib/__tests__/prompt-runner-attempt-expansion.test.ts",
   "lib/__tests__/openai-telemetry-metadata.test.ts",

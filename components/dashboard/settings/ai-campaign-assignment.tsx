@@ -25,6 +25,7 @@ type CampaignRow = {
   leadCount: number
   responseMode: CampaignResponseMode
   autoSendConfidenceThreshold: number
+  autoSendSkipHumanReview: boolean
   // Phase 47l: Auto-send delay window
   autoSendDelayMinSeconds: number
   autoSendDelayMaxSeconds: number
@@ -131,6 +132,7 @@ function areEqual(a: CampaignRow, b: CampaignRow): boolean {
   return (
     a.responseMode === b.responseMode &&
     Math.abs((a.autoSendConfidenceThreshold ?? 0) - (b.autoSendConfidenceThreshold ?? 0)) < 0.00001 &&
+    a.autoSendSkipHumanReview === b.autoSendSkipHumanReview &&
     a.autoSendDelayMinSeconds === b.autoSendDelayMinSeconds &&
     a.autoSendDelayMaxSeconds === b.autoSendDelayMaxSeconds &&
     scheduleModeEqual &&
@@ -198,6 +200,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       leadCount: c.leadCount,
       responseMode: c.responseMode,
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold ?? 0.9,
+      autoSendSkipHumanReview: c.autoSendSkipHumanReview ?? false,
       autoSendDelayMinSeconds: c.autoSendDelayMinSeconds ?? 180,
       autoSendDelayMaxSeconds: c.autoSendDelayMaxSeconds ?? 420,
       autoSendScheduleMode: c.autoSendScheduleMode ?? null,
@@ -299,6 +302,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
     const responseModeChanged =
       row.responseMode !== baseline.responseMode ||
       Math.abs((row.autoSendConfidenceThreshold ?? 0) - (baseline.autoSendConfidenceThreshold ?? 0)) >= 0.00001 ||
+      row.autoSendSkipHumanReview !== baseline.autoSendSkipHumanReview ||
       row.autoSendDelayMinSeconds !== baseline.autoSendDelayMinSeconds ||
       row.autoSendDelayMaxSeconds !== baseline.autoSendDelayMaxSeconds ||
       scheduleChanged
@@ -312,6 +316,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       const res = await updateEmailCampaignConfig(row.id, {
         responseMode: row.responseMode,
         autoSendConfidenceThreshold: clamp01(row.autoSendConfidenceThreshold),
+        autoSendSkipHumanReview: row.autoSendSkipHumanReview,
         autoSendDelayMinSeconds: row.autoSendDelayMinSeconds,
         autoSendDelayMaxSeconds: row.autoSendDelayMaxSeconds,
         autoSendScheduleMode: row.autoSendScheduleMode,
@@ -326,6 +331,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
 
       nextRow.responseMode = res.data.responseMode
       nextRow.autoSendConfidenceThreshold = res.data.autoSendConfidenceThreshold
+      nextRow.autoSendSkipHumanReview = res.data.autoSendSkipHumanReview
       nextRow.autoSendDelayMinSeconds = res.data.autoSendDelayMinSeconds
       nextRow.autoSendDelayMaxSeconds = res.data.autoSendDelayMaxSeconds
       nextRow.autoSendScheduleMode = res.data.autoSendScheduleMode
@@ -550,6 +556,26 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                         <Label className="text-xs text-muted-foreground">
                           {thresholdDisabled ? "Enable AI auto‑send to edit." : "Higher = fewer auto‑sends, more reviews."}
                         </Label>
+                        {row.responseMode === "AI_AUTO_SEND" ? (
+                          <div className="mt-1 space-y-1">
+                            <div className="flex items-center gap-2">
+                              <Checkbox
+                                id={`skip-review-${row.id}`}
+                                checked={row.autoSendSkipHumanReview}
+                                disabled={thresholdDisabled}
+                                onCheckedChange={(checked) =>
+                                  updateRow(row.id, { autoSendSkipHumanReview: checked === true })
+                                }
+                              />
+                              <Label htmlFor={`skip-review-${row.id}`} className="text-xs text-muted-foreground">
+                                Skip human review check
+                              </Label>
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              Uses only confidence threshold. Hard blocks (opt-out, blacklist) still apply.
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell className="min-w-[160px]">

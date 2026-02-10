@@ -43,6 +43,7 @@ export async function runSmsInboundPostProcessJob(params: {
               bisonCampaignId: true,
               responseMode: true,
               autoSendConfidenceThreshold: true,
+              autoSendSkipHumanReview: true,
               autoSendScheduleMode: true,
               autoSendCustomSchedule: true,
             },

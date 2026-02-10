@@ -223,13 +223,23 @@ export async function getEffectiveSnippet(
   const defaultValue = SNIPPET_DEFAULTS[snippetKey];
   if (!defaultValue) return null;
 
-  const override = await prisma.promptSnippetOverride.findUnique({
-    where: { clientId_snippetKey: { clientId, snippetKey } },
-    select: { content: true, updatedAt: true },
-  });
+  const [workspaceOverride, systemOverride] = await Promise.all([
+    prisma.promptSnippetOverride.findUnique({
+      where: { clientId_snippetKey: { clientId, snippetKey } },
+      select: { content: true, updatedAt: true },
+    }),
+    prisma.systemPromptSnippetOverride.findUnique({
+      where: { snippetKey },
+      select: { content: true, updatedAt: true },
+    }),
+  ]);
 
-  if (override) {
-    return { content: override.content, isOverride: true, updatedAt: override.updatedAt };
+  if (workspaceOverride) {
+    return { content: workspaceOverride.content, isOverride: true, updatedAt: workspaceOverride.updatedAt };
+  }
+
+  if (systemOverride) {
+    return { content: systemOverride.content, isOverride: true, updatedAt: systemOverride.updatedAt };
   }
 
   return { content: defaultValue, isOverride: false, updatedAt: null };
@@ -285,7 +295,7 @@ export async function getEffectiveEmailLengthBounds(
   maxChars: number;
   isOverride: boolean;
 }> {
-  // First check for workspace overrides
+  // First check for workspace/system overrides
   const [minOverride, maxOverride] = await Promise.all([
     getEffectiveSnippet("emailLengthMinChars", clientId),
     getEffectiveSnippet("emailLengthMaxChars", clientId),

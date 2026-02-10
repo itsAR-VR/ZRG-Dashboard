@@ -19,6 +19,7 @@ interface EmailCampaignData {
   leadCount: number;
   responseMode: CampaignResponseMode;
   autoSendConfidenceThreshold: number;
+  autoSendSkipHumanReview: boolean;
   // Phase 47l: Auto-send delay window
   autoSendDelayMinSeconds: number;
   autoSendDelayMaxSeconds: number;
@@ -68,6 +69,7 @@ export async function getEmailCampaigns(clientId?: string): Promise<{
       leadCount: c._count.leads,
       responseMode: c.responseMode,
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold,
+      autoSendSkipHumanReview: c.autoSendSkipHumanReview,
       autoSendDelayMinSeconds: c.autoSendDelayMinSeconds,
       autoSendDelayMaxSeconds: c.autoSendDelayMaxSeconds,
       autoSendScheduleMode: c.autoSendScheduleMode ?? null,
@@ -108,6 +110,7 @@ export async function updateEmailCampaignConfig(
   opts: {
     responseMode?: CampaignResponseMode;
     autoSendConfidenceThreshold?: number;
+    autoSendSkipHumanReview?: boolean;
     autoSendDelayMinSeconds?: number;
     autoSendDelayMaxSeconds?: number;
     autoSendScheduleMode?: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
@@ -118,6 +121,7 @@ export async function updateEmailCampaignConfig(
   data?: {
     responseMode: CampaignResponseMode;
     autoSendConfidenceThreshold: number;
+    autoSendSkipHumanReview: boolean;
     autoSendDelayMinSeconds: number;
     autoSendDelayMaxSeconds: number;
     autoSendScheduleMode: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
@@ -150,6 +154,10 @@ export async function updateEmailCampaignConfig(
     if (opts.autoSendConfidenceThreshold !== undefined) {
       const normalized = clamp01(Number(opts.autoSendConfidenceThreshold));
       data.autoSendConfidenceThreshold = normalized;
+    }
+
+    if (opts.autoSendSkipHumanReview !== undefined) {
+      data.autoSendSkipHumanReview = Boolean(opts.autoSendSkipHumanReview);
     }
 
     // Phase 47l: Handle delay settings
@@ -192,6 +200,7 @@ export async function updateEmailCampaignConfig(
       select: {
         responseMode: true,
         autoSendConfidenceThreshold: true,
+        autoSendSkipHumanReview: true,
         autoSendDelayMinSeconds: true,
         autoSendDelayMaxSeconds: true,
         autoSendScheduleMode: true,
@@ -206,6 +215,7 @@ export async function updateEmailCampaignConfig(
       data: {
         responseMode: updated.responseMode,
         autoSendConfidenceThreshold: updated.autoSendConfidenceThreshold,
+        autoSendSkipHumanReview: updated.autoSendSkipHumanReview,
         autoSendDelayMinSeconds: updated.autoSendDelayMinSeconds,
         autoSendDelayMaxSeconds: updated.autoSendDelayMaxSeconds,
         autoSendScheduleMode: updated.autoSendScheduleMode ?? null,

@@ -74,7 +74,7 @@ import { WorkspaceMembersManager } from "./settings/workspace-members-manager"
 import { AdminDashboardTab } from "./admin-dashboard-tab"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { cn } from "@/lib/utils"
-import { getWorkspaceAdminStatus, getWorkspaceCapabilities } from "@/actions/access-actions"
+import { getGlobalAdminStatus, getWorkspaceAdminStatus, getWorkspaceCapabilities } from "@/actions/access-actions"
 import {
   getSlackApprovalRecipients,
   getSlackBotTokenStatus,
@@ -124,6 +124,7 @@ import {
   getAiObservabilitySummary,
   getAiPromptTemplates,
   getPromptOverrides,
+  getSystemPromptOverridesForWorkspace,
   savePromptOverride,
   resetPromptOverride,
   getPromptOverrideRevisions,
@@ -131,6 +132,8 @@ import {
   getPromptSnippetOverrides,
   savePromptSnippetOverride,
   resetPromptSnippetOverride,
+  getPromptSnippetOverrideRevisions,
+  rollbackPromptSnippetOverrideRevision,
   getSnippetRegistry,
   type AiObservabilityWindow,
   type AiPromptTemplatePublic,
@@ -138,8 +141,22 @@ import {
   type PromptOverrideRecord,
   type PromptOverrideRevisionRecord,
   type PromptSnippetOverrideRecord,
+  type PromptSnippetOverrideRevisionRecord,
   type SnippetRegistryEntry,
+  type SystemPromptOverrideRecord,
 } from "@/actions/ai-observability-actions"
+import {
+  saveSystemPromptOverride,
+  resetSystemPromptOverride,
+  saveSystemSnippetOverride,
+  resetSystemSnippetOverride,
+  getSystemPromptOverrideRevisions,
+  rollbackSystemPromptOverrideRevision,
+  getSystemSnippetOverrideRevisions,
+  rollbackSystemSnippetOverrideRevision,
+  type SystemPromptOverrideRevisionRecord,
+  type SystemSnippetOverrideRevisionRecord,
+} from "@/actions/system-prompt-actions"
 import {
   listAiPersonas,
   getAiPersona,
@@ -544,6 +561,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   // AI observability (admin-only)
   const [isWorkspaceAdmin, setIsWorkspaceAdmin] = useState(false)
+  const [isGlobalAdmin, setIsGlobalAdmin] = useState(false)
   const [workspaceCapabilities, setWorkspaceCapabilities] = useState<WorkspaceCapabilities | null>(null)
   const [aiObsWindow, setAiObsWindow] = useState<AiObservabilityWindow>("24h")
   const [aiObs, setAiObs] = useState<ObservabilitySummary | null>(null)
@@ -580,7 +598,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [aiPromptTemplates, setAiPromptTemplates] = useState<AiPromptTemplatePublic[] | null>(null)
   const [aiPromptsLoading, setAiPromptsLoading] = useState(false)
   // Prompt override editing state (Phase 47)
-  const [promptOverrides, setPromptOverrides] = useState<Map<string, string>>(new Map())
+  const [promptOverrides, setPromptOverrides] = useState<
+    Map<string, { content: string; updatedAt: string; isDrifted: boolean }>
+  >(new Map())
+  const [systemPromptOverrides, setSystemPromptOverrides] = useState<
+    Map<string, { content: string; updatedAt: string; isDrifted: boolean }>
+  >(new Map())
   const [editingPrompt, setEditingPrompt] = useState<{
     promptKey: string
     role: string
@@ -588,18 +611,38 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   } | null>(null)
   const [editContent, setEditContent] = useState("")
   const [savingOverride, setSavingOverride] = useState(false)
+  const [editingSystemPrompt, setEditingSystemPrompt] = useState<{
+    promptKey: string
+    role: string
+    index: number
+  } | null>(null)
+  const [systemEditContent, setSystemEditContent] = useState("")
+  const [savingSystemOverride, setSavingSystemOverride] = useState(false)
   const [promptHistoryOpen, setPromptHistoryOpen] = useState(false)
   const [promptHistoryTarget, setPromptHistoryTarget] = useState<{ promptKey: string; role: string; index: number } | null>(null)
   const [promptHistoryRows, setPromptHistoryRows] = useState<PromptOverrideRevisionRecord[]>([])
   const [promptHistoryLoading, setPromptHistoryLoading] = useState(false)
+  const [systemPromptHistoryOpen, setSystemPromptHistoryOpen] = useState(false)
+  const [systemPromptHistoryTarget, setSystemPromptHistoryTarget] = useState<{ promptKey: string; role: string; index: number } | null>(null)
+  const [systemPromptHistoryRows, setSystemPromptHistoryRows] = useState<SystemPromptOverrideRevisionRecord[]>([])
+  const [systemPromptHistoryLoading, setSystemPromptHistoryLoading] = useState(false)
   // Snippet override state (Phase 47f)
   const [snippetOverrides, setSnippetOverrides] = useState<Map<string, string>>(new Map())
   const [expandedSnippets, setExpandedSnippets] = useState<Set<string>>(new Set())
   const [editingSnippet, setEditingSnippet] = useState<string | null>(null)
   const [snippetEditContent, setSnippetEditContent] = useState("")
   const [savingSnippet, setSavingSnippet] = useState(false)
+  const [editingSystemSnippet, setEditingSystemSnippet] = useState<string | null>(null)
+  const [systemSnippetEditContent, setSystemSnippetEditContent] = useState("")
+  const [savingSystemSnippet, setSavingSystemSnippet] = useState(false)
+  const [snippetHistoryOpen, setSnippetHistoryOpen] = useState(false)
+  const [snippetHistoryTarget, setSnippetHistoryTarget] = useState<{ scope: "workspace" | "system"; snippetKey: string } | null>(null)
+  const [snippetHistoryRows, setSnippetHistoryRows] = useState<Array<PromptSnippetOverrideRevisionRecord | SystemSnippetOverrideRevisionRecord>>([])
+  const [snippetHistoryLoading, setSnippetHistoryLoading] = useState(false)
   // Variables tab state (Phase 47h)
-  const [promptModalTab, setPromptModalTab] = useState<"prompts" | "variables">("prompts")
+  const [promptModalTab, setPromptModalTab] = useState<
+    "prompts" | "variables" | "system_prompts" | "system_variables"
+  >("prompts")
   const [snippetRegistry, setSnippetRegistry] = useState<SnippetRegistryEntry[] | null>(null)
   // Persona context state (Phase 47j)
   const [personaList, setPersonaList] = useState<AiPersonaSummary[] | null>(null)
@@ -617,21 +660,36 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const resetAiPromptModalState = useCallback(() => {
     setAiPromptTemplates(null)
     setPromptOverrides(new Map())
+    setSystemPromptOverrides(new Map())
     setEditingPrompt(null)
     setEditContent("")
+    setSavingOverride(false)
     setPromptHistoryRows([])
     setPromptHistoryOpen(false)
     setPromptHistoryTarget(null)
+    setSystemPromptHistoryRows([])
+    setSystemPromptHistoryOpen(false)
+    setSystemPromptHistoryTarget(null)
     setSnippetOverrides(new Map())
     setExpandedSnippets(new Set())
     setEditingSnippet(null)
     setSnippetEditContent("")
+    setSavingSnippet(false)
+    setEditingSystemPrompt(null)
+    setSystemEditContent("")
+    setSavingSystemOverride(false)
+    setEditingSystemSnippet(null)
+    setSystemSnippetEditContent("")
+    setSavingSystemSnippet(false)
     setPromptModalTab("prompts")
     setSnippetRegistry(null)
     setPersonaList(null)
     setSelectedPersonaId(null)
     setSelectedPersonaDetails(null)
     setAiPromptsLoading(false)
+    setSnippetHistoryRows([])
+    setSnippetHistoryOpen(false)
+    setSnippetHistoryTarget(null)
     setAssetHistoryRows([])
     setAssetHistoryOpen(false)
     setAssetHistoryTarget(null)
@@ -646,15 +704,17 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   useEffect(() => {
     async function loadSettings() {
       setIsLoading(true)
-      const [result, adminStatus, capabilitiesResult] = await Promise.all([
+      const [result, adminStatus, capabilitiesResult, globalStatus] = await Promise.all([
         getUserSettings(activeWorkspace),
         activeWorkspace ? getWorkspaceAdminStatus(activeWorkspace) : Promise.resolve({ success: true, isAdmin: false }),
         activeWorkspace ? getWorkspaceCapabilities(activeWorkspace) : Promise.resolve({ success: true, capabilities: null }),
+        getGlobalAdminStatus(),
       ])
 
       const capabilities = capabilitiesResult.success ? capabilitiesResult.capabilities ?? null : null
       setWorkspaceCapabilities(capabilities)
       setIsWorkspaceAdmin(Boolean(adminStatus.success && adminStatus.isAdmin) && !capabilities?.isClientPortalUser)
+      setIsGlobalAdmin(Boolean(globalStatus.success && globalStatus.isAdmin))
       setSlackIntegrationError(null)
       setSlackChannels([])
       setSlackChannelToAdd("")
@@ -1035,11 +1095,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     Promise.all([
       getAiPromptTemplates(activeWorkspace),
       getPromptOverrides(activeWorkspace),
+      getSystemPromptOverridesForWorkspace(activeWorkspace),
       getPromptSnippetOverrides(activeWorkspace),
       getSnippetRegistry(activeWorkspace),
       listAiPersonas(activeWorkspace),
     ])
-      .then(([templatesRes, overridesRes, snippetsRes, registryRes, personasRes]) => {
+      .then(([templatesRes, overridesRes, systemOverridesRes, snippetsRes, registryRes, personasRes]) => {
         if (cancelled) return
         if (templatesRes.success && templatesRes.templates) {
           setAiPromptTemplates(templatesRes.templates)
@@ -1048,11 +1109,19 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         }
         // Build override map: "promptKey:role:index" -> content
         if (overridesRes.success && overridesRes.overrides) {
-          const map = new Map<string, string>()
+          const map = new Map<string, { content: string; updatedAt: string; isDrifted: boolean }>()
           for (const o of overridesRes.overrides) {
-            map.set(`${o.promptKey}:${o.role}:${o.index}`, o.content)
+            map.set(`${o.promptKey}:${o.role}:${o.index}`, { content: o.content, updatedAt: o.updatedAt, isDrifted: o.isDrifted })
           }
           setPromptOverrides(map)
+        }
+        // Build system override map: "promptKey:role:index" -> { content, updatedAt }
+        if (systemOverridesRes.success && systemOverridesRes.overrides) {
+          const map = new Map<string, { content: string; updatedAt: string; isDrifted: boolean }>()
+          for (const o of systemOverridesRes.overrides) {
+            map.set(`${o.promptKey}:${o.role}:${o.index}`, { content: o.content, updatedAt: o.updatedAt, isDrifted: o.isDrifted })
+          }
+          setSystemPromptOverrides(map)
         }
         // Build snippet override map: "snippetKey" -> content
         if (snippetsRes.success && snippetsRes.overrides) {
@@ -1867,11 +1936,31 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     if (!activeWorkspace) return
     const res = await getPromptOverrides(activeWorkspace)
     if (res.success && res.overrides) {
-      const map = new Map<string, string>()
+      const map = new Map<string, { content: string; updatedAt: string; isDrifted: boolean }>()
       for (const o of res.overrides) {
-        map.set(`${o.promptKey}:${o.role}:${o.index}`, o.content)
+        map.set(`${o.promptKey}:${o.role}:${o.index}`, { content: o.content, updatedAt: o.updatedAt, isDrifted: o.isDrifted })
       }
       setPromptOverrides(map)
+    }
+  }, [activeWorkspace])
+
+  const refreshSystemPromptOverrides = useCallback(async () => {
+    if (!activeWorkspace) return
+    const res = await getSystemPromptOverridesForWorkspace(activeWorkspace)
+    if (res.success && res.overrides) {
+      const map = new Map<string, { content: string; updatedAt: string; isDrifted: boolean }>()
+      for (const o of res.overrides) {
+        map.set(`${o.promptKey}:${o.role}:${o.index}`, { content: o.content, updatedAt: o.updatedAt, isDrifted: o.isDrifted })
+      }
+      setSystemPromptOverrides(map)
+    }
+  }, [activeWorkspace])
+
+  const refreshSnippetRegistry = useCallback(async () => {
+    if (!activeWorkspace) return
+    const res = await getSnippetRegistry(activeWorkspace)
+    if (res.success && res.entries) {
+      setSnippetRegistry(res.entries)
     }
   }, [activeWorkspace])
 
@@ -1918,6 +2007,67 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       toast.error(res.error || "Failed to rollback prompt")
     }
   }, [activeWorkspace, promptHistoryTarget, refreshPromptOverrides])
+
+  const handleRollbackSystemPromptRevision = useCallback(async (revisionId: string) => {
+    const res = await rollbackSystemPromptOverrideRevision({ revisionId })
+    if (res.success) {
+      toast.success("System prompt rolled back")
+      await refreshSystemPromptOverrides()
+      if (systemPromptHistoryTarget) {
+        const next = await getSystemPromptOverrideRevisions({
+          promptKey: systemPromptHistoryTarget.promptKey,
+          role: systemPromptHistoryTarget.role,
+          index: systemPromptHistoryTarget.index,
+        })
+        if (next.success && next.data) {
+          setSystemPromptHistoryRows(next.data)
+        }
+      }
+    } else {
+      toast.error(res.error || "Failed to rollback system prompt")
+    }
+  }, [refreshSystemPromptOverrides, systemPromptHistoryTarget])
+
+  const handleOpenSnippetHistory = useCallback(async (scope: "workspace" | "system", snippetKey: string) => {
+    if (scope === "workspace" && !activeWorkspace) return
+    setSnippetHistoryTarget({ scope, snippetKey })
+    setSnippetHistoryOpen(true)
+    setSnippetHistoryLoading(true)
+    const res =
+      scope === "workspace"
+        ? await getPromptSnippetOverrideRevisions(activeWorkspace!, snippetKey)
+        : await getSystemSnippetOverrideRevisions({ snippetKey })
+    if (res.success && res.data) {
+      setSnippetHistoryRows(res.data)
+    } else {
+      toast.error(res.error || "Failed to load history")
+    }
+    setSnippetHistoryLoading(false)
+  }, [activeWorkspace])
+
+  const handleRollbackSnippetRevision = useCallback(async (revisionId: string) => {
+    if (!snippetHistoryTarget) return
+
+    const res =
+      snippetHistoryTarget.scope === "workspace"
+        ? await rollbackPromptSnippetOverrideRevision(activeWorkspace!, revisionId)
+        : await rollbackSystemSnippetOverrideRevision({ revisionId })
+
+    if (res.success) {
+      toast.success("Variable rolled back")
+      await refreshSnippetRegistry()
+
+      const next =
+        snippetHistoryTarget.scope === "workspace"
+          ? await getPromptSnippetOverrideRevisions(activeWorkspace!, snippetHistoryTarget.snippetKey)
+          : await getSystemSnippetOverrideRevisions({ snippetKey: snippetHistoryTarget.snippetKey })
+      if (next.success && next.data) {
+        setSnippetHistoryRows(next.data)
+      }
+    } else {
+      toast.error(res.error || "Failed to rollback variable")
+    }
+  }, [activeWorkspace, refreshSnippetRegistry, snippetHistoryTarget])
 
   const handleOpenAssetHistory = useCallback(async (asset: KnowledgeAssetData) => {
     if (!activeWorkspace) return
@@ -5919,7 +6069,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                               <DialogHeader>
                                 <DialogTitle>Backend Prompts</DialogTitle>
                                 <DialogDescription>
-                                  View and customize AI prompt templates and variables. Changes apply to this workspace only.
+                                  View and customize AI prompt templates and variables. Workspace changes apply to this workspace only.
+                                  {isGlobalAdmin ? " System changes apply to all workspaces." : null}
                                 </DialogDescription>
                               </DialogHeader>
 
@@ -5947,11 +6098,430 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                 >
                                   Variables
                                 </button>
+                                {isGlobalAdmin ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                                        promptModalTab === "system_prompts"
+                                          ? "border-primary text-primary"
+                                          : "border-transparent text-muted-foreground hover:text-foreground"
+                                      }`}
+                                      onClick={() => setPromptModalTab("system_prompts")}
+                                    >
+                                      System Prompts
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                                        promptModalTab === "system_variables"
+                                          ? "border-primary text-primary"
+                                          : "border-transparent text-muted-foreground hover:text-foreground"
+                                      }`}
+                                      onClick={() => setPromptModalTab("system_variables")}
+                                    >
+                                      System Variables
+                                    </button>
+                                  </>
+                                ) : null}
                               </div>
 
                               {aiPromptsLoading ? (
                                 <div className="flex items-center justify-center py-10">
                                   <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                                </div>
+                              ) : promptModalTab === "system_variables" ? (
+                                /* System Variables Tab Content (Phase 129) */
+                                <div className="space-y-6 py-4">
+                                  <p className="text-sm text-muted-foreground">
+                                    Edit system default variables used in AI prompt templates. Changes apply to all workspaces.
+                                  </p>
+                                  {snippetRegistry && snippetRegistry.length > 0 ? (
+                                    <div className="space-y-4">
+                                      {snippetRegistry.map((entry) => {
+                                        const systemValue = entry.systemDefaultValue ?? null
+                                        const baseValue = systemValue ?? entry.codeDefaultValue ?? entry.defaultValue
+                                        const isEditing = editingSystemSnippet === entry.key
+
+                                        return (
+                                          <div key={entry.key} className="border rounded-lg p-4 space-y-2">
+                                            <div className="flex items-center justify-between">
+                                              <div>
+                                                <p className="font-medium text-sm">{entry.label}</p>
+                                                <p className="text-xs text-muted-foreground">{entry.description}</p>
+                                              </div>
+                                              {systemValue !== null ? (
+                                                <Badge variant="outline" className="text-xs text-amber-700 border-amber-300">
+                                                  System Override
+                                                </Badge>
+                                              ) : (
+                                                <Badge variant="outline" className="text-xs text-muted-foreground">
+                                                  Code Default
+                                                </Badge>
+                                              )}
+                                            </div>
+
+                                            {isEditing ? (
+                                              <div className="space-y-2">
+                                                {entry.type === "number" ? (
+                                                  <Input
+                                                    type="number"
+                                                    value={systemSnippetEditContent}
+                                                    onChange={(e) => setSystemSnippetEditContent(e.target.value)}
+                                                    className="font-mono"
+                                                  />
+                                                ) : (
+                                                  <Textarea
+                                                    value={systemSnippetEditContent}
+                                                    onChange={(e) => setSystemSnippetEditContent(e.target.value)}
+                                                    className={`font-mono text-xs ${
+                                                      entry.type === "list" || entry.type === "text" || entry.type === "template"
+                                                        ? "min-h-[150px]"
+                                                        : "min-h-[100px]"
+                                                    }`}
+                                                    placeholder={entry.type === "list" ? "One item per line..." : undefined}
+                                                  />
+                                                )}
+                                                {entry.placeholders && entry.placeholders.length > 0 && (
+                                                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                                    <span>Placeholders:</span>
+                                                    {entry.placeholders.map((p) => (
+                                                      <code key={p} className="bg-muted px-1 rounded">{p}</code>
+                                                    ))}
+                                                  </div>
+                                                )}
+                                                <div className="flex justify-end gap-2">
+                                                  <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={() => {
+                                                      setEditingSystemSnippet(null)
+                                                      setSystemSnippetEditContent("")
+                                                    }}
+                                                  >
+                                                    Cancel
+                                                  </Button>
+                                                  <Button
+                                                    size="sm"
+                                                    disabled={savingSystemSnippet || !activeWorkspace}
+                                                    onClick={async () => {
+                                                      setSavingSystemSnippet(true)
+                                                      const result = await saveSystemSnippetOverride({
+                                                        snippetKey: entry.key,
+                                                        content: systemSnippetEditContent,
+                                                      })
+                                                      if (result.success) {
+                                                        await refreshSnippetRegistry()
+                                                        setEditingSystemSnippet(null)
+                                                        setSystemSnippetEditContent("")
+                                                        toast.success("System variable saved", {
+                                                          description: `${entry.label} has been updated.`,
+                                                        })
+                                                      } else {
+                                                        toast.error("Error", {
+                                                          description: result.error || "Failed to save system variable",
+                                                        })
+                                                      }
+                                                      setSavingSystemSnippet(false)
+                                                    }}
+                                                  >
+                                                    {savingSystemSnippet ? (
+                                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                                    ) : (
+                                                      "Save"
+                                                    )}
+                                                  </Button>
+                                                </div>
+                                              </div>
+                                            ) : (
+                                              <div className="space-y-2">
+                                                <div className="rounded border bg-muted/20 p-2 text-xs max-h-[80px] overflow-y-auto">
+                                                  <div className="text-muted-foreground whitespace-pre-wrap font-mono">
+                                                    {baseValue}
+                                                  </div>
+                                                </div>
+                                                <div className="flex items-center gap-1">
+                                                  <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => {
+                                                      setEditingSystemSnippet(entry.key)
+                                                      setSystemSnippetEditContent(baseValue)
+                                                    }}
+                                                  >
+                                                    <Pencil className="h-3 w-3 mr-1" />
+                                                    Edit
+                                                  </Button>
+                                                  <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => handleOpenSnippetHistory("system", entry.key)}
+                                                    title="View history"
+                                                  >
+                                                    <Clock className="h-3 w-3" />
+                                                  </Button>
+                                                  {systemValue !== null ? (
+                                                    <Button
+                                                      variant="ghost"
+                                                      size="sm"
+                                                      onClick={async () => {
+                                                        const result = await resetSystemSnippetOverride({ snippetKey: entry.key })
+                                                        if (result.success) {
+                                                          await refreshSnippetRegistry()
+                                                          toast.success("Reset to code default", {
+                                                            description: `${entry.label} restored to code default.`,
+                                                          })
+                                                        } else {
+                                                          toast.error("Error", {
+                                                            description: result.error || "Failed to reset system variable",
+                                                          })
+                                                        }
+                                                      }}
+                                                    >
+                                                      <RotateCcw className="h-3 w-3 mr-1" />
+                                                      Reset
+                                                    </Button>
+                                                  ) : null}
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  ) : (
+                                    <div className="text-sm text-muted-foreground">No variables available.</div>
+                                  )}
+                                </div>
+                              ) : promptModalTab === "system_prompts" ? (
+                                /* System Prompts Tab Content (Phase 129) */
+                                <div className="space-y-4 py-4">
+                                  <p className="text-sm text-muted-foreground">
+                                    Edit system default prompt messages. Changes apply to all workspaces.
+                                  </p>
+                                  {aiPromptTemplates && aiPromptTemplates.length > 0 ? (
+                                    <Accordion type="single" collapsible className="w-full">
+                                      {aiPromptTemplates.map((t) => (
+                                        <AccordionItem key={t.key} value={t.key}>
+                                          <AccordionTrigger>
+                                            <div className="flex flex-col text-left">
+                                              <span className="font-medium">{t.name}</span>
+                                              <span className="text-xs text-muted-foreground">
+                                                {t.featureId} · {t.model} · {t.apiType}
+                                              </span>
+                                            </div>
+                                          </AccordionTrigger>
+                                          <AccordionContent className="space-y-4">
+                                            {t.description ? (
+                                              <p className="text-sm text-muted-foreground">{t.description}</p>
+                                            ) : null}
+
+                                            {(["system", "assistant", "user"] as const).map((role) => {
+                                              const parts = t.messages.filter((m) => m.role === role)
+                                              if (parts.length === 0) return null
+                                              return (
+                                                <div key={role} className="space-y-2">
+                                                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                                                    {role}
+                                                  </p>
+                                                  {parts.map((p, i) => {
+                                                    const key = `${t.key}:${role}:${i}`
+                                                    const systemOverride = systemPromptOverrides.get(key) ?? null
+                                                    const hasSystemOverride = Boolean(systemOverride)
+                                                    const isDrifted = Boolean(systemOverride && systemOverride.isDrifted)
+                                                    const displayContent = hasSystemOverride ? systemOverride!.content : p.content
+                                                    const isEditing =
+                                                      editingSystemPrompt?.promptKey === t.key &&
+                                                      editingSystemPrompt?.role === role &&
+                                                      editingSystemPrompt?.index === i
+
+                                                    return (
+                                                      <div key={key} className="space-y-2">
+                                                        <div className="flex items-center justify-between">
+                                                          <div className="flex items-center gap-2">
+                                                            {hasSystemOverride ? (
+                                                              <Badge variant="outline" className="text-xs text-amber-700 border-amber-300">
+                                                                System Override
+                                                              </Badge>
+                                                            ) : (
+                                                              <Badge variant="outline" className="text-xs text-muted-foreground">
+                                                                Code Default
+                                                              </Badge>
+                                                            )}
+                                                            {isDrifted ? (
+                                                              <Badge
+                                                                variant="outline"
+                                                                className="text-xs text-amber-700 border-amber-300"
+                                                                title="Code default changed; this system override is not applied at runtime until saved again."
+                                                              >
+                                                                Code changed
+                                                              </Badge>
+                                                            ) : null}
+                                                          </div>
+                                                          <div className="flex items-center gap-1">
+                                                            {!isEditing ? (
+                                                              <Button
+                                                                variant="ghost"
+                                                                size="sm"
+                                                                onClick={() => {
+                                                                  setEditingSystemPrompt({ promptKey: t.key, role, index: i })
+                                                                  setSystemEditContent(displayContent)
+                                                                }}
+                                                              >
+                                                                <Pencil className="h-3 w-3" />
+                                                              </Button>
+                                                            ) : null}
+                                                            {!isEditing ? (
+                                                              <Button
+                                                                variant="ghost"
+                                                                size="sm"
+                                                                onClick={() => {
+                                                                  setSystemPromptHistoryTarget({ promptKey: t.key, role, index: i })
+                                                                  setSystemPromptHistoryOpen(true)
+                                                                  setSystemPromptHistoryLoading(true)
+                                                                  getSystemPromptOverrideRevisions({ promptKey: t.key, role, index: i })
+                                                                    .then((res) => {
+                                                                      if (res.success && res.data) {
+                                                                        setSystemPromptHistoryRows(res.data)
+                                                                      } else {
+                                                                        toast.error(res.error || "Failed to load system prompt history")
+                                                                      }
+                                                                    })
+                                                                    .finally(() => setSystemPromptHistoryLoading(false))
+                                                                }}
+                                                                title="View history"
+                                                              >
+                                                                <Clock className="h-3 w-3" />
+                                                              </Button>
+                                                            ) : null}
+                                                            {hasSystemOverride && isDrifted && !isEditing ? (
+                                                              <Button
+                                                                variant="ghost"
+                                                                size="sm"
+                                                                onClick={async () => {
+                                                                  const result = await saveSystemPromptOverride({
+                                                                    promptKey: t.key,
+                                                                    role,
+                                                                    index: i,
+                                                                    content: systemOverride?.content ?? "",
+                                                                  })
+                                                                  if (result.success) {
+                                                                    await refreshSystemPromptOverrides()
+                                                                    toast.success("Rebased system override", {
+                                                                      description: "This system override will apply to the current code default.",
+                                                                    })
+                                                                  } else {
+                                                                    toast.error("Error", {
+                                                                      description: result.error || "Failed to rebase system override",
+                                                                    })
+                                                                  }
+                                                                }}
+                                                                title="Rebase to current code"
+                                                              >
+                                                                <RefreshCcw className="h-3 w-3" />
+                                                              </Button>
+                                                            ) : null}
+                                                            {hasSystemOverride && !isEditing ? (
+                                                              <Button
+                                                                variant="ghost"
+                                                                size="sm"
+                                                                onClick={async () => {
+                                                                  setSavingSystemOverride(true)
+                                                                  const result = await resetSystemPromptOverride({
+                                                                    promptKey: t.key,
+                                                                    role,
+                                                                    index: i,
+                                                                  })
+                                                                  if (result.success) {
+                                                                    await refreshSystemPromptOverrides()
+                                                                    toast.success("Reset to code default", {
+                                                                      description: "System prompt restored to code default.",
+                                                                    })
+                                                                  } else {
+                                                                    toast.error("Error", {
+                                                                      description: result.error || "Failed to reset system prompt",
+                                                                    })
+                                                                  }
+                                                                  setSavingSystemOverride(false)
+                                                                }}
+                                                                title="Reset to code default"
+                                                              >
+                                                                <RotateCcw className="h-3 w-3" />
+                                                              </Button>
+                                                            ) : null}
+                                                          </div>
+                                                        </div>
+
+                                                        {isEditing ? (
+                                                          <div className="space-y-2">
+                                                            <Textarea
+                                                              value={systemEditContent}
+                                                              onChange={(e) => setSystemEditContent(e.target.value)}
+                                                              className="min-h-[200px] font-mono text-xs"
+                                                            />
+                                                            <div className="flex justify-end gap-2">
+                                                              <Button
+                                                                variant="outline"
+                                                                size="sm"
+                                                                onClick={() => {
+                                                                  setEditingSystemPrompt(null)
+                                                                  setSystemEditContent("")
+                                                                }}
+                                                              >
+                                                                Cancel
+                                                              </Button>
+                                                              <Button
+                                                                size="sm"
+                                                                disabled={savingSystemOverride}
+                                                                onClick={async () => {
+                                                                  setSavingSystemOverride(true)
+                                                                  const result = await saveSystemPromptOverride({
+                                                                    promptKey: t.key,
+                                                                    role,
+                                                                    index: i,
+                                                                    content: systemEditContent,
+                                                                  })
+                                                                  if (result.success) {
+                                                                    await refreshSystemPromptOverrides()
+                                                                    setEditingSystemPrompt(null)
+                                                                    setSystemEditContent("")
+                                                                    toast.success("System prompt saved", {
+                                                                      description: "Your changes have been saved.",
+                                                                    })
+                                                                  } else {
+                                                                    toast.error("Error", {
+                                                                      description: result.error || "Failed to save system prompt",
+                                                                    })
+                                                                  }
+                                                                  setSavingSystemOverride(false)
+                                                                }}
+                                                              >
+                                                                {savingSystemOverride ? (
+                                                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                                                ) : (
+                                                                  "Save"
+                                                                )}
+                                                              </Button>
+                                                            </div>
+                                                          </div>
+                                                        ) : (
+                                                          <div className="rounded-lg border bg-muted/30 p-3 text-xs whitespace-pre-wrap">
+                                                            {displayContent}
+                                                          </div>
+                                                        )}
+                                                      </div>
+                                                    )
+                                                  })}
+                                                </div>
+                                              )
+                                            })}
+                                          </AccordionContent>
+                                        </AccordionItem>
+                                      ))}
+                                    </Accordion>
+                                  ) : (
+                                    <div className="text-sm text-muted-foreground">No prompts available.</div>
+                                  )}
                                 </div>
                               ) : promptModalTab === "variables" ? (
                                 /* Variables Tab Content (Phase 47h + 47j) */
@@ -6037,11 +6607,22 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                               <p className="font-medium text-sm">{entry.label}</p>
                                               <p className="text-xs text-muted-foreground">{entry.description}</p>
                                             </div>
-                                            {entry.currentValue !== null && (
-                                              <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
-                                                Customized
-                                              </Badge>
-                                            )}
+                                            <div className="flex items-center gap-2">
+                                              {entry.source === "workspace" ? (
+                                                <Badge variant="outline" className="text-xs text-blue-700 border-blue-300">
+                                                  Workspace Custom
+                                                </Badge>
+                                              ) : entry.source === "system" ? (
+                                                <Badge variant="outline" className="text-xs text-amber-700 border-amber-300">
+                                                  System Default
+                                                </Badge>
+                                              ) : null}
+                                              {entry.isStale ? (
+                                                <Badge variant="outline" className="text-xs text-amber-700 border-amber-300">
+                                                  System default changed
+                                                </Badge>
+                                              ) : null}
+                                            </div>
                                           </div>
 
                                           {editingSnippet === entry.key ? (
@@ -6101,14 +6682,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                         next.set(entry.key, snippetEditContent)
                                                         return next
                                                       })
-                                                      // Update registry
-                                                      setSnippetRegistry((prev) =>
-                                                        prev?.map((e) =>
-                                                          e.key === entry.key
-                                                            ? { ...e, currentValue: snippetEditContent }
-                                                            : e
-                                                        ) ?? null
-                                                      )
+                                                      await refreshSnippetRegistry()
                                                       setEditingSnippet(null)
                                                       setSnippetEditContent("")
                                                       toast.success("Variable saved", {
@@ -6150,6 +6724,39 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                     <Pencil className="h-3 w-3 mr-1" />
                                                     Edit
                                                   </Button>
+                                                  <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => handleOpenSnippetHistory("workspace", entry.key)}
+                                                    title="View history"
+                                                  >
+                                                    <Clock className="h-3 w-3" />
+                                                  </Button>
+                                                  {isGlobalAdmin && entry.currentValue !== null ? (
+                                                    <Button
+                                                      variant="ghost"
+                                                      size="sm"
+                                                      onClick={async () => {
+                                                        const result = await saveSystemSnippetOverride({
+                                                          snippetKey: entry.key,
+                                                          content: entry.currentValue ?? "",
+                                                        })
+                                                        if (result.success) {
+                                                          await refreshSnippetRegistry()
+                                                          toast.success("Set as system default", {
+                                                            description: `${entry.label} is now the system default for all workspaces.`,
+                                                          })
+                                                        } else {
+                                                          toast.error("Error", {
+                                                            description: result.error || "Failed to set system default",
+                                                          })
+                                                        }
+                                                      }}
+                                                      title="Set as system default"
+                                                    >
+                                                      <Globe className="h-3 w-3" />
+                                                    </Button>
+                                                  ) : null}
                                                   {entry.currentValue !== null && (
                                                     <Button
                                                       variant="ghost"
@@ -6166,15 +6773,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                             next.delete(entry.key)
                                                             return next
                                                           })
-                                                          setSnippetRegistry((prev) =>
-                                                            prev?.map((e) =>
-                                                              e.key === entry.key
-                                                                ? { ...e, currentValue: null }
-                                                                : e
-                                                            ) ?? null
-                                                          )
+                                                          await refreshSnippetRegistry()
                                                           toast.success("Reset to default", {
-                                                            description: `${entry.label} restored to default.`,
+                                                            description: entry.systemDefaultValue !== null
+                                                              ? `${entry.label} restored to system default.`
+                                                              : `${entry.label} restored to code default.`,
                                                           })
                                                         } else {
                                                           toast.error("Error", {
@@ -6184,7 +6787,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                       }}
                                                     >
                                                       <RotateCcw className="h-3 w-3 mr-1" />
-                                                      Reset
+                                                      {entry.systemDefaultValue !== null ? "Reset to System" : "Reset to Code"}
                                                     </Button>
                                                   )}
                                                 </div>
@@ -6203,7 +6806,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                 <Accordion type="single" collapsible className="w-full">
                                   {aiPromptTemplates.map((t) => {
                                     // Check if this prompt has any overrides
-                                    const hasAnyOverride = Array.from(promptOverrides.keys()).some(
+                                    const hasAnyWorkspaceOverride = Array.from(promptOverrides.keys()).some(
+                                      (key) => key.startsWith(`${t.key}:`)
+                                    )
+                                    const hasAnySystemOverride = Array.from(systemPromptOverrides.keys()).some(
                                       (key) => key.startsWith(`${t.key}:`)
                                     )
                                     return (
@@ -6212,11 +6818,16 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                           <div className="flex flex-col text-left">
                                             <div className="flex items-center gap-2">
                                               <span className="font-medium">{t.name}</span>
-                                              {hasAnyOverride && (
+                                              {hasAnyWorkspaceOverride ? (
                                                 <Badge variant="secondary" className="text-xs">
-                                                  Modified
+                                                  Workspace Modified
                                                 </Badge>
-                                              )}
+                                              ) : null}
+                                              {hasAnySystemOverride ? (
+                                                <Badge variant="outline" className="text-xs text-amber-700 border-amber-300">
+                                                  System Default
+                                                </Badge>
+                                              ) : null}
                                             </div>
                                             <span className="text-xs text-muted-foreground">
                                               {t.featureId} · {t.model} · {t.apiType}
@@ -6238,24 +6849,70 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                 </p>
                                                 {parts.map((p, i) => {
                                                   const overrideKey = `${t.key}:${role}:${i}`
-                                                  const hasOverride = promptOverrides.has(overrideKey)
-                                                  const displayContent = hasOverride
-                                                    ? promptOverrides.get(overrideKey)!
-                                                    : p.content
+                                                  const workspaceOverride = promptOverrides.get(overrideKey) ?? null
+                                                  const systemOverride = systemPromptOverrides.get(overrideKey) ?? null
+
+                                                  const hasWorkspaceOverride = Boolean(workspaceOverride)
+                                                  const hasSystemOverride = Boolean(systemOverride)
+
+                                                  const workspaceApplied = Boolean(workspaceOverride && !workspaceOverride.isDrifted)
+                                                  const systemApplied = Boolean(systemOverride && !systemOverride.isDrifted)
+
+                                                  const effectiveSource: "workspace" | "system" | "code" = workspaceApplied
+                                                    ? "workspace"
+                                                    : systemApplied
+                                                      ? "system"
+                                                      : "code"
+
+                                                  const displayContent =
+                                                    effectiveSource === "workspace"
+                                                      ? workspaceOverride!.content
+                                                      : effectiveSource === "system"
+                                                        ? systemOverride!.content
+                                                        : p.content
                                                   const isEditing =
                                                     editingPrompt?.promptKey === t.key &&
                                                     editingPrompt?.role === role &&
                                                     editingPrompt?.index === i
 
+                                                  const workspaceUpdatedAt = workspaceOverride?.updatedAt ?? null
+                                                  const systemUpdatedAt = systemOverride?.updatedAt ?? null
+
+                                                  const isStale =
+                                                    effectiveSource === "workspace" &&
+                                                    Boolean(systemOverride && !systemOverride.isDrifted && workspaceUpdatedAt && systemUpdatedAt) &&
+                                                    new Date(workspaceUpdatedAt || 0).getTime() < new Date(systemUpdatedAt || 0).getTime()
+
+                                                  const workspaceDrifted = Boolean(hasWorkspaceOverride && workspaceOverride?.isDrifted)
+                                                  const systemDrifted = Boolean(!workspaceApplied && hasSystemOverride && systemOverride?.isDrifted)
+
                                                   return (
                                                     <div key={overrideKey} className="space-y-2">
                                                       <div className="flex items-center justify-between">
                                                         <div className="flex items-center gap-2">
-                                                          {hasOverride && (
-                                                            <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
-                                                              Customized
+                                                          {effectiveSource === "workspace" ? (
+                                                            <Badge variant="outline" className="text-xs text-blue-700 border-blue-300">
+                                                              Workspace Custom
                                                             </Badge>
-                                                          )}
+                                                          ) : effectiveSource === "system" ? (
+                                                            <Badge variant="outline" className="text-xs text-amber-700 border-amber-300">
+                                                              System Default
+                                                            </Badge>
+                                                          ) : null}
+                                                          {workspaceDrifted || systemDrifted ? (
+                                                            <Badge
+                                                              variant="outline"
+                                                              className="text-xs text-amber-700 border-amber-300"
+                                                              title="Code default changed; an override exists but is not applied at runtime."
+                                                            >
+                                                              Code changed
+                                                            </Badge>
+                                                          ) : null}
+                                                          {isStale ? (
+                                                            <Badge variant="outline" className="text-xs text-amber-700 border-amber-300">
+                                                              System default changed
+                                                            </Badge>
+                                                          ) : null}
                                                         </div>
                                                         <div className="flex items-center gap-1">
                                                           {!isEditing && isWorkspaceAdmin && activeWorkspace && (
@@ -6264,7 +6921,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                               size="sm"
                                                               onClick={() => {
                                                                 setEditingPrompt({ promptKey: t.key, role, index: i })
-                                                                setEditContent(displayContent)
+                                                                // If an override exists but is drifted, seed the editor with the saved override
+                                                                // so the admin can rebase it onto the new code default.
+                                                                setEditContent(workspaceOverride?.content ?? displayContent)
                                                               }}
                                                             >
                                                               <Pencil className="h-3 w-3" />
@@ -6280,7 +6939,35 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                               <Clock className="h-3 w-3" />
                                                             </Button>
                                                           )}
-                                                          {hasOverride && !isEditing && isWorkspaceAdmin && activeWorkspace && (
+                                                          {hasWorkspaceOverride && !isEditing && isGlobalAdmin && (
+                                                            <Button
+                                                              variant="ghost"
+                                                              size="sm"
+                                                              onClick={async () => {
+                                                                const content = workspaceOverride?.content ?? ""
+                                                                const result = await saveSystemPromptOverride({
+                                                                  promptKey: t.key,
+                                                                  role: role as "system" | "assistant" | "user",
+                                                                  index: i,
+                                                                  content,
+                                                                })
+                                                                if (result.success) {
+                                                                  await refreshSystemPromptOverrides()
+                                                                  toast.success("Set as system default", {
+                                                                    description: "This prompt message is now the system default for all workspaces.",
+                                                                  })
+                                                                } else {
+                                                                  toast.error("Error", {
+                                                                    description: result.error || "Failed to set system default",
+                                                                  })
+                                                                }
+                                                              }}
+                                                              title="Set as system default"
+                                                            >
+                                                              <Globe className="h-3 w-3" />
+                                                            </Button>
+                                                          )}
+                                                          {hasWorkspaceOverride && !isEditing && isWorkspaceAdmin && activeWorkspace && (
                                                             <Button
                                                               variant="ghost"
                                                               size="sm"
@@ -6299,7 +6986,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                                     return next
                                                                   })
                                                                   toast.success("Reset to default", {
-                                                                    description: "Prompt restored to original content.",
+                                                                    description: systemApplied
+                                                                      ? "Prompt restored to system default."
+                                                                      : "Prompt restored to code default.",
                                                                   })
                                                                 } else {
                                                                   toast.error("Error", {
@@ -6307,7 +6996,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                                   })
                                                                 }
                                                               }}
-                                                              title="Reset to default"
+                                                              title={systemApplied ? "Reset to system default" : "Reset to code default"}
                                                             >
                                                               <RotateCcw className="h-3 w-3" />
                                                             </Button>
@@ -6346,11 +7035,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                                   content: editContent,
                                                                 })
                                                                 if (result.success) {
-                                                                  setPromptOverrides((prev) => {
-                                                                    const next = new Map(prev)
-                                                                    next.set(overrideKey, editContent)
-                                                                    return next
-                                                                  })
+                                                                  await refreshPromptOverrides()
                                                                   setEditingPrompt(null)
                                                                   setEditContent("")
                                                                   toast.success("Prompt saved", {
@@ -6887,6 +7572,100 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </TableBody>
                 </Table>
                 {promptHistoryRows.length === 0 && (
+                  <div className="text-xs text-muted-foreground mt-2">No revisions found.</div>
+                )}
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* System Prompt History Dialog */}
+        <Dialog open={systemPromptHistoryOpen} onOpenChange={(open) => (!open ? setSystemPromptHistoryOpen(false) : null)}>
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>System Prompt History</DialogTitle>
+            </DialogHeader>
+            {systemPromptHistoryLoading ? (
+              <div className="text-sm text-muted-foreground">Loading history…</div>
+            ) : (
+              <div className="max-h-[420px] overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>When</TableHead>
+                      <TableHead>Action</TableHead>
+                      <TableHead>By</TableHead>
+                      <TableHead>Preview</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {systemPromptHistoryRows.map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell className="text-xs">{new Date(row.createdAt).toLocaleString()}</TableCell>
+                        <TableCell className="text-xs">{row.action}</TableCell>
+                        <TableCell className="text-xs">{row.createdByEmail || "system"}</TableCell>
+                        <TableCell className="text-xs">
+                          {(row.content || "").slice(0, 120) || "—"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button size="sm" variant="outline" onClick={() => handleRollbackSystemPromptRevision(row.id)}>
+                            Rollback
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {systemPromptHistoryRows.length === 0 && (
+                  <div className="text-xs text-muted-foreground mt-2">No revisions found.</div>
+                )}
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Variable History Dialog */}
+        <Dialog open={snippetHistoryOpen} onOpenChange={(open) => (!open ? setSnippetHistoryOpen(false) : null)}>
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>
+                {snippetHistoryTarget?.scope === "system" ? "System Variable History" : "Variable History"}
+              </DialogTitle>
+            </DialogHeader>
+            {snippetHistoryLoading ? (
+              <div className="text-sm text-muted-foreground">Loading history…</div>
+            ) : (
+              <div className="max-h-[420px] overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>When</TableHead>
+                      <TableHead>Action</TableHead>
+                      <TableHead>By</TableHead>
+                      <TableHead>Preview</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {snippetHistoryRows.map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell className="text-xs">{new Date(row.createdAt).toLocaleString()}</TableCell>
+                        <TableCell className="text-xs">{row.action}</TableCell>
+                        <TableCell className="text-xs">{row.createdByEmail || "system"}</TableCell>
+                        <TableCell className="text-xs">
+                          {(row.content || "").slice(0, 120) || "—"}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button size="sm" variant="outline" onClick={() => handleRollbackSnippetRevision(row.id)}>
+                            Rollback
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                {snippetHistoryRows.length === 0 && (
                   <div className="text-xs text-muted-foreground mt-2">No revisions found.</div>
                 )}
               </div>

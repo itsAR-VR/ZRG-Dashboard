@@ -1413,6 +1413,8 @@ model EmailCampaign {
   reactivationCampaigns ReactivationCampaign[]
   responseMode   CampaignResponseMode @default(SETTER_MANAGED)
   autoSendConfidenceThreshold Float @default(0.9)
+  // Phase 130: Use only confidence threshold for auto-send (hard blocks still apply)
+  autoSendSkipHumanReview Boolean @default(false)
   // Phase 47l: Auto-send delay window (seconds)
   // When responseMode = AI_AUTO_SEND, wait this long after inbound before auto-sending
   autoSendDelayMinSeconds Int @default(180) // 3 minutes
@@ -1995,6 +1997,77 @@ model PromptSnippetOverrideRevision {
   @@index([clientId])
   @@index([snippetKey])
   @@index([promptSnippetOverrideId])
+}
+
+// =============================================================================
+// System Default Prompt Overrides (Phase 129)
+// =============================================================================
+
+// System-level prompt override for customizing AI prompt templates globally.
+// Applies to all workspaces unless a workspace override exists.
+model SystemPromptOverride {
+  id              String   @id @default(uuid())
+  promptKey       String   // e.g., "sentiment.classify.v1"
+  role            String   // "system", "assistant", or "user"
+  index           Int      // Message index within the role group (0-based)
+  baseContentHash String   // Hash of the code-default message content at save-time (flat drift model)
+  content         String   @db.Text
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  revisions SystemPromptOverrideRevision[]
+
+  @@unique([promptKey, role, index])
+  @@index([promptKey])
+}
+
+model SystemPromptOverrideRevision {
+  id                   String   @id @default(uuid())
+  systemPromptOverrideId String?
+  systemPromptOverride  SystemPromptOverride? @relation(fields: [systemPromptOverrideId], references: [id], onDelete: SetNull)
+  promptKey             String
+  role                 String
+  index                Int
+  baseContentHash       String?
+  content               String?  @db.Text
+  action                String
+  createdByUserId       String?
+  createdByEmail        String?
+  createdAt             DateTime @default(now())
+
+  @@index([promptKey])
+  @@index([systemPromptOverrideId])
+}
+
+// System-level snippet override for customizing reusable prompt variables globally.
+// Applies to all workspaces unless a workspace override exists.
+model SystemPromptSnippetOverride {
+  id                String   @id @default(uuid())
+  snippetKey         String   // e.g., "forbiddenTerms", "emailLengthRulesTemplate"
+  content            String   @db.Text
+  codeDefaultSnapshot String? @db.Text // Optional snapshot of code default at save-time (UI warning only)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  revisions SystemPromptSnippetOverrideRevision[]
+
+  @@unique([snippetKey])
+  @@index([snippetKey])
+}
+
+model SystemPromptSnippetOverrideRevision {
+  id                        String   @id @default(uuid())
+  systemPromptSnippetOverrideId String?
+  systemPromptSnippetOverride  SystemPromptSnippetOverride? @relation(fields: [systemPromptSnippetOverrideId], references: [id], onDelete: SetNull)
+  snippetKey                 String
+  content                    String?  @db.Text
+  action                     String
+  createdByUserId            String?
+  createdByEmail             String?
+  createdAt                  DateTime @default(now())
+
+  @@index([snippetKey])
+  @@index([systemPromptSnippetOverrideId])
 }
 
 // =============================================================================

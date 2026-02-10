@@ -121,6 +121,7 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
               bisonCampaignId: true,
               responseMode: true,
               autoSendConfidenceThreshold: true,
+              autoSendSkipHumanReview: true,
               autoSendScheduleMode: true,
               autoSendCustomSchedule: true,
             },

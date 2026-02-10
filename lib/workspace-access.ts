@@ -59,6 +59,14 @@ export async function requireAuthUser(): Promise<AuthUser> {
   }
 }
 
+export async function requireSuperAdminUser(): Promise<{ userId: string; userEmail: string | null }> {
+  const user = await requireAuthUser();
+  if (!isTrueSuperAdminUser(user)) {
+    throw new Error("Unauthorized: Super admin required");
+  }
+  return { userId: user.id, userEmail: user.email ?? null };
+}
+
 export async function getAccessibleClientIdsForUser(userId: string, userEmail?: string | null): Promise<string[]> {
   if (isTrueSuperAdminUser({ id: userId, email: userEmail ?? null })) {
     const all = await prisma.client.findMany({ select: { id: true } });
