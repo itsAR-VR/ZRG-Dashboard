@@ -60,6 +60,9 @@ type Props = {
   clientId: string | null;
 };
 
+const DEFAULT_EVALUATOR_MODEL_VALUE = "__DEFAULT_MODEL__";
+const DEFAULT_EVALUATOR_EFFORT_VALUE = "__DEFAULT_EFFORT__";
+
 type ProposalRow = {
   id: string;
   policyKey: string;
@@ -119,8 +122,8 @@ export function ConfidenceControlPlane({ clientId }: Props) {
   const [memoryMinConfidenceText, setMemoryMinConfidenceText] = useState("0.7");
   const [memoryMinTtlDaysText, setMemoryMinTtlDaysText] = useState("1");
   const [memoryTtlCapDaysText, setMemoryTtlCapDaysText] = useState("90");
-  const [evaluatorModel, setEvaluatorModel] = useState<string>("");
-  const [evaluatorEffort, setEvaluatorEffort] = useState<string>("");
+  const [evaluatorModel, setEvaluatorModel] = useState<string>(DEFAULT_EVALUATOR_MODEL_VALUE);
+  const [evaluatorEffort, setEvaluatorEffort] = useState<string>(DEFAULT_EVALUATOR_EFFORT_VALUE);
   const [savingMemorySettings, setSavingMemorySettings] = useState(false);
 
   const [pendingMemoryEntries, setPendingMemoryEntries] = useState<PendingMemoryEntryRow[]>([]);
@@ -203,8 +206,8 @@ export function ConfidenceControlPlane({ clientId }: Props) {
       setMemoryMinConfidenceText(String(res.data.minConfidence));
       setMemoryMinTtlDaysText(String(res.data.minTtlDays));
       setMemoryTtlCapDaysText(String(res.data.ttlCapDays));
-      setEvaluatorModel(res.data.autoSendEvaluatorModel ?? "");
-      setEvaluatorEffort(res.data.autoSendEvaluatorReasoningEffort ?? "");
+      setEvaluatorModel(res.data.autoSendEvaluatorModel ?? DEFAULT_EVALUATOR_MODEL_VALUE);
+      setEvaluatorEffort(res.data.autoSendEvaluatorReasoningEffort ?? DEFAULT_EVALUATOR_EFFORT_VALUE);
     } else {
       toast.error("Failed to load memory governance", { description: res.error || "Unknown error" });
     }
@@ -338,8 +341,10 @@ export function ConfidenceControlPlane({ clientId }: Props) {
         minConfidence,
         minTtlDays,
         ttlCapDays,
-        autoSendEvaluatorModel: evaluatorModel.trim() ? evaluatorModel.trim() : null,
-        autoSendEvaluatorReasoningEffort: evaluatorEffort.trim() ? evaluatorEffort.trim() : null,
+        autoSendEvaluatorModel:
+          evaluatorModel === DEFAULT_EVALUATOR_MODEL_VALUE || !evaluatorModel.trim() ? null : evaluatorModel.trim(),
+        autoSendEvaluatorReasoningEffort:
+          evaluatorEffort === DEFAULT_EVALUATOR_EFFORT_VALUE || !evaluatorEffort.trim() ? null : evaluatorEffort.trim(),
       });
 
       if (res.success) {
@@ -682,7 +687,7 @@ export function ConfidenceControlPlane({ clientId }: Props) {
                       <SelectValue placeholder="Default (env/code)" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">Default (env/code)</SelectItem>
+                      <SelectItem value={DEFAULT_EVALUATOR_MODEL_VALUE}>Default (env/code)</SelectItem>
                       <SelectItem value="gpt-5-mini">gpt-5-mini</SelectItem>
                       <SelectItem value="gpt-5.1">gpt-5.1</SelectItem>
                       <SelectItem value="gpt-5.2">gpt-5.2</SelectItem>
@@ -696,7 +701,7 @@ export function ConfidenceControlPlane({ clientId }: Props) {
                       <SelectValue placeholder="Default (env/code)" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="">Default (env/code)</SelectItem>
+                      <SelectItem value={DEFAULT_EVALUATOR_EFFORT_VALUE}>Default (env/code)</SelectItem>
                       <SelectItem value="low">low</SelectItem>
                       <SelectItem value="medium">medium</SelectItem>
                       <SelectItem value="high">high</SelectItem>

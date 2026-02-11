@@ -57,7 +57,7 @@ export interface AutoSendContext {
     bisonCampaignId: string | null;
     responseMode: string | null;
     autoSendConfidenceThreshold: number;
-    autoSendSkipHumanReview?: boolean;
+    autoSendSkipHumanReview?: boolean | null;
     autoSendScheduleMode?: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
     autoSendCustomSchedule?: unknown;
   } | null;
@@ -69,6 +69,7 @@ export interface AutoSendContext {
     timezone?: string | null;
     workStartTime?: string | null;
     workEndTime?: string | null;
+    autoSendSkipHumanReview?: boolean | null;
     autoSendScheduleMode?: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
     autoSendCustomSchedule?: unknown;
     autoSendRevisionEnabled?: boolean | null;

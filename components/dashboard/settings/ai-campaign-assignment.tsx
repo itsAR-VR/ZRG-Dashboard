@@ -25,7 +25,7 @@ type CampaignRow = {
   leadCount: number
   responseMode: CampaignResponseMode
   autoSendConfidenceThreshold: number
-  autoSendSkipHumanReview: boolean
+  autoSendSkipHumanReview: boolean | null
   // Phase 47l: Auto-send delay window
   autoSendDelayMinSeconds: number
   autoSendDelayMaxSeconds: number
@@ -200,7 +200,7 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
       leadCount: c.leadCount,
       responseMode: c.responseMode,
       autoSendConfidenceThreshold: c.autoSendConfidenceThreshold ?? 0.9,
-      autoSendSkipHumanReview: c.autoSendSkipHumanReview ?? false,
+      autoSendSkipHumanReview: c.autoSendSkipHumanReview ?? null,
       autoSendDelayMinSeconds: c.autoSendDelayMinSeconds ?? 180,
       autoSendDelayMaxSeconds: c.autoSendDelayMaxSeconds ?? 420,
       autoSendScheduleMode: c.autoSendScheduleMode ?? null,
@@ -558,21 +558,34 @@ export function AiCampaignAssignmentPanel({ activeWorkspace }: { activeWorkspace
                         </Label>
                         {row.responseMode === "AI_AUTO_SEND" ? (
                           <div className="mt-1 space-y-1">
-                            <div className="flex items-center gap-2">
-                              <Checkbox
-                                id={`skip-review-${row.id}`}
-                                checked={row.autoSendSkipHumanReview}
-                                disabled={thresholdDisabled}
-                                onCheckedChange={(checked) =>
-                                  updateRow(row.id, { autoSendSkipHumanReview: checked === true })
-                                }
-                              />
-                              <Label htmlFor={`skip-review-${row.id}`} className="text-xs text-muted-foreground">
-                                Skip human review check
-                              </Label>
-                            </div>
+                            <Label className="text-xs text-muted-foreground">Human review</Label>
+                            <Select
+                              value={
+                                row.autoSendSkipHumanReview === null
+                                  ? "INHERIT"
+                                  : row.autoSendSkipHumanReview
+                                    ? "SKIP"
+                                    : "REQUIRE"
+                              }
+                              disabled={thresholdDisabled}
+                              onValueChange={(value) =>
+                                updateRow(row.id, {
+                                  autoSendSkipHumanReview:
+                                    value === "INHERIT" ? null : value === "SKIP",
+                                })
+                              }
+                            >
+                              <SelectTrigger className="h-8 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="INHERIT">Inherit workspace</SelectItem>
+                                <SelectItem value="SKIP">Skip review</SelectItem>
+                                <SelectItem value="REQUIRE">Require review</SelectItem>
+                              </SelectContent>
+                            </Select>
                             <div className="text-xs text-muted-foreground">
-                              Uses only confidence threshold. Hard blocks (opt-out, blacklist) still apply.
+                              Hard blocks (opt-out, blacklist) still apply.
                             </div>
                           </div>
                         ) : null}

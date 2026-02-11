@@ -373,6 +373,9 @@ model WorkspaceSettings {
   workEndTime          String?  @default("17:00")
   autoSendScheduleMode   AutoSendScheduleMode @default(ALWAYS)
   autoSendCustomSchedule Json?
+  // Phase 136: Workspace-level default for auto-send human review behavior.
+  // Campaign-level nullable override resolves as: campaign ?? workspace ?? false.
+  autoSendSkipHumanReview Boolean @default(false)
   // Phase 116: Per-workspace rollout toggle for the Phase 115 auto-send revision loop.
   // Global kill-switch `AUTO_SEND_REVISION_DISABLED=1` still overrides this.
   autoSendRevisionEnabled Boolean @default(false)
@@ -1463,8 +1466,8 @@ model EmailCampaign {
   reactivationCampaigns ReactivationCampaign[]
   responseMode   CampaignResponseMode @default(SETTER_MANAGED)
   autoSendConfidenceThreshold Float @default(0.9)
-  // Phase 130: Use only confidence threshold for auto-send (hard blocks still apply)
-  autoSendSkipHumanReview Boolean @default(false)
+  // Phase 130/136: Nullable campaign override (null => inherit workspace default).
+  autoSendSkipHumanReview Boolean?
   // Phase 47l: Auto-send delay window (seconds)
   // When responseMode = AI_AUTO_SEND, wait this long after inbound before auto-sending
   autoSendDelayMinSeconds Int @default(180) // 3 minutes

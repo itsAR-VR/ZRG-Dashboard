@@ -937,6 +937,82 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     assert.equal(sendSlackDmByEmail.mock.calls.length, 0);
   });
 
+  it("inherits workspace toggle when campaign override is null", async () => {
+    const evaluateAutoSend = mock.fn(async () => ({
+      confidence: 0.95,
+      safeToSend: false,
+      requiresHumanReview: true,
+      reason: "Voice review needed",
+      source: "model" as const,
+    }));
+    const approveAndSendDraftSystem = mock.fn(async () => ({ success: true, messageId: "sent-1" }));
+    const sendSlackDmByEmail = mock.fn(async (_opts: unknown) => ({ success: true }));
+
+    const { executeAutoSend } = createAutoSendExecutor({
+      approveAndSendDraftSystem,
+      decideShouldAutoReply: mock.fn(async () => ({ shouldReply: false, reason: "unused" })),
+      evaluateAutoSend,
+      getPublicAppUrl: () => "https://app.example.com",
+      getCampaignDelayConfig: mock.fn(async () => null),
+      scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
+      recordAutoSendDecision: mock.fn(async () => undefined),
+    });
+
+    const result = await executeAutoSend(
+      createContext({
+        emailCampaign: createCampaign({ autoSendConfidenceThreshold: 0.9, autoSendSkipHumanReview: null }),
+        workspaceSettings: { autoSendSkipHumanReview: true },
+      })
+    );
+
+    assert.equal(result.mode, "AI_AUTO_SEND");
+    assert.equal(result.outcome.action, "send_immediate");
+    assert.equal(approveAndSendDraftSystem.mock.calls.length, 1);
+    assert.equal(sendSlackDmByEmail.mock.calls.length, 0);
+  });
+
+  it("prefers explicit campaign false over workspace true", async () => {
+    const evaluateAutoSend = mock.fn(async () => ({
+      confidence: 0.95,
+      safeToSend: false,
+      requiresHumanReview: true,
+      reason: "Voice review needed",
+      source: "model" as const,
+    }));
+    const approveAndSendDraftSystem = mock.fn(async () => ({ success: true, messageId: "sent-1" }));
+    const sendSlackDmByEmail = mock.fn(async (_opts: unknown) => ({ success: true }));
+
+    const { executeAutoSend } = createAutoSendExecutor({
+      approveAndSendDraftSystem,
+      decideShouldAutoReply: mock.fn(async () => ({ shouldReply: false, reason: "unused" })),
+      evaluateAutoSend,
+      getPublicAppUrl: () => "https://app.example.com",
+      getCampaignDelayConfig: mock.fn(async () => null),
+      scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: sendSlackDmByEmail,
+      recordAutoSendDecision: mock.fn(async () => undefined),
+    });
+
+    const result = await executeAutoSend(
+      createContext({
+        emailCampaign: createCampaign({ autoSendConfidenceThreshold: 0.9, autoSendSkipHumanReview: false }),
+        workspaceSettings: { autoSendSkipHumanReview: true },
+      })
+    );
+
+    assert.equal(result.mode, "AI_AUTO_SEND");
+    assert.equal(result.outcome.action, "needs_review");
+    assert.equal(approveAndSendDraftSystem.mock.calls.length, 0);
+    assert.equal(sendSlackDmByEmail.mock.calls.length, 1);
+  });
+
   it("does not bypass hard blocks when campaign toggle is enabled", async () => {
     const evaluateAutoSend = mock.fn(async () => ({
       confidence: 0.95,

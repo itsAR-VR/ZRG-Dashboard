@@ -11,7 +11,7 @@ import { extractKnowledgeNotesFromFile, extractKnowledgeNotesFromText } from "@/
 import { crawl4aiExtractMarkdown } from "@/lib/crawl4ai";
 import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
 import { validateAutoSendCustomSchedule } from "@/lib/auto-send-schedule";
-import { isIP } from "node:net";
+import { buildKnowledgeAssetUpdateData, isPrivateNetworkHostname } from "@/lib/knowledge-asset-update";
 import { MeetingBookingProvider, Prisma } from "@prisma/client";
 
 export interface UserSettingsData {
@@ -60,6 +60,7 @@ export interface UserSettingsData {
   timezone: string | null;
   workStartTime: string | null;
   workEndTime: string | null;
+  autoSendSkipHumanReview: boolean;
   autoSendScheduleMode: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
   autoSendCustomSchedule: Record<string, unknown> | null;
   // Calendar Settings
@@ -177,6 +178,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           timezone: "America/New_York",
           workStartTime: "09:00",
           workEndTime: "17:00",
+          autoSendSkipHumanReview: false,
           autoSendScheduleMode: "ALWAYS",
           autoSendCustomSchedule: null,
           calendarSlotsToShow: 3,
@@ -236,6 +238,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           timezone: "America/New_York",
           workStartTime: "09:00",
           workEndTime: "17:00",
+          autoSendSkipHumanReview: false,
           autoSendScheduleMode: "ALWAYS",
           autoSendCustomSchedule: Prisma.JsonNull,
           calendarHealthEnabled: true,
@@ -302,6 +305,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         timezone: settings.timezone,
         workStartTime: settings.workStartTime,
         workEndTime: settings.workEndTime,
+        autoSendSkipHumanReview: settings.autoSendSkipHumanReview,
         autoSendScheduleMode: settings.autoSendScheduleMode ?? "ALWAYS",
         autoSendCustomSchedule: (settings.autoSendCustomSchedule as Record<string, unknown> | null) ?? null,
         calendarSlotsToShow: settings.calendarSlotsToShow,
@@ -377,6 +381,7 @@ export async function updateUserSettings(
       data.emailBisonAvailabilitySlotCount !== undefined ||
       data.emailBisonAvailabilitySlotPreferWithinDays !== undefined;
     const wantsScheduleUpdate =
+      data.autoSendSkipHumanReview !== undefined ||
       data.autoSendScheduleMode !== undefined ||
       data.autoSendCustomSchedule !== undefined;
     const wantsCalendarHealthUpdate =
@@ -448,6 +453,7 @@ export async function updateUserSettings(
         timezone: data.timezone,
         workStartTime: data.workStartTime,
         workEndTime: data.workEndTime,
+        autoSendSkipHumanReview: data.autoSendSkipHumanReview,
         autoSendScheduleMode: data.autoSendScheduleMode as any,
         autoSendCustomSchedule: toNullableJson(normalizedCustomSchedule),
         calendarSlotsToShow: data.calendarSlotsToShow,
@@ -514,6 +520,7 @@ export async function updateUserSettings(
         timezone: data.timezone,
         workStartTime: data.workStartTime ?? "09:00",
         workEndTime: data.workEndTime ?? "17:00",
+        autoSendSkipHumanReview: data.autoSendSkipHumanReview ?? false,
         autoSendScheduleMode: (data.autoSendScheduleMode as any) ?? "ALWAYS",
         autoSendCustomSchedule: toNullableJson(normalizedCustomSchedule) ?? Prisma.JsonNull,
         calendarSlotsToShow: data.calendarSlotsToShow ?? 3,
@@ -1003,32 +1010,6 @@ function detectDocxMimeType(file: File): boolean {
   return name.endsWith(".docx");
 }
 
-function isPrivateNetworkHostname(hostname: string): boolean {
-  const host = (hostname || "").toLowerCase();
-  if (!host) return true;
-  if (host === "localhost") return true;
-  if (host.endsWith(".local")) return true;
-  if (host === "0.0.0.0") return true;
-
-  const ipKind = isIP(host);
-  if (ipKind === 4) {
-    const [a, b] = host.split(".").map((p) => Number.parseInt(p, 10));
-    if (!Number.isFinite(a) || !Number.isFinite(b)) return true;
-    if (a === 10) return true;
-    if (a === 127) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-  }
-
-  if (ipKind === 6) {
-    if (host === "::1") return true;
-    if (host.startsWith("fc") || host.startsWith("fd")) return true; // unique local
-    if (host.startsWith("fe80")) return true; // link-local
-  }
-
-  return false;
-}
-
 /**
  * Upload a file to Knowledge Assets and extract high-signal notes for AI.
  * Uses `gpt-5-mini` (low reasoning) for OCR/extraction.
@@ -1387,12 +1368,18 @@ export async function retryWebsiteKnowledgeAssetIngestion(
 }
 
 /**
- * Update extracted text content for a knowledge asset
+ * Update editable fields for a knowledge asset.
+ * - All types: name + textContent
+ * - URL assets only: source URL (fileUrl)
  */
-export async function updateAssetTextContent(
+export async function updateKnowledgeAsset(
   assetId: string,
-  textContent: string
-): Promise<{ success: boolean; error?: string }> {
+  data: {
+    name?: string;
+    textContent?: string | null;
+    fileUrl?: string | null;
+  }
+): Promise<{ success: boolean; asset?: KnowledgeAssetData; error?: string }> {
   try {
     const asset = await prisma.knowledgeAsset.findUnique({
       where: { id: assetId },
@@ -1402,17 +1389,42 @@ export async function updateAssetTextContent(
         type: true,
         fileUrl: true,
         textContent: true,
+        originalFileName: true,
+        mimeType: true,
+        createdAt: true,
+        updatedAt: true,
         workspaceSettingsId: true,
         workspaceSettings: { select: { clientId: true } },
       },
     });
     if (!asset) return { success: false, error: "Asset not found" };
+
     await requireSettingsWriteAccess(asset.workspaceSettings.clientId);
     const user = await requireAuthUser();
 
+    const { updateData, error } = buildKnowledgeAssetUpdateData(asset.type as KnowledgeAssetData["type"], data);
+    if (error) return { success: false, error };
+
+    if (Object.keys(updateData).length === 0) {
+      return {
+        success: true,
+        asset: {
+          id: asset.id,
+          name: asset.name,
+          type: asset.type as KnowledgeAssetData["type"],
+          fileUrl: asset.fileUrl,
+          textContent: asset.textContent,
+          originalFileName: asset.originalFileName,
+          mimeType: asset.mimeType,
+          createdAt: asset.createdAt,
+          updatedAt: asset.updatedAt,
+        },
+      };
+    }
+
     const updated = await prisma.knowledgeAsset.update({
       where: { id: assetId },
-      data: { textContent },
+      data: updateData,
     });
 
     await recordKnowledgeAssetRevision({
@@ -1431,11 +1443,35 @@ export async function updateAssetTextContent(
     });
 
     revalidatePath("/");
-    return { success: true };
+    return {
+      success: true,
+      asset: {
+        id: updated.id,
+        name: updated.name,
+        type: updated.type as KnowledgeAssetData["type"],
+        fileUrl: updated.fileUrl,
+        textContent: updated.textContent,
+        originalFileName: updated.originalFileName,
+        mimeType: updated.mimeType,
+        createdAt: updated.createdAt,
+        updatedAt: updated.updatedAt,
+      },
+    };
   } catch (error) {
-    console.error("Failed to update asset text content:", error);
+    console.error("Failed to update knowledge asset:", error);
     return { success: false, error: "Failed to update asset" };
   }
+}
+
+/**
+ * Update extracted text content for a knowledge asset
+ */
+export async function updateAssetTextContent(
+  assetId: string,
+  textContent: string
+): Promise<{ success: boolean; error?: string }> {
+  const result = await updateKnowledgeAsset(assetId, { textContent });
+  return { success: result.success, error: result.error };
 }
 
 /**

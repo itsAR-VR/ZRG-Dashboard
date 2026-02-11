@@ -560,6 +560,7 @@ export async function runEmailInboundPostProcessJob(opts: {
             timezone: true,
             workStartTime: true,
             workEndTime: true,
+            autoSendSkipHumanReview: true,
             autoSendScheduleMode: true,
             autoSendCustomSchedule: true,
             autoSendRevisionEnabled: true,

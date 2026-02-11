@@ -104,6 +104,7 @@ import {
   retryWebsiteKnowledgeAssetIngestion,
   getKnowledgeAssetRevisions,
   rollbackKnowledgeAssetRevision,
+  updateKnowledgeAsset,
   updateAssetTextContent,
   deleteKnowledgeAsset,
   getCalendarLinks,
@@ -447,6 +448,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     customEndTime: "17:00",
     holidays: { ...DEFAULT_AUTO_SEND_HOLIDAYS },
   })
+  const [autoSendSkipHumanReview, setAutoSendSkipHumanReview] = useState(false)
   const [holidayExcludedPresetDate, setHolidayExcludedPresetDate] = useState("")
   const [holidayBlackoutDate, setHolidayBlackoutDate] = useState("")
   const [holidayBlackoutRangeStart, setHolidayBlackoutRangeStart] = useState("")
@@ -653,6 +655,17 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [assetHistoryTarget, setAssetHistoryTarget] = useState<KnowledgeAssetData | null>(null)
   const [assetHistoryRows, setAssetHistoryRows] = useState<KnowledgeAssetRevisionRecord[]>([])
   const [assetHistoryLoading, setAssetHistoryLoading] = useState(false)
+  const [assetViewerOpen, setAssetViewerOpen] = useState(false)
+  const [assetViewerTarget, setAssetViewerTarget] = useState<KnowledgeAssetData | null>(null)
+  const [assetEditOpen, setAssetEditOpen] = useState(false)
+  const [assetEditDraft, setAssetEditDraft] = useState<{
+    id: string
+    name: string
+    type: "file" | "text" | "url"
+    fileUrl: string
+    textContent: string
+  } | null>(null)
+  const [isSavingAssetEdit, setIsSavingAssetEdit] = useState(false)
 
   const isClientPortalUser = Boolean(workspaceCapabilities?.isClientPortalUser)
   const showAdminTab = isWorkspaceAdmin && !isClientPortalUser
@@ -693,6 +706,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     setAssetHistoryRows([])
     setAssetHistoryOpen(false)
     setAssetHistoryTarget(null)
+    setAssetViewerOpen(false)
+    setAssetViewerTarget(null)
+    setAssetEditOpen(false)
+    setAssetEditDraft(null)
+    setIsSavingAssetEdit(false)
   }, [])
 
   // Prevent prompt editor state from leaking across workspaces (Phase 47 follow-up)
@@ -784,6 +802,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             additionalBlackoutDateRanges: [...holidays.additionalBlackoutDateRanges],
           },
         })
+        setAutoSendSkipHumanReview(result.data.autoSendSkipHumanReview ?? false)
         setNotifications({
           emailDigest: result.data.emailDigest,
           slackAlerts: result.data.slackAlerts,
@@ -1561,6 +1580,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     }
 
     if (isWorkspaceAdmin) {
+      payload.autoSendSkipHumanReview = autoSendSkipHumanReview
       payload.autoSendScheduleMode = autoSendSchedule.mode
       payload.autoSendCustomSchedule = customSchedulePayload
       payload.calendarHealthEnabled = calendarHealth.enabled
@@ -1931,6 +1951,58 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       toast.error(result.error || "Failed to refresh website")
     }
   }, [])
+
+  const handleOpenAssetViewer = useCallback((asset: KnowledgeAssetData) => {
+    setAssetViewerTarget(asset)
+    setAssetViewerOpen(true)
+  }, [])
+
+  const handleOpenAssetEditor = useCallback((asset: KnowledgeAssetData) => {
+    if (!isWorkspaceAdmin) return
+    setAssetEditDraft({
+      id: asset.id,
+      name: asset.name,
+      type: asset.type,
+      fileUrl: asset.fileUrl || "",
+      textContent: asset.textContent || "",
+    })
+    setAssetEditOpen(true)
+  }, [isWorkspaceAdmin])
+
+  const handleCloseAssetEditor = useCallback(() => {
+    setAssetEditOpen(false)
+    setAssetEditDraft(null)
+    setIsSavingAssetEdit(false)
+  }, [])
+
+  const handleSaveAssetEdit = useCallback(async () => {
+    if (!assetEditDraft) return
+    if (!assetEditDraft.name.trim()) {
+      toast.error("Asset name is required")
+      return
+    }
+    if (assetEditDraft.type === "url" && !assetEditDraft.fileUrl.trim()) {
+      toast.error("URL is required for website assets")
+      return
+    }
+
+    setIsSavingAssetEdit(true)
+    const result = await updateKnowledgeAsset(assetEditDraft.id, {
+      name: assetEditDraft.name.trim(),
+      textContent: assetEditDraft.textContent,
+      fileUrl: assetEditDraft.type === "url" ? assetEditDraft.fileUrl.trim() : undefined,
+    })
+
+    if (result.success && result.asset) {
+      setKnowledgeAssets((prev) => prev.map((asset) => (asset.id === result.asset!.id ? result.asset! : asset)))
+      setAssetViewerTarget((prev) => (prev && prev.id === result.asset!.id ? result.asset! : prev))
+      toast.success("Asset updated")
+      handleCloseAssetEditor()
+    } else {
+      toast.error(result.error || "Failed to update asset")
+      setIsSavingAssetEdit(false)
+    }
+  }, [assetEditDraft, handleCloseAssetEditor])
 
   const refreshPromptOverrides = useCallback(async () => {
     if (!activeWorkspace) return
@@ -2856,6 +2928,22 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     Only workspace admins can edit auto-send schedules and holiday blackouts.
                   </div>
                 ) : null}
+                <div className="flex items-center justify-between rounded-lg border p-3">
+                  <div className="space-y-0.5 pr-3">
+                    <Label className="text-sm font-medium">Skip Human Review (Global Default)</Label>
+                    <p className="text-xs text-muted-foreground">
+                      When enabled, campaigns set to inherit will skip human review checks. Hard blocks still apply.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={autoSendSkipHumanReview}
+                    disabled={!isWorkspaceAdmin}
+                    onCheckedChange={(checked) => {
+                      setAutoSendSkipHumanReview(checked === true)
+                      handleChange()
+                    }}
+                  />
+                </div>
                 <Accordion type="single" collapsible className="w-full">
                   <AccordionItem value="schedule-mode">
                     <AccordionTrigger>
@@ -5281,6 +5369,26 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                           <Badge variant="outline" className="text-xs">
                             {asset.type}
                           </Badge>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                            onClick={() => handleOpenAssetViewer(asset)}
+                            aria-label="View asset"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                          {isWorkspaceAdmin && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                              onClick={() => handleOpenAssetEditor(asset)}
+                              aria-label="Edit asset"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                          )}
                           {asset.type === "url" && !asset.textContent && (
                             <Button
                               variant="ghost"
@@ -7670,6 +7778,136 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 )}
               </div>
             )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Knowledge Asset Viewer Dialog */}
+        <Dialog
+          open={assetViewerOpen}
+          onOpenChange={(open) => {
+            setAssetViewerOpen(open)
+            if (!open) setAssetViewerTarget(null)
+          }}
+        >
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Knowledge Asset</DialogTitle>
+              <DialogDescription>Review full asset content and metadata.</DialogDescription>
+            </DialogHeader>
+            {assetViewerTarget ? (
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Name</Label>
+                    <div className="text-sm font-medium">{assetViewerTarget.name}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Type</Label>
+                    <div className="text-sm">{assetViewerTarget.type}</div>
+                  </div>
+                </div>
+
+                {assetViewerTarget.type === "url" ? (
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">Source URL</Label>
+                    <div className="text-sm break-all">{assetViewerTarget.fileUrl || "—"}</div>
+                  </div>
+                ) : null}
+
+                {assetViewerTarget.originalFileName || assetViewerTarget.mimeType ? (
+                  <div className="space-y-1">
+                    <Label className="text-xs text-muted-foreground">File Metadata</Label>
+                    <div className="text-sm">
+                      {assetViewerTarget.originalFileName || "Unknown name"}
+                      {assetViewerTarget.mimeType ? ` · ${assetViewerTarget.mimeType}` : ""}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">Content</Label>
+                  <div className="max-h-[360px] overflow-auto rounded-md border bg-muted/20 p-3 text-xs whitespace-pre-wrap break-words">
+                    {assetViewerTarget.textContent || "No content available."}
+                  </div>
+                </div>
+
+                <div className="text-xs text-muted-foreground">
+                  Updated {new Date(assetViewerTarget.updatedAt).toLocaleString()}
+                </div>
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
+        {/* Knowledge Asset Edit Dialog */}
+        <Dialog
+          open={assetEditOpen}
+          onOpenChange={(open) => {
+            if (!open) handleCloseAssetEditor()
+            setAssetEditOpen(open)
+          }}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Edit Knowledge Asset</DialogTitle>
+              <DialogDescription>Update name and content. Website URLs require manual refresh after saving.</DialogDescription>
+            </DialogHeader>
+            {assetEditDraft ? (
+              <div className="space-y-4">
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Name</Label>
+                  <Input
+                    value={assetEditDraft.name}
+                    onChange={(e) =>
+                      setAssetEditDraft((prev) => (prev ? { ...prev, name: e.target.value } : prev))
+                    }
+                  />
+                </div>
+
+                {assetEditDraft.type === "url" ? (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Source URL</Label>
+                    <Input
+                      value={assetEditDraft.fileUrl}
+                      onChange={(e) =>
+                        setAssetEditDraft((prev) => (prev ? { ...prev, fileUrl: e.target.value } : prev))
+                      }
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Saving this URL does not scrape automatically. Use refresh on the asset row to re-ingest.
+                    </p>
+                  </div>
+                ) : null}
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Content</Label>
+                  <Textarea
+                    value={assetEditDraft.textContent}
+                    onChange={(e) =>
+                      setAssetEditDraft((prev) => (prev ? { ...prev, textContent: e.target.value } : prev))
+                    }
+                    rows={12}
+                  />
+                </div>
+
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={handleCloseAssetEditor} disabled={isSavingAssetEdit}>
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={handleSaveAssetEdit}
+                    disabled={
+                      isSavingAssetEdit ||
+                      !assetEditDraft.name.trim() ||
+                      (assetEditDraft.type === "url" && !assetEditDraft.fileUrl.trim())
+                    }
+                  >
+                    {isSavingAssetEdit ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : null}
+                    Save
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </DialogContent>
         </Dialog>
 

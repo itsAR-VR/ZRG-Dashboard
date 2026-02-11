@@ -30,6 +30,7 @@ const TEST_FILES = [
   "lib/__tests__/workspace-access-super-admin.test.ts",
   "lib/__tests__/auto-send-evaluator-input.test.ts",
   "lib/__tests__/knowledge-asset-context.test.ts",
+  "lib/__tests__/knowledge-asset-update.test.ts",
   "lib/__tests__/lead-context-bundle.test.ts",
   "lib/__tests__/memory-governance.test.ts",
   "lib/__tests__/draft-pipeline-retention-cron.test.ts",

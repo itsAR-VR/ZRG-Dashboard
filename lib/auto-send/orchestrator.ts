@@ -276,7 +276,11 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
     }
 
     const threshold = context.emailCampaign?.autoSendConfidenceThreshold ?? AUTO_SEND_CONSTANTS.DEFAULT_CONFIDENCE_THRESHOLD;
-    const skipHumanReview = context.emailCampaign?.autoSendSkipHumanReview === true;
+    const campaignSkipHumanReview = context.emailCampaign?.autoSendSkipHumanReview;
+    const skipHumanReview =
+      typeof campaignSkipHumanReview === "boolean"
+        ? campaignSkipHumanReview
+        : context.workspaceSettings?.autoSendSkipHumanReview === true;
 
     let evaluation = await deps.evaluateAutoSend({
       clientId: context.clientId,

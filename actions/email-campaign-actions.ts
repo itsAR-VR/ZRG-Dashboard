@@ -19,7 +19,7 @@ interface EmailCampaignData {
   leadCount: number;
   responseMode: CampaignResponseMode;
   autoSendConfidenceThreshold: number;
-  autoSendSkipHumanReview: boolean;
+  autoSendSkipHumanReview: boolean | null;
   // Phase 47l: Auto-send delay window
   autoSendDelayMinSeconds: number;
   autoSendDelayMaxSeconds: number;
@@ -110,7 +110,7 @@ export async function updateEmailCampaignConfig(
   opts: {
     responseMode?: CampaignResponseMode;
     autoSendConfidenceThreshold?: number;
-    autoSendSkipHumanReview?: boolean;
+    autoSendSkipHumanReview?: boolean | null;
     autoSendDelayMinSeconds?: number;
     autoSendDelayMaxSeconds?: number;
     autoSendScheduleMode?: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
@@ -121,7 +121,7 @@ export async function updateEmailCampaignConfig(
   data?: {
     responseMode: CampaignResponseMode;
     autoSendConfidenceThreshold: number;
-    autoSendSkipHumanReview: boolean;
+    autoSendSkipHumanReview: boolean | null;
     autoSendDelayMinSeconds: number;
     autoSendDelayMaxSeconds: number;
     autoSendScheduleMode: "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM" | null;
@@ -157,7 +157,7 @@ export async function updateEmailCampaignConfig(
     }
 
     if (opts.autoSendSkipHumanReview !== undefined) {
-      data.autoSendSkipHumanReview = Boolean(opts.autoSendSkipHumanReview);
+      data.autoSendSkipHumanReview = opts.autoSendSkipHumanReview;
     }
 
     // Phase 47l: Handle delay settings
