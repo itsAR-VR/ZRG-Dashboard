@@ -53,3 +53,17 @@ After both updates, verify that `getPromptWithOverrides('draft.verify.email.step
 ## Handoff
 
 Subphase b strengthens the Step 2 generation prompts so fewer pricing hallucinations reach Step 3 in the first place.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Updated the Step 3 code-default pricing rule in `lib/ai/prompt-registry.ts` to require numeric exact-match against source context and explicitly reject hallucinated pricing.
+  - Added `scripts/rebase-email-step3-pricing-override.ts` to rebase existing `draft.verify.email.step3.v1` workspace overrides while preserving non-pricing custom rules and creating a revision record.
+  - Preserved compatibility with the prompt-editing/drift model by using `computePromptMessageBaseHash` in the script before writing `baseContentHash`.
+- Commands run:
+  - `npm test` — pass (313 tests, 0 failures)
+  - `npm run lint` — pass (warnings only; no errors)
+  - `npm run build` — pass
+- Blockers:
+  - Founders Club override rebase has not been executed yet because this requires the target workspace/client context and DB write execution in this environment.
+- Next concrete steps:
+  - Run `scripts/rebase-email-step3-pricing-override.ts` against the Founders Club workspace override and verify `getPromptWithOverrides('draft.verify.email.step3.v1', foundersClubClientId)` resolves to the updated override content.

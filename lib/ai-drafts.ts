@@ -100,6 +100,9 @@ const TRUNCATED_URL_GLOBAL_REGEX = /https?:\/\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-
 // Pricing placeholders like "${PRICE}" or "$X-$Y" (avoid matching real prices like "$5,000").
 const PRICING_PLACEHOLDER_REGEX = /\$\{[A-Z_]+\}|\$[A-Z](?:\s*-\s*\$[A-Z])?(?![A-Za-z0-9])/;
 const PRICING_PLACEHOLDER_GLOBAL_REGEX = /\$\{[A-Z_]+\}|\$[A-Z](?:\s*-\s*\$[A-Z])?(?![A-Za-z0-9])/g;
+const DOLLAR_AMOUNT_REGEX = /\$\s*\d[\d,]*(?:\.\d{1,2})?/g;
+const PRICING_NEARBY_REGEX = /\b(price|pricing|fee|fees|cost|costs|membership|investment|per\s+(month|year)|\/\s?(mo|month|yr|year))\b/i;
+const THRESHOLD_NEARBY_REGEX = /\b(revenue|arr|mrr|raised|raise|funding|valuation|gmv|run[\s-]?rate)\b/i;
 
 function isMaxOutputTokensIncomplete(response: any): boolean {
   return response?.status === "incomplete" && response?.incomplete_details?.reason === "max_output_tokens";
@@ -218,6 +221,53 @@ export function sanitizeDraftContent(content: string, leadId: string, channel: D
   }
 
   return result;
+}
+
+function parseDollarAmountToNumber(token: string): number | null {
+  const normalized = token.replace(/^\$/, "").replace(/[,\s]/g, "");
+  const parsed = Number.parseFloat(normalized);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+export function extractPricingAmounts(text: string): number[] {
+  if (!text || !text.trim()) return [];
+
+  const seen = new Set<number>();
+  for (const match of text.matchAll(DOLLAR_AMOUNT_REGEX)) {
+    const raw = match[0];
+    const index = match.index ?? -1;
+    if (index < 0) continue;
+
+    const suffix = text.slice(index + raw.length, index + raw.length + 4);
+    if (/^\s*[kKmMbB]/.test(suffix)) continue;
+
+    const windowStart = Math.max(0, index - 40);
+    const windowEnd = Math.min(text.length, index + raw.length + 40);
+    const nearby = text.slice(windowStart, windowEnd);
+    if (THRESHOLD_NEARBY_REGEX.test(nearby) && !PRICING_NEARBY_REGEX.test(nearby)) continue;
+
+    const amount = parseDollarAmountToNumber(raw);
+    if (amount === null) continue;
+    seen.add(amount);
+  }
+
+  return Array.from(seen.values());
+}
+
+export function detectPricingHallucinations(
+  draft: string,
+  serviceDescription: string | null,
+  _knowledgeContext: string | null
+): { hallucinated: number[]; valid: number[]; allDraft: number[] } {
+  const draftAmounts = extractPricingAmounts(draft);
+  const sourceText = serviceDescription ?? "";
+  const sourceAmounts = new Set(extractPricingAmounts(sourceText));
+
+  const hallucinated = draftAmounts.filter((amount) => !sourceAmounts.has(amount));
+  const valid = draftAmounts.filter((amount) => sourceAmounts.has(amount));
+
+  return { hallucinated, valid, allDraft: draftAmounts };
 }
 
 // ---------------------------------------------------------------------------
@@ -693,7 +743,7 @@ Guidelines:
 - Be professional but personable
 - Don't use emojis unless the lead used them first
 - Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
-- Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If pricing isn't explicitly present in About Our Business or Reference Information, ask one clarifying question and offer a quick call.
+- Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If you mention pricing, the numeric dollar amount MUST match a price/fee/cost stated in About Our Business or Reference Information — do not round, estimate, or invent. If no pricing is explicitly present in those sections, do not state any dollar amount; instead ask one clarifying question and offer a quick call.
 - If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
 - TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". If no available times match their preference, ask what works better instead of offering mismatched times.
 - If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works. When the lead expressed a timing preference, only offer times that match it. When no timing preference was expressed, prefer sooner options but never offer same-day (today) times unless the lead explicitly asks for today. If no availability is provided, ask for their availability.
@@ -755,7 +805,7 @@ Guidelines:
 - Keep it concise and natural (1-3 short paragraphs).
 - Don't use emojis unless the lead used them first.
 - Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
-- Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If pricing isn't explicitly present in About Our Business or Reference Information, ask one clarifying question and offer a quick call.
+- Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If you mention pricing, the numeric dollar amount MUST match a price/fee/cost stated in About Our Business or Reference Information — do not round, estimate, or invent. If no pricing is explicitly present in those sections, do not state any dollar amount; instead ask one clarifying question and offer a quick call.
 - If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
 - TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". If no available times match their preference, ask what works better instead of offering mismatched times.
 - If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works. When the lead expressed a timing preference, only offer times that match it. When no timing preference was expressed, prefer sooner options but never offer same-day (today) times unless the lead explicitly asks for today. If no availability is provided, ask for their availability.
@@ -843,7 +893,7 @@ OUTPUT RULES:
 - Output the email reply in Markdown-friendly plain text (paragraphs and "-" bullets allowed).
 - Do not use bold, italics, underline, strikethrough, code, or headings.
 - Do not invent facts. Use only provided context.
-- Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If pricing isn't explicitly present in OFFER or Reference Information, ask one clarifying question and offer a quick call.
+- Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If you mention pricing, the numeric dollar amount MUST match a price/fee/cost stated in OFFER or Reference Information — do not round, estimate, or invent. If no pricing is explicitly present in those sections, do not state any dollar amount; instead ask one clarifying question and offer a quick call.
 - If the lead opted out/unsubscribed/asked to stop, output an empty reply ("") and nothing else.
 - Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
 - If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
@@ -1808,6 +1858,8 @@ export async function generateResponseDraft(
     let draftContent: string | null = null;
     let emailVerifierForbiddenTerms: string[] | null = null;
     let emailLengthBoundsForClamp: { minChars: number; maxChars: number } | null = null;
+    let generationInteractionId: string | null = null;
+    let verificationInteractionId: string | null = null;
 
     // ---------------------------------------------------------------------------
     // Email: Two-Step Pipeline (Phase 30)
@@ -1886,9 +1938,9 @@ export async function generateResponseDraft(
 	      const generationTimeoutMs = Math.max(3000, timeoutMs - strategyTimeoutMs);
 
       // Step 1: Strategy
-      let strategy: EmailDraftStrategy | null = null;
-      let strategyInteractionId: string | null = null;
-      let strategyPromptKeyUsed: string | null = null;
+  let strategy: EmailDraftStrategy | null = null;
+  let strategyInteractionId: string | null = null;
+  let strategyPromptKeyUsed: string | null = null;
 
       let strategyInstructions = buildEmailDraftStrategyInstructions({
         aiName,
@@ -2116,9 +2168,12 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
 	          forbiddenTerms: effectiveForbiddenTerms, // Phase 47e
 	        }) + emailLengthRules;
 
-        const generationInput = `<conversation_transcript>
-${conversationTranscript}
-</conversation_transcript>
+        const latestInboundForGeneration =
+          (await getLatestInboundEmailTextForVerifier({ leadId, triggerMessageId }))?.trim() || null;
+
+        const generationInput = `<latest_inbound>
+${latestInboundForGeneration || "None."}
+</latest_inbound>
 
 <task>
 Write the email response now, following the strategy and structure archetype.
@@ -2243,7 +2298,7 @@ Write the email response now, following the strategy and structure archetype.
                 },
               });
 
-              if (!generationResult.success) {
+            if (!generationResult.success) {
                 if (
                   generationResult.error.category === "incomplete_output" &&
                   generationResult.error.message.includes("max_output_tokens") &&
@@ -2269,8 +2324,9 @@ Write the email response now, following the strategy and structure archetype.
                 continue;
               }
 
-	            const text = generationResult.data.trim() || null;
-              if (!text) break;
+            const text = generationResult.data.trim() || null;
+            generationInteractionId = generationResult.telemetry.interactionId;
+            if (!text) break;
 
 	            const issues = detectDraftIssues(text);
 	            if ((issues.hasTruncatedUrl || issues.hasPlaceholders) && attempt < generationMaxAttempts) {
@@ -2740,6 +2796,7 @@ Generate an appropriate ${channel} response following the guidelines above.
             console.warn(`[AI Drafts] ${channel} generation failed after retries:`, fallbackResult.error.message);
           } else {
             const fallbackText = fallbackResult.data.trim() || null;
+            generationInteractionId = fallbackResult.telemetry.interactionId;
             if (fallbackText) {
               draftContent = fallbackText;
             }
@@ -2814,6 +2871,7 @@ Generate an appropriate ${channel} response following the guidelines above.
           });
 
           if (verification?.finalDraft) {
+            verificationInteractionId = verification.interactionId;
             draftContent = verification.finalDraft;
             await persistDraftPipelineArtifact({
               stage: DRAFT_PIPELINE_STAGES.draftVerifierStep3,
@@ -2947,6 +3005,21 @@ Generate an appropriate ${channel} response following the guidelines above.
     }
 
     draftContent = sanitizeDraftContent(draftContent, leadId, channel);
+    const pricingCheck = detectPricingHallucinations(draftContent, serviceDescription, knowledgeContext);
+    if (pricingCheck.hallucinated.length > 0) {
+      console.warn(
+        `[pricing-hallucination] Lead ${leadId}: draft contains $${pricingCheck.hallucinated.join(", $")} not found in source material`
+      );
+      const interactionIdForPricingSignal =
+        channel === "email" ? (verificationInteractionId || generationInteractionId) : generationInteractionId;
+      if (interactionIdForPricingSignal) {
+        await markAiInteractionError(
+          interactionIdForPricingSignal,
+          `pricing_hallucination_detected: hallucinated=${pricingCheck.hallucinated.join(",")} valid=${pricingCheck.valid.join(",")}`,
+          { severity: "warning" }
+        );
+      }
+    }
 
     if (channel === "email") {
       const bounds = emailLengthBoundsForClamp ?? getEmailDraftCharBoundsFromEnv();
@@ -2963,7 +3036,7 @@ Generate an appropriate ${channel} response following the guidelines above.
     await persistDraftPipelineArtifact({
       stage: DRAFT_PIPELINE_STAGES.finalDraft,
       text: draftContent,
-      payload: { bookingLink, channel },
+      payload: { bookingLink, channel, pricingHallucination: pricingCheck },
     });
 
     try {

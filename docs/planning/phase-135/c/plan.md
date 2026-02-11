@@ -83,6 +83,20 @@ Add a code-level pricing validation function that runs on the **final draft** fo
 
 Phase 135 complete. Monitor `AIInteraction` records for `pricing_hallucination_detected` classifications post-deploy. If hallucinations persist despite prompt changes (135a/135b), consider upgrading this safety net from telemetry-only to auto-correction (stripping hallucinated amounts and substituting a call redirect).
 
-## Open Question (Need Human Input)
+## Resolved Decision
 
-- Should a detected hallucinated price set `AIInteraction.status="error"` via `markAiInteractionError(...)` (visible in observability), or should we implement a separate “warning”/metadata-only logging method to avoid inflating error counts? (confidence <90%)
+- Keep pricing hallucination signaling on `markAiInteractionError(..., { severity: "warning" })` for now (decision locked on 2026-02-11).
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Added `extractPricingAmounts()` and `detectPricingHallucinations()` in `lib/ai-drafts.ts` and wired them into the final draft post-pass for all channels.
+  - Added telemetry warning handling for hallucinated prices via `markAiInteractionError(..., { severity: "warning" })` with interaction-id selection per channel path.
+  - Added unit coverage for extraction and hallucination detection in `lib/__tests__/ai-drafts-pricing-placeholders.test.ts`.
+- Commands run:
+  - `npm test` — pass
+  - `npm run lint` — pass with warnings
+  - `npm run build` — pass
+- Blockers:
+  - None for the code-level safety net.
+- Next concrete steps:
+  - Monitor `AIInteraction` records post-deploy for `pricing_hallucination_detected` volume and decide whether to keep warning-on-error status or move to metadata-only warnings.

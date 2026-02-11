@@ -62,3 +62,18 @@ Updated pricing exact-match guards on the **hot paths**:
 ## Handoff
 
 Subphase c adds a programmatic post-processing safety net to detect pricing hallucinations that slip through both Step 2 and Step 3.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Strengthened pricing guardrails in email strategy/generation instructions (`buildEmailDraftStrategyInstructions`, `buildEmailDraftGenerationInstructions`) so pricing must be grounded before generation and reused exactly.
+  - Updated fallback prompt builders (`buildEmailPrompt`, `buildSmsPrompt`, `buildLinkedInPrompt`) to enforce exact numeric pricing matches and clarifying-question fallback when no explicit pricing exists.
+  - Updated hot-path prompt templates in `lib/ai/prompt-registry.ts` for SMS and LinkedIn to match the new exact-match pricing policy.
+  - Adjusted email Step 2 input to use latest inbound content, aligning with prompt-editing flow and reducing drift between strategy/generation context.
+- Commands run:
+  - `npm test` — pass
+  - `npm run lint` — pass with warnings
+  - `npm run build` — pass
+- Blockers:
+  - None for prompt-level code changes.
+- Next concrete steps:
+  - If workspace/system overrides exist for `draft.generate.sms.v1` or `draft.generate.linkedin.v1`, re-save those overrides with the new pricing rule to avoid stale hash drift behavior.

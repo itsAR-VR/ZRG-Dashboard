@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { sanitizeDraftContent } from "../ai-drafts";
+import { detectPricingHallucinations, extractPricingAmounts, sanitizeDraftContent } from "../ai-drafts";
 
 function withMutedWarn<T>(fn: () => T): T {
   const originalWarn = console.warn;
@@ -47,3 +47,36 @@ test("sanitizeDraftContent does not strip real prices like $5,000/year, $500/mon
   assert.equal(output.includes("$0"), true);
 });
 
+test("extractPricingAmounts extracts grounded prices", () => {
+  const result = extractPricingAmounts("Pricing is $791/month or $9,500/year.");
+  assert.deepEqual(result.sort((a, b) => a - b), [791, 9500]);
+});
+
+test("extractPricingAmounts excludes revenue/threshold amounts", () => {
+  const input = "We look for $1M+ in revenue, usually around $50M ARR, and $500k raised.";
+  const result = extractPricingAmounts(input);
+  assert.deepEqual(result, []);
+});
+
+test("extractPricingAmounts still reads regular one-time prices", () => {
+  const result = extractPricingAmounts("A one-time onboarding fee is $3,000.");
+  assert.deepEqual(result, [3000]);
+});
+
+test("detectPricingHallucinations flags unsupported pricing", () => {
+  const result = detectPricingHallucinations("Our fee is $3,000", "Pricing: $791 per month", null);
+  assert.deepEqual(result.hallucinated, [3000]);
+  assert.deepEqual(result.valid, []);
+});
+
+test("detectPricingHallucinations accepts supported pricing", () => {
+  const result = detectPricingHallucinations("It works out to $791/month", "Pricing: $791 per month", null);
+  assert.deepEqual(result.hallucinated, []);
+  assert.deepEqual(result.valid, [791]);
+});
+
+test("detectPricingHallucinations ignores knowledgeContext as pricing source", () => {
+  const result = detectPricingHallucinations("It works out to $791/month", null, "Pricing: $791 per month");
+  assert.deepEqual(result.hallucinated, [791]);
+  assert.deepEqual(result.valid, []);
+});
