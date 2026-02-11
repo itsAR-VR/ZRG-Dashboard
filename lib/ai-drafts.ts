@@ -230,6 +230,18 @@ function parseDollarAmountToNumber(token: string): number | null {
   return parsed;
 }
 
+function isLikelyNonPricingDollarAmount(text: string, index: number, rawToken: string): boolean {
+  const suffix = text.slice(index + rawToken.length, index + rawToken.length + 4);
+  if (/^\s*[kKmMbB]/.test(suffix)) return true;
+
+  const windowStart = Math.max(0, index - 40);
+  const windowEnd = Math.min(text.length, index + rawToken.length + 40);
+  const nearby = text.slice(windowStart, windowEnd);
+  if (THRESHOLD_NEARBY_REGEX.test(nearby) && !PRICING_NEARBY_REGEX.test(nearby)) return true;
+
+  return false;
+}
+
 export function extractPricingAmounts(text: string): number[] {
   if (!text || !text.trim()) return [];
 
@@ -238,14 +250,7 @@ export function extractPricingAmounts(text: string): number[] {
     const raw = match[0];
     const index = match.index ?? -1;
     if (index < 0) continue;
-
-    const suffix = text.slice(index + raw.length, index + raw.length + 4);
-    if (/^\s*[kKmMbB]/.test(suffix)) continue;
-
-    const windowStart = Math.max(0, index - 40);
-    const windowEnd = Math.min(text.length, index + raw.length + 40);
-    const nearby = text.slice(windowStart, windowEnd);
-    if (THRESHOLD_NEARBY_REGEX.test(nearby) && !PRICING_NEARBY_REGEX.test(nearby)) continue;
+    if (isLikelyNonPricingDollarAmount(text, index, raw)) continue;
 
     const amount = parseDollarAmountToNumber(raw);
     if (amount === null) continue;
@@ -268,6 +273,41 @@ export function detectPricingHallucinations(
   const valid = draftAmounts.filter((amount) => sourceAmounts.has(amount));
 
   return { hallucinated, valid, allDraft: draftAmounts };
+}
+
+export function enforcePricingAmountSafety(
+  draft: string,
+  serviceDescription: string | null
+): { draft: string; removedAmounts: number[]; addedClarifier: boolean } {
+  const sourceAmounts = new Set(extractPricingAmounts(serviceDescription ?? ""));
+  const removedAmounts: number[] = [];
+
+  let next = draft.replace(DOLLAR_AMOUNT_REGEX, (token, offset, fullText) => {
+    if (typeof offset === "number" && isLikelyNonPricingDollarAmount(fullText, offset, token)) {
+      return token;
+    }
+
+    const amount = parseDollarAmountToNumber(token);
+    if (amount === null || sourceAmounts.has(amount)) return token;
+    removedAmounts.push(amount);
+    return "";
+  });
+
+  next = next
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .replace(/\(\s*\)/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+
+  let addedClarifier = false;
+  if (removedAmounts.length > 0 && sourceAmounts.size === 0 && !/monthly\s+or\s+annual/i.test(next)) {
+    const clarifier = "To share exact pricing accurately, can you confirm whether you want monthly or annual details?";
+    next = next ? `${next}\n\n${clarifier}` : clarifier;
+    addedClarifier = true;
+  }
+
+  return { draft: next, removedAmounts, addedClarifier };
 }
 
 // ---------------------------------------------------------------------------
@@ -3005,6 +3045,18 @@ Generate an appropriate ${channel} response following the guidelines above.
     }
 
     draftContent = sanitizeDraftContent(draftContent, leadId, channel);
+    let pricingSafety: ReturnType<typeof enforcePricingAmountSafety> | null = null;
+    if (channel === "email") {
+      pricingSafety = enforcePricingAmountSafety(draftContent, serviceDescription);
+      draftContent = pricingSafety.draft;
+
+      if (pricingSafety.removedAmounts.length > 0) {
+        console.warn(
+          `[pricing-safety] Lead ${leadId}: removed unsupported $${pricingSafety.removedAmounts.join(", $")} from final email draft`
+        );
+      }
+    }
+
     const pricingCheck = detectPricingHallucinations(draftContent, serviceDescription, knowledgeContext);
     if (pricingCheck.hallucinated.length > 0) {
       console.warn(
@@ -3036,7 +3088,7 @@ Generate an appropriate ${channel} response following the guidelines above.
     await persistDraftPipelineArtifact({
       stage: DRAFT_PIPELINE_STAGES.finalDraft,
       text: draftContent,
-      payload: { bookingLink, channel, pricingHallucination: pricingCheck },
+      payload: { bookingLink, channel, pricingHallucination: pricingCheck, pricingSafety },
     });
 
     try {

@@ -41,7 +41,7 @@ Founders Club has a **custom `PromptOverride`** for `draft.verify.email.step3.v1
 * [x] Strengthen Step 3 verifier default prompt to actively validate pricing
 * [x] Update Founders Club workspace override with the stronger pricing rule (preserving custom rules 9-15)
 * [x] Strengthen Step 2 generation prompt to require exact-match pricing
-* [x] Add programmatic pricing validation with telemetry after Step 3
+* [x] Add deterministic pricing safety net + telemetry after Step 3
 
 ## Constraints
 
@@ -49,11 +49,11 @@ Founders Club has a **custom `PromptOverride`** for `draft.verify.email.step3.v1
 - The pricing validation regex must NOT flag revenue thresholds ("$1M+ in revenue") as pricing
 - Must not break existing tests in `lib/__tests__/ai-drafts-pricing-placeholders.test.ts`
 - Founders Club workspace override must preserve all existing custom rules (9-15)
-- The programmatic safety net should log telemetry, not auto-strip (to avoid edge case breakage)
+- The programmatic safety net must deterministically strip unsupported pricing amounts while preserving non-pricing tokens like revenue thresholds (for example `$1M+`)
 
 ## Success Criteria
 
-- Regenerating a Founders Club draft where the lead asks about pricing uses only source-supported pricing values and does not emit unsupported amounts (for example `$3,000`) unless explicitly approved as negated clarification copy
+- Regenerating a Founders Club draft where the lead asks about pricing uses only source-supported pricing values and does not emit unsupported amounts (for example `$3,000`) in the final saved draft content
 - `npm run build` and `npm run lint` pass
 - Existing pricing placeholder tests still pass
 - Founders Club custom Step 3 rules (9-15) are preserved in their workspace override
@@ -84,7 +84,7 @@ Founders Club has a **custom `PromptOverride`** for `draft.verify.email.step3.v1
 
 ### Missing or ambiguous requirements
 - Runtime functional verification criterion (live draft regeneration path) is observational and requires a fresh Founders Club draft event; cannot be fully proven from static/unit checks alone.
-- "No hallucinated pricing" policy is underspecified for negated references (example: "isn't ~$3,000") and for newly introduced pricing values not present in currently indexed knowledge assets.
+- Runtime acceptance of the new deterministic post-pass requires a deploy that includes the latest `lib/ai-drafts.ts` changes; otherwise probe outcomes can still reflect pre-patch behavior.
 
 ### Repo mismatches (fix the plan)
 - No remaining repo mismatch for subphase `a`/`d`: DB apply + revision were executed and verified for `draft.verify.email.step3.v1`.
@@ -114,9 +114,9 @@ Founders Club has a **custom `PromptOverride`** for `draft.verify.email.step3.v1
 
 ## Open Questions (Need Human Input)
 
-- [ ] Production runtime currently does not apply workspace prompt overrides for Step 3 (`promptKey` remains plain `draft.verify.email.step3.v1` without `ws_...` suffix). Do we deploy the current code+prompt changes now before final runtime closeout? (confidence ~75%)
-  - Why it matters: without deployment alignment, 3/3 probe acceptance can fail even when local code and DB override content are correct, because the active runtime path is using a non-updated Step 3 template path.
-  - Current assumption in this plan: deployment is required before final 3/3 runtime acceptance can be claimed.
+- [ ] Confirm whether the most recent production deploy includes the deterministic `enforcePricingAmountSafety()` integration in `lib/ai-drafts.ts` (post-sanitize, pre-final persistence). (confidence ~70%)
+  - Why it matters: current Step 3 override keys (`ws_...`) are active, but runtime probes can still show unsupported amounts if production is running code from before the deterministic post-pass wiring.
+  - Current assumption in this plan: production still needs one deploy with this latest patch before final 3/3 clean runtime acceptance can be claimed.
 
 ## Assumptions (Agent)
 
@@ -155,6 +155,17 @@ Founders Club has a **custom `PromptOverride`** for `draft.verify.email.step3.v1
   - `npm test -- lib/__tests__/ai-drafts-pricing-placeholders.test.ts` — pass
   - `npm run lint` — pass with existing warnings
   - `npm run build` — pass
+- Local deterministic hardening validation (latest turn):
+  - `lib/ai-drafts.ts` now enforces `enforcePricingAmountSafety()` before final draft persistence for `email` channel.
+  - Safety pass now preserves non-pricing thresholds (for example `$1M+`) using the same nearby-context heuristics as `extractPricingAmounts()`.
+  - `lib/__tests__/ai-drafts-pricing-placeholders.test.ts` now covers:
+    - unsupported amount removal,
+    - supported amount retention,
+    - no-pricing clarifier injection,
+    - non-pricing threshold preservation.
+  - `npm test -- lib/__tests__/ai-drafts-pricing-placeholders.test.ts` — pass (318 tests, 0 failures)
+  - `npm run lint` — pass with existing warnings
+  - `npm run build` — pass
 - Runtime probe batches after Step 3 override content update:
   - Batch #1 (`tmx_p135e_*`): 3/3 jobs succeeded, but 2/3 drafts still emitted unsupported `$3,000`.
   - Batch #2 (`tmx_p135e2_*`): first completed draft still emitted `$3,000`; remaining jobs in flight at capture time.
@@ -162,10 +173,12 @@ Founders Club has a **custom `PromptOverride`** for `draft.verify.email.step3.v1
   - Override hash alignment notes:
     - Runtime probe checks were executed while testing `baseContentHash` candidates to detect active runtime hash behavior.
     - Final persisted hash is set to `4c68c87622cc6dc9` (code-aligned) for post-deploy correctness.
+  - Latest read-only interaction check (post user deploy):
+    - Recent Step 3 interactions now include `promptKey = draft.verify.email.step3.v1.ws_202602110537`, confirming workspace override resolution is active in production.
 
 ## Remaining Runtime Verification
 
-- Pending final closeout dependency: align production runtime path (deploy) so Step 3 override/template changes are actually applied, then rerun the required 3/3 clean pricing probes.
+- Pending final closeout dependency: confirm production deploy includes the latest deterministic post-pass (`enforcePricingAmountSafety()`), then rerun the required 3/3 clean pricing probes.
 
 ## Phase Summary (running)
 
@@ -174,3 +187,4 @@ Founders Club has a **custom `PromptOverride`** for `draft.verify.email.step3.v1
 - 2026-02-11 04:05 UTC — Completed production Founders Club Step 3 prompt override rebase via Supabase SQL (hash + content + revision), verified custom-rule preservation, and confirmed no stale SMS/LinkedIn overrides requiring proactive refresh (files: `docs/planning/phase-135/plan.md`, `docs/planning/phase-135/d/plan.md`).
 - 2026-02-11 04:40 UTC — Completed synthetic runtime pricing probes; observed mixed outcomes (`$3,000` negation persists in one draft, `$2,500/$25,000` appears in another), and appended subphase `e` to lock pricing source-of-truth + negation policy before final phase closeout (files: `docs/planning/phase-135/plan.md`, `docs/planning/phase-135/e/plan.md`).
 - 2026-02-11 05:37 UTC — Implemented Step 3 service-description-only pricing contract in code + rebase script, aligned pricing telemetry source to workspace description, and executed additional production probe batches; runtime still logs plain Step 3 prompt keys (no workspace override suffix), so final 3/3 acceptance remains blocked pending runtime deployment alignment (files: `lib/ai/prompt-registry.ts`, `lib/ai-drafts.ts`, `lib/__tests__/ai-drafts-pricing-placeholders.test.ts`, `scripts/rebase-email-step3-pricing-override.ts`, `docs/planning/phase-135/plan.md`, `docs/planning/phase-135/e/plan.md`).
+- 2026-02-11 06:35 UTC — Wired deterministic email pricing safety into final draft post-pass (`enforcePricingAmountSafety()`), added unit coverage for removal/clarifier/threshold-preservation cases, re-ran tests/lint/build, and updated runtime findings to note active Step 3 workspace override keys in production (files: `lib/ai-drafts.ts`, `lib/__tests__/ai-drafts-pricing-placeholders.test.ts`, `docs/planning/phase-135/plan.md`, `docs/planning/phase-135/e/plan.md`).

@@ -39,32 +39,29 @@ Resolve the remaining runtime ambiguity after rebase: lock the canonical Founder
 
 ## Progress This Turn (Terminus Maximus)
 - Work done:
-  - Implemented plan decisions in code:
-    - Step 3 pricing contract updated to service-description-only matching in `lib/ai/prompt-registry.ts`.
-    - Step 2 strategy/generation pricing policy bullets removed in `lib/ai-drafts.ts` (stylistic-only role).
-    - Pricing hallucination source comparison aligned to `serviceDescription` only in `detectPricingHallucinations()`.
-    - Rebase script replacement rule updated in `scripts/rebase-email-step3-pricing-override.ts`.
-    - Unit tests updated in `lib/__tests__/ai-drafts-pricing-placeholders.test.ts`.
-  - Rebased Founders Club Step 3 override content in production DB and preserved custom rules.
-  - Finalized override base hash at `4c68c87622cc6dc9` to align with updated local Step 3 code hash for next deploy.
-  - Executed additional runtime probe batches (`tmx_p135e_*`, `tmx_p135e2_*`, `tmx_p135e_hash_*`) and captured Step 3 runtime behavior.
+  - Completed deterministic pricing hardening in `lib/ai-drafts.ts`:
+    - Added `isLikelyNonPricingDollarAmount()` helper and reused it in `extractPricingAmounts()` + `enforcePricingAmountSafety()`.
+    - Wired `enforcePricingAmountSafety()` into `generateResponseDraft()` post-pass (after sanitize, before final pricing check/persistence) for `email` channel.
+    - Added `pricingSafety` payload to final draft pipeline artifact for observability.
+  - Expanded pricing tests in `lib/__tests__/ai-drafts-pricing-placeholders.test.ts`:
+    - unsupported amount removal,
+    - supported amount retention,
+    - no-source clarifier injection,
+    - non-pricing threshold (`$1M+`) preservation.
+  - Performed post-deploy read-only runtime verification via Supabase SQL:
+    - recent Step 3 interactions now show workspace prompt key suffix (`draft.verify.email.step3.v1.ws_202602110537`), confirming override resolution is active in production.
   - Confirmed coordination context:
-    - No functional overlap with active Phase 134 files.
-    - Unrelated dirty-file overlap remains only in `docs/planning/phase-132/review.md`.
+    - Recent overlaps remain limited to prompt-editing phases (`129`, `131`) and shared `lib/ai-drafts.ts` work from prior phases.
+    - No conflicting uncommitted changes detected in files touched this turn.
 - Commands run:
   - `npm test -- lib/__tests__/ai-drafts-pricing-placeholders.test.ts` — pass
   - `npm run lint` — pass (existing warnings only)
   - `npm run build` — pass
-  - `vercel --prod --yes --debug` — fail (`getaddrinfo ENOTFOUND api.vercel.com` from this environment)
   - Supabase SQL:
-    - prompt override update + revision insert — pass
-    - runtime probe lead/message/job inserts — pass
-    - probe status + draft + interaction verification queries — pass
+    - read-only Step 3 interaction query (`featureId='draft.verify.email.step3'`) — pass
 - Blockers:
-  - Runtime acceptance remains blocked by production runtime alignment:
-    - Step 3 interactions still record plain `promptKey = draft.verify.email.step3.v1` (no `ws_...` suffix), indicating workspace overrides are not currently applied in the active runtime path.
-    - Under this runtime path, probe drafts still emit unsupported `$3,000`, so 3/3 clean acceptance cannot be proven yet.
-    - Automated production deploy from this environment is blocked by DNS/network resolution to `api.vercel.com`.
+  - Final runtime closeout is blocked until the newly wired deterministic post-pass is confirmed in production and validated with fresh probes.
 - Next concrete steps:
-  - Deploy current code changes so runtime uses updated Step 3 template resolution.
-  - Re-run 3 fresh pricing probes and require 3/3 clean before closeout.
+  - Confirm the latest deploy includes this exact `lib/ai-drafts.ts` deterministic patch.
+  - Run 3 fresh pricing inquiry probes and require 3/3 final drafts with no unsupported dollar amounts.
+  - If any probe still emits unsupported pricing, capture `AIDraft` + `AIInteraction.errorMessage` and decide whether to tighten post-pass cleanup or prompt guardrails further.

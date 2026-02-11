@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { detectPricingHallucinations, extractPricingAmounts, sanitizeDraftContent } from "../ai-drafts";
+import {
+  detectPricingHallucinations,
+  enforcePricingAmountSafety,
+  extractPricingAmounts,
+  sanitizeDraftContent,
+} from "../ai-drafts";
 
 function withMutedWarn<T>(fn: () => T): T {
   const originalWarn = console.warn;
@@ -79,4 +84,33 @@ test("detectPricingHallucinations ignores knowledgeContext as pricing source", (
   const result = detectPricingHallucinations("It works out to $791/month", null, "Pricing: $791 per month");
   assert.deepEqual(result.hallucinated, [791]);
   assert.deepEqual(result.valid, []);
+});
+
+test("enforcePricingAmountSafety removes unsupported dollar amounts", () => {
+  const result = enforcePricingAmountSafety("Our fee is $3,000.", "Pricing: $791 per month");
+  assert.equal(result.draft.includes("$3,000"), false);
+  assert.deepEqual(result.removedAmounts, [3000]);
+  assert.equal(result.addedClarifier, false);
+});
+
+test("enforcePricingAmountSafety keeps supported dollar amounts", () => {
+  const result = enforcePricingAmountSafety("Our fee is $791 per month.", "Pricing: $791 per month");
+  assert.equal(result.draft.includes("$791"), true);
+  assert.deepEqual(result.removedAmounts, []);
+  assert.equal(result.addedClarifier, false);
+});
+
+test("enforcePricingAmountSafety adds clarifier when no source pricing exists", () => {
+  const result = enforcePricingAmountSafety("Our fee is $3,000.", null);
+  assert.equal(result.draft.includes("$3,000"), false);
+  assert.equal(result.draft.includes("monthly or annual details"), true);
+  assert.deepEqual(result.removedAmounts, [3000]);
+  assert.equal(result.addedClarifier, true);
+});
+
+test("enforcePricingAmountSafety does not strip revenue-threshold amounts", () => {
+  const result = enforcePricingAmountSafety("We typically work with $1M+ revenue founders.", null);
+  assert.equal(result.draft.includes("$1M+"), true);
+  assert.deepEqual(result.removedAmounts, []);
+  assert.equal(result.addedClarifier, false);
 });
