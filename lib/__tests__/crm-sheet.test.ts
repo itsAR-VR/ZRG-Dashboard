@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   deriveCrmResponseMode,
+  deriveCrmResponseType,
   mapLeadStatusFromSheet,
   mapSentimentTagFromSheet,
   normalizeCrmValue,
@@ -31,6 +32,10 @@ describe("CRM Sheet Utils", () => {
     it("handles case-insensitive matching", () => {
       assert.equal(mapSentimentTagFromSheet("interested"), "Interested");
     });
+
+    it('maps "Objection" to Lead.sentimentTag', () => {
+      assert.equal(mapSentimentTagFromSheet("Objection"), "Objection");
+    });
   });
 
   describe("Normalize CRM values", () => {
@@ -53,6 +58,68 @@ describe("CRM Sheet Utils", () => {
 
     it("falls back to UNKNOWN", () => {
       assert.equal(deriveCrmResponseMode(null, null), "UNKNOWN");
+    });
+  });
+
+  describe("Response type derivation", () => {
+    const now = new Date("2026-02-10T00:00:00.000Z");
+
+    it("labels booked leads as meeting requests", () => {
+      assert.equal(
+        deriveCrmResponseType({ sentimentTag: null, snoozedUntil: null, bookedEvidence: true, now }),
+        "MEETING_REQUEST"
+      );
+    });
+
+    it("labels meeting/call requests as meeting requests", () => {
+      assert.equal(
+        deriveCrmResponseType({ sentimentTag: "Meeting Requested", snoozedUntil: null, bookedEvidence: false, now }),
+        "MEETING_REQUEST"
+      );
+      assert.equal(
+        deriveCrmResponseType({ sentimentTag: "Call Requested", snoozedUntil: null, bookedEvidence: false, now }),
+        "MEETING_REQUEST"
+      );
+    });
+
+    it("labels information requests", () => {
+      assert.equal(
+        deriveCrmResponseType({ sentimentTag: "Information Requested", snoozedUntil: null, bookedEvidence: false, now }),
+        "INFORMATION_REQUEST"
+      );
+    });
+
+    it("labels objections", () => {
+      assert.equal(
+        deriveCrmResponseType({ sentimentTag: "Objection", snoozedUntil: null, bookedEvidence: false, now }),
+        "OBJECTION"
+      );
+    });
+
+    it("labels follow-up future when snoozedUntil is in the future", () => {
+      assert.equal(
+        deriveCrmResponseType({
+          sentimentTag: "Follow Up",
+          snoozedUntil: new Date("2026-02-12T00:00:00.000Z"),
+          bookedEvidence: false,
+          now,
+        }),
+        "FOLLOW_UP_FUTURE"
+      );
+    });
+
+    it("labels follow-up future for any Follow Up sentiment", () => {
+      assert.equal(
+        deriveCrmResponseType({ sentimentTag: "Follow Up", snoozedUntil: null, bookedEvidence: false, now }),
+        "FOLLOW_UP_FUTURE"
+      );
+    });
+
+    it("falls back to OTHER when no rule matches", () => {
+      assert.equal(
+        deriveCrmResponseType({ sentimentTag: "Neutral", snoozedUntil: null, bookedEvidence: false, now }),
+        "OTHER"
+      );
     });
   });
 });

@@ -40,6 +40,10 @@ import {
   getAiDraftBookingConversionStats,
   type AiDraftBookingConversionStats,
 } from "@/actions/ai-draft-response-analytics-actions"
+import {
+  getResponseTimingAnalytics,
+  type ResponseTimingAnalyticsData,
+} from "@/actions/response-timing-analytics-actions"
 
 // Sentiment colors for charts
 const SENTIMENT_COLORS: Record<string, string> = {
@@ -50,6 +54,7 @@ const SENTIMENT_COLORS: Record<string, string> = {
   "Out of Office": "#F59E0B",
   "Follow Up": "#3B82F6",
   "Information Requested": "#8B5CF6",
+  "Objection": "#F97316",
   "Blacklist": "#DC2626",
   "Unknown": "#9CA3AF",
 }
@@ -81,6 +86,22 @@ function formatPercent(value: number): string {
 function formatPct01(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "—"
   return `${Math.round(value * 100)}%`
+}
+
+function parseDateInputToLocalMidnight(value: string): Date | null {
+  const trimmed = value.trim()
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed)
+  if (!match) return null
+
+  const year = Number(match[1])
+  const monthIndex = Number(match[2]) - 1
+  const day = Number(match[3])
+  if (!Number.isFinite(year) || !Number.isFinite(monthIndex) || !Number.isFinite(day)) return null
+
+  const date = new Date(year, monthIndex, day)
+  if (date.getFullYear() !== year || date.getMonth() !== monthIndex || date.getDate() !== day) return null
+  date.setHours(0, 0, 0, 0)
+  return date
 }
 
 function buildCapacityTooltip(capacity: AnalyticsData["overview"]["capacity"] | undefined): string | undefined {
@@ -132,6 +153,10 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
   const [aiDraftOutcomeLoading, setAiDraftOutcomeLoading] = useState(true)
   const [aiDraftBookingStats, setAiDraftBookingStats] = useState<AiDraftBookingConversionStats | null>(null)
   const [aiDraftBookingLoading, setAiDraftBookingLoading] = useState(true)
+  const [responseTimingStats, setResponseTimingStats] = useState<ResponseTimingAnalyticsData | null>(null)
+  const [responseTimingLoading, setResponseTimingLoading] = useState(true)
+  const [responseTimingChannel, setResponseTimingChannel] = useState<"all" | "email" | "sms" | "linkedin">("all")
+  const [responseTimingResponder, setResponseTimingResponder] = useState("all")
   const [datePreset, setDatePreset] = useState<"7d" | "30d" | "90d" | "custom">("30d")
   const [customFrom, setCustomFrom] = useState("")
   const [customTo, setCustomTo] = useState("")
@@ -139,12 +164,12 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
   const windowRange = useMemo(() => {
     if (datePreset === "custom") {
       if (!customFrom || !customTo) return null
-      const from = new Date(customFrom)
-      const to = new Date(customTo)
-      if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) return null
-      // Make the end date inclusive by adding a day.
-      to.setDate(to.getDate() + 1)
-      return { from: from.toISOString(), to: to.toISOString() }
+      const fromDate = parseDateInputToLocalMidnight(customFrom)
+      const toDate = parseDateInputToLocalMidnight(customTo)
+      if (!fromDate || !toDate) return null
+      // Make the end date inclusive by adding a day to the exclusive bound.
+      toDate.setDate(toDate.getDate() + 1)
+      return { from: fromDate.toISOString(), to: toDate.toISOString() }
     }
 
     const now = new Date()
@@ -270,6 +295,48 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
       cancelled = true
     }
   }, [activeWorkspace, windowKey, windowParams])
+
+  useEffect(() => {
+    if (!activeWorkspace) {
+      setResponseTimingStats(null)
+      setResponseTimingLoading(false)
+      return
+    }
+
+    let cancelled = false
+
+    async function fetchResponseTimingAnalytics() {
+      setResponseTimingLoading(true)
+      const payload = windowParams
+        ? {
+            clientId: activeWorkspace,
+            ...windowParams,
+            channel: responseTimingChannel === "all" ? null : responseTimingChannel,
+            responder: responseTimingResponder,
+          }
+        : {
+            clientId: activeWorkspace,
+            channel: responseTimingChannel === "all" ? null : responseTimingChannel,
+            responder: responseTimingResponder,
+          }
+
+      const result = await getResponseTimingAnalytics(payload)
+      if (!cancelled) {
+        if (result.success && result.data) {
+          setResponseTimingStats(result.data)
+        } else {
+          setResponseTimingStats(null)
+        }
+        setResponseTimingLoading(false)
+      }
+    }
+
+    fetchResponseTimingAnalytics()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeWorkspace, windowKey, windowParams, responseTimingChannel, responseTimingResponder])
 
   const kpiCards = [
     { label: "Total Leads", value: data?.overview.totalLeads.toLocaleString() || "0", icon: Users },
@@ -408,6 +475,7 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
           <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
           <TabsTrigger value="booking">Booking</TabsTrigger>
           <TabsTrigger value="crm">CRM</TabsTrigger>
+          <TabsTrigger value="response-timing">Response Timing</TabsTrigger>
         </TabsList>
       </div>
 
@@ -1075,7 +1143,205 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
 
       <TabsContent value="crm" className="flex-1">
         <div className="p-6">
-          <AnalyticsCrmTable activeWorkspace={activeWorkspace} />
+          <AnalyticsCrmTable activeWorkspace={activeWorkspace} window={windowParams} windowLabel={windowLabel} />
+        </div>
+      </TabsContent>
+
+      <TabsContent value="response-timing" className="flex-1">
+        <div className="p-6 space-y-6">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <h2 className="text-xl font-semibold">Response Timing</h2>
+              <p className="text-sm text-muted-foreground">
+                Booking conversion by first response per lead (first responder wins) for {windowLabel}.
+              </p>
+              {responseTimingStats ? (
+                <p className="text-xs text-muted-foreground">
+                  Attribution window: {responseTimingStats.attributionWindowDays}d • Maturity buffer:{" "}
+                  {responseTimingStats.maturityBufferDays}d
+                </p>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={responseTimingChannel}
+                onValueChange={(value) => {
+                  setResponseTimingChannel(value as typeof responseTimingChannel)
+                  setResponseTimingResponder("all")
+                }}
+              >
+                <SelectTrigger className="w-[160px]">
+                  <SelectValue placeholder="All channels" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All channels</SelectItem>
+                  <SelectItem value="sms">SMS</SelectItem>
+                  <SelectItem value="email">Email</SelectItem>
+                  <SelectItem value="linkedin">LinkedIn</SelectItem>
+                </SelectContent>
+              </Select>
+
+              <Select value={responseTimingResponder} onValueChange={setResponseTimingResponder}>
+                <SelectTrigger className="w-[220px]">
+                  <SelectValue placeholder="All responders" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(responseTimingStats?.responderOptions ?? [{ key: "all", label: "All responders", eligible: 0 }]).map(
+                    (option) => (
+                      <SelectItem key={option.key} value={option.key}>
+                        {option.key === "all" || option.eligible <= 0
+                          ? option.label
+                          : `${option.label} (${option.eligible})`}
+                      </SelectItem>
+                    )
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {responseTimingLoading ? (
+            <div className="flex flex-1 flex-col items-center justify-center py-10">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : !responseTimingStats ? (
+            <div className="text-sm text-muted-foreground">No response timing analytics available for this window.</div>
+          ) : (
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Responders</CardTitle>
+                  <CardDescription>Lead-level: first responder per lead (avg response time + booking rate)</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {responseTimingStats.responderSummary.length === 0 ? (
+                    <div className="text-sm text-muted-foreground">No responders found for this window.</div>
+                  ) : (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Responder</TableHead>
+                          <TableHead className="text-right">Eligible</TableHead>
+                          <TableHead className="text-right">Booked</TableHead>
+                          <TableHead className="text-right">Rate</TableHead>
+                          <TableHead className="text-right">Avg Response</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {responseTimingStats.responderSummary.map((row) => (
+                          <TableRow key={row.key}>
+                            <TableCell className="font-medium">{row.label}</TableCell>
+                            <TableCell className="text-right">{row.stats.eligible}</TableCell>
+                            <TableCell className="text-right">{row.stats.booked}</TableCell>
+                            <TableCell className="text-right">
+                              {row.stats.bookingRate == null ? "—" : formatPercent(row.stats.bookingRate * 100)}
+                            </TableCell>
+                            <TableCell className="text-right">{row.avgResponseFormatted ?? "—"}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  )}
+                </CardContent>
+              </Card>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>First Response Time</CardTitle>
+                    <CardDescription>Lead-level: first response per lead (setter or AI)</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Bucket</TableHead>
+                          <TableHead className="text-right">Eligible</TableHead>
+                          <TableHead className="text-right">Booked</TableHead>
+                          <TableHead className="text-right">Rate</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {responseTimingStats.responseTime.map((row) => (
+                          <TableRow key={row.bucket}>
+                            <TableCell className="font-medium">{row.bucket}</TableCell>
+                            <TableCell className="text-right">{row.stats.eligible}</TableCell>
+                            <TableCell className="text-right">{row.stats.booked}</TableCell>
+                            <TableCell className="text-right">
+                              {row.stats.bookingRate == null ? "—" : formatPercent(row.stats.bookingRate * 100)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>AI Chosen Delay</CardTitle>
+                    <CardDescription>AI-only (first responder AI): chosen delay bucket</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Bucket</TableHead>
+                          <TableHead className="text-right">Eligible</TableHead>
+                          <TableHead className="text-right">Booked</TableHead>
+                          <TableHead className="text-right">Rate</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {responseTimingStats.aiChosenDelay.map((row) => (
+                          <TableRow key={row.bucket}>
+                            <TableCell className="font-medium">{row.bucket}</TableCell>
+                            <TableCell className="text-right">{row.stats.eligible}</TableCell>
+                            <TableCell className="text-right">{row.stats.booked}</TableCell>
+                            <TableCell className="text-right">
+                              {row.stats.bookingRate == null ? "—" : formatPercent(row.stats.bookingRate * 100)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>AI Drift</CardTitle>
+                    <CardDescription>AI-only (first responder AI): scheduled runAt → actual send</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Bucket</TableHead>
+                          <TableHead className="text-right">Eligible</TableHead>
+                          <TableHead className="text-right">Booked</TableHead>
+                          <TableHead className="text-right">Rate</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {responseTimingStats.aiDrift.map((row) => (
+                          <TableRow key={row.bucket}>
+                            <TableCell className="font-medium">{row.bucket}</TableCell>
+                            <TableCell className="text-right">{row.stats.eligible}</TableCell>
+                            <TableCell className="text-right">{row.stats.booked}</TableCell>
+                            <TableCell className="text-right">
+                              {row.stats.bookingRate == null ? "—" : formatPercent(row.stats.bookingRate * 100)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+              </div>
+            </div>
+          )}
         </div>
       </TabsContent>
     </Tabs>

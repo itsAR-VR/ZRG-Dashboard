@@ -3,9 +3,11 @@
 import { prisma } from "@/lib/prisma";
 import {
   deriveCrmResponseMode,
+  deriveCrmResponseType,
   mapLeadStatusFromSheet,
   mapSentimentTagFromSheet,
   normalizeCrmValue,
+  type CrmResponseType,
 } from "@/lib/crm-sheet-utils";
 import { POSITIVE_SENTIMENTS } from "@/lib/sentiment-shared";
 import { normalizeEmail, normalizePhone } from "@/lib/lead-matching";
@@ -478,6 +480,7 @@ export interface CrmSheetRow {
   phoneNumber: string | null;
   stepResponded: number | null;
   leadCategory: string | null;
+  responseType: CrmResponseType;
   leadStatus: string | null;
   channel: string | null;
   leadType: string | null;
@@ -508,6 +511,425 @@ export interface CrmSheetFilters {
   responseMode?: CrmResponseMode | null;
   dateFrom?: string | null;
   dateTo?: string | null;
+}
+
+export interface CrmWindowSummaryBucket<T extends string> {
+  key: T;
+  cohortLeads: number;
+  bookedEverAny: number;
+  bookedEverKept: number;
+  bookedInWindowAny: number;
+  bookedInWindowKept: number;
+  cohortConversionRateAny: number;
+  cohortConversionRateKept: number;
+  inWindowBookingRateAny: number;
+  inWindowBookingRateKept: number;
+}
+
+export interface CrmWindowSummary {
+  totals: {
+    cohortLeads: number;
+    bookedEverAny: number;
+    bookedEverKept: number;
+    bookedInWindowAny: number;
+    bookedInWindowKept: number;
+    cohortConversionRateAny: number;
+    cohortConversionRateKept: number;
+    inWindowBookingRateAny: number;
+    inWindowBookingRateKept: number;
+  };
+  byResponseType: Array<CrmWindowSummaryBucket<CrmResponseType>>;
+  byResponseMode: Array<CrmWindowSummaryBucket<CrmResponseMode | "AI" | "HUMAN" | "UNKNOWN">>;
+  bySetter: Array<
+    CrmWindowSummaryBucket<string> & {
+      label: string;
+    }
+  >;
+}
+
+export async function getCrmWindowSummary(params: {
+  clientId?: string | null;
+  filters?: CrmSheetFilters;
+}): Promise<{ success: boolean; data?: CrmWindowSummary; error?: string }> {
+  try {
+    const user = await requireAuthUser();
+    const clientId = params.clientId ?? null;
+
+    if (!clientId) {
+      return {
+        success: true,
+        data: {
+          totals: {
+            cohortLeads: 0,
+            bookedEverAny: 0,
+            bookedEverKept: 0,
+            bookedInWindowAny: 0,
+            bookedInWindowKept: 0,
+            cohortConversionRateAny: 0,
+            cohortConversionRateKept: 0,
+            inWindowBookingRateAny: 0,
+            inWindowBookingRateKept: 0,
+          },
+          byResponseType: [],
+          byResponseMode: [],
+          bySetter: [],
+        },
+      };
+    }
+
+    const canAccess = await prisma.client.findFirst({
+      where: { id: clientId, ...accessibleClientWhere(user.id) },
+      select: { id: true },
+    });
+    if (!canAccess) {
+      return { success: false, error: "Unauthorized" };
+    }
+
+    const filters = params.filters ?? {};
+    const whereParts: Prisma.Sql[] = [Prisma.sql`l."clientId" = ${clientId}`];
+
+    if (filters.leadStatus) {
+      whereParts.push(Prisma.sql`l.status = ${filters.leadStatus}`);
+    }
+
+    if (filters.leadCategory) {
+      const pattern = `%${filters.leadCategory}%`;
+      whereParts.push(
+        Prisma.sql`(lcr."leadCategoryOverride" ILIKE ${pattern} OR lcr."interestType" ILIKE ${pattern})`
+      );
+    }
+
+    if (filters.campaign) {
+      const pattern = `%${filters.campaign}%`;
+      whereParts.push(Prisma.sql`lcr."interestCampaignName" ILIKE ${pattern}`);
+    }
+
+    const responseModeFilter = filters.responseMode ?? null;
+    const dateFrom = filters.dateFrom ? new Date(filters.dateFrom) : null;
+    const dateTo = filters.dateTo ? new Date(filters.dateTo) : null;
+    if (dateFrom && Number.isFinite(dateFrom.getTime())) {
+      whereParts.push(Prisma.sql`lcr."interestRegisteredAt" >= ${dateFrom}`);
+    }
+    if (dateTo && Number.isFinite(dateTo.getTime())) {
+      whereParts.push(Prisma.sql`lcr."interestRegisteredAt" < ${dateTo}`);
+    }
+
+    const whereSql = Prisma.join(whereParts, " AND ");
+    const bookedWindowFrom = dateFrom && Number.isFinite(dateFrom.getTime()) ? dateFrom : null;
+    const bookedWindowTo = dateTo && Number.isFinite(dateTo.getTime()) ? dateTo : null;
+
+    const rows = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL statement_timeout = 15000`;
+      return tx.$queryRaw<
+        Array<{
+          totals:
+            | {
+                cohortLeads: number;
+                bookedEverAny: number;
+                bookedEverKept: number;
+                bookedInWindowAny: number;
+                bookedInWindowKept: number;
+              }
+            | null;
+          byResponseType:
+            | Array<{
+                responseType: string;
+                cohortLeads: number;
+                bookedEverAny: number;
+                bookedEverKept: number;
+                bookedInWindowAny: number;
+                bookedInWindowKept: number;
+              }>
+            | null;
+          byResponseMode:
+            | Array<{
+                responseMode: string;
+                cohortLeads: number;
+                bookedEverAny: number;
+                bookedEverKept: number;
+                bookedInWindowAny: number;
+                bookedInWindowKept: number;
+              }>
+            | null;
+          bySetter:
+            | Array<{
+                setterKey: string;
+                cohortLeads: number;
+                bookedEverAny: number;
+                bookedEverKept: number;
+                bookedInWindowAny: number;
+                bookedInWindowKept: number;
+              }>
+            | null;
+        }>
+      >(Prisma.sql`
+      WITH cohort AS (
+        SELECT
+          lcr."leadId",
+          lcr."responseMode",
+          lcr."responseSentByUserId",
+          lcr."interestRegisteredAt",
+          lcr."interestChannel",
+          l."sentimentTag",
+          l."snoozedUntil",
+          l."appointmentBookedAt",
+          l."appointmentStatus",
+          l."appointmentCanceledAt",
+          l."ghlAppointmentId",
+          l."calendlyInviteeUri"
+        FROM "LeadCrmRow" lcr
+        JOIN "Lead" l ON l.id = lcr."leadId"
+        WHERE ${whereSql}
+      ),
+      first_response AS (
+        SELECT DISTINCT ON (m."leadId")
+          m."leadId",
+          m."sentBy",
+          m."sentByUserId"
+        FROM "Message" m
+        JOIN cohort c ON c."leadId" = m."leadId"
+        WHERE m.direction = 'outbound'
+          AND c."interestChannel" IS NOT NULL
+          AND c."interestRegisteredAt" IS NOT NULL
+          AND m.channel = c."interestChannel"
+          AND m."sentAt" > c."interestRegisteredAt"
+        ORDER BY m."leadId", m."sentAt" ASC
+      ),
+      joined AS (
+        SELECT
+          c."leadId" as lead_id,
+          c."sentimentTag" as sentiment_tag,
+          c."snoozedUntil" as snoozed_until,
+          c."appointmentBookedAt" as appointment_booked_at,
+          (c."appointmentBookedAt" IS NOT NULL OR c."ghlAppointmentId" IS NOT NULL OR c."calendlyInviteeUri" IS NOT NULL) as booked_any_evidence,
+          (
+            (c."appointmentBookedAt" IS NOT NULL OR c."ghlAppointmentId" IS NOT NULL OR c."calendlyInviteeUri" IS NOT NULL)
+            AND NOT (c."appointmentStatus" = 'canceled' OR c."appointmentCanceledAt" IS NOT NULL)
+          ) as booked_evidence,
+          (
+            (c."appointmentBookedAt" IS NOT NULL)
+            AND ${bookedWindowFrom} IS NOT NULL
+            AND ${bookedWindowTo} IS NOT NULL
+            AND c."appointmentBookedAt" >= ${bookedWindowFrom}
+            AND c."appointmentBookedAt" < ${bookedWindowTo}
+          ) as booked_in_window_any,
+          (
+            (c."appointmentBookedAt" IS NOT NULL)
+            AND ${bookedWindowFrom} IS NOT NULL
+            AND ${bookedWindowTo} IS NOT NULL
+            AND c."appointmentBookedAt" >= ${bookedWindowFrom}
+            AND c."appointmentBookedAt" < ${bookedWindowTo}
+            AND NOT (c."appointmentStatus" = 'canceled' OR c."appointmentCanceledAt" IS NOT NULL)
+          ) as booked_in_window,
+          COALESCE(
+            c."responseMode"::text,
+            CASE
+              WHEN fr."sentBy" = 'ai' THEN 'AI'
+              WHEN fr."sentByUserId" IS NOT NULL OR fr."sentBy" = 'setter' THEN 'HUMAN'
+              ELSE 'UNKNOWN'
+            END
+          ) as effective_response_mode,
+          COALESCE(c."responseSentByUserId", fr."sentByUserId") as effective_response_user_id
+        FROM cohort c
+        LEFT JOIN first_response fr ON fr."leadId" = c."leadId"
+      ),
+      typed AS (
+        SELECT
+          *,
+          CASE
+            WHEN booked_any_evidence OR sentiment_tag IN ('Meeting Booked', 'Meeting Requested', 'Call Requested') THEN 'MEETING_REQUEST'
+            WHEN sentiment_tag = 'Information Requested' THEN 'INFORMATION_REQUEST'
+            WHEN sentiment_tag = 'Objection' THEN 'OBJECTION'
+            WHEN sentiment_tag = 'Follow Up' THEN 'FOLLOW_UP_FUTURE'
+            ELSE 'OTHER'
+          END as response_type,
+          CASE
+            WHEN effective_response_mode = 'AI' THEN 'AI'
+            WHEN effective_response_mode = 'HUMAN' THEN COALESCE(effective_response_user_id, 'UNATTRIBUTED_HUMAN')
+            ELSE 'UNKNOWN'
+          END as setter_key
+        FROM joined
+        WHERE (${responseModeFilter} IS NULL OR effective_response_mode = ${responseModeFilter})
+      )
+      SELECT
+        (
+          SELECT json_build_object(
+            'cohortLeads', COUNT(*)::int,
+            'bookedEverAny', COALESCE(SUM(CASE WHEN booked_any_evidence THEN 1 ELSE 0 END), 0)::int,
+            'bookedEverKept', COALESCE(SUM(CASE WHEN booked_evidence THEN 1 ELSE 0 END), 0)::int,
+            'bookedInWindowAny', COALESCE(SUM(CASE WHEN booked_in_window_any THEN 1 ELSE 0 END), 0)::int,
+            'bookedInWindowKept', COALESCE(SUM(CASE WHEN booked_in_window THEN 1 ELSE 0 END), 0)::int
+          )
+          FROM typed
+        ) as totals,
+        (
+          SELECT COALESCE(json_agg(row_to_json(t) ORDER BY t."cohortLeads" DESC), '[]'::json)
+          FROM (
+            SELECT
+              response_type as "responseType",
+              COUNT(*)::int as "cohortLeads",
+              COALESCE(SUM(CASE WHEN booked_any_evidence THEN 1 ELSE 0 END), 0)::int as "bookedEverAny",
+              COALESCE(SUM(CASE WHEN booked_evidence THEN 1 ELSE 0 END), 0)::int as "bookedEverKept",
+              COALESCE(SUM(CASE WHEN booked_in_window_any THEN 1 ELSE 0 END), 0)::int as "bookedInWindowAny",
+              COALESCE(SUM(CASE WHEN booked_in_window THEN 1 ELSE 0 END), 0)::int as "bookedInWindowKept"
+            FROM typed
+            GROUP BY response_type
+          ) t
+        ) as "byResponseType",
+        (
+          SELECT COALESCE(json_agg(row_to_json(t) ORDER BY t."cohortLeads" DESC), '[]'::json)
+          FROM (
+            SELECT
+              effective_response_mode as "responseMode",
+              COUNT(*)::int as "cohortLeads",
+              COALESCE(SUM(CASE WHEN booked_any_evidence THEN 1 ELSE 0 END), 0)::int as "bookedEverAny",
+              COALESCE(SUM(CASE WHEN booked_evidence THEN 1 ELSE 0 END), 0)::int as "bookedEverKept",
+              COALESCE(SUM(CASE WHEN booked_in_window_any THEN 1 ELSE 0 END), 0)::int as "bookedInWindowAny",
+              COALESCE(SUM(CASE WHEN booked_in_window THEN 1 ELSE 0 END), 0)::int as "bookedInWindowKept"
+            FROM typed
+            GROUP BY effective_response_mode
+          ) t
+        ) as "byResponseMode",
+        (
+          SELECT COALESCE(json_agg(row_to_json(t) ORDER BY t."cohortLeads" DESC), '[]'::json)
+          FROM (
+            SELECT
+              setter_key as "setterKey",
+              COUNT(*)::int as "cohortLeads",
+              COALESCE(SUM(CASE WHEN booked_any_evidence THEN 1 ELSE 0 END), 0)::int as "bookedEverAny",
+              COALESCE(SUM(CASE WHEN booked_evidence THEN 1 ELSE 0 END), 0)::int as "bookedEverKept",
+              COALESCE(SUM(CASE WHEN booked_in_window_any THEN 1 ELSE 0 END), 0)::int as "bookedInWindowAny",
+              COALESCE(SUM(CASE WHEN booked_in_window THEN 1 ELSE 0 END), 0)::int as "bookedInWindowKept"
+            FROM typed
+            GROUP BY setter_key
+            ORDER BY "cohortLeads" DESC
+            LIMIT 20
+          ) t
+        ) as "bySetter"
+      ;
+    `);
+    });
+
+    const payload = rows[0] ?? null;
+    const totalsRaw = payload?.totals ?? {
+      cohortLeads: 0,
+      bookedEverAny: 0,
+      bookedEverKept: 0,
+      bookedInWindowAny: 0,
+      bookedInWindowKept: 0,
+    };
+    const cohortLeads = Number(totalsRaw.cohortLeads) || 0;
+    const bookedEverAny = Number(totalsRaw.bookedEverAny) || 0;
+    const bookedEverKept = Number(totalsRaw.bookedEverKept) || 0;
+    const bookedInWindowAny = Number(totalsRaw.bookedInWindowAny) || 0;
+    const bookedInWindowKept = Number(totalsRaw.bookedInWindowKept) || 0;
+
+    const userIds = new Set<string>();
+    const bySetterRaw = payload?.bySetter ?? [];
+    for (const row of bySetterRaw) {
+      const key = row.setterKey;
+      if (key && key !== "AI" && key !== "UNKNOWN" && key !== "UNATTRIBUTED_HUMAN") userIds.add(key);
+    }
+
+    let emailMap = new Map<string, string | null>();
+    if (userIds.size > 0) {
+      try {
+        emailMap = await getSupabaseUserEmailsByIds([...userIds]);
+      } catch (error) {
+        console.warn("[getCrmWindowSummary] Failed to resolve setter emails:", error);
+      }
+    }
+
+    const bySetter = (bySetterRaw ?? []).map((row) => {
+      const key = row.setterKey;
+      const label =
+        key === "AI"
+          ? "AI"
+          : key === "UNKNOWN"
+            ? "Unknown"
+            : key === "UNATTRIBUTED_HUMAN"
+              ? "Unattributed"
+              : emailMap.get(key) ?? key;
+
+      return {
+        key,
+        label,
+        cohortLeads: row.cohortLeads,
+        bookedEverAny: row.bookedEverAny,
+        bookedEverKept: row.bookedEverKept,
+        bookedInWindowAny: row.bookedInWindowAny,
+        bookedInWindowKept: row.bookedInWindowKept,
+        cohortConversionRateAny: safeRate(row.bookedEverAny, row.cohortLeads),
+        cohortConversionRateKept: safeRate(row.bookedEverKept, row.cohortLeads),
+        inWindowBookingRateAny: safeRate(row.bookedInWindowAny, row.cohortLeads),
+        inWindowBookingRateKept: safeRate(row.bookedInWindowKept, row.cohortLeads),
+      };
+    });
+
+    const byResponseType = (payload?.byResponseType ?? []).map((row) => {
+      const cohortLeads = row.cohortLeads;
+      const bookedEverAny = row.bookedEverAny;
+      const bookedEverKept = row.bookedEverKept;
+      const bookedInWindowAny = row.bookedInWindowAny;
+      const bookedInWindowKept = row.bookedInWindowKept;
+
+      return {
+        key: row.responseType as CrmResponseType,
+        cohortLeads,
+        bookedEverAny,
+        bookedEverKept,
+        bookedInWindowAny,
+        bookedInWindowKept,
+        cohortConversionRateAny: safeRate(bookedEverAny, cohortLeads),
+        cohortConversionRateKept: safeRate(bookedEverKept, cohortLeads),
+        inWindowBookingRateAny: safeRate(bookedInWindowAny, cohortLeads),
+        inWindowBookingRateKept: safeRate(bookedInWindowKept, cohortLeads),
+      };
+    });
+
+    const byResponseMode = (payload?.byResponseMode ?? []).map((row) => {
+      const cohortLeads = row.cohortLeads;
+      const bookedEverAny = row.bookedEverAny;
+      const bookedEverKept = row.bookedEverKept;
+      const bookedInWindowAny = row.bookedInWindowAny;
+      const bookedInWindowKept = row.bookedInWindowKept;
+
+      return {
+        key: (row.responseMode as CrmResponseMode) ?? "UNKNOWN",
+        cohortLeads,
+        bookedEverAny,
+        bookedEverKept,
+        bookedInWindowAny,
+        bookedInWindowKept,
+        cohortConversionRateAny: safeRate(bookedEverAny, cohortLeads),
+        cohortConversionRateKept: safeRate(bookedEverKept, cohortLeads),
+        inWindowBookingRateAny: safeRate(bookedInWindowAny, cohortLeads),
+        inWindowBookingRateKept: safeRate(bookedInWindowKept, cohortLeads),
+      };
+    });
+
+    const data: CrmWindowSummary = {
+      totals: {
+        cohortLeads,
+        bookedEverAny,
+        bookedEverKept,
+        bookedInWindowAny,
+        bookedInWindowKept,
+        cohortConversionRateAny: safeRate(bookedEverAny, cohortLeads),
+        cohortConversionRateKept: safeRate(bookedEverKept, cohortLeads),
+        inWindowBookingRateAny: safeRate(bookedInWindowAny, cohortLeads),
+        inWindowBookingRateKept: safeRate(bookedInWindowKept, cohortLeads),
+      },
+      byResponseType,
+      byResponseMode,
+      bySetter,
+    };
+
+    return { success: true, data };
+  } catch (error) {
+    console.error("[getCrmWindowSummary] Failed:", error);
+    return { success: false, error: error instanceof Error ? error.message : "Failed to fetch CRM summary" };
+  }
 }
 
 function buildAccessibleLeadSqlWhere(opts: { userId: string; clientId?: string | null }): Prisma.Sql {
@@ -1737,6 +2159,7 @@ export async function getCrmSheetRows(params: {
 
     const limit = Math.min(params.limit ?? 100, 300);
     const filters = params.filters ?? {};
+    const requestedResponseMode = filters.responseMode ?? null;
 
     const leadWhere: Prisma.LeadWhereInput = { clientId };
     if (filters.leadStatus) {
@@ -1744,9 +2167,6 @@ export async function getCrmSheetRows(params: {
     }
 
     const rowWhere: Prisma.LeadCrmRowWhereInput = { lead: leadWhere };
-    if (filters.responseMode) {
-      rowWhere.responseMode = filters.responseMode;
-    }
     if (filters.leadCategory) {
       rowWhere.OR = [
         { leadCategoryOverride: { contains: filters.leadCategory, mode: "insensitive" } },
@@ -1758,56 +2178,170 @@ export async function getCrmSheetRows(params: {
     }
 
     if (filters.dateFrom || filters.dateTo) {
-      const dateFilter: { gte?: Date; lte?: Date } = {};
+      const dateFilter: { gte?: Date; lt?: Date } = {};
       if (filters.dateFrom) {
         const parsed = new Date(filters.dateFrom);
         if (!Number.isNaN(parsed.getTime())) dateFilter.gte = parsed;
       }
       if (filters.dateTo) {
         const parsed = new Date(filters.dateTo);
-        if (!Number.isNaN(parsed.getTime())) dateFilter.lte = parsed;
+        if (!Number.isNaN(parsed.getTime())) dateFilter.lt = parsed;
       }
-      if (dateFilter.gte || dateFilter.lte) {
+      if (dateFilter.gte || dateFilter.lt) {
         rowWhere.interestRegisteredAt = dateFilter;
       }
     }
 
-    const rows = await prisma.leadCrmRow.findMany({
-      where: rowWhere,
-      orderBy: [{ interestRegisteredAt: "desc" }, { createdAt: "desc" }, { id: "desc" }],
-      take: limit + 1,
-      ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
-      include: {
-        lead: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-            phone: true,
-            linkedinUrl: true,
-            companyName: true,
-            companyWebsite: true,
-            jobTitle: true,
-            status: true,
-            sentimentTag: true,
-            createdAt: true,
-            snoozedUntil: true,
-            assignedToUserId: true,
-            appointmentBookedAt: true,
-            appointmentStartAt: true,
-            overallScore: true,
-            emailCampaign: { select: { name: true } },
-            smsCampaign: { select: { name: true } },
-            campaign: { select: { name: true } },
-          },
+    // Effective mode is what we display (stored mode OR inferred from first outbound message).
+    // When filtering by responseMode, match the effective mode so filters align with what users see.
+    if (requestedResponseMode) {
+      rowWhere.AND = [
+        ...(Array.isArray(rowWhere.AND) ? rowWhere.AND : rowWhere.AND ? [rowWhere.AND] : []),
+        { OR: [{ responseMode: requestedResponseMode }, { responseMode: null }] },
+      ];
+    }
+
+    const orderBy: Prisma.LeadCrmRowOrderByWithRelationInput[] = [
+      { interestRegisteredAt: "desc" },
+      { createdAt: "desc" },
+      { id: "desc" },
+    ];
+    const include = {
+      lead: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          linkedinUrl: true,
+          companyName: true,
+          companyWebsite: true,
+          jobTitle: true,
+          status: true,
+          sentimentTag: true,
+          createdAt: true,
+          snoozedUntil: true,
+          assignedToUserId: true,
+          appointmentBookedAt: true,
+          appointmentStartAt: true,
+          ghlAppointmentId: true,
+          calendlyInviteeUri: true,
+          overallScore: true,
+          emailCampaign: { select: { name: true } },
+          smsCampaign: { select: { name: true } },
+          campaign: { select: { name: true } },
         },
       },
-    });
+    } as const;
 
-    const hasMore = rows.length > limit;
-    const page = hasMore ? rows.slice(0, limit) : rows;
-    const nextCursor = hasMore ? page[page.length - 1]?.id ?? null : null;
+    type LeadCrmRowWithLead = Prisma.LeadCrmRowGetPayload<{ include: typeof include }>;
+
+    let page: LeadCrmRowWithLead[] = [];
+    let nextCursor: string | null = null;
+
+    if (!requestedResponseMode) {
+      const rows = await prisma.leadCrmRow.findMany({
+        where: rowWhere,
+        orderBy,
+        take: limit + 1,
+        ...(params.cursor ? { cursor: { id: params.cursor }, skip: 1 } : {}),
+        include,
+      });
+
+      const hasMore = rows.length > limit;
+      page = hasMore ? rows.slice(0, limit) : rows;
+      nextCursor = hasMore ? page[page.length - 1]?.id ?? null : null;
+    } else {
+      const batchTake = Math.min(limit * 2, 300);
+      const maxScanPages = 6;
+
+      const collected: LeadCrmRowWithLead[] = [];
+      let scanCursor: string | null = params.cursor ?? null;
+      let lastScannedRowId: string | null = null;
+      let hasMoreBeyondLastScanned = false;
+
+      const withTimeout = async <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> => {
+        return prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SET LOCAL statement_timeout = 10000`;
+          return fn(tx);
+        });
+      };
+
+      scanLoop: for (let scanPage = 0; scanPage < maxScanPages && collected.length < limit; scanPage++) {
+        const rows = await prisma.leadCrmRow.findMany({
+          where: rowWhere,
+          orderBy,
+          take: batchTake + 1,
+          ...(scanCursor ? { cursor: { id: scanCursor }, skip: 1 } : {}),
+          include,
+        });
+
+        const batchHasMore = rows.length > batchTake;
+        const batchPageRows = batchHasMore ? rows.slice(0, batchTake) : rows;
+        if (batchPageRows.length === 0) {
+          hasMoreBeyondLastScanned = false;
+          break;
+        }
+
+        const deriveLeadIds = [...new Set(batchPageRows.filter((row) => !row.responseMode).map((row) => row.leadId))];
+        const derivedByLeadId = new Map<string, CrmResponseMode>();
+
+        if (deriveLeadIds.length > 0) {
+          try {
+            const responseModeRows = await withTimeout((tx) =>
+              tx.$queryRaw<Array<{ leadId: string; sentBy: string | null; sentByUserId: string | null }>>`
+                SELECT DISTINCT ON (m."leadId")
+                  m."leadId",
+                  m."sentBy",
+                  m."sentByUserId"
+                FROM "Message" m
+                JOIN "LeadCrmRow" lcr ON lcr."leadId" = m."leadId"
+                WHERE m."leadId" IN (${Prisma.join(deriveLeadIds)})
+                  AND m.direction = 'outbound'
+                  AND lcr."interestChannel" IS NOT NULL
+                  AND lcr."interestRegisteredAt" IS NOT NULL
+                  AND m.channel = lcr."interestChannel"
+                  AND m."sentAt" > lcr."interestRegisteredAt"
+                ORDER BY m."leadId", m."sentAt" ASC
+              `
+            );
+
+            for (const row of responseModeRows) {
+              derivedByLeadId.set(row.leadId, deriveCrmResponseMode(row.sentBy, row.sentByUserId));
+            }
+          } catch (error) {
+            console.warn("[getCrmSheetRows] Derived response mode query failed:", error);
+          }
+        }
+
+        for (let i = 0; i < batchPageRows.length; i++) {
+          const row = batchPageRows[i];
+          lastScannedRowId = row.id;
+
+          const effectiveMode = row.responseMode ?? derivedByLeadId.get(row.leadId) ?? "UNKNOWN";
+          if (effectiveMode === requestedResponseMode) {
+            collected.push(row);
+            if (collected.length >= limit) {
+              hasMoreBeyondLastScanned = i < batchPageRows.length - 1 || batchHasMore;
+              break scanLoop;
+            }
+          }
+        }
+
+        if (batchHasMore) {
+          scanCursor = batchPageRows[batchPageRows.length - 1]?.id ?? null;
+          hasMoreBeyondLastScanned = true;
+          continue;
+        }
+
+        hasMoreBeyondLastScanned = false;
+        break;
+      }
+
+      page = collected;
+      nextCursor = hasMoreBeyondLastScanned ? lastScannedRowId : null;
+    }
 
     const leadIds = page.map((row) => row.leadId);
     const stepRespondedByLeadId = new Map<string, number>();
@@ -1962,6 +2496,12 @@ export async function getCrmSheetRows(params: {
           ? responseStepCompleteByLeadId.has(row.leadId)
           : null;
       const derivedResponseMode = responseModeByLeadId.get(row.leadId) ?? null;
+      const bookedEvidence = Boolean(lead.appointmentBookedAt || lead.ghlAppointmentId || lead.calendlyInviteeUri);
+      const responseType = deriveCrmResponseType({
+        sentimentTag: lead.sentimentTag ?? null,
+        snoozedUntil: lead.snoozedUntil ?? null,
+        bookedEvidence,
+      });
 
       return {
         id: row.id,
@@ -1978,6 +2518,7 @@ export async function getCrmSheetRows(params: {
         phoneNumber: lead.phone ?? null,
         stepResponded,
         leadCategory: row.leadCategoryOverride ?? row.interestType ?? lead.sentimentTag ?? null,
+        responseType,
         leadStatus: status,
         channel: interestChannel,
         leadType: row.leadType ?? null,
@@ -1997,7 +2538,7 @@ export async function getCrmSheetRows(params: {
         qualified,
         followUpDateRequested: lead.snoozedUntil ?? null,
         setters: appointmentSetter,
-        responseMode: row.responseMode ?? derivedResponseMode ?? null,
+        responseMode: row.responseMode ?? derivedResponseMode ?? "UNKNOWN",
         leadScore: row.leadScoreAtInterest ?? lead.overallScore ?? null,
       };
     });

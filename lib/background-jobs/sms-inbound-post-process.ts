@@ -225,6 +225,7 @@ export async function runSmsInboundPostProcessJob(params: {
   const autoBook = await processMessageForAutoBooking(lead.id, messageBody, {
     channel: "sms",
     messageId: message.id,
+    sentimentTag: finalSentiment,
   });
   if (autoBook.booked) {
     console.log(`[SMS Post-Process] Auto-booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);

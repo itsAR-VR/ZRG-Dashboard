@@ -49,21 +49,23 @@ import {
   type FollowUpInstanceData,
   type FollowUpSequenceData,
 } from "@/actions/followup-sequence-actions"
-import {
-  updateLeadAutoBookSetting,
-  bookMeetingOnGHL,
-  getLeadBookingStatusEnhanced,
-  getLeadAppointmentHistory,
-  isGHLBookingConfigured,
-  getBookingAvailabilityForLead,
-  getGhlCalendarMismatchInfo,
-} from "@/actions/booking-actions"
-import type { AppointmentHistoryItem } from "@/actions/booking-actions"
-import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
-import { getCalendarLinks, getUserSettings, type CalendarLinkData, type UserSettingsData } from "@/actions/settings-actions"
-import { useEnrichmentPolling } from "@/hooks/use-enrichment-polling"
-import { toast } from "sonner"
-import { toDisplayPhone } from "@/lib/phone-utils"
+	import {
+	  updateLeadAutoBookSetting,
+	  bookMeetingOnGHL,
+	  getLeadBookingStatusEnhanced,
+	  getLeadAppointmentHistory,
+	  isGHLBookingConfigured,
+	  getBookingAvailabilityForLead,
+	  getGhlCalendarMismatchInfo,
+	} from "@/actions/booking-actions"
+	import type { AppointmentHistoryItem } from "@/actions/booking-actions"
+	import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
+	import { resolveEmailBisonReplyUrlForLead } from "@/actions/emailbison-link-actions"
+	import { getCalendarLinks, getUserSettings, type CalendarLinkData, type UserSettingsData } from "@/actions/settings-actions"
+	import { getLeadResponseTiming, type LeadResponseTimingRow } from "@/actions/response-timing-actions"
+	import { useEnrichmentPolling } from "@/hooks/use-enrichment-polling"
+	import { toast } from "sonner"
+	import { toDisplayPhone } from "@/lib/phone-utils"
 import {
   Dialog,
   DialogContent,
@@ -142,13 +144,14 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
   const [isFollowUpDialogOpen, setIsFollowUpDialogOpen] = useState(false)
   const [followUpMessage, setFollowUpMessage] = useState("")
   const [isBookingMeeting, setIsBookingMeeting] = useState(false)
-  const [isSnoozing, setIsSnoozing] = useState(false)
-  const [customSnoozeAt, setCustomSnoozeAt] = useState("")
-  const [isCreatingFollowUp, setIsCreatingFollowUp] = useState(false)
-  
-  // Automation states
-  const [autoReplyEnabled, setAutoReplyEnabled] = useState(lead.autoReplyEnabled || false)
-  const [autoFollowUpEnabled, setAutoFollowUpEnabled] = useState(lead.autoFollowUpEnabled || false)
+	  const [isSnoozing, setIsSnoozing] = useState(false)
+	  const [customSnoozeAt, setCustomSnoozeAt] = useState("")
+	  const [isCreatingFollowUp, setIsCreatingFollowUp] = useState(false)
+	  const [isOpeningEmailBison, setIsOpeningEmailBison] = useState(false)
+	  
+	  // Automation states
+	  const [autoReplyEnabled, setAutoReplyEnabled] = useState(lead.autoReplyEnabled || false)
+	  const [autoFollowUpEnabled, setAutoFollowUpEnabled] = useState(lead.autoFollowUpEnabled || false)
 
   // Follow-up sequence states
   const [followUpInstances, setFollowUpInstances] = useState<FollowUpInstanceData[]>([])
@@ -158,6 +161,9 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
   const [workspaceSettings, setWorkspaceSettings] = useState<UserSettingsData | null>(null)
   const [calendarLinks, setCalendarLinks] = useState<CalendarLinkData[]>([])
   const [isWorkspaceContextLoaded, setIsWorkspaceContextLoaded] = useState(false)
+  const [responseTimingRows, setResponseTimingRows] = useState<LeadResponseTimingRow[]>([])
+  const [isLoadingResponseTiming, setIsLoadingResponseTiming] = useState(false)
+  const [responseTimingError, setResponseTimingError] = useState<string | null>(null)
   const [sequenceStartError, setSequenceStartError] = useState<string | null>(null)
 
   // GHL Booking states
@@ -372,13 +378,33 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
     }
   }, [lead.id, lead.clientId])
 
+  const loadResponseTiming = useCallback(async () => {
+    setIsLoadingResponseTiming(true)
+    setResponseTimingError(null)
+    try {
+      const result = await getLeadResponseTiming(lead.id, { limit: 10 })
+      if (result.success) {
+        setResponseTimingRows(result.data ?? [])
+      } else {
+        setResponseTimingRows([])
+        setResponseTimingError(result.error || "Failed to load response timing")
+      }
+    } catch (error) {
+      setResponseTimingRows([])
+      setResponseTimingError(error instanceof Error ? error.message : "Failed to load response timing")
+    } finally {
+      setIsLoadingResponseTiming(false)
+    }
+  }, [lead.id])
+
   useEffect(() => {
     if (isOpen) {
       loadFollowUpData()
       loadBookingData()
       loadWorkspaceContext()
+      loadResponseTiming()
     }
-  }, [isOpen, loadFollowUpData, loadBookingData, loadWorkspaceContext])
+  }, [isOpen, loadFollowUpData, loadBookingData, loadWorkspaceContext, loadResponseTiming])
 
   useEffect(() => {
     setSequenceStartError(null)
@@ -907,6 +933,17 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
     })
   }
 
+  const formatResponseTimingTimestamp = (iso: string): string => {
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return "Unknown time"
+    return d.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    })
+  }
+
   const getAppointmentStatusLabel = (status: string): string => {
     switch (status) {
       case "CONFIRMED":
@@ -1154,6 +1191,75 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
                 </div>
               )}
             </div>
+          </div>
+
+          <Separator />
+
+          {/* Response Timing */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Response Timing</h4>
+              {isLoadingResponseTiming ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+            </div>
+
+            {responseTimingError ? (
+              <div className="text-xs text-destructive">{responseTimingError}</div>
+            ) : responseTimingRows.length === 0 ? (
+              <div className="text-xs text-muted-foreground">No response timing events yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {responseTimingRows.map((row) => {
+                  const hasAi =
+                    Boolean(row.aiResponseFormatted) ||
+                    Boolean(row.aiChosenDelayFormatted) ||
+                    Boolean(row.aiActualDelayFormatted)
+                  const hasSetter = Boolean(row.setterResponseFormatted) || Boolean(row.setterEmail)
+
+                  return (
+                    <div key={row.inboundMessageId} className="rounded-md border border-muted/50 bg-muted/30 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge variant="outline" className="text-[10px]">
+                          {row.channel.toUpperCase()}
+                        </Badge>
+                        <span className="text-[10px] text-muted-foreground">
+                          {formatResponseTimingTimestamp(row.inboundSentAtIso)}
+                        </span>
+                      </div>
+
+                      <div className="mt-2 space-y-1 text-xs">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">Setter</span>
+                          <span className="text-foreground">
+                            {hasSetter
+                              ? `${row.setterResponseFormatted ?? "—"}${row.setterEmail ? ` • ${row.setterEmail}` : ""}`
+                              : "—"}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-muted-foreground">AI</span>
+                          <span className="text-foreground">{hasAi ? row.aiResponseFormatted ?? "—" : "—"}</span>
+                        </div>
+
+                        {row.aiChosenDelayFormatted || row.aiActualDelayFormatted || row.aiDriftFormatted ? (
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-[10px] text-muted-foreground">
+                            {row.aiChosenDelayFormatted ? (
+                              <span>Chosen: {row.aiChosenDelayFormatted}</span>
+                            ) : null}
+                            {row.aiActualDelayFormatted ? (
+                              <span>Actual: {row.aiActualDelayFormatted}</span>
+                            ) : null}
+                            {row.aiDriftFormatted ? (
+                              <span>Drift: {row.aiDriftFormatted}</span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
 
           <Separator />
@@ -1563,10 +1669,10 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
           <div className="space-y-3">
             <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Actions</h4>
             <div className="space-y-2">
-              {/* Open in Go High-Level Button */}
-              <Button 
-                className="w-full justify-start" 
-                size="sm"
+	              {/* Open in Go High-Level Button */}
+	              <Button 
+	                className="w-full justify-start" 
+	                size="sm"
                 onClick={() => {
                   if (lead.ghlContactId && lead.ghlLocationId) {
                     window.open(
@@ -1578,14 +1684,57 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
                 disabled={!lead.ghlContactId || !lead.ghlLocationId}
                 title={!lead.ghlContactId ? "No GHL contact linked" : !lead.ghlLocationId ? "No GHL location configured" : undefined}
               >
-                <ExternalLink className="mr-2 h-4 w-4" />
-                Open in Go High-Level
-              </Button>
+	                <ExternalLink className="mr-2 h-4 w-4" />
+	                Open in Go High-Level
+	              </Button>
 
-              {/* GHL Booking Button */}
-              {isGHLConfigured ? (
-                <Button 
-                  className="w-full justify-start" 
+	              {/* Open in EmailBison Button */}
+	              {!!lead.emailBisonLeadId && (
+	                <Button
+	                  variant="outline"
+	                  className="w-full justify-start"
+	                  size="sm"
+	                  disabled={isOpeningEmailBison}
+	                  onClick={async () => {
+	                    const popup = window.open("about:blank", "_blank")
+	                    if (!popup) {
+	                      toast.error("Popup blocked. Allow popups to open EmailBison.")
+	                      return
+	                    }
+
+	                    popup.opener = null
+	                    setIsOpeningEmailBison(true)
+	                    try {
+	                      const result = await resolveEmailBisonReplyUrlForLead(lead.id)
+	                      if (!result.success || !result.url) {
+	                        popup.close()
+	                        toast.error(result.error || "Failed to open EmailBison")
+	                        return
+	                      }
+
+	                      popup.location.href = result.url
+	                    } catch (error) {
+	                      console.error("Failed to open EmailBison:", error)
+	                      popup.close()
+	                      toast.error("Failed to open EmailBison")
+	                    } finally {
+	                      setIsOpeningEmailBison(false)
+	                    }
+	                  }}
+	                >
+	                  {isOpeningEmailBison ? (
+	                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+	                  ) : (
+	                    <ExternalLink className="mr-2 h-4 w-4" />
+	                  )}
+	                  Open in EmailBison
+	                </Button>
+	              )}
+
+	              {/* GHL Booking Button */}
+	              {isGHLConfigured ? (
+	                <Button 
+	                  className="w-full justify-start" 
                   size="sm"
                   onClick={handleOpenBookingDialog}
                   disabled={isBookingMeeting || existingAppointment.hasAppointment}

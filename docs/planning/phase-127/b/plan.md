@@ -98,7 +98,7 @@ Extend the revision outputs to include bounded memory proposals, implement an ex
 - Memory governance (policy + redaction + persistence):
   - `lib/memory-governance/types.ts`
   - `lib/memory-governance/redaction.ts`
-  - `lib/memory-governance/policy.ts`
+  - `lib/memory-governance/policy.ts` (empty allowlist disables auto-approval; UI can apply suggested defaults)
   - `lib/memory-governance/persist.ts`
 - Revision agent now emits + persists governed memory proposals (best-effort; bounded JSON):
   - `lib/auto-send/revision-agent.ts` (parses `memory_proposals`, applies policy gate, writes `DraftPipelineArtifact` stage `memory_proposal`)

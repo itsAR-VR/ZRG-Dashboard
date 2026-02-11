@@ -161,7 +161,7 @@ function truncateForLog(value: string, maxLen = 500): string {
   return `${normalized.slice(0, maxLen)}…`;
 }
 
-function resolveEmailBisonBaseUrl(baseHost?: string | null): string {
+export function resolveEmailBisonBaseUrl(baseHost?: string | null): string {
   const candidate = typeof baseHost === "string" ? baseHost.trim() : "";
   if (!candidate) return DEFAULT_EMAILBISON_BASE_URL;
 

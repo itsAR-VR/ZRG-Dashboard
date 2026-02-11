@@ -12,10 +12,23 @@ test("memory-governance: scrub strips emails/phones but keeps urls", () => {
   assert.ok(res.content.includes("https://example.com/pricing"));
 });
 
-test("memory-governance: empty allowlist falls back to defaults", () => {
+test("memory-governance: empty allowlist disables auto-approval (fail-closed)", () => {
   const policy = resolveMemoryPolicySettings({ allowlistCategories: [] });
-  assert.ok(policy.allowlistCategories.includes("timezone_preference"));
-  assert.ok(policy.allowlistCategories.includes("scheduling_preference"));
+  assert.equal(policy.allowlistCategories.length, 0);
+
+  const decision = decideMemoryProposal(
+    {
+      scope: "lead",
+      category: "timezone_preference",
+      content: "Lead prefers America/Los_Angeles timezone for scheduling.",
+      ttlDays: 30,
+      confidence: 0.95,
+    },
+    policy
+  );
+
+  assert.ok(decision);
+  assert.equal(decision.status, "PENDING");
 });
 
 test("memory-governance: allowlisted proposal auto-approves when thresholds met", () => {
@@ -87,4 +100,3 @@ test("memory-governance: ttlDays is capped by policy ttlCapDays", () => {
   assert.ok(decision);
   assert.equal(decision.effectiveTtlDays, 90);
 });
-

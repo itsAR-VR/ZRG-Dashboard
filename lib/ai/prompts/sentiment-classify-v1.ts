@@ -23,7 +23,7 @@ HIGH-SIGNAL EDGE CASES
 - Timing deferrals are NOT hard declines: "not ready", "not right now", "not looking right now", "maybe next year", "in a couple years" → usually "Follow Up".
 
 PRIORITY ORDER (if multiple cues exist)
-Blacklist > Automated Reply > Out of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Follow Up > Not Interested > Interested > Neutral
+Blacklist > Automated Reply > Out of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Follow Up > Not Interested > Objection > Interested > Neutral
 
 CATEGORIES
 - "Blacklist": Opt-out/unsubscribe/removal request, hostile opt-out language, spam complaint, email bounces, or inbox/address not monitored/no longer in use.
@@ -37,6 +37,7 @@ CATEGORIES
 - "Information Requested": Asks for details/clarifications/pricing/more information about the offer.
 - "Follow Up": Defers timing / "not now" (e.g., "not ready to sell", "not right now", "not looking right now", "reach out in X", "next month", "maybe next year", "in a couple years").
 - "Not Interested": Clear hard decline with no future openness (e.g., "not interested", "no thanks", "don't want to sell", "not looking to sell").
+- "Objection": A concern or constraint that blocks the next step, without a hard decline (e.g., price/budget concerns, already working with someone, skeptical, doesn't apply, capacity/timing constraints that aren't a specific "reach out after X date" deferral).
 - "Interested": Positive interest without a clear next step.
 - "Neutral": Truly ambiguous (rare).
 
@@ -45,4 +46,3 @@ Return ONLY valid JSON (no markdown/code-fences, no extra keys):
 {"classification": "<one of the category names above>"}\n`;
 
 export const SENTIMENT_CLASSIFY_V1_USER_TEMPLATE = "Transcript (chronological; newest at the end):\n\n{{transcript}}";
-

@@ -247,6 +247,7 @@ model Client {
   availabilityCaches WorkspaceAvailabilityCache[]
   offeredSlots   WorkspaceOfferedSlot[]
   aiInteractions AIInteraction[]
+  responseTimingEvents ResponseTimingEvent[]
   meetingOverseerDecisions MeetingOverseerDecision[]
   backgroundJobs BackgroundJob[]
   draftPipelineRuns DraftPipelineRun[]
@@ -550,6 +551,7 @@ model Lead {
   currentReplierSince     DateTime?                // When they started being the active replier
   // Relations
   messages          Message[]
+  responseTimingEvents ResponseTimingEvent[]
   backgroundJobs    BackgroundJob[]
   followUps         FollowUpTask[]
   notificationEvents NotificationEvent[]
@@ -1086,6 +1088,54 @@ model Message {
   @@index([sentByUserId])    // For per-setter response time aggregation
   @@index([aiDraftId])       // For finding all messages from a draft
   @@index([leadId, direction, source, sentAt(sort: Desc)])
+  @@index([leadId, channel, sentAt(sort: Desc)])
+}
+
+// Inbound → outbound response timing events (Phase 132)
+model ResponseTimingEvent {
+  id        String   @id @default(uuid())
+
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  channel   String   // sms | email | linkedin
+
+  inboundMessageId String @unique
+  inboundSentAt    DateTime
+
+  // Setter response (human)
+  setterResponseMessageId String?
+  setterResponseSentAt    DateTime?
+  setterSentByUserId      String?
+  setterResponseMs        Int?
+
+  // AI response (auto-sent only)
+  aiDraftId           String?
+  aiResponseMessageId String?
+  aiResponseSentAt    DateTime?
+  aiResponseMs        Int?
+
+  // AI delay attribution (campaign window + deterministic choice + actual timestamps)
+  aiDelayMinSeconds    Int?
+  aiDelayMaxSeconds    Int?
+  aiChosenDelaySeconds Int?
+  aiActualDelaySeconds Int?
+
+  aiScheduledRunAt   DateTime?
+  aiBackgroundJobId  String?
+  aiJobStartedAt     DateTime?
+  aiJobFinishedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clientId, inboundSentAt(sort: Desc)])
+  @@index([leadId, channel, inboundSentAt(sort: Desc)])
+  @@index([setterSentByUserId])
+  @@index([clientId, aiChosenDelaySeconds])
 }
 
 // Meeting overseer decisions (Phase 106)

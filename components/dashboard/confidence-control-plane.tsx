@@ -353,6 +353,24 @@ export function ConfidenceControlPlane({ clientId }: Props) {
     }
   };
 
+  const handleApplySuggestedAllowlist = async () => {
+    if (!clientId || !memorySettings) return;
+    setSavingMemorySettings(true);
+    try {
+      const res = await updateMemoryGovernanceSettings(clientId, {
+        allowlistCategories: memorySettings.suggestedAllowlistCategories,
+      });
+      if (res.success) {
+        toast.success("Applied suggested allowlist categories");
+        await refreshMemorySettings();
+      } else {
+        toast.error("Failed to apply suggested allowlist", { description: res.error || "Unknown error" });
+      }
+    } finally {
+      setSavingMemorySettings(false);
+    }
+  };
+
   const handleApproveMemory = async (row: PendingMemoryEntryRow) => {
     if (!clientId) return;
     const res = await approvePendingMemoryEntry(clientId, { scope: row.scope, id: row.id });
@@ -613,8 +631,30 @@ export function ConfidenceControlPlane({ clientId }: Props) {
                 placeholder="timezone_preference\nscheduling_preference\ncommunication_preference\navailability_pattern"
                 className="font-mono text-xs min-h-32"
               />
-              <div className="text-xs text-muted-foreground">
-                Empty allowlist will fall back to the default set (shown). Categories longer than 64 chars are ignored.
+              {memorySettings?.allowlistCategories.length === 0 ? (
+                <div className="text-xs text-amber-700">
+                  No categories allowlisted; all memory proposals require approval.
+                </div>
+              ) : (
+                <div className="text-xs text-muted-foreground">
+                  Auto-approval requires allowlist match and thresholds. Categories longer than 64 chars are ignored.
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleApplySuggestedAllowlist()}
+                  disabled={!memorySettings || savingMemorySettings}
+                >
+                  Use suggested defaults
+                </Button>
+                <div className="text-xs text-muted-foreground">
+                  Suggested:{" "}
+                  {memorySettings?.suggestedAllowlistCategories?.length
+                    ? memorySettings.suggestedAllowlistCategories.join(", ")
+                    : "-"}
+                </div>
               </div>
             </div>
 

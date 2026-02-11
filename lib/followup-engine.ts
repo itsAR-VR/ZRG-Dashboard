@@ -42,6 +42,7 @@ import {
   selectOfferedSlotByPreference,
   type MeetingOverseerExtractDecision,
 } from "@/lib/meeting-overseer";
+import { isAutoBookingBlockedSentiment } from "@/lib/sentiment-shared";
 import { computeAIDraftResponseDisposition } from "@/lib/ai-drafts/response-disposition";
 import {
   buildLeadContextBundle,
@@ -3500,13 +3501,18 @@ async function sendAutoBookingConfirmation(opts: {
 export async function processMessageForAutoBooking(
   leadId: string,
   messageBody: string,
-  meta?: { channel?: "sms" | "email" | "linkedin"; messageId?: string | null }
+  meta?: { channel?: "sms" | "email" | "linkedin"; messageId?: string | null; sentimentTag?: string | null }
 ): Promise<{
   booked: boolean;
   appointmentId?: string;
   error?: string;
 }> {
   try {
+    // Defense-in-depth: block known non-scheduling sentiments from auto-booking before any DB/AI work.
+    if (isAutoBookingBlockedSentiment(meta?.sentimentTag)) {
+      return { booked: false };
+    }
+
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
       include: {
@@ -3521,6 +3527,11 @@ export async function processMessageForAutoBooking(
 
     if (!lead) {
       return { booked: false, error: "Lead not found" };
+    }
+
+    // Defense-in-depth for callers that don't pass sentimentTag via meta.
+    if (isAutoBookingBlockedSentiment(lead.sentimentTag)) {
+      return { booked: false };
     }
 
     // Check if lead should auto-book

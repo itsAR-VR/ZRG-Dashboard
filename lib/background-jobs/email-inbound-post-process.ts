@@ -903,6 +903,7 @@ export async function runEmailInboundPostProcessJob(opts: {
     ? await processMessageForAutoBooking(lead.id, inboundReplyOnly, {
         channel: "email",
         messageId: message.id,
+        sentimentTag: lead.sentimentTag,
       })
     : { booked: false as const };
 

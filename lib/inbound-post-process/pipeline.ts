@@ -6,6 +6,7 @@ import {
   buildSentimentTranscriptFromMessages,
   classifySentiment,
   detectBounce,
+  isAutoBookingBlockedSentiment,
   isOptOutText,
   isPositiveSentiment,
   SENTIMENT_TO_STATUS,
@@ -43,6 +44,8 @@ function mapInboxClassificationToSentimentTag(classification: string): Sentiment
       return "Call Requested";
     case "Information Requested":
       return "Information Requested";
+    case "Objection":
+      return "Objection";
     case "Follow Up":
       return "Follow Up";
     case "Not Interested":
@@ -290,10 +293,12 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   }
 
   pushStage("auto_booking");
-  const autoBook = inboundReplyOnly
+  const skipAutoBook = isAutoBookingBlockedSentiment(sentimentTag);
+  const autoBook = !skipAutoBook && inboundReplyOnly
     ? await processMessageForAutoBooking(lead.id, inboundReplyOnly, {
         channel: "email",
         messageId: message.id,
+        sentimentTag,
       })
     : { booked: false as const };
   if (autoBook.booked) {

@@ -186,6 +186,7 @@ export async function runLinkedInInboundPostProcessJob(params: {
   const autoBook = await processMessageForAutoBooking(lead.id, messageBody, {
     channel: "linkedin",
     messageId: message.id,
+    sentimentTag: finalSentiment,
   });
   if (autoBook.booked) {
     console.log(`[LinkedIn Post-Process] Auto-booked appointment for lead ${lead.id}: ${autoBook.appointmentId}`);

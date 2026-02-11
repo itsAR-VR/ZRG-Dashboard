@@ -7,6 +7,7 @@ export const SENTIMENT_TAGS = [
   "Meeting Requested",
   "Call Requested",
   "Information Requested",
+  "Objection",
   "Not Interested",
   "Blacklist",
   "Follow Up",
@@ -26,6 +27,7 @@ export const SENTIMENT_TO_STATUS: Record<SentimentTag, string> = {
   "Meeting Requested": "meeting-requested",
   "Call Requested": "qualified",
   "Information Requested": "qualified",
+  Objection: "new",
   "Not Interested": "not-interested",
   Blacklist: "blacklisted",
   "Follow Up": "new",
@@ -49,4 +51,13 @@ export type PositiveSentiment = (typeof POSITIVE_SENTIMENTS)[number];
 export function isPositiveSentiment(tag: string | null): tag is PositiveSentiment {
   if (!tag) return false;
   return POSITIVE_SENTIMENTS.includes(tag as PositiveSentiment);
+}
+
+export const AUTO_BOOKING_BLOCKED_SENTIMENTS = ["Out of Office", "Automated Reply", "Blacklist"] as const;
+
+export type AutoBookingBlockedSentiment = (typeof AUTO_BOOKING_BLOCKED_SENTIMENTS)[number];
+
+export function isAutoBookingBlockedSentiment(tag: string | null | undefined): tag is AutoBookingBlockedSentiment {
+  if (!tag) return false;
+  return AUTO_BOOKING_BLOCKED_SENTIMENTS.includes(tag as AutoBookingBlockedSentiment);
 }

@@ -38,3 +38,17 @@ Phase 127 adds:
   - Min confidence / TTL thresholds (TTL cap enforced)
   - Review + approve/reject PENDING memory entries
 
+### Backfill (One-Time)
+After the follow-up semantics change, **empty allowlist disables auto-approval** (fail-closed). To preserve default behavior for existing workspaces, run the one-time backfill:
+
+```bash
+node --require ./scripts/server-only-mock.cjs --import tsx scripts/backfill-memory-allowlist-defaults.ts --dry-run
+node --require ./scripts/server-only-mock.cjs --import tsx scripts/backfill-memory-allowlist-defaults.ts --apply
+```
+
+## Follow-Up (2026-02-10)
+- Changed semantics: empty allowlist disables auto-approval (fail-closed), and UI surfaces suggested defaults explicitly.
+- Re-ran quality gates after the change:
+  - `npm test` — pass
+  - `npm run lint` — pass (warnings only)
+  - `npm run build` — pass

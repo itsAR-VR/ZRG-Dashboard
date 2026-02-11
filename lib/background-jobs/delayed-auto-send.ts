@@ -50,6 +50,14 @@ function computeDeterministicDelay(
   return minSeconds + (hash % (range + 1));
 }
 
+export function computeChosenDelaySeconds(
+  triggerMessageId: string,
+  minSeconds: number,
+  maxSeconds: number
+): number {
+  return computeDeterministicDelay(triggerMessageId, minSeconds, maxSeconds);
+}
+
 export function computeDelayedAutoSendRunAt(params: {
   triggerMessageId: string;
   inboundSentAt: Date;

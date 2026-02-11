@@ -42,6 +42,7 @@ function normalizeAllowlist(values: unknown): string[] {
 }
 
 export type MemoryGovernanceSettings = MemoryPolicySettings & {
+  suggestedAllowlistCategories: string[];
   autoSendEvaluatorModel: string | null;
   autoSendEvaluatorReasoningEffort: string | null;
 };
@@ -65,13 +66,11 @@ export async function getMemoryGovernanceSettings(
       },
     });
 
-    const allowlist = settings?.memoryAllowlistCategories ?? [];
-    const allowlistCategories = allowlist.length > 0 ? allowlist : DEFAULT_MEMORY_POLICY.allowlistCategories;
-
     return {
       success: true,
       data: {
-        allowlistCategories,
+        allowlistCategories: settings?.memoryAllowlistCategories ?? [],
+        suggestedAllowlistCategories: DEFAULT_MEMORY_POLICY.allowlistCategories,
         minConfidence: clamp01(settings?.memoryMinConfidence, DEFAULT_MEMORY_POLICY.minConfidence),
         minTtlDays: clampPosInt(settings?.memoryMinTtlDays, DEFAULT_MEMORY_POLICY.minTtlDays),
         ttlCapDays: clampPosInt(settings?.memoryTtlCapDays, DEFAULT_MEMORY_POLICY.ttlCapDays),

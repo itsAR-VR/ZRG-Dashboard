@@ -54,6 +54,8 @@ Keep persistent run artifacts bounded via pruning, finalize tests for memory gov
   - `scripts/test-orchestrator.ts` (includes the new tests)
 - Docs updated:
   - `README.md` (documents: `AUTO_SEND_EVALUATOR_*`, `AUTO_SEND_REVISION_*`, `AUTO_SEND_REVISION_LOOP_TIMEOUT_MS`, `DRAFT_PIPELINE_RUN_RETENTION_DAYS`)
+- One-time rollout backfill:
+  - `scripts/backfill-memory-allowlist-defaults.ts` (sets default allowlist for workspaces with empty allowlist)
 
 ## Handoff
 Phase 127 is ready for review/merge:

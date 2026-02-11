@@ -6,12 +6,15 @@ import { Loader2, RefreshCw } from "lucide-react"
 import {
   getCrmAssigneeOptions,
   getCrmSheetRows,
+  getCrmWindowSummary,
   updateCrmSheetCell,
+  type CrmWindowSummary,
   type CrmSheetFilters,
   type CrmSheetRow,
 } from "@/actions/analytics-actions"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -52,6 +55,26 @@ const responseModeLabel = (value: CrmSheetRow["responseMode"]) => {
   if (value === "AI") return "AI"
   if (value === "HUMAN") return "Human"
   return "Unknown"
+}
+
+const formatPercent01 = (value: number) => {
+  if (!Number.isFinite(value) || value <= 0) return "0%"
+  return `${Math.round(value * 100)}%`
+}
+
+const responseTypeLabel = (value: CrmSheetRow["responseType"]) => {
+  switch (value) {
+    case "MEETING_REQUEST":
+      return "Meeting request"
+    case "INFORMATION_REQUEST":
+      return "Info request"
+    case "FOLLOW_UP_FUTURE":
+      return "Follow-up future"
+    case "OBJECTION":
+      return "Objection"
+    default:
+      return "Other"
+  }
 }
 
 type CrmAssigneeOption = { userId: string; email: string | null }
@@ -316,14 +339,19 @@ function EditableSelectCell({
 
 interface AnalyticsCrmTableProps {
   activeWorkspace?: string | null
+  window?: { from: string; to: string }
+  windowLabel?: string
 }
 
-export function AnalyticsCrmTable({ activeWorkspace }: AnalyticsCrmTableProps) {
+export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: AnalyticsCrmTableProps) {
   const [rows, setRows] = useState<CrmSheetRow[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isLoadingMore, setIsLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [summary, setSummary] = useState<CrmWindowSummary | null>(null)
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summaryError, setSummaryError] = useState<string | null>(null)
   const [filters, setFilters] = useState<CrmSheetFilters>({})
   const [assigneeOptions, setAssigneeOptions] = useState<CrmAssigneeOption[]>([])
   const [assigneeLoading, setAssigneeLoading] = useState(false)
@@ -336,8 +364,10 @@ export function AnalyticsCrmTable({ activeWorkspace }: AnalyticsCrmTableProps) {
       campaign: filters.campaign?.trim() || null,
       leadCategory: filters.leadCategory?.trim() || null,
       leadStatus: filters.leadStatus?.trim() || null,
+      dateFrom: window?.from ?? null,
+      dateTo: window?.to ?? null,
     }
-  }, [filters])
+  }, [filters, window?.from, window?.to])
 
   useEffect(() => {
     if (!activeWorkspace) {
@@ -374,6 +404,43 @@ export function AnalyticsCrmTable({ activeWorkspace }: AnalyticsCrmTableProps) {
     }
 
     fetchRows()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeWorkspace, normalizedFilters])
+
+  useEffect(() => {
+    if (!activeWorkspace) {
+      setSummary(null)
+      setSummaryError(null)
+      return
+    }
+
+    let cancelled = false
+
+    const fetchSummary = async () => {
+      setSummaryLoading(true)
+      setSummaryError(null)
+
+      const result = await getCrmWindowSummary({
+        clientId: activeWorkspace,
+        filters: normalizedFilters,
+      })
+
+      if (cancelled) return
+
+      if (result.success && result.data) {
+        setSummary(result.data)
+      } else {
+        setSummary(null)
+        setSummaryError(result.error || "Failed to load CRM summary")
+      }
+
+      setSummaryLoading(false)
+    }
+
+    fetchSummary()
 
     return () => {
       cancelled = true
@@ -590,6 +657,11 @@ export function AnalyticsCrmTable({ activeWorkspace }: AnalyticsCrmTableProps) {
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="secondary">{rows.length.toLocaleString()} rows</Badge>
+          {windowLabel ? (
+            <Badge variant="outline" className="text-xs text-muted-foreground">
+              Window: {windowLabel}
+            </Badge>
+          ) : null}
           <Button size="sm" variant="outline" onClick={handleRefresh} disabled={isLoading}>
             <RefreshCw className="mr-2 h-4 w-4" />
             Refresh
@@ -597,12 +669,167 @@ export function AnalyticsCrmTable({ activeWorkspace }: AnalyticsCrmTableProps) {
         </div>
       </div>
 
+      {summaryLoading ? (
+        <div className="rounded-lg border p-4 text-sm text-muted-foreground">
+          <Loader2 className="inline h-4 w-4 animate-spin" /> Loading summary...
+        </div>
+      ) : summaryError ? (
+        <div className="rounded-lg border p-4 text-sm text-destructive">{summaryError}</div>
+      ) : summary ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            <Card>
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Cohort leads</div>
+                <div className="text-2xl font-semibold tabular-nums">{summary.totals.cohortLeads.toLocaleString()}</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Booked ever</div>
+                <div className="text-2xl font-semibold tabular-nums">{summary.totals.bookedEverKept.toLocaleString()}</div>
+                <div className="mt-1 text-xs text-muted-foreground">Any: {summary.totals.bookedEverAny.toLocaleString()}</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Cohort conversion</div>
+                <div className="text-2xl font-semibold tabular-nums">{formatPercent01(summary.totals.cohortConversionRateKept)}</div>
+                <div className="mt-1 text-xs text-muted-foreground">Any: {formatPercent01(summary.totals.cohortConversionRateAny)}</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">Booked in window</div>
+                <div className="text-2xl font-semibold tabular-nums">{summary.totals.bookedInWindowKept.toLocaleString()}</div>
+                <div className="mt-1 text-xs text-muted-foreground">Any: {summary.totals.bookedInWindowAny.toLocaleString()}</div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-4">
+                <div className="text-xs text-muted-foreground">In-window rate</div>
+                <div className="text-2xl font-semibold tabular-nums">{formatPercent01(summary.totals.inWindowBookingRateKept)}</div>
+                <div className="mt-1 text-xs text-muted-foreground">Any: {formatPercent01(summary.totals.inWindowBookingRateAny)}</div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="text-xs text-muted-foreground">
+            Kept excludes canceled appointments. Any includes booking evidence even if later canceled.
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Response Type</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Type</TableHead>
+                      <TableHead className="text-right">Leads</TableHead>
+                      <TableHead className="text-right">Booked</TableHead>
+                      <TableHead className="text-right">Rate</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {summary.byResponseType.map((row) => (
+                      <TableRow key={row.key}>
+                        <TableCell className="font-medium">{responseTypeLabel(row.key)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{row.cohortLeads.toLocaleString()}</TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {row.bookedEverKept.toLocaleString()}
+                          <div className="text-xs text-muted-foreground">Any: {row.bookedEverAny.toLocaleString()}</div>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {formatPercent01(row.cohortConversionRateKept)}
+                          <div className="text-xs text-muted-foreground">Any: {formatPercent01(row.cohortConversionRateAny)}</div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">AI vs Human</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Mode</TableHead>
+                      <TableHead className="text-right">Leads</TableHead>
+                      <TableHead className="text-right">Booked</TableHead>
+                      <TableHead className="text-right">Rate</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {summary.byResponseMode.map((row) => (
+                      <TableRow key={row.key}>
+                        <TableCell className="font-medium">{responseModeLabel(row.key)}</TableCell>
+                        <TableCell className="text-right tabular-nums">{row.cohortLeads.toLocaleString()}</TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {row.bookedEverKept.toLocaleString()}
+                          <div className="text-xs text-muted-foreground">Any: {row.bookedEverAny.toLocaleString()}</div>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {formatPercent01(row.cohortConversionRateKept)}
+                          <div className="text-xs text-muted-foreground">Any: {formatPercent01(row.cohortConversionRateAny)}</div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Setters</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Setter</TableHead>
+                      <TableHead className="text-right">Leads</TableHead>
+                      <TableHead className="text-right">Booked</TableHead>
+                      <TableHead className="text-right">Rate</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {summary.bySetter.slice(0, 10).map((row) => (
+                      <TableRow key={row.key}>
+                        <TableCell className="font-medium">{row.label}</TableCell>
+                        <TableCell className="text-right tabular-nums">{row.cohortLeads.toLocaleString()}</TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {row.bookedEverKept.toLocaleString()}
+                          <div className="text-xs text-muted-foreground">Any: {row.bookedEverAny.toLocaleString()}</div>
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {formatPercent01(row.cohortConversionRateKept)}
+                          <div className="text-xs text-muted-foreground">Any: {formatPercent01(row.cohortConversionRateAny)}</div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      ) : null}
+
       <div className="rounded-lg border">
         <div className="overflow-auto">
           <Table className="min-w-[1800px]">
             <TableHeader>
               <TableRow>
-                <TableHead>DATE</TableHead>
+                <TableHead>Interest date</TableHead>
                 <TableHead>Campaign</TableHead>
                 <TableHead>Company Name</TableHead>
                 <TableHead>Website</TableHead>
@@ -614,6 +841,7 @@ export function AnalyticsCrmTable({ activeWorkspace }: AnalyticsCrmTableProps) {
                 <TableHead>Phone Number</TableHead>
                 <TableHead>Email/LinkedIn Step Responded</TableHead>
                 <TableHead>Lead Category</TableHead>
+                <TableHead>Response Type</TableHead>
                 <TableHead>Lead Status</TableHead>
                 <TableHead>Channel</TableHead>
                 <TableHead>Lead Type</TableHead>
@@ -640,13 +868,13 @@ export function AnalyticsCrmTable({ activeWorkspace }: AnalyticsCrmTableProps) {
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={33} className="h-28 text-center text-muted-foreground">
+                  <TableCell colSpan={34} className="h-28 text-center text-muted-foreground">
                     <Loader2 className="inline h-4 w-4 animate-spin" /> Loading CRM rows...
                   </TableCell>
                 </TableRow>
               ) : rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={33} className="h-28 text-center text-muted-foreground">
+                  <TableCell colSpan={34} className="h-28 text-center text-muted-foreground">
                     {error || "No CRM rows yet"}
                   </TableCell>
                 </TableRow>
@@ -714,6 +942,11 @@ export function AnalyticsCrmTable({ activeWorkspace }: AnalyticsCrmTableProps) {
                         showAutomationToggle
                         onSave={handleSaveCell}
                       />
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline" className="text-xs">
+                        {responseTypeLabel(row.responseType)}
+                      </Badge>
                     </TableCell>
                     <TableCell>
                       <EditableTextCell

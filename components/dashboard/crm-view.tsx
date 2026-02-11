@@ -44,12 +44,13 @@ import {
   deleteLead, 
   type CRMLeadData,
   type CRMLeadsCursorOptions 
-} from "@/actions/crm-actions"
-import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
-import { subscribeToLeads, unsubscribe } from "@/lib/supabase"
-import { toast } from "sonner"
-import { cn } from "@/lib/utils"
-import { LeadScoreBadge } from "./lead-score-badge"
+	} from "@/actions/crm-actions"
+	import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
+	import { resolveEmailBisonReplyUrlForLead } from "@/actions/emailbison-link-actions"
+	import { subscribeToLeads, unsubscribe } from "@/lib/supabase"
+	import { toast } from "sonner"
+	import { cn } from "@/lib/utils"
+	import { LeadScoreBadge } from "./lead-score-badge"
 
 type LeadStatus = "new" | "qualified" | "unqualified" | "meeting-booked" | "not-interested" | "blacklisted"
 
@@ -80,10 +81,11 @@ interface LeadDetailSheetProps {
   onLeadUpdate?: () => void
 }
 
-function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, onLeadUpdate }: LeadDetailSheetProps) {
-  const [isEnriching, setIsEnriching] = useState(false)
+	function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, onLeadUpdate }: LeadDetailSheetProps) {
+	  const [isEnriching, setIsEnriching] = useState(false)
+	  const [isOpeningEmailBison, setIsOpeningEmailBison] = useState(false)
 
-  if (!lead) return null
+	  if (!lead) return null
 
   const smsClient = lead.smsCampaignName?.trim() || null
   const isSmsAccountWorkspace = ["owen", "uday 18th", "uday18th", "u-day 18th"].includes(
@@ -291,33 +293,73 @@ function LeadDetailSheet({ lead, open, onClose, onStatusChange, onOpenInInbox, o
           </div>
 
           <div className="pt-4 space-y-2">
-            <Button 
-              className="w-full" 
-              onClick={() => {
-                if (lead.ghlContactId && lead.ghlLocationId) {
-                  window.open(
-                    `https://app.gohighlevel.com/v2/location/${lead.ghlLocationId}/contacts/detail/${lead.ghlContactId}`,
-                    '_blank'
-                  )
-                }
-              }}
-              disabled={!lead.ghlContactId || !lead.ghlLocationId}
-              title={!lead.ghlContactId ? "No GHL contact linked" : !lead.ghlLocationId ? "No GHL location configured" : undefined}
-            >
-              <ExternalLink className="h-4 w-4 mr-2" />
-              Open in Go High-Level
-            </Button>
-            <Button 
-              variant="outline"
-              className="w-full" 
-              onClick={() => {
-                onOpenInInbox?.(lead.id)
-                onClose()
-              }}
-            >
-              <ExternalLink className="h-4 w-4 mr-2" />
-              Open in Master Inbox
-            </Button>
+	            <Button 
+	              className="w-full" 
+	              onClick={() => {
+	                if (lead.ghlContactId && lead.ghlLocationId) {
+	                  window.open(
+	                    `https://app.gohighlevel.com/v2/location/${lead.ghlLocationId}/contacts/detail/${lead.ghlContactId}`,
+	                    '_blank'
+	                  )
+	                }
+	              }}
+	              disabled={!lead.ghlContactId || !lead.ghlLocationId}
+	              title={!lead.ghlContactId ? "No GHL contact linked" : !lead.ghlLocationId ? "No GHL location configured" : undefined}
+	            >
+	              <ExternalLink className="h-4 w-4 mr-2" />
+	              Open in Go High-Level
+	            </Button>
+	            {!!lead.emailBisonLeadId && (
+	              <Button
+	                variant="outline"
+	                className="w-full"
+	                disabled={isOpeningEmailBison}
+	                onClick={async () => {
+	                  const popup = window.open("about:blank", "_blank")
+	                  if (!popup) {
+	                    toast.error("Popup blocked. Allow popups to open EmailBison.")
+	                    return
+	                  }
+
+	                  popup.opener = null
+	                  setIsOpeningEmailBison(true)
+	                  try {
+	                    const result = await resolveEmailBisonReplyUrlForLead(lead.id)
+	                    if (!result.success || !result.url) {
+	                      popup.close()
+	                      toast.error(result.error || "Failed to open EmailBison")
+	                      return
+	                    }
+
+	                    popup.location.href = result.url
+	                  } catch (error) {
+	                    console.error("Failed to open EmailBison:", error)
+	                    popup.close()
+	                    toast.error("Failed to open EmailBison")
+	                  } finally {
+	                    setIsOpeningEmailBison(false)
+	                  }
+	                }}
+	              >
+	                {isOpeningEmailBison ? (
+	                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+	                ) : (
+	                  <ExternalLink className="h-4 w-4 mr-2" />
+	                )}
+	                Open in EmailBison
+	              </Button>
+	            )}
+	            <Button 
+	              variant="outline"
+	              className="w-full" 
+	              onClick={() => {
+	                onOpenInInbox?.(lead.id)
+	                onClose()
+	              }}
+	            >
+	              <ExternalLink className="h-4 w-4 mr-2" />
+	              Open in Master Inbox
+	            </Button>
             <Button 
               variant="outline"
               className="w-full" 

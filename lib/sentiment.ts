@@ -5,19 +5,25 @@ import { resolvePromptTemplate, runStructuredJsonPrompt } from "@/lib/ai/prompt-
 import { substituteTemplateVars } from "@/lib/ai/prompt-runner/template";
 import { computeAdaptiveMaxOutputTokens } from "@/lib/ai/token-budget";
 import {
+  isAutoBookingBlockedSentiment,
+  AUTO_BOOKING_BLOCKED_SENTIMENTS,
   isPositiveSentiment,
   POSITIVE_SENTIMENTS,
   SENTIMENT_TAGS,
   SENTIMENT_TO_STATUS,
+  type AutoBookingBlockedSentiment,
   type PositiveSentiment,
   type SentimentTag,
 } from "@/lib/sentiment-shared";
 
 export {
+  isAutoBookingBlockedSentiment,
+  AUTO_BOOKING_BLOCKED_SENTIMENTS,
   isPositiveSentiment,
   POSITIVE_SENTIMENTS,
   SENTIMENT_TAGS,
   SENTIMENT_TO_STATUS,
+  type AutoBookingBlockedSentiment,
   type PositiveSentiment,
   type SentimentTag,
 };
@@ -293,6 +299,7 @@ export type EmailInboxClassification =
   | "Information Requested"
   | "Follow Up"
   | "Not Interested"
+  | "Objection"
   | "Automated Reply"
   | "Out Of Office"
   | "Blacklist";
@@ -308,7 +315,7 @@ export type EmailInboxAnalysis = {
 
 const EMAIL_INBOX_MANAGER_SYSTEM = `Output your response in the following strict JSON format:
 {
-  "classification": "One of: Meeting Booked, Meeting Requested, Call Requested, Information Requested, Follow Up, Not Interested, Automated Reply, Out Of Office, Blacklist",
+  "classification": "One of: Meeting Booked, Meeting Requested, Call Requested, Information Requested, Follow Up, Not Interested, Objection, Automated Reply, Out Of Office, Blacklist",
   "cleaned_response": "Plain-text body including at most a short closing + name/job title. If the scheduling link is not in the signature and is in the main part of the email body do not omit it from the cleaned email body.",
   "mobile_number": "E.164 formatted string or null. It MUST be in E.164 format when present",
   "direct_phone": "E.164 formatted string or null. It MUST be in E.164 format when present",
@@ -351,6 +358,10 @@ Blacklist classification notes:
 Follow Up classification notes:
 - Use "Follow Up" when the lead is not ready / not right now but leaves the door open (timing deferral).
 - Examples: "not ready to sell", "not looking to sell right now", "maybe next year", "in a couple of years", "reach back out in 6 months".
+
+Objection classification notes:
+- Use "Objection" when the lead raises a concern/constraint that blocks the next step without a hard decline (e.g., price/budget, already using a provider, skeptical, doesn't apply, capacity constraints).
+- If they clearly say "not interested" / "no thanks" with no openness, prefer "Not Interested" over "Objection".
 
 Newsletter / marketing detection notes:
 - is_newsletter = true ONLY if you are very certain this is a marketing/newsletter blast (unsubscribe footer, digest/promotional template, broad marketing content, no reference to the outreach).
@@ -413,6 +424,7 @@ export async function analyzeInboundEmailReply(opts: {
             "Information Requested",
             "Follow Up",
             "Not Interested",
+            "Objection",
             "Automated Reply",
             "Out Of Office",
             "Blacklist",
@@ -456,6 +468,7 @@ export async function analyzeInboundEmailReply(opts: {
             "Information Requested: Asks for details/clarifications/pricing/more information.",
             "Follow Up: Defers timing / not right now but leaves the door open (e.g., 'not ready', 'maybe next year', 'reach out in 6 months').",
             "Not Interested: Clear hard decline with no future openness and no explicit unsubscribe request.",
+            "Objection: Raises a concern/constraint that blocks the next step without a hard decline (e.g., price/budget, already using a provider, skeptical, doesn't apply).",
           ],
         },
         {
@@ -502,7 +515,7 @@ export async function analyzeInboundEmailReply(opts: {
     constraints: [
       "Always choose exactly one category from allowed list.",
       "Meeting Booked MUST satisfy the guardrails; otherwise use Meeting Requested / Call Requested / other best fit.",
-      "If multiple cues exist, apply decision_rules priority order: Blacklist > Automated Reply > Out Of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Follow Up > Not Interested.",
+      "If multiple cues exist, apply decision_rules priority order: Blacklist > Automated Reply > Out Of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Follow Up > Not Interested > Objection.",
       "Signature data must be excluded from cleaned_response and only output under the correct JSON keys.",
       "Use null for signature keys if not present.",
       "Do NOT use scheduling links found only in signatures to decide classification unless the body explicitly references using that link.",

@@ -20,6 +20,8 @@ This phase intentionally avoids “silent LLM writes” to durable memory.
   - `ttlDays >= 1`
   - `ttlDays` is hard-capped to **90 days**
 - Allowlist: **UI-configurable** (per-workspace policy, not code-only)
+  - Empty allowlist disables auto-approval (all proposals become `PENDING`).
+  - UI offers suggested defaults; rollout includes a one-time backfill script for existing workspaces.
 - Redaction: **minimal scrub** (emails/phones scrubbed; URLs allowed)
 - Loop model selection: **selectable in UI**, with **env var fallbacks** (no behavior break if unset)
   - evaluator: `AUTO_SEND_EVALUATOR_MODEL`, `AUTO_SEND_EVALUATOR_REASONING_EFFORT`
@@ -76,3 +78,4 @@ Overlaps detected by scanning last 10 phases and current working tree.
 ## Phase Summary (running)
 - 2026-02-09 — Added memory governance schema + workspace memory model + policy fields + TS contract scaffolding. (files: `prisma/schema.prisma`, `lib/memory-governance/types.ts`, `lib/memory-governance/redaction.ts`, `lib/draft-pipeline/types.ts`, `docs/planning/phase-127/a/plan.md`)
 - 2026-02-09 — Completed governance wiring + loop observability + pruning/tests/docs; ran full quality gates. (files: `lib/memory-governance/persist.ts`, `lib/auto-send/revision-agent.ts`, `lib/auto-send/orchestrator.ts`, `lib/auto-send/loop-observability.ts`, `actions/memory-governance-actions.ts`, `components/dashboard/confidence-control-plane.tsx`, `app/api/cron/background-jobs/route.ts`, `README.md`, `scripts/test-orchestrator.ts`)
+- 2026-02-10 — Empty allowlist now disables auto-approval (fail-closed); UI shows suggested defaults and added one-time backfill script. (files: `lib/memory-governance/policy.ts`, `actions/memory-governance-actions.ts`, `components/dashboard/confidence-control-plane.tsx`, `scripts/backfill-memory-allowlist-defaults.ts`, `lib/__tests__/memory-governance.test.ts`)

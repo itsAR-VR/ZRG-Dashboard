@@ -35,8 +35,9 @@ export function resolveMemoryPolicySettings(input?: Partial<MemoryPolicySettings
   const minTtlDays = normalizePositiveInt(input?.minTtlDays, DEFAULT_MEMORY_POLICY.minTtlDays);
   const ttlCapDays = normalizePositiveInt(input?.ttlCapDays, DEFAULT_MEMORY_POLICY.ttlCapDays);
 
-  // If no allowlist configured, fall back to a conservative default set.
-  const allowlistCategories = allowlist.length > 0 ? allowlist : DEFAULT_MEMORY_POLICY.allowlistCategories;
+  // Empty allowlist is a deliberate, fail-closed setting: no categories are auto-approved.
+  // (UI can still offer DEFAULT_MEMORY_POLICY.allowlistCategories as suggestions.)
+  const allowlistCategories = allowlist;
 
   return { allowlistCategories, minConfidence, minTtlDays, ttlCapDays };
 }
@@ -80,4 +81,3 @@ export function decideMemoryProposal(
     scrubbedContent,
   };
 }
-
