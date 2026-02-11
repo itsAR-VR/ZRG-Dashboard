@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import type { OfferedSlot } from "../booking";
-import { isLowRiskGenericAcceptance, looksLikeTimeProposalText } from "../followup-engine";
+import { isLowRiskGenericAcceptance, looksLikeTimeProposalText, processMessageForAutoBooking } from "../followup-engine";
+import { isAutoBookingBlockedSentiment } from "../sentiment-shared";
 
 describe("isLowRiskGenericAcceptance", () => {
   it("returns true for a fresh offered slot", () => {
@@ -56,5 +57,25 @@ describe("looksLikeTimeProposalText", () => {
     assert.equal(looksLikeTimeProposalText("Next week works for me."), true);
     assert.equal(looksLikeTimeProposalText("Thursday at 3pm"), true);
     assert.equal(looksLikeTimeProposalText("Feb 13"), true);
+  });
+});
+
+describe("auto-booking sentiment guards", () => {
+  it("treats blocked sentiments as blocked, but fails open when sentiment is missing", () => {
+    assert.equal(isAutoBookingBlockedSentiment(null), false);
+    assert.equal(isAutoBookingBlockedSentiment(undefined), false);
+    assert.equal(isAutoBookingBlockedSentiment("Out of Office"), true);
+    assert.equal(isAutoBookingBlockedSentiment("Automated Reply"), true);
+    assert.equal(isAutoBookingBlockedSentiment("Blacklist"), true);
+    assert.equal(isAutoBookingBlockedSentiment("Meeting Requested"), false);
+  });
+
+  it("does not attempt auto-booking for blocked sentiments (meta guard, no DB required)", async () => {
+    const result = await processMessageForAutoBooking("lead-123", "I'll be out until Monday 2/16", {
+      channel: "email",
+      messageId: "msg-123",
+      sentimentTag: "Out of Office",
+    });
+    assert.deepEqual(result, { booked: false });
   });
 });

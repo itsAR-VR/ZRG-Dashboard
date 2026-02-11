@@ -35,7 +35,7 @@ Prevent auto-booking from triggering on Out of Office and Automated Reply messag
 
 ## Constraints
 
-- **Fail-closed**: If sentiment is unavailable (null/undefined), auto-booking should still proceed (existing behavior preserved) — the guard only blocks on known non-scheduling sentiments
+- **Fail-open for unknown**: If sentiment is unavailable (null/undefined), auto-booking should still proceed (existing behavior preserved) — the guard only blocks on known non-scheduling sentiments
 - **Minimal blast radius**: Only add guards; do not restructure the auto-booking flow or modify the Meeting Overseer prompt
 - **Existing pattern**: Follow the same block-list pattern used by `auto-reply-gate.ts` and `auto-send-evaluator.ts`
 
@@ -61,6 +61,13 @@ Prevent auto-booking from triggering on Out of Office and Automated Reply messag
 | 1 | `lib/inbound-post-process/pipeline.ts` | ~294-300 | Add sentiment check before `processMessageForAutoBooking()` call; pass `sentimentTag` in meta |
 | 2 | `lib/followup-engine.ts` | ~3500-3530 | Add `sentimentTag` to `meta` type; add early-return guard |
 | 3 | `lib/meeting-overseer.ts` | ~145-155 | Add negative sentiment check to `shouldRunMeetingOverseer()` (defense-in-depth for future callers) |
+| 4 | `lib/sentiment-shared.ts` | N/A | Add `AUTO_BOOKING_BLOCKED_SENTIMENTS` + `isAutoBookingBlockedSentiment()` helper |
+| 5 | `lib/sentiment.ts` | N/A | Re-export the new helper/constant so server code can import via `@/lib/sentiment` |
+| 6 | `lib/background-jobs/email-inbound-post-process.ts` | N/A | Pass `sentimentTag` through to `processMessageForAutoBooking()` meta |
+| 7 | `lib/background-jobs/sms-inbound-post-process.ts` | N/A | Pass `sentimentTag` through to `processMessageForAutoBooking()` meta |
+| 8 | `lib/background-jobs/linkedin-inbound-post-process.ts` | N/A | Pass `sentimentTag` through to `processMessageForAutoBooking()` meta |
+| 9 | `lib/__tests__/meeting-overseer-slot-selection.test.ts` | N/A | Add unit tests for `shouldRunMeetingOverseer()` blocked-sentiment guard |
+| 10 | `lib/__tests__/followup-generic-acceptance.test.ts` | N/A | Add unit tests for helper semantics + `processMessageForAutoBooking()` meta guard |
 
 ## Blocked Sentiments
 
@@ -68,3 +75,34 @@ The following sentiments will block auto-booking:
 - `"Out of Office"` — OOO auto-replies contain dates that get misinterpreted as scheduling intent
 - `"Automated Reply"` — Generic auto-acknowledgements are not human scheduling intent
 - `"Blacklist"` — Opted-out leads should never be auto-booked (matches auto-reply-gate pattern)
+
+## Repo Reality Check (RED TEAM)
+
+- What exists today:
+  - `processMessageForAutoBooking(...)` is invoked from 4 places:
+    - `lib/inbound-post-process/pipeline.ts`
+    - `lib/background-jobs/email-inbound-post-process.ts`
+    - `lib/background-jobs/sms-inbound-post-process.ts`
+    - `lib/background-jobs/linkedin-inbound-post-process.ts`
+  - The sentiment taxonomy already contains `"Out of Office"`, `"Automated Reply"`, and `"Blacklist"` (`lib/sentiment-shared.ts`).
+  - `npm test` runs a fixed allowlist in `scripts/test-orchestrator.ts` (new test files must be added there to run under CI-style `npm test`).
+
+- Verified touch points:
+  - `lib/inbound-post-process/pipeline.ts` — auto-book call site and `sentimentTag` in scope
+  - `lib/followup-engine.ts` — `processMessageForAutoBooking` entrypoint; calls `runMeetingOverseerExtraction`
+  - `lib/meeting-overseer.ts` — `shouldRunMeetingOverseer` (used by `lib/ai-drafts.ts`)
+
+## RED TEAM Findings (Gaps / Weak Spots)
+
+- Missing caller coverage would allow regressions:
+  - Auto-book is called from background jobs (email/sms/linkedin), not only from the email webhook pipeline.
+  - Mitigation: add defense-in-depth guard inside `processMessageForAutoBooking` and pass `sentimentTag` in meta from all call sites.
+- Test harness mismatch:
+  - Adding new `lib/__tests__/*.test.ts` files does not automatically run under `npm test` due to the orchestrator allowlist.
+  - Mitigation: add new assertions to existing orchestrator-listed test files (or update the allowlist).
+- Build verification in sandbox:
+  - Turbopack build can fail in restricted environments due to port binding.
+  - Mitigation: verify with `npm run build -- --webpack` and document the rationale.
+
+## Phase Summary (running)
+- 2026-02-10 20:21 EST — Implemented auto-booking sentiment guards (pipeline skip + meta passthrough + followup-engine defense-in-depth + meeting overseer guard) and added unit tests; verified `npm test`, `npm run lint`, and `npm run build -- --webpack`. (files: `lib/sentiment-shared.ts`, `lib/sentiment.ts`, `lib/inbound-post-process/pipeline.ts`, `lib/followup-engine.ts`, `lib/meeting-overseer.ts`, `lib/background-jobs/email-inbound-post-process.ts`, `lib/background-jobs/sms-inbound-post-process.ts`, `lib/background-jobs/linkedin-inbound-post-process.ts`, `lib/__tests__/meeting-overseer-slot-selection.test.ts`, `lib/__tests__/followup-generic-acceptance.test.ts`)

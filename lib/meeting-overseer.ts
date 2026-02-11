@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { coerceEmailDraftVerificationModel } from "@/lib/ai-drafts/config";
 import type { OfferedSlot } from "@/lib/booking";
+import { isAutoBookingBlockedSentiment } from "@/lib/sentiment-shared";
 
 export type MeetingOverseerStage = "extract" | "gate";
 export type MeetingOverseerIntent =
@@ -147,6 +148,7 @@ export function shouldRunMeetingOverseer(opts: {
   sentimentTag?: string | null;
   offeredSlotsCount?: number;
 }): boolean {
+  if (isAutoBookingBlockedSentiment(opts.sentimentTag)) return false;
   const message = (opts.messageText || "").toLowerCase();
   if (!message) return false;
   if (typeof opts.offeredSlotsCount === "number" && opts.offeredSlotsCount > 0) return true;

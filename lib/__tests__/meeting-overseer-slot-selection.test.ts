@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { selectOfferedSlotByPreference } from "../meeting-overseer";
+import { selectOfferedSlotByPreference, shouldRunMeetingOverseer } from "../meeting-overseer";
 import type { OfferedSlot } from "../booking";
 
 describe("selectOfferedSlotByPreference", () => {
@@ -49,5 +49,34 @@ describe("selectOfferedSlotByPreference", () => {
     });
 
     assert.equal(selected?.datetime, offeredSlots[0].datetime);
+  });
+});
+
+describe("shouldRunMeetingOverseer", () => {
+  it("does not run for blocked sentiments even if the message contains scheduling keywords", () => {
+    assert.equal(
+      shouldRunMeetingOverseer({ messageText: "Monday works for me", sentimentTag: "Out of Office" }),
+      false
+    );
+    assert.equal(
+      shouldRunMeetingOverseer({ messageText: "Thursday at 3pm", sentimentTag: "Automated Reply" }),
+      false
+    );
+    assert.equal(
+      shouldRunMeetingOverseer({ messageText: "Next week is great", sentimentTag: "Blacklist" }),
+      false
+    );
+  });
+
+  it("does not run for blocked sentiments even when offered slots exist", () => {
+    assert.equal(
+      shouldRunMeetingOverseer({ messageText: "Sure", sentimentTag: "Out of Office", offeredSlotsCount: 3 }),
+      false
+    );
+  });
+
+  it("still runs for positive/unknown sentiment when appropriate", () => {
+    assert.equal(shouldRunMeetingOverseer({ messageText: "Monday works", sentimentTag: "Meeting Requested" }), true);
+    assert.equal(shouldRunMeetingOverseer({ messageText: "What time works for you?", sentimentTag: null }), true);
   });
 });

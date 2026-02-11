@@ -7,19 +7,31 @@ Strengthen the pricing instruction in Step 2 (draft generation) prompts across a
 ## Inputs
 
 - Subphase 135a completed (Step 3 verifier updated)
-- Current email pricing guard: `lib/ai-drafts.ts:846` in `buildEmailPrompt()`
-- SMS prompt: `buildSmsPrompt()` — check for equivalent pricing rule
-- LinkedIn prompt: `buildLinkedInPrompt()` — check for equivalent pricing rule
-- Template-based email prompt: `lib/ai/prompt-registry.ts:258+` (`DRAFT_EMAIL_SYSTEM_TEMPLATE`)
+- Email two-step prompts (hot path):
+  - Step 1 strategy system instructions: `lib/ai-drafts.ts` → `buildEmailDraftStrategyInstructions()` (~line 1023)
+  - Step 2 generation system instructions: `lib/ai-drafts.ts` → `buildEmailDraftGenerationInstructions()` (~line 1151)
+- Email single-step fallback prompt (only used when two-step fails): `lib/ai-drafts.ts` → `buildEmailPrompt()` (~line 846)
+- SMS/LinkedIn hot-path templates (used by `generateResponseDraft()` via prompt registry):
+  - `lib/ai/prompt-registry.ts` → `DRAFT_SMS_SYSTEM_TEMPLATE` (promptKey `draft.generate.sms.v1`)
+  - `lib/ai/prompt-registry.ts` → `DRAFT_LINKEDIN_SYSTEM_TEMPLATE` (promptKey `draft.generate.linkedin.v1`)
+- SMS/LinkedIn fallback prompts (used only if registry template is missing/empty):
+  - `lib/ai-drafts.ts` → `buildSmsPrompt()` (~line 628)
+  - `lib/ai-drafts.ts` → `buildLinkedInPrompt()` (~line 707)
+- Prompt override drift model: any existing `PromptOverride` / `SystemPromptOverride` for these prompt keys must be updated (re-saved) after code-default edits, otherwise they will be silently ignored due to `baseContentHash` mismatch.
 
 ## Work
 
-1. **Read** `lib/ai-drafts.ts` and locate the pricing instruction in each prompt builder:
-   - `buildEmailPrompt()` (~line 846)
-   - `buildSmsPrompt()` (~line 628-705)
-   - `buildLinkedInPrompt()` (~line 707-765)
+1. **Email two-step: add an explicit pricing exact-match contract to Step 1 strategy.**
+   - Update `buildEmailDraftStrategyInstructions()` to include:
+     - If the lead asks about pricing/cost/fee and pricing is present in OUR OFFER or REFERENCE INFORMATION, the strategy must include the exact dollar amounts verbatim in `intent_summary` and/or the `outline` bullets.
+     - If pricing is NOT explicitly present, the strategy must plan to ask one clarifying question and must not invent a dollar amount.
 
-2. **Replace** the pricing guard in `buildEmailPrompt()` at line 846:
+2. **Email two-step: add a pricing guard to Step 2 generation.**
+   - Update `buildEmailDraftGenerationInstructions()` to include:
+     - If you mention pricing, only use dollar amounts that appear in the STRATEGY section (intent/outline). Do not round, estimate, or invent.
+   - This keeps the generation model aligned to the strategy output (which was grounded to offer/knowledge in Step 1).
+
+3. **Update the email single-step fallback pricing guard** in `buildEmailPrompt()` (~line 846):
 
    **Current:**
    ```
@@ -28,16 +40,24 @@ Strengthen the pricing instruction in Step 2 (draft generation) prompts across a
 
    **New:**
    ```
-   - Never use pricing placeholders like ${PRICE}, $X-$Y, or made-up numbers. If you mention pricing, the dollar amount MUST exactly match a price/fee/cost stated in OFFER or Reference Information — do not round, estimate, or invent. If no pricing is explicitly present in those sections, do not state any dollar amount; instead ask one clarifying question and offer a quick call.
+   - Never use pricing placeholders like ${PRICE}, $X-$Y, or made-up numbers. If you mention pricing, the numeric dollar amount MUST match a price/fee/cost stated in OFFER or Reference Information — do not round, estimate, or invent. If no pricing is explicitly present in those sections, do not state any dollar amount; instead ask one clarifying question and offer a quick call.
    ```
 
-3. **Apply** the same change to `buildSmsPrompt()` and `buildLinkedInPrompt()` if they contain equivalent pricing rules
+4. **Update SMS + LinkedIn hot-path system templates** in `lib/ai/prompt-registry.ts`:
+   - Add the same “numeric dollar amount must match explicitly stated pricing in About Our Business / Reference Information” rule to:
+     - `DRAFT_SMS_SYSTEM_TEMPLATE` Guidelines section
+     - `DRAFT_LINKEDIN_SYSTEM_TEMPLATE` Guidelines section
 
-4. **Check** if the template-based prompt `DRAFT_EMAIL_SYSTEM_TEMPLATE` also has a pricing instruction and update it if so
+5. **Update SMS + LinkedIn fallback prompt builders** (`buildSmsPrompt()`, `buildLinkedInPrompt()`) with the same “exact-match pricing” wording so fallback behavior matches the registry templates.
+
+6. **(Optional sanity check)** If there are active `PromptOverride` / `SystemPromptOverride` records for `draft.generate.sms.v1` or `draft.generate.linkedin.v1`, re-save them with the same pricing guardrail so they don’t keep weaker/legacy wording.
 
 ## Output
 
-Updated pricing guards in all three prompt builders in `lib/ai-drafts.ts` and the template in `lib/ai/prompt-registry.ts` (if applicable).
+Updated pricing exact-match guards on the **hot paths**:
+- Email two-step strategy + generation instructions in `lib/ai-drafts.ts`
+- Email fallback prompt in `lib/ai-drafts.ts`
+- SMS/LinkedIn registry templates in `lib/ai/prompt-registry.ts` (plus fallback builders for consistency)
 
 ## Handoff
 

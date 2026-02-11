@@ -97,3 +97,21 @@ Confirm no other callers of `processMessageForAutoBooking()` are affected:
 ## Handoff
 
 Phase 134b adds unit tests verifying the guards work for all blocked and allowed sentiment combinations.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Added shared blocked-sentiments helper (`AUTO_BOOKING_BLOCKED_SENTIMENTS`, `isAutoBookingBlockedSentiment`) in `lib/sentiment-shared.ts` (re-exported via `lib/sentiment.ts`).
+  - Added pipeline guard to skip auto-booking when sentiment is blocked and passed `sentimentTag` via meta (`lib/inbound-post-process/pipeline.ts`).
+  - Preserved prior pipeline/sentiment taxonomy changes from adjacent phases (e.g., Phase 131 `"Objection"` mapping) while adding the new guards.
+  - Added defense-in-depth guard in `processMessageForAutoBooking(...)` using both `meta.sentimentTag` (pre-DB) and `lead.sentimentTag` (post-load) (`lib/followup-engine.ts`).
+  - Added negative-sentiment guard to `shouldRunMeetingOverseer(...)` (`lib/meeting-overseer.ts`).
+  - Passed `sentimentTag` through all `processMessageForAutoBooking(...)` call sites, including background jobs (email/sms/linkedin).
+- Commands run:
+  - `npm test` — pass
+  - `npm run lint` — pass (warnings only)
+  - `npm run build -- --webpack` — pass (Turbopack build can fail in this sandbox due to port binding)
+- Blockers:
+  - `npm run build` (Turbopack) can fail in restricted environments with `Operation not permitted (os error 1)`; used webpack build flag as a workaround.
+- Next concrete steps:
+  - Update Phase 134b Output to reflect actual test locations (added to existing test files to match orchestrator allowlist).
+  - Write `docs/planning/phase-134/review.md` with verification evidence.

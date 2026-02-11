@@ -31,7 +31,10 @@ Founders Club has a **custom `PromptOverride`** for `draft.verify.email.step3.v1
 
 | Phase | Status | Overlap | Coordination |
 |-------|--------|---------|--------------|
-| Phase 131 | Active (uncommitted) | File: `lib/ai/prompt-registry.ts` (sentiment prompts) | Independent — our change targets Step 3 verifier section (line ~241), Phase 131 modified sentiment classification templates |
+| Phase 129 | Complete | Domain: prompt editing + overrides (`PromptOverride`, `SystemPromptOverride`) | Phase 135 changes must respect the flat drift model: overrides only apply when `baseContentHash` matches the current code default. Prefer `savePromptOverride()` / `saveSystemPromptOverride()` for DB updates so hashes + revision history stay aligned. |
+| Phase 128 | Complete | File: `lib/ai-drafts.ts` (pricing placeholders, serviceDescription merge) | Preserve Phase 128 pricing placeholder hardening + existing tests. Phase 135 targets hallucinated *real-looking* dollar amounts (e.g., `$3,000`) and must not regress placeholder stripping behavior. |
+| Phase 131 | Complete | File: `lib/ai/prompt-registry.ts` (sentiment prompt updates) | Re-read current `prompt-registry.ts` from HEAD before editing; keep changes localized to the Step 3 verifier + draft templates only. |
+| Phase 134 | Active (uncommitted in working tree) | Files: `lib/meeting-overseer.ts`, tests | No intended overlap with Phase 135, but keep a strict pre-flight `git status` check before touching shared files. |
 
 ## Objectives
 
@@ -61,3 +64,14 @@ Founders Club has a **custom `PromptOverride`** for `draft.verify.email.step3.v1
 * a — Strengthen Step 3 pricing validation (code default + Founders Club override)
 * b — Strengthen Step 2 generation prompt pricing guards
 * c — Add programmatic pricing validation safety net with telemetry
+
+## Repo Reality Check (RED TEAM)
+
+- **Override drift is real:** Workspace/system prompt overrides are applied only when `baseContentHash` matches the current code default (`lib/ai/prompt-registry.ts:1684-1702`). Changing code defaults will temporarily disable existing overrides until they are re-saved (hash rebased).
+- **Email Step 2 guard is not on the hot path:** The pricing guard at `lib/ai-drafts.ts:846` lives in `buildEmailPrompt()` which is used only for the **single-step fallback** when two-step email generation fails. The primary two-step generation uses `buildEmailDraftStrategyInstructions()` + `buildEmailDraftGenerationInstructions()` and currently has no “exact-match pricing” rule.
+- **SMS/LinkedIn hot-path prompts come from the registry:** Runtime system instructions for SMS/LinkedIn come from `lib/ai/prompt-registry.ts` templates (`DRAFT_SMS_SYSTEM_TEMPLATE`, `DRAFT_LINKEDIN_SYSTEM_TEMPLATE`). The `buildSmsPrompt()` / `buildLinkedInPrompt()` pricing guardrails are fallbacks and do not protect the common path unless the registry template is missing.
+- **Email strategy/generation prompt keys are suffixed:** Two-step email prompt keys are suffixed (`draft.generate.email.*.arch_*` / `.ai_select`) and do not resolve to prompt-registry templates. Prompt editing/overrides won’t affect them; Step 1/2 fixes must be code-level in `lib/ai-drafts.ts`.
+
+## Open Questions (Need Human Input)
+
+- Telemetry severity: when the safety net detects hallucinated prices, should we (A) mark the most relevant `AIInteraction` as `status="error"` via `markAiInteractionError(..., { severity: "warning" })`, or (B) implement a metadata-only “warning” log path to avoid inflating error counts? (confidence <90%)
