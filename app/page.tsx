@@ -1,19 +1,41 @@
 "use client"
 
-import { Suspense, useEffect, useState } from "react"
+import { Suspense, useCallback, useEffect, useState } from "react"
+import dynamic from "next/dynamic"
 import { useSearchParams } from "next/navigation"
 import { AlertTriangle, X } from "lucide-react"
 import { Sidebar, type ViewType } from "@/components/dashboard/sidebar"
-import { InboxView } from "@/components/dashboard/inbox-view"
-import { FollowUpsView } from "@/components/dashboard/follow-ups-view"
-import { CRMView } from "@/components/dashboard/crm-view"
-import { AnalyticsView } from "@/components/dashboard/analytics-view"
-import { InsightsView } from "@/components/dashboard/insights-view"
-import { SettingsView } from "@/components/dashboard/settings-view"
 import { Button } from "@/components/ui/button"
 import { getClients } from "@/actions/client-actions"
 import { getLeadWorkspaceId } from "@/actions/lead-actions"
 import type { Channel } from "@/actions/lead-actions"
+
+const dynamicViewLoadingFallback = () => <div className="flex-1 animate-pulse rounded bg-muted/30" />
+
+const InboxView = dynamic(
+  () => import("@/components/dashboard/inbox-view").then((mod) => mod.InboxView),
+  { loading: dynamicViewLoadingFallback }
+)
+const FollowUpsView = dynamic(
+  () => import("@/components/dashboard/follow-ups-view").then((mod) => mod.FollowUpsView),
+  { loading: dynamicViewLoadingFallback }
+)
+const CRMView = dynamic(
+  () => import("@/components/dashboard/crm-view").then((mod) => mod.CRMView),
+  { loading: dynamicViewLoadingFallback }
+)
+const AnalyticsView = dynamic(
+  () => import("@/components/dashboard/analytics-view").then((mod) => mod.AnalyticsView),
+  { loading: dynamicViewLoadingFallback }
+)
+const InsightsView = dynamic(
+  () => import("@/components/dashboard/insights-view").then((mod) => mod.InsightsView),
+  { loading: dynamicViewLoadingFallback }
+)
+const SettingsView = dynamic(
+  () => import("@/components/dashboard/settings-view").then((mod) => mod.SettingsView),
+  { loading: dynamicViewLoadingFallback }
+)
 
 interface Client {
   id: string
@@ -54,7 +76,7 @@ function DashboardPageInner() {
     setActiveWorkspace(nextWorkspace)
   }
 
-  const syncWorkspaces = (nextWorkspaces: Client[]) => {
+  const syncWorkspaces = useCallback((nextWorkspaces: Client[]) => {
     setWorkspaces(nextWorkspaces)
     setActiveWorkspace((prev) => {
       if (nextWorkspaces.length === 0) return null
@@ -63,7 +85,7 @@ function DashboardPageInner() {
       if (nextWorkspaces.some((w) => w.id === prev)) return prev
       return nextWorkspaces[0].id
     })
-  }
+  }, [workspaceSelectionMode])
 
   // Handler to open a lead in the Master Inbox from CRM
   const handleOpenInInbox = (leadId: string) => {
@@ -98,7 +120,7 @@ function DashboardPageInner() {
       }
     }
     fetchWorkspaces()
-  }, [workspaceFetchNonce])
+  }, [syncWorkspaces, workspaceFetchNonce])
 
   // Sync view/lead selection from URL params (used by Follow-ups deep links)
   useEffect(() => {

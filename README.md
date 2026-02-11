@@ -266,6 +266,7 @@ model Message {
 | `OPENAI_API_KEY` | OpenAI API key |
 | `OPENAI_DRAFT_TIMEOUT_MS` | (Optional) Max time for AI draft generation (default `120000`) |
 | `OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS` | (Optional) Max time for AI draft generation inside webhook/background-job contexts (default `30000`) |
+| `AUTO_BOOK_SLOT_MATCH_WINDOW_MS` | (Optional) Max milliseconds for nearest-slot auto-book matching fallback when exact UTC slot match fails (default `1800000` = 30 minutes) |
 | `OPENAI_DRAFT_TOKEN_BUDGET_MULTIPLIER` | (Optional) Output token budget multiplier for drafts (default `3`) |
 | `OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP` | (Optional) Hard cap for `max_output_tokens` on draft retries (default `12000`) |
 | `OPENAI_DRAFT_PREFER_API_TOKEN_COUNT` | (Optional) Use OpenAI input-tokens count API for sizing draft budgets (default `false`) |

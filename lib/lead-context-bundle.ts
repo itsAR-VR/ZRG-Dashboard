@@ -260,7 +260,7 @@ export async function buildLeadContextBundle(opts: {
       if (!settings) settings = fetchedSettings;
 
       if (wantsKnowledgeAssets && !knowledgeAssets) {
-        knowledgeAssets = await prisma.knowledgeAsset.findMany({
+        const fetchedAssets = await prisma.knowledgeAsset.findMany({
           where: { workspaceSettings: { clientId } },
           orderBy: { updatedAt: "desc" },
           take: 50,
@@ -270,10 +270,17 @@ export async function buildLeadContextBundle(opts: {
             fileUrl: true,
             originalFileName: true,
             mimeType: true,
+            rawContent: true,
             textContent: true,
+            aiContextMode: true,
             updatedAt: true,
           },
         }).catch(() => []);
+
+        knowledgeAssets = fetchedAssets.map((asset) => ({
+          ...asset,
+          aiContextMode: asset.aiContextMode === "raw" ? "raw" : "notes",
+        }));
       }
     }
 

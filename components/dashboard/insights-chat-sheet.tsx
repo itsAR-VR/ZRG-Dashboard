@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, Bot, CheckCircle2, Clock, Copy, ExternalLink, Loader2, MessageSquareText, Plus, RefreshCcw, Settings2, Shield, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -512,6 +512,7 @@ const SessionItem = memo(function SessionItem({
         isBusy || isBuilding ? "insights-glow-pulse" : "",
       ].join(" ")}
       onClick={() => onSelect(session.id)}
+      aria-current={isSelected ? "true" : undefined}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
@@ -652,13 +653,27 @@ function CampaignPickerDialog(props: {
                           key={c.id}
                           className={props.allCampaigns ? "opacity-50" : "cursor-pointer"}
                           onClick={toggleSelection}
+                          role={props.allCampaigns ? undefined : "button"}
+                          tabIndex={props.allCampaigns ? -1 : 0}
+                          onKeyDown={(event) => {
+                            if (props.allCampaigns) return;
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              toggleSelection();
+                            }
+                          }}
                         >
                           <TableCell>
                             <input
                               type="checkbox"
                               checked={checked}
                               disabled={props.allCampaigns}
-                              onChange={toggleSelection}
+                              onClick={(event) => event.stopPropagation()}
+                              onKeyDown={(event) => event.stopPropagation()}
+                              onChange={(event) => {
+                                event.stopPropagation();
+                                toggleSelection();
+                              }}
                               aria-label={`Select ${c.name}`}
                             />
                           </TableCell>
@@ -966,7 +981,7 @@ function InsightsConsoleBody({
     };
   }, []);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     if (previousWorkspaceRef.current === activeWorkspace) return;
     previousWorkspaceRef.current = activeWorkspace;
 

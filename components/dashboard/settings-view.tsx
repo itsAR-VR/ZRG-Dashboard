@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useLayoutEffect, useCallback } from "react"
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react"
 import {
   Mail,
   Send,
@@ -37,6 +37,7 @@ import {
   RotateCcw,
   ChevronDown,
   ChevronRight,
+  Image as ImageIcon,
 } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -46,6 +47,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
+import { Slider } from "@/components/ui/slider"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -75,6 +77,7 @@ import { AdminDashboardTab } from "./admin-dashboard-tab"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { cn } from "@/lib/utils"
 import { getGlobalAdminStatus, getWorkspaceAdminStatus, getWorkspaceCapabilities } from "@/actions/access-actions"
+import { getClients } from "@/actions/client-actions"
 import {
   getSlackApprovalRecipients,
   getSlackBotTokenStatus,
@@ -100,12 +103,12 @@ import {
   updateUserSettings,
   addKnowledgeAsset,
   uploadKnowledgeAssetFile,
+  uploadWorkspaceBrandLogo,
   addWebsiteKnowledgeAsset,
   retryWebsiteKnowledgeAssetIngestion,
   getKnowledgeAssetRevisions,
   rollbackKnowledgeAssetRevision,
   updateKnowledgeAsset,
-  updateAssetTextContent,
   deleteKnowledgeAsset,
   getCalendarLinks,
   addCalendarLink,
@@ -294,6 +297,31 @@ function extractCalendlyEventTypeUuidFromUri(input: string | null | undefined): 
 }
 
 const PRIMARY_WEBSITE_ASSET_NAME = "Primary: Website URL"
+const MAX_WORKSPACE_LOGO_BYTES = 5 * 1024 * 1024
+const WORKSPACE_LOGO_ACCEPT = "image/png,image/jpeg,image/jpg,image/webp"
+type DeferredSettingsSlice = "integrations" | "booking"
+
+type BrandLogoCropState = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+type BrandLogoSource = {
+  file: File
+  previewUrl: string
+  mimeType: "image/png" | "image/jpeg" | "image/webp"
+  naturalWidth: number
+  naturalHeight: number
+}
+
+const DEFAULT_BRAND_LOGO_CROP: BrandLogoCropState = {
+  x: 10,
+  y: 10,
+  width: 80,
+  height: 80,
+}
 
 function normalizePrimaryWebsiteUrl(value: string): string | null {
   const raw = value.trim()
@@ -312,11 +340,108 @@ function normalizePrimaryWebsiteUrl(value: string): string | null {
   }
 }
 
+function clampBrandLogoCrop(crop: BrandLogoCropState): BrandLogoCropState {
+  const x = Math.min(99, Math.max(0, Number.isFinite(crop.x) ? crop.x : 0))
+  const y = Math.min(99, Math.max(0, Number.isFinite(crop.y) ? crop.y : 0))
+  const maxWidth = Math.max(1, 100 - x)
+  const maxHeight = Math.max(1, 100 - y)
+  const width = Math.min(maxWidth, Math.max(1, Number.isFinite(crop.width) ? crop.width : 1))
+  const height = Math.min(maxHeight, Math.max(1, Number.isFinite(crop.height) ? crop.height : 1))
+
+  return { x, y, width, height }
+}
+
+function coerceWorkspaceLogoMimeType(file: File): "image/png" | "image/jpeg" | "image/webp" | null {
+  const type = (file.type || "").toLowerCase()
+  if (type === "image/png") return "image/png"
+  if (type === "image/jpeg" || type === "image/jpg") return "image/jpeg"
+  if (type === "image/webp") return "image/webp"
+  return null
+}
+
+function resolveThemeSurfaceColor(): string {
+  if (typeof window === "undefined" || typeof document === "undefined") return "rgb(24, 24, 27)"
+
+  const cardToken = window.getComputedStyle(document.documentElement).getPropertyValue("--card").trim()
+  if (!cardToken) return "rgb(24, 24, 27)"
+
+  const probe = document.createElement("div")
+  probe.style.color = `hsl(${cardToken})`
+  probe.style.position = "absolute"
+  probe.style.pointerEvents = "none"
+  probe.style.opacity = "0"
+  document.body.appendChild(probe)
+  const resolved = window.getComputedStyle(probe).color || "rgb(24, 24, 27)"
+  document.body.removeChild(probe)
+  return resolved
+}
+
+async function readImageDimensions(url: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      resolve({ width: img.naturalWidth, height: img.naturalHeight })
+    }
+    img.onerror = () => reject(new Error("Failed to load image"))
+    img.src = url
+  })
+}
+
+async function createCroppedWorkspaceLogoFile(opts: {
+  source: BrandLogoSource
+  crop: BrandLogoCropState
+  maxEdge: number
+  backgroundColor: string
+}): Promise<File> {
+  const image = new Image()
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve()
+    image.onerror = () => reject(new Error("Failed to decode selected image"))
+    image.src = opts.source.previewUrl
+  })
+
+  const crop = clampBrandLogoCrop(opts.crop)
+  const sourceWidth = opts.source.naturalWidth
+  const sourceHeight = opts.source.naturalHeight
+  const sx = Math.max(0, Math.floor((crop.x / 100) * sourceWidth))
+  const sy = Math.max(0, Math.floor((crop.y / 100) * sourceHeight))
+  const sw = Math.max(1, Math.floor((crop.width / 100) * sourceWidth))
+  const sh = Math.max(1, Math.floor((crop.height / 100) * sourceHeight))
+
+  const maxEdge = Math.max(64, Math.min(2048, Math.floor(opts.maxEdge)))
+  const scale = Math.min(1, maxEdge / Math.max(sw, sh))
+  const outputWidth = Math.max(1, Math.floor(sw * scale))
+  const outputHeight = Math.max(1, Math.floor(sh * scale))
+
+  const canvas = document.createElement("canvas")
+  canvas.width = outputWidth
+  canvas.height = outputHeight
+
+  const context = canvas.getContext("2d")
+  if (!context) throw new Error("Canvas is unavailable in this browser")
+
+  context.fillStyle = opts.backgroundColor
+  context.fillRect(0, 0, outputWidth, outputHeight)
+  context.drawImage(image, sx, sy, sw, sh, 0, 0, outputWidth, outputHeight)
+
+  const outputType = opts.source.mimeType
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, outputType, outputType === "image/png" ? undefined : 0.92)
+  })
+  if (!blob) throw new Error("Failed to prepare cropped logo")
+
+  const extension = outputType === "image/png" ? "png" : outputType === "image/webp" ? "webp" : "jpg"
+  return new File([blob], `workspace-logo.${extension}`, { type: outputType })
+}
+
 export function SettingsView({ activeWorkspace, activeTab = "general", onTabChange, onWorkspacesChange }: SettingsViewProps) {
   const { user, isLoading: isUserLoading } = useUser()
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [hasChanges, setHasChanges] = useState(false)
+  const loadSettingsRequestRef = useRef(0)
+  const loadGhlRequestRef = useRef(0)
+  const loadCalendlyRequestRef = useRef(0)
 
   // Settings state from database
   const [settings, setSettings] = useState<UserSettingsData | null>(null)
@@ -375,6 +500,19 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     companyName: "",
     targetResult: "",
   })
+  const [workspaceBrand, setWorkspaceBrand] = useState<{
+    brandName: string
+    brandLogoUrl: string | null
+  }>({
+    brandName: "",
+    brandLogoUrl: null,
+  })
+  const [brandLogoSource, setBrandLogoSource] = useState<BrandLogoSource | null>(null)
+  const [brandLogoCrop, setBrandLogoCrop] = useState<BrandLogoCropState>(DEFAULT_BRAND_LOGO_CROP)
+  const [brandLogoExportMaxEdge, setBrandLogoExportMaxEdge] = useState(512)
+  const [brandLogoCropOpen, setBrandLogoCropOpen] = useState(false)
+  const [isUploadingBrandLogo, setIsUploadingBrandLogo] = useState(false)
+  const [isClearingBrandLogo, setIsClearingBrandLogo] = useState(false)
 
   // Calendar links state
   const [calendarLinks, setCalendarLinks] = useState<CalendarLinkData[]>([])
@@ -595,6 +733,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   } | null>(null)
   const [emailBisonAvailabilitySlotPreviewLoading, setEmailBisonAvailabilitySlotPreviewLoading] = useState(false)
   const [emailBisonAvailabilitySlotPreviewError, setEmailBisonAvailabilitySlotPreviewError] = useState<string | null>(null)
+  const deferredSliceLoadRef = useRef<Record<string, Record<DeferredSettingsSlice, boolean>>>({})
 
   const [aiPromptsOpen, setAiPromptsOpen] = useState(false)
   const [aiPromptTemplates, setAiPromptTemplates] = useState<AiPromptTemplatePublic[] | null>(null)
@@ -663,9 +802,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     name: string
     type: "file" | "text" | "url"
     fileUrl: string
+    rawContent: string
     textContent: string
+    aiContextMode: "notes" | "raw"
   } | null>(null)
   const [isSavingAssetEdit, setIsSavingAssetEdit] = useState(false)
+  const [assetViewerTab, setAssetViewerTab] = useState<"raw" | "notes">("raw")
 
   const isClientPortalUser = Boolean(workspaceCapabilities?.isClientPortalUser)
   const showAdminTab = isWorkspaceAdmin && !isClientPortalUser
@@ -708,6 +850,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     setAssetHistoryTarget(null)
     setAssetViewerOpen(false)
     setAssetViewerTarget(null)
+    setAssetViewerTab("raw")
     setAssetEditOpen(false)
     setAssetEditDraft(null)
     setIsSavingAssetEdit(false)
@@ -718,306 +861,246 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     resetAiPromptModalState()
   }, [activeWorkspace, resetAiPromptModalState])
 
+  useEffect(() => {
+    return () => {
+      if (brandLogoSource?.previewUrl) {
+        URL.revokeObjectURL(brandLogoSource.previewUrl)
+      }
+    }
+  }, [brandLogoSource?.previewUrl])
+
   // Load settings when workspace changes
   useEffect(() => {
+    let cancelled = false
+    const requestId = ++loadSettingsRequestRef.current
+    loadGhlRequestRef.current += 1
+    loadCalendlyRequestRef.current += 1
+    const isStale = () => cancelled || requestId !== loadSettingsRequestRef.current
+
     async function loadSettings() {
       setIsLoading(true)
-      const [result, adminStatus, capabilitiesResult, globalStatus] = await Promise.all([
-        getUserSettings(activeWorkspace),
-        activeWorkspace ? getWorkspaceAdminStatus(activeWorkspace) : Promise.resolve({ success: true, isAdmin: false }),
-        activeWorkspace ? getWorkspaceCapabilities(activeWorkspace) : Promise.resolve({ success: true, capabilities: null }),
-        getGlobalAdminStatus(),
-      ])
-
-      const capabilities = capabilitiesResult.success ? capabilitiesResult.capabilities ?? null : null
-      setWorkspaceCapabilities(capabilities)
-      setIsWorkspaceAdmin(Boolean(adminStatus.success && adminStatus.isAdmin) && !capabilities?.isClientPortalUser)
-      setIsGlobalAdmin(Boolean(globalStatus.success && globalStatus.isAdmin))
-      setSlackIntegrationError(null)
-      setSlackChannels([])
-      setSlackChannelToAdd("")
-      setSlackMembers([])
-      setSelectedApprovalRecipients([])
-      setResendIntegrationError(null)
-      setResendApiKeyDraft("")
-      setResendFromEmailDraft("")
-      setEmailBisonAvailabilitySlotPreview(null)
-      setEmailBisonAvailabilitySlotPreviewError(null)
-      
-      if (result.success && result.data) {
-        setSettings(result.data)
-        // Populate form state from database
-        setAiPersona({
-          name: result.data.aiPersonaName || "",
-          tone: result.data.aiTone || "friendly-professional",
-          greeting: result.data.aiGreeting || "Hi {firstName},",
-          smsGreeting: result.data.aiSmsGreeting || result.data.aiGreeting || "Hi {firstName},",
-          signature: result.data.aiSignature || "",
-          goals: result.data.aiGoals || "",
-          serviceDescription: result.data.serviceDescription || "",
-          idealCustomerProfile: result.data.idealCustomerProfile || "",
-        })
-        setInsightsChatSettings({
-          model: result.data.insightsChatModel || "gpt-5-mini",
-          reasoningEffort: result.data.insightsChatReasoningEffort || "medium",
-          enableCampaignChanges: result.data.insightsChatEnableCampaignChanges ?? false,
-          enableExperimentWrites: result.data.insightsChatEnableExperimentWrites ?? false,
-          enableFollowupPauses: result.data.insightsChatEnableFollowupPauses ?? false,
-          messagePerformanceWeeklyEnabled: result.data.messagePerformanceWeeklyEnabled ?? false,
-        })
-        setDraftGenerationSettings({
-          model: result.data.draftGenerationModel || "gpt-5.1",
-          reasoningEffort: result.data.draftGenerationReasoningEffort || "medium",
-        })
-        setEmailDraftVerificationSettings({
-          model: result.data.emailDraftVerificationModel || "gpt-5.2",
-        })
-        setCompanyContext({
-          companyName: result.data.companyName || "",
-          targetResult: result.data.targetResult || "",
-        })
-        setAvailability({
-          timezone: result.data.timezone || "America/New_York",
-          startTime: result.data.workStartTime || "09:00",
-          endTime: result.data.workEndTime || "17:00",
-        })
-        setCalendarHealth({
-          enabled: result.data.calendarHealthEnabled ?? true,
-          minSlots:
-            typeof result.data.calendarHealthMinSlots === "number" && Number.isFinite(result.data.calendarHealthMinSlots)
-              ? result.data.calendarHealthMinSlots
-              : 10,
-        })
-        const customSchedule = coerceAutoSendCustomSchedule(result.data.autoSendCustomSchedule)
-        const holidays = customSchedule?.holidays ?? DEFAULT_AUTO_SEND_HOLIDAYS
-        setAutoSendSchedule({
-          mode: (result.data.autoSendScheduleMode as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM") || "ALWAYS",
-          customDays: customSchedule?.days ?? [1, 2, 3, 4, 5],
-          customStartTime: customSchedule?.startTime || result.data.workStartTime || "09:00",
-          customEndTime: customSchedule?.endTime || result.data.workEndTime || "17:00",
-          holidays: {
-            presetEnabled: holidays.presetEnabled,
-            excludedPresetDates: [...holidays.excludedPresetDates],
-            additionalBlackoutDates: [...holidays.additionalBlackoutDates],
-            additionalBlackoutDateRanges: [...holidays.additionalBlackoutDateRanges],
-          },
-        })
-        setAutoSendSkipHumanReview(result.data.autoSendSkipHumanReview ?? false)
-        setNotifications({
-          emailDigest: result.data.emailDigest,
-          slackAlerts: result.data.slackAlerts,
-        })
-        setNotificationCenter({
-          emails: result.data.notificationEmails ?? [],
-          phones: result.data.notificationPhones ?? [],
-          slackChannelIds: result.data.notificationSlackChannelIds ?? [],
-          dailyDigestTime: result.data.notificationDailyDigestTime || "09:00",
-          sentimentRules: coerceNotificationRules(result.data.notificationSentimentRules),
-        })
-	        setAutomationRules({
-	          autoApproveMeetings: result.data.autoApproveMeetings,
-	          flagUncertainReplies: result.data.flagUncertainReplies,
-	          pauseForOOO: result.data.pauseForOOO,
-	          autoBlacklist: result.data.autoBlacklist,
-	        })
-	        setFollowUpsPausedUntil(result.data.followUpsPausedUntil)
-	        setAirtableModeEnabled(result.data.airtableMode)
-        // Parse qualification questions from JSON
-        if (result.data.qualificationQuestions) {
-          try {
-            setQualificationQuestions(JSON.parse(result.data.qualificationQuestions))
-          } catch {
-            setQualificationQuestions([])
-          }
-        } else {
-          setQualificationQuestions([])
-        }
-        // Set knowledge assets
-        if (result.knowledgeAssets) {
-          setKnowledgeAssets(result.knowledgeAssets)
-          const primaryAsset = result.knowledgeAssets.find((asset) => asset.name === PRIMARY_WEBSITE_ASSET_NAME)
-          const primaryUrl = primaryAsset?.textContent || primaryAsset?.fileUrl || ""
-          setPrimaryWebsiteAssetId(primaryAsset?.id || null)
-          setPrimaryWebsiteUrl(primaryUrl)
-        } else {
-          setPrimaryWebsiteAssetId(null)
-          setPrimaryWebsiteUrl("")
-        }
-        // Set meeting booking settings
-        setMeetingBooking({
-          meetingBookingProvider: result.data.meetingBookingProvider || "ghl",
-          ghlDefaultCalendarId: result.data.ghlDefaultCalendarId || "",
-          ghlDirectBookCalendarId: result.data.ghlDirectBookCalendarId || "",
-          ghlAssignedUserId: result.data.ghlAssignedUserId || "",
-          autoBookMeetings: result.data.autoBookMeetings,
-          meetingDurationMinutes: result.data.meetingDurationMinutes,
-          meetingTitle: result.data.meetingTitle || "Intro to {companyName}",
-          calendlyEventTypeLink: result.data.calendlyEventTypeLink || "",
-          calendlyEventTypeUri: result.data.calendlyEventTypeUri || "",
-          calendlyDirectBookEventTypeLink: result.data.calendlyDirectBookEventTypeLink || "",
-          calendlyDirectBookEventTypeUri: result.data.calendlyDirectBookEventTypeUri || "",
-        })
-
-        setEmailBisonAvailabilitySlot({
-          enabled: result.data.emailBisonFirstTouchAvailabilitySlotEnabled ?? true,
-          includeWeekends: result.data.emailBisonAvailabilitySlotIncludeWeekends ?? false,
-          count: result.data.emailBisonAvailabilitySlotCount ?? 2,
-          preferWithinDays: result.data.emailBisonAvailabilitySlotPreferWithinDays ?? 5,
-          template: result.data.emailBisonAvailabilitySlotTemplate || "",
-        })
-      }
-
-      if (activeWorkspace && adminStatus.success && adminStatus.isAdmin) {
-        const slack = await getSlackBotTokenStatus(activeWorkspace)
-        if (slack.success) {
-          setSlackTokenStatus({
-            configured: Boolean(slack.configured),
-            masked: slack.masked ?? null,
-          })
-        } else {
-          setSlackTokenStatus(null)
-        }
-      } else {
-        setSlackTokenStatus(null)
-      }
-
-      if (activeWorkspace && adminStatus.success && adminStatus.isAdmin) {
-        const [recipientsResult, membersResult] = await Promise.all([
-          getSlackApprovalRecipients(activeWorkspace),
-          getSlackMembers(activeWorkspace),
+      try {
+        const [result, adminStatus, capabilitiesResult, globalStatus] = await Promise.all([
+          getUserSettings(activeWorkspace),
+          activeWorkspace ? getWorkspaceAdminStatus(activeWorkspace) : Promise.resolve({ success: true, isAdmin: false }),
+          activeWorkspace ? getWorkspaceCapabilities(activeWorkspace) : Promise.resolve({ success: true, capabilities: null }),
+          getGlobalAdminStatus(),
         ])
 
-        if (recipientsResult.success) {
-          setSelectedApprovalRecipients(recipientsResult.recipients || [])
-        }
+        if (isStale()) return
 
-        if (membersResult.success) {
-          setSlackMembers(membersResult.members || [])
-        }
-      }
+        const capabilities = capabilitiesResult.success ? capabilitiesResult.capabilities ?? null : null
+        setWorkspaceCapabilities(capabilities)
+        setIsWorkspaceAdmin(Boolean(adminStatus.success && adminStatus.isAdmin) && !capabilities?.isClientPortalUser)
+        setIsGlobalAdmin(Boolean(globalStatus.success && globalStatus.isAdmin))
+        setSlackIntegrationError(null)
+        setSlackChannels([])
+        setSlackChannelToAdd("")
+        setSlackMembers([])
+        setSelectedApprovalRecipients([])
+        setResendIntegrationError(null)
+        setResendApiKeyDraft("")
+        setResendFromEmailDraft("")
+        setEmailBisonAvailabilitySlotPreview(null)
+        setEmailBisonAvailabilitySlotPreviewError(null)
 
-      if (activeWorkspace && adminStatus.success && adminStatus.isAdmin) {
-        const resend = await getResendConfigStatus(activeWorkspace)
-        if (resend.success) {
-          setResendStatus({
-            configured: Boolean(resend.configured),
-            maskedApiKey: resend.maskedApiKey ?? null,
-            fromEmail: resend.fromEmail ?? null,
+        if (result.success && result.data) {
+          setSettings(result.data)
+          // Populate form state from database
+          setAiPersona({
+            name: result.data.aiPersonaName || "",
+            tone: result.data.aiTone || "friendly-professional",
+            greeting: result.data.aiGreeting || "Hi {firstName},",
+            smsGreeting: result.data.aiSmsGreeting || result.data.aiGreeting || "Hi {firstName},",
+            signature: result.data.aiSignature || "",
+            goals: result.data.aiGoals || "",
+            serviceDescription: result.data.serviceDescription || "",
+            idealCustomerProfile: result.data.idealCustomerProfile || "",
           })
-          setResendFromEmailDraft(resend.fromEmail ?? "")
-        } else {
-          setResendStatus(null)
+          setInsightsChatSettings({
+            model: result.data.insightsChatModel || "gpt-5-mini",
+            reasoningEffort: result.data.insightsChatReasoningEffort || "medium",
+            enableCampaignChanges: result.data.insightsChatEnableCampaignChanges ?? false,
+            enableExperimentWrites: result.data.insightsChatEnableExperimentWrites ?? false,
+            enableFollowupPauses: result.data.insightsChatEnableFollowupPauses ?? false,
+            messagePerformanceWeeklyEnabled: result.data.messagePerformanceWeeklyEnabled ?? false,
+          })
+          setDraftGenerationSettings({
+            model: result.data.draftGenerationModel || "gpt-5.1",
+            reasoningEffort: result.data.draftGenerationReasoningEffort || "medium",
+          })
+          setEmailDraftVerificationSettings({
+            model: result.data.emailDraftVerificationModel || "gpt-5.2",
+          })
+          setCompanyContext({
+            companyName: result.data.companyName || "",
+            targetResult: result.data.targetResult || "",
+          })
+          setWorkspaceBrand({
+            brandName: result.data.brandName || "",
+            brandLogoUrl: result.data.brandLogoUrl ?? null,
+          })
+          setAvailability({
+            timezone: result.data.timezone || "America/New_York",
+            startTime: result.data.workStartTime || "09:00",
+            endTime: result.data.workEndTime || "17:00",
+          })
+          setCalendarHealth({
+            enabled: result.data.calendarHealthEnabled ?? true,
+            minSlots:
+              typeof result.data.calendarHealthMinSlots === "number" && Number.isFinite(result.data.calendarHealthMinSlots)
+                ? result.data.calendarHealthMinSlots
+                : 10,
+          })
+          const customSchedule = coerceAutoSendCustomSchedule(result.data.autoSendCustomSchedule)
+          const holidays = customSchedule?.holidays ?? DEFAULT_AUTO_SEND_HOLIDAYS
+          setAutoSendSchedule({
+            mode: (result.data.autoSendScheduleMode as "ALWAYS" | "BUSINESS_HOURS" | "CUSTOM") || "ALWAYS",
+            customDays: customSchedule?.days ?? [1, 2, 3, 4, 5],
+            customStartTime: customSchedule?.startTime || result.data.workStartTime || "09:00",
+            customEndTime: customSchedule?.endTime || result.data.workEndTime || "17:00",
+            holidays: {
+              presetEnabled: holidays.presetEnabled,
+              excludedPresetDates: [...holidays.excludedPresetDates],
+              additionalBlackoutDates: [...holidays.additionalBlackoutDates],
+              additionalBlackoutDateRanges: [...holidays.additionalBlackoutDateRanges],
+            },
+          })
+          setAutoSendSkipHumanReview(result.data.autoSendSkipHumanReview ?? false)
+          setNotifications({
+            emailDigest: result.data.emailDigest,
+            slackAlerts: result.data.slackAlerts,
+          })
+          setNotificationCenter({
+            emails: result.data.notificationEmails ?? [],
+            phones: result.data.notificationPhones ?? [],
+            slackChannelIds: result.data.notificationSlackChannelIds ?? [],
+            dailyDigestTime: result.data.notificationDailyDigestTime || "09:00",
+            sentimentRules: coerceNotificationRules(result.data.notificationSentimentRules),
+          })
+          setAutomationRules({
+            autoApproveMeetings: result.data.autoApproveMeetings,
+            flagUncertainReplies: result.data.flagUncertainReplies,
+            pauseForOOO: result.data.pauseForOOO,
+            autoBlacklist: result.data.autoBlacklist,
+          })
+          setFollowUpsPausedUntil(result.data.followUpsPausedUntil)
+          setAirtableModeEnabled(result.data.airtableMode)
+          // Parse qualification questions from JSON
+          if (result.data.qualificationQuestions) {
+            try {
+              setQualificationQuestions(JSON.parse(result.data.qualificationQuestions))
+            } catch {
+              setQualificationQuestions([])
+            }
+          } else {
+            setQualificationQuestions([])
+          }
+          // Set knowledge assets
+          if (result.knowledgeAssets) {
+            setKnowledgeAssets(result.knowledgeAssets)
+            const primaryAsset = result.knowledgeAssets.find((asset) => asset.name === PRIMARY_WEBSITE_ASSET_NAME)
+            const primaryUrl = primaryAsset?.textContent || primaryAsset?.fileUrl || ""
+            setPrimaryWebsiteAssetId(primaryAsset?.id || null)
+            setPrimaryWebsiteUrl(primaryUrl)
+          } else {
+            setPrimaryWebsiteAssetId(null)
+            setPrimaryWebsiteUrl("")
+          }
+          // Set meeting booking settings
+          setMeetingBooking({
+            meetingBookingProvider: result.data.meetingBookingProvider || "ghl",
+            ghlDefaultCalendarId: result.data.ghlDefaultCalendarId || "",
+            ghlDirectBookCalendarId: result.data.ghlDirectBookCalendarId || "",
+            ghlAssignedUserId: result.data.ghlAssignedUserId || "",
+            autoBookMeetings: result.data.autoBookMeetings,
+            meetingDurationMinutes: result.data.meetingDurationMinutes,
+            meetingTitle: result.data.meetingTitle || "Intro to {companyName}",
+            calendlyEventTypeLink: result.data.calendlyEventTypeLink || "",
+            calendlyEventTypeUri: result.data.calendlyEventTypeUri || "",
+            calendlyDirectBookEventTypeLink: result.data.calendlyDirectBookEventTypeLink || "",
+            calendlyDirectBookEventTypeUri: result.data.calendlyDirectBookEventTypeUri || "",
+          })
+
+          setEmailBisonAvailabilitySlot({
+            enabled: result.data.emailBisonFirstTouchAvailabilitySlotEnabled ?? true,
+            includeWeekends: result.data.emailBisonAvailabilitySlotIncludeWeekends ?? false,
+            count: result.data.emailBisonAvailabilitySlotCount ?? 2,
+            preferWithinDays: result.data.emailBisonAvailabilitySlotPreferWithinDays ?? 5,
+            template: result.data.emailBisonAvailabilitySlotTemplate || "",
+          })
         }
-      } else {
+        if (!(result.success && result.data)) {
+          setWorkspaceBrand({ brandName: "", brandLogoUrl: null })
+        }
+
+        setSlackTokenStatus(null)
         setResendStatus(null)
-      }
-
-      // Load calendar links
-      if (activeWorkspace) {
-        const calendarResult = await getCalendarLinks(activeWorkspace)
-        if (calendarResult.success && calendarResult.data) {
-          setCalendarLinks(calendarResult.data)
-        }
-
-        const provider = result?.success && result.data?.meetingBookingProvider ? result.data.meetingBookingProvider : "ghl"
-        if (provider === "ghl") {
-          try {
-            const mismatch = await getGhlCalendarMismatchInfo(activeWorkspace)
-            if (mismatch.success) {
-              setCalendarMismatchInfo({
-                mismatch: mismatch.mismatch ?? false,
-                ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
-                calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
-                lastError: mismatch.lastError ?? null,
-              })
-            } else {
-              setCalendarMismatchInfo(null)
-            }
-          } catch (e) {
-            console.warn("Failed to load GHL mismatch info:", e)
-            setCalendarMismatchInfo(null)
-          }
-          setCalendlyCalendarMismatchInfo(null)
-
-          // Load GHL calendars and users for meeting booking config
-          loadGHLData(activeWorkspace)
-        } else {
-          setCalendarMismatchInfo(null)
-          try {
-            const mismatch = await getCalendlyCalendarMismatchInfo(activeWorkspace)
-            if (mismatch.success) {
-              setCalendlyCalendarMismatchInfo({
-                mismatch: mismatch.mismatch ?? false,
-                calendlyEventTypeUuid: mismatch.calendlyEventTypeUuid ?? null,
-                calendarLinkCalendlyEventTypeUuid: mismatch.calendarLinkCalendlyEventTypeUuid ?? null,
-                lastError: mismatch.lastError ?? null,
-              })
-            } else {
-              setCalendlyCalendarMismatchInfo(null)
-            }
-          } catch (e) {
-            console.warn("Failed to load Calendly mismatch info:", e)
-            setCalendlyCalendarMismatchInfo(null)
-          }
-          setGhlCalendars([])
-          setGhlUsers([])
-          setGhlConnectionStatus("unknown")
-          loadCalendlyStatus(activeWorkspace)
-        }
-      } else {
-        setCalendarLinks([])
+        setEmailBisonBaseHostId("")
+        setEmailBisonBaseHostLoading(false)
+        setEmailBisonBaseHostError(null)
         setCalendarMismatchInfo(null)
         setCalendlyCalendarMismatchInfo(null)
         setCalendlyIntegration(null)
         setCalendlyConnectionStatus("unknown")
+        setGhlCalendars([])
+        setGhlUsers([])
+        setGhlConnectionStatus("unknown")
+
+        // Load only core calendar links for general-tab warnings.
+        if (activeWorkspace) {
+          const calendarResult = await getCalendarLinks(activeWorkspace)
+          if (isStale()) return
+          if (calendarResult.success && calendarResult.data) {
+            setCalendarLinks(calendarResult.data)
+          }
+        } else {
+          setCalendarLinks([])
+        }
+      } catch {
+        if (isStale()) return
+        setSettings(null)
+        setCalendarLinks([])
+        setCalendarMismatchInfo(null)
+        setCalendlyCalendarMismatchInfo(null)
+        setGhlCalendars([])
+        setGhlUsers([])
+        setGhlConnectionStatus("unknown")
+        setCalendlyIntegration(null)
+        setCalendlyConnectionStatus("unknown")
+        setSlackTokenStatus(null)
+        setResendStatus(null)
+      } finally {
+        if (isStale()) return
+        setIsLoading(false)
       }
-      
-      setIsLoading(false)
     }
 
     loadSettings()
-  }, [activeWorkspace])
-
-  // Load EmailBison base host state for the active workspace
-  useEffect(() => {
-    let cancelled = false
-
-    async function loadEmailBisonBaseHost() {
-      if (!activeWorkspace) {
-        setEmailBisonBaseHostId("")
-        setEmailBisonBaseHostError(null)
-        return
-      }
-
-      setEmailBisonBaseHostLoading(true)
-      setEmailBisonBaseHostError(null)
-
-      const [hostsRes, currentRes] = await Promise.all([
-        getEmailBisonBaseHosts(),
-        getClientEmailBisonBaseHost(activeWorkspace),
-      ])
-
-      if (cancelled) return
-
-      if (hostsRes.success && hostsRes.data) {
-        setEmailBisonBaseHosts(hostsRes.data)
-      }
-
-      if (currentRes.success && currentRes.data) {
-        setEmailBisonBaseHostId(currentRes.data.baseHostId || "")
-      } else {
-        setEmailBisonBaseHostId("")
-        if (currentRes.error) setEmailBisonBaseHostError(currentRes.error)
-      }
-
-      setEmailBisonBaseHostLoading(false)
-    }
-
-    loadEmailBisonBaseHost()
     return () => {
       cancelled = true
     }
   }, [activeWorkspace])
+
+  const hasLoadedDeferredSlice = useCallback((workspaceId: string, slice: DeferredSettingsSlice) => {
+    return Boolean(deferredSliceLoadRef.current[workspaceId]?.[slice])
+  }, [])
+
+  const markDeferredSliceLoaded = useCallback((workspaceId: string, slice: DeferredSettingsSlice) => {
+    deferredSliceLoadRef.current[workspaceId] = {
+      integrations: deferredSliceLoadRef.current[workspaceId]?.integrations ?? false,
+      booking: deferredSliceLoadRef.current[workspaceId]?.booking ?? false,
+      [slice]: true,
+    }
+
+    // Keep a bounded cache to avoid unbounded growth across many workspace switches.
+    const keys = Object.keys(deferredSliceLoadRef.current)
+    if (keys.length > 10) {
+      for (const key of keys.slice(0, keys.length - 10)) {
+        delete deferredSliceLoadRef.current[key]
+      }
+    }
+  }, [])
 
   async function handleSaveEmailBisonBaseHost() {
     if (!activeWorkspace) return
@@ -1098,8 +1181,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   }, [activeWorkspace, aiObsWindow, isClientPortalUser, isWorkspaceAdmin])
 
   useEffect(() => {
+    if (activeTab !== "ai" && activeTab !== "admin") return
     refreshAiObservability()
-  }, [refreshAiObservability])
+  }, [activeTab, refreshAiObservability])
 
   useEffect(() => {
     if (!aiPromptsOpen) return
@@ -1218,11 +1302,15 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   }, [selectedPersonaId])
 
   // Load GHL calendars and users for booking config
-  const loadGHLData = async (clientId: string) => {
+  const loadGHLData = useCallback(async (clientId: string) => {
+    const requestId = ++loadGhlRequestRef.current
     setIsLoadingGhlData(true)
+    setGhlCalendars([])
+    setGhlUsers([])
     try {
       // Test connection first
       const connectionResult = await testGHLConnectionForWorkspace(clientId)
+      if (requestId !== loadGhlRequestRef.current) return
       if (connectionResult.success) {
         setGhlConnectionStatus("connected")
         
@@ -1232,6 +1320,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           fetchGHLUsersForWorkspace(clientId),
         ])
 
+        if (requestId !== loadGhlRequestRef.current) return
         if (calendarsResult.success && calendarsResult.calendars) {
           setGhlCalendars(calendarsResult.calendars)
         }
@@ -1245,14 +1334,17 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       console.error("Failed to load GHL data:", error)
       setGhlConnectionStatus("error")
     } finally {
+      if (requestId !== loadGhlRequestRef.current) return
       setIsLoadingGhlData(false)
     }
-  }
+  }, [])
 
-  const loadCalendlyStatus = async (clientId: string) => {
+  const loadCalendlyStatus = useCallback(async (clientId: string) => {
+    const requestId = ++loadCalendlyRequestRef.current
     setIsLoadingCalendlyData(true)
     try {
       const result = await getCalendlyIntegrationStatusForWorkspace(clientId)
+      if (requestId !== loadCalendlyRequestRef.current) return
       if (result.success && result.data) {
         setCalendlyIntegration(result.data)
         setCalendlyConnectionStatus(result.data.hasAccessToken ? "connected" : "unknown")
@@ -1265,9 +1357,223 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       setCalendlyIntegration(null)
       setCalendlyConnectionStatus("error")
     } finally {
+      if (requestId !== loadCalendlyRequestRef.current) return
       setIsLoadingCalendlyData(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!activeWorkspace || isLoading) return
+
+    const workspaceId = activeWorkspace
+    let cancelled = false
+    const prefetchTimers: Array<ReturnType<typeof setTimeout>> = []
+    const isStale = () => cancelled
+
+    const loadIntegrationsSlice = async () => {
+      if (hasLoadedDeferredSlice(workspaceId, "integrations")) return
+
+      setEmailBisonBaseHostLoading(true)
+      setEmailBisonBaseHostError(null)
+
+      try {
+        const [hostsRes, currentRes, slackRes, recipientsRes, membersRes, resendRes] = await Promise.all([
+          getEmailBisonBaseHosts(),
+          getClientEmailBisonBaseHost(workspaceId),
+          isWorkspaceAdmin ? getSlackBotTokenStatus(workspaceId) : Promise.resolve(null),
+          isWorkspaceAdmin ? getSlackApprovalRecipients(workspaceId) : Promise.resolve(null),
+          isWorkspaceAdmin ? getSlackMembers(workspaceId) : Promise.resolve(null),
+          isWorkspaceAdmin ? getResendConfigStatus(workspaceId) : Promise.resolve(null),
+        ])
+
+        if (isStale()) return
+
+        if (hostsRes.success && hostsRes.data) {
+          setEmailBisonBaseHosts(hostsRes.data)
+        }
+
+        if (currentRes.success && currentRes.data) {
+          setEmailBisonBaseHostId(currentRes.data.baseHostId || "")
+        } else {
+          setEmailBisonBaseHostId("")
+          if (currentRes.error) setEmailBisonBaseHostError(currentRes.error)
+        }
+
+        if (isWorkspaceAdmin) {
+          if (slackRes?.success) {
+            setSlackTokenStatus({
+              configured: Boolean(slackRes.configured),
+              masked: slackRes.masked ?? null,
+            })
+          } else {
+            setSlackTokenStatus(null)
+          }
+
+          if (recipientsRes?.success) {
+            setSelectedApprovalRecipients(recipientsRes.recipients || [])
+          }
+
+          if (membersRes?.success) {
+            setSlackMembers(membersRes.members || [])
+          }
+
+          if (resendRes?.success) {
+            setResendStatus({
+              configured: Boolean(resendRes.configured),
+              maskedApiKey: resendRes.maskedApiKey ?? null,
+              fromEmail: resendRes.fromEmail ?? null,
+            })
+            setResendFromEmailDraft(resendRes.fromEmail ?? "")
+          } else {
+            setResendStatus(null)
+            setResendFromEmailDraft("")
+          }
+        } else {
+          setSlackTokenStatus(null)
+          setSelectedApprovalRecipients([])
+          setSlackMembers([])
+          setResendStatus(null)
+          setResendFromEmailDraft("")
+        }
+
+        markDeferredSliceLoaded(workspaceId, "integrations")
+      } catch (error) {
+        if (isStale()) return
+        setEmailBisonBaseHostId("")
+        setEmailBisonBaseHostError(error instanceof Error ? error.message : "Failed to load integration settings")
+      } finally {
+        if (isStale()) return
+        setEmailBisonBaseHostLoading(false)
+      }
+    }
+
+    const loadBookingSlice = async () => {
+      if (hasLoadedDeferredSlice(workspaceId, "booking")) return
+
+      const provider = meetingBooking.meetingBookingProvider || "ghl"
+      if (provider === "ghl") {
+        try {
+          const mismatch = await getGhlCalendarMismatchInfo(workspaceId)
+          if (isStale()) return
+          if (mismatch.success) {
+            setCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              ghlDefaultCalendarId: mismatch.ghlDefaultCalendarId ?? null,
+              calendarLinkGhlCalendarId: mismatch.calendarLinkGhlCalendarId ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendarMismatchInfo(null)
+          }
+        } catch (error) {
+          if (isStale()) return
+          console.warn("Failed to load GHL mismatch info:", error)
+          setCalendarMismatchInfo(null)
+        }
+
+        if (isStale()) return
+        setCalendlyCalendarMismatchInfo(null)
+        setCalendlyIntegration(null)
+        setCalendlyConnectionStatus("unknown")
+        await loadGHLData(workspaceId)
+      } else {
+        setCalendarMismatchInfo(null)
+
+        try {
+          const mismatch = await getCalendlyCalendarMismatchInfo(workspaceId)
+          if (isStale()) return
+          if (mismatch.success) {
+            setCalendlyCalendarMismatchInfo({
+              mismatch: mismatch.mismatch ?? false,
+              calendlyEventTypeUuid: mismatch.calendlyEventTypeUuid ?? null,
+              calendarLinkCalendlyEventTypeUuid: mismatch.calendarLinkCalendlyEventTypeUuid ?? null,
+              lastError: mismatch.lastError ?? null,
+            })
+          } else {
+            setCalendlyCalendarMismatchInfo(null)
+          }
+        } catch (error) {
+          if (isStale()) return
+          console.warn("Failed to load Calendly mismatch info:", error)
+          setCalendlyCalendarMismatchInfo(null)
+        }
+
+        if (isStale()) return
+        setGhlCalendars([])
+        setGhlUsers([])
+        setGhlConnectionStatus("unknown")
+        await loadCalendlyStatus(workspaceId)
+      }
+
+      if (isStale()) return
+      markDeferredSliceLoaded(workspaceId, "booking")
+    }
+
+    const canRunBackgroundPrefetch = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return false
+      }
+
+      if (typeof navigator !== "undefined") {
+        type ConnectionLike = { saveData?: boolean; effectiveType?: string }
+        const connection = (navigator as Navigator & { connection?: ConnectionLike }).connection
+        if (connection?.saveData) return false
+        if (connection?.effectiveType === "slow-2g" || connection?.effectiveType === "2g") return false
+      }
+
+      return true
+    }
+
+    const schedulePrefetch = (loader: () => Promise<void>, delayMs: number) => {
+      if (!canRunBackgroundPrefetch()) return
+      const timer = setTimeout(() => {
+        if (cancelled || isStale()) return
+        if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+          ;(window as Window & {
+            requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => number
+          }).requestIdleCallback(
+            () => {
+              if (cancelled || isStale()) return
+              void loader()
+            },
+            { timeout: 1500 }
+          )
+          return
+        }
+
+        void loader()
+      }, delayMs)
+      prefetchTimers.push(timer)
+    }
+
+    if (activeTab === "integrations") {
+      void loadIntegrationsSlice()
+      schedulePrefetch(loadBookingSlice, 1000)
+    } else if (activeTab === "booking") {
+      void loadBookingSlice()
+      schedulePrefetch(loadIntegrationsSlice, 1000)
+    } else {
+      schedulePrefetch(loadIntegrationsSlice, 900)
+      schedulePrefetch(loadBookingSlice, 1300)
+    }
+
+    return () => {
+      cancelled = true
+      for (const timer of prefetchTimers) {
+        clearTimeout(timer)
+      }
+    }
+  }, [
+    activeWorkspace,
+    activeTab,
+    hasLoadedDeferredSlice,
+    isLoading,
+    isWorkspaceAdmin,
+    loadCalendlyStatus,
+    loadGHLData,
+    markDeferredSliceLoaded,
+    meetingBooking.meetingBookingProvider,
+  ])
 
   // Handle auto-book toggle with workspace-level update
   const handleAutoBookToggle = async (enabled: boolean) => {
@@ -1499,10 +1805,33 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     }
   }, [isClientPortalUser])
 
+  const refreshWorkspaceSidebarData = useCallback(async () => {
+    if (!onWorkspacesChange) return
+
+    const result = await getClients()
+    if (!result.success || !result.data) return
+
+    onWorkspacesChange(
+      result.data.map((workspace) => ({
+        id: workspace.id,
+        name: workspace.name,
+        ghlLocationId: workspace.ghlLocationId,
+        hasDefaultCalendarLink: workspace.hasDefaultCalendarLink,
+        brandName: workspace.brandName ?? null,
+        brandLogoUrl: workspace.brandLogoUrl ?? null,
+        hasConnectedAccounts: workspace.hasConnectedAccounts ?? false,
+      }))
+    )
+  }, [onWorkspacesChange])
+
   // Save all settings
   const handleSaveSettings = async () => {
     if (isClientPortalUser) {
       toast.info("Settings are read-only. Request changes from ZRG.")
+      return
+    }
+    if (!activeWorkspace) {
+      toast.error("Select a workspace before saving settings.")
       return
     }
     setIsSaving(true)
@@ -1580,6 +1909,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     }
 
     if (isWorkspaceAdmin) {
+      payload.brandName = toNullableText(workspaceBrand.brandName)
+      payload.brandLogoUrl = toNullableText(workspaceBrand.brandLogoUrl)
       payload.autoSendSkipHumanReview = autoSendSkipHumanReview
       payload.autoSendScheduleMode = autoSendSchedule.mode
       payload.autoSendCustomSchedule = customSchedulePayload
@@ -1623,6 +1954,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         description: "Your settings have been saved successfully.",
       })
       setHasChanges(false)
+      await refreshWorkspaceSidebarData()
     } else {
       toast.error("Error", {
         description: approvalRecipientsResult?.error || result.error || "Failed to save settings.",
@@ -1774,12 +2106,24 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     setIsSavingPrimaryWebsite(true)
     try {
       if (primaryWebsiteAssetId) {
-        const result = await updateAssetTextContent(primaryWebsiteAssetId, normalized)
+        const result = await updateKnowledgeAsset(primaryWebsiteAssetId, {
+          rawContent: normalized,
+          textContent: normalized,
+          aiContextMode: "notes",
+        })
         if (result.success) {
           setKnowledgeAssets(prev =>
             prev.map(asset =>
               asset.id === primaryWebsiteAssetId
-                ? { ...asset, name: PRIMARY_WEBSITE_ASSET_NAME, type: "text", textContent: normalized, updatedAt: new Date() }
+                ? {
+                    ...asset,
+                    name: PRIMARY_WEBSITE_ASSET_NAME,
+                    type: "text",
+                    rawContent: normalized,
+                    textContent: normalized,
+                    aiContextMode: "notes",
+                    updatedAt: new Date(),
+                  }
                 : asset
             )
           )
@@ -1803,7 +2147,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           name: PRIMARY_WEBSITE_ASSET_NAME,
           type: "text",
           fileUrl: null,
+          rawContent: normalized,
           textContent: normalized,
+          aiContextMode: "notes",
           originalFileName: null,
           mimeType: null,
           createdAt: new Date(),
@@ -1836,6 +2182,152 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       toast.error(result.error || "Failed to remove website")
     }
   }, [primaryWebsiteAssetId])
+
+  const closeBrandLogoCropDialog = useCallback(() => {
+    if (brandLogoSource?.previewUrl) {
+      URL.revokeObjectURL(brandLogoSource.previewUrl)
+    }
+    setBrandLogoSource(null)
+    setBrandLogoCrop(DEFAULT_BRAND_LOGO_CROP)
+    setBrandLogoCropOpen(false)
+  }, [brandLogoSource?.previewUrl])
+
+  const handleBrandLogoFileSelected = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0]
+    event.target.value = ""
+
+    if (!selectedFile) return
+    if (!isWorkspaceAdmin) {
+      toast.error("Only workspace admins can update branding")
+      return
+    }
+    if (!activeWorkspace) {
+      toast.error("No workspace selected")
+      return
+    }
+
+    const mimeType = coerceWorkspaceLogoMimeType(selectedFile)
+    if (!mimeType) {
+      toast.error("Unsupported logo format. Use PNG, JPG, or WebP.")
+      return
+    }
+    if (selectedFile.size > MAX_WORKSPACE_LOGO_BYTES) {
+      toast.error("Logo file is too large. Maximum file size is 5MB.")
+      return
+    }
+
+    const previewUrl = URL.createObjectURL(selectedFile)
+    try {
+      const dims = await readImageDimensions(previewUrl)
+      setBrandLogoSource({
+        file: selectedFile,
+        previewUrl,
+        mimeType,
+        naturalWidth: dims.width,
+        naturalHeight: dims.height,
+      })
+      setBrandLogoCrop(DEFAULT_BRAND_LOGO_CROP)
+      setBrandLogoExportMaxEdge(512)
+      setBrandLogoCropOpen(true)
+    } catch {
+      URL.revokeObjectURL(previewUrl)
+      toast.error("Failed to read selected logo file")
+    }
+  }, [activeWorkspace, isWorkspaceAdmin])
+
+  const handleUploadCroppedBrandLogo = useCallback(async () => {
+    if (!activeWorkspace || !brandLogoSource) {
+      toast.error("Select a workspace logo first")
+      return
+    }
+    if (!isWorkspaceAdmin) {
+      toast.error("Only workspace admins can update branding")
+      return
+    }
+
+    setIsUploadingBrandLogo(true)
+    try {
+      const croppedFile = await createCroppedWorkspaceLogoFile({
+        source: brandLogoSource,
+        crop: brandLogoCrop,
+        maxEdge: brandLogoExportMaxEdge,
+        backgroundColor: resolveThemeSurfaceColor(),
+      })
+
+      if (croppedFile.size > MAX_WORKSPACE_LOGO_BYTES) {
+        toast.error("Cropped logo exceeds 5MB. Reduce crop area or export size.")
+        return
+      }
+
+      const formData = new FormData()
+      formData.append("clientId", activeWorkspace)
+      formData.append("file", croppedFile)
+
+      const result = await uploadWorkspaceBrandLogo(formData)
+      if (!result.success || !result.brandLogoUrl) {
+        toast.error(result.error || "Failed to upload workspace logo")
+        return
+      }
+
+      setWorkspaceBrand((prev) => ({
+        ...prev,
+        brandLogoUrl: result.brandLogoUrl!,
+      }))
+      setSettings((prev) =>
+        prev
+          ? {
+              ...prev,
+              brandLogoUrl: result.brandLogoUrl!,
+            }
+          : prev
+      )
+      await refreshWorkspaceSidebarData()
+      toast.success("Workspace logo updated")
+      closeBrandLogoCropDialog()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to upload workspace logo")
+    } finally {
+      setIsUploadingBrandLogo(false)
+    }
+  }, [
+    activeWorkspace,
+    brandLogoCrop,
+    brandLogoExportMaxEdge,
+    brandLogoSource,
+    closeBrandLogoCropDialog,
+    isWorkspaceAdmin,
+    refreshWorkspaceSidebarData,
+  ])
+
+  const handleClearWorkspaceLogo = useCallback(async () => {
+    if (!activeWorkspace) return
+    if (!isWorkspaceAdmin) {
+      toast.error("Only workspace admins can update branding")
+      return
+    }
+    setIsClearingBrandLogo(true)
+    try {
+      const result = await updateUserSettings(activeWorkspace, { brandLogoUrl: null })
+      if (!result.success) {
+        toast.error(result.error || "Failed to remove workspace logo")
+        return
+      }
+
+      setWorkspaceBrand((prev) => ({ ...prev, brandLogoUrl: null }))
+      setSettings((prev) =>
+        prev
+          ? {
+              ...prev,
+              brandLogoUrl: null,
+            }
+          : prev
+      )
+      await refreshWorkspaceSidebarData()
+      toast.success("Workspace logo removed")
+    } finally {
+      setIsClearingBrandLogo(false)
+    }
+  }, [activeWorkspace, isWorkspaceAdmin, refreshWorkspaceSidebarData])
 
   const handleAddAsset = useCallback(async () => {
     if (!newAssetName.trim()) {
@@ -1917,7 +2409,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         name: newAssetName.trim(),
         type: newAssetType,
         fileUrl: null,
+        rawContent: newAssetContent.trim(),
         textContent: newAssetContent.trim(),
+        aiContextMode: "notes",
         originalFileName: null,
         mimeType: null,
         createdAt: new Date(),
@@ -1953,7 +2447,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   }, [])
 
   const handleOpenAssetViewer = useCallback((asset: KnowledgeAssetData) => {
+    const hasRawSource = Boolean((asset.rawContent || "").trim())
+    const preferredTab: "raw" | "notes" = hasRawSource && asset.aiContextMode === "raw" ? "raw" : "notes"
     setAssetViewerTarget(asset)
+    setAssetViewerTab(preferredTab)
     setAssetViewerOpen(true)
   }, [])
 
@@ -1964,7 +2461,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       name: asset.name,
       type: asset.type,
       fileUrl: asset.fileUrl || "",
+      rawContent: asset.rawContent || "",
       textContent: asset.textContent || "",
+      aiContextMode: asset.aiContextMode || "notes",
     })
     setAssetEditOpen(true)
   }, [isWorkspaceAdmin])
@@ -1989,8 +2488,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     setIsSavingAssetEdit(true)
     const result = await updateKnowledgeAsset(assetEditDraft.id, {
       name: assetEditDraft.name.trim(),
+      rawContent: assetEditDraft.rawContent,
       textContent: assetEditDraft.textContent,
       fileUrl: assetEditDraft.type === "url" ? assetEditDraft.fileUrl.trim() : undefined,
+      aiContextMode: assetEditDraft.aiContextMode,
     })
 
     if (result.success && result.asset) {
@@ -2548,38 +3049,40 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 </p>
               </div>
 
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Route/Job</TableHead>
-                    <TableHead>Model</TableHead>
-                    <TableHead>Calls</TableHead>
-                    <TableHead>Tokens</TableHead>
-                    <TableHead>Cost</TableHead>
-                    <TableHead>Errors</TableHead>
-                    <TableHead>Latency</TableHead>
-                    <TableHead>Last Used</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {aiObs.sources.map((s) => (
-                    <TableRow key={`${s.source || "unattributed"}:${s.model}`}>
-                      <TableCell className="font-medium">{s.name}</TableCell>
-                      <TableCell className="text-muted-foreground">{s.model}</TableCell>
-                      <TableCell>{new Intl.NumberFormat().format(s.calls)}</TableCell>
-                      <TableCell>{new Intl.NumberFormat(undefined, { notation: "compact" }).format(s.totalTokens)}</TableCell>
-                      <TableCell>
-                        {s.estimatedCostUsd === null
-                          ? "—"
-                          : s.estimatedCostUsd.toLocaleString("en-US", { style: "currency", currency: "USD" })}
-                      </TableCell>
-                      <TableCell>{new Intl.NumberFormat().format(s.errors)}</TableCell>
-                      <TableCell>{s.avgLatencyMs ? `${s.avgLatencyMs}ms` : "—"}</TableCell>
-                      <TableCell>{s.lastUsedAt ? new Date(s.lastUsedAt).toLocaleString() : "—"}</TableCell>
+              <div className="overflow-x-auto">
+                <Table className="min-w-[820px]">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Route/Job</TableHead>
+                      <TableHead>Model</TableHead>
+                      <TableHead>Calls</TableHead>
+                      <TableHead>Tokens</TableHead>
+                      <TableHead>Cost</TableHead>
+                      <TableHead>Errors</TableHead>
+                      <TableHead>Latency</TableHead>
+                      <TableHead>Last Used</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {aiObs.sources.map((s) => (
+                      <TableRow key={`${s.source || "unattributed"}:${s.model}`}>
+                        <TableCell className="font-medium">{s.name}</TableCell>
+                        <TableCell className="text-muted-foreground">{s.model}</TableCell>
+                        <TableCell>{new Intl.NumberFormat().format(s.calls)}</TableCell>
+                        <TableCell>{new Intl.NumberFormat(undefined, { notation: "compact" }).format(s.totalTokens)}</TableCell>
+                        <TableCell>
+                          {s.estimatedCostUsd === null
+                            ? "—"
+                            : s.estimatedCostUsd.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                        </TableCell>
+                        <TableCell>{new Intl.NumberFormat().format(s.errors)}</TableCell>
+                        <TableCell>{s.avgLatencyMs ? `${s.avgLatencyMs}ms` : "—"}</TableCell>
+                        <TableCell>{s.lastUsedAt ? new Date(s.lastUsedAt).toLocaleString() : "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
 
             <Separator />
@@ -2589,38 +3092,40 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 <p className="text-sm font-medium">By Feature</p>
               </div>
 
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Feature</TableHead>
-                    <TableHead>Model</TableHead>
-                    <TableHead>Calls</TableHead>
-                    <TableHead>Tokens</TableHead>
-                    <TableHead>Cost</TableHead>
-                    <TableHead>Errors</TableHead>
-                    <TableHead>Latency</TableHead>
-                    <TableHead>Last Used</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {aiObs.features.map((f) => (
-                    <TableRow key={`${f.featureId}:${f.model}`}>
-                      <TableCell className="font-medium">{f.name}</TableCell>
-                      <TableCell className="text-muted-foreground">{f.model}</TableCell>
-                      <TableCell>{new Intl.NumberFormat().format(f.calls)}</TableCell>
-                      <TableCell>{new Intl.NumberFormat(undefined, { notation: "compact" }).format(f.totalTokens)}</TableCell>
-                      <TableCell>
-                        {f.estimatedCostUsd === null
-                          ? "—"
-                          : f.estimatedCostUsd.toLocaleString("en-US", { style: "currency", currency: "USD" })}
-                      </TableCell>
-                      <TableCell>{new Intl.NumberFormat().format(f.errors)}</TableCell>
-                      <TableCell>{f.avgLatencyMs ? `${f.avgLatencyMs}ms` : "—"}</TableCell>
-                      <TableCell>{f.lastUsedAt ? new Date(f.lastUsedAt).toLocaleString() : "—"}</TableCell>
+              <div className="overflow-x-auto">
+                <Table className="min-w-[820px]">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Feature</TableHead>
+                      <TableHead>Model</TableHead>
+                      <TableHead>Calls</TableHead>
+                      <TableHead>Tokens</TableHead>
+                      <TableHead>Cost</TableHead>
+                      <TableHead>Errors</TableHead>
+                      <TableHead>Latency</TableHead>
+                      <TableHead>Last Used</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {aiObs.features.map((f) => (
+                      <TableRow key={`${f.featureId}:${f.model}`}>
+                        <TableCell className="font-medium">{f.name}</TableCell>
+                        <TableCell className="text-muted-foreground">{f.model}</TableCell>
+                        <TableCell>{new Intl.NumberFormat().format(f.calls)}</TableCell>
+                        <TableCell>{new Intl.NumberFormat(undefined, { notation: "compact" }).format(f.totalTokens)}</TableCell>
+                        <TableCell>
+                          {f.estimatedCostUsd === null
+                            ? "—"
+                            : f.estimatedCostUsd.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                        </TableCell>
+                        <TableCell>{new Intl.NumberFormat().format(f.errors)}</TableCell>
+                        <TableCell>{f.avgLatencyMs ? `${f.avgLatencyMs}ms` : "—"}</TableCell>
+                        <TableCell>{f.lastUsedAt ? new Date(f.lastUsedAt).toLocaleString() : "—"}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
 
             <Separator />
@@ -2675,8 +3180,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   if (isLoading || isUserLoading) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center">
+      <div className="flex flex-1 flex-col items-center justify-center" role="status" aria-live="polite">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <span className="sr-only">Loading settings…</span>
       </div>
     )
   }
@@ -2709,13 +3215,33 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
       <div className="p-6">
         <Tabs value={activeTab} onValueChange={onTabChange} className="space-y-6">
-          <TabsList className={cn("grid w-full max-w-4xl", showAdminTab ? "grid-cols-6" : "grid-cols-5")}>
-            <TabsTrigger value="general">General</TabsTrigger>
-            <TabsTrigger value="integrations">Integrations</TabsTrigger>
-            <TabsTrigger value="ai">AI Personality</TabsTrigger>
-            <TabsTrigger value="booking">Booking</TabsTrigger>
-            <TabsTrigger value="team">Team</TabsTrigger>
-            {showAdminTab ? <TabsTrigger value="admin">Admin</TabsTrigger> : null}
+          <TabsList
+            className={cn(
+              "flex w-full max-w-4xl items-center gap-1 overflow-x-auto p-1",
+              "md:grid md:overflow-visible",
+              showAdminTab ? "md:grid-cols-6" : "md:grid-cols-5"
+            )}
+          >
+            <TabsTrigger value="general" className="shrink-0 min-w-[112px] md:min-w-0">
+              General
+            </TabsTrigger>
+            <TabsTrigger value="integrations" className="shrink-0 min-w-[112px] md:min-w-0">
+              Integrations
+            </TabsTrigger>
+            <TabsTrigger value="ai" className="shrink-0 min-w-[122px] md:min-w-0">
+              AI Personality
+            </TabsTrigger>
+            <TabsTrigger value="booking" className="shrink-0 min-w-[112px] md:min-w-0">
+              Booking
+            </TabsTrigger>
+            <TabsTrigger value="team" className="shrink-0 min-w-[112px] md:min-w-0">
+              Team
+            </TabsTrigger>
+            {showAdminTab ? (
+              <TabsTrigger value="admin" className="shrink-0 min-w-[112px] md:min-w-0">
+                Admin
+              </TabsTrigger>
+            ) : null}
           </TabsList>
 
           {isClientPortalUser ? (
@@ -2763,11 +3289,26 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    <div className="text-sm text-amber-100/80">
-                      Missing: {missing.join(", ")}
+                    <div className="text-sm text-amber-100/80 space-y-2">
+                      <p>Missing required setup:</p>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {missing.map((entry) => (
+                          <li key={entry}>{entry}</li>
+                        ))}
+                      </ul>
                       {airtableModeEnabled ? " • Airtable Mode is ON (email steps are skipped in sequences)." : null}
                     </div>
                     <div className="flex flex-wrap gap-2">
+                      {missing.some((entry) => entry.includes("AI Persona")) ? (
+                        <Button type="button" variant="outline" onClick={() => onTabChange?.("ai")}>
+                          Open AI tab
+                        </Button>
+                      ) : null}
+                      {missing.some((entry) => entry.includes("Default calendar")) ? (
+                        <Button type="button" variant="outline" onClick={() => onTabChange?.("booking")}>
+                          Open Booking tab
+                        </Button>
+                      ) : null}
                       <Button
                         variant="secondary"
                         onClick={handleBackfillFollowUps}
@@ -2817,6 +3358,92 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     <p className="text-xs text-muted-foreground mt-1">
                       Profile managed by {userProvider} login
                     </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="flex items-center gap-2 mt-6">
+              <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                Workspace Branding
+              </h3>
+              <Separator className="flex-1" />
+            </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <ImageIcon className="h-5 w-5" />
+                  Workspace Identity
+                </CardTitle>
+                <CardDescription>Set the workspace name and logo shown in the sidebar and shared surfaces.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                <div className="space-y-2">
+                  <Label htmlFor="workspaceBrandName">Workspace Brand Name</Label>
+                  <Input
+                    id="workspaceBrandName"
+                    placeholder="e.g., ZRG Growth Team"
+                    value={workspaceBrand.brandName}
+                    disabled={!isWorkspaceAdmin}
+                    onChange={(event) => {
+                      setWorkspaceBrand((prev) => ({ ...prev, brandName: event.target.value }))
+                      handleChange()
+                    }}
+                    maxLength={120}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    This controls the title shown at the top of the sidebar for this workspace.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-4 rounded-lg border p-4 sm:flex-row sm:items-center">
+                  <Avatar className="h-20 w-20 rounded-xl border border-border">
+                    {workspaceBrand.brandLogoUrl ? (
+                      <AvatarImage src={workspaceBrand.brandLogoUrl} alt={`${workspaceBrand.brandName || "Workspace"} logo`} />
+                    ) : null}
+                    <AvatarFallback className="rounded-xl text-xs">
+                      <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                    </AvatarFallback>
+                  </Avatar>
+
+                  <div className="flex-1 space-y-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="workspaceBrandLogoFile">Workspace Logo</Label>
+                      <Input
+                        id="workspaceBrandLogoFile"
+                        type="file"
+                        accept={WORKSPACE_LOGO_ACCEPT}
+                        onChange={handleBrandLogoFileSelected}
+                        disabled={!isWorkspaceAdmin || isUploadingBrandLogo || isClearingBrandLogo}
+                        aria-describedby="workspaceBrandLogoHelp"
+                      />
+                      <p id="workspaceBrandLogoHelp" className="text-xs text-muted-foreground">
+                        PNG, JPG, or WebP up to 5MB. You can crop and resize before upload.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={handleClearWorkspaceLogo}
+                        disabled={!isWorkspaceAdmin || !workspaceBrand.brandLogoUrl || isUploadingBrandLogo || isClearingBrandLogo}
+                      >
+                        {isClearingBrandLogo ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Removing…
+                          </>
+                        ) : (
+                          "Remove Logo"
+                        )}
+                      </Button>
+                    </div>
+                    {!isWorkspaceAdmin ? (
+                      <p className="text-xs text-muted-foreground">Only workspace admins can change branding.</p>
+                    ) : null}
                   </div>
                 </div>
               </CardContent>
@@ -3833,8 +4460,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                     </p>
                   </div>
 
-                  <div className="rounded-lg border">
-                    <Table>
+                  <div className="rounded-lg border overflow-x-auto">
+                    <Table className="min-w-[720px]">
                       <TableHeader>
                         <TableRow>
                           <TableHead>Sentiment</TableHead>
@@ -4141,6 +4768,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                       key={member.id}
                                       type="button"
                                       onClick={() => toggleApprovalRecipient(member)}
+                                      aria-pressed={isSelected}
+                                      aria-label={`Toggle ${member.displayName || "member"} as approval recipient`}
                                       className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${
                                         isSelected
                                           ? "border-primary bg-primary/10 text-primary"
@@ -5351,7 +5980,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                     const source =
                                       asset.fileUrl ||
                                       ((asset.textContent || "").trim().startsWith("http") ? asset.textContent : "")
-                                    const summary = asset.fileUrl ? asset.textContent : null
+                                    const summary = asset.fileUrl ? (asset.textContent || asset.rawContent || "") : null
                                     if (source && !summary) {
                                       return `${source} — Pending extraction`
                                     }
@@ -5363,12 +5992,22 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                   })()
                                 : asset.textContent
                                   ? `${asset.textContent.slice(0, 100)}${asset.textContent.length > 100 ? "..." : ""}`
-                                  : "No extracted text yet"}
+                                  : asset.rawContent
+                                    ? `${asset.rawContent.slice(0, 100)}${asset.rawContent.length > 100 ? "..." : ""}`
+                                    : "No extracted text yet"}
                             </p>
                           </div>
                           <Badge variant="outline" className="text-xs">
                             {asset.type}
                           </Badge>
+                          <Badge variant="outline" className="text-xs">
+                            {asset.aiContextMode === "raw" ? "raw" : "notes"}
+                          </Badge>
+                          {asset.type === "file" && !asset.fileUrl ? (
+                            <Badge variant="outline" className="text-xs text-amber-600 border-amber-500/40">
+                              source-missing
+                            </Badge>
+                          ) : null}
                           <Button
                             variant="ghost"
                             size="icon"
@@ -5389,7 +6028,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                               <Pencil className="h-4 w-4" />
                             </Button>
                           )}
-                          {asset.type === "url" && !asset.textContent && (
+                          {asset.type === "url" && !asset.textContent && !asset.rawContent && (
                             <Button
                               variant="ghost"
                               size="icon"
@@ -7281,7 +7920,11 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                         let remainingTokens = knowledgeBudgets.maxTokens
 
                                                         const perAsset = assetsSorted.map((asset) => {
-                                                          const raw = (asset.textContent || "").trim()
+                                                          const raw =
+                                                            ((asset.aiContextMode === "raw" ? asset.rawContent : asset.textContent) ||
+                                                              asset.textContent ||
+                                                              asset.rawContent ||
+                                                              "").trim()
                                                           const bytes = estimateBytes(raw)
                                                           const tokensEstimated = estimateTokensFromBytes(bytes)
 
@@ -7323,6 +7966,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                             id: asset.id,
                                                             name: asset.name,
                                                             type: asset.type,
+                                                            aiContextMode: asset.aiContextMode || "notes",
                                                             originalFileName: asset.originalFileName,
                                                             mimeType: asset.mimeType,
                                                             bytes,
@@ -7393,6 +8037,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                                                                               <div className="font-medium truncate">{asset.name}</div>
                                                                               <div className="text-[11px] text-muted-foreground truncate">
                                                                                 {asset.type}
+                                                                                {asset.aiContextMode ? ` · mode:${asset.aiContextMode}` : ""}
                                                                                 {asset.originalFileName ? ` · ${asset.originalFileName}` : ""}
                                                                                 {asset.mimeType ? ` · ${asset.mimeType}` : ""}
                                                                               </div>
@@ -7781,6 +8426,146 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           </DialogContent>
         </Dialog>
 
+        {/* Workspace Brand Logo Crop Dialog */}
+        <Dialog
+          open={brandLogoCropOpen}
+          onOpenChange={(open) => {
+            if (!open) closeBrandLogoCropDialog()
+          }}
+        >
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Crop Workspace Logo</DialogTitle>
+              <DialogDescription>
+                Freeform crop plus resize before upload. Background fill follows your current theme surface token.
+              </DialogDescription>
+            </DialogHeader>
+            {brandLogoSource ? (
+              <div className="space-y-5">
+                <div className="relative aspect-[4/3] w-full overflow-hidden rounded-lg border bg-card">
+                  <div
+                    className="absolute inset-0 bg-contain bg-center bg-no-repeat"
+                    style={{ backgroundImage: `url("${brandLogoSource.previewUrl}")` }}
+                  />
+                  <div
+                    className="pointer-events-none absolute border-2 border-primary shadow-[0_0_0_9999px_rgba(0,0,0,0.35)]"
+                    style={{
+                      left: `${brandLogoCrop.x}%`,
+                      top: `${brandLogoCrop.y}%`,
+                      width: `${brandLogoCrop.width}%`,
+                      height: `${brandLogoCrop.height}%`,
+                    }}
+                  />
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Crop X</Label>
+                    <Slider
+                      value={[brandLogoCrop.x]}
+                      min={0}
+                      max={99}
+                      step={1}
+                      onValueChange={([next]) =>
+                        setBrandLogoCrop((prev) =>
+                          clampBrandLogoCrop({
+                            ...prev,
+                            x: next ?? prev.x,
+                          })
+                        )
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Crop Y</Label>
+                    <Slider
+                      value={[brandLogoCrop.y]}
+                      min={0}
+                      max={99}
+                      step={1}
+                      onValueChange={([next]) =>
+                        setBrandLogoCrop((prev) =>
+                          clampBrandLogoCrop({
+                            ...prev,
+                            y: next ?? prev.y,
+                          })
+                        )
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Crop Width</Label>
+                    <Slider
+                      value={[brandLogoCrop.width]}
+                      min={1}
+                      max={Math.max(1, 100 - brandLogoCrop.x)}
+                      step={1}
+                      onValueChange={([next]) =>
+                        setBrandLogoCrop((prev) =>
+                          clampBrandLogoCrop({
+                            ...prev,
+                            width: next ?? prev.width,
+                          })
+                        )
+                      }
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Crop Height</Label>
+                    <Slider
+                      value={[brandLogoCrop.height]}
+                      min={1}
+                      max={Math.max(1, 100 - brandLogoCrop.y)}
+                      step={1}
+                      onValueChange={([next]) =>
+                        setBrandLogoCrop((prev) =>
+                          clampBrandLogoCrop({
+                            ...prev,
+                            height: next ?? prev.height,
+                          })
+                        )
+                      }
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="brandLogoExportSize">Resize (Max Edge)</Label>
+                  <Select
+                    value={String(brandLogoExportMaxEdge)}
+                    onValueChange={(value) => setBrandLogoExportMaxEdge(Number.parseInt(value, 10) || 512)}
+                  >
+                    <SelectTrigger id="brandLogoExportSize">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="256">256px</SelectItem>
+                      <SelectItem value="512">512px</SelectItem>
+                      <SelectItem value="1024">1024px</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" onClick={closeBrandLogoCropDialog} disabled={isUploadingBrandLogo}>
+                    Cancel
+                  </Button>
+                  <Button type="button" onClick={handleUploadCroppedBrandLogo} disabled={isUploadingBrandLogo}>
+                    {isUploadingBrandLogo ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Uploading…
+                      </>
+                    ) : (
+                      "Crop & Upload"
+                    )}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
         {/* Knowledge Asset Viewer Dialog */}
         <Dialog
           open={assetViewerOpen}
@@ -7807,11 +8592,26 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </div>
                 </div>
 
+                <div className="space-y-1">
+                  <Label className="text-xs text-muted-foreground">AI Context Mode</Label>
+                  <div className="text-sm">{assetViewerTarget.aiContextMode === "raw" ? "raw" : "notes"}</div>
+                </div>
+
                 {assetViewerTarget.type === "url" ? (
                   <div className="space-y-1">
                     <Label className="text-xs text-muted-foreground">Source URL</Label>
                     <div className="text-sm break-all">{assetViewerTarget.fileUrl || "—"}</div>
                   </div>
+                ) : null}
+
+                {assetViewerTarget.type === "file" && !assetViewerTarget.fileUrl ? (
+                  <Alert>
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Original file source missing</AlertTitle>
+                    <AlertDescription>
+                      This is a legacy asset without a file pointer. Re-upload this asset to restore true raw-source viewing.
+                    </AlertDescription>
+                  </Alert>
                 ) : null}
 
                 {assetViewerTarget.originalFileName || assetViewerTarget.mimeType ? (
@@ -7824,12 +8624,28 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </div>
                 ) : null}
 
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Content</Label>
-                  <div className="max-h-[360px] overflow-auto rounded-md border bg-muted/20 p-3 text-xs whitespace-pre-wrap break-words">
-                    {assetViewerTarget.textContent || "No content available."}
-                  </div>
-                </div>
+                <Tabs value={assetViewerTab} onValueChange={(value) => setAssetViewerTab(value as "raw" | "notes")}>
+                  <TabsList>
+                    <TabsTrigger value="raw">Raw Source</TabsTrigger>
+                    <TabsTrigger value="notes">AI Notes</TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="raw" className="mt-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Raw Source Content</Label>
+                      <div className="max-h-[360px] overflow-auto rounded-md border bg-muted/20 p-3 text-xs whitespace-pre-wrap break-words">
+                        {assetViewerTarget.rawContent || "No raw source available."}
+                      </div>
+                    </div>
+                  </TabsContent>
+                  <TabsContent value="notes" className="mt-3">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">AI Notes</Label>
+                      <div className="max-h-[360px] overflow-auto rounded-md border bg-muted/20 p-3 text-xs whitespace-pre-wrap break-words">
+                        {assetViewerTarget.textContent || "No AI notes available."}
+                      </div>
+                    </div>
+                  </TabsContent>
+                </Tabs>
 
                 <div className="text-xs text-muted-foreground">
                   Updated {new Date(assetViewerTarget.updatedAt).toLocaleString()}
@@ -7880,7 +8696,41 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                 ) : null}
 
                 <div className="space-y-1.5">
-                  <Label className="text-xs">Content</Label>
+                  <Label className="text-xs">AI Context Mode</Label>
+                  <Select
+                    value={assetEditDraft.aiContextMode}
+                    onValueChange={(value) =>
+                      setAssetEditDraft((prev) =>
+                        prev ? { ...prev, aiContextMode: value === "raw" ? "raw" : "notes" } : prev
+                      )
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="notes">notes</SelectItem>
+                      <SelectItem value="raw">raw</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Controls whether AI context uses concise notes or raw source text for this asset.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Raw Source Content</Label>
+                  <Textarea
+                    value={assetEditDraft.rawContent}
+                    onChange={(e) =>
+                      setAssetEditDraft((prev) => (prev ? { ...prev, rawContent: e.target.value } : prev))
+                    }
+                    rows={8}
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs">AI Notes</Label>
                   <Textarea
                     value={assetEditDraft.textContent}
                     onChange={(e) =>

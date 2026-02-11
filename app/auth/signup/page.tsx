@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -88,7 +89,7 @@ export default function SignupPage() {
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1 text-center">
           <div className="flex justify-center mb-4">
-            <img src="/images/zrg-logo-3.png" alt="ZRG Logo" className="h-12 w-auto" />
+            <Image src="/images/zrg-logo-3.png" alt="ZRG Logo" width={160} height={48} className="h-12 w-auto" priority />
           </div>
           <CardTitle className="text-2xl font-bold">Create an account</CardTitle>
           <CardDescription>Enter your details to get started</CardDescription>
@@ -190,7 +191,6 @@ export default function SignupPage() {
     </div>
   );
 }
-
 
 
 

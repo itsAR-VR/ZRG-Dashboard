@@ -1,6 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import Image from "next/image"
 import { cn } from "@/lib/utils"
 import {
   Inbox,
@@ -112,6 +113,8 @@ export function Sidebar({
   const [counts, setCounts] = useState<FilterCounts | null>(null)
   const [isLoadingCounts, setIsLoadingCounts] = useState(true)
   const [workspaceSearch, setWorkspaceSearch] = useState("")
+  const hasLoadedCountsRef = useRef(false)
+  const lastWorkspaceRef = useRef<string | null>(activeWorkspace)
   const { user } = useUser()
   const workspaceCollator = useMemo(
     () => new Intl.Collator(undefined, { sensitivity: "base", numeric: true }),
@@ -122,25 +125,36 @@ export function Sidebar({
   // Don't fetch until workspace is set to avoid showing all-workspace counts
   useEffect(() => {
     let cancelled = false
+    if (lastWorkspaceRef.current !== activeWorkspace) {
+      hasLoadedCountsRef.current = false
+      lastWorkspaceRef.current = activeWorkspace
+    }
 
     async function fetchCounts() {
       // Only start loading indicator on initial fetch, not periodic refreshes
-      if (counts === null) {
+      if (!hasLoadedCountsRef.current) {
         setIsLoadingCounts(true)
       }
 
-      const result = await getInboxCounts(activeWorkspace)
-      
-      if (!cancelled) {
-        setCounts({
-          allResponses: result.allResponses,
-          attention: result.requiresAttention,
-          previousAttention: result.previouslyRequiredAttention,
-          needsRepair: result.needsRepair,
-          aiSent: result.aiSent,
-          aiReview: result.aiReview,
-        })
-        setIsLoadingCounts(false)
+      try {
+        const result = await getInboxCounts(activeWorkspace)
+
+        if (!cancelled) {
+          setCounts({
+            allResponses: result.allResponses,
+            attention: result.requiresAttention,
+            previousAttention: result.previouslyRequiredAttention,
+            needsRepair: result.needsRepair,
+            aiSent: result.aiSent,
+            aiReview: result.aiReview,
+          })
+          hasLoadedCountsRef.current = true
+          setIsLoadingCounts(false)
+        }
+      } catch {
+        if (!cancelled) {
+          setIsLoadingCounts(false)
+        }
       }
     }
 
@@ -166,6 +180,8 @@ export function Sidebar({
   const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)
   const displayBrandName = (selectedWorkspace?.brandName || selectedWorkspace?.name || "Inbox").trim()
   const displayBrandLogoUrl = normalizeBrandLogoSrc(selectedWorkspace?.brandLogoUrl)
+  const [brandLogoSrc, setBrandLogoSrc] = useState(displayBrandLogoUrl ?? "/images/zrg-logo-3.png")
+  const [logoErrored, setLogoErrored] = useState(false)
   const workspaceQuery = workspaceSearch.trim().toLowerCase()
   const sortedWorkspaces = useMemo(
     () =>
@@ -196,6 +212,11 @@ export function Sidebar({
     await signOut()
   }
 
+  useEffect(() => {
+    setBrandLogoSrc(displayBrandLogoUrl ?? "/images/zrg-logo-3.png")
+    setLogoErrored(false)
+  }, [displayBrandLogoUrl])
+
   const channelToggleValue: string[] =
     activeChannels.length === 0 ? ["all"] : activeChannels;
 
@@ -203,13 +224,18 @@ export function Sidebar({
     <aside className="flex h-full w-[18.5rem] flex-col border-r border-border bg-card overflow-x-hidden">
       {/* Branding */}
       <div className="flex items-center gap-3 border-b border-border p-4">
-        <img
-          src={displayBrandLogoUrl ?? "/images/zrg-logo-3.png"}
+        <Image
+          unoptimized
+          src={brandLogoSrc}
           alt={`${displayBrandName} Logo`}
+          width={96}
+          height={32}
           className="h-8 w-auto"
-          onError={(event) => {
-            event.currentTarget.onerror = null
-            event.currentTarget.src = "/images/zrg-logo-3.png"
+          onError={() => {
+            if (!logoErrored) {
+              setLogoErrored(true)
+              setBrandLogoSrc("/images/zrg-logo-3.png")
+            }
           }}
         />
         <div className="leading-tight">

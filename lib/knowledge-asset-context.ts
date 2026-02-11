@@ -13,7 +13,9 @@ export type KnowledgeAssetForContext = {
   fileUrl?: string | null;
   originalFileName?: string | null;
   mimeType?: string | null;
+  rawContent?: string | null;
   textContent?: string | null;
+  aiContextMode?: "notes" | "raw" | null;
   updatedAt?: Date | null;
 };
 
@@ -47,6 +49,26 @@ export type KnowledgeContextBuildResult = {
 
 export const PRIMARY_WEBSITE_ASSET_NAME = "Primary: Website URL";
 
+export function resolveKnowledgeAssetContextSource(asset: Pick<KnowledgeAssetForContext, "rawContent" | "textContent" | "aiContextMode">): {
+  content: string;
+  source: "raw" | "notes" | "none";
+} {
+  const mode = asset.aiContextMode === "raw" ? "raw" : "notes";
+  const raw = (asset.rawContent || "").trim();
+  const notes = (asset.textContent || "").trim();
+
+  if (mode === "raw" && raw) {
+    return { content: raw, source: "raw" };
+  }
+  if (notes) {
+    return { content: notes, source: "notes" };
+  }
+  if (raw) {
+    return { content: raw, source: "raw" };
+  }
+  return { content: "", source: "none" };
+}
+
 function extractFirstUrlCandidate(input: string): string | null {
   const httpMatch = input.match(/https?:\/\/[^\s)]+/i);
   if (httpMatch?.[0]) return httpMatch[0];
@@ -73,13 +95,13 @@ export function normalizeWebsiteUrl(value: string | null | undefined): string | 
 }
 
 export function extractPrimaryWebsiteUrlFromAssets(
-  assets: Array<Pick<KnowledgeAssetForContext, "name" | "textContent" | "fileUrl" | "type">>
+  assets: Array<Pick<KnowledgeAssetForContext, "name" | "rawContent" | "textContent" | "fileUrl" | "type">>
 ): string | null {
   const list = Array.isArray(assets) ? assets : [];
   const asset = list.find((a) => (a.name || "").trim().toLowerCase() === PRIMARY_WEBSITE_ASSET_NAME.toLowerCase());
   if (!asset) return null;
 
-  const candidate = (asset.fileUrl || asset.textContent || "").trim();
+  const candidate = (asset.fileUrl || asset.textContent || asset.rawContent || "").trim();
   return normalizeWebsiteUrl(candidate);
 }
 
@@ -109,7 +131,8 @@ export function buildKnowledgeContextFromAssets(opts: {
   const blocks: string[] = [];
 
   for (const asset of sorted) {
-    const raw = (asset.textContent || "").trim();
+    const selected = resolveKnowledgeAssetContextSource(asset);
+    const raw = selected.content;
     const bytes = estimateBytesFromText(raw);
     const tokensEstimated = estimateTokensFromBytes(bytes);
 

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  resolveKnowledgeAssetContextSource,
   extractPrimaryWebsiteUrlFromAssets,
   normalizeWebsiteUrl,
   PRIMARY_WEBSITE_ASSET_NAME,
@@ -33,5 +34,41 @@ describe("extractPrimaryWebsiteUrlFromAssets", () => {
   it("returns null when primary asset is missing", () => {
     const assets = [{ name: "General Notes", textContent: "Notes", fileUrl: null, type: "text" }];
     assert.equal(extractPrimaryWebsiteUrlFromAssets(assets), null);
+  });
+
+  it("uses raw source when text content is missing", () => {
+    const assets = [
+      { name: PRIMARY_WEBSITE_ASSET_NAME, rawContent: "https://example.com/pricing", textContent: null, fileUrl: null, type: "url" },
+    ];
+    assert.equal(extractPrimaryWebsiteUrlFromAssets(assets), "https://example.com/pricing");
+  });
+});
+
+describe("resolveKnowledgeAssetContextSource", () => {
+  it("returns notes by default", () => {
+    const result = resolveKnowledgeAssetContextSource({
+      rawContent: "raw content",
+      textContent: "notes content",
+      aiContextMode: null,
+    });
+    assert.deepEqual(result, { content: "notes content", source: "notes" });
+  });
+
+  it("returns raw when mode is raw", () => {
+    const result = resolveKnowledgeAssetContextSource({
+      rawContent: "raw content",
+      textContent: "notes content",
+      aiContextMode: "raw",
+    });
+    assert.deepEqual(result, { content: "raw content", source: "raw" });
+  });
+
+  it("falls back to raw when notes are empty", () => {
+    const result = resolveKnowledgeAssetContextSource({
+      rawContent: "raw content",
+      textContent: " ",
+      aiContextMode: "notes",
+    });
+    assert.deepEqual(result, { content: "raw content", source: "raw" });
   });
 });

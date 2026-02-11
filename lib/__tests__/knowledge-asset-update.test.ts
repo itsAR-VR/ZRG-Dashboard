@@ -56,3 +56,24 @@ test("knowledge asset update: rejects malformed urls", () => {
 
   assert.equal(result.error, "Invalid URL");
 });
+
+test("knowledge asset update: supports raw content and mode", () => {
+  const result = buildKnowledgeAssetUpdateData("file", {
+    rawContent: "Original extracted content",
+    textContent: "Summarized notes",
+    aiContextMode: "raw",
+  });
+
+  assert.equal(result.error, undefined);
+  assert.equal(result.updateData.rawContent, "Original extracted content");
+  assert.equal(result.updateData.textContent, "Summarized notes");
+  assert.equal(result.updateData.aiContextMode, "raw");
+});
+
+test("knowledge asset update: rejects invalid aiContextMode", () => {
+  const result = buildKnowledgeAssetUpdateData("file", {
+    aiContextMode: "invalid" as unknown as "notes" | "raw",
+  });
+
+  assert.equal(result.error, "Invalid AI context mode");
+});

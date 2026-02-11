@@ -38,7 +38,12 @@ import {
   buildLeadContextBundleTelemetryMetadata,
   isLeadContextBundleGloballyDisabled,
 } from "@/lib/lead-context-bundle";
-import { PRIMARY_WEBSITE_ASSET_NAME, extractPrimaryWebsiteUrlFromAssets } from "@/lib/knowledge-asset-context";
+import {
+  PRIMARY_WEBSITE_ASSET_NAME,
+  extractPrimaryWebsiteUrlFromAssets,
+  resolveKnowledgeAssetContextSource,
+  type KnowledgeAssetForContext,
+} from "@/lib/knowledge-asset-context";
 import { getLeadMemoryContext } from "@/lib/lead-memory-context";
 import {
   getMeetingOverseerDecision,
@@ -46,6 +51,7 @@ import {
   shouldRunMeetingOverseer,
   type MeetingOverseerExtractDecision,
 } from "@/lib/meeting-overseer";
+import type { AutoBookingContext } from "@/lib/followup-engine";
 import { DRAFT_PIPELINE_STAGES, type DraftPipelineStage } from "@/lib/draft-pipeline/types";
 import { validateArtifactPayload } from "@/lib/draft-pipeline/validate-payload";
 import type { AvailabilitySource } from "@prisma/client";
@@ -82,6 +88,11 @@ export type DraftGenerationOptions = {
    * Adds an extra request; consider disabling for latency-sensitive contexts.
    */
   preferApiCount?: boolean;
+  /**
+   * Auto-booking context from inbound processing. Used to keep scheduling drafts coherent
+   * (e.g., avoid contradictory "we'll call" language when scheduling intent was already detected).
+   */
+  autoBookingContext?: AutoBookingContext | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -1453,7 +1464,9 @@ export async function generateResponseDraft(
                     name: true,
                     type: true,
                     fileUrl: true,
+                    rawContent: true,
                     textContent: true,
+                    aiContextMode: true,
                     updatedAt: true,
                   },
                 },
@@ -1621,7 +1634,10 @@ export async function generateResponseDraft(
       }
     }
 
-    const knowledgeAssets = settings?.knowledgeAssets ?? [];
+    const knowledgeAssets: KnowledgeAssetForContext[] = (settings?.knowledgeAssets ?? []).map((asset) => ({
+      ...asset,
+      aiContextMode: asset.aiContextMode === "raw" ? "raw" : "notes",
+    }));
     let primaryWebsiteUrl = extractPrimaryWebsiteUrlFromAssets(knowledgeAssets);
     let knowledgeContext = "";
     let draftPromptMetadata: unknown = undefined;
@@ -1665,8 +1681,12 @@ export async function generateResponseDraft(
       // Legacy knowledge context assembly (kept as a safe fallback).
       if (knowledgeAssets.length > 0) {
         const assetSnippets = knowledgeAssets
-          .filter((a) => a.textContent && a.name !== PRIMARY_WEBSITE_ASSET_NAME)
-          .map((a) => `[${a.name}]: ${a.textContent!.slice(0, 1000)}${a.textContent!.length > 1000 ? "..." : ""}`);
+          .map((a) => ({
+            name: a.name,
+            source: resolveKnowledgeAssetContextSource(a).content,
+          }))
+          .filter((a) => a.source && a.name !== PRIMARY_WEBSITE_ASSET_NAME)
+          .map((a) => `[${a.name}]: ${a.source.slice(0, 1000)}${a.source.length > 1000 ? "..." : ""}`);
 
         if (assetSnippets.length > 0) {
           knowledgeContext = assetSnippets.join("\n\n");
@@ -1849,6 +1869,25 @@ export async function generateResponseDraft(
       bookingEscalationReason && !leadSchedulerLink
         ? `\nBOOKING ESCALATION OVERRIDE (${bookingEscalationReason}):\nSCHEDULING: Do not propose specific meeting times or include any booking links. If scheduling comes up, ask for their preferred times/timezone and note a human will coordinate.\n`
         : "";
+    const autoBookingSchedulingAppendix = opts.autoBookingContext?.schedulingDetected
+      ? [
+          "SCHEDULING CONTEXT (from auto-booking):",
+          `- Scheduling intent was detected (intent: ${opts.autoBookingContext.schedulingIntent ?? "unknown"}).`,
+          opts.autoBookingContext.failureReason === "no_match"
+            ? "- Proposed time did not match current availability; acknowledge and offer alternatives from provided availability."
+            : null,
+          opts.autoBookingContext.failureReason === "needs_clarification"
+            ? "- Scheduling details were ambiguous; ask one concise clarifying question."
+            : null,
+          opts.autoBookingContext.isQualifiedForBooking === false
+            ? "- Qualification is currently not met; do not imply confirmed booking."
+            : null,
+          "- Do NOT say \"we'll call\" due to signature phone numbers unless the lead explicitly asked for a call.",
+          "- Keep the response focused on scheduling/booking clarity.",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : "";
 
     // ---------------------------------------------------------------------------
     // Shared config
@@ -2018,6 +2057,9 @@ export async function generateResponseDraft(
 
       if (bookingEscalationPromptAppendix) {
         strategyInstructions += bookingEscalationPromptAppendix;
+      }
+      if (autoBookingSchedulingAppendix) {
+        strategyInstructions += `\n${autoBookingSchedulingAppendix}\n`;
       }
 
       // Lead-scheduler-link override (Phase 79): prevent booking-process templates from suggesting our times/link
@@ -2451,6 +2493,9 @@ Write the email response now, following the strategy and structure archetype.
         if (bookingEscalationPromptAppendix) {
           fallbackSystemPrompt += bookingEscalationPromptAppendix;
         }
+        if (autoBookingSchedulingAppendix) {
+          fallbackSystemPrompt += `\n${autoBookingSchedulingAppendix}\n`;
+        }
 
         // Lead-scheduler-link override (Phase 79): prevent fallback prompt from suggesting our times/link
         // when the lead explicitly provided their own scheduling link.
@@ -2700,6 +2745,9 @@ Generate an appropriate email response following the guidelines and structure ar
 
       if (bookingEscalationPromptAppendix) {
         instructions += bookingEscalationPromptAppendix;
+      }
+      if (autoBookingSchedulingAppendix) {
+        instructions += `\n${autoBookingSchedulingAppendix}\n`;
       }
 
       // Lead-scheduler-link override (Phase 79): prevent SMS/LinkedIn drafts from suggesting our times/link
@@ -2992,6 +3040,25 @@ Generate an appropriate ${channel} response following the guidelines above.
                 triggerMessageId,
                 errorMessage: error instanceof Error ? error.message : String(error),
               });
+            }
+
+            if (opts.autoBookingContext?.schedulingDetected) {
+              const summary = [
+                `auto_booking_failure_reason: ${opts.autoBookingContext.failureReason ?? "none"}`,
+                `auto_booking_intent: ${opts.autoBookingContext.schedulingIntent ?? "unknown"}`,
+                opts.autoBookingContext.clarificationMessage
+                  ? `auto_booking_clarification: ${opts.autoBookingContext.clarificationMessage}`
+                  : null,
+                opts.autoBookingContext.isQualifiedForBooking === false
+                  ? "auto_booking_qualification: not_qualified"
+                  : null,
+                "draft_policy: avoid implying phone-call outreach unless explicitly requested",
+              ]
+                .filter(Boolean)
+                .join("\n");
+              gateMemoryContext = gateMemoryContext
+                ? `${gateMemoryContext}\n\nAUTO-BOOKING CONTEXT:\n${summary}`
+                : `AUTO-BOOKING CONTEXT:\n${summary}`;
             }
 
             const gateDraft = await runMeetingOverseerGate({

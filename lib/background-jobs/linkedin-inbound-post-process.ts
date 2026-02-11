@@ -291,7 +291,11 @@ export async function runLinkedInInboundPostProcessJob(params: {
   }
 
   // 7. AI Draft Generation
-  const shouldDraft = !autoBook.booked && newSentiment && shouldGenerateDraft(newSentiment);
+  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated);
+  if (schedulingHandled) {
+    console.log("[LinkedIn Post-Process] Skipping draft generation; scheduling follow-up task already created by auto-booking");
+  }
+  const shouldDraft = !autoBook.booked && !schedulingHandled && newSentiment && shouldGenerateDraft(newSentiment);
 
   if (shouldDraft) {
     console.log(`[LinkedIn Post-Process] Generating draft for message ${message.id}`);
@@ -307,6 +311,7 @@ export async function runLinkedInInboundPostProcessJob(params: {
       {
         timeoutMs: webhookDraftTimeoutMs,
         triggerMessageId: message.id,
+        autoBookingContext: autoBook.context?.schedulingDetected ? autoBook.context : null,
       }
     );
 

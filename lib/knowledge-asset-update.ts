@@ -1,17 +1,22 @@
 import { isIP } from "node:net";
 
 export type KnowledgeAssetEditableType = "file" | "text" | "url";
+export type KnowledgeAssetAiContextMode = "notes" | "raw";
 
 export type KnowledgeAssetUpdateInput = {
   name?: string;
+  rawContent?: string | null;
   textContent?: string | null;
   fileUrl?: string | null;
+  aiContextMode?: KnowledgeAssetAiContextMode;
 };
 
 export type KnowledgeAssetUpdateData = {
   name?: string;
+  rawContent?: string | null;
   textContent?: string | null;
   fileUrl?: string;
+  aiContextMode?: KnowledgeAssetAiContextMode;
 };
 
 export function isPrivateNetworkHostname(hostname: string): boolean {
@@ -52,8 +57,19 @@ export function buildKnowledgeAssetUpdateData(
     updateData.name = nextName;
   }
 
+  if (data.rawContent !== undefined) {
+    updateData.rawContent = data.rawContent;
+  }
+
   if (data.textContent !== undefined) {
     updateData.textContent = data.textContent;
+  }
+
+  if (data.aiContextMode !== undefined) {
+    if (data.aiContextMode !== "notes" && data.aiContextMode !== "raw") {
+      return { updateData, error: "Invalid AI context mode" };
+    }
+    updateData.aiContextMode = data.aiContextMode;
   }
 
   if (data.fileUrl !== undefined && assetType === "url") {

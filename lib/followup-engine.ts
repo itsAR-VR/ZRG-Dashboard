@@ -226,6 +226,28 @@ function detectWeekdayTokenFromText(message: string): WeekdayToken | null {
   return null;
 }
 
+function resolveRelativeDateToWeekdayToken(
+  relativePreference: string | null | undefined,
+  timeZone: string
+): WeekdayToken | null {
+  const pref = (relativePreference || "").trim().toLowerCase();
+  if (!pref) return null;
+
+  let targetDate: Date | null = null;
+  const now = new Date();
+  if (pref.includes("today")) {
+    targetDate = now;
+  } else if (pref.includes("tomorrow")) {
+    targetDate = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  } else {
+    return null;
+  }
+
+  const INDEX_TO_TOKEN: WeekdayToken[] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+  const parts = getZonedDateTimeParts(targetDate, safeTimeZone(timeZone, "UTC"));
+  return INDEX_TO_TOKEN[parts.weekday] ?? null;
+}
+
 function getZonedDateTimeParts(date: Date, timeZone: string): {
   year: number;
   month: number;
@@ -307,6 +329,45 @@ export function selectEarliestSlotForWeekday(opts: {
 
   const bestUtc = bestUtcByTimeOfDay || bestUtcAny;
   return bestUtc ? bestUtc.toISOString() : null;
+}
+
+function findNearestAvailableSlot(
+  proposedUtcIso: string,
+  slotsUtcIso: string[],
+  windowMs: number
+): { slotUtcIso: string; strategy: Exclude<AutoBookingMatchStrategy, "exact" | null> } | null {
+  const proposedMs = new Date(proposedUtcIso).getTime();
+  if (!Number.isFinite(proposedMs)) return null;
+
+  let bestDelta = Number.POSITIVE_INFINITY;
+  const candidates: Array<{ slotUtcIso: string; slotMs: number }> = [];
+
+  for (const slotUtcIso of slotsUtcIso) {
+    const slotMs = new Date(slotUtcIso).getTime();
+    if (!Number.isFinite(slotMs)) continue;
+    const delta = Math.abs(slotMs - proposedMs);
+    if (delta > windowMs) continue;
+
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      candidates.length = 0;
+      candidates.push({ slotUtcIso, slotMs });
+      continue;
+    }
+
+    if (delta === bestDelta) {
+      candidates.push({ slotUtcIso, slotMs });
+    }
+  }
+
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) {
+    return { slotUtcIso: candidates[0]!.slotUtcIso, strategy: "nearest" };
+  }
+
+  // Product decision (Phase 138): for equal-distance ties, book the later slot.
+  const later = candidates.sort((a, b) => b.slotMs - a.slotMs)[0]!;
+  return { slotUtcIso: later.slotUtcIso, strategy: "nearest_tie_later" };
 }
 
 function addDaysToYmd(ymd: { year: number; month: number; day: number }, days: number): {
@@ -3061,12 +3122,18 @@ function summarizeOverseerForGate(decision: MeetingOverseerExtractDecision | nul
     {
       is_scheduling_related: decision.is_scheduling_related,
       intent: decision.intent,
+      intent_to_book: decision.intent_to_book,
+      intent_confidence: decision.intent_confidence,
       acceptance_specificity: decision.acceptance_specificity,
       accepted_slot_index: decision.accepted_slot_index,
       preferred_day_of_week: decision.preferred_day_of_week,
       preferred_time_of_day: decision.preferred_time_of_day,
       relative_preference: decision.relative_preference,
       relative_preference_detail: decision.relative_preference_detail,
+      qualification_status: decision.qualification_status,
+      qualification_confidence: decision.qualification_confidence,
+      time_from_body_only: decision.time_from_body_only,
+      time_extraction_confidence: decision.time_extraction_confidence,
       needs_clarification: decision.needs_clarification,
       clarification_reason: decision.clarification_reason,
       confidence: decision.confidence,
@@ -3363,6 +3430,69 @@ type BookingSignal = {
   preferredTimeOfDay: string | null;
 };
 
+export type AutoBookingFailureReason =
+  | "no_scheduling_intent"
+  | "blocked_sentiment"
+  | "disabled"
+  | "no_match"
+  | "low_confidence"
+  | "gate_denied"
+  | "needs_clarification"
+  | "booking_api_error"
+  | "overseer_error"
+  | "unqualified_or_unknown"
+  | null;
+
+export type AutoBookingTaskKind =
+  | "clarification"
+  | "alternatives"
+  | "timezone_clarification"
+  | "qualification_clarification"
+  | "other"
+  | null;
+
+export type AutoBookingMatchStrategy = "exact" | "nearest" | "nearest_tie_later" | null;
+
+export type AutoBookingContext = {
+  schedulingDetected: boolean;
+  schedulingIntent: string | null;
+  clarificationTaskCreated: boolean;
+  clarificationMessage: string | null;
+  followUpTaskCreated: boolean;
+  followUpTaskKind: AutoBookingTaskKind;
+  qualificationEvaluated: boolean;
+  isQualifiedForBooking: boolean | null;
+  qualificationReason: string | null;
+  failureReason: AutoBookingFailureReason;
+  route: BookingRoute | null;
+  matchStrategy: AutoBookingMatchStrategy;
+};
+
+export type AutoBookingResult = {
+  booked: boolean;
+  appointmentId?: string;
+  error?: string;
+  context: AutoBookingContext;
+};
+
+function defaultAutoBookingContext(overrides?: Partial<AutoBookingContext>): AutoBookingContext {
+  return {
+    schedulingDetected: false,
+    schedulingIntent: null,
+    clarificationTaskCreated: false,
+    clarificationMessage: null,
+    followUpTaskCreated: false,
+    followUpTaskKind: null,
+    qualificationEvaluated: false,
+    isQualifiedForBooking: null,
+    qualificationReason: null,
+    failureReason: null,
+    route: null,
+    matchStrategy: null,
+    ...overrides,
+  };
+}
+
 export function deriveBookingSignal(opts: {
   overseerDecision: MeetingOverseerExtractDecision | null;
   hasOfferedSlots: boolean;
@@ -3439,8 +3569,12 @@ function buildAutoBookingConfirmationMessage(opts: {
   channel: "sms" | "email" | "linkedin";
   slotLabel: string;
   bookingLink: string | null;
+  includeCorrectionOption?: boolean;
 }): string {
-  const base = `You're booked for ${opts.slotLabel}.`;
+  const correctionText = opts.includeCorrectionOption
+    ? " Let me know if that doesn't work and we can find another time."
+    : "";
+  const base = `You're booked for ${opts.slotLabel}.${correctionText}`;
   if (!opts.bookingLink) return base;
   if (opts.channel === "sms") {
     return `${base} Reschedule: ${opts.bookingLink}`;
@@ -3454,6 +3588,7 @@ async function sendAutoBookingConfirmation(opts: {
   slot: OfferedSlot;
   timeZone: string;
   bookingLink: string | null;
+  includeCorrectionOption?: boolean;
 }): Promise<{ success: boolean; error?: string }> {
   if (!opts.lead) return { success: false, error: "Lead not found" };
 
@@ -3467,6 +3602,7 @@ async function sendAutoBookingConfirmation(opts: {
     channel: opts.channel,
     slotLabel,
     bookingLink: opts.bookingLink,
+    includeCorrectionOption: opts.includeCorrectionOption,
   });
 
   if (opts.channel === "sms") {
@@ -3502,15 +3638,39 @@ export async function processMessageForAutoBooking(
   leadId: string,
   messageBody: string,
   meta?: { channel?: "sms" | "email" | "linkedin"; messageId?: string | null; sentimentTag?: string | null }
-): Promise<{
-  booked: boolean;
-  appointmentId?: string;
-  error?: string;
-}> {
+): Promise<AutoBookingResult> {
   try {
+    const context = defaultAutoBookingContext();
+    const makeResult = (
+      payload: { booked: boolean; appointmentId?: string; error?: string },
+      overrides?: Partial<AutoBookingContext>
+    ): AutoBookingResult => ({
+      ...payload,
+      context: { ...context, ...(overrides || {}) },
+    });
+    const fail = (
+      failureReason: AutoBookingFailureReason,
+      payload?: { error?: string },
+      overrides?: Partial<AutoBookingContext>
+    ): AutoBookingResult =>
+      makeResult({ booked: false, ...(payload || {}) }, { failureReason, ...(overrides || {}) });
+
+    const markTaskCreated = (opts: {
+      kind: AutoBookingTaskKind;
+      suggestedMessage?: string | null;
+      isClarification?: boolean;
+    }) => {
+      context.followUpTaskCreated = true;
+      context.followUpTaskKind = opts.kind;
+      if (opts.isClarification) {
+        context.clarificationTaskCreated = true;
+        context.clarificationMessage = (opts.suggestedMessage || "").trim() || null;
+      }
+    };
+
     // Defense-in-depth: block known non-scheduling sentiments from auto-booking before any DB/AI work.
     if (isAutoBookingBlockedSentiment(meta?.sentimentTag)) {
-      return { booked: false };
+      return fail("blocked_sentiment");
     }
 
     const lead = await prisma.lead.findUnique({
@@ -3526,18 +3686,18 @@ export async function processMessageForAutoBooking(
     });
 
     if (!lead) {
-      return { booked: false, error: "Lead not found" };
+      return fail("overseer_error", { error: "Lead not found" });
     }
 
     // Defense-in-depth for callers that don't pass sentimentTag via meta.
     if (isAutoBookingBlockedSentiment(lead.sentimentTag)) {
-      return { booked: false };
+      return fail("blocked_sentiment");
     }
 
     // Check if lead should auto-book
     const autoBookResult = await shouldAutoBook(leadId);
     if (!autoBookResult.shouldBook) {
-      return { booked: false };
+      return fail("disabled");
     }
 
     // Get offered slots for this lead
@@ -3579,12 +3739,59 @@ export async function processMessageForAutoBooking(
 
     let overseerDecision: MeetingOverseerExtractDecision | null = null;
     try {
+      const [answerState, recentMessages, bundle] = await Promise.all([
+        getLeadQualificationAnswerState({ leadId: lead.id, clientId: lead.clientId }).catch(() => null),
+        prisma.message.findMany({
+          where: { leadId: lead.id },
+          orderBy: { sentAt: "desc" },
+          take: 8,
+          select: { direction: true, channel: true, body: true },
+        }).catch(() => []),
+        buildLeadContextBundle({
+          clientId: lead.clientId,
+          leadId: lead.id,
+          profile: "followup_booking_gate",
+          timeoutMs: 500,
+          settings: lead.client.settings ?? null,
+        }).catch(() => null),
+      ]);
+      const conversationContext = recentMessages
+        .slice()
+        .reverse()
+        .map((m) => {
+          const body = (m.body || "").trim();
+          if (!body) return null;
+          return `${m.direction.toUpperCase()} (${m.channel}): ${body.slice(0, 180)}`;
+        })
+        .filter(Boolean)
+        .join("\n");
+
+      const qualificationContext = answerState
+        ? [
+            `required_question_ids: ${(answerState.requiredQuestionIds || []).join(", ") || "none"}`,
+            `missing_required_question_ids: ${(answerState.missingRequiredQuestionIds || []).join(", ") || "none"}`,
+            `has_all_required_answers: ${answerState.hasAllRequiredAnswers ? "true" : "false"}`,
+          ].join("\n")
+        : "qualification state unavailable";
+
+      const businessContext = [
+        `service_description: ${((lead.client.settings?.serviceDescription || "").trim() || "none").slice(0, 500)}`,
+        `lead_status: ${(lead.status || "").trim() || "unknown"}`,
+        `lead_sentiment: ${(lead.sentimentTag || "").trim() || "unknown"}`,
+        bundle?.leadMemoryContext ? `lead_memory_context: ${bundle.leadMemoryContext.slice(0, 500)}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+
       overseerDecision = await runMeetingOverseerExtraction({
         clientId: lead.clientId,
         leadId: lead.id,
         messageId: meta?.messageId,
         messageText: messageTrimmed,
         offeredSlots,
+        qualificationContext,
+        conversationContext,
+        businessContext,
       });
     } catch (error) {
       console.warn("[FollowupEngine] Meeting overseer extraction failed; failing closed (no auto-book)", {
@@ -3597,10 +3804,21 @@ export async function processMessageForAutoBooking(
 
     // Fail closed if we can't get an overseer extraction (no heuristic fallbacks).
     if (!overseerDecision) {
-      return { booked: false };
+      return fail("overseer_error");
     }
 
     const signal = deriveBookingSignal({ overseerDecision, hasOfferedSlots: offeredSlots.length > 0 });
+    context.schedulingDetected = Boolean(overseerDecision.is_scheduling_related);
+    context.schedulingIntent = overseerDecision.intent || null;
+    context.route = signal.route;
+    context.qualificationEvaluated = true;
+    context.isQualifiedForBooking =
+      overseerDecision.qualification_status === "qualified"
+        ? true
+        : overseerDecision.qualification_status === "unqualified"
+          ? false
+          : null;
+    context.qualificationReason = (overseerDecision.qualification_evidence || [])[0] || null;
 
     const tzResult = await ensureLeadTimezone(leadId);
     const timeZone = tzResult.timezone || lead.timezone || lead.client.settings?.timezone || "UTC";
@@ -3623,6 +3841,11 @@ export async function processMessageForAutoBooking(
           suggestedMessage,
         },
       });
+      markTaskCreated({
+        kind: "clarification",
+        suggestedMessage,
+        isClarification: true,
+      });
 
       if (lead.sentimentTag !== "Blacklist") {
         await prisma.lead.update({
@@ -3633,11 +3856,37 @@ export async function processMessageForAutoBooking(
     };
 
     const route: BookingRoute = signal.route;
+    context.route = route;
+
+    if (route !== "none") {
+      if (!overseerDecision.intent_to_book) {
+        await createClarificationTask("Just to confirm, would you like to book a meeting time now?");
+        return fail("needs_clarification");
+      }
+      if (route === "accept_offered" && !overseerDecision.time_from_body_only) {
+        const bodyClarification = "Could you confirm which offered time works for you in your reply so I can schedule it correctly?";
+        await createClarificationTask(bodyClarification);
+        return fail("needs_clarification");
+      }
+      if (overseerDecision.qualification_status !== "qualified") {
+        const qualificationClarification =
+          overseerDecision.qualification_status === "unqualified"
+            ? "Before we schedule, I need to confirm a quick qualification detail. Could you share a bit more so we can make sure this is the right fit?"
+            : "Before I schedule this, could you confirm a quick qualification detail so we can make sure this is the right fit?";
+        await createClarificationTask(qualificationClarification);
+        markTaskCreated({
+          kind: "qualification_clarification",
+          suggestedMessage: qualificationClarification,
+          isClarification: true,
+        });
+        return fail("unqualified_or_unknown");
+      }
+    }
 
     // Scenario 1/2: lead accepts one of the offered slots.
     if (route === "accept_offered") {
       if (offeredSlots.length === 0) {
-        return { booked: false };
+        return fail("no_match");
       }
 
       if (overseerDecision?.needs_clarification) {
@@ -3646,7 +3895,7 @@ export async function processMessageForAutoBooking(
             ? "Got it — which day and time later this week works best for you?"
             : "Got it — what day and time works best for you?";
         await createClarificationTask(clarification);
-        return { booked: false };
+        return fail("needs_clarification");
       }
 
       let acceptedSlot: OfferedSlot | null = null;
@@ -3682,7 +3931,9 @@ export async function processMessageForAutoBooking(
       }
 
       const weekdayTokenForAcceptance =
-        overseerDecision?.preferred_day_of_week || detectWeekdayTokenFromText(messageTrimmed);
+        overseerDecision?.preferred_day_of_week ||
+        detectWeekdayTokenFromText(messageTrimmed) ||
+        resolveRelativeDateToWeekdayToken(overseerDecision?.relative_preference, timeZone);
 
       // Day-only: if the lead indicates a weekday preference, try to map it to an offered slot first.
       // This covers cases where overseer didn't populate `preferred_day_of_week` but the message contains it.
@@ -3770,7 +4021,7 @@ export async function processMessageForAutoBooking(
                 issues: null,
                 retryCount: attempts - 1,
               });
-              return { booked: false };
+              return fail("gate_denied");
             }
 
             if (gate.decision === "needs_clarification") {
@@ -3784,12 +4035,12 @@ export async function processMessageForAutoBooking(
                 issues: gate.issues,
                 retryCount: attempts - 1,
               });
-              return { booked: false };
+              return fail("needs_clarification");
             }
 
             if (gate.decision === "deny") {
               await createClarificationTask("Got it — what time works best for you on that day?");
-              return { booked: false };
+              return fail("gate_denied");
             }
           }
 
@@ -3811,24 +4062,24 @@ export async function processMessageForAutoBooking(
                 bookingLink,
               });
               if (!confirmResult.success) {
-                return {
+                return makeResult({
                   booked: true,
                   appointmentId: bookingResult.appointmentId,
                   error: confirmResult.error || "Booked, but failed to send confirmation",
-                };
+                });
               }
             } else if (preferred) {
-              return {
+              return makeResult({
                 booked: true,
                 appointmentId: bookingResult.appointmentId,
                 error: "Booked, but inbound channel is unavailable for confirmation",
-              };
+              });
             }
 
-            return { booked: true, appointmentId: bookingResult.appointmentId };
+            return makeResult({ booked: true, appointmentId: bookingResult.appointmentId });
           }
 
-          return { booked: false, error: bookingResult.error };
+          return fail("booking_api_error", { error: bookingResult.error });
         }
       }
 
@@ -3857,7 +4108,7 @@ export async function processMessageForAutoBooking(
               : `Which works better for you: (1) ${options[0]!.label} or (2) ${options[1]!.label}?`
             : `Which of these works best for you: ${offeredSlots.map((s) => s.label).join(" or ")}?`;
         await createClarificationTask(suggestion);
-        return { booked: false };
+        return fail("no_match");
       }
 
       if (bookingGateEnabled) {
@@ -3902,7 +4153,7 @@ export async function processMessageForAutoBooking(
             issues: null,
             retryCount: attempts - 1,
           });
-          return { booked: false };
+          return fail("gate_denied");
         }
 
         if (gate.decision === "needs_clarification") {
@@ -3916,12 +4167,12 @@ export async function processMessageForAutoBooking(
             issues: gate.issues,
             retryCount: attempts - 1,
           });
-          return { booked: false };
+          return fail("needs_clarification");
         }
 
         if (gate.decision === "deny") {
           await createClarificationTask(`Just to confirm, does ${acceptedSlot.label} work for you?`);
-          return { booked: false };
+          return fail("gate_denied");
         }
       }
 
@@ -3943,27 +4194,27 @@ export async function processMessageForAutoBooking(
             bookingLink,
           });
           if (!confirmResult.success) {
-            return {
+            return makeResult({
               booked: true,
               appointmentId: bookingResult.appointmentId,
               error: confirmResult.error || "Booked, but failed to send confirmation",
-            };
+            });
           }
         } else if (preferred) {
-          return {
+          return makeResult({
             booked: true,
             appointmentId: bookingResult.appointmentId,
             error: "Booked, but inbound channel is unavailable for confirmation",
-          };
+          });
         }
 
-        return {
+        return makeResult({
           booked: true,
           appointmentId: bookingResult.appointmentId,
-        };
+        });
       }
 
-      return { booked: false, error: bookingResult.error };
+      return fail("booking_api_error", { error: bookingResult.error });
     }
 
     // Scenario 3: lead proposes their own time (or a day-only preference).
@@ -3973,7 +4224,13 @@ export async function processMessageForAutoBooking(
         : overseerDecision.is_scheduling_related && overseerDecision.intent === "propose_time";
 
     if (!shouldParseProposal) {
-      return { booked: false };
+      return fail("no_scheduling_intent");
+    }
+
+    if ((route === "proposed_time" || route === "day_only") && !overseerDecision.time_from_body_only) {
+      const bodyClarification = "Could you confirm the exact day/time you want from your message body so I can schedule it correctly?";
+      await createClarificationTask(bodyClarification);
+      return fail("needs_clarification");
     }
 
     if (overseerDecision?.needs_clarification) {
@@ -3982,7 +4239,7 @@ export async function processMessageForAutoBooking(
           ? "Got it — which day and time works best for you?"
           : "Got it — what day and time works best for you?";
       await createClarificationTask(clarification);
-      return { booked: false };
+      return fail("needs_clarification");
     }
 
     const nowUtcIsoForParse = new Date().toISOString();
@@ -3998,21 +4255,27 @@ export async function processMessageForAutoBooking(
 
     if (!proposed) {
       await createClarificationTask("Got it — what day and time works best for you?");
-      return { booked: false };
+      return fail("needs_clarification");
     }
 
     if (proposed.needsTimezoneClarification) {
       const type = await pickTaskType();
+      const timezoneClarification = "What timezone are you in for that time?";
       await prisma.followUpTask.create({
         data: {
           leadId,
           type,
           dueDate: new Date(),
           status: "pending",
-          suggestedMessage: "What timezone are you in for that time?",
+          suggestedMessage: timezoneClarification,
         },
       });
-      return { booked: false };
+      markTaskCreated({
+        kind: "timezone_clarification",
+        suggestedMessage: timezoneClarification,
+        isClarification: true,
+      });
+      return fail("needs_clarification");
     }
 
     const bookingTarget = await selectBookingTargetForLead({
@@ -4028,7 +4291,23 @@ export async function processMessageForAutoBooking(
     });
     const availabilitySet = new Set(availability.slotsUtc);
 
-    const match = proposed.proposedStartTimesUtc.find((iso) => availabilitySet.has(iso)) ?? null;
+    const slotMatchWindowMsRaw = Number.parseInt(process.env.AUTO_BOOK_SLOT_MATCH_WINDOW_MS || "1800000", 10);
+    const slotMatchWindowMs = Number.isFinite(slotMatchWindowMsRaw) && slotMatchWindowMsRaw >= 0
+      ? slotMatchWindowMsRaw
+      : 30 * 60 * 1000;
+
+    let match = proposed.proposedStartTimesUtc.find((iso) => availabilitySet.has(iso)) ?? null;
+    if (match) {
+      context.matchStrategy = "exact";
+    } else if (slotMatchWindowMs > 0) {
+      for (const proposedIso of proposed.proposedStartTimesUtc) {
+        const nearest = findNearestAvailableSlot(proposedIso, availability.slotsUtc, slotMatchWindowMs);
+        if (!nearest) continue;
+        match = nearest.slotUtcIso;
+        context.matchStrategy = nearest.strategy;
+        break;
+      }
+    }
 
     let highConfidenceThreshold = 0.9;
     try {
@@ -4046,6 +4325,7 @@ export async function processMessageForAutoBooking(
     }
 
     let shouldAutoBookMatched = Boolean(match) && proposed.confidence >= highConfidenceThreshold;
+    const hasMatchButLowConfidence = Boolean(match) && proposed.confidence < highConfidenceThreshold;
 
     if (shouldAutoBookMatched && bookingGateEnabled) {
       const matchLabel = formatAvailabilitySlotLabel({
@@ -4088,7 +4368,7 @@ export async function processMessageForAutoBooking(
           issues: null,
           retryCount: attempts - 1,
         });
-        return { booked: false };
+        return fail("gate_denied");
       }
 
       if (gate.decision === "needs_clarification") {
@@ -4102,7 +4382,7 @@ export async function processMessageForAutoBooking(
           issues: gate.issues,
           retryCount: attempts - 1,
         });
-        return { booked: false };
+        return fail("needs_clarification");
       }
 
       if (gate.decision === "deny") {
@@ -4142,30 +4422,34 @@ export async function processMessageForAutoBooking(
             },
             timeZone,
             bookingLink,
+            includeCorrectionOption: context.matchStrategy === "nearest_tie_later",
           });
           if (!confirmResult.success) {
-            return {
+            return makeResult({
               booked: true,
               appointmentId: bookingResult.appointmentId,
               error: confirmResult.error || "Booked, but failed to send confirmation",
-            };
+            });
           }
         } else if (preferred) {
-          return {
+          return makeResult({
             booked: true,
             appointmentId: bookingResult.appointmentId,
             error: "Booked, but inbound channel is unavailable for confirmation",
-          };
+          });
         }
 
-        return { booked: true, appointmentId: bookingResult.appointmentId };
+        return makeResult({ booked: true, appointmentId: bookingResult.appointmentId });
       }
-      return { booked: false, error: bookingResult.error };
+      return fail("booking_api_error", { error: bookingResult.error });
     }
 
     // Day-only fallback: lead gives a weekday preference without an exact time (e.g., "Thursday works").
     if (!match && proposed.proposedStartTimesUtc.length === 0) {
-      const weekdayToken = overseerDecision?.preferred_day_of_week || detectWeekdayTokenFromText(messageTrimmed);
+      const weekdayToken =
+        overseerDecision?.preferred_day_of_week ||
+        detectWeekdayTokenFromText(messageTrimmed) ||
+        resolveRelativeDateToWeekdayToken(overseerDecision?.relative_preference, timeZone);
       if (weekdayToken) {
         const dayOnlyUtcIso = selectEarliestSlotForWeekday({
           slotsUtcIso: availability.slotsUtc,
@@ -4223,7 +4507,7 @@ export async function processMessageForAutoBooking(
                 issues: null,
                 retryCount: attempts - 1,
               });
-              return { booked: false };
+              return fail("gate_denied");
             }
 
             if (gate.decision === "needs_clarification") {
@@ -4237,12 +4521,12 @@ export async function processMessageForAutoBooking(
                 issues: gate.issues,
                 retryCount: attempts - 1,
               });
-              return { booked: false };
+              return fail("needs_clarification");
             }
 
             if (gate.decision === "deny") {
               await createClarificationTask("Got it — what time works best for you on that day?");
-              return { booked: false };
+              return fail("gate_denied");
             }
           }
 
@@ -4263,24 +4547,24 @@ export async function processMessageForAutoBooking(
                 bookingLink,
               });
               if (!confirmResult.success) {
-                return {
+                return makeResult({
                   booked: true,
                   appointmentId: bookingResult.appointmentId,
                   error: confirmResult.error || "Booked, but failed to send confirmation",
-                };
+                });
               }
             } else if (preferred) {
-              return {
+              return makeResult({
                 booked: true,
                 appointmentId: bookingResult.appointmentId,
                 error: "Booked, but inbound channel is unavailable for confirmation",
-              };
+              });
             }
 
-            return { booked: true, appointmentId: bookingResult.appointmentId };
+            return makeResult({ booked: true, appointmentId: bookingResult.appointmentId });
           }
 
-          return { booked: false, error: bookingResult.error };
+          return fail("booking_api_error", { error: bookingResult.error });
         }
       }
     }
@@ -4346,24 +4630,36 @@ export async function processMessageForAutoBooking(
           suggestedMessage: suggestion,
         },
       });
+      markTaskCreated({
+        kind: "alternatives",
+        suggestedMessage: suggestion,
+        isClarification: false,
+      });
     } else {
+      const noAvailabilityMessage = "The lead proposed a time, but no availability match was found. Please propose alternative times.";
       await prisma.followUpTask.create({
         data: {
           leadId,
           type,
           dueDate: new Date(),
           status: "pending",
-          suggestedMessage: "The lead proposed a time, but no availability match was found. Please propose alternative times.",
+          suggestedMessage: noAvailabilityMessage,
         },
+      });
+      markTaskCreated({
+        kind: "alternatives",
+        suggestedMessage: noAvailabilityMessage,
+        isClarification: false,
       });
     }
 
-    return { booked: false };
+    return fail(hasMatchButLowConfidence ? "low_confidence" : "no_match");
   } catch (error) {
     console.error("Failed to process message for auto-booking:", error);
     return {
       booked: false,
       error: error instanceof Error ? error.message : "Unknown error",
+      context: defaultAutoBookingContext({ failureReason: "overseer_error" }),
     };
   }
 }

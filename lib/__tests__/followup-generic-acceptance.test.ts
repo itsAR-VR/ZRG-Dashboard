@@ -76,6 +76,7 @@ describe("auto-booking sentiment guards", () => {
       messageId: "msg-123",
       sentimentTag: "Out of Office",
     });
-    assert.deepEqual(result, { booked: false });
+    assert.equal(result.booked, false);
+    assert.equal(result.context.failureReason, "blocked_sentiment");
   });
 });

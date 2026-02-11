@@ -810,6 +810,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 <button
                   type="button"
                   onClick={() => setShowEmailFields(!showEmailFields)}
+                  aria-expanded={showEmailFields}
+                  aria-controls="email-integration-panel"
                   className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
                 >
                   <Mail className="h-4 w-4" />
@@ -822,7 +824,7 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 </button>
                 
                 {showEmailFields && (
-                  <div className="mt-4 space-y-4">
+                  <div id="email-integration-panel" className="mt-4 space-y-4">
                     <div className="space-y-2">
                       <Label className="flex items-center gap-2">
                         <Mail className="h-4 w-4" />
@@ -1035,7 +1037,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
               </div>
             )}
 
-            <Table>
+            <div className="overflow-x-auto">
+              <Table className="min-w-[760px]">
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
@@ -1814,7 +1817,8 @@ export function IntegrationsManager({ onWorkspacesChange }: IntegrationsManagerP
                 );
                 })}
               </TableBody>
-            </Table>
+              </Table>
+            </div>
 
             {clients.length > collapsedWorkspaceCount && (
               <div className="relative pt-3">

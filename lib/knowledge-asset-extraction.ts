@@ -56,16 +56,29 @@ async function summarizeTextToKnowledgeNotes(opts: {
   return result.data.trim();
 }
 
-export async function extractKnowledgeNotesFromText(opts: {
+export async function summarizeKnowledgeRawTextToNotes(opts: {
   clientId: string;
+  sourceLabel: string;
+  rawText: string;
+}): Promise<string> {
+  if (!opts.rawText || !opts.rawText.trim()) return "";
+  return summarizeTextToKnowledgeNotes({
+    clientId: opts.clientId,
+    sourceLabel: opts.sourceLabel,
+    text: opts.rawText,
+  });
+}
+
+export async function extractKnowledgeRawTextFromText(opts: {
   sourceLabel: string;
   text: string;
 }): Promise<string> {
   if (!opts.text || !opts.text.trim()) return "";
-  return summarizeTextToKnowledgeNotes(opts);
+  const raw = opts.text.trim();
+  return raw.length > 180_000 ? `${raw.slice(0, 180_000)}\n\n[TRUNCATED]` : raw;
 }
 
-export async function extractKnowledgeNotesFromFile(opts: {
+export async function extractKnowledgeRawTextFromFile(opts: {
   clientId: string;
   filename: string;
   mimeType: string;
@@ -75,16 +88,10 @@ export async function extractKnowledgeNotesFromFile(opts: {
   const sourceLabel = `${opts.filename} (${opts.mimeType || "unknown"})`;
   const mimeType = opts.mimeType || "application/octet-stream";
 
-  // If we already have extracted text (e.g., DOCX via mammoth), just summarize it.
   if (opts.fallbackText && opts.fallbackText.trim().length > 0) {
-    return summarizeTextToKnowledgeNotes({
-      clientId: opts.clientId,
-      sourceLabel,
-      text: opts.fallbackText,
-    });
+    return extractKnowledgeRawTextFromText({ sourceLabel, text: opts.fallbackText });
   }
 
-  // PDF: send as input_file (supports scanned PDFs: text + page images).
   if (mimeType === "application/pdf") {
     const base64 = opts.bytes.toString("base64");
     const result = await runTextPrompt({
@@ -94,7 +101,7 @@ export async function extractKnowledgeNotesFromFile(opts: {
       promptKey: "knowledge_assets.ocr_pdf.v1",
       model: "gpt-5-mini",
       reasoningEffort: "low",
-      systemFallback: buildKnowledgeNotesPrompt({ sourceLabel }),
+      systemFallback: `Extract all readable text from SOURCE ${sourceLabel}.\nReturn plain text only.`,
       input: [
         {
           role: "user" as const,
@@ -107,7 +114,7 @@ export async function extractKnowledgeNotesFromFile(opts: {
           ],
         },
       ],
-      maxOutputTokens: 2200,
+      maxOutputTokens: 6000,
       timeoutMs: Math.max(10_000, Number.parseInt(process.env.OPENAI_OCR_TIMEOUT_MS || "180000", 10) || 180_000),
       maxRetries: 0,
     });
@@ -115,10 +122,10 @@ export async function extractKnowledgeNotesFromFile(opts: {
     if (!result.success) {
       throw new Error(result.error.message);
     }
-    return result.data.trim();
+
+    return extractKnowledgeRawTextFromText({ sourceLabel, text: result.data });
   }
 
-  // Images: OCR via vision input_image base64.
   if (isImageMimeType(mimeType)) {
     const base64 = opts.bytes.toString("base64");
     const result = await runTextPrompt({
@@ -128,7 +135,7 @@ export async function extractKnowledgeNotesFromFile(opts: {
       promptKey: "knowledge_assets.ocr_image.v1",
       model: "gpt-5-mini",
       reasoningEffort: "low",
-      systemFallback: buildKnowledgeNotesPrompt({ sourceLabel }),
+      systemFallback: `Extract all readable text from SOURCE ${sourceLabel}.\nReturn plain text only.`,
       input: [
         {
           role: "user" as const,
@@ -141,7 +148,7 @@ export async function extractKnowledgeNotesFromFile(opts: {
           ],
         },
       ],
-      maxOutputTokens: 2200,
+      maxOutputTokens: 6000,
       timeoutMs: Math.max(10_000, Number.parseInt(process.env.OPENAI_OCR_TIMEOUT_MS || "120000", 10) || 120_000),
       maxRetries: 0,
     });
@@ -149,16 +156,50 @@ export async function extractKnowledgeNotesFromFile(opts: {
     if (!result.success) {
       throw new Error(result.error.message);
     }
-    return result.data.trim();
+
+    return extractKnowledgeRawTextFromText({ sourceLabel, text: result.data });
   }
 
-  // As a fallback, treat bytes as UTF-8 text and summarize.
-  const text = opts.bytes.toString("utf8");
-  if (!text.trim()) return "";
+  return extractKnowledgeRawTextFromText({
+    sourceLabel,
+    text: opts.bytes.toString("utf8"),
+  });
+}
 
-  return summarizeTextToKnowledgeNotes({
+export async function extractKnowledgeNotesFromText(opts: {
+  clientId: string;
+  sourceLabel: string;
+  text: string;
+}): Promise<string> {
+  const rawText = await extractKnowledgeRawTextFromText({
+    sourceLabel: opts.sourceLabel,
+    text: opts.text,
+  });
+  return summarizeKnowledgeRawTextToNotes({
+    clientId: opts.clientId,
+    sourceLabel: opts.sourceLabel,
+    rawText,
+  });
+}
+
+export async function extractKnowledgeNotesFromFile(opts: {
+  clientId: string;
+  filename: string;
+  mimeType: string;
+  bytes: Buffer;
+  fallbackText?: string | null;
+}): Promise<string> {
+  const sourceLabel = `${opts.filename} (${opts.mimeType || "unknown"})`;
+  const rawText = await extractKnowledgeRawTextFromFile({
+    clientId: opts.clientId,
+    filename: opts.filename,
+    mimeType: opts.mimeType,
+    bytes: opts.bytes,
+    fallbackText: opts.fallbackText,
+  });
+  return summarizeKnowledgeRawTextToNotes({
     clientId: opts.clientId,
     sourceLabel,
-    text,
+    rawText,
   });
 }

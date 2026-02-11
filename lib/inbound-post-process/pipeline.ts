@@ -301,7 +301,23 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
         messageId: message.id,
         sentimentTag,
       })
-    : { booked: false as const };
+    : ({
+        booked: false as const,
+        context: {
+          schedulingDetected: false,
+          schedulingIntent: null,
+          clarificationTaskCreated: false,
+          clarificationMessage: null,
+          followUpTaskCreated: false,
+          followUpTaskKind: null,
+          qualificationEvaluated: false,
+          isQualifiedForBooking: null,
+          qualificationReason: null,
+          failureReason: "disabled",
+          route: null,
+          matchStrategy: null,
+        },
+      } as const);
   if (autoBook.booked) {
     console.log(prefix, "Auto-booked appointment:", autoBook.appointmentId);
   }
@@ -328,7 +344,12 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   resumeAwaitingEnrichmentFollowUpsForLead(lead.id).catch(() => undefined);
 
   pushStage("draft_generation");
-  if (!autoBook.booked && shouldGenerateDraft(sentimentTag, lead.email)) {
+  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated);
+  if (schedulingHandled) {
+    console.log(prefix, "Skipping draft generation; scheduling follow-up task already created by auto-booking");
+  }
+
+  if (!autoBook.booked && !schedulingHandled && shouldGenerateDraft(sentimentTag, lead.email)) {
     console.log(prefix, "Generating draft for message", message.id);
 
     const webhookDraftTimeoutMs = Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
@@ -338,7 +359,11 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
       `Subject: ${subject ?? ""}\n\n${messageBody}`,
       sentimentTag,
       "email",
-      { timeoutMs: webhookDraftTimeoutMs, triggerMessageId: message.id }
+      {
+        timeoutMs: webhookDraftTimeoutMs,
+        triggerMessageId: message.id,
+        autoBookingContext: autoBook.context?.schedulingDetected ? autoBook.context : null,
+      }
     );
 
     if (draftResult.success) {

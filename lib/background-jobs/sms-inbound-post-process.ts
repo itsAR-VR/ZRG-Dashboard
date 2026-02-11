@@ -271,7 +271,11 @@ export async function runSmsInboundPostProcessJob(params: {
 
   // 7. AI Draft Generation
   // Skip if auto-booked or sentiment doesn't need draft
-  const shouldDraft = !autoBook.booked && newSentiment && shouldGenerateDraft(newSentiment);
+  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated);
+  if (schedulingHandled) {
+    console.log("[SMS Post-Process] Skipping draft generation; scheduling follow-up task already created by auto-booking");
+  }
+  const shouldDraft = !autoBook.booked && !schedulingHandled && newSentiment && shouldGenerateDraft(newSentiment);
 
   if (shouldDraft) {
     console.log(`[SMS Post-Process] Generating draft for message ${message.id}`);
@@ -287,6 +291,7 @@ export async function runSmsInboundPostProcessJob(params: {
       {
         timeoutMs: webhookDraftTimeoutMs,
         triggerMessageId: message.id,
+        autoBookingContext: autoBook.context?.schedulingDetected ? autoBook.context : null,
       }
     );
 

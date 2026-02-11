@@ -658,14 +658,16 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
+              id="crmLeadSearch"
               placeholder="Search leads..."
               className="pl-9"
               value={searchInput}
               onChange={handleSearchChange}
+              aria-label="Search leads"
             />
           </div>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-[180px]">
+            <SelectTrigger className="w-[180px]" aria-label="Filter by status">
               <Filter className="h-4 w-4 mr-2" />
               <SelectValue placeholder="Filter by status" />
             </SelectTrigger>
@@ -694,8 +696,8 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
         {/* Virtualized table */}
           <Card className="flex-1 overflow-hidden">
             {/* Table header */}
-            <div className="border-b bg-muted/30">
-              <div className="flex items-center h-12 px-4">
+            <div className="border-b bg-muted/30 overflow-x-auto">
+              <div className="flex min-w-[790px] items-center h-12 px-4">
               <button
                 type="button"
                 className="flex-[3] min-w-[200px] cursor-pointer hover:bg-muted/50 px-2 py-1 rounded flex items-center gap-1 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -767,21 +769,12 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
                 return (
                   <div
                     key={lead.id}
-                    role="button"
-                    tabIndex={0}
-                    className="absolute top-0 left-0 w-full flex items-center px-4 border-b hover:bg-muted/50 cursor-pointer focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                    className="absolute top-0 left-0 w-full min-w-[790px] flex items-center px-4 border-b hover:bg-muted/50 cursor-pointer"
                     style={{
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
                     onClick={() => openLeadDetail(lead)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        openLeadDetail(lead);
-                      }
-                    }}
-                    aria-label={`View details for ${lead.name}`}
                   >
                     {/* Name */}
                     <div className="flex-[3] min-w-[200px] pr-2">

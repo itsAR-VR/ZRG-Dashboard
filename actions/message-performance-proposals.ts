@@ -225,7 +225,11 @@ export async function applyMessagePerformanceProposal(
         if (!existing) return { success: false, error: "Knowledge asset not found" };
         asset = await prisma.knowledgeAsset.update({
           where: { id: existing.id },
-          data: { textContent: content },
+          data: {
+            textContent: content,
+            rawContent: content,
+            aiContextMode: "notes",
+          },
         });
       } else {
         asset = await prisma.knowledgeAsset.create({
@@ -233,7 +237,9 @@ export async function applyMessagePerformanceProposal(
             workspaceSettingsId: settings.id,
             name: assetName,
             type: "text",
+            rawContent: content,
             textContent: content,
+            aiContextMode: "notes",
           },
         });
       }
@@ -247,7 +253,9 @@ export async function applyMessagePerformanceProposal(
           name: asset.name,
           type: asset.type,
           fileUrl: asset.fileUrl,
+          rawContent: asset.rawContent,
           textContent: asset.textContent,
+          aiContextMode: asset.aiContextMode,
           action: "APPLY_PROPOSAL",
           createdByUserId: user.id,
           createdByEmail: user.email ?? null,

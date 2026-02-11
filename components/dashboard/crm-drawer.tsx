@@ -245,6 +245,11 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
     setAutoReplyEnabled(lead.autoReplyEnabled || false)
     setAutoFollowUpEnabled(lead.autoFollowUpEnabled || false)
     setAutoBookMeetingsEnabled(lead.autoBookMeetingsEnabled ?? true)
+    // Reset booking modal state when switching to a different lead to avoid stale slot reuse.
+    setIsBookingDialogOpen(false)
+    setAvailableSlots([])
+    setSelectedSlot(null)
+    setIsLoadingSlots(false)
   }, [
     lead.id,
     lead.status,
@@ -412,7 +417,11 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
 
   // Load available time slots for booking dialog
   const loadAvailableSlots = async () => {
-    if (!lead.clientId) return
+    if (!lead.clientId) {
+      setAvailableSlots([])
+      setSelectedSlot(null)
+      return
+    }
     setIsLoadingSlots(true)
     try {
       const [slots, mismatch] = await Promise.all([
@@ -482,6 +491,8 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
 
   // Open booking dialog
   const handleOpenBookingDialog = () => {
+    setSelectedSlot(null)
+    setAvailableSlots([])
     setIsBookingDialogOpen(true)
     loadAvailableSlots()
   }
@@ -909,7 +920,7 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
           ? "Already enriched"
           : null
 
-  const workspaceName = lead.company
+  const workspaceName = (lead.company || "Workspace").trim() || "Workspace"
   const smsClient = lead.smsCampaignName?.trim() || null
   const isSmsAccountWorkspace = ["owen", "uday 18th", "uday18th", "u-day 18th"].includes(
     workspaceName.toLowerCase()
@@ -1199,7 +1210,12 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Response Timing</h4>
-              {isLoadingResponseTiming ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
+              {isLoadingResponseTiming ? (
+                <span role="status" aria-live="polite" className="flex items-center gap-1 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+                  <span className="sr-only">Loading response timing</span>
+                </span>
+              ) : null}
             </div>
 
             {responseTimingError ? (
@@ -1266,13 +1282,20 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
 
           {/* Status */}
           <div className="space-y-3">
-            <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Status</h4>
+            <h4 id="lead-status-label" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Status
+            </h4>
             <Select
               value={currentStatus}
               onValueChange={(value) => handleStatusChange(value as Lead["status"])}
               disabled={isPending}
             >
-              <SelectTrigger className={cn("w-full", getStatusColor(currentStatus))}>
+              <SelectTrigger
+                id="lead-status"
+                aria-labelledby="lead-status-label"
+                aria-busy={isPending}
+                className={cn("w-full", getStatusColor(currentStatus))}
+              >
                 {isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin mr-2" />
                 ) : null}
@@ -1292,13 +1315,21 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
 
           {/* Sentiment */}
           <div className="space-y-3">
-            <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Sentiment</h4>
+            <h4 id="lead-sentiment-label" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Sentiment
+            </h4>
             <Select
               value={currentSentimentTag}
               onValueChange={(value) => handleSentimentChange(value as SentimentTag)}
               disabled={isPending}
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger
+                id="lead-sentiment"
+                aria-labelledby="lead-sentiment-label"
+                aria-describedby="lead-sentiment-desc"
+                aria-busy={isPending}
+                className="w-full"
+              >
                 {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                 <SelectValue />
               </SelectTrigger>
@@ -1310,7 +1341,7 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">
+            <p id="lead-sentiment-desc" className="text-xs text-muted-foreground">
               Sets the lead&apos;s sentiment tag for filtering and automation.
             </p>
           </div>
@@ -1411,8 +1442,9 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
             ) : null}
 
             {isLoadingSequences ? (
-              <div className="flex items-center justify-center py-4">
-                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              <div className="flex items-center justify-center py-4" role="status" aria-live="polite">
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+                <span className="sr-only">Loading follow-up sequences</span>
               </div>
             ) : (
               <div className="space-y-3">
@@ -1484,14 +1516,23 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
 	                          ) : null}
 	                        </div>
                         {/* Progress bar */}
-                        <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+                        <div
+                          className="w-full h-1.5 bg-muted rounded-full overflow-hidden"
+                          role="progressbar"
+                          aria-label={`Follow-up progress for ${instance.sequenceName}`}
+                          aria-valuemin={0}
+                          aria-valuemax={Math.max(1, instance.totalSteps)}
+                          aria-valuenow={Math.min(Math.max(1, instance.totalSteps), instance.currentStep + 1)}
+                        >
                           <div
                             className={cn(
                               "h-full transition-all duration-300",
                               instance.status === "completed" ? "bg-emerald-500" :
                               instance.status === "active" ? "bg-primary" : "bg-muted-foreground"
                             )}
-                            style={{ width: `${((instance.currentStep) / instance.totalSteps) * 100}%` }}
+                            style={{
+                              width: `${(Math.min(instance.currentStep + 1, Math.max(1, instance.totalSteps)) / Math.max(1, instance.totalSteps)) * 100}%`,
+                            }}
                           />
                         </div>
                         {/* Actions */}
@@ -1598,8 +1639,8 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
             </div>
 
             {isLoadingAppointmentHistory ? (
-              <p className="text-xs text-muted-foreground flex items-center gap-2">
-                <Loader2 className="h-3 w-3 animate-spin" />
+              <p className="text-xs text-muted-foreground flex items-center gap-2" role="status" aria-live="polite">
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                 Loading appointment history…
               </p>
             ) : appointmentHistoryError ? (
@@ -1918,8 +1959,9 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
           </DialogHeader>
           <div className="py-4">
             {isLoadingSlots ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              <div className="flex items-center justify-center py-8" role="status" aria-live="polite">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
+                <span className="sr-only">Loading available time slots</span>
               </div>
             ) : availableSlots.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">

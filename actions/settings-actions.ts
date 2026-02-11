@@ -7,16 +7,23 @@ import { computeWorkspaceFollowUpsPausedUntil } from "@/lib/workspace-followups-
 import { requireAuthUser, requireClientAccess, requireClientAdminAccess, requireLeadAccessById } from "@/lib/workspace-access";
 import { requireWorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { extractKnowledgeNotesFromFile, extractKnowledgeNotesFromText } from "@/lib/knowledge-asset-extraction";
+import {
+  extractKnowledgeRawTextFromFile,
+  extractKnowledgeRawTextFromText,
+  summarizeKnowledgeRawTextToNotes,
+} from "@/lib/knowledge-asset-extraction";
 import { crawl4aiExtractMarkdown } from "@/lib/crawl4ai";
 import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
 import { validateAutoSendCustomSchedule } from "@/lib/auto-send-schedule";
 import { buildKnowledgeAssetUpdateData, isPrivateNetworkHostname } from "@/lib/knowledge-asset-update";
+import { resolveKnowledgeAssetContextSource } from "@/lib/knowledge-asset-context";
 import { MeetingBookingProvider, Prisma } from "@prisma/client";
 
 export interface UserSettingsData {
   id: string;
   clientId: string;
+  brandName: string | null;
+  brandLogoUrl: string | null;
   aiPersonaName: string | null;
   aiTone: string | null;
   aiGreeting: string | null;  // Email greeting template
@@ -93,7 +100,9 @@ export interface KnowledgeAssetData {
   name: string;
   type: "file" | "text" | "url";
   fileUrl: string | null;
+  rawContent: string | null;
   textContent: string | null;
+  aiContextMode: "notes" | "raw";
   originalFileName: string | null;
   mimeType: string | null;
   createdAt: Date;
@@ -141,6 +150,8 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         data: {
           id: "default",
           clientId: "default",
+          brandName: null,
+          brandLogoUrl: null,
           aiPersonaName: null,
           aiTone: "friendly-professional",
           aiGreeting: "Hi {firstName},",
@@ -253,7 +264,9 @@ export async function getUserSettings(clientId?: string | null): Promise<{
       name: asset.name,
       type: asset.type as "file" | "text" | "url",
       fileUrl: asset.fileUrl,
+      rawContent: asset.rawContent,
       textContent: asset.textContent,
+      aiContextMode: asset.aiContextMode === "raw" ? "raw" : "notes",
       originalFileName: asset.originalFileName,
       mimeType: asset.mimeType,
       createdAt: asset.createdAt,
@@ -265,6 +278,8 @@ export async function getUserSettings(clientId?: string | null): Promise<{
       data: {
         id: settings.id,
         clientId: settings.clientId,
+        brandName: settings.brandName,
+        brandLogoUrl: settings.brandLogoUrl,
         aiPersonaName: settings.aiPersonaName,
         aiTone: settings.aiTone,
         aiGreeting: settings.aiGreeting,
@@ -387,6 +402,9 @@ export async function updateUserSettings(
     const wantsCalendarHealthUpdate =
       data.calendarHealthEnabled !== undefined ||
       data.calendarHealthMinSlots !== undefined;
+    const wantsBrandingUpdate =
+      data.brandName !== undefined ||
+      data.brandLogoUrl !== undefined;
 
     let normalizedCustomSchedule = data.autoSendCustomSchedule;
     const normalizedCalendarHealthMinSlots =
@@ -413,10 +431,15 @@ export async function updateUserSettings(
     if (wantsCalendarHealthUpdate) {
       await requireClientAdminAccess(clientId);
     }
+    if (wantsBrandingUpdate) {
+      await requireClientAdminAccess(clientId);
+    }
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
       update: {
+        brandName: data.brandName,
+        brandLogoUrl: data.brandLogoUrl,
         aiPersonaName: data.aiPersonaName,
         aiTone: data.aiTone,
         aiGreeting: data.aiGreeting,
@@ -484,6 +507,8 @@ export async function updateUserSettings(
       },
       create: {
         clientId,
+        brandName: data.brandName,
+        brandLogoUrl: data.brandLogoUrl,
         aiPersonaName: data.aiPersonaName,
         aiTone: data.aiTone ?? "friendly-professional",
         aiGreeting: data.aiGreeting,
@@ -818,7 +843,9 @@ export type KnowledgeAssetRevisionRecord = {
   knowledgeAssetId: string;
   name: string;
   type: string;
+  rawContent: string | null;
   textContent: string | null;
+  aiContextMode: string | null;
   action: string;
   createdAt: Date;
   createdByEmail: string | null;
@@ -827,7 +854,15 @@ export type KnowledgeAssetRevisionRecord = {
 async function recordKnowledgeAssetRevision(opts: {
   clientId: string;
   workspaceSettingsId: string;
-  asset: { id: string; name: string; type: string; fileUrl: string | null; textContent: string | null };
+  asset: {
+    id: string;
+    name: string;
+    type: string;
+    fileUrl: string | null;
+    rawContent: string | null;
+    textContent: string | null;
+    aiContextMode: string | null;
+  };
   action: string;
   createdByUserId: string | null;
   createdByEmail: string | null;
@@ -842,7 +877,9 @@ async function recordKnowledgeAssetRevision(opts: {
       name: opts.asset.name,
       type: opts.asset.type,
       fileUrl: opts.asset.fileUrl,
+      rawContent: opts.asset.rawContent,
       textContent: opts.asset.textContent,
+      aiContextMode: opts.asset.aiContextMode,
       action: opts.action,
       createdByUserId: opts.createdByUserId ?? null,
       createdByEmail: opts.createdByEmail ?? null,
@@ -859,6 +896,8 @@ export async function addKnowledgeAsset(
     name: string;
     type: "text" | "url";
     textContent: string;
+    rawContent?: string | null;
+    aiContextMode?: "notes" | "raw";
   }
 ): Promise<{ success: boolean; assetId?: string; error?: string }> {
   try {
@@ -880,7 +919,9 @@ export async function addKnowledgeAsset(
         workspaceSettingsId: settings.id,
         name: data.name,
         type: data.type,
+        rawContent: data.rawContent ?? data.textContent,
         textContent: data.textContent,
+        aiContextMode: data.aiContextMode === "raw" ? "raw" : "notes",
       },
     });
 
@@ -892,7 +933,9 @@ export async function addKnowledgeAsset(
         name: asset.name,
         type: asset.type,
         fileUrl: asset.fileUrl,
+        rawContent: asset.rawContent,
         textContent: asset.textContent,
+        aiContextMode: asset.aiContextMode,
       },
       action: "CREATE",
       createdByUserId: user.id,
@@ -917,7 +960,9 @@ export async function addFileKnowledgeAsset(
     fileUrl: string;
     originalFileName: string;
     mimeType: string;
-    textContent?: string; // Extracted text (if already processed)
+    rawContent?: string | null;
+    textContent?: string | null; // Extracted notes (if already processed)
+    aiContextMode?: "notes" | "raw";
   }
 ): Promise<{ success: boolean; assetId?: string; error?: string }> {
   try {
@@ -942,7 +987,9 @@ export async function addFileKnowledgeAsset(
         fileUrl: data.fileUrl,
         originalFileName: data.originalFileName,
         mimeType: data.mimeType,
+        rawContent: data.rawContent ?? null,
         textContent: data.textContent,
+        aiContextMode: data.aiContextMode === "raw" ? "raw" : "notes",
       },
     });
 
@@ -954,7 +1001,9 @@ export async function addFileKnowledgeAsset(
         name: asset.name,
         type: asset.type,
         fileUrl: asset.fileUrl,
+        rawContent: asset.rawContent,
         textContent: asset.textContent,
+        aiContextMode: asset.aiContextMode,
       },
       action: "CREATE",
       createdByUserId: user.id,
@@ -982,7 +1031,12 @@ function isSupabaseBucketNotFound(error: unknown): boolean {
   return status === 404 || /bucket not found/i.test(msg);
 }
 
-async function ensureSupabaseStorageBucketExists(bucket: string): Promise<void> {
+async function ensureSupabaseStorageBucketExists(
+  bucket: string,
+  opts?: {
+    isPublic?: boolean;
+  }
+): Promise<void> {
   const supabase = createSupabaseAdminClient();
   const storageAny: any = supabase.storage as any;
 
@@ -994,13 +1048,173 @@ async function ensureSupabaseStorageBucketExists(bucket: string): Promise<void> 
 
   if (typeof storageAny.createBucket !== "function") return;
 
-  // Default private bucket (safer for uploaded documents). We store an internal reference, not a public URL.
-  const { error } = await storageAny.createBucket(bucket, { public: false });
+  const { error } = await storageAny.createBucket(bucket, { public: opts?.isPublic === true });
   if (!error) return;
   const msg = String((error as any)?.message ?? "");
   // Ignore "already exists" / conflict-style responses.
   if (/already exists/i.test(msg) || (error as any)?.statusCode === 409) return;
   throw error;
+}
+
+function isAllowedWorkspaceBrandLogoMimeType(mimeType: string): boolean {
+  const value = (mimeType || "").toLowerCase();
+  return value === "image/png" || value === "image/jpeg" || value === "image/jpg" || value === "image/webp";
+}
+
+function hasAllowedImageMagicBytes(bytes: Buffer): boolean {
+  if (bytes.length < 12) return false;
+
+  // PNG: 89 50 4E 47
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return true;
+  // JPEG: FF D8 FF
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true;
+  // WebP: RIFF....WEBP
+  if (
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function normalizeBrandLogoUrl(value: string | null | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+
+  let normalized = value.trim();
+  if (!normalized) return null;
+  normalized = normalized.replace(/\\/g, "/");
+
+  if (/^https?:\/\//i.test(normalized)) return normalized;
+  if (normalized.startsWith("public/")) normalized = normalized.slice("public".length);
+  if (!normalized.startsWith("/")) normalized = `/${normalized}`;
+  return normalized === "/" ? null : normalized;
+}
+
+function extractSupabasePublicObjectPath(publicUrl: string, bucket: string): string | null {
+  const projectUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+  if (!projectUrl) return null;
+
+  try {
+    const url = new URL(publicUrl);
+    const project = new URL(projectUrl);
+    if (url.origin !== project.origin) return null;
+
+    const prefix = `/storage/v1/object/public/${bucket}/`;
+    if (!url.pathname.startsWith(prefix)) return null;
+    const objectPath = decodeURIComponent(url.pathname.slice(prefix.length));
+    return objectPath || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function uploadWorkspaceBrandLogo(
+  formData: FormData
+): Promise<{ success: boolean; brandLogoUrl?: string; error?: string }> {
+  try {
+    const clientIdRaw = formData.get("clientId");
+    const fileRaw = formData.get("file");
+
+    const clientId = typeof clientIdRaw === "string" ? clientIdRaw : "";
+    const file = fileRaw instanceof File ? fileRaw : null;
+
+    if (!clientId) return { success: false, error: "No workspace selected" };
+    if (!file) return { success: false, error: "Missing logo file" };
+
+    await requireClientAdminAccess(clientId);
+
+    const maxBytes = Math.max(
+      1,
+      Number.parseInt(process.env.WORKSPACE_BRAND_LOGO_MAX_BYTES || "5242880", 10) || 5_242_880
+    ); // 5MB
+
+    if (file.size > maxBytes) {
+      return { success: false, error: `Logo file is too large (max ${(maxBytes / (1024 * 1024)).toFixed(0)}MB)` };
+    }
+
+    const mimeType = (file.type || "application/octet-stream").toLowerCase();
+    if (!isAllowedWorkspaceBrandLogoMimeType(mimeType)) {
+      return { success: false, error: "Unsupported logo format. Use PNG, JPG, or WebP." };
+    }
+
+    const supabase = createSupabaseAdminClient();
+    const bucket = process.env.SUPABASE_WORKSPACE_BRAND_ASSETS_BUCKET || "workspace-brand-assets";
+    const safeName = sanitizeStorageFilename(file.name || "logo");
+    const uploadPath = `${clientId}/${crypto.randomUUID()}-${safeName}`;
+    const bytes = Buffer.from(await file.arrayBuffer());
+    if (!hasAllowedImageMagicBytes(bytes)) {
+      return { success: false, error: "File does not appear to be a valid image. Use PNG, JPG, or WebP." };
+    }
+
+    try {
+      await ensureSupabaseStorageBucketExists(bucket, { isPublic: true });
+    } catch (ensureError) {
+      console.warn("[WorkspaceBrandLogo] Storage bucket ensure failed (continuing):", ensureError);
+    }
+
+    const attemptUpload = async (): Promise<void> => {
+      const { error: uploadError } = await supabase.storage.from(bucket).upload(uploadPath, bytes, {
+        contentType: mimeType,
+        upsert: false,
+        cacheControl: "3600",
+      });
+      if (uploadError) throw uploadError;
+    };
+
+    try {
+      await attemptUpload();
+    } catch (uploadError) {
+      if (isSupabaseBucketNotFound(uploadError)) {
+        await ensureSupabaseStorageBucketExists(bucket, { isPublic: true });
+        await attemptUpload();
+      } else {
+        throw uploadError;
+      }
+    }
+
+    const {
+      data: { publicUrl },
+    } = supabase.storage.from(bucket).getPublicUrl(uploadPath);
+    const normalizedPublicUrl = normalizeBrandLogoUrl(publicUrl);
+    if (!normalizedPublicUrl) {
+      return { success: false, error: "Failed to resolve public logo URL" };
+    }
+
+    const existingSettings = await prisma.workspaceSettings.findUnique({
+      where: { clientId },
+      select: { brandLogoUrl: true },
+    });
+
+    const previousPath =
+      existingSettings?.brandLogoUrl ? extractSupabasePublicObjectPath(existingSettings.brandLogoUrl, bucket) : null;
+    if (previousPath && previousPath !== uploadPath) {
+      const { error: removeError } = await supabase.storage.from(bucket).remove([previousPath]);
+      if (removeError) {
+        console.warn("[WorkspaceBrandLogo] Failed to remove previous logo object:", removeError);
+      }
+    }
+
+    await prisma.workspaceSettings.upsert({
+      where: { clientId },
+      update: { brandLogoUrl: normalizedPublicUrl },
+      create: { clientId, brandLogoUrl: normalizedPublicUrl },
+    });
+
+    revalidatePath("/");
+    return { success: true, brandLogoUrl: normalizedPublicUrl };
+  } catch (error) {
+    console.error("Failed to upload workspace brand logo:", error);
+    return { success: false, error: "Failed to upload workspace logo" };
+  }
 }
 
 function detectDocxMimeType(file: File): boolean {
@@ -1103,12 +1317,17 @@ export async function uploadKnowledgeAssetFile(
       }
     }
 
-    const textContent = await extractKnowledgeNotesFromFile({
+    const rawContent = await extractKnowledgeRawTextFromFile({
       clientId,
       filename: file.name || "uploaded_file",
       mimeType,
       bytes,
       fallbackText,
+    });
+    const textContent = await summarizeKnowledgeRawTextToNotes({
+      clientId,
+      sourceLabel: `${file.name || "uploaded_file"} (${mimeType || "unknown"})`,
+      rawText: rawContent,
     });
 
     const created = await prisma.knowledgeAsset.create({
@@ -1119,7 +1338,9 @@ export async function uploadKnowledgeAssetFile(
         fileUrl,
         originalFileName: file.name || null,
         mimeType: mimeType || null,
+        rawContent: rawContent || null,
         textContent: textContent || null,
+        aiContextMode: "notes",
       },
     });
 
@@ -1131,7 +1352,9 @@ export async function uploadKnowledgeAssetFile(
         name: created.name,
         type: created.type,
         fileUrl: created.fileUrl,
+        rawContent: created.rawContent,
         textContent: created.textContent,
+        aiContextMode: created.aiContextMode,
       },
       action: "CREATE",
       createdByUserId: user.id,
@@ -1146,7 +1369,9 @@ export async function uploadKnowledgeAssetFile(
           name: created.name,
           type: created.type as KnowledgeAssetData["type"],
           fileUrl: created.fileUrl,
+          rawContent: created.rawContent,
           textContent: created.textContent,
+          aiContextMode: created.aiContextMode === "raw" ? "raw" : "notes",
           originalFileName: created.originalFileName,
           mimeType: created.mimeType,
           createdAt: created.createdAt,
@@ -1210,7 +1435,9 @@ export async function addWebsiteKnowledgeAsset(
         name,
         type: "url",
         fileUrl: url,
+        rawContent: null,
         textContent: null,
+        aiContextMode: "notes",
       },
     });
 
@@ -1222,15 +1449,23 @@ export async function addWebsiteKnowledgeAsset(
       const markdown =
         crawl.markdown.length > 180_000 ? `${crawl.markdown.slice(0, 180_000)}\n\n[TRUNCATED]` : crawl.markdown;
 
-      const notes = await extractKnowledgeNotesFromText({
-        clientId,
+      const raw = await extractKnowledgeRawTextFromText({
         sourceLabel: url,
         text: markdown,
       });
 
+      const notes = await summarizeKnowledgeRawTextToNotes({
+        clientId,
+        sourceLabel: url,
+        rawText: raw,
+      });
+
       updated = await prisma.knowledgeAsset.update({
         where: { id: created.id },
-        data: { textContent: notes || null },
+        data: {
+          rawContent: raw || null,
+          textContent: notes || null,
+        },
       });
     } catch (ingestError) {
       console.warn("[KnowledgeAssets] Website ingestion failed (asset created; retry available):", ingestError);
@@ -1245,7 +1480,9 @@ export async function addWebsiteKnowledgeAsset(
         name: updated.name,
         type: updated.type,
         fileUrl: updated.fileUrl,
+        rawContent: updated.rawContent,
         textContent: updated.textContent,
+        aiContextMode: updated.aiContextMode,
       },
       action: "CREATE",
       createdByUserId: user.id,
@@ -1261,7 +1498,9 @@ export async function addWebsiteKnowledgeAsset(
           name: updated.name,
           type: updated.type as KnowledgeAssetData["type"],
           fileUrl: updated.fileUrl,
+          rawContent: updated.rawContent,
           textContent: updated.textContent,
+          aiContextMode: updated.aiContextMode === "raw" ? "raw" : "notes",
           originalFileName: updated.originalFileName,
           mimeType: updated.mimeType,
           createdAt: updated.createdAt,
@@ -1287,7 +1526,9 @@ export async function retryWebsiteKnowledgeAssetIngestion(
           name: true,
           type: true,
           fileUrl: true,
+          rawContent: true,
           textContent: true,
+          aiContextMode: true,
           originalFileName: true,
           mimeType: true,
           createdAt: true,
@@ -1319,15 +1560,23 @@ export async function retryWebsiteKnowledgeAssetIngestion(
     const crawl = await crawl4aiExtractMarkdown(url);
     const markdown = crawl.markdown.length > 180_000 ? `${crawl.markdown.slice(0, 180_000)}\n\n[TRUNCATED]` : crawl.markdown;
 
-    const notes = await extractKnowledgeNotesFromText({
-      clientId: asset.workspaceSettings.clientId,
+    const raw = await extractKnowledgeRawTextFromText({
       sourceLabel: url,
       text: markdown,
     });
 
+    const notes = await summarizeKnowledgeRawTextToNotes({
+      clientId: asset.workspaceSettings.clientId,
+      sourceLabel: url,
+      rawText: raw,
+    });
+
     const updated = await prisma.knowledgeAsset.update({
       where: { id: asset.id },
-      data: { textContent: notes || null },
+      data: {
+        rawContent: raw || null,
+        textContent: notes || null,
+      },
     });
 
     await recordKnowledgeAssetRevision({
@@ -1338,7 +1587,9 @@ export async function retryWebsiteKnowledgeAssetIngestion(
         name: updated.name,
         type: updated.type,
         fileUrl: updated.fileUrl,
+        rawContent: updated.rawContent,
         textContent: updated.textContent,
+        aiContextMode: updated.aiContextMode,
       },
       action: "UPDATE",
       createdByUserId: user.id,
@@ -1353,7 +1604,9 @@ export async function retryWebsiteKnowledgeAssetIngestion(
           name: updated.name,
           type: updated.type as KnowledgeAssetData["type"],
           fileUrl: updated.fileUrl,
+          rawContent: updated.rawContent,
           textContent: updated.textContent,
+          aiContextMode: updated.aiContextMode === "raw" ? "raw" : "notes",
           originalFileName: updated.originalFileName,
           mimeType: updated.mimeType,
           createdAt: updated.createdAt,
@@ -1376,8 +1629,10 @@ export async function updateKnowledgeAsset(
   assetId: string,
   data: {
     name?: string;
+    rawContent?: string | null;
     textContent?: string | null;
     fileUrl?: string | null;
+    aiContextMode?: "notes" | "raw";
   }
 ): Promise<{ success: boolean; asset?: KnowledgeAssetData; error?: string }> {
   try {
@@ -1388,7 +1643,9 @@ export async function updateKnowledgeAsset(
         name: true,
         type: true,
         fileUrl: true,
+        rawContent: true,
         textContent: true,
+        aiContextMode: true,
         originalFileName: true,
         mimeType: true,
         createdAt: true,
@@ -1413,7 +1670,9 @@ export async function updateKnowledgeAsset(
           name: asset.name,
           type: asset.type as KnowledgeAssetData["type"],
           fileUrl: asset.fileUrl,
+          rawContent: asset.rawContent,
           textContent: asset.textContent,
+          aiContextMode: asset.aiContextMode === "raw" ? "raw" : "notes",
           originalFileName: asset.originalFileName,
           mimeType: asset.mimeType,
           createdAt: asset.createdAt,
@@ -1435,7 +1694,9 @@ export async function updateKnowledgeAsset(
         name: updated.name,
         type: updated.type,
         fileUrl: updated.fileUrl,
+        rawContent: updated.rawContent,
         textContent: updated.textContent,
+        aiContextMode: updated.aiContextMode,
       },
       action: "UPDATE",
       createdByUserId: user.id,
@@ -1450,7 +1711,9 @@ export async function updateKnowledgeAsset(
         name: updated.name,
         type: updated.type as KnowledgeAssetData["type"],
         fileUrl: updated.fileUrl,
+        rawContent: updated.rawContent,
         textContent: updated.textContent,
+        aiContextMode: updated.aiContextMode === "raw" ? "raw" : "notes",
         originalFileName: updated.originalFileName,
         mimeType: updated.mimeType,
         createdAt: updated.createdAt,
@@ -1516,7 +1779,9 @@ export async function getKnowledgeAssetRevisions(
         knowledgeAssetId: true,
         name: true,
         type: true,
+        rawContent: true,
         textContent: true,
+        aiContextMode: true,
         action: true,
         createdAt: true,
         createdByEmail: true,
@@ -1544,7 +1809,9 @@ export async function rollbackKnowledgeAssetRevision(
         name: true,
         type: true,
         fileUrl: true,
+        rawContent: true,
         textContent: true,
+        aiContextMode: true,
         workspaceSettingsId: true,
       },
     });
@@ -1554,7 +1821,9 @@ export async function rollbackKnowledgeAssetRevision(
       where: { id: revision.knowledgeAssetId },
       data: {
         name: revision.name,
+        rawContent: revision.rawContent,
         textContent: revision.textContent,
+        aiContextMode: revision.aiContextMode === "raw" ? "raw" : "notes",
       },
     });
 
@@ -1566,7 +1835,9 @@ export async function rollbackKnowledgeAssetRevision(
         name: updated.name,
         type: updated.type,
         fileUrl: updated.fileUrl,
+        rawContent: updated.rawContent,
         textContent: updated.textContent,
+        aiContextMode: updated.aiContextMode,
       },
       action: "ROLLBACK",
       createdByUserId: userId,
@@ -1594,7 +1865,9 @@ export async function getKnowledgeAssetsForAI(
         knowledgeAssets: {
           select: {
             name: true,
+            rawContent: true,
             textContent: true,
+            aiContextMode: true,
           },
         },
       },
@@ -1603,10 +1876,21 @@ export async function getKnowledgeAssetsForAI(
     if (!settings) return [];
 
     return settings.knowledgeAssets
-      .filter((asset) => asset.textContent)
+      .map((asset) => {
+        const selected = resolveKnowledgeAssetContextSource({
+          rawContent: asset.rawContent,
+          textContent: asset.textContent,
+          aiContextMode: asset.aiContextMode as "notes" | "raw" | null,
+        });
+        return {
+          name: asset.name,
+          content: selected.content,
+        };
+      })
+      .filter((asset) => Boolean(asset.content))
       .map((asset) => ({
         name: asset.name,
-        content: asset.textContent!,
+        content: asset.content,
       }));
   } catch (error) {
     console.error("Failed to get knowledge assets:", error);

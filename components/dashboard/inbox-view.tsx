@@ -172,6 +172,7 @@ export function InboxView({
   const realtimeConnectedRef = useRef(false);
   const prevConversationIdRef = useRef<string | null>(null);
   const lastAutoSyncRef = useRef<Map<string, number>>(new Map());
+  const activeConversationRequestRef = useRef(0);
 
   // Reset SMS sub-client and score filters when switching workspaces
   useEffect(() => {
@@ -376,12 +377,15 @@ export function InboxView({
   // showLoading: true for initial loads (shows spinner), false for background polling (silent refresh)
   const fetchActiveConversation = useCallback(async (showLoading = true) => {
     if (!activeConversationId) {
+      activeConversationRequestRef.current += 1;
       setActiveConversation(null);
       setIsLoadingMessages(false);
       return;
     }
 
     const conversationId = activeConversationId;
+    const requestId = activeConversationRequestRef.current + 1;
+    activeConversationRequestRef.current = requestId;
 
     // Optimistic UI: Immediately show conversation with data from list
     const baseConv = conversations.find((c) => c.id === conversationId);
@@ -414,12 +418,13 @@ export function InboxView({
     }
 
     // Fetch full messages in background
-	    const result = await getConversation(conversationId);
-		    if (result.success && result.data) {
-		      const messages = (result.data.messages ?? []).map((m) => ({
-		        ...m,
-		        timestamp: toDateOrNull(m.timestamp) ?? new Date(),
-		      }));
+    const result = await getConversation(conversationId);
+    if (activeConversationRequestRef.current !== requestId) return;
+    if (result.success && result.data) {
+      const messages = (result.data.messages ?? []).map((m) => ({
+        ...m,
+        timestamp: toDateOrNull(m.timestamp) ?? new Date(),
+      }));
 
 	      if (baseConv) {
 	        // Keep lead automation flags in sync with server-side updates (e.g. enabling follow-ups on first setter reply).
@@ -504,10 +509,10 @@ export function InboxView({
           hasAiDraft: false,
           requiresAttention: false,
         });
-      }
+    }
     }
 
-    if (showLoading) {
+    if (showLoading && activeConversationRequestRef.current === requestId) {
       setIsLoadingMessages(false);
     }
   }, [activeConversationId, conversations, refetch]);
@@ -998,6 +1003,9 @@ export function InboxView({
             </>
           )}
         </Badge>
+      </div>
+      <div className="sr-only" role="status" aria-live="polite">
+        {newConversationCount > 0 ? `${newConversationCount} new conversations available.` : ""}
       </div>
 	      
 		      <ConversationFeed

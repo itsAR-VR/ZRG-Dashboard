@@ -1498,7 +1498,9 @@ model KnowledgeAsset {
   name                String              // Display name for the asset
   type                String              // 'file' | 'text' | 'url'
   fileUrl             String?             // Supabase Storage URL (for files)
+  rawContent          String?  @db.Text   // Raw extracted source content (or source text for text assets)
   textContent         String?  @db.Text   // Extracted or direct text content
+  aiContextMode       String   @default("notes") // 'notes' | 'raw'
   originalFileName    String?             // Original file name if uploaded
   mimeType            String?             // File MIME type
   createdAt           DateTime @default(now())
@@ -1521,7 +1523,9 @@ model KnowledgeAssetRevision {
   name                String
   type                String
   fileUrl             String?
+  rawContent          String?  @db.Text
   textContent         String?  @db.Text
+  aiContextMode       String?
   action              String
   createdByUserId     String?
   createdByEmail      String?

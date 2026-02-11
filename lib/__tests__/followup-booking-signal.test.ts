@@ -8,12 +8,19 @@ function buildDecision(overrides: Partial<MeetingOverseerExtractDecision>): Meet
   return {
     is_scheduling_related: true,
     intent: "other",
+    intent_to_book: false,
+    intent_confidence: 1,
     acceptance_specificity: "none",
     accepted_slot_index: null,
     preferred_day_of_week: null,
     preferred_time_of_day: null,
     relative_preference: null,
     relative_preference_detail: null,
+    qualification_status: "unknown",
+    qualification_confidence: 1,
+    qualification_evidence: [],
+    time_from_body_only: true,
+    time_extraction_confidence: 1,
     needs_clarification: false,
     clarification_reason: null,
     confidence: 1,
@@ -86,4 +93,3 @@ describe("deriveBookingSignal", () => {
     assert.equal(signal.preferredTimeOfDay, "morning");
   });
 });
-

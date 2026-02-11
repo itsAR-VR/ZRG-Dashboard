@@ -30,6 +30,7 @@ import {
   pauseFollowUpsUntil,
   processMessageForAutoBooking,
   resumeAwaitingEnrichmentFollowUpsForLead,
+  type AutoBookingContext,
 } from "@/lib/followup-engine";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
@@ -900,13 +901,36 @@ export async function runEmailInboundPostProcessJob(opts: {
   }
 
   // Auto-booking: only books when the lead clearly accepts one of the offered slots.
-  const autoBook = inboundReplyOnly
+  const fallbackAutoBookingContext: AutoBookingContext = {
+    schedulingDetected: false,
+    schedulingIntent: null,
+    clarificationTaskCreated: false,
+    clarificationMessage: null,
+    followUpTaskCreated: false,
+    followUpTaskKind: null,
+    qualificationEvaluated: false,
+    isQualifiedForBooking: null,
+    qualificationReason: null,
+    failureReason: "disabled",
+    route: null,
+    matchStrategy: null,
+  };
+
+  const autoBook: {
+    booked: boolean;
+    appointmentId?: string;
+    error?: string;
+    context: AutoBookingContext;
+  } = inboundReplyOnly
     ? await processMessageForAutoBooking(lead.id, inboundReplyOnly, {
         channel: "email",
         messageId: message.id,
         sentimentTag: lead.sentimentTag,
       })
-    : { booked: false as const };
+    : {
+        booked: false as const,
+        context: fallbackAutoBookingContext,
+      };
 
   // Enrichment sequence.
   const fullEmailBody = message.rawText || message.rawHtml || inboundText || "";
@@ -994,7 +1018,12 @@ export async function runEmailInboundPostProcessJob(opts: {
   });
 
   // Draft generation (skip bounce emails and auto-booked appointments).
-  if (!autoBook.booked && lead.sentimentTag && shouldGenerateDraft(lead.sentimentTag, lead.email)) {
+  const schedulingHandled = Boolean(autoBook.context.followUpTaskCreated);
+  if (schedulingHandled) {
+    console.log("[Email PostProcess] Skipping draft generation; scheduling follow-up task already created by auto-booking");
+  }
+
+  if (!autoBook.booked && !schedulingHandled && lead.sentimentTag && shouldGenerateDraft(lead.sentimentTag, lead.email)) {
     const messages = await prisma.message.findMany({
       where: { leadId: lead.id },
       orderBy: { sentAt: "asc" },
@@ -1018,6 +1047,7 @@ export async function runEmailInboundPostProcessJob(opts: {
     if (!mustBlacklist) {
       const draftResult = await generateResponseDraft(lead.id, transcript || latestInbound, lead.sentimentTag, "email", {
         triggerMessageId: message.id,
+        autoBookingContext: autoBook.context?.schedulingDetected ? autoBook.context : null,
       });
 
       if (draftResult.success && draftResult.draftId && draftResult.content) {

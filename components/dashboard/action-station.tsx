@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useEffect, useState, useMemo } from "react"
+import { useRef, useEffect, useState, useMemo, useCallback } from "react"
 import type { Conversation, Channel } from "@/lib/mock-data"
 import { ChatMessage } from "./chat-message"
 import { Button } from "@/components/ui/button"
@@ -61,6 +61,12 @@ type EmailRecipientOption = {
   name: string | null
 }
 
+function getSendFailureMessage(channel: Channel): string {
+  if (channel === "linkedin") return "LinkedIn send failed. Check connection status and try again."
+  if (channel === "email") return "Email send failed. Check recipient details and try again."
+  return "SMS send failed. Please try again."
+}
+
 // Phase 50: Email recipient editor for CC management
 interface EmailRecipientEditorProps {
   toEmail: string
@@ -87,6 +93,10 @@ function EmailRecipientEditor({
   onCcInputChange,
   disabled = false,
 }: EmailRecipientEditorProps) {
+  const toFieldId = "email-recipient-to"
+  const toWarningId = "email-recipient-warning"
+  const ccInputId = "email-recipient-cc"
+
   const handleAddCc = () => {
     const trimmed = ccInput.trim().toLowerCase()
     if (trimmed && validateEmail(trimmed) && !ccList.some(e => e.toLowerCase() === trimmed)) {
@@ -117,7 +127,12 @@ function EmailRecipientEditor({
             onValueChange={onToEmailChange}
             disabled={disabled || toDisabled || toOptions.length === 0}
           >
-            <SelectTrigger className="h-7 text-xs">
+            <SelectTrigger
+              id={toFieldId}
+              className="h-7 text-xs"
+              aria-label="To recipient"
+              aria-describedby={!toEmail ? toWarningId : undefined}
+            >
               <SelectValue placeholder="Select recipient" />
             </SelectTrigger>
             <SelectContent>
@@ -158,12 +173,14 @@ function EmailRecipientEditor({
           {!disabled && (
             <div className="flex items-center gap-1">
               <Input
+                id={ccInputId}
                 type="email"
                 placeholder="Add CC..."
                 value={ccInput}
                 onChange={(e) => onCcInputChange(e.target.value)}
                 onKeyDown={handleKeyDown}
                 className="h-6 w-32 text-xs"
+                aria-label="CC recipient"
               />
               <Button
                 type="button"
@@ -184,7 +201,7 @@ function EmailRecipientEditor({
         </div>
       </div>
       {!toEmail && (
-        <div className="flex items-center gap-1.5 text-xs text-amber-600">
+        <div id={toWarningId} className="flex items-center gap-1.5 text-xs text-amber-600">
           <AlertCircle className="h-3.5 w-3.5" />
           Select a recipient to send email
         </div>
@@ -209,6 +226,7 @@ export function ActionStation({
   const shouldScrollRef = useRef(true)
   const prevConversationIdRef = useRef<string | null>(null)
   const prevMessageCountRef = useRef(0)
+  const draftFetchSeqRef = useRef(0)
   const conversationMessagesRef = useRef<Conversation["messages"]>([])
   const composeMessageRef = useRef("")
   const originalDraftRef = useRef("")
@@ -247,6 +265,7 @@ export function ActionStation({
   
   // Check if LinkedIn is available (lead has linkedinUrl)
   const hasLinkedIn = conversation?.lead?.linkedinUrl !== undefined && conversation?.lead?.linkedinUrl !== null
+  const isLinkedInSendBlocked = isLinkedIn && !hasLinkedIn
   
   // Calculate message counts per channel
   const messageCounts = useMemo(() => {
@@ -415,31 +434,59 @@ export function ActionStation({
     prevMessageCountRef.current = currentMessageCount
   }, [conversation?.id, conversation?.messages])
 
-  // Fetch LinkedIn connection status when LinkedIn tab is active
-  useEffect(() => {
-    async function fetchLinkedInStatus() {
-      if (!conversation || activeChannel !== "linkedin" || !hasLinkedIn) {
+  const fetchLinkedInStatus = useCallback(
+    async (isCancelled?: () => boolean) => {
+      const cancelled = () => Boolean(isCancelled?.())
+      const conversationId = conversation?.id ?? null
+
+      if (!conversationId || activeChannel !== "linkedin" || !hasLinkedIn) {
+        if (cancelled()) return
         setLinkedInStatus(null)
         return
       }
 
+      if (cancelled()) return
       setIsLoadingLinkedInStatus(true)
       try {
-        const result = await checkLinkedInStatus(conversation.id)
+        const result = await checkLinkedInStatus(conversationId)
+        if (cancelled()) return
         setLinkedInStatus(result)
       } catch (error) {
+        if (cancelled()) return
         console.error("[ActionStation] Failed to fetch LinkedIn status:", error)
-        setLinkedInStatus(null)
+        setLinkedInStatus({
+          success: false,
+          error: "Network issue while checking LinkedIn status",
+          connectionStatus: "NOT_CONNECTED",
+          canSendDM: false,
+          canSendInMail: false,
+          hasOpenProfile: false,
+          inMailBalance: null,
+        })
       } finally {
-        setIsLoadingLinkedInStatus(false)
+        if (!cancelled()) {
+          setIsLoadingLinkedInStatus(false)
+        }
       }
-    }
+    },
+    [conversation?.id, activeChannel, hasLinkedIn]
+  )
 
-    fetchLinkedInStatus()
-  }, [conversation?.id, activeChannel, hasLinkedIn])
+  // Fetch LinkedIn connection status when LinkedIn tab is active
+  useEffect(() => {
+    let cancelled = false
+    void fetchLinkedInStatus(() => cancelled)
+    return () => {
+      cancelled = true
+    }
+  }, [fetchLinkedInStatus])
 
   // Fetch real AI drafts when conversation or active channel changes
   useEffect(() => {
+    let cancelled = false
+    const requestSeq = draftFetchSeqRef.current + 1
+    draftFetchSeqRef.current = requestSeq
+
     async function fetchDrafts() {
       if (!conversation) {
         setDrafts([])
@@ -454,6 +501,7 @@ export function ActionStation({
       console.log("[ActionStation] Fetching drafts for conversation:", conversation.id, "channel:", activeChannel)
       setIsLoadingDrafts(true)
       const result = await getPendingDrafts(conversation.id, activeChannel)
+      if (cancelled || requestSeq !== draftFetchSeqRef.current) return
       console.log("[ActionStation] Draft fetch result:", result)
       
       if (result.success && result.data && result.data.length > 0) {
@@ -485,14 +533,24 @@ export function ActionStation({
         setFastRegenCycleSeed(null)
         setFastRegenCount(0)
       }
-      setIsLoadingDrafts(false)
+      if (!cancelled && requestSeq === draftFetchSeqRef.current) {
+        setIsLoadingDrafts(false)
+      }
     }
 
     fetchDrafts()
+    return () => {
+      cancelled = true
+    }
   }, [conversation?.id, activeChannel, deepLinkedDraftId, conversation?.lead?.sentimentTag])
 
   const handleSendMessage = async () => {
+    if (isSending || isRegenerating) return
     if (!composeMessage.trim() || !conversation) return
+    if (isLinkedInSendBlocked) {
+      toast.error("No LinkedIn profile found for this lead.")
+      return
+    }
     if (isEmail && !toEmail) {
       toast.error("Select a recipient before sending.")
       return
@@ -541,14 +599,19 @@ export function ActionStation({
       // Scroll to bottom to show the sent message
       shouldScrollRef.current = true
     } else {
-      toast.error(result.error || "Failed to send message")
+      toast.error(result.error || getSendFailureMessage(activeChannel))
     }
     
     setIsSending(false)
   }
 
   const handleApproveAndSend = async () => {
+    if (isSending || isRegenerating) return
     if (!composeMessage.trim() || !conversation) return
+    if (isLinkedInSendBlocked) {
+      toast.error("No LinkedIn profile found for this lead.")
+      return
+    }
     if (isEmail && !toEmail) {
       toast.error("Select a recipient before sending.")
       return
@@ -583,7 +646,7 @@ export function ActionStation({
         // Scroll to bottom to show the sent message
         shouldScrollRef.current = true
       } else {
-        toast.error(result.error || "Failed to send message")
+        toast.error(result.error || getSendFailureMessage(activeChannel))
       }
     } else {
       // Fallback to regular send
@@ -596,7 +659,7 @@ export function ActionStation({
         // Scroll to bottom to show the sent message
         shouldScrollRef.current = true
       } else {
-        toast.error(result.error || "Failed to send message")
+        toast.error(result.error || getSendFailureMessage(activeChannel))
       }
     }
     
@@ -932,11 +995,11 @@ export function ActionStation({
 
       {/* LinkedIn Status Bar */}
       {isLinkedIn && hasLinkedIn && (
-        <div className="border-b border-border px-6 py-2 bg-muted/20 flex items-center gap-4 flex-wrap">
+        <div className="border-b border-border px-6 py-2 bg-muted/20 flex items-center gap-3 flex-wrap">
           {isLoadingLinkedInStatus ? (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Checking connection status...
+              Checking LinkedIn status...
             </div>
           ) : linkedInStatus?.success ? (
             <>
@@ -985,16 +1048,29 @@ export function ActionStation({
               )}
 
               {/* Messaging hint */}
-              <span className="text-xs text-muted-foreground ml-auto">
+              <span className="text-xs font-medium text-muted-foreground ml-auto">
                 {linkedInStatus.canSendDM && "Will send DM"}
                 {!linkedInStatus.canSendDM && linkedInStatus.canSendInMail && "Will send InMail"}
                 {!linkedInStatus.canSendDM && !linkedInStatus.canSendInMail && "Will send Connection Request"}
               </span>
             </>
           ) : linkedInStatus?.error ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
               <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
-              {linkedInStatus.error}
+              <span>Unable to check LinkedIn status.</span>
+              <span className="text-muted-foreground/80">{linkedInStatus.error}</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => {
+                  void fetchLinkedInStatus()
+                }}
+                disabled={isLoadingLinkedInStatus}
+              >
+                Retry
+              </Button>
+              <span className="text-[11px] text-muted-foreground/80">Send mode unknown until status is available.</span>
             </div>
           ) : null}
         </div>
@@ -1034,22 +1110,30 @@ export function ActionStation({
 
       {/* Compose Box with integrated AI Draft */}
       <div className="border-t border-border p-4">
+        <div className="sr-only" role="status" aria-live="polite">
+          {isLoadingDrafts ? "Loading drafts. " : ""}
+          {isRegenerating ? "Regenerating draft. " : ""}
+          {isSending ? "Sending message." : ""}
+        </div>
+
         {/* Compose with AI button - shown when no draft exists */}
-        {!hasAiDraft && !isLoadingDrafts && (
+        {!hasAiDraft && (
           <div className="flex justify-end mb-2">
             <Button
               variant="outline"
               size="sm"
               onClick={handleFullRegenerateDraft}
-              disabled={isRegenerating}
+              disabled={isRegenerating || isLoadingDrafts}
               className="text-xs"
             >
-              {isRegeneratingFull ? (
+              {isLoadingDrafts ? (
+                <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+              ) : isRegeneratingFull ? (
                 <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
               ) : (
                 <Sparkles className="h-3.5 w-3.5 mr-1.5" />
               )}
-              Compose with AI
+              {isLoadingDrafts ? "Loading draft..." : "Compose with AI"}
             </Button>
           </div>
         )}
@@ -1072,6 +1156,16 @@ export function ActionStation({
             disabled={isSending}
           />
         )}
+        {isEmail && !lead?.email ? (
+          <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            No recipient email found for this lead. Add an email in CRM before sending.
+          </div>
+        ) : null}
+        {isLinkedInSendBlocked ? (
+          <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            LinkedIn send is unavailable because this lead has no LinkedIn profile.
+          </div>
+        ) : null}
 
         {/* Connection Note Field - shown when LinkedIn is active and not connected */}
         {isLinkedIn && linkedInStatus?.success && linkedInStatus.connectionStatus === "NOT_CONNECTED" && (
@@ -1152,7 +1246,7 @@ export function ActionStation({
                   size="sm"
                   variant="outline"
                   onClick={handleApproveAndSend}
-                  disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail)}
+                  disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail) || isLinkedInSendBlocked}
                 >
                   Approve & Send
                 </Button>
@@ -1171,8 +1265,14 @@ export function ActionStation({
               hasAiDraft && "border-primary/30 bg-primary/5"
             )}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.key === "Process") return
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault()
+                if (isSending || isRegenerating) return
+                if (isEmail && !toEmail) {
+                  toast.error("Select a recipient before sending.")
+                  return
+                }
                 if (hasAiDraft) {
                   handleApproveAndSend()
                 } else {
@@ -1263,7 +1363,7 @@ export function ActionStation({
                 {/* Approve & Send button */}
                 <Button 
                   onClick={handleApproveAndSend} 
-                  disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail)}
+                  disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail) || isLinkedInSendBlocked}
                   className="h-11 px-3 min-h-[44px]"
                   title="Approve and send"
                 >
@@ -1294,7 +1394,7 @@ export function ActionStation({
 
                 <Button 
                   onClick={handleSendMessage} 
-                  disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail)}
+                  disabled={!composeMessage.trim() || isSending || isRegenerating || (isEmail && !toEmail) || isLinkedInSendBlocked}
                   className="h-11 px-3 min-h-[44px]"
                 >
                   {isSending ? (

@@ -18,12 +18,19 @@ export type MeetingOverseerIntent =
 export type MeetingOverseerExtractDecision = {
   is_scheduling_related: boolean;
   intent: MeetingOverseerIntent;
+  intent_to_book: boolean;
+  intent_confidence: number;
   acceptance_specificity: "specific" | "day_only" | "generic" | "none";
   accepted_slot_index: number | null;
   preferred_day_of_week: string | null;
   preferred_time_of_day: string | null;
   relative_preference: string | null;
   relative_preference_detail: string | null;
+  qualification_status: "qualified" | "unqualified" | "unknown";
+  qualification_confidence: number;
+  qualification_evidence: string[];
+  time_from_body_only: boolean;
+  time_extraction_confidence: number;
   needs_clarification: boolean;
   clarification_reason: string | null;
   confidence: number;
@@ -44,12 +51,19 @@ const MEETING_OVERSEER_EXTRACT_SCHEMA = {
   properties: {
     is_scheduling_related: { type: "boolean" },
     intent: { type: "string" },
+    intent_to_book: { type: "boolean" },
+    intent_confidence: { type: "number" },
     acceptance_specificity: { type: "string" },
     accepted_slot_index: { type: ["number", "null"] },
     preferred_day_of_week: { type: ["string", "null"] },
     preferred_time_of_day: { type: ["string", "null"] },
     relative_preference: { type: ["string", "null"] },
     relative_preference_detail: { type: ["string", "null"] },
+    qualification_status: { type: "string" },
+    qualification_confidence: { type: "number" },
+    qualification_evidence: { type: "array", items: { type: "string" } },
+    time_from_body_only: { type: "boolean" },
+    time_extraction_confidence: { type: "number" },
     needs_clarification: { type: "boolean" },
     clarification_reason: { type: ["string", "null"] },
     confidence: { type: "number" },
@@ -58,12 +72,19 @@ const MEETING_OVERSEER_EXTRACT_SCHEMA = {
   required: [
     "is_scheduling_related",
     "intent",
+    "intent_to_book",
+    "intent_confidence",
     "acceptance_specificity",
     "accepted_slot_index",
     "preferred_day_of_week",
     "preferred_time_of_day",
     "relative_preference",
     "relative_preference_detail",
+    "qualification_status",
+    "qualification_confidence",
+    "qualification_evidence",
+    "time_from_body_only",
+    "time_extraction_confidence",
     "needs_clarification",
     "clarification_reason",
     "confidence",
@@ -141,6 +162,15 @@ function normalizeRelativePreference(value: string | null | undefined): string |
   if (raw.includes("today")) return "today";
   if (raw.includes("after")) return "after_date";
   return raw;
+}
+
+function normalizeQualificationStatus(
+  value: string | null | undefined
+): "qualified" | "unqualified" | "unknown" {
+  const raw = (value || "").trim().toLowerCase();
+  if (raw === "qualified") return "qualified";
+  if (raw === "unqualified") return "unqualified";
+  return "unknown";
 }
 
 export function shouldRunMeetingOverseer(opts: {
@@ -247,11 +277,20 @@ export async function runMeetingOverseerExtraction(opts: {
   messageId?: string | null;
   messageText: string;
   offeredSlots: OfferedSlot[];
+  qualificationContext?: string | null;
+  conversationContext?: string | null;
+  businessContext?: string | null;
 }): Promise<MeetingOverseerExtractDecision | null> {
   const messageId = (opts.messageId || "").trim();
   if (messageId) {
     const existing = await loadExistingDecision(messageId, "extract");
-    if (existing && typeof existing === "object") {
+    if (
+      existing &&
+      typeof existing === "object" &&
+      "intent_to_book" in existing &&
+      "qualification_status" in existing &&
+      "time_from_body_only" in existing
+    ) {
       return existing as MeetingOverseerExtractDecision;
     }
   }
@@ -259,6 +298,9 @@ export async function runMeetingOverseerExtraction(opts: {
   const offeredSlotsContext = opts.offeredSlots
     .map((slot, idx) => `${idx + 1}. ${slot.label} (${slot.datetime})`)
     .join("\n") || "None.";
+  const qualificationContext = (opts.qualificationContext || "").trim() || "None.";
+  const conversationContext = (opts.conversationContext || "").trim() || "None.";
+  const businessContext = (opts.businessContext || "").trim() || "None.";
 
   const promptKey = "meeting.overseer.extract.v1";
 
@@ -275,6 +317,15 @@ export async function runMeetingOverseerExtraction(opts: {
 
 Offered slots (if any):
 {{offeredSlots}}
+
+Qualification context:
+{{qualificationContext}}
+
+Business context:
+{{businessContext}}
+
+Conversation context (recent thread summary):
+{{conversationContext}}
 
 Rules:
 - If NOT scheduling-related, set is_scheduling_related=false, intent="other", acceptance_specificity="none", needs_clarification=false.
@@ -300,13 +351,29 @@ Rules:
 - If they mention "later this week", "next week", or "sometime" without a specific day/time, set needs_clarification=true.
 - If they mention relative timing ("later this week", "next week", "tomorrow"), set relative_preference + relative_preference_detail to the exact phrase.
 - accepted_slot_index is 1-based and should ONLY be set when you are confident it matches the offered slots list. Otherwise null.
+- intent_to_book:
+  - true when the lead is clearly trying to schedule/confirm a meeting time now.
+  - false when they are not trying to schedule now (even if scheduling is discussed generally).
+- qualification_status must be one of: qualified, unqualified, unknown.
+  - Use qualification context first, then conversation context.
+  - If evidence is insufficient or conflicting, return unknown.
+  - Add concise supporting quotes to qualification_evidence.
+- time_from_body_only:
+  - true only if timing details come from the inbound message body itself.
+  - false when timing appears to come from signature/footer/contact lines or cannot be grounded.
+- confidence fields (intent_confidence, qualification_confidence, time_extraction_confidence) must be 0..1.
 - If the message is ambiguous about scheduling intent, prefer is_scheduling_related=false and intent="other" (fail closed).
 - Do NOT invent dates or times. Use only the message and offered slots list.
 - Provide short evidence quotes from the message.
 
 Output JSON only.`,
     input: opts.messageText,
-    templateVars: { offeredSlots: offeredSlotsContext },
+    templateVars: {
+      offeredSlots: offeredSlotsContext,
+      qualificationContext,
+      conversationContext,
+      businessContext,
+    },
     schemaName: "meeting_overseer_extract",
     strict: true,
     schema: MEETING_OVERSEER_EXTRACT_SCHEMA,
@@ -324,9 +391,13 @@ Output JSON only.`,
 
   const decision = result.data;
   decision.confidence = clamp01(decision.confidence);
+  decision.intent_confidence = clamp01(decision.intent_confidence);
+  decision.qualification_confidence = clamp01(decision.qualification_confidence);
+  decision.time_extraction_confidence = clamp01(decision.time_extraction_confidence);
   decision.preferred_day_of_week = normalizeDayToken(decision.preferred_day_of_week);
   decision.preferred_time_of_day = normalizeTimeOfDay(decision.preferred_time_of_day);
   decision.relative_preference = normalizeRelativePreference(decision.relative_preference);
+  decision.qualification_status = normalizeQualificationStatus(decision.qualification_status);
   if (!Number.isFinite(decision.accepted_slot_index ?? NaN)) {
     decision.accepted_slot_index = null;
   }

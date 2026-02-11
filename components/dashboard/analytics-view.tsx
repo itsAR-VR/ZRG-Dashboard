@@ -452,12 +452,18 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
         {datePreset === "custom" && (
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">From</span>
-              <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+              <label htmlFor="analytics-custom-from" className="text-sm text-muted-foreground">From</label>
+              <Input
+                id="analytics-custom-from"
+                type="date"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+              />
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">To</span>
+              <label htmlFor="analytics-custom-to" className="text-sm text-muted-foreground">To</label>
               <Input
+                id="analytics-custom-to"
                 type="date"
                 value={customTo}
                 min={customFrom || undefined}
