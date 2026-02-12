@@ -220,6 +220,55 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     assert.equal(recordArg?.arguments[0]?.action, "send_immediate");
   });
 
+  it("blocks approved send when post-AI invariants fail", async () => {
+    const evaluateAutoSend = mock.fn(async () => ({
+      confidence: 0.98,
+      safeToSend: true,
+      requiresHumanReview: false,
+      reason: "Approved by evaluator",
+    }));
+    const approveAndSendDraftSystem = mock.fn(async () => ({ success: true, messageId: "sent-1" }));
+    const sendSlackDmByUserIdWithToken = mock.fn(async () => ({ success: true, messageTs: "123.456", channelId: "D123" }));
+    const recordAutoSendDecision = mock.fn(async () => undefined);
+
+    const { executeAutoSend } = createAutoSendExecutor({
+      approveAndSendDraftSystem,
+      decideShouldAutoReply: mock.fn(async () => ({ shouldReply: false, reason: "unused" })),
+      evaluateAutoSend,
+      getPublicAppUrl: () => "https://app.example.com",
+      getCampaignDelayConfig: mock.fn(async () => null),
+      scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken,
+      recordAutoSendDecision,
+    });
+
+    const result = await executeAutoSend(
+      createContext({
+        emailCampaign: createCampaign({ autoSendConfidenceThreshold: 0.9 }),
+        latestInbound: "Thanks, sounds good.",
+        draftContent: "Perfect — book here: https://calendar.example.com/chris/15",
+        offeredSlots: [],
+        bookingLink: null,
+        leadSchedulerLink: null,
+      })
+    );
+
+    assert.equal(result.mode, "AI_AUTO_SEND");
+    assert.equal(result.outcome.action, "needs_review");
+    if (result.outcome.action !== "needs_review") return;
+    assert.ok(result.outcome.reason.startsWith("post_ai_invariant_failed:"));
+    assert.ok((result.outcome.invariantCodes || []).includes("fabricated_link"));
+    assert.equal(approveAndSendDraftSystem.mock.calls.length, 0);
+    assert.equal(sendSlackDmByUserIdWithToken.mock.calls.length, 1);
+    assert.equal(recordAutoSendDecision.mock.calls.length, 1);
+    const recordArg = (recordAutoSendDecision.mock.calls as unknown[])[0] as { arguments: [{ action?: string; reason?: string }] };
+    assert.equal(recordArg?.arguments[0]?.action, "needs_review");
+    assert.match(recordArg?.arguments[0]?.reason || "", /^post_ai_invariant_failed:/);
+  });
+
   it("attempts revision when below threshold and uses revised evaluation when improved", async () => {
     const evaluateAutoSend = mock.fn(async () => ({
       confidence: 0.4,

@@ -29,9 +29,11 @@ import {
 import { enforceCanonicalBookingLink, removeForbiddenTerms, replaceEmDashesWithCommaSpace } from "@/lib/ai-drafts/step3-verifier";
 import { evaluateStep3RewriteGuardrail, normalizeDraftForCompare } from "@/lib/ai-drafts/step3-guardrail";
 import { getBookingProcessInstructions } from "@/lib/booking-process-instructions";
+import type { OfferedSlot } from "@/lib/booking";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
 import { extractImportantEmailSignatureContext, type EmailSignatureContextExtraction } from "@/lib/email-signature-context";
+import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { emailsMatch, extractFirstName } from "@/lib/email-participants";
 import {
   buildLeadContextBundle,
@@ -45,24 +47,35 @@ import {
   type KnowledgeAssetForContext,
 } from "@/lib/knowledge-asset-context";
 import { getLeadMemoryContext } from "@/lib/lead-memory-context";
+import { recordAiRouteSkip } from "@/lib/ai/route-skip-observability";
 import {
   getMeetingOverseerDecision,
-  runMeetingOverseerGate,
+  runMeetingOverseerExtraction,
+  runMeetingOverseerGateDecision,
   shouldRunMeetingOverseer,
   type MeetingOverseerExtractDecision,
 } from "@/lib/meeting-overseer";
+import type { ActionSignalDetectionResult } from "@/lib/action-signal-detector";
 import type { AutoBookingContext } from "@/lib/followup-engine";
 import { DRAFT_PIPELINE_STAGES, type DraftPipelineStage } from "@/lib/draft-pipeline/types";
 import { validateArtifactPayload } from "@/lib/draft-pipeline/validate-payload";
 import type { AvailabilitySource } from "@prisma/client";
 
 type DraftChannel = "sms" | "email" | "linkedin";
+type DraftRouteSkip =
+  | "draft_generation"
+  | "draft_generation_step2"
+  | "draft_verification_step3"
+  | "meeting_overseer";
 
 interface DraftGenerationResult {
   success: boolean;
   draftId?: string;
   content?: string;
   runId?: string | null;
+  reusedExistingDraft?: boolean;
+  skippedRoutes?: DraftRouteSkip[];
+  blockedBySetting?: "draftGenerationEnabled";
   error?: string;
 }
 
@@ -79,6 +92,14 @@ export type DraftGenerationOptions = {
    */
   triggerMessageId?: string | null;
   /**
+   * Controls whether an existing draft for (triggerMessageId, channel) should
+   * be reused. Defaults to true.
+   *
+   * Replay/backfill flows should set this to false to force a fresh generation
+   * pass against current prompt/pipeline behavior.
+   */
+  reuseExistingDraft?: boolean;
+  /**
    * Multiplier applied to the adaptive output token budget (min/max/overhead/outputScale).
    * Defaults to `OPENAI_DRAFT_TOKEN_BUDGET_MULTIPLIER` or 3.
    */
@@ -93,7 +114,151 @@ export type DraftGenerationOptions = {
    * (e.g., avoid contradictory "we'll call" language when scheduling intent was already detected).
    */
   autoBookingContext?: AutoBookingContext | null;
+  /**
+   * Optional action-signal payload supplied by inbound post-processing.
+   * Reserved for signal-aware prompt augmentation.
+   */
+  actionSignals?: ActionSignalDetectionResult | null;
+  /**
+   * Optional lead-provided scheduler link override for replay/backfill contexts
+   * where the link exists in raw message content but is not yet persisted on Lead.
+   */
+  leadSchedulerLinkOverride?: string | null;
+  /**
+   * Controls whether meeting overseer decisions should be reused from persisted
+   * message-level cache (`persisted`) or recomputed fresh for this run (`fresh`).
+   */
+  meetingOverseerMode?: "persisted" | "fresh";
+  /**
+   * When running with `meetingOverseerMode: "fresh"`, controls whether new
+   * overseer decisions should be persisted to `MeetingOverseerDecision`.
+   * Defaults to true.
+   */
+  persistMeetingOverseerDecisions?: boolean;
 };
+
+function escapeRegExpSimple(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildBookedConfirmationDraft(params: {
+  channel: DraftChannel;
+  firstName: string | null;
+  aiName: string;
+  slotLabel: string;
+}): string {
+  const slotLabel = params.slotLabel.trim();
+  if (params.channel === "sms") {
+    return `Booked for ${slotLabel}.`;
+  }
+  if (params.channel === "linkedin") {
+    return `You're booked for ${slotLabel}.`;
+  }
+
+  const greeting = params.firstName ? `Hi ${params.firstName},\n\n` : "Hi,\n\n";
+  return `${greeting}You're booked for ${slotLabel}.\n\nBest,\n${params.aiName}`;
+}
+
+function applyShouldBookNowConfirmationIfNeeded(params: {
+  draft: string;
+  channel: DraftChannel;
+  firstName: string | null;
+  aiName: string;
+  extraction: MeetingOverseerExtractDecision | null;
+  availability: string[];
+}): string {
+  const draft = (params.draft || "").trim();
+  const contract = params.extraction?.decision_contract_v1;
+  if (!draft || !contract || contract.shouldBookNow !== "yes") return draft;
+  if (!Array.isArray(params.availability) || params.availability.length === 0) return draft;
+
+  const hasBookedSignal = /\b(booked|confirmed|confirming|scheduled)\b/i.test(draft);
+  const hasProposalSignal = /\b(let'?s do|would (?:either|you)|which works|are you free|does .* work)\b/i.test(draft);
+
+  if (hasBookedSignal && !hasProposalSignal) return draft;
+
+  const acceptedIndex = typeof params.extraction?.accepted_slot_index === "number" ? params.extraction.accepted_slot_index : null;
+  const selectedSlot =
+    acceptedIndex && acceptedIndex > 0 && acceptedIndex <= params.availability.length
+      ? params.availability[acceptedIndex - 1]!
+      : params.availability[0]!;
+
+  return buildBookedConfirmationDraft({
+    channel: params.channel,
+    firstName: params.firstName,
+    aiName: params.aiName,
+    slotLabel: selectedSlot,
+  });
+}
+
+function hasActionSignal(result: ActionSignalDetectionResult | null | undefined, type: "call_requested" | "book_on_external_calendar"): boolean {
+  return Boolean(result?.signals?.some((signal) => signal.type === type));
+}
+
+function hasActionSignalOrRoute(result: ActionSignalDetectionResult | null | undefined): boolean {
+  return Boolean(result?.signals?.length || result?.route);
+}
+
+export function buildActionSignalsPromptAppendix(result: ActionSignalDetectionResult | null | undefined): string {
+  if (!hasActionSignalOrRoute(result)) return "";
+
+  const lines = ["ACTION SIGNAL CONTEXT:"];
+  const route = result?.route ?? null;
+
+  if (route) {
+    lines.push(`- Booking process route: Process ${route.processId}${route.uncertain ? " (uncertain)" : ""}.`);
+    lines.push(`- Route confidence: ${Math.round(route.confidence * 100)}%.`);
+    lines.push(`- Route rationale: ${route.rationale}`);
+  }
+
+  if (route?.processId === 1) {
+    lines.push("- Process 1 guidance: prioritize concise qualification/context clarification before hard booking nudges.");
+  } else if (route?.processId === 2) {
+    lines.push("- Process 2 guidance: focus on selecting/confirming offered time options without adding unrelated scheduling flows.");
+  } else if (route?.processId === 3) {
+    lines.push("- Process 3 guidance: acknowledge the lead-proposed time and confirm details (timezone/date precision) without extra detours.");
+  }
+
+  if (hasActionSignal(result, "call_requested")) {
+    lines.push("- The lead has requested or implied they want a phone call.");
+    lines.push("- Acknowledge this. Offer to set up a call or confirm someone will reach out by phone.");
+    lines.push("- Do NOT suggest email-only scheduling when a call was explicitly requested.");
+  } else if (route?.processId === 4) {
+    lines.push("- Process 4 guidance: treat this as call-first intent and avoid email-only scheduling language.");
+  }
+
+  if (hasActionSignal(result, "book_on_external_calendar")) {
+    lines.push("- The lead wants to book on someone else's calendar or provided their own scheduling link.");
+    lines.push("- Do NOT offer the workspace's default availability/booking link.");
+    lines.push("- Acknowledge their calendar/link and coordinate through it.");
+  } else if (route?.processId === 5) {
+    lines.push("- Process 5 guidance: acknowledge the lead-provided scheduler flow and avoid nudging the workspace default booking link.");
+  }
+
+  return lines.join("\n");
+}
+
+function buildActionSignalsGateSummary(result: ActionSignalDetectionResult | null | undefined): string | null {
+  if (!hasActionSignalOrRoute(result)) return null;
+  if (!result) return null;
+
+  const evidence = result.signals
+    .map((signal) => `${signal.type}:${signal.evidence}`)
+    .slice(0, 3)
+    .join(" | ");
+
+  return [
+    `call_requested: ${hasActionSignal(result, "call_requested") ? "true" : "false"}`,
+    `book_on_external_calendar: ${hasActionSignal(result, "book_on_external_calendar") ? "true" : "false"}`,
+    result.route ? `route_process: ${result.route.processId}` : null,
+    result.route ? `route_confidence: ${result.route.confidence}` : null,
+    result.route ? `route_uncertain: ${result.route.uncertain ? "true" : "false"}` : null,
+    result.route?.rationale ? `route_rationale: ${result.route.rationale}` : null,
+    evidence ? `evidence: ${evidence}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // Draft Output Hardening (Phase 45)
@@ -112,8 +277,17 @@ const TRUNCATED_URL_GLOBAL_REGEX = /https?:\/\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-
 const PRICING_PLACEHOLDER_REGEX = /\$\{[A-Z_]+\}|\$[A-Z](?:\s*-\s*\$[A-Z])?(?![A-Za-z0-9])/;
 const PRICING_PLACEHOLDER_GLOBAL_REGEX = /\$\{[A-Z_]+\}|\$[A-Z](?:\s*-\s*\$[A-Z])?(?![A-Za-z0-9])/g;
 const DOLLAR_AMOUNT_REGEX = /\$\s*\d[\d,]*(?:\.\d{1,2})?/g;
-const PRICING_NEARBY_REGEX = /\b(price|pricing|fee|fees|cost|costs|membership|investment|per\s+(month|year)|\/\s?(mo|month|yr|year))\b/i;
+const DOLLAR_AMOUNT_PRESENCE_REGEX = /\$\s*\d[\d,]*(?:\.\d{1,2})?/;
+const PRICING_NEARBY_REGEX =
+  /\b(price|pricing|fee|fees|cost|costs|membership|investment|per\s+(month|year|quarter)|\/\s?(mo|month|yr|year|qtr|quarter))\b/i;
 const THRESHOLD_NEARBY_REGEX = /\b(revenue|arr|mrr|raised|raise|funding|valuation|gmv|run[\s-]?rate)\b/i;
+const MONTHLY_CADENCE_REGEX = /\b(monthly|per\s+month|\/\s?(?:mo|month))\b/i;
+const ANNUAL_CADENCE_REGEX = /\b(annual|annually|yearly|per\s+year|\/\s?(?:yr|year))\b/i;
+const QUARTERLY_CADENCE_REGEX = /\b(quarterly|per\s+quarter|\/\s?(?:qtr|quarter))\b/i;
+const NEGATED_MONTHLY_CADENCE_REGEX = /\b(no\s+monthly\s+(?:payment\s+)?plan|not\s+monthly|without\s+monthly)\b/i;
+const MONTHLY_PLAN_REGEX = /\bmonthly\s+(?:payment\s+)?plan\b/i;
+const QUARTERLY_ONLY_BILLING_REGEX =
+  /\b(no\s+monthly\s+(?:payment\s+)?plan|no\s+monthly\s+option|quarterly\s+only|billed\s+quarterly\s+only)\b/i;
 
 function isMaxOutputTokensIncomplete(response: any): boolean {
   return response?.status === "incomplete" && response?.incomplete_details?.reason === "max_output_tokens";
@@ -241,6 +415,14 @@ function parseDollarAmountToNumber(token: string): number | null {
   return parsed;
 }
 
+type PricingCadence = "monthly" | "annual" | "quarterly" | "unknown";
+type PricingClaim = {
+  amount: number;
+  cadences: Set<PricingCadence>;
+  index: number;
+  token: string;
+};
+
 function isLikelyNonPricingDollarAmount(text: string, index: number, rawToken: string): boolean {
   const suffix = text.slice(index + rawToken.length, index + rawToken.length + 4);
   if (/^\s*[kKmMbB]/.test(suffix)) return true;
@@ -253,10 +435,25 @@ function isLikelyNonPricingDollarAmount(text: string, index: number, rawToken: s
   return false;
 }
 
-export function extractPricingAmounts(text: string): number[] {
-  if (!text || !text.trim()) return [];
+function extractCadencesFromNearby(text: string): Set<PricingCadence> {
+  const cadences = new Set<PricingCadence>();
+  const hasNegatedMonthly = NEGATED_MONTHLY_CADENCE_REGEX.test(text);
+  if (MONTHLY_CADENCE_REGEX.test(text) && !hasNegatedMonthly) cadences.add("monthly");
+  if (ANNUAL_CADENCE_REGEX.test(text)) cadences.add("annual");
+  if (QUARTERLY_CADENCE_REGEX.test(text)) cadences.add("quarterly");
+  if (cadences.size === 0) cadences.add("unknown");
+  return cadences;
+}
 
-  const seen = new Set<number>();
+function buildPricingClaimWindow(text: string, index: number, rawToken: string): string {
+  const windowStart = Math.max(0, index - 80);
+  const windowEnd = Math.min(text.length, index + rawToken.length + 80);
+  return text.slice(windowStart, windowEnd);
+}
+
+function extractPricingClaims(text: string): PricingClaim[] {
+  if (!text || !text.trim()) return [];
+  const claims: PricingClaim[] = [];
   for (const match of text.matchAll(DOLLAR_AMOUNT_REGEX)) {
     const raw = match[0];
     const index = match.index ?? -1;
@@ -265,7 +462,78 @@ export function extractPricingAmounts(text: string): number[] {
 
     const amount = parseDollarAmountToNumber(raw);
     if (amount === null) continue;
-    seen.add(amount);
+
+    const nearby = buildPricingClaimWindow(text, index, raw);
+    claims.push({
+      amount,
+      cadences: extractCadencesFromNearby(nearby),
+      index,
+      token: raw,
+    });
+  }
+  return claims;
+}
+
+function buildPricingCadenceMap(text: string): Map<number, Set<PricingCadence>> {
+  const map = new Map<number, Set<PricingCadence>>();
+  for (const claim of extractPricingClaims(text)) {
+    const existing = map.get(claim.amount) ?? new Set<PricingCadence>();
+    for (const cadence of claim.cadences) existing.add(cadence);
+    map.set(claim.amount, existing);
+  }
+  return map;
+}
+
+function getKnownCadences(cadences: Set<PricingCadence>): Set<PricingCadence> {
+  const known = new Set<PricingCadence>();
+  for (const cadence of cadences) {
+    if (cadence !== "unknown") known.add(cadence);
+  }
+  return known;
+}
+
+function cadenceMatchesDraftClaim(
+  draftCadences: Set<PricingCadence>,
+  supportedCadences: Set<PricingCadence>
+): boolean {
+  const draftKnown = getKnownCadences(draftCadences);
+  if (draftKnown.size === 0) return true;
+
+  const supportedKnown = getKnownCadences(supportedCadences);
+  if (supportedKnown.size === 0) return true;
+
+  for (const cadence of draftKnown) {
+    if (supportedKnown.has(cadence)) return true;
+  }
+  return false;
+}
+
+function resolvePricingClaimSupport(
+  claim: PricingClaim,
+  serviceDescriptionMap: Map<number, Set<PricingCadence>>,
+  knowledgeContextMap: Map<number, Set<PricingCadence>>
+): { supported: boolean; cadenceMismatch: boolean } {
+  const serviceCadences = serviceDescriptionMap.get(claim.amount);
+  if (serviceCadences) {
+    const supported = cadenceMatchesDraftClaim(claim.cadences, serviceCadences);
+    return { supported, cadenceMismatch: !supported };
+  }
+
+  const knowledgeCadences = knowledgeContextMap.get(claim.amount);
+  if (!knowledgeCadences) {
+    return { supported: false, cadenceMismatch: false };
+  }
+
+  const supported = cadenceMatchesDraftClaim(claim.cadences, knowledgeCadences);
+  return { supported, cadenceMismatch: !supported };
+}
+
+export function extractPricingAmounts(text: string): number[] {
+  if (!text || !text.trim()) return [];
+
+  const seen = new Set<number>();
+  for (const claim of extractPricingClaims(text)) {
+    seen.add(claim.amount);
   }
 
   return Array.from(seen.values());
@@ -274,24 +542,55 @@ export function extractPricingAmounts(text: string): number[] {
 export function detectPricingHallucinations(
   draft: string,
   serviceDescription: string | null,
-  _knowledgeContext: string | null
-): { hallucinated: number[]; valid: number[]; allDraft: number[] } {
-  const draftAmounts = extractPricingAmounts(draft);
-  const sourceText = serviceDescription ?? "";
-  const sourceAmounts = new Set(extractPricingAmounts(sourceText));
+  knowledgeContext: string | null
+): { hallucinated: number[]; valid: number[]; allDraft: number[]; cadenceMismatched: number[] } {
+  const draftClaims = extractPricingClaims(draft);
+  const serviceDescriptionMap = buildPricingCadenceMap(serviceDescription ?? "");
+  const knowledgeContextMap = buildPricingCadenceMap(knowledgeContext ?? "");
 
-  const hallucinated = draftAmounts.filter((amount) => !sourceAmounts.has(amount));
-  const valid = draftAmounts.filter((amount) => sourceAmounts.has(amount));
+  const hallucinated = new Set<number>();
+  const valid = new Set<number>();
+  const cadenceMismatched = new Set<number>();
 
-  return { hallucinated, valid, allDraft: draftAmounts };
+  for (const claim of draftClaims) {
+    const support = resolvePricingClaimSupport(claim, serviceDescriptionMap, knowledgeContextMap);
+    if (support.supported) {
+      valid.add(claim.amount);
+      continue;
+    }
+
+    if (support.cadenceMismatch) {
+      cadenceMismatched.add(claim.amount);
+      continue;
+    }
+
+    hallucinated.add(claim.amount);
+  }
+
+  return {
+    hallucinated: Array.from(hallucinated.values()),
+    valid: Array.from(valid.values()),
+    allDraft: Array.from(new Set(draftClaims.map((claim) => claim.amount)).values()),
+    cadenceMismatched: Array.from(cadenceMismatched.values()),
+  };
 }
 
 export function enforcePricingAmountSafety(
   draft: string,
-  serviceDescription: string | null
-): { draft: string; removedAmounts: number[]; addedClarifier: boolean } {
-  const sourceAmounts = new Set(extractPricingAmounts(serviceDescription ?? ""));
+  serviceDescription: string | null,
+  knowledgeContext?: string | null
+): {
+  draft: string;
+  removedAmounts: number[];
+  removedCadenceAmounts: number[];
+  normalizedCadencePhrase: boolean;
+  addedClarifier: boolean;
+} {
+  const serviceDescriptionMap = buildPricingCadenceMap(serviceDescription ?? "");
+  const knowledgeContextMap = buildPricingCadenceMap(knowledgeContext ?? "");
+  const sourceHasPricing = serviceDescriptionMap.size > 0 || knowledgeContextMap.size > 0;
   const removedAmounts: number[] = [];
+  const removedCadenceAmounts: number[] = [];
 
   let next = draft.replace(DOLLAR_AMOUNT_REGEX, (token, offset, fullText) => {
     if (typeof offset === "number" && isLikelyNonPricingDollarAmount(fullText, offset, token)) {
@@ -299,8 +598,23 @@ export function enforcePricingAmountSafety(
     }
 
     const amount = parseDollarAmountToNumber(token);
-    if (amount === null || sourceAmounts.has(amount)) return token;
-    removedAmounts.push(amount);
+    if (amount === null) return token;
+
+    const nearby = typeof offset === "number" ? buildPricingClaimWindow(fullText, offset, token) : token;
+    const claim: PricingClaim = {
+      amount,
+      cadences: extractCadencesFromNearby(nearby),
+      index: typeof offset === "number" ? offset : -1,
+      token,
+    };
+    const support = resolvePricingClaimSupport(claim, serviceDescriptionMap, knowledgeContextMap);
+    if (support.supported) return token;
+
+    if (support.cadenceMismatch) {
+      removedCadenceAmounts.push(amount);
+    } else {
+      removedAmounts.push(amount);
+    }
     return "";
   });
 
@@ -311,14 +625,28 @@ export function enforcePricingAmountSafety(
     .replace(/[ \t]+\n/g, "\n")
     .trim();
 
+  let normalizedCadencePhrase = false;
+  if (serviceDescription && QUARTERLY_ONLY_BILLING_REGEX.test(serviceDescription) && MONTHLY_PLAN_REGEX.test(next)) {
+    next = next.replace(MONTHLY_PLAN_REGEX, "quarterly billing");
+    normalizedCadencePhrase = true;
+  }
+
   let addedClarifier = false;
-  if (removedAmounts.length > 0 && sourceAmounts.size === 0 && !/monthly\s+or\s+annual/i.test(next)) {
-    const clarifier = "To share exact pricing accurately, can you confirm whether you want monthly or annual details?";
+  const removedAny = removedAmounts.length > 0 || removedCadenceAmounts.length > 0;
+  if (
+    removedAny &&
+    !sourceHasPricing &&
+    !DOLLAR_AMOUNT_PRESENCE_REGEX.test(next) &&
+    !/confirm\s+which\s+pricing\s+option/i.test(next)
+  ) {
+    const clarifier = sourceHasPricing
+      ? "To share exact pricing accurately, can you confirm which pricing option you want details on?"
+      : "To share exact pricing accurately, can you confirm which pricing details you want?";
     next = next ? `${next}\n\n${clarifier}` : clarifier;
     addedClarifier = true;
   }
 
-  return { draft: next, removedAmounts, addedClarifier };
+  return { draft: next, removedAmounts, removedCadenceAmounts, normalizedCadencePhrase, addedClarifier };
 }
 
 // ---------------------------------------------------------------------------
@@ -717,6 +1045,194 @@ export function mergeServiceDescriptions(
   return `${a}\n\n${b}`;
 }
 
+function buildDateContext(timeZone: string): string {
+  const now = new Date();
+  const dayFormat = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const tzParts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "short",
+  }).formatToParts(now);
+  const shortTz = tzParts.find((part) => part.type === "timeZoneName")?.value || timeZone;
+  return `Today is ${dayFormat.format(now)} (${shortTz}).`;
+}
+
+const WEEKDAY_REGEX = /\b(mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b/gi;
+
+function normalizeWeekdayToken(raw: string): string | null {
+  const token = raw.trim().toLowerCase();
+  if (token.startsWith("mon")) return "mon";
+  if (token.startsWith("tue")) return "tue";
+  if (token.startsWith("wed")) return "wed";
+  if (token.startsWith("thu")) return "thu";
+  if (token.startsWith("fri")) return "fri";
+  if (token.startsWith("sat")) return "sat";
+  if (token.startsWith("sun")) return "sun";
+  return null;
+}
+
+function getLocalDateParts(date: Date, timeZone: string): { year: number; month: number; day: number } | null {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date);
+    const year = Number.parseInt(parts.find((part) => part.type === "year")?.value || "", 10);
+    const month = Number.parseInt(parts.find((part) => part.type === "month")?.value || "", 10);
+    const day = Number.parseInt(parts.find((part) => part.type === "day")?.value || "", 10);
+    if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+    return { year, month, day };
+  } catch {
+    return null;
+  }
+}
+
+function getDayDiffInTimeZone(targetIso: string, now: Date, timeZone: string): number | null {
+  const targetDate = new Date(targetIso);
+  if (Number.isNaN(targetDate.getTime())) return null;
+
+  const nowParts = getLocalDateParts(now, timeZone);
+  const targetParts = getLocalDateParts(targetDate, timeZone);
+  if (!nowParts || !targetParts) return null;
+
+  const nowUtcMidnight = Date.UTC(nowParts.year, nowParts.month - 1, nowParts.day);
+  const targetUtcMidnight = Date.UTC(targetParts.year, targetParts.month - 1, targetParts.day);
+  const msPerDay = 24 * 60 * 60 * 1000;
+  return Math.floor((targetUtcMidnight - nowUtcMidnight) / msPerDay);
+}
+
+function parseClockToken(
+  raw: string,
+  fallbackMeridiem?: "am" | "pm"
+): { minutes: number; meridiem: "am" | "pm" } | null {
+  const normalized = (raw || "").trim().toLowerCase().replace(/\./g, "");
+  if (!normalized) return null;
+
+  const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!match) return null;
+
+  const hours = Number.parseInt(match[1] || "", 10);
+  const minutes = match[2] ? Number.parseInt(match[2], 10) : 0;
+  const meridiem = (match[3] as "am" | "pm" | undefined) || fallbackMeridiem || null;
+
+  if (!Number.isFinite(hours) || hours < 1 || hours > 12) return null;
+  if (!Number.isFinite(minutes) || minutes < 0 || minutes > 59) return null;
+  if (!meridiem) return null;
+
+  const normalizedHours = hours % 12;
+  const totalMinutes = normalizedHours * 60 + minutes + (meridiem === "pm" ? 12 * 60 : 0);
+
+  return { minutes: totalMinutes, meridiem };
+}
+
+function parseExplicitTimeWindow(
+  message: string
+): { startMinutes: number; endMinutes: number } | null {
+  const patterns = [
+    /\bbetween\s+(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)\s*(?:and|to|-)\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)/i,
+    /\bfrom\s+(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)\s*(?:to|-)\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)/i,
+    /\b(\d{1,2}(?::\d{2})?)\s*-\s*(\d{1,2}(?::\d{2})?)\s*(am|pm)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = message.match(pattern);
+    if (!match) continue;
+
+    const startRaw = (match[1] || "").trim();
+    const endRaw = (match[2] || "").trim();
+    const sharedMeridiem = (match[3] || "").trim().toLowerCase() as "am" | "pm" | "";
+
+    const endToken = parseClockToken(endRaw, sharedMeridiem || undefined);
+    const startToken = parseClockToken(startRaw, (sharedMeridiem || endToken?.meridiem || undefined) as
+      | "am"
+      | "pm"
+      | undefined);
+
+    if (!startToken || !endToken) continue;
+
+    return {
+      startMinutes: startToken.minutes,
+      endMinutes: endToken.minutes,
+    };
+  }
+
+  return null;
+}
+
+function getMinutesOfDayInTimeZone(targetIso: string, timeZone: string): number | null {
+  const targetDate = new Date(targetIso);
+  if (Number.isNaN(targetDate.getTime())) return null;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(targetDate);
+    const hour = Number.parseInt(parts.find((part) => part.type === "hour")?.value || "", 10);
+    const minute = Number.parseInt(parts.find((part) => part.type === "minute")?.value || "", 10);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return hour * 60 + minute;
+  } catch {
+    return null;
+  }
+}
+
+function isMinuteWithinWindow(value: number, startMinutes: number, endMinutes: number): boolean {
+  if (startMinutes <= endMinutes) {
+    return value >= startMinutes && value <= endMinutes;
+  }
+  // Handles overnight windows like 10pm-1am.
+  return value >= startMinutes || value <= endMinutes;
+}
+
+export function extractTimingPreferencesFromText(
+  text: string,
+  timeZone: string
+): {
+  weekdayTokens?: string[];
+  relativeWeek?: "this_week" | "next_week";
+  timeWindow?: { startMinutes: number; endMinutes: number };
+} | null {
+  const message = (text || "").trim();
+  if (!message) return null;
+
+  const lower = message.toLowerCase();
+  const weekdayTokens = new Set<string>();
+  const weekdayMatches = message.matchAll(WEEKDAY_REGEX);
+  for (const match of weekdayMatches) {
+    const normalized = normalizeWeekdayToken(match[1] || "");
+    if (normalized) weekdayTokens.add(normalized);
+  }
+
+  let relativeWeek: "this_week" | "next_week" | undefined;
+  if (/\bnext\s+week\b/i.test(lower) || /\bnext\s+(mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b/i.test(lower)) {
+    relativeWeek = "next_week";
+  } else if (/\b(this|later\s+this)\s+week\b/i.test(lower) || /\bthis\s+(mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b/i.test(lower)) {
+    relativeWeek = "this_week";
+  }
+
+  const timeWindow = parseExplicitTimeWindow(message);
+  if (weekdayTokens.size === 0 && !relativeWeek && !timeWindow) return null;
+
+  // Keep an explicit dependency on timezone for relative-week interpretation downstream.
+  void timeZone;
+
+  return {
+    weekdayTokens: weekdayTokens.size > 0 ? Array.from(weekdayTokens) : undefined,
+    relativeWeek,
+    timeWindow: timeWindow || undefined,
+  };
+}
+
 function isPrismaUniqueConstraintError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   return "code" in error && (error as { code?: unknown }).code === "P2002";
@@ -731,6 +1247,8 @@ function buildSmsPrompt(opts: {
   aiTone: string;
   aiGreeting: string;
   firstName: string;
+  dateContext: string;
+  leadTimezoneContext: string;
   responseStrategy: string;
   sentimentTag: string;
   aiGoals?: string | null;
@@ -789,6 +1307,8 @@ ${companyContext}${valueProposition}Tone: ${opts.aiTone}
 Strategy: ${opts.responseStrategy}
 Primary Goal/Strategy: ${opts.aiGoals || "Use good judgment to advance the conversation while respecting user intent."}
 ${serviceContext}${qualificationGuidance}${knowledgeSection}${websiteSection}${availabilitySection}
+${opts.dateContext}
+${opts.leadTimezoneContext}
 Guidelines:
 - Keep each SMS part <= 160 characters (hard limit). Total parts max 3.
 - Be professional but personable
@@ -810,6 +1330,8 @@ function buildLinkedInPrompt(opts: {
   aiTone: string;
   aiGreeting: string;
   firstName: string;
+  dateContext: string;
+  leadTimezoneContext: string;
   responseStrategy: string;
   sentimentTag: string;
   aiGoals?: string | null;
@@ -850,6 +1372,8 @@ ${companyContext}${valueProposition}Tone: ${opts.aiTone}
 Strategy: ${opts.responseStrategy}
 Primary Goal/Strategy: ${opts.aiGoals || "Use good judgment to advance the conversation while respecting user intent."}
 ${serviceContext}${qualificationGuidance}${knowledgeSection}${websiteSection}${availabilitySection}
+${opts.dateContext}
+${opts.leadTimezoneContext}
 
 Guidelines:
 - Output plain text only (no markdown).
@@ -870,6 +1394,8 @@ function buildEmailPrompt(opts: {
   aiTone: string;
   aiGreeting: string;
   firstName: string;
+  dateContext: string;
+  leadTimezoneContext: string;
   responseStrategy: string;
   aiGoals?: string | null;
   availability: string[];
@@ -949,9 +1475,16 @@ OUTPUT RULES:
 - Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
 - If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
 
+DATE CONTEXT:
+${opts.dateContext}
+
+LEAD TIMEZONE:
+${opts.leadTimezoneContext}
+IMPORTANT: When the lead mentions times, interpret them in the lead's timezone if known.
+
 SCHEDULING RULES:
 ${availabilityBlock}
-- Never imply a meeting is booked unless the lead explicitly confirmed a specific time or said they booked/accepted an invite.
+- Do not imply a meeting is booked unless clear booking confirmation context exists (explicit lead confirmation or a should-book-now path with a selected matching slot).
 - A scheduling link in a signature must not affect your response unless the lead explicitly tells you to use it in the body.
 
 COMPANY CONTEXT:
@@ -1125,6 +1658,8 @@ function buildEmailDraftStrategyInstructions(opts: {
   aiName: string;
   aiTone: string;
   firstName: string;
+  dateContext: string;
+  leadTimezoneContext: string;
   lastName: string | null;
   leadEmail: string | null;
   currentReplierName: string | null;
@@ -1216,6 +1751,8 @@ CONTEXT:
 - Tone: ${opts.aiTone}
 - Lead sentiment: ${opts.sentimentTag}
 - Response approach: ${opts.responseStrategy}
+- ${opts.dateContext}
+- ${opts.leadTimezoneContext}
 
 LEAD INFORMATION:
 ${leadContext || "No additional lead information available."}
@@ -1232,15 +1769,23 @@ ${archetypeSection}
 TASK:
 Analyze this lead and conversation to produce a strategy for writing a personalized email response.
 Output a JSON object with your analysis. Focus on:
-1. What makes this lead unique (personalization_points)
+1. What makes this lead unique (personalization_points). Use only grounded facts from provided context; if no reliable personalization exists, use an empty list.
 2. What the response should achieve (intent_summary)
 3. Whether to offer scheduling times (should_offer_times, times_to_offer) — TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th", "this month"), ONLY select times from the list that match their request. Do NOT offer "this week" times if they said "next week". When no timing preference is expressed, prefer sooner options. If no available times match their stated preference, set should_offer_times to false and plan to ask what works better.
-   - LEAD SCHEDULER: If a lead-provided scheduling link is present above, set should_offer_times to false (times_to_offer = null) and plan to acknowledge their link instead of proposing our times.
+   - LEAD SCHEDULER: If a lead-provided scheduling link is present above, set should_offer_times to false (times_to_offer = null) and plan to acknowledge their link instead of proposing our times. Keep the response scheduling-only (no extra pitch/agenda/qualification detours).
 4. The email structure (outline) - aligned with ${opts.shouldSelectArchetype ? "your selected archetype" : "the archetype above"}
 5. What to avoid (must_avoid)
 ${archetypeTask}
 
+Scheduling priority:
+- If the lead is clearly ready to book, strategy should be booking-first and concise.
+- Avoid adding new qualification questions when the conversation already establishes fit/qualification.
+- If the lead already confirmed meeting the revenue/fit threshold, do not ask another qualification question.
+- Keep timezone framing consistent with the lead's stated window when times are proposed.
+- If the lead provided a scheduling link or a concrete booking window, keep the plan scheduling-only. Do not include extra selling points or meeting agenda content.
+
 If the lead asks for more info, ensure the strategy includes concrete details from OUR OFFER and REFERENCE INFORMATION in the intent_summary/outline. Do not treat "more info" as a website request unless the lead explicitly asked for a link.
+If the lead asks explicit questions (for example pricing, attendance frequency, or location), make sure each explicit question is answered in the strategy outline.
 
 Be specific and actionable. The strategy will be used to generate the actual email.`;
 }
@@ -1268,8 +1813,8 @@ function buildEmailDraftGenerationInstructions(opts: {
   const greeting = opts.aiGreeting.replace("{firstName}", opts.firstName);
 
   const strategySection = `
-PERSONALIZATION POINTS (use at least 2):
-${opts.strategy.personalization_points.map(p => `- ${p}`).join("\n")}
+PERSONALIZATION POINTS (use only grounded points; if none, keep generic):
+${opts.strategy.personalization_points.length > 0 ? opts.strategy.personalization_points.map(p => `- ${p}`).join("\n") : "- none"}
 
 INTENT: ${opts.strategy.intent_summary}
 
@@ -1290,7 +1835,7 @@ ${opts.strategy.must_avoid.length > 0 ? opts.strategy.must_avoid.map(a => `- ${a
     : "";
 
   const leadSchedulerLinkSection = opts.leadSchedulerLink
-    ? `\nLEAD-PROVIDED SCHEDULING LINK (EXPLICITLY SHARED BY LEAD):\n${opts.leadSchedulerLink}\nIMPORTANT: Do NOT offer our availability times or our booking link. Instead, acknowledge their link and express willingness to book via their scheduler (no need to repeat the full URL).`
+    ? `\nLEAD-PROVIDED SCHEDULING LINK (EXPLICITLY SHARED BY LEAD):\n${opts.leadSchedulerLink}\nIMPORTANT: Do NOT offer our availability times or our booking link. Acknowledge their link and express willingness to book via their scheduler (no need to repeat the full URL). Keep the response scheduling-only: no pitch, agenda, or extra qualification detours.`
     : "";
 
   // Use workspace-specific forbidden terms if provided, otherwise default (Phase 47e)
@@ -1320,9 +1865,16 @@ OUTPUT RULES:
 - Output the email reply in Markdown-friendly plain text (paragraphs and "-" bullets allowed).
 - Do not use bold, italics, underline, strikethrough, code, or headings.
 - Do not invent facts. Use only provided context.
+- Prefer collective voice ("we"/"our") when natural, but first-person voice and personal sign-offs are allowed when they fit the conversation.
 - If the lead opted out/unsubscribed/asked to stop, output an empty reply ("") and nothing else.
-- NEVER imply a meeting is booked unless the lead explicitly confirmed.
+- Do not imply a meeting is booked unless there is clear scheduling confirmation context (for example explicit lead acceptance or a should-book-now confirmation path with a selected slot).
+- If the lead is clearly ready to book, prioritize scheduling only: do not add extra pitch or re-qualification questions.
+- If the lead already confirmed qualification/thresholds, do not ask follow-up qualification questions.
+- If you present time options, keep them in one timezone context and align to any lead-provided window.
+- If the lead asked explicit questions, answer all of them before adding extra context.
+- If the lead asked for pricing/fee/cadence details, include concrete pricing/cadence details from provided context. Never invent missing numbers.
 - If the lead asked for more info, include the concrete details from the strategy. Do not add a website or link unless it appears in the strategy or conversation.
+- Do not add extra polite closings beyond the provided signature block.
 
 FORBIDDEN TERMS (never use):
 ${forbiddenTerms}
@@ -1330,6 +1882,61 @@ ${forbiddenTerms}
 ${opts.signature ? `SIGNATURE (include at end):\n${opts.signature}` : ""}
 
 Write the email now, following the strategy and archetype structure exactly.`;
+}
+
+function buildStep1BridgeEmailDraft(opts: {
+  aiName: string;
+  aiGreeting: string;
+  firstName: string;
+  signature: string | null;
+  strategy: EmailDraftStrategy;
+}): string {
+  const greeting = (opts.aiGreeting || "Hi {firstName},").replace("{firstName}", opts.firstName || "there");
+  const personalization = opts.strategy.personalization_points
+    .map((point) => point.trim())
+    .filter(Boolean)
+    .slice(0, 2);
+  const outlinePoints = opts.strategy.outline
+    .map((point) => point.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  const intentSummary = opts.strategy.intent_summary?.trim() || "Happy to help and share the most relevant next steps.";
+
+  const lines: string[] = [
+    greeting,
+    "",
+    "Thanks for the reply.",
+    "",
+    intentSummary,
+  ];
+
+  if (personalization.length > 0) {
+    lines.push("");
+    lines.push(personalization.map((point) => `- ${point}`).join("\n"));
+  }
+
+  if (outlinePoints.length > 0) {
+    lines.push("");
+    lines.push(outlinePoints.map((point) => `- ${point}`).join("\n"));
+  }
+
+  if (opts.strategy.should_offer_times && opts.strategy.times_to_offer?.length) {
+    lines.push("");
+    lines.push("If helpful, I can hold one of these times:");
+    lines.push(opts.strategy.times_to_offer.slice(0, 2).map((slot) => `- ${slot}`).join("\n"));
+    lines.push("Let me know which works best.");
+  } else {
+    lines.push("");
+    lines.push("If helpful, I can send over a couple of time options.");
+  }
+
+  if (opts.signature?.trim()) {
+    lines.push("", opts.signature.trim());
+  } else {
+    lines.push("", `Best,\n${opts.aiName}`);
+  }
+
+  return lines.join("\n").trim();
 }
 
 function buildDeterministicFallbackDraft(opts: {
@@ -1386,8 +1993,12 @@ export async function generateResponseDraft(
 ): Promise<DraftGenerationResult> {
   try {
     const triggerMessageId = typeof opts.triggerMessageId === "string" ? opts.triggerMessageId.trim() : null;
+    const reuseExistingDraft = opts.reuseExistingDraft !== false;
+    const meetingOverseerMode = opts.meetingOverseerMode === "fresh" ? "fresh" : "persisted";
+    const reuseMeetingOverseerDecisions = meetingOverseerMode !== "fresh";
+    const persistMeetingOverseerDecisions = opts.persistMeetingOverseerDecisions !== false;
 
-    if (triggerMessageId) {
+    if (triggerMessageId && reuseExistingDraft) {
       const existing = await prisma.aIDraft.findFirst({
         where: { triggerMessageId, channel },
         select: { id: true, content: true, leadId: true },
@@ -1413,16 +2024,21 @@ export async function generateResponseDraft(
           // ignore
         }
 
-        return { success: true, draftId: existing.id, content: existing.content, runId };
+        return { success: true, draftId: existing.id, content: existing.content, runId, reusedExistingDraft: true };
       }
     }
 
-    let triggerMessageRecord: { body: string; rawText: string | null; rawHtml: string | null } | null = null;
+    let triggerMessageRecord: {
+      body: string;
+      subject: string | null;
+      rawText: string | null;
+      rawHtml: string | null;
+    } | null = null;
     if (triggerMessageId) {
       try {
         triggerMessageRecord = await prisma.message.findFirst({
           where: { id: triggerMessageId, leadId },
-          select: { body: true, rawText: true, rawHtml: true },
+          select: { body: true, subject: true, rawText: true, rawHtml: true },
         });
       } catch (error) {
         console.warn("[AI Drafts] Failed to load trigger message:", error);
@@ -1519,6 +2135,7 @@ export async function generateResponseDraft(
     }
 
     const settings = lead?.client?.settings;
+    const skippedRoutes: DraftRouteSkip[] = [];
 
     // ---------------------------------------------------------------------------
     // Phase 123: Draft pipeline run + artifact persistence (fail-open)
@@ -1597,6 +2214,77 @@ export async function generateResponseDraft(
         });
       }
     };
+
+    const markRouteSkipped = async (route: DraftRouteSkip): Promise<void> => {
+      if (!skippedRoutes.includes(route)) skippedRoutes.push(route);
+
+      const routeConfig: Record<
+        DraftRouteSkip,
+        {
+          stage: DraftPipelineStage;
+          skipRoute:
+            | "draft_generation"
+            | "draft_generation_step2"
+            | "draft_verification_step3"
+            | "meeting_overseer_draft";
+        }
+      > = {
+        draft_generation: {
+          stage: DRAFT_PIPELINE_STAGES.draftGenerationStep2,
+          skipRoute: "draft_generation",
+        },
+        draft_generation_step2: {
+          stage: DRAFT_PIPELINE_STAGES.draftGenerationStep2,
+          skipRoute: "draft_generation_step2",
+        },
+        draft_verification_step3: {
+          stage: DRAFT_PIPELINE_STAGES.draftVerifierStep3,
+          skipRoute: "draft_verification_step3",
+        },
+        meeting_overseer: {
+          stage: DRAFT_PIPELINE_STAGES.meetingOverseerGate,
+          skipRoute: "meeting_overseer_draft",
+        },
+      };
+
+      const config = routeConfig[route];
+      console.info("[AI Drafts] Route skipped by workspace setting", {
+        route: config.skipRoute,
+        clientId: lead.clientId,
+        leadId,
+        channel,
+      });
+
+      await Promise.all([
+        persistDraftPipelineArtifact({
+          stage: config.stage,
+          payload: {
+            skipped: true,
+            reason: "disabled_by_workspace_settings",
+            route: config.skipRoute,
+            channel,
+          },
+        }),
+        recordAiRouteSkip({
+          clientId: lead.clientId,
+          leadId,
+          route: config.skipRoute,
+          channel,
+          triggerMessageId,
+          reason: "disabled_by_workspace_settings",
+        }),
+      ]);
+    };
+
+    if (!(settings?.draftGenerationEnabled ?? true)) {
+      await markRouteSkipped("draft_generation");
+      return {
+        success: true,
+        runId: draftPipelineRunId,
+        skippedRoutes,
+        blockedBySetting: "draftGenerationEnabled",
+      };
+    }
 
     // ---------------------------------------------------------------------------
     // Resolve AI Persona (Phase 39)
@@ -1719,7 +2407,21 @@ export async function generateResponseDraft(
     const currentReplierName = hasCcReplier ? lead.currentReplierName : null;
     const responseStrategy = getResponseStrategy(sentimentTag);
 
-    const leadSchedulerLink = (lead.externalSchedulingLink || "").trim() || null;
+    const triggerMessageSchedulerLink = (() => {
+      const bodyText = (triggerMessageRecord?.body || "").trim();
+      const rawText = (triggerMessageRecord?.rawText || "").trim();
+      const candidate = extractSchedulerLinkFromText(`${bodyText}\n${rawText}`);
+      if (!candidate) return null;
+      if (!/\b(schedule|scheduling|book|booking|calendar|availability|slot|time|works?)\b/i.test(bodyText)) {
+        return null;
+      }
+      return candidate;
+    })();
+    const leadSchedulerLink =
+      (opts.leadSchedulerLinkOverride || "").trim() ||
+      (lead.externalSchedulingLink || "").trim() ||
+      triggerMessageSchedulerLink ||
+      null;
     const leadHasSchedulerLink = Boolean(leadSchedulerLink);
 
     const shouldConsiderScheduling = [
@@ -1730,7 +2432,60 @@ export async function generateResponseDraft(
       "Information Requested",
     ].includes(sentimentTag) && !leadHasSchedulerLink;
 
+    let latestMessageBody = (triggerMessageRecord?.body || "").trim();
+    let latestMessageSubject = (triggerMessageRecord?.subject || "").trim();
+    if (!latestMessageBody) {
+      try {
+        const latestInbound = await prisma.message.findFirst({
+          where: { leadId, channel, direction: "inbound" },
+          orderBy: [{ sentAt: "desc" }, { createdAt: "desc" }],
+          select: { body: true, subject: true },
+        });
+        latestMessageBody = (latestInbound?.body || "").trim();
+        latestMessageSubject = (latestInbound?.subject || "").trim();
+      } catch (error) {
+        console.warn("[AI Drafts] Failed to load latest inbound message for timezone inference:", error);
+      }
+    }
+    const tzResult = await ensureLeadTimezone(leadId, {
+      conversationText: latestMessageBody || null,
+      subjectText: latestMessageSubject || null,
+    });
+    const leadTimeZone = tzResult.timezone || null;
+    const workspaceTimeZone = settings?.timezone || "America/New_York";
+    const dateContext = buildDateContext(leadTimeZone || workspaceTimeZone);
+    const leadTimezoneContext = leadTimeZone
+      ? `Lead's timezone: ${leadTimeZone}`
+      : "Lead's timezone: unknown";
+
     let availability: string[] = [];
+    let offeredSlotsForOverseer: OfferedSlot[] = [];
+
+    if (lead.offeredSlots) {
+      try {
+        const parsed = JSON.parse(lead.offeredSlots);
+        if (Array.isArray(parsed)) {
+          offeredSlotsForOverseer = parsed
+            .map((entry) => {
+              if (!entry || typeof entry !== "object") return null;
+              const label = typeof (entry as { label?: unknown }).label === "string" ? (entry as { label: string }).label.trim() : "";
+              const datetime =
+                typeof (entry as { datetime?: unknown }).datetime === "string"
+                  ? (entry as { datetime: string }).datetime.trim()
+                  : "";
+              const offeredAt =
+                typeof (entry as { offeredAt?: unknown }).offeredAt === "string"
+                  ? (entry as { offeredAt: string }).offeredAt.trim()
+                  : "";
+              if (!label || !datetime) return null;
+              return { label, datetime, offeredAt };
+            })
+            .filter((entry): entry is OfferedSlot => Boolean(entry));
+        }
+      } catch {
+        // Ignore malformed offeredSlots.
+      }
+    }
 
     if (shouldConsiderScheduling && lead?.clientId) {
       try {
@@ -1747,8 +2502,7 @@ export async function generateResponseDraft(
         if (slots.slotsUtc.length > 0) {
           const offeredAtIso = new Date().toISOString();
           const offeredAt = new Date(offeredAtIso);
-          const tzResult = await ensureLeadTimezone(leadId);
-          const timeZone = tzResult.timezone || settings?.timezone || "UTC";
+          const timeZone = leadTimeZone || settings?.timezone || "UTC";
           const mode = "explicit_tz"; // Always show explicit timezone (e.g., "EST", "PST")
 
           const existingOffered = new Set<string>();
@@ -1776,11 +2530,60 @@ export async function generateResponseDraft(
             availabilitySource: slots.availabilitySource,
           });
 
+          let candidateSlotsUtc = slots.slotsUtc;
+          const timingPreferences = latestMessageBody
+            ? extractTimingPreferencesFromText(latestMessageBody, timeZone)
+            : null;
+          if (timingPreferences?.weekdayTokens?.length) {
+              const weekdayFormatter = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" });
+              const weekdayFiltered = candidateSlotsUtc.filter((iso) => {
+                const d = new Date(iso);
+                if (Number.isNaN(d.getTime())) return false;
+                const weekdayToken = weekdayFormatter.format(d).toLowerCase().slice(0, 3);
+                return timingPreferences.weekdayTokens!.includes(weekdayToken);
+              });
+              if (weekdayFiltered.length > 0) {
+                candidateSlotsUtc = weekdayFiltered;
+              }
+          }
+
+          if (timingPreferences?.relativeWeek) {
+              const relativeFiltered = candidateSlotsUtc.filter((iso) => {
+                const dayDiff = getDayDiffInTimeZone(iso, offeredAt, timeZone);
+                if (dayDiff === null) return false;
+                if (timingPreferences.relativeWeek === "this_week") {
+                  return dayDiff >= 0 && dayDiff < 7;
+                }
+                return dayDiff >= 7 && dayDiff < 14;
+              });
+              if (relativeFiltered.length > 0) {
+                candidateSlotsUtc = relativeFiltered;
+              }
+          }
+
+          if (timingPreferences?.timeWindow) {
+            const windowFiltered = candidateSlotsUtc.filter((iso) => {
+              const minutes = getMinutesOfDayInTimeZone(iso, timeZone);
+              if (minutes === null) return false;
+              return isMinuteWithinWindow(
+                minutes,
+                timingPreferences.timeWindow!.startMinutes,
+                timingPreferences.timeWindow!.endMinutes
+              );
+            });
+            if (windowFiltered.length > 0) {
+              candidateSlotsUtc = windowFiltered;
+            }
+          }
+
+          const excludeUtcIso = timingPreferences?.timeWindow ? new Set<string>() : existingOffered;
+
           const selectedUtcIso = selectDistributedAvailabilitySlots({
-            slotsUtcIso: slots.slotsUtc,
+            slotsUtcIso: candidateSlotsUtc,
             offeredCountBySlotUtcIso: offerCounts,
             timeZone,
-            excludeUtcIso: existingOffered,
+            leadTimeZone: leadTimeZone || null,
+            excludeUtcIso,
             startAfterUtc,
             preferWithinDays: 5,
             now: offeredAt,
@@ -1794,6 +2597,11 @@ export async function generateResponseDraft(
           });
 
           availability = formatted.map((s) => s.label);
+          offeredSlotsForOverseer = formatted.map((s) => ({
+            label: s.label,
+            datetime: s.datetime,
+            offeredAt: offeredAtIso,
+          }));
 
           if (formatted.length > 0) {
             await prisma.lead.update({
@@ -1888,6 +2696,8 @@ export async function generateResponseDraft(
           .filter(Boolean)
           .join("\n")
       : "";
+    const actionSignalsPromptAppendix = buildActionSignalsPromptAppendix(opts.actionSignals);
+    const actionSignalsGateSummary = buildActionSignalsGateSummary(opts.actionSignals);
 
     // ---------------------------------------------------------------------------
     // Shared config
@@ -1931,7 +2741,7 @@ export async function generateResponseDraft(
 
 	    const maxOutputTokensCap = Math.max(
 	      1500,
-	      Number.parseInt(process.env.OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP || "12000", 10) || 12_000
+	      Number.parseInt(process.env.OPENAI_DRAFT_MAX_OUTPUT_TOKENS_CAP || "18000", 10) || 18_000
     );
 
     let draftContent: string | null = null;
@@ -2025,6 +2835,8 @@ export async function generateResponseDraft(
         aiName,
         aiTone,
         firstName,
+        dateContext,
+        leadTimezoneContext,
         lastName: lead.lastName,
         leadEmail: lead.email,
         currentReplierName,
@@ -2060,6 +2872,9 @@ export async function generateResponseDraft(
       }
       if (autoBookingSchedulingAppendix) {
         strategyInstructions += `\n${autoBookingSchedulingAppendix}\n`;
+      }
+      if (actionSignalsPromptAppendix) {
+        strategyInstructions += `\n${actionSignalsPromptAppendix}\n`;
       }
 
       // Lead-scheduler-link override (Phase 79): prevent booking-process templates from suggesting our times/link
@@ -2219,6 +3034,11 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
         });
       }
 
+      const step2Enabled = settings?.draftGenerationStep2Enabled ?? true;
+      if (!step2Enabled) {
+        await markRouteSkipped("draft_generation_step2");
+      }
+
       // Step 2: Generation (if strategy succeeded and archetype is resolved)
       if (strategy) {
           // Ensure archetype is set (fallback if AI selection failed or wasn't requested)
@@ -2235,6 +3055,15 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
           // At this point archetype is guaranteed to be set
           const resolvedArchetype = archetype;
 
+          if (!step2Enabled) {
+            draftContent = buildStep1BridgeEmailDraft({
+              aiName,
+              aiGreeting,
+              firstName,
+              signature: aiSignature || null,
+              strategy,
+            });
+          } else {
 	        const generationInstructions = buildEmailDraftGenerationInstructions({
 	          aiName,
 	          aiTone,
@@ -2447,6 +3276,7 @@ Write the email response now, following the strategy and structure archetype.
 	            console.error(`[AI Drafts] Step 2 (Generation) failed (attempt ${attempt}):`, error);
 	          }
 	        }
+          }
 	      }
 
       // Fallback: Single-step with archetype + high temperature (if two-step failed)
@@ -2472,6 +3302,8 @@ Write the email response now, following the strategy and structure archetype.
 	          aiTone,
 	          aiGreeting,
 	          firstName,
+          dateContext,
+          leadTimezoneContext,
 	          responseStrategy,
 	          aiGoals,
 	          availability,
@@ -2495,6 +3327,9 @@ Write the email response now, following the strategy and structure archetype.
         }
         if (autoBookingSchedulingAppendix) {
           fallbackSystemPrompt += `\n${autoBookingSchedulingAppendix}\n`;
+        }
+        if (actionSignalsPromptAppendix) {
+          fallbackSystemPrompt += `\n${actionSignalsPromptAppendix}\n`;
         }
 
         // Lead-scheduler-link override (Phase 79): prevent fallback prompt from suggesting our times/link
@@ -2676,6 +3511,8 @@ Generate an appropriate email response following the guidelines and structure ar
         aiTone,
         responseStrategy,
         aiGoals: safeGoals,
+        dateContext,
+        leadTimezoneContext,
         greeting,
         companyName: safeCompanyName,
         targetResult: safeTargetResult,
@@ -2706,6 +3543,8 @@ Generate an appropriate email response following the guidelines and structure ar
               aiTone,
               aiGreeting,
               firstName,
+              dateContext,
+              leadTimezoneContext,
               responseStrategy,
               sentimentTag,
               aiGoals: safeGoals,
@@ -2722,6 +3561,8 @@ Generate an appropriate email response following the guidelines and structure ar
               aiTone,
               aiGreeting,
               firstName,
+              dateContext,
+              leadTimezoneContext,
               responseStrategy,
               sentimentTag,
               aiGoals: safeGoals,
@@ -2748,6 +3589,9 @@ Generate an appropriate email response following the guidelines and structure ar
       }
       if (autoBookingSchedulingAppendix) {
         instructions += `\n${autoBookingSchedulingAppendix}\n`;
+      }
+      if (actionSignalsPromptAppendix) {
+        instructions += `\n${actionSignalsPromptAppendix}\n`;
       }
 
       // Lead-scheduler-link override (Phase 79): prevent SMS/LinkedIn drafts from suggesting our times/link
@@ -2917,6 +3761,7 @@ Generate an appropriate ${channel} response following the guidelines above.
         channel,
         usedLeadContextBundle,
         hasAvailability: availability.length > 0,
+        step2Skipped: skippedRoutes.includes("draft_generation_step2"),
       },
     });
 
@@ -2935,7 +3780,7 @@ Generate an appropriate ${channel} response following the guidelines above.
       hasPublicBookingLinkOverride = false;
     }
 
-      if (channel === "email" && draftContent) {
+      if (channel === "email" && draftContent && (settings?.draftVerificationStep3Enabled ?? true)) {
         // Prevent verifier truncations by keeping the draft within our configured bounds.
         const preBounds = emailLengthBoundsForClamp ?? getEmailDraftCharBoundsFromEnv();
         if (draftContent.trim().length > preBounds.maxChars) {
@@ -2980,131 +3825,200 @@ Generate an appropriate ${channel} response following the guidelines above.
           console.error("[AI Drafts] Step 3 verifier threw unexpectedly:", error);
         }
 
+      } else if (channel === "email" && draftContent) {
+        await markRouteSkipped("draft_verification_step3");
       }
 
+    let meetingOverseerExtractionDecision: MeetingOverseerExtractDecision | null = null;
+
     if (draftContent && triggerMessageId) {
-      const latestInboundText = triggerMessageRecord?.body?.trim() ?? "";
-
-      if (!latestInboundText) {
-        console.warn("[AI Drafts] Missing trigger message body; skipping meeting overseer gate.", {
-          leadId,
-          triggerMessageId,
-        });
+      if (!(settings?.meetingOverseerEnabled ?? true)) {
+        await markRouteSkipped("meeting_overseer");
       } else {
-        try {
-          const shouldGate = shouldRunMeetingOverseer({
-            messageText: latestInboundText,
-            sentimentTag,
-            offeredSlotsCount: availability.length,
-          });
+        const latestInboundBody = triggerMessageRecord?.body?.trim() ?? "";
+        const latestInboundSubject = triggerMessageRecord?.subject?.trim() ?? "";
+        const latestInboundText = [
+          latestInboundSubject ? `Subject: ${latestInboundSubject}` : "",
+          latestInboundBody,
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+          .trim();
 
-          if (shouldGate) {
-            const extraction = await getMeetingOverseerDecision(triggerMessageId, "extract");
-            const extractionDecision =
-              extraction && typeof extraction === "object" && "is_scheduling_related" in extraction
-                ? (extraction as MeetingOverseerExtractDecision)
-                : null;
-
-            await persistDraftPipelineArtifact({
-              stage: DRAFT_PIPELINE_STAGES.meetingOverseerExtract,
-              payload: { extraction: extractionDecision },
-            });
-
-            let gateMemoryContext: string | null = null;
-            let gatePromptMetadata: unknown = undefined;
-
-            try {
-              if (leadContextBundleEnabled) {
-                const gateBundle = await buildLeadContextBundle({
-                  clientId: lead.clientId,
-                  leadId,
-                  profile: "meeting_overseer_gate",
-                  timeoutMs: 500,
-                  settings: settings ?? null,
-                });
-                gateMemoryContext = (gateBundle.leadMemoryContext || "").trim() || null;
-                gatePromptMetadata = buildLeadContextBundleTelemetryMetadata(gateBundle);
-              } else {
-                const leadMemoryResult = await getLeadMemoryContext({
-                  leadId,
-                  clientId: lead.clientId,
-                  maxTokens: 600,
-                  maxEntryTokens: 300,
-                  redact: true,
-                });
-                gateMemoryContext = leadMemoryResult.context.trim() || null;
-              }
-            } catch (error) {
-              console.warn("[AI Drafts] Failed to build meeting overseer memory context; continuing without memory", {
-                leadId,
-                triggerMessageId,
-                errorMessage: error instanceof Error ? error.message : String(error),
-              });
-            }
-
-            if (opts.autoBookingContext?.schedulingDetected) {
-              const summary = [
-                `auto_booking_failure_reason: ${opts.autoBookingContext.failureReason ?? "none"}`,
-                `auto_booking_intent: ${opts.autoBookingContext.schedulingIntent ?? "unknown"}`,
-                opts.autoBookingContext.clarificationMessage
-                  ? `auto_booking_clarification: ${opts.autoBookingContext.clarificationMessage}`
-                  : null,
-                opts.autoBookingContext.isQualifiedForBooking === false
-                  ? "auto_booking_qualification: not_qualified"
-                  : null,
-                "draft_policy: avoid implying phone-call outreach unless explicitly requested",
-              ]
-                .filter(Boolean)
-                .join("\n");
-              gateMemoryContext = gateMemoryContext
-                ? `${gateMemoryContext}\n\nAUTO-BOOKING CONTEXT:\n${summary}`
-                : `AUTO-BOOKING CONTEXT:\n${summary}`;
-            }
-
-            const gateDraft = await runMeetingOverseerGate({
-              clientId: lead.clientId,
-              leadId,
-              messageId: triggerMessageId,
-              channel,
-              latestInbound: latestInboundText,
-              draft: draftContent,
-              availability,
-              bookingLink,
-              extraction: extractionDecision,
-              memoryContext: gateMemoryContext,
-              metadata: gatePromptMetadata,
-              leadSchedulerLink,
-              timeoutMs: emailVerifierTimeoutMs,
-            });
-
-            if (gateDraft) {
-              draftContent = gateDraft;
-            }
-
-            const gateDecision = await getMeetingOverseerDecision(triggerMessageId, "gate");
-            await persistDraftPipelineArtifact({
-              stage: DRAFT_PIPELINE_STAGES.meetingOverseerGate,
-              payload: gateDecision,
-              text: gateDraft,
-            });
-          }
-        } catch (overseerError) {
-          console.warn("[AI Drafts] Meeting overseer failed; continuing with pre-gate draft", {
+        if (!latestInboundText) {
+          console.warn("[AI Drafts] Missing trigger message body; skipping meeting overseer gate.", {
             leadId,
             triggerMessageId,
-            channel,
-            errorType: overseerError instanceof Error ? overseerError.name : "unknown",
-            errorMessage: overseerError instanceof Error ? overseerError.message : String(overseerError),
           });
+        } else {
+          try {
+            const shouldGate = shouldRunMeetingOverseer({
+              messageText: latestInboundText,
+              sentimentTag,
+              offeredSlotsCount: availability.length,
+            });
+
+            if (shouldGate) {
+              let extractionDecision: MeetingOverseerExtractDecision | null = null;
+              if (reuseMeetingOverseerDecisions) {
+                const extraction = await getMeetingOverseerDecision(triggerMessageId, "extract");
+                extractionDecision =
+                  extraction && typeof extraction === "object" && "is_scheduling_related" in extraction
+                    ? (extraction as MeetingOverseerExtractDecision)
+                    : null;
+              } else {
+                extractionDecision = await runMeetingOverseerExtraction({
+                  clientId: lead.clientId,
+                  leadId,
+                  messageId: triggerMessageId,
+                  messageText: latestInboundText,
+                  leadTimezone: leadTimeZone || null,
+                  offeredSlots: offeredSlotsForOverseer,
+                  conversationContext: conversationTranscript || null,
+                  businessContext: [serviceDescription, aiGoals].filter(Boolean).join(" | ") || null,
+                  reuseExistingDecision: false,
+                  persistDecision: persistMeetingOverseerDecisions,
+                });
+
+                if (!extractionDecision) {
+                  const fallbackExtraction = await getMeetingOverseerDecision(triggerMessageId, "extract");
+                  extractionDecision =
+                    fallbackExtraction && typeof fallbackExtraction === "object" && "is_scheduling_related" in fallbackExtraction
+                      ? (fallbackExtraction as MeetingOverseerExtractDecision)
+                      : null;
+                }
+              }
+
+              meetingOverseerExtractionDecision = extractionDecision;
+
+              await persistDraftPipelineArtifact({
+                stage: DRAFT_PIPELINE_STAGES.meetingOverseerExtract,
+                payload: { extraction: extractionDecision },
+              });
+
+              let gateMemoryContext: string | null = null;
+              let gatePromptMetadata: unknown = undefined;
+
+              try {
+                if (leadContextBundleEnabled) {
+                  const gateBundle = await buildLeadContextBundle({
+                    clientId: lead.clientId,
+                    leadId,
+                    profile: "meeting_overseer_gate",
+                    timeoutMs: 500,
+                    settings: settings ?? null,
+                  });
+                  gateMemoryContext = (gateBundle.leadMemoryContext || "").trim() || null;
+                  gatePromptMetadata = buildLeadContextBundleTelemetryMetadata(gateBundle);
+                } else {
+                  const leadMemoryResult = await getLeadMemoryContext({
+                    leadId,
+                    clientId: lead.clientId,
+                    maxTokens: 600,
+                    maxEntryTokens: 300,
+                    redact: true,
+                  });
+                  gateMemoryContext = leadMemoryResult.context.trim() || null;
+                }
+              } catch (error) {
+                console.warn("[AI Drafts] Failed to build meeting overseer memory context; continuing without memory", {
+                  leadId,
+                  triggerMessageId,
+                  errorMessage: error instanceof Error ? error.message : String(error),
+                });
+              }
+
+              if (opts.autoBookingContext?.schedulingDetected) {
+                const summary = [
+                  `auto_booking_failure_reason: ${opts.autoBookingContext.failureReason ?? "none"}`,
+                  `auto_booking_intent: ${opts.autoBookingContext.schedulingIntent ?? "unknown"}`,
+                  opts.autoBookingContext.clarificationMessage
+                    ? `auto_booking_clarification: ${opts.autoBookingContext.clarificationMessage}`
+                    : null,
+                  opts.autoBookingContext.isQualifiedForBooking === false
+                    ? "auto_booking_qualification: not_qualified"
+                    : null,
+                  "draft_policy: avoid implying phone-call outreach unless explicitly requested",
+                ]
+                  .filter(Boolean)
+                  .join("\n");
+                gateMemoryContext = gateMemoryContext
+                  ? `${gateMemoryContext}\n\nAUTO-BOOKING CONTEXT:\n${summary}`
+                  : `AUTO-BOOKING CONTEXT:\n${summary}`;
+              }
+
+              if (actionSignalsGateSummary) {
+                gateMemoryContext = gateMemoryContext
+                  ? `${gateMemoryContext}\n\nACTION SIGNAL CONTEXT:\n${actionSignalsGateSummary}`
+                  : `ACTION SIGNAL CONTEXT:\n${actionSignalsGateSummary}`;
+              }
+
+              const gateResult = await runMeetingOverseerGateDecision({
+                clientId: lead.clientId,
+                leadId,
+                messageId: triggerMessageId,
+                channel,
+                latestInbound: latestInboundText,
+                draft: draftContent,
+                availability,
+                bookingLink,
+                extraction: extractionDecision,
+                memoryContext: gateMemoryContext,
+                metadata: gatePromptMetadata,
+                leadSchedulerLink,
+                timeoutMs: emailVerifierTimeoutMs,
+                reuseExistingDecision: reuseMeetingOverseerDecisions,
+                persistDecision: persistMeetingOverseerDecisions,
+              });
+              const gateDraft = gateResult.finalDraft;
+
+              if (gateDraft) {
+                draftContent = gateDraft;
+              }
+
+              await persistDraftPipelineArtifact({
+                stage: DRAFT_PIPELINE_STAGES.meetingOverseerGate,
+                payload: gateResult.decision,
+                text: gateDraft,
+              });
+            }
+          } catch (overseerError) {
+            console.warn("[AI Drafts] Meeting overseer failed; continuing with pre-gate draft", {
+              leadId,
+              triggerMessageId,
+              channel,
+              errorType: overseerError instanceof Error ? overseerError.name : "unknown",
+              errorMessage: overseerError instanceof Error ? overseerError.message : String(overseerError),
+            });
+          }
         }
       }
     }
 
+    if (draftContent) {
+      draftContent = applyShouldBookNowConfirmationIfNeeded({
+        draft: draftContent,
+        channel,
+        firstName: firstName || null,
+        aiName,
+        extraction: meetingOverseerExtractionDecision,
+        availability,
+      });
+    }
+
     if (channel === "email" && draftContent) {
       // Hard post-pass enforcement (even if verifier or gate fails).
-      draftContent = enforceCanonicalBookingLink(draftContent, bookingLink, {
-        replaceAllUrls: hasPublicBookingLinkOverride,
-      });
+      if (leadSchedulerLink) {
+        const canonicalWorkspaceLink = (bookingLink || "").trim();
+        if (canonicalWorkspaceLink) {
+          const bookingRegex = new RegExp(escapeRegExpSimple(canonicalWorkspaceLink), "gi");
+          draftContent = draftContent.replace(bookingRegex, leadSchedulerLink);
+        }
+      } else {
+        draftContent = enforceCanonicalBookingLink(draftContent, bookingLink, {
+          replaceAllUrls: hasPublicBookingLinkOverride,
+        });
+      }
       draftContent = replaceEmDashesWithCommaSpace(draftContent);
       const forbiddenTerms = emailVerifierForbiddenTerms ?? DEFAULT_FORBIDDEN_TERMS;
       const forbiddenResult = removeForbiddenTerms(draftContent, forbiddenTerms);
@@ -3114,27 +4028,51 @@ Generate an appropriate ${channel} response following the guidelines above.
     draftContent = sanitizeDraftContent(draftContent, leadId, channel);
     let pricingSafety: ReturnType<typeof enforcePricingAmountSafety> | null = null;
     if (channel === "email") {
-      pricingSafety = enforcePricingAmountSafety(draftContent, serviceDescription);
-      draftContent = pricingSafety.draft;
+      const pricingSafetyPreview = enforcePricingAmountSafety(draftContent, serviceDescription, knowledgeContext);
+      pricingSafety = {
+        ...pricingSafetyPreview,
+        // Keep model output unchanged; this stage is detect-and-report only.
+        draft: draftContent,
+      };
 
-      if (pricingSafety.removedAmounts.length > 0) {
+      if (
+        pricingSafetyPreview.removedAmounts.length > 0 ||
+        pricingSafetyPreview.removedCadenceAmounts.length > 0 ||
+        pricingSafetyPreview.normalizedCadencePhrase
+      ) {
+        const removedAmountLabel = pricingSafetyPreview.removedAmounts.length
+          ? `would remove unsupported $${pricingSafetyPreview.removedAmounts.join(", $")}`
+          : "";
+        const removedCadenceLabel = pricingSafetyPreview.removedCadenceAmounts.length
+          ? `would remove cadence-mismatched $${pricingSafetyPreview.removedCadenceAmounts.join(", $")}`
+          : "";
+        const normalizedCadenceLabel = pricingSafetyPreview.normalizedCadencePhrase
+          ? "would normalize unsupported monthly-plan wording to quarterly billing"
+          : "";
+        const summary = [removedAmountLabel, removedCadenceLabel, normalizedCadenceLabel].filter(Boolean).join("; ");
         console.warn(
-          `[pricing-safety] Lead ${leadId}: removed unsupported $${pricingSafety.removedAmounts.join(", $")} from final email draft`
+          `[pricing-safety] Lead ${leadId}: detected but not auto-applied (${summary || "no-op"})`
         );
       }
     }
 
     const pricingCheck = detectPricingHallucinations(draftContent, serviceDescription, knowledgeContext);
-    if (pricingCheck.hallucinated.length > 0) {
+    if (pricingCheck.hallucinated.length > 0 || pricingCheck.cadenceMismatched.length > 0) {
+      const hallucinatedLabel = pricingCheck.hallucinated.length
+        ? `$${pricingCheck.hallucinated.join(", $")} not found in source material`
+        : "";
+      const cadenceMismatchLabel = pricingCheck.cadenceMismatched.length
+        ? `$${pricingCheck.cadenceMismatched.join(", $")} cadence-mismatched`
+        : "";
       console.warn(
-        `[pricing-hallucination] Lead ${leadId}: draft contains $${pricingCheck.hallucinated.join(", $")} not found in source material`
+        `[pricing-hallucination] Lead ${leadId}: ${[hallucinatedLabel, cadenceMismatchLabel].filter(Boolean).join("; ")}`
       );
       const interactionIdForPricingSignal =
         channel === "email" ? (verificationInteractionId || generationInteractionId) : generationInteractionId;
       if (interactionIdForPricingSignal) {
         await markAiInteractionError(
           interactionIdForPricingSignal,
-          `pricing_hallucination_detected: hallucinated=${pricingCheck.hallucinated.join(",")} valid=${pricingCheck.valid.join(",")}`,
+          `pricing_hallucination_detected: hallucinated=${pricingCheck.hallucinated.join(",")} cadence_mismatch=${pricingCheck.cadenceMismatched.join(",")} valid=${pricingCheck.valid.join(",")}`,
           { severity: "warning" }
         );
       }
@@ -3191,6 +4129,7 @@ Generate an appropriate ${channel} response following the guidelines above.
         draftId: draft.id,
         content: draftContent,
         runId: draftPipelineRunId,
+        ...(skippedRoutes.length ? { skippedRoutes } : {}),
       };
     } catch (error) {
       // If multiple workers raced, return the already-created draft instead of failing.
@@ -3211,7 +4150,34 @@ Generate an appropriate ${channel} response following the guidelines above.
               // fail-open
             }
           }
-          return { success: true, draftId: existing.id, content: existing.content, runId: draftPipelineRunId };
+          if (opts.reuseExistingDraft === false) {
+            try {
+              await prisma.aIDraft.update({
+                where: { id: existing.id },
+                data: { content: draftContent, status: "pending" },
+                select: { id: true },
+              });
+              return {
+                success: true,
+                draftId: existing.id,
+                content: draftContent,
+                runId: draftPipelineRunId,
+                reusedExistingDraft: true,
+                ...(skippedRoutes.length ? { skippedRoutes } : {}),
+              };
+            } catch {
+              // Fall through to existing-content return as a fail-safe.
+            }
+          }
+
+          return {
+            success: true,
+            draftId: existing.id,
+            content: existing.content,
+            runId: draftPipelineRunId,
+            reusedExistingDraft: true,
+            ...(skippedRoutes.length ? { skippedRoutes } : {}),
+          };
         }
       }
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useMemo, useRef, useCallback, useEffect } from "react"
+import { memo, useState, useMemo, useRef, useCallback, useEffect } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { useDebouncedCallback } from "use-debounce"
 import type { Conversation } from "@/lib/mock-data"
@@ -20,6 +20,8 @@ type SortOption = "recent" | "oldest" | "name-az" | "name-za"
 
 // Estimated card height for virtualization (actual height is measured dynamically)
 const ESTIMATED_CARD_HEIGHT = 160
+const EMPTY_SMS_CLIENT_OPTIONS: Array<{ id: string; name: string; leadCount: number }> = []
+const EMPTY_SYNCING_LEAD_IDS = new Set<string>()
 
 // Available sentiment tags for filtering
 const SENTIMENT_OPTIONS = [
@@ -77,7 +79,7 @@ interface ConversationFeedProps {
   onLoadMore?: () => void
 }
 
-export function ConversationFeed({
+export const ConversationFeed = memo(function ConversationFeed({
   conversations,
   activeConversationId,
   onSelectConversation,
@@ -86,12 +88,12 @@ export function ConversationFeed({
   onSentimentsChange,
   activeSmsClient = "all",
   onSmsClientChange,
-  smsClientOptions = [],
+  smsClientOptions = EMPTY_SMS_CLIENT_OPTIONS,
   smsClientUnattributedCount = 0,
   isLoadingSmsClients = false,
   activeScoreFilter = "all",
   onScoreFilterChange,
-  syncingLeadIds = new Set(),
+  syncingLeadIds = EMPTY_SYNCING_LEAD_IDS,
   onSyncAll,
   isSyncingAll = false,
   onReanalyzeAllSentiments,
@@ -166,6 +168,14 @@ export function ConversationFeed({
     )
   }, [conversations, debouncedSearch, isServerSearch])
 
+  const messageTimeById = useMemo(() => {
+    const byId = new Map<string, number>()
+    for (const conversation of filteredConversations) {
+      byId.set(conversation.id, new Date(conversation.lastMessageTime).getTime())
+    }
+    return byId
+  }, [filteredConversations])
+
   // Sort filtered conversations
   const sortedConversations = useMemo(() => {
     const sorted = [...filteredConversations]
@@ -173,11 +183,11 @@ export function ConversationFeed({
     switch (sortBy) {
       case "recent":
         return sorted.sort((a, b) => 
-          new Date(b.lastMessageTime).getTime() - new Date(a.lastMessageTime).getTime()
+          (messageTimeById.get(b.id) ?? 0) - (messageTimeById.get(a.id) ?? 0)
         )
       case "oldest":
         return sorted.sort((a, b) => 
-          new Date(a.lastMessageTime).getTime() - new Date(b.lastMessageTime).getTime()
+          (messageTimeById.get(a.id) ?? 0) - (messageTimeById.get(b.id) ?? 0)
         )
       case "name-az":
         return sorted.sort((a, b) => 
@@ -190,12 +200,16 @@ export function ConversationFeed({
       default:
         return sorted
     }
-  }, [filteredConversations, sortBy])
+  }, [filteredConversations, sortBy, messageTimeById])
 
   // Setup virtualizer with dynamic height measurement
   const rowVirtualizer = useVirtualizer({
     count: hasMore ? sortedConversations.length + 1 : sortedConversations.length,
     getScrollElement: () => parentRef.current,
+    getItemKey: (index) => {
+      if (index >= sortedConversations.length) return "load-more"
+      return sortedConversations[index]?.id ?? `conversation-${index}`
+    },
     estimateSize: () => ESTIMATED_CARD_HEIGHT,
     measureElement: (element) => element.getBoundingClientRect().height,
     overscan: 5,
@@ -589,4 +603,6 @@ export function ConversationFeed({
       )}
     </>
   )
-}
+})
+
+ConversationFeed.displayName = "ConversationFeed"

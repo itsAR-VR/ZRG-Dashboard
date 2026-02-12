@@ -717,6 +717,11 @@ export function ActionStation({
 
     if (result.success && result.data) {
       toast.success("Fast regenerated!")
+      if (result.notices?.length) {
+        for (const notice of result.notices) {
+          toast.info(notice)
+        }
+      }
       setDrafts([
         {
           id: result.data.id,
@@ -748,6 +753,11 @@ export function ActionStation({
 
     if (result.success && result.data) {
       toast.success("New AI draft generated!")
+      if (result.notices?.length) {
+        for (const notice of result.notices) {
+          toast.info(notice)
+        }
+      }
       setDrafts([
         {
           id: result.data.id,

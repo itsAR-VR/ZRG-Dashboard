@@ -35,10 +35,31 @@ Add deterministic and model-level safeguards so pricing cadence mismatches (mont
 
 ## Output
 
-- Evaluator input contains explicit cadence mismatch signals.
-- Auto-send evaluator marks cadence-conflicting drafts for human review.
-- Pipeline telemetry includes cadence mismatch diagnostics for debugging.
+- Updated evaluator input payload in `lib/auto-send-evaluator-input.ts`:
+  - Added `pricing_terms_verified`, `pricing_terms_draft`, and `pricing_terms_mismatch`.
+  - Added deterministic cadence extraction + mismatch resolution (`service_description` precedence).
+  - Extended stats with `pricingCadence` summary.
+- Updated evaluator policy in `lib/ai/prompt-registry.ts`:
+  - Added hard-block rule for pricing cadence conflicts with verified context.
+- Updated tests:
+  - `lib/__tests__/auto-send-evaluator-input.test.ts` validates cadence mismatch signal path.
+- Coordination note:
+  - Subphase implemented without modifying concurrent scheduling/timezone logic files.
 
 ## Handoff
 
 Return to root phase closeout and confirm runtime behavior in at least one quarterly-billing workspace case.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Implemented evaluator-side cadence mismatch extraction/signaling.
+  - Added evaluator system-rule hard blocker for cadence mismatch.
+  - Added unit coverage for mismatch detection.
+- Commands run:
+  - `npm test -- lib/__tests__/auto-send-evaluator-input.test.ts` (via targeted test run command) — pass
+  - `npm run lint` — pass (warnings only)
+  - `npm run build` — pass
+- Blockers:
+  - None in this subphase.
+- Next concrete steps:
+  - Complete subphase d runtime rebase + live validation once env access is available.

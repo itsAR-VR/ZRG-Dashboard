@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { useRouter } from "next/navigation"
 import {
   Mail,
@@ -571,6 +571,8 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
   const [instances, setInstances] = useState<FollowUpInstanceData[]>([])
   const [followUpLeads, setFollowUpLeads] = useState<FollowUpTaggedLeadData[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const hasLoadedDataRef = useRef(false)
+  const lastWorkspaceRef = useRef<string | null | undefined>(activeWorkspace)
   const [instanceActionInProgress, setInstanceActionInProgress] = useState<string | null>(null)
   const [leadActionInProgress, setLeadActionInProgress] = useState<string | null>(null)
   const [showSequenceManager, setShowSequenceManager] = useState(false)
@@ -583,15 +585,24 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
   const handleTabChange = onTabChange ?? setLocalTab
 
   const fetchData = useCallback(async () => {
+    const workspaceChanged = lastWorkspaceRef.current !== activeWorkspace
+    if (workspaceChanged) {
+      hasLoadedDataRef.current = false
+      lastWorkspaceRef.current = activeWorkspace
+    }
+
     if (!activeWorkspace) {
       setTasks([])
       setInstances([])
       setFollowUpLeads([])
+      hasLoadedDataRef.current = false
       setIsLoading(false)
       return
     }
 
-    setIsLoading(true)
+    if (!hasLoadedDataRef.current) {
+      setIsLoading(true)
+    }
 		try {
 	      const [tasksResult, instancesResult, leadsResult] = await Promise.all([
 	        getFollowUpTasks("all", activeWorkspace),
@@ -640,6 +651,7 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
       setFollowUpLeads([])
     }
     
+    hasLoadedDataRef.current = true
     setIsLoading(false)
   }, [activeWorkspace])
 
@@ -738,7 +750,7 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
   // ============================================================================
 
   const handleExecute = async (id: string) => {
-    setTasks(tasks.filter((t) => t.id !== id))
+    setTasks((prevTasks) => prevTasks.filter((t) => t.id !== id))
     const result = await completeFollowUpTask(id)
     if (result.success) {
       toast.success("Task completed")
@@ -752,7 +764,7 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
     newDueDate.setDate(newDueDate.getDate() + 1)
     newDueDate.setHours(9, 0, 0, 0)
     
-    setTasks(tasks.map((t) => (t.id === id ? { ...t, dueDate: newDueDate } : t)))
+    setTasks((prevTasks) => prevTasks.map((t) => (t.id === id ? { ...t, dueDate: newDueDate } : t)))
     
     const result = await snoozeFollowUpTask(id, 1)
     if (result.success) {
@@ -763,7 +775,7 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
   }
 
   const handleSkip = async (id: string) => {
-    setTasks(tasks.filter((t) => t.id !== id))
+    setTasks((prevTasks) => prevTasks.filter((t) => t.id !== id))
     const result = await skipFollowUpTask(id)
     if (result.success) {
       toast.success("Task skipped")
@@ -820,11 +832,11 @@ export function FollowUpsView({ activeWorkspace, activeTab = "needs-followup", o
     return groups
   }
 
-  const groupedInstances = groupInstancesByDay(instances)
+  const groupedInstances = useMemo(() => groupInstancesByDay(instances), [instances])
 
   // Computed values
-  const overdueTasks = tasks.filter((t) => isOverdue(t.dueDate))
-  const todayTasks = tasks.filter((t) => isToday(t.dueDate))
+  const overdueTasks = useMemo(() => tasks.filter((t) => isOverdue(t.dueDate)), [tasks])
+  const todayTasks = useMemo(() => tasks.filter((t) => isToday(t.dueDate)), [tasks])
   // Use total followUpLeads count (includes both "Follow Up" and "Snoozed") to match tab badge
   const needsFollowUpCount = followUpLeads.length
 

@@ -333,7 +333,7 @@ export async function bookMeetingOnGHL(
   }
 }
 
-function normalizeQuestionKey(text: string): string {
+export function normalizeQuestionKey(text: string): string {
   return (text || "")
     .trim()
     .toLowerCase()

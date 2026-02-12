@@ -143,3 +143,16 @@ Pass `filteredSlots` (instead of `slots.slotsUtc`) to `selectDistributedAvailabi
 ## Handoff
 
 Phase 139c uses the same scheduling section to apply lead-local business-hours filtering and enforce lead-timezone labels.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Added `buildDateContext(...)` in `lib/ai-drafts.ts` and threaded `dateContext` + `leadTimezoneContext` into `buildSmsPrompt`, `buildLinkedInPrompt`, `buildEmailPrompt`, and `buildEmailDraftStrategyInstructions` (lead-timezone-first date anchoring when known).
+  - Updated `generateResponseDraft(...)` to resolve timezone once via `ensureLeadTimezone(leadId, { conversationText: latestMessageBody })`.
+  - Added deterministic `extractTimingPreferencesFromText(...)` and applied pre-distribution slot filtering for weekday/relative-week preferences with fail-open behavior.
+  - Updated prompt template variables to expose `dateContext` and `leadTimezoneContext` for override templates.
+- Commands run:
+  - `DATABASE_URL='postgresql://test:test@localhost:5432/test?schema=public' DIRECT_URL='postgresql://test:test@localhost:5432/test?schema=public' OPENAI_API_KEY='test' node --conditions=react-server --import tsx --test lib/__tests__/timezone-inference-conversation.test.ts` — pass.
+- Blockers:
+  - None.
+- Next concrete steps:
+  - Completed in this turn; slot business-hours guard and confirmation label enforcement are covered by 139c/139d.

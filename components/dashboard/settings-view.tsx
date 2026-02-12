@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import {
   Mail,
   Send,
@@ -126,6 +126,7 @@ import {
 } from "@/actions/settings-actions"
 import {
   getAiObservabilitySummary,
+  getAiRouteSkipSummary,
   getAiPromptTemplates,
   getPromptOverrides,
   getSystemPromptOverridesForWorkspace,
@@ -141,6 +142,7 @@ import {
   getSnippetRegistry,
   type AiObservabilityWindow,
   type AiPromptTemplatePublic,
+  type AiRouteSkipSummary,
   type ObservabilitySummary,
   type PromptOverrideRecord,
   type PromptOverrideRevisionRecord,
@@ -442,6 +444,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const loadSettingsRequestRef = useRef(0)
   const loadGhlRequestRef = useRef(0)
   const loadCalendlyRequestRef = useRef(0)
+  const globalAdminStatusRef = useRef<boolean | null>(null)
 
   // Settings state from database
   const [settings, setSettings] = useState<UserSettingsData | null>(null)
@@ -477,6 +480,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   // Email draft verification (Step 3) model setting (Phase 104)
   const [emailDraftVerificationSettings, setEmailDraftVerificationSettings] = useState({
     model: "gpt-5.2",
+  })
+  const [aiPipelineToggles, setAiPipelineToggles] = useState({
+    draftGenerationEnabled: true,
+    draftGenerationStep2Enabled: true,
+    draftVerificationStep3Enabled: true,
+    meetingOverseerEnabled: true,
+    aiRouteBookingProcessEnabled: true,
   })
 
   // Qualification questions state
@@ -542,6 +552,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     calendlyEventTypeUri: "",
     calendlyDirectBookEventTypeLink: "",
     calendlyDirectBookEventTypeUri: "",
+    bookingQualificationCheckEnabled: false,
+    bookingQualificationCriteria: "",
+    bookingDisqualificationMessage: "",
   })
   const [ghlCalendars, setGhlCalendars] = useState<GHLCalendar[]>([])
   const [ghlUsers, setGhlUsers] = useState<GHLUser[]>([])
@@ -707,6 +720,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [aiObs, setAiObs] = useState<ObservabilitySummary | null>(null)
   const [aiObsLoading, setAiObsLoading] = useState(false)
   const [aiObsError, setAiObsError] = useState<string | null>(null)
+  const [aiRouteSkips, setAiRouteSkips] = useState<AiRouteSkipSummary | null>(null)
+  const [aiRouteSkipsLoading, setAiRouteSkipsLoading] = useState(false)
+  const [aiRouteSkipsError, setAiRouteSkipsError] = useState<string | null>(null)
 
   // EmailBison base host (per active workspace)
   const [emailBisonBaseHosts, setEmailBisonBaseHosts] = useState<EmailBisonBaseHostRow[]>([])
@@ -857,7 +873,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   }, [])
 
   // Prevent prompt editor state from leaking across workspaces (Phase 47 follow-up)
-  useLayoutEffect(() => {
+  useEffect(() => {
     resetAiPromptModalState()
   }, [activeWorkspace, resetAiPromptModalState])
 
@@ -880,11 +896,15 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     async function loadSettings() {
       setIsLoading(true)
       try {
+        const globalStatusPromise =
+          globalAdminStatusRef.current === null
+            ? getGlobalAdminStatus()
+            : Promise.resolve({ success: true, isAdmin: globalAdminStatusRef.current })
         const [result, adminStatus, capabilitiesResult, globalStatus] = await Promise.all([
           getUserSettings(activeWorkspace),
           activeWorkspace ? getWorkspaceAdminStatus(activeWorkspace) : Promise.resolve({ success: true, isAdmin: false }),
           activeWorkspace ? getWorkspaceCapabilities(activeWorkspace) : Promise.resolve({ success: true, capabilities: null }),
-          getGlobalAdminStatus(),
+          globalStatusPromise,
         ])
 
         if (isStale()) return
@@ -892,7 +912,10 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         const capabilities = capabilitiesResult.success ? capabilitiesResult.capabilities ?? null : null
         setWorkspaceCapabilities(capabilities)
         setIsWorkspaceAdmin(Boolean(adminStatus.success && adminStatus.isAdmin) && !capabilities?.isClientPortalUser)
-        setIsGlobalAdmin(Boolean(globalStatus.success && globalStatus.isAdmin))
+        if (globalStatus.success) {
+          globalAdminStatusRef.current = Boolean(globalStatus.isAdmin)
+        }
+        setIsGlobalAdmin(Boolean(globalStatus.success ? globalStatus.isAdmin : globalAdminStatusRef.current))
         setSlackIntegrationError(null)
         setSlackChannels([])
         setSlackChannelToAdd("")
@@ -931,6 +954,13 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           })
           setEmailDraftVerificationSettings({
             model: result.data.emailDraftVerificationModel || "gpt-5.2",
+          })
+          setAiPipelineToggles({
+            draftGenerationEnabled: result.data.draftGenerationEnabled ?? true,
+            draftGenerationStep2Enabled: result.data.draftGenerationStep2Enabled ?? true,
+            draftVerificationStep3Enabled: result.data.draftVerificationStep3Enabled ?? true,
+            meetingOverseerEnabled: result.data.meetingOverseerEnabled ?? true,
+            aiRouteBookingProcessEnabled: result.data.aiRouteBookingProcessEnabled ?? true,
           })
           setCompanyContext({
             companyName: result.data.companyName || "",
@@ -1020,6 +1050,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             calendlyEventTypeUri: result.data.calendlyEventTypeUri || "",
             calendlyDirectBookEventTypeLink: result.data.calendlyDirectBookEventTypeLink || "",
             calendlyDirectBookEventTypeUri: result.data.calendlyDirectBookEventTypeUri || "",
+            bookingQualificationCheckEnabled: result.data.bookingQualificationCheckEnabled ?? false,
+            bookingQualificationCriteria: result.data.bookingQualificationCriteria || "",
+            bookingDisqualificationMessage: result.data.bookingDisqualificationMessage || "",
           })
 
           setEmailBisonAvailabilitySlot({
@@ -1180,10 +1213,42 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
     }
   }, [activeWorkspace, aiObsWindow, isClientPortalUser, isWorkspaceAdmin])
 
+  const refreshAiRouteSkips = useCallback(async () => {
+    if (!activeWorkspace) {
+      setAiRouteSkips(null)
+      setAiRouteSkipsError(null)
+      return
+    }
+
+    if (isClientPortalUser || !isWorkspaceAdmin) {
+      setAiRouteSkips(null)
+      setAiRouteSkipsError(null)
+      return
+    }
+
+    setAiRouteSkipsLoading(true)
+    try {
+      const result = await getAiRouteSkipSummary(activeWorkspace, aiObsWindow)
+      if (result.success && result.data) {
+        setAiRouteSkips(result.data)
+        setAiRouteSkipsError(null)
+      } else {
+        setAiRouteSkips(null)
+        setAiRouteSkipsError(result.error || "Failed to load AI route skip metrics")
+      }
+    } catch (error) {
+      setAiRouteSkips(null)
+      setAiRouteSkipsError(error instanceof Error ? error.message : "Failed to load AI route skip metrics")
+    } finally {
+      setAiRouteSkipsLoading(false)
+    }
+  }, [activeWorkspace, aiObsWindow, isClientPortalUser, isWorkspaceAdmin])
+
   useEffect(() => {
     if (activeTab !== "ai" && activeTab !== "admin") return
     refreshAiObservability()
-  }, [activeTab, refreshAiObservability])
+    refreshAiRouteSkips()
+  }, [activeTab, refreshAiObservability, refreshAiRouteSkips])
 
   useEffect(() => {
     if (!aiPromptsOpen) return
@@ -1927,6 +1992,12 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       payload.draftGenerationReasoningEffort = draftGenerationSettings.reasoningEffort
       // Email draft verification settings (Phase 104)
       payload.emailDraftVerificationModel = emailDraftVerificationSettings.model
+      // Phase 141: AI pipeline route toggles
+      payload.draftGenerationEnabled = aiPipelineToggles.draftGenerationEnabled
+      payload.draftGenerationStep2Enabled = aiPipelineToggles.draftGenerationStep2Enabled
+      payload.draftVerificationStep3Enabled = aiPipelineToggles.draftVerificationStep3Enabled
+      payload.meetingOverseerEnabled = aiPipelineToggles.meetingOverseerEnabled
+      payload.aiRouteBookingProcessEnabled = aiPipelineToggles.aiRouteBookingProcessEnabled
       // Notification Center (Phase 52d)
       payload.notificationEmails = notificationCenter.emails
       payload.notificationPhones = notificationCenter.phones
@@ -1940,6 +2011,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       payload.emailBisonAvailabilitySlotCount = emailBisonAvailabilitySlot.count
       payload.emailBisonAvailabilitySlotPreferWithinDays = emailBisonAvailabilitySlot.preferWithinDays
       payload.emailBisonAvailabilitySlotTemplate = toNullableText(emailBisonAvailabilitySlot.template)
+      payload.bookingQualificationCheckEnabled = meetingBooking.bookingQualificationCheckEnabled
+      payload.bookingQualificationCriteria = toNullableText(meetingBooking.bookingQualificationCriteria)
+      payload.bookingDisqualificationMessage = toNullableText(meetingBooking.bookingDisqualificationMessage)
     }
 
     const result = await updateUserSettings(activeWorkspace, payload)
@@ -5736,6 +5810,68 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </>
                 )}
 
+                <div className="rounded-lg border p-4 bg-muted/30 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <Label htmlFor="booking-qualification-check-switch" className="text-base font-medium">
+                        Post-Booking Qualification Check
+                      </Label>
+                      <p className="text-sm text-muted-foreground">
+                        Run an AI qualification check after booking and auto-cancel only for high-confidence
+                        disqualifications.
+                      </p>
+                    </div>
+                    <Switch
+                      id="booking-qualification-check-switch"
+                      checked={meetingBooking.bookingQualificationCheckEnabled}
+                      disabled={!isWorkspaceAdmin}
+                      onCheckedChange={(checked) => {
+                        setMeetingBooking((prev) => ({ ...prev, bookingQualificationCheckEnabled: checked }))
+                        handleChange()
+                      }}
+                    />
+                  </div>
+
+                  {meetingBooking.bookingQualificationCheckEnabled && (
+                    <div className="space-y-4">
+                      <div className="space-y-2">
+                        <Label>Qualification Criteria</Label>
+                        <Textarea
+                          value={meetingBooking.bookingQualificationCriteria}
+                          disabled={!isWorkspaceAdmin}
+                          onChange={(e) => {
+                            setMeetingBooking((prev) => ({
+                              ...prev,
+                              bookingQualificationCriteria: e.target.value,
+                            }))
+                            handleChange()
+                          }}
+                          placeholder="Describe what qualifies a lead for a meeting (e.g., company size > 50, decision-maker role, target industry)."
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>Disqualification Message</Label>
+                        <Textarea
+                          value={meetingBooking.bookingDisqualificationMessage}
+                          disabled={!isWorkspaceAdmin}
+                          onChange={(e) => {
+                            setMeetingBooking((prev) => ({
+                              ...prev,
+                              bookingDisqualificationMessage: e.target.value,
+                            }))
+                            handleChange()
+                          }}
+                          placeholder="Custom message sent when a lead doesn’t qualify. Use {reasons} and {companyName}."
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Available variables: {"{reasons}"}, {"{companyName}"}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <Separator />
 
                 {/* Auto-Book Toggle */}
@@ -6697,6 +6833,135 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
               </CardContent>
             </Card>
 
+            {showAdminTab ? (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <Activity className="h-5 w-5" />
+                        AI Route Switch Activity
+                      </CardTitle>
+                      <CardDescription>
+                        Current route states and recent skip events when routes are disabled in workspace settings.
+                      </CardDescription>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={refreshAiRouteSkips} disabled={aiRouteSkipsLoading}>
+                      <RefreshCcw className="h-4 w-4 mr-2" />
+                      Refresh
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {aiRouteSkipsError ? <div className="text-sm text-destructive">{aiRouteSkipsError}</div> : null}
+
+                  {aiRouteSkipsLoading ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">AI Draft Generation</p>
+                          <div className="mt-1 flex items-center justify-between">
+                            <Badge variant={aiPipelineToggles.draftGenerationEnabled ? "secondary" : "destructive"}>
+                              {aiPipelineToggles.draftGenerationEnabled ? "ON" : "OFF"}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                              {aiRouteSkips?.counts.draftGeneration ?? 0} skips
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">Draft Generation (Step 2)</p>
+                          <div className="mt-1 flex items-center justify-between">
+                            <Badge variant={aiPipelineToggles.draftGenerationStep2Enabled ? "secondary" : "destructive"}>
+                              {aiPipelineToggles.draftGenerationStep2Enabled ? "ON" : "OFF"}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                              {aiRouteSkips?.counts.draftGenerationStep2 ?? 0} skips
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">Draft Verification (Step 3)</p>
+                          <div className="mt-1 flex items-center justify-between">
+                            <Badge variant={aiPipelineToggles.draftVerificationStep3Enabled ? "secondary" : "destructive"}>
+                              {aiPipelineToggles.draftVerificationStep3Enabled ? "ON" : "OFF"}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                              {aiRouteSkips?.counts.draftVerificationStep3 ?? 0} skips
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">Meeting Overseer</p>
+                          <div className="mt-1 flex items-center justify-between">
+                            <Badge variant={aiPipelineToggles.meetingOverseerEnabled ? "secondary" : "destructive"}>
+                              {aiPipelineToggles.meetingOverseerEnabled ? "ON" : "OFF"}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                              {aiRouteSkips?.counts.meetingOverseer ?? 0} skips
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">Booking Process Router</p>
+                          <div className="mt-1 flex items-center justify-between">
+                            <Badge variant={aiPipelineToggles.aiRouteBookingProcessEnabled ? "secondary" : "destructive"}>
+                              {aiPipelineToggles.aiRouteBookingProcessEnabled ? "ON" : "OFF"}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">events</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-medium">Recent Skip Events</p>
+                          <p className="text-xs text-muted-foreground">
+                            Window: {aiRouteSkips?.window ?? aiObsWindow}
+                          </p>
+                        </div>
+                        {aiRouteSkips?.events.length ? (
+                          <div className="space-y-2">
+                            {aiRouteSkips.events.map((event) => {
+                              const routeLabel =
+                                event.route === "draft_generation"
+                                  ? "AI Draft Generation"
+                                  : event.route === "draft_generation_step2"
+                                    ? "Draft Generation (Step 2)"
+                                  : event.route === "draft_verification_step3"
+                                    ? "Draft Verification (Step 3)"
+                                    : "Meeting Overseer";
+                              return (
+                                <div key={event.id} className="rounded-lg border p-3 text-sm">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="outline">{routeLabel}</Badge>
+                                    <span className="text-xs text-muted-foreground">{new Date(event.createdAt).toLocaleString()}</span>
+                                  </div>
+                                  <div className="mt-1 text-xs text-muted-foreground">
+                                    reason: {event.reason}
+                                    {event.channel ? ` · channel: ${event.channel}` : ""}
+                                    {event.source ? ` · source: ${event.source}` : ""}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-sm text-muted-foreground">No skip events in this window.</div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            ) : null}
+
             {isWorkspaceAdmin && activeWorkspace && !isClientPortalUser ? (
               <BulkDraftRegenerationCard clientId={activeWorkspace} />
             ) : null}
@@ -6798,6 +7063,132 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
           {/* Admin Dashboard (workspace admins only) */}
           {showAdminTab ? (
             <TabsContent value="admin" className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Sparkles className="h-5 w-5" />
+                    AI Route Toggles
+                  </CardTitle>
+                  <CardDescription>
+                    Control AI draft-generation routes for this workspace. Changes apply immediately and are tracked in AI route activity.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-3">
+                    <div className="space-y-0.5">
+                      <span className="text-sm font-medium">Workspace-wide</span>
+                      <p className="text-xs text-muted-foreground">Only admins can change these settings.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!isWorkspaceAdmin ? (
+                        <>
+                          <Lock className="h-4 w-4 text-muted-foreground" />
+                          <Badge variant="outline">Locked</Badge>
+                        </>
+                      ) : (
+                        <Badge variant="secondary">Admin</Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <div className="space-y-0.5">
+                        <p id="draft-generation-enabled-label" className="text-sm font-medium">AI Draft Generation</p>
+                        <p className="text-xs text-muted-foreground">
+                          Generate AI response drafts for inbound messages. When off, no new AI drafts are created.
+                        </p>
+                      </div>
+                      <Switch
+                        id="draft-generation-enabled-switch"
+                        aria-labelledby="draft-generation-enabled-label"
+                        checked={aiPipelineToggles.draftGenerationEnabled}
+                        disabled={!isWorkspaceAdmin}
+                        onCheckedChange={(checked) => {
+                          setAiPipelineToggles((prev) => ({ ...prev, draftGenerationEnabled: checked }))
+                          handleChange()
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <div className="space-y-0.5">
+                        <p id="draft-generation-step2-enabled-label" className="text-sm font-medium">Draft Generation (Step 2)</p>
+                        <p className="text-xs text-muted-foreground">
+                          Run Step 2 text generation after strategy. When off, generation continues from Step 1 directly into Step 3.
+                        </p>
+                      </div>
+                      <Switch
+                        id="draft-generation-step2-enabled-switch"
+                        aria-labelledby="draft-generation-step2-enabled-label"
+                        checked={aiPipelineToggles.draftGenerationStep2Enabled}
+                        disabled={!isWorkspaceAdmin}
+                        onCheckedChange={(checked) => {
+                          setAiPipelineToggles((prev) => ({ ...prev, draftGenerationStep2Enabled: checked }))
+                          handleChange()
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <div className="space-y-0.5">
+                        <p id="draft-verification-enabled-label" className="text-sm font-medium">Draft Verification (Step 3)</p>
+                        <p className="text-xs text-muted-foreground">
+                          Run the Step 3 verification pass. When off, drafts continue directly to deterministic post-processing.
+                        </p>
+                      </div>
+                      <Switch
+                        id="draft-verification-enabled-switch"
+                        aria-labelledby="draft-verification-enabled-label"
+                        checked={aiPipelineToggles.draftVerificationStep3Enabled}
+                        disabled={!isWorkspaceAdmin}
+                        onCheckedChange={(checked) => {
+                          setAiPipelineToggles((prev) => ({ ...prev, draftVerificationStep3Enabled: checked }))
+                          handleChange()
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <div className="space-y-0.5">
+                        <p id="meeting-overseer-enabled-label" className="text-sm font-medium">Meeting Overseer</p>
+                        <p className="text-xs text-muted-foreground">
+                          Apply AI scheduling coherence checks. When off, both draft-time and follow-up overseer routes are skipped.
+                        </p>
+                      </div>
+                      <Switch
+                        id="meeting-overseer-enabled-switch"
+                        aria-labelledby="meeting-overseer-enabled-label"
+                        checked={aiPipelineToggles.meetingOverseerEnabled}
+                        disabled={!isWorkspaceAdmin}
+                        onCheckedChange={(checked) => {
+                          setAiPipelineToggles((prev) => ({ ...prev, meetingOverseerEnabled: checked }))
+                          handleChange()
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-lg border p-3">
+                      <div className="space-y-0.5">
+                        <p id="booking-process-router-enabled-label" className="text-sm font-medium">Booking Process Router</p>
+                        <p className="text-xs text-muted-foreground">
+                          Route inbound booking intent into Process 1-5 context. When off, action-signal routing is skipped.
+                        </p>
+                      </div>
+                      <Switch
+                        id="booking-process-router-enabled-switch"
+                        aria-labelledby="booking-process-router-enabled-label"
+                        checked={aiPipelineToggles.aiRouteBookingProcessEnabled}
+                        disabled={!isWorkspaceAdmin}
+                        onCheckedChange={(checked) => {
+                          setAiPipelineToggles((prev) => ({ ...prev, aiRouteBookingProcessEnabled: checked }))
+                          handleChange()
+                        }}
+                      />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
               {aiDashboardCard}
               <AdminDashboardTab clientId={activeWorkspace ?? null} active={activeTab === "admin"} />
             </TabsContent>

@@ -30,6 +30,7 @@ export type InboundPostProcessPipelineStage =
   | "reject_pending_drafts"
   | "ghl_contact_sync"
   | "resume_enrichment_followups"
+  | "action_signal_detection"
   | "draft_generation"
   | "bump_rollups"
   | "enqueue_lead_scoring";

@@ -17,6 +17,7 @@ import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { syncEmailConversationHistorySystem, syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { getAccessibleClientIdsForUser, requireAuthUser, requireClientAdminAccess } from "@/lib/workspace-access";
 import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
+import { recordAiRouteSkip } from "@/lib/ai/route-skip-observability";
 import {
   sendLinkedInMessageWithWaterfall,
   checkLinkedInConnection,
@@ -30,6 +31,35 @@ import { recordOutboundForBookingProgress } from "@/lib/booking-progress";
 import { coerceSmsDraftPartsOrThrow } from "@/lib/sms-multipart";
 import { BackgroundJobType } from "@prisma/client";
 import { enqueueBackgroundJob } from "@/lib/background-jobs/enqueue";
+
+const AI_ROUTE_SETTINGS_PATH = "Settings -> Admin -> Admin Dashboard";
+const DRAFT_GENERATION_DISABLED_ERROR =
+  `AI Draft Generation is turned off for this workspace. Re-enable it in ${AI_ROUTE_SETTINGS_PATH}.`;
+const DRAFT_GENERATION_STEP2_DISABLED_NOTICE =
+  `Draft Generation (Step 2) is off in ${AI_ROUTE_SETTINGS_PATH}. Using the Step 1 bridge draft path.`;
+const DRAFT_VERIFICATION_DISABLED_NOTICE =
+  `Draft Verification (Step 3) is off in ${AI_ROUTE_SETTINGS_PATH}.`;
+const MEETING_OVERSEER_DISABLED_NOTICE =
+  `Meeting Overseer is off in ${AI_ROUTE_SETTINGS_PATH}.`;
+
+function getDisabledRouteNotices(settings?: {
+  draftGenerationStep2Enabled?: boolean | null;
+  draftVerificationStep3Enabled?: boolean | null;
+  meetingOverseerEnabled?: boolean | null;
+} | null, opts?: { channel?: DraftChannel }): string[] {
+  const notices: string[] = [];
+  const isEmailChannel = (opts?.channel ?? "email") === "email";
+  if (isEmailChannel && settings?.draftGenerationStep2Enabled === false) {
+    notices.push(DRAFT_GENERATION_STEP2_DISABLED_NOTICE);
+  }
+  if (isEmailChannel && settings?.draftVerificationStep3Enabled === false) {
+    notices.push(DRAFT_VERIFICATION_DISABLED_NOTICE);
+  }
+  if (settings?.meetingOverseerEnabled === false) {
+    notices.push(MEETING_OVERSEER_DISABLED_NOTICE);
+  }
+  return notices;
+}
 
 /**
  * Pre-classification check for sentiment analysis.
@@ -1406,7 +1436,9 @@ export async function regenerateDraft(
 ): Promise<{
   success: boolean;
   data?: { id: string; content: string };
-  error?: string
+  notices?: string[];
+  error?: string;
+  errorCode?: "DRAFT_GENERATION_DISABLED";
 }> {
   return withAiTelemetrySourceIfUnset("action:message.regenerate_draft", async () => {
     try {
@@ -1459,8 +1491,27 @@ export async function regenerateDraft(
 
       const draftResult = await generateResponseDraft(leadId, transcript, sentimentTag, channel);
 
+      if (draftResult.blockedBySetting === "draftGenerationEnabled") {
+        return {
+          success: false,
+          error: DRAFT_GENERATION_DISABLED_ERROR,
+          errorCode: "DRAFT_GENERATION_DISABLED",
+        };
+      }
+
       if (!draftResult.success || !draftResult.draftId || !draftResult.content) {
         return { success: false, error: draftResult.error || "Failed to generate draft" };
+      }
+
+      const notices: string[] = [];
+      if (draftResult.skippedRoutes?.includes("draft_generation_step2")) {
+        notices.push(DRAFT_GENERATION_STEP2_DISABLED_NOTICE);
+      }
+      if (draftResult.skippedRoutes?.includes("draft_verification_step3")) {
+        notices.push(DRAFT_VERIFICATION_DISABLED_NOTICE);
+      }
+      if (draftResult.skippedRoutes?.includes("meeting_overseer")) {
+        notices.push(MEETING_OVERSEER_DISABLED_NOTICE);
       }
 
       revalidatePath("/");
@@ -1471,6 +1522,7 @@ export async function regenerateDraft(
           id: draftResult.draftId,
           content: draftResult.content,
         },
+        ...(notices.length > 0 ? { notices } : {}),
       };
     } catch (error) {
       console.error("Failed to regenerate draft:", error);
@@ -1496,7 +1548,9 @@ export async function fastRegenerateDraft(
 ): Promise<{
   success: boolean;
   data?: { id: string; content: string };
+  notices?: string[];
   error?: string;
+  errorCode?: "DRAFT_GENERATION_DISABLED";
 }> {
   return withAiTelemetrySourceIfUnset("action:message.fast_regenerate_draft", async () => {
     try {
@@ -1510,6 +1564,18 @@ export async function fastRegenerateDraft(
           sentimentTag: true,
           email: true,
           externalSchedulingLink: true,
+          client: {
+            select: {
+              settings: {
+                select: {
+                  draftGenerationEnabled: true,
+                  draftGenerationStep2Enabled: true,
+                  draftVerificationStep3Enabled: true,
+                  meetingOverseerEnabled: true,
+                },
+              },
+            },
+          },
         },
       });
 
@@ -1517,11 +1583,21 @@ export async function fastRegenerateDraft(
         return { success: false, error: "Lead not found" };
       }
 
+      if (lead.client?.settings?.draftGenerationEnabled === false) {
+        return {
+          success: false,
+          error: DRAFT_GENERATION_DISABLED_ERROR,
+          errorCode: "DRAFT_GENERATION_DISABLED",
+        };
+      }
+
       const sentimentTag = lead.sentimentTag || "Neutral";
       const email = channel === "email" ? lead.email : null;
       if (!shouldGenerateDraft(sentimentTag, email)) {
         return { success: false, error: "Cannot generate draft for this sentiment" };
       }
+
+      const notices = getDisabledRouteNotices(lead.client?.settings, { channel });
 
       const previousDraft =
         (await prisma.aIDraft.findFirst({
@@ -1538,6 +1614,17 @@ export async function fastRegenerateDraft(
       if (!previousDraft?.content?.trim()) {
         // No prior content to rewrite → fall back to full regeneration.
         return regenerateDraft(leadId, channel);
+      }
+
+      if (channel === "email" && lead.client?.settings?.draftGenerationStep2Enabled === false) {
+        await recordAiRouteSkip({
+          clientId: lead.clientId,
+          leadId,
+          route: "draft_generation_step2",
+          channel,
+          reason: "disabled_by_workspace_settings",
+          source: "action:message.fast_regenerate_draft",
+        });
       }
 
       // Reject any existing pending drafts for this channel (server-side).
@@ -1590,6 +1677,7 @@ export async function fastRegenerateDraft(
           id: draft.id,
           content: draft.content,
         },
+        ...(notices.length > 0 ? { notices } : {}),
       };
     } catch (error) {
       console.error("Failed to fast regenerate draft:", error);
@@ -1667,6 +1755,7 @@ export type RegenerateAllDraftsResult = {
   regenerated: number;
   skipped: number;
   errors: number;
+  notices?: string[];
   error?: string;
 };
 
@@ -1676,7 +1765,10 @@ type RegenerateAllDraftsOptions = {
   mode?: RegenerateAllDraftsMode;
 };
 
-async function regenerateDraftSystem(leadId: string, channel: DraftChannel): Promise<{ success: boolean; error?: string }> {
+async function regenerateDraftSystem(
+  leadId: string,
+  channel: DraftChannel
+): Promise<{ success: boolean; error?: string; errorCode?: "DRAFT_GENERATION_DISABLED" }> {
   const lead = await prisma.lead.findUnique({
     where: { id: leadId },
     select: {
@@ -1721,6 +1813,13 @@ async function regenerateDraftSystem(leadId: string, channel: DraftChannel): Pro
   }
 
   const draftResult = await generateResponseDraft(leadId, transcript, sentimentTag, channel);
+  if (draftResult.blockedBySetting === "draftGenerationEnabled") {
+    return {
+      success: false,
+      error: DRAFT_GENERATION_DISABLED_ERROR,
+      errorCode: "DRAFT_GENERATION_DISABLED",
+    };
+  }
   if (!draftResult.success || !draftResult.draftId || !draftResult.content) {
     return { success: false, error: draftResult.error || "Failed to generate draft" };
   }
@@ -1736,6 +1835,36 @@ export async function regenerateAllDrafts(
   return withAiTelemetrySourceIfUnset("action:message.regenerate_all_drafts", async () => {
     try {
       await requireClientAdminAccess(clientId);
+
+      const clientSettings = await prisma.client.findUnique({
+        where: { id: clientId },
+        select: {
+          settings: {
+            select: {
+              draftGenerationEnabled: true,
+              draftGenerationStep2Enabled: true,
+              draftVerificationStep3Enabled: true,
+              meetingOverseerEnabled: true,
+            },
+          },
+        },
+      });
+
+      const notices = getDisabledRouteNotices(clientSettings?.settings, { channel });
+
+      if (clientSettings?.settings?.draftGenerationEnabled === false) {
+        return {
+          success: false,
+          totalEligible: 0,
+          processedLeads: 0,
+          nextCursor: null,
+          hasMore: false,
+          regenerated: 0,
+          skipped: 0,
+          errors: 0,
+          error: DRAFT_GENERATION_DISABLED_ERROR,
+        };
+      }
 
       const startedAtMs = Date.now();
       const maxSeconds = Number.isFinite(options.maxSeconds) && (options.maxSeconds || 0) > 0 ? options.maxSeconds! : 55;
@@ -1801,6 +1930,7 @@ export async function regenerateAllDrafts(
               return {
                 status:
                   draftResult.error === "Cannot generate draft for this sentiment"
+                  || draftResult.errorCode === "DRAFT_GENERATION_DISABLED"
                     ? ("skipped" as const)
                     : ("error" as const),
               };
@@ -1836,6 +1966,7 @@ export async function regenerateAllDrafts(
         regenerated,
         skipped,
         errors,
+        ...(notices.length > 0 ? { notices } : {}),
       };
     } catch (error) {
       console.error("[RegenerateAllDrafts] Failed:", error);

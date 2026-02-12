@@ -1,0 +1,22 @@
+{
+  "id": "revenue-threshold-is-not-pricing",
+  "description": "Revenue/funding thresholds should not be treated as pricing claims.",
+  "input": {
+    "draft": "We typically work with founders at $1M+ revenue.",
+    "serviceDescription": null,
+    "knowledgeContext": null
+  },
+  "expected": {
+    "removedAmounts": [],
+    "removedCadenceAmounts": [],
+    "addedClarifier": false,
+    "normalizedCadencePhrase": false,
+    "draftIncludes": ["$1M+"],
+    "detection": {
+      "hallucinated": [],
+      "valid": [],
+      "cadenceMismatched": [],
+      "allDraft": []
+    }
+  }
+}

@@ -1,0 +1,247 @@
+# Phase 144e — Verification, Rollout Guardrails, and Phase Review
+
+## Focus
+Prove performance outcomes with hard evidence, then lock rollout and closure documentation.
+
+## Inputs
+- `docs/planning/phase-144/a/perf-baseline.md`
+- `docs/planning/phase-144/b/wave1-delta.md`
+- `docs/planning/phase-144/c/wave2-delta.md`
+- `docs/planning/phase-144/d/wave3-delta.md`
+- `docs/planning/phase-144/plan.md`
+
+## Work
+1. **Run final quality gates**:
+   - `npm run lint`
+   - `npm run build` (canonical build command: `prisma generate && next build --webpack`)
+   - `npm run test`
+2. **Produce final criteria mapping** (must use same measurement environment as 144a baseline):
+   - rootMainFiles gzip sum: achieved <=92KB? (measure via `gzip -9 -c <chunk> | wc -c` for each `rootMainFiles` chunk in `build-manifest.json`)
+   - Total `.next/static/chunks` size: increased <=5% from baseline?
+   - INP p75 <=200ms? (measure with Chrome DevTools, 4x CPU throttle, N>=10 samples, same hardware as 144a)
+   - HTTP request count (5-min idle, excluding WebSocket): reduced vs baseline?
+   - All functional smoke tests from 144b/144d passing?
+3. **Document rollback triggers** (concrete thresholds):
+   - Rollback if INP p75 increases by >50ms vs pre-deploy baseline
+   - Rollback if LCP p75 increases by >200ms
+   - Rollback if JavaScript error rate increases by >0.1% (Vercel Analytics)
+   - Rollback if any critical user flow fails (send message, save settings, inbox load)
+4. **Document rollout plan**:
+   - Deploy to Vercel preview for internal validation
+   - Merge to main for production deploy
+   - Monitor Vercel Analytics Web Vitals for 48 hours post-deploy
+   - Confirm no regression in INP, LCP, or CLS p75 values
+5. **Write `review.md`** using this template:
+   - Success criteria table: each criterion with pass/fail verdict and evidence command
+   - Baseline (144a) vs final measurements with exact commands used
+   - Files modified list (all files touched by 144b-144d)
+   - Known residual issues / unresolved bottlenecks
+   - Follow-on recommendations (e.g., SSR/RSC migration, further settings-view splitting if deferred)
+6. Run phase review process and finalize closure artifact.
+
+## Output
+- `docs/planning/phase-144/review.md` with command evidence and success-criteria mapping.
+- Final decision: close phase or spin follow-on phase for unresolved perf debt.
+
+## Handoff
+If all success criteria are met, phase 144 closes. If any criteria are partial/not met, create next-phase follow-up plan limited to unresolved measured bottlenecks.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Ran phase-level quality gates and drafted running review in `docs/planning/phase-144/review.md`.
+  - Mapped current status against success criteria (pass/fail/partial).
+- Commands run:
+  - `npm run lint` — pass (warnings only)
+  - `npm run build` — pass
+  - `npm run test` — pass (361 pass, 0 fail)
+- Blockers:
+  - Root payload target (`<=92KB`) still unmet.
+  - INP and request-volume acceptance evidence incomplete.
+- Next concrete steps:
+  - Execute remaining wave-2 byte-reduction work.
+  - Capture INP + network evidence and finalize close decision.
+- NTTAN gate (agentic impact check for inbox message-handling changes):
+  - `npm run test:ai-drafts` — pass
+  - `npm run test:ai-replay -- --client-id 00000000-0000-0000-0000-000000000000 --dry-run --limit 20` — blocked (`P1001`, DB unreachable)
+  - `npm run test:ai-replay -- --client-id 00000000-0000-0000-0000-000000000000 --limit 20 --concurrency 3` — blocked (`P1001`, DB unreachable)
+- Analyzer setup attempt:
+  - `npm install --save-dev @next/bundle-analyzer` — attempted, but package is still absent (`npm ls @next/bundle-analyzer --depth=0` -> empty). Treat as environment/package-install blocker for this turn.
+- Additional verification pass after wave-2 analytics split:
+  - `npm run lint` — pass (warnings only)
+  - `npm run build` — pass
+  - root payload re-check — unchanged at `122,932` gzip bytes
+- Final-state regression run after analytics-view split:
+  - `npm run test` — pass (361 tests, 0 fail)
+- 2026-02-12 — Shell/bootstrap refactor for startup byte reduction:
+  - Split root route into server wrapper + async client loader:
+    - `app/page.tsx` now renders `DashboardShellLoader`
+    - `components/dashboard/dashboard-shell-loader.tsx` uses `next/dynamic` with `ssr: false`
+    - Existing full dashboard client implementation moved to `components/dashboard/dashboard-shell.tsx`
+  - Moved global client providers off `app/layout.tsx` into dashboard shell:
+    - `QueryProvider` + `UserProvider` now wrap only dashboard shell
+    - Added `components/providers/post-hydration-enhancements.tsx` for deferred `Toaster` + `Analytics`
+  - Verification:
+    - `npm run build` — pass
+    - `npm run lint` — pass (warnings only)
+    - `npm run test` — pass (361 tests, 0 fail)
+  - Measurement snapshot (same method family as phase baseline):
+    - `build-manifest rootMainFiles` gzip: `122,697` (flat vs `122,932` prior; still above <=92KB target)
+    - `/page entryJSFiles` gzip (from `page_client-reference-manifest.js`): `75,370` -> `20,022` -> `10,046` -> `1,859` after final provider move
+  - Interpretation:
+    - Startup route-entry JS dropped sharply, but phase primary rootMainFiles metric remains effectively unchanged and is likely dominated by framework/runtime chunks not reduced by route-local splits.
+- 2026-02-12 — Bundler strategy + attribution constraints update:
+  - Context7 docs check (Next.js 16.0.3 docs) confirms `next build --webpack` is supported to opt out of Turbopack.
+  - Applied build-script change in `package.json`:
+    - `build`: `prisma generate && next build --webpack`
+  - Validation after script update:
+    - `npm run build` — pass (Webpack)
+    - `npm run lint` — pass (warnings only)
+    - `npm run test` — pass (361 tests, 0 fail)
+  - Webpack payload measurement:
+    - `.next/build-manifest.json` `rootMainFiles` gzip: `117,240`
+    - chunk breakdown:
+      - `static/chunks/webpack-*.js`: `2,255` gzip
+      - `static/chunks/4bd1b696-*.js`: `62,337` gzip
+      - `static/chunks/3794-b16d224*.js`: `52,415` gzip
+      - `static/chunks/main-app-*.js`: `233` gzip
+  - Local attribution signal:
+    - `page_client-reference-manifest.js` shows `clientModules touching rootMainFiles = 0`, supporting that remaining root bytes are framework/runtime-dominated.
+  - Analyzer blocker:
+    - `npm install --save-dev @next/bundle-analyzer` fails with `ENOTFOUND registry.npmjs.org` (network/DNS connectivity blocker).
+  - Manual loader experiment:
+    - tested direct `useEffect(import())` loader; no root metric improvement.
+    - reverted to `next/dynamic` loader for simpler, safer behavior.
+  - Multi-agent coordination check:
+    - `git status --porcelain` confirmed heavy concurrent edits across phases 139-143.
+    - This turn touched only phase-144 scoped frontend/build files (`app/page.tsx`, `app/layout.tsx`, dashboard shell/provider files, `package.json`, phase-144 docs).
+    - No edits were made to active high-conflict phase-141/142 settings symbols.
+  - Agentic impact classification (NTTAN gate):
+    - Scope is frontend shell/loading and build config only.
+    - No AI drafting, prompt, message/reply, webhook/cron reply logic touched this turn.
+    - NTTAN commands not required for this turn under the phase rule.
+- 2026-02-12 — Navigation-speed refinement pass (perceived view-switch latency):
+  - Code changes:
+    - `components/dashboard/dashboard-shell.tsx`
+      - introduced reusable dynamic import loaders per view
+      - added prefetch registry (`VIEW_PREFETCH_LOADERS`) and active-view heuristic prefetch map (`PREFETCH_BY_VIEW`)
+      - added intent prefetch helper (`handleViewIntent`) and click-path prefetch (`handleViewChange`)
+    - `components/dashboard/sidebar.tsx`
+      - added optional `onViewIntent` prop and wired prefetch on nav hover/focus
+      - added `areCountsEqual` guard to avoid redundant count-state updates every refresh cycle
+  - Commands run:
+    - `npm run lint` — pass (warnings only)
+    - `npm run build` — pass (Webpack)
+    - `npm run test` — pass (361 pass, 0 fail)
+  - Measurement:
+    - `.next/build-manifest.json` `rootMainFiles` gzip: `117,240` (unchanged vs prior Webpack baseline)
+  - Multi-agent coordination:
+    - `git status --porcelain` remains heavily multi-agent dirty.
+    - This turn touched only phase-144 frontend performance files (`dashboard-shell.tsx`, `sidebar.tsx`) and phase-144 docs.
+    - No edits to active high-conflict settings logic under phases 141/142.
+  - Sub-agent checks (2 explorer agents; within 5-agent limit):
+    - settings-surface bottlenecks mapped to `impeccable-optimize`, `impeccable-harden`, `impeccable-polish`, `impeccable-adapt`
+    - inbox/follow-ups bottlenecks mapped to `impeccable-optimize`, `impeccable-polish`, `impeccable-adapt`
+  - Agentic impact classification (NTTAN gate):
+    - No AI drafting/prompt/message/webhook/cron reply logic touched.
+    - NTTAN not required for this turn.
+- 2026-02-12 — Follow-ups render-churn smoothing:
+  - Code changes:
+    - `components/dashboard/follow-ups-view.tsx`
+      - added load-state gating (`hasLoadedDataRef` + workspace-change detection) so refresh cycles do not force full-screen spinner
+      - memoized derived computations for grouped instances and task summaries
+      - switched task mutation handlers to functional state updates
+  - Commands run:
+    - `npm run lint` — pass (warnings only)
+    - `npm run test` — pass (361 pass, 0 fail)
+    - `npm run build` — pass (Webpack)
+  - Measurement:
+    - `.next/build-manifest.json` `rootMainFiles` gzip: `117,241` (effectively unchanged)
+  - Multi-agent coordination:
+    - touched only `follow-ups-view.tsx` plus phase-144 docs in this step
+    - no overlap edits in active high-conflict settings files under phases 141/142
+  - Agentic impact classification (NTTAN gate):
+    - no AI/message handling/webhook/cron reply logic touched
+    - NTTAN not required for this step
+- 2026-02-12 — Cached-view navigation acceleration + inbox active gating:
+  - Code changes:
+    - `components/dashboard/dashboard-shell.tsx`
+      - retain previously visited views in `mountedViews` and render hidden inactive sections
+      - initialize active view/settings tab from URL params to avoid initial wrong-view render
+      - keep intent/click prefetch behavior while reducing remount churn on repeat navigation
+    - `components/dashboard/inbox-view.tsx`
+      - introduced `isActive` prop and disabled inbox query/realtime/polling paths when inactive
+      - preserved cached inbox state while avoiding background network churn
+  - Commands run:
+    - `npm run lint` — pass (warnings only)
+    - `npm run build` — pass (Webpack)
+    - `npm run test` — pass (368 pass, 0 fail)
+    - `npm run test:ai-drafts` — pass (58 pass, 0 fail)
+    - `npm run test:ai-replay -- --client-id 00000000-0000-0000-0000-000000000000 --dry-run --limit 20` — blocked (`P1001`, DB unreachable)
+    - `npm run test:ai-replay -- --client-id 00000000-0000-0000-0000-000000000000 --limit 20 --concurrency 3` — blocked (`P1001`, DB unreachable)
+  - Measurement:
+    - `.next/build-manifest.json` `rootMainFiles` gzip: `117,241` (flat; optimization targets repeat-navigation latency over base runtime bytes)
+    - `.next/static/chunks` size: `3060 KB` (within +5% guardrail vs earlier baseline)
+  - Multi-agent coordination:
+    - touched only phase-144 scoped files (`dashboard-shell.tsx`, `inbox-view.tsx`, phase-144 docs)
+    - no edits to `settings-view.tsx` conflict zone under active phases 141/142
+  - Agentic impact classification (NTTAN gate):
+    - touched inbox/message-handling paths, so NTTAN gate executed this turn
+    - replay commands remain blocked by environment DB connectivity
+- 2026-02-12 — Navigation speed hardening (shell + list + settings mount cost):
+  - Code changes:
+    - `components/dashboard/conversation-feed.tsx`
+      - feed wrapped with `memo`
+      - stabilized default props and added `getItemKey` for virtualizer row stability
+      - reduced repeated timestamp parse work with `messageTimeById` memo
+    - `components/dashboard/inbox-view.tsx`
+      - stabilized `ConversationFeed` props (`smsClientOptions`, `smsClientUnattributedCount`, `onLoadMore`)
+    - `components/dashboard/dashboard-shell.tsx`
+      - reduced mounted-view retention from unbounded history to `active + previous`
+      - added URL-sync no-op guards and deduped legacy lead->workspace resolver calls
+      - added in-flight guard for dynamic prefetches
+    - `components/dashboard/sidebar.tsx`
+      - added in-flight guard for workspace counts polling and memoized filter config
+    - `components/dashboard/settings-view.tsx`
+      - moved prompt-reset from `useLayoutEffect` -> `useEffect`
+      - cached global admin status across workspace changes to avoid repeated non-workspace fetch
+  - Commands run:
+    - `npm run lint` — pass (warnings only)
+    - `npm run build` — pass
+    - `npm run test` — pass (368/368)
+  - NTTAN gate:
+    - `npm run test:ai-drafts` — pass (58/58)
+    - `npm run test:ai-replay -- --client-id 00000000-0000-0000-0000-000000000000 --dry-run --limit 20` — blocked (`P1001`, DB unreachable)
+    - `npm run test:ai-replay -- --client-id 00000000-0000-0000-0000-000000000000 --limit 20 --concurrency 3` — blocked (`P1001`, DB unreachable)
+  - Measurements:
+    - `.next/build-manifest.json` `rootMainFiles` gzip: `117,241`
+    - `.next/static/chunks` size: `3064 KB`
+  - Multi-agent coordination:
+    - This turn touched phase-144 dashboard files and a minimal settings optimization seam only (no admin/AI logic edits inside the active settings conflict zone).
+- 2026-02-12 — Sub-agent verified nav/caching hardening + safety corrections:
+  - Multi-agent awareness checks this turn:
+    - `git status --short` confirms active concurrent work across phases 139-145.
+    - scanned phase docs `phase-134`..`phase-145`; no new overlap outside phase-144 dashboard performance files.
+  - Sub-agent review (2 explorer agents, within 5-agent cap) findings:
+    - risk: aggressive all-view background warm prefetch could increase first-load contention
+    - risk: campaigns cache key could lock partial-success null data and suppress retries
+  - Code corrections applied:
+    - `components/dashboard/dashboard-shell.tsx`
+      - kept `MAX_RETAINED_VIEWS = 3` LRU-mounted view retention
+      - removed broad all-view delayed prefetch warmup to avoid background CPU/network spikes
+      - preserved intent/click and heuristic prefetch paths
+    - `components/dashboard/analytics-view.tsx`
+      - added `ANALYTICS_CACHE_TTL_MS = 90_000` and per-tab fetch timestamps
+      - cache short-circuit now requires fresh TTL, not indefinite key match
+      - campaigns cache key now sets only when all campaign-tab requests succeed
+      - retained tab-gated fetching and dynamic component loading
+  - Verification:
+    - `npm run lint` — pass (warnings only)
+    - `npm run test` — pass (372/372)
+    - `npm run build -- --webpack` — pass
+  - Measurement:
+    - `.next/build-manifest.json` `rootMainFiles` gzip: `117,503`
+    - `.next/static/chunks` size: `3068 KB`
+  - Agentic impact classification (NTTAN gate):
+    - touched dashboard navigation + analytics display/fetching only
+    - no AI drafting/prompt/message/webhook/cron reply logic touched
+    - NTTAN not required for this step

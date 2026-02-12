@@ -122,3 +122,16 @@ After signature update, run a callsite scan for `ensureLeadTimezone(` and confir
 ## Handoff
 
 Phase 139b needs the updated `ensureLeadTimezone` signature to pass `conversationText` from the trigger message in `generateResponseDraft()`. Phase 139c needs `isValidIanaTimezone` export for the business-hours filter.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Implemented conversation-aware timezone extraction in `lib/timezone-inference.ts` with regex-first detection (`TZ_ABBREVIATION_MAP`) and AI fallback (`timezone.infer_from_conversation.v1`).
+  - Exported `isValidIanaTimezone` and updated `ensureLeadTimezone(leadId, opts?)` to accept optional `conversationText` while preserving backward compatibility for existing callsites.
+  - Added `conversation` as an explicit timezone resolution source and inserted conversation inference before metadata AI fallback.
+  - Threaded `conversationText` into high-value inbound path `lib/background-jobs/sms-inbound-post-process.ts`.
+- Commands run:
+  - `DATABASE_URL='postgresql://test:test@localhost:5432/test?schema=public' DIRECT_URL='postgresql://test:test@localhost:5432/test?schema=public' OPENAI_API_KEY='test' node --conditions=react-server --import tsx --test lib/__tests__/timezone-inference-conversation.test.ts` — pass.
+- Blockers:
+  - None.
+- Next concrete steps:
+  - Completed in this turn; downstream subphases consume the new optional `conversationText` contract.

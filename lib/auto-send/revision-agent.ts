@@ -67,8 +67,14 @@ type RevisePromptOutput = {
   revised_draft: string;
   changes_made: string[];
   issues_addressed: string[];
+  unresolved_requirements?: string[];
   confidence: number;
   memory_proposals?: MemoryProposal[];
+};
+
+type RevisionDraftValidation = {
+  passed: boolean;
+  reasons: string[];
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -125,6 +131,7 @@ function validateReviseOutput(value: unknown): RevisePromptOutput | null {
     revised_draft: draft,
     changes_made: readStringArray(value.changes_made, 10),
     issues_addressed: readStringArray(value.issues_addressed, 10),
+    unresolved_requirements: readStringArray(value.unresolved_requirements, 10),
     confidence: clamp01(conf),
     memory_proposals: readMemoryProposals(value.memory_proposals, 10),
   };
@@ -140,6 +147,8 @@ export type AutoSendRevisionResult = {
     originalConfidence: number;
     revisedConfidence: number | null;
     threshold: number;
+    validationPassed?: boolean;
+    validationReasons?: string[];
   };
 };
 
@@ -162,6 +171,14 @@ export async function maybeReviseAutoSendDraft(opts: {
   selectorTimeoutMs?: number;
   reviserTimeoutMs?: number;
   model?: string;
+  hardRequirements?: string[];
+  hardForbidden?: string[];
+  currentDayIso?: string | null;
+  leadTimezone?: string | null;
+  offeredSlots?: Array<{ label?: string | null; datetime?: string | null; offeredAt?: string | null }> | null;
+  bookingLink?: string | null;
+  leadSchedulerLink?: string | null;
+  validateRevisedDraft?: (draft: string) => RevisionDraftValidation | Promise<RevisionDraftValidation>;
   optimizationContext?: AutoSendOptimizationSelection | null;
   selectOptimizationContext?: typeof selectAutoSendOptimizationContext;
   runPrompt?: typeof runStructuredJsonPrompt;
@@ -540,10 +557,31 @@ export async function maybeReviseAutoSendDraft(opts: {
     }
   }
 
+  const hardRequirements = Array.from(new Set((opts.hardRequirements || []).map((entry) => String(entry || "").trim()).filter(Boolean))).slice(0, 12);
+  const hardForbidden = Array.from(new Set((opts.hardForbidden || []).map((entry) => String(entry || "").trim()).filter(Boolean))).slice(0, 12);
+  const offeredSlots = (opts.offeredSlots || [])
+    .map((slot) => {
+      const label = String(slot?.label || "").trim();
+      const datetime = String(slot?.datetime || "").trim();
+      return [label, datetime].filter(Boolean).join(" | ");
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+  const hardConstraints = {
+    hard_requirements: hardRequirements,
+    hard_forbidden: hardForbidden,
+    current_day_iso: (opts.currentDayIso || new Date().toISOString()).trim(),
+    lead_timezone: (opts.leadTimezone || "UNKNOWN").trim() || "UNKNOWN",
+    offered_slots_verbatim: offeredSlots,
+    booking_link: (opts.bookingLink || "").trim() || null,
+    lead_scheduler_link: (opts.leadSchedulerLink || "").trim() || null,
+  };
+
   const inputObject = contextPackMarkdown
     ? {
         context_pack: { runId, iteration, chars: contextPackChars },
         context_pack_markdown: trimToMaxChars(contextPackMarkdown, 24_000),
+        hard_constraints: hardConstraints,
         case: {
           channel: opts.channel,
           subject: (opts.subject || "").slice(0, 300),
@@ -564,6 +602,7 @@ export async function maybeReviseAutoSendDraft(opts: {
             reason: String(opts.evaluation.reason || "").slice(0, 400),
           },
         },
+        hard_constraints: hardConstraints,
         optimization_context: selection
           ? {
               selected_context_markdown: selection.selected_context_markdown.slice(0, 2500),
@@ -607,6 +646,7 @@ export async function maybeReviseAutoSendDraft(opts: {
           revised_draft: { type: "string" },
           changes_made: { type: "array", items: { type: "string" } },
           issues_addressed: { type: "array", items: { type: "string" } },
+          unresolved_requirements: { type: "array", items: { type: "string" } },
           confidence: { type: "number", minimum: 0, maximum: 1 },
           memory_proposals: {
             type: "array",
@@ -647,6 +687,9 @@ export async function maybeReviseAutoSendDraft(opts: {
           reasoningEffort: revisionReasoningEffort,
           contextPackUsed: Boolean(contextPackMarkdown),
           contextPackChars,
+          hardRequirementsCount: hardRequirements.length,
+          hardForbiddenCount: hardForbidden.length,
+          offeredSlotsCount: offeredSlots.length,
         },
       },
       validate: (value) => {
@@ -685,7 +728,27 @@ export async function maybeReviseAutoSendDraft(opts: {
 
   const revisedEvaluation = await withDeadline(opts.reEvaluate(revisedDraft), deadlineMs);
   const revisedConfidence = clamp01(Number(revisedEvaluation.confidence));
-  const improved = revisedConfidence > originalConfidence;
+  let validationPassed = true;
+  let validationReasons: string[] = [];
+  if (Array.isArray(revisedResult.unresolved_requirements) && revisedResult.unresolved_requirements.length > 0) {
+    validationPassed = false;
+    validationReasons = revisedResult.unresolved_requirements.slice(0, 10);
+  }
+  if (validationPassed && typeof opts.validateRevisedDraft === "function") {
+    try {
+      const validation = await opts.validateRevisedDraft(revisedDraft);
+      validationPassed = Boolean(validation?.passed);
+      validationReasons = Array.isArray(validation?.reasons) ? validation.reasons.slice(0, 10) : [];
+    } catch (error) {
+      validationPassed = false;
+      validationReasons = [
+        `revision_validation_error:${error instanceof Error ? error.message : String(error)}`.slice(0, 240),
+      ];
+    }
+  }
+
+  const improvedByConfidence = revisedConfidence > originalConfidence || revisedConfidence >= threshold;
+  const improved = improvedByConfidence && validationPassed;
 
   const memoryProposals = Array.isArray(revisedResult.memory_proposals) ? revisedResult.memory_proposals : [];
   if (memoryProposals.length > 0) {
@@ -740,10 +803,14 @@ export async function maybeReviseAutoSendDraft(opts: {
       payload: {
         selectorUsed,
         improved,
+        improvedByConfidence,
+        validationPassed,
+        validationReasons,
         originalConfidence,
         revisedConfidence,
         changesMade: revisedResult.changes_made,
         issuesAddressed: revisedResult.issues_addressed,
+        unresolvedRequirements: revisedResult.unresolved_requirements || [],
       },
       text: revisedDraft,
     });
@@ -802,6 +869,8 @@ export async function maybeReviseAutoSendDraft(opts: {
         originalConfidence,
         revisedConfidence,
         threshold,
+        validationPassed,
+        validationReasons,
       },
     };
   }
@@ -816,6 +885,8 @@ export async function maybeReviseAutoSendDraft(opts: {
       originalConfidence,
       revisedConfidence,
       threshold,
+      validationPassed,
+      validationReasons,
     },
   };
 }

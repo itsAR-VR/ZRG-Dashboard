@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
-import { createCalendlyInvitee, getCalendlyEventType } from "../calendly-api";
+import {
+  cancelCalendlyScheduledEvent,
+  createCalendlyInvitee,
+  getCalendlyEventType,
+} from "../calendly-api";
 
 const ORIGINAL_FETCH = globalThis.fetch;
 
@@ -111,5 +115,34 @@ describe("calendly-api", () => {
       required: true,
     });
   });
-});
 
+  it("POST scheduled event cancellation endpoint", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+
+    globalThis.fetch = (async (url: any, init?: any) => {
+      calls.push({ url: String(url), init: init as RequestInit });
+      return new Response(
+        JSON.stringify({
+          resource: {
+            uri: "https://api.calendly.com/scheduled_events/evt-1/cancellation",
+          },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } }
+      );
+    }) as any;
+
+    const result = await cancelCalendlyScheduledEvent(
+      "token-123",
+      "https://api.calendly.com/scheduled_events/evt-1",
+      { reason: "Not qualified" }
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0]!.url.endsWith("/scheduled_events/evt-1/cancellation"));
+    assert.equal(calls[0]!.init.method, "POST");
+
+    const body = JSON.parse(String(calls[0]!.init.body));
+    assert.equal(body.reason, "Not qualified");
+  });
+});

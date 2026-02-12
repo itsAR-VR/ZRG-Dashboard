@@ -83,6 +83,12 @@ export function BulkDraftRegenerationCard({ clientId }: { clientId: string }) {
         return;
       }
 
+      if (result.notices?.length && isStartingFresh) {
+        for (const notice of result.notices) {
+          toast.info(notice);
+        }
+      }
+
       setProgress((prev) => mergeProgress(prev, result));
       setNextCursor(result.nextCursor);
       setHasMore(result.hasMore);
@@ -226,4 +232,3 @@ export function BulkDraftRegenerationCard({ clientId }: { clientId: string }) {
     </Card>
   );
 }
-

@@ -37,6 +37,9 @@ From repo root:
 - Dev server: `npm run dev`
 - Lint: `npm run lint`
 - Build (Vercel parity-ish): `npm run build`
+- Tests (full): `npm test`
+- Tests (AI drafting + prompt safety): `npm run test:ai-drafts`
+- Tests (live AI replay on historical replies): `npm run test:ai-replay -- --client-id <clientId>`
 - Prisma schema sync: `npm run db:push`
 - Prisma UI: `npm run db:studio`
 
@@ -166,15 +169,62 @@ Note for automated agents: some `vercel` commands can be interactive; prefer `--
 
 1. `npm run lint`
 2. `npm run build`
-3. If Prisma schema changed:
+3. If your change touches AI drafting/prompts/safety/evaluator paths, run `npm run test:ai-drafts`
+4. If Prisma schema changed:
    - `npm run db:push`
    - confirm tables/columns exist
    - update README/env var docs if required
-4. Smoke test (minimum):
+5. Smoke test (minimum):
    - Login works
    - webhook endpoint accepts a sample payload (or test route)
    - cron endpoint returns success with CRON_SECRET
    - sending a message creates a Message row
+
+## AI Behavior Regression Suite (Agent Required)
+
+Use this whenever you touch `lib/ai-drafts.ts`, `lib/ai/prompt-registry.ts`, Step 3 verifier logic, auto-send evaluator context, or pricing/cadence safety behavior.
+
+- Command: `npm run test:ai-drafts`
+- Focused run: `npm run test:ai-drafts -- lib/ai-drafts/__tests__/pricing-safety-fixtures.test.ts`
+- Fixture harness location: `lib/ai-drafts/__fixtures__/pricing-safety/*.json`
+- Fixture test runner: `lib/ai-drafts/__tests__/pricing-safety-fixtures.test.ts`
+
+Fixture rule for agents:
+- Every AI behavior regression fix should add/update at least one fixture that encodes the input + expected invariants (for example: amounts removed, cadence mismatch handling, clarifier insertion, required include/exclude text).
+
+## Live AI Replay Suite (Real End-to-End Model Generations)
+
+Use this when you need real model outputs against historical inbound replies (not just deterministic fixtures).
+
+- Primary command:
+  - `npm run test:ai-replay -- --client-id <clientId> --limit 20 --concurrency 3`
+- Channel-constrained selection (default is `--channel any`):
+  - `npm run test:ai-replay -- --client-id <clientId> --channel email --limit 20`
+- Selection preview only (no generation/judge):
+  - `npm run test:ai-replay -- --client-id <clientId> --dry-run`
+- Explicit message IDs instead of auto-selection:
+  - `npm run test:ai-replay -- --thread-ids <messageId1,messageId2>`
+- Deterministic manifest-driven replay (critical sets):
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-145/replay-case-manifest.json`
+- Overseer decision mode for replay:
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-145/replay-case-manifest.json --overseer-mode fresh`
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-145/replay-case-manifest.json --overseer-mode persisted`
+- Three-way A/B replay (revision loop off vs platform vs forced):
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-145/replay-case-manifest.json --ab-mode all`
+- Baseline regression comparison:
+  - `npm run test:ai-replay -- --client-id <clientId> --baseline .artifacts/ai-replay/<prior-run>.json`
+
+Important behavior:
+- Runs real `generateResponseDraft` path end-to-end and then scores with overseer gate judge (`meeting.overseer.gate.v1`) using per-case workspace prompt/model context by default.
+- Judge receives historical outbound examples + observed next real outbound reply (when available) to compare against past behavior.
+- Stores full-text artifacts in `.artifacts/ai-replay/*.json` (local-only, gitignored).
+- Artifacts include judge prompt metadata (`judgePromptKey`, `judgeSystemPrompt`, `promptClientId`), per-case `failureType`, and critical invariant evidence (`slot_mismatch`, `date_mismatch`, `fabricated_link`, `empty_draft`, `non_logistics_reply`).
+- Default auto-selection mines high-risk historical inbound messages (pricing/cadence keywords + recent replies).
+- Replay exits non-zero if no cases are selected (use `--allow-empty` only when intentional).
+- Batch runs are rate-limited by `--concurrency`; per-case retries controlled via `--retries`.
+- Replay-generated drafts are deleted by default after judging to reduce inbox clutter; use `--keep-drafts` to retain.
+- Platform invariant policy: deterministic invariants run only after AI approval; invariant failures block send and route to review.
+- `--overseer-mode fresh` is the recommended default for replay validation because it recomputes extract/gate decisions per run without persisting message-level cache entries (prevents stale historical decisions from biasing A/B outcomes).
 
 ---
 

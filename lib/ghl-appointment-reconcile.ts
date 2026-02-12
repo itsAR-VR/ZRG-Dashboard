@@ -12,7 +12,7 @@
  */
 
 import { prisma } from "@/lib/prisma";
-import { getGHLContactAppointments, getGHLAppointment, type GHLAppointment } from "@/lib/ghl-api";
+import { getGHLContact, getGHLContactAppointments, getGHLAppointment, type GHLAppointment } from "@/lib/ghl-api";
 import {
   APPOINTMENT_STATUS,
   APPOINTMENT_SOURCE,
@@ -24,6 +24,16 @@ import { createCancellationTask } from "@/lib/appointment-cancellation-task";
 import { upsertAppointmentWithRollup, mapStringToAppointmentStatus } from "@/lib/appointment-upsert";
 import { AppointmentSource as PrismaAppointmentSource, AppointmentStatus } from "@prisma/client";
 import { resolveGhlContactIdForLead } from "@/lib/ghl-contacts";
+import { getWorkspaceQualificationQuestions } from "@/lib/qualification-answer-extraction";
+import {
+  extractQualificationAnswersFromGhlCustomFields,
+  markLeadBookingQualificationPending,
+  storeBookingFormAnswersOnLead,
+} from "@/lib/booking-qualification";
+import {
+  buildBookingQualificationDedupeKey,
+  enqueueBookingQualificationJob,
+} from "@/lib/booking-qualification-jobs/enqueue";
 
 export interface GHLReconcileResult {
   leadId: string;
@@ -118,6 +128,68 @@ function mapSourceToPrismaEnum(source: AppointmentSource): PrismaAppointmentSour
     default:
       return PrismaAppointmentSource.RECONCILE_CRON;
   }
+}
+
+async function enqueueGhlBookingQualificationIfEligible(opts: {
+  clientId: string;
+  leadId: string;
+  ghlContactId: string | null;
+  ghlAppointmentId: string;
+  ghlPrivateKey: string | null;
+  ghlLocationId: string | null;
+}): Promise<boolean> {
+  const settings = await prisma.workspaceSettings.findUnique({
+    where: { clientId: opts.clientId },
+    select: {
+      bookingQualificationCheckEnabled: true,
+      bookingQualificationCriteria: true,
+    },
+  });
+
+  if (!settings?.bookingQualificationCheckEnabled) return false;
+  if (!(settings.bookingQualificationCriteria || "").trim()) return false;
+  if (!opts.ghlContactId || !opts.ghlPrivateKey) return false;
+
+  const contact = await getGHLContact(opts.ghlContactId, opts.ghlPrivateKey, {
+    locationId: opts.ghlLocationId || undefined,
+  });
+  if (!contact.success || !contact.data?.contact) return false;
+
+  const questions = await getWorkspaceQualificationQuestions(opts.clientId);
+  if (questions.length === 0) return false;
+
+  const answers = extractQualificationAnswersFromGhlCustomFields({
+    questions,
+    customFields: contact.data.contact.customFields,
+  });
+  if (answers.length === 0) return false;
+
+  await storeBookingFormAnswersOnLead({
+    leadId: opts.leadId,
+    clientId: opts.clientId,
+    questionsAndAnswers: answers,
+  });
+  await markLeadBookingQualificationPending(opts.leadId);
+
+  const anchorId = opts.ghlAppointmentId.trim();
+  await enqueueBookingQualificationJob({
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    provider: "GHL",
+    anchorId,
+    dedupeKey: buildBookingQualificationDedupeKey({
+      clientId: opts.clientId,
+      leadId: opts.leadId,
+      provider: "GHL",
+      anchorId,
+    }),
+    payload: {
+      ghlAppointmentId: opts.ghlAppointmentId,
+      ghlContactId: opts.ghlContactId,
+    },
+  });
+
+  return true;
 }
 
 /**
@@ -264,9 +336,17 @@ export async function reconcileGHLAppointmentForLead(
 
       // Apply side effects for new bookings (not for cancellations, not for updates to existing bookings)
       if (isNewBooking && !opts.skipSideEffects) {
-        // Start post-booking sequence
-        await autoStartPostBookingSequenceIfEligible({ leadId });
-
+        const qualificationQueued = await enqueueGhlBookingQualificationIfEligible({
+          clientId: lead.clientId,
+          leadId,
+          ghlContactId,
+          ghlAppointmentId: primary.id,
+          ghlPrivateKey: lead.client.ghlPrivateKey,
+          ghlLocationId: lead.client.ghlLocationId,
+        });
+        if (!qualificationQueued) {
+          await autoStartPostBookingSequenceIfEligible({ leadId });
+        }
         await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
       }
 
@@ -330,6 +410,7 @@ export async function reconcileGHLAppointmentById(
       where: { id: leadId },
       select: {
         id: true,
+        ghlContactId: true,
         ghlAppointmentId: true,
         appointmentStatus: true,
         appointmentBookedAt: true,
@@ -400,7 +481,17 @@ export async function reconcileGHLAppointmentById(
 
       if (!opts.skipSideEffects) {
         if (isNewBooking) {
-          await autoStartPostBookingSequenceIfEligible({ leadId });
+          const qualificationQueued = await enqueueGhlBookingQualificationIfEligible({
+            clientId: lead.clientId,
+            leadId,
+            ghlContactId: lead.ghlContactId,
+            ghlAppointmentId: appointment.id,
+            ghlPrivateKey: lead.client.ghlPrivateKey,
+            ghlLocationId: lead.client.ghlLocationId,
+          });
+          if (!qualificationQueued) {
+            await autoStartPostBookingSequenceIfEligible({ leadId });
+          }
           await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
         }
 

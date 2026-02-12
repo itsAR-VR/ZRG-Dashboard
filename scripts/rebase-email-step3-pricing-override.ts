@@ -49,16 +49,16 @@ function parseOptions(): CliOptions {
 }
 
 function patchStep3PricingRule(existing: string): { next: string; changed: boolean; reason?: string } {
-  const pricingRuleLineRegex = /^\s*-\s*For pricing\/fees:.*$/m;
+  const pricingRuleLineRegex = /^\s*-\s*(?:PRICING VALIDATION:|For pricing\/fees:).*(?:\r?\n)?/m;
   const replacement =
-    `- PRICING VALIDATION: If the draft includes any dollar amount that implies pricing (price/fee/cost/membership/investment, per month/year, /mo, /yr), the numeric dollar amount MUST match an explicit price/fee/cost in <service_description> only. Ignore <knowledge_context> for pricing validation. If an amount does not match, replace it with the best supported price from <service_description>. If multiple supported prices exist, match cadence (monthly vs annual); if cadence is unclear, include both supported options. If no explicit pricing exists in <service_description>, remove all dollar amounts and ask one clarifying pricing question with a quick-call next step. Treat negated unsupported amounts (for example, "not $3,000") as unsupported and remove/replace them too. Ignore revenue/funding thresholds (e.g., "$1M+ in revenue", "$2.5M raised", "$50M ARR") and do NOT treat them as pricing.`;
+    `- PRICING VALIDATION: If the draft includes any dollar amount that implies pricing (price/fee/cost/membership/investment, per month/year/quarter, /mo, /yr, /qtr), the numeric dollar amount MUST match an explicit price/fee/cost in <service_description>. If <service_description> is silent for that amount, fallback to <knowledge_context>. If <service_description> and <knowledge_context> conflict, prefer <service_description>. Cadence must also match supported terms (monthly, annual, quarterly). Do NOT imply a monthly payment plan when context says billing is quarterly; if monthly-equivalent wording is used, keep billing cadence explicit. If an amount/cadence does not match supported context, replace with the best supported option. If multiple supported prices exist, match cadence (monthly vs annual vs quarterly); if cadence is unclear, include supported options with explicit billing cadence. If no explicit pricing exists in either source, remove all dollar amounts and ask one clarifying pricing question with a quick-call next step. Treat negated unsupported amounts (for example, "not $3,000") as unsupported and remove/replace them too. Ignore revenue/funding thresholds (e.g., "$1M+ in revenue", "$2.5M raised", "$50M ARR") and do NOT treat them as pricing.`;
 
   if (pricingRuleLineRegex.test(existing)) {
     return { next: existing.replace(pricingRuleLineRegex, replacement), changed: true };
   }
 
-  // Fallback: if the old line is already gone (manually edited), no-op safely.
-  if (existing.includes("PRICING VALIDATION:")) {
+  // Fallback: if the pricing rule already matches exactly, no-op safely.
+  if (existing.includes(replacement)) {
     return { next: existing, changed: false, reason: "pricing_rule_already_patched" };
   }
 

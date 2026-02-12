@@ -327,6 +327,11 @@ export interface CalendlyInvitee {
     uri?: string;
     created_at?: string;
   } | null;
+  questions_and_answers?: Array<{
+    question: string;
+    answer: string;
+    position: number;
+  }>;
 }
 
 export interface ListScheduledEventsParams {
@@ -419,4 +424,18 @@ export async function getCalendlyScheduledEvent(
     return { success: false, error: "Calendly scheduled event response missing resource" };
   }
   return { success: true, data: resource };
+}
+
+export async function cancelCalendlyScheduledEvent(
+  accessToken: string,
+  scheduledEventUri: string,
+  opts?: { reason?: string }
+): Promise<CalendlyApiResult<{ canceled: true }>> {
+  const url = `${scheduledEventUri}/cancellation`;
+  const res = await calendlyRequest<unknown>(accessToken, url, {
+    method: "POST",
+    body: JSON.stringify({ reason: opts?.reason || "" }),
+  });
+  if (!res.success) return res;
+  return { success: true, data: { canceled: true } };
 }

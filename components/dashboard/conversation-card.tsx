@@ -1,5 +1,6 @@
 "use client"
 
+import { memo } from "react"
 import { cn } from "@/lib/utils"
 import type { Conversation } from "@/lib/mock-data"
 import { Mail, MessageSquare, Linkedin, AlertCircle, AlertTriangle, Loader2, Moon, UserCheck } from "lucide-react"
@@ -101,7 +102,7 @@ function getClassificationStyle(classification: string) {
   return classificationStyles["new"]
 }
 
-export function ConversationCard({ conversation, isActive, onClick, isSyncing = false }: ConversationCardProps) {
+function ConversationCardComponent({ conversation, isActive, onClick, isSyncing = false }: ConversationCardProps) {
   // Use primaryChannel with fallback to platform for backward compatibility
   const primaryChannel = conversation.primaryChannel || conversation.platform || "sms"
   const PrimaryIcon = platformIcons[primaryChannel]
@@ -230,3 +231,42 @@ export function ConversationCard({ conversation, isActive, onClick, isSyncing = 
     </button>
   )
 }
+
+function areEqualStringArrays(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+export const ConversationCard = memo(ConversationCardComponent, (prev, next) => {
+  const prevConversation = prev.conversation
+  const nextConversation = next.conversation
+
+  if (prev.isActive !== next.isActive) return false
+  if (prev.isSyncing !== next.isSyncing) return false
+  if (prevConversation.id !== nextConversation.id) return false
+  if (prevConversation.classification !== nextConversation.classification) return false
+  if (prevConversation.lastMessage !== nextConversation.lastMessage) return false
+  if (prevConversation.lastSubject !== nextConversation.lastSubject) return false
+  if (prevConversation.lastMessageTime.getTime() !== nextConversation.lastMessageTime.getTime()) return false
+  if (prevConversation.primaryChannel !== nextConversation.primaryChannel) return false
+  if (prevConversation.platform !== nextConversation.platform) return false
+  if (prevConversation.requiresAttention !== nextConversation.requiresAttention) return false
+  if (prevConversation.hasAiDraft !== nextConversation.hasAiDraft) return false
+  if (!areEqualStringArrays(prevConversation.channels, nextConversation.channels)) return false
+
+  if (prevConversation.lead.name !== nextConversation.lead.name) return false
+  if (prevConversation.lead.company !== nextConversation.lead.company) return false
+  if (prevConversation.lead.smsCampaignName !== nextConversation.lead.smsCampaignName) return false
+  if (prevConversation.lead.smsDndActive !== nextConversation.lead.smsDndActive) return false
+  if (prevConversation.lead.followUpBlockedReason !== nextConversation.lead.followUpBlockedReason) return false
+  if (prevConversation.lead.overallScore !== nextConversation.lead.overallScore) return false
+  if ((prevConversation.lead.scoredAt?.getTime() ?? 0) !== (nextConversation.lead.scoredAt?.getTime() ?? 0)) return false
+  if (prevConversation.lead.assignedToEmail !== nextConversation.lead.assignedToEmail) return false
+
+  return true
+})

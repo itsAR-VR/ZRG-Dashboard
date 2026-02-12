@@ -6,6 +6,14 @@ import { verifyCalendlyWebhookSignature } from "@/lib/calendly-webhook";
 import { upsertAppointmentWithRollup } from "@/lib/appointment-upsert";
 import { AppointmentStatus, AppointmentSource } from "@prisma/client";
 import { createCancellationTask } from "@/lib/appointment-cancellation-task";
+import {
+  markLeadBookingQualificationPending,
+  storeBookingFormAnswersOnLead,
+} from "@/lib/booking-qualification";
+import {
+  buildBookingQualificationDedupeKey,
+  enqueueBookingQualificationJob,
+} from "@/lib/booking-qualification-jobs/enqueue";
 
 type CalendlyWebhookEnvelope = {
   event?: string;
@@ -34,6 +42,7 @@ function parseInviteePayload(payload: unknown): {
   eventTypeUri: string | null;
   startTime: string | null;
   endTime: string | null;
+  questionsAndAnswers: Array<{ question: string; answer: string; position: number }>;
 } {
   const root = getObject(payload);
   const invitee = getObject(getNested(root, "invitee"));
@@ -50,12 +59,34 @@ function parseInviteePayload(payload: unknown): {
 
   const startTime = getString(getNested(scheduledEvent, "start_time")) ?? getString(getNested(scheduledEvent, "startTime"));
   const endTime = getString(getNested(scheduledEvent, "end_time")) ?? getString(getNested(scheduledEvent, "endTime"));
+  const questionsAndAnswersRaw = getNested(invitee, "questions_and_answers");
+  const questionsAndAnswers = Array.isArray(questionsAndAnswersRaw)
+    ? questionsAndAnswersRaw
+        .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+        .map((item) => ({
+          question: typeof item.question === "string" ? item.question.trim() : "",
+          answer: typeof item.answer === "string" ? item.answer.trim() : "",
+          position: typeof item.position === "number" && Number.isFinite(item.position) ? Math.trunc(item.position) : 0,
+        }))
+        .filter((item) => item.question && item.answer)
+    : [];
 
-  return { inviteeUri, inviteeEmail, inviteeName, scheduledEventUri, eventTypeUri, startTime, endTime };
+  return {
+    inviteeUri,
+    inviteeEmail,
+    inviteeName,
+    scheduledEventUri,
+    eventTypeUri,
+    startTime,
+    endTime,
+    questionsAndAnswers,
+  };
 }
 
-async function applyPostBookingSideEffects(leadId: string) {
-  await autoStartPostBookingSequenceIfEligible({ leadId });
+async function applyPostBookingSideEffects(leadId: string, opts?: { skipAutoStart?: boolean }) {
+  if (!opts?.skipAutoStart) {
+    await autoStartPostBookingSequenceIfEligible({ leadId });
+  }
   await pauseFollowUpsOnBooking(leadId, { mode: "complete" });
 }
 
@@ -108,7 +139,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ cl
     return NextResponse.json({ ok: true, ignored: true, reason: "missing_event" }, { status: 200 });
   }
 
-  const { inviteeUri, inviteeEmail, scheduledEventUri, eventTypeUri, startTime, endTime } = parseInviteePayload(parsed?.payload);
+  const { inviteeUri, inviteeEmail, scheduledEventUri, eventTypeUri, startTime, endTime, questionsAndAnswers } =
+    parseInviteePayload(parsed?.payload);
 
   // Try to map to a lead deterministically (IDs first, then email fallback).
   let lead =
@@ -132,15 +164,25 @@ export async function POST(request: NextRequest, context: { params: Promise<{ cl
         })
       : null);
 
-  // Optional: filter by configured event type if present (avoids noise if org has many event types).
-  if (lead && eventTypeUri) {
-    const settings = await prisma.workspaceSettings.findUnique({
-      where: { clientId },
-      select: { calendlyEventTypeUri: true },
-    });
-    if (settings?.calendlyEventTypeUri && settings.calendlyEventTypeUri !== eventTypeUri) {
-      return NextResponse.json({ ok: true, ignored: true, reason: "event_type_mismatch" }, { status: 200 });
-    }
+  const settings = lead
+    ? await prisma.workspaceSettings.findUnique({
+        where: { clientId },
+        select: {
+          calendlyEventTypeUri: true,
+          calendlyDirectBookEventTypeUri: true,
+          bookingQualificationCheckEnabled: true,
+          bookingQualificationCriteria: true,
+        },
+      })
+    : null;
+
+  // Optional: filter by configured event types if present (avoids noise if org has many event types).
+  const allowedEventTypeUris = [
+    (settings?.calendlyEventTypeUri || "").trim(),
+    (settings?.calendlyDirectBookEventTypeUri || "").trim(),
+  ].filter(Boolean);
+  if (eventTypeUri && allowedEventTypeUris.length > 0 && !allowedEventTypeUris.includes(eventTypeUri)) {
+    return NextResponse.json({ ok: true, ignored: true, reason: "event_type_mismatch" }, { status: 200 });
   }
 
   if (!lead) {
@@ -184,7 +226,43 @@ export async function POST(request: NextRequest, context: { params: Promise<{ cl
       });
     }
 
-    await applyPostBookingSideEffects(lead.id);
+    const qualificationEventTypeUri = (settings?.calendlyEventTypeUri || "").trim();
+    const shouldRunQualificationCheck =
+      Boolean(settings?.bookingQualificationCheckEnabled) &&
+      Boolean((settings?.bookingQualificationCriteria || "").trim()) &&
+      Boolean(eventTypeUri && qualificationEventTypeUri && eventTypeUri === qualificationEventTypeUri) &&
+      questionsAndAnswers.length > 0;
+
+    if (shouldRunQualificationCheck) {
+      await storeBookingFormAnswersOnLead({
+        leadId: lead.id,
+        clientId,
+        questionsAndAnswers,
+      });
+      await markLeadBookingQualificationPending(lead.id);
+
+      const anchorId =
+        (inviteeUri || "").trim() || (scheduledEventUri || "").trim() || `${lead.id}:calendly:${eventTypeUri || "unknown"}`;
+      await enqueueBookingQualificationJob({
+        clientId,
+        leadId: lead.id,
+        provider: "CALENDLY",
+        anchorId,
+        dedupeKey: buildBookingQualificationDedupeKey({
+          clientId,
+          leadId: lead.id,
+          provider: "CALENDLY",
+          anchorId,
+        }),
+        payload: {
+          inviteeUri: inviteeUri || null,
+          scheduledEventUri: scheduledEventUri || null,
+          eventTypeUri: eventTypeUri || null,
+        },
+      });
+    }
+
+    await applyPostBookingSideEffects(lead.id, { skipAutoStart: shouldRunQualificationCheck });
 
     return NextResponse.json(
       { ok: true, handled: true, event, leadId: lead.id, calendlyInviteeUri: inviteeUri, calendlyScheduledEventUri: scheduledEventUri },

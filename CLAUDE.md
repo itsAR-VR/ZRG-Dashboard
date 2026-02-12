@@ -23,6 +23,9 @@ ZRG Dashboard is a multi-channel sales inbox and CRM that unifies SMS (GoHighLev
 npm run dev          # Start development server (localhost:3000)
 npm run build        # Build for production (runs prisma generate first)
 npm run lint         # ESLint
+npm run test         # Full test orchestrator
+npm run test:ai-drafts # AI drafting + prompt safety suite
+npm run test:ai-replay -- --client-id <clientId> # Live replay: real generation + LLM judging on historical replies
 npm run db:push      # Push Prisma schema changes to database
 npm run db:studio    # Open Prisma Studio GUI
 ```
@@ -203,8 +206,54 @@ prisma/
 
 1. `npm run lint` - no errors
 2. `npm run build` - succeeds
-3. If schema changed: `npm run db:push` and verify in Studio
-4. Test affected webhook endpoints with sample payloads
+3. If change touches AI drafting/prompt/safety/evaluator logic: `npm run test:ai-drafts`
+4. If schema changed: `npm run db:push` and verify in Studio
+5. Test affected webhook endpoints with sample payloads
+
+## AI Behavior Regression Suite (For Coding + Review Agents)
+
+Use this suite for any changes in AI drafting behavior, prompt contracts, pricing/cadence logic, Step 3 verification, or auto-send evaluator context.
+
+- Run: `npm run test:ai-drafts`
+- Target one file: `npm run test:ai-drafts -- lib/ai-drafts/__tests__/pricing-safety-fixtures.test.ts`
+- Add/update fixtures in: `lib/ai-drafts/__fixtures__/pricing-safety/*.json`
+- Fixture runner: `lib/ai-drafts/__tests__/pricing-safety-fixtures.test.ts`
+
+Fixture strategy:
+- Encode production regressions as fixture JSON with explicit invariants (removed amounts, cadence mismatches, clarifier insertion, required include/exclude tokens).
+- Prefer invariants over exact full-draft string matches to keep tests stable across safe copy edits.
+
+## Live AI Replay Suite (Real Model Generations)
+
+Use this suite when deterministic tests are not enough and you need end-to-end live outputs:
+
+- Main run:
+  - `npm run test:ai-replay -- --client-id <clientId> --limit 20 --concurrency 3`
+- Channel-constrained selection (default is `--channel any`):
+  - `npm run test:ai-replay -- --client-id <clientId> --channel email --limit 20`
+- Dry-run selection:
+  - `npm run test:ai-replay -- --client-id <clientId> --dry-run`
+- Explicit historical message IDs:
+  - `npm run test:ai-replay -- --thread-ids <messageId1,messageId2>`
+- Deterministic manifest-driven replay (critical sets):
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-145/replay-case-manifest.json`
+- Overseer decision mode for replay:
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-145/replay-case-manifest.json --overseer-mode fresh`
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-145/replay-case-manifest.json --overseer-mode persisted`
+- Three-way A/B replay (revision loop off vs platform vs forced):
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-145/replay-case-manifest.json --ab-mode all`
+- Compare against prior run:
+  - `npm run test:ai-replay -- --client-id <clientId> --baseline .artifacts/ai-replay/<prior-run>.json`
+
+Operational notes:
+- Uses the production draft generation path (`generateResponseDraft`) plus overseer gate judge (`meeting.overseer.gate.v1`) with per-case workspace prompt/model context by default.
+- Judge input includes historical outbound examples + observed next real outbound reply (when available).
+- Writes full-text JSON artifacts to `.artifacts/ai-replay/*.json` (gitignored).
+- Artifacts include judge prompt metadata (`judgePromptKey`, `judgeSystemPrompt`, `promptClientId`), per-case `failureType`, and critical invariant evidence (`slot_mismatch`, `date_mismatch`, `fabricated_link`, `empty_draft`, `non_logistics_reply`).
+- Replay exits non-zero when zero cases are selected unless `--allow-empty` is set.
+- Replay-generated `AIDraft` rows are deleted by default after scoring; pass `--keep-drafts` to retain.
+- Platform invariant policy: deterministic invariants run only after AI approval; invariant failures block send and route to review.
+- `--overseer-mode fresh` is recommended for replay validation because it recomputes extract/gate decisions without reusing persisted message-level cache entries.
 
 ## Debugging
 

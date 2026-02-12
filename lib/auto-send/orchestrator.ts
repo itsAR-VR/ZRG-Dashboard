@@ -3,6 +3,7 @@ import "server-only";
 import { approveAndSendDraftSystem } from "@/actions/message-actions";
 import { decideShouldAutoReply } from "@/lib/auto-reply-gate";
 import { evaluateAutoSend } from "@/lib/auto-send-evaluator";
+import { evaluateReplayInvariantFailures } from "@/lib/ai-replay/invariants";
 import { getPublicAppUrl } from "@/lib/app-url";
 import {
   computeDelayedAutoSendRunAt,
@@ -14,6 +15,7 @@ import {
 import { sendSlackDmByUserIdWithToken } from "@/lib/slack-dm";
 import { sanitizeSlackCodeBlockText, truncateSlackText } from "@/lib/slack-format";
 import { maybeReviseAutoSendDraft } from "@/lib/auto-send/revision-agent";
+import { buildRevisionHardConstraints, validateRevisionAgainstHardConstraints } from "@/lib/auto-send/revision-constraints";
 import { persistAutoSendRevisionLoopSummary } from "@/lib/auto-send/loop-observability";
 import {
   getNextAutoSendWindow,
@@ -58,6 +60,21 @@ function buildLeadName(context: AutoSendContext): string {
 function buildCampaignLabel(context: AutoSendContext): string {
   const campaign = context.emailCampaign;
   return campaign ? `${campaign.name} (${campaign.bisonCampaignId})` : "Unknown campaign";
+}
+
+function evaluatePostAiInvariantCodes(context: AutoSendContext): string[] {
+  const failures = evaluateReplayInvariantFailures({
+    inboundBody: context.latestInbound || "",
+    draft: context.draftContent || "",
+    offeredSlots: (context.offeredSlots || []).map((slot) => ({
+      label: slot.label || "",
+      datetime: slot.datetime || "",
+      offeredAt: slot.offeredAt || "",
+    })),
+    bookingLink: context.bookingLink || null,
+    leadSchedulerLink: context.leadSchedulerLink || null,
+  });
+  return failures.map((entry) => entry.code);
 }
 
 export type AutoSendDependencies = {
@@ -335,6 +352,20 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
             break;
           }
 
+          const offeredSlots =
+            (context.offeredSlots || []).map((slot) => ({
+              label: slot.label || "",
+              datetime: slot.datetime || "",
+              offeredAt: slot.offeredAt || "",
+            })) || [];
+          const revisionConstraints = buildRevisionHardConstraints({
+            inboundBody: context.latestInbound || "",
+            offeredSlots,
+            bookingLink: context.bookingLink || null,
+            leadSchedulerLink: context.leadSchedulerLink || null,
+            currentDraft: context.draftContent,
+          });
+
           const revision = await deps.maybeReviseAutoSendDraft({
             clientId: context.clientId,
             leadId: context.leadId,
@@ -349,6 +380,21 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
             draft: context.draftContent,
             evaluation,
             threshold,
+            hardRequirements: revisionConstraints.hardRequirements,
+            hardForbidden: revisionConstraints.hardForbidden,
+            currentDayIso: context.messageSentAt.toISOString(),
+            leadTimezone: context.leadTimezone || null,
+            offeredSlots,
+            bookingLink: context.bookingLink || null,
+            leadSchedulerLink: context.leadSchedulerLink || null,
+            validateRevisedDraft: async (candidateDraft) =>
+              validateRevisionAgainstHardConstraints({
+                inboundBody: context.latestInbound || "",
+                offeredSlots,
+                bookingLink: context.bookingLink || null,
+                leadSchedulerLink: context.leadSchedulerLink || null,
+                draft: candidateDraft,
+              }),
             timeoutMs: Math.min(remainingMs, 20_000),
             selectorTimeoutMs: Math.min(remainingMs, 7_500),
             reviserTimeoutMs: Math.min(remainingMs, 12_000),
@@ -467,6 +513,54 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
     }
 
     if (passesSafety && passesConfidence) {
+      const invariantCodes = evaluatePostAiInvariantCodes(context);
+      if (invariantCodes.length > 0) {
+        const invariantReason = `post_ai_invariant_failed:${invariantCodes.join(",")}`;
+        const dmResult = await sendReviewNeededSlackDm({
+          context,
+          confidence: evaluation.confidence,
+          threshold,
+          reason: invariantReason,
+        });
+
+        await safeRecord({
+          draftId: context.draftId,
+          evaluatedAt,
+          confidence: evaluation.confidence,
+          threshold,
+          reason: invariantReason,
+          action: "needs_review",
+          slackNotified: dmResult.success,
+          slackNotificationChannelId: dmResult.channelId,
+          slackNotificationMessageTs: dmResult.messageTs,
+        });
+
+        return {
+          mode: "AI_AUTO_SEND",
+          outcome: {
+            action: "needs_review",
+            draftId: context.draftId,
+            reason: invariantReason,
+            confidence: evaluation.confidence,
+            threshold,
+            invariantCodes,
+            slackDm: {
+              sent: dmResult.success,
+              skipped: dmResult.skipped,
+              error: dmResult.error,
+              messageTs: dmResult.messageTs,
+              channelId: dmResult.channelId,
+            },
+          },
+          telemetry: {
+            path: "campaign_ai_auto_send",
+            evaluationTimeMs,
+            confidence: evaluation.confidence,
+            threshold,
+          },
+        };
+      }
+
       const scheduleConfig = resolveAutoSendScheduleConfig(
         context.workspaceSettings ?? null,
         context.emailCampaign ?? null,

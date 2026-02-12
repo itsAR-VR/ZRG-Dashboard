@@ -13,6 +13,10 @@
       "schedule": "* * * * *"
     },
     {
+      "path": "/api/cron/booking-qualification-jobs",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/cron/response-timing",
       "schedule": "*/5 * * * *"
     },

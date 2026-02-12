@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "phase-146/evidence-packet.schema.json",
+  "title": "Replay Evidence Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "caseId",
+    "channel",
+    "failureType",
+    "inbound",
+    "decisionContract",
+    "generation",
+    "judge",
+    "invariants",
+    "references"
+  ],
+  "properties": {
+    "caseId": { "type": "string", "minLength": 1 },
+    "channel": { "type": "string", "enum": ["email", "sms", "linkedin"] },
+    "failureType": {
+      "type": ["string", "null"],
+      "enum": [
+        "decision_error",
+        "draft_generation_error",
+        "draft_quality_error",
+        "judge_error",
+        "infra_error",
+        "selection_error",
+        "execution_error",
+        null
+      ]
+    },
+    "inbound": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["leadSentiment", "body"],
+      "properties": {
+        "leadSentiment": { "type": "string" },
+        "subject": { "type": ["string", "null"] },
+        "body": { "type": "string", "minLength": 1 },
+        "transcript": { "type": ["string", "null"] }
+      }
+    },
+    "decisionContract": {
+      "type": ["object", "null"],
+      "description": "decision_contract_v1 snapshot used (or null when unavailable)."
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "draftId", "content", "error"],
+      "properties": {
+        "status": { "type": "string", "enum": ["generated", "skipped", "failed"] },
+        "draftId": { "type": ["string", "null"] },
+        "content": { "type": ["string", "null"] },
+        "error": { "type": ["string", "null"] }
+      }
+    },
+    "judge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["promptKey", "promptClientId", "systemPrompt", "pass", "overallScore", "failureReasons"],
+      "properties": {
+        "promptKey": { "type": "string" },
+        "promptClientId": { "type": ["string", "null"] },
+        "systemPrompt": { "type": "string" },
+        "pass": { "type": ["boolean", "null"] },
+        "overallScore": { "type": ["number", "null"] },
+        "failureReasons": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "invariants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message", "severity"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "slot_mismatch",
+              "date_mismatch",
+              "fabricated_link",
+              "empty_draft",
+              "non_logistics_reply"
+            ]
+          },
+          "message": { "type": "string" },
+          "severity": { "type": "string", "enum": ["critical"] }
+        }
+      }
+    },
+    "references": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactPath"],
+      "properties": {
+        "artifactPath": { "type": ["string", "null"] },
+        "historicalOutbound": { "type": ["string", "null"] },
+        "notes": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

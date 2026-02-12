@@ -633,6 +633,56 @@ npm run dev
 # Open http://localhost:3000
 ```
 
+### AI Behavior Testing (Long-Term Regression Suite)
+
+For prompt, AI drafting, pricing/cadence safety, and auto-send evaluator behavior changes, run:
+
+```bash
+npm run test:ai-drafts
+```
+
+Run a focused fixture suite:
+
+```bash
+npm run test:ai-drafts -- lib/ai-drafts/__tests__/pricing-safety-fixtures.test.ts
+```
+
+Fixture harness for production regressions:
+- Fixture JSONs: `lib/ai-drafts/__fixtures__/pricing-safety/*.json`
+- Fixture runner: `lib/ai-drafts/__tests__/pricing-safety-fixtures.test.ts`
+
+When fixing AI behavior bugs, add/update a fixture with explicit invariants (for example: removed unsupported amounts, cadence mismatch handling, clarifier insertion, and must-include/must-exclude tokens).
+
+### Live AI Replay Testing (Real End-to-End Generations)
+
+Use this when you need actual model outputs on historical replies (batch + multi-case), not just deterministic fixtures.
+
+```bash
+# Run live replay against auto-selected historical inbound messages
+npm run test:ai-replay -- --client-id <clientId> --limit 20 --concurrency 3
+
+# Constrain to a specific channel (default selection uses any channel)
+npm run test:ai-replay -- --client-id <clientId> --channel email --limit 20
+
+# Selection-only preview (no live generation or judging)
+npm run test:ai-replay -- --client-id <clientId> --dry-run
+
+# Replay explicit historical inbound message IDs
+npm run test:ai-replay -- --thread-ids <messageId1,messageId2>
+
+# Compare against a previous run artifact (regression diff)
+npm run test:ai-replay -- --client-id <clientId> --baseline .artifacts/ai-replay/<prior-run>.json
+```
+
+What it does:
+- Uses real `generateResponseDraft` path for each selected case.
+- Scores each generated draft with an LLM judge prompt (`ai.replay.judge.v1`).
+- Judge input includes historical outbound examples and observed next real outbound reply (when available) for grounded evaluation.
+- Writes a full-text JSON artifact to `.artifacts/ai-replay/*.json` (gitignored).
+- Supports batch concurrency (`--concurrency`) and case retries (`--retries`).
+- Fails fast when zero cases are selected (use `--allow-empty` only when intentionally bypassing this guard).
+- Deletes replay-generated `AIDraft` rows by default after scoring (`--keep-drafts` to retain).
+
 ---
 
 ## 🔮 Roadmap

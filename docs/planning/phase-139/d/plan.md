@@ -92,3 +92,17 @@ Before writing in shared sections:
 ## Handoff
 
 Phase 139e performs final cross-phase integration checks against active Phase 138 changes and runs full regression verification across the three reported bug scenarios.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Updated `sendAutoBookingConfirmation(...)` in `lib/followup-engine.ts` to accept `leadTimeZone` and format confirmation labels lead-timezone-first.
+  - Updated `processMessageForAutoBooking(...)` to pass `conversationText` into `ensureLeadTimezone(...)`.
+  - Added overseer timezone persistence guard in `processMessageForAutoBooking(...)` to persist only valid IANA values when changed.
+  - Migrated meeting overseer extraction to `meeting.overseer.extract.v2` in `lib/meeting-overseer.ts` with new `detected_timezone` field and compatibility normalization for older v1 payloads.
+  - Updated overseer decision test fixture in `lib/__tests__/followup-booking-signal.test.ts` for new schema field.
+- Commands run:
+  - `DATABASE_URL='postgresql://test:test@localhost:5432/test?schema=public' DIRECT_URL='postgresql://test:test@localhost:5432/test?schema=public' OPENAI_API_KEY='test' node --conditions=react-server --import tsx --test lib/__tests__/followup-booking-signal.test.ts` — pass.
+- Blockers:
+  - None.
+- Next concrete steps:
+  - Completed in this turn; phase-level integration and gates are finalized in 139e.

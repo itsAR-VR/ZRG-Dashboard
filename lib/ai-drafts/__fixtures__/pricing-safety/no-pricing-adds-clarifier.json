@@ -1,0 +1,22 @@
+{
+  "id": "no-pricing-adds-clarifier",
+  "description": "Unsupported pricing should be stripped and replaced with a clarifier when no source pricing exists.",
+  "input": {
+    "draft": "Our fee is $3,000.",
+    "serviceDescription": null,
+    "knowledgeContext": null
+  },
+  "expected": {
+    "removedAmounts": [3000],
+    "removedCadenceAmounts": [],
+    "addedClarifier": true,
+    "normalizedCadencePhrase": false,
+    "draftIncludes": ["which pricing details you want"],
+    "draftExcludes": ["$3,000"],
+    "detection": {
+      "hallucinated": [3000],
+      "valid": [],
+      "cadenceMismatched": []
+    }
+  }
+}

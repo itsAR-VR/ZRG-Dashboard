@@ -56,6 +56,7 @@ interface SidebarProps {
   onFilterChange: (filter: string) => void
   activeView: ViewType
   onViewChange: (view: ViewType) => void
+  onViewIntent?: (view: ViewType) => void
   activeWorkspace: string | null
   onWorkspaceChange: (workspace: string | null) => void
   workspaces: Workspace[]
@@ -78,6 +79,13 @@ function normalizeBrandLogoSrc(value?: string | null): string | null {
   if (!normalized.startsWith("/")) normalized = `/${normalized}`
 
   if (normalized === "/") return null
+  // Prevent `%20` becoming `%2520` when the stored path is already URI-encoded.
+  try {
+    normalized = decodeURI(normalized)
+  } catch {
+    // keep original string when decode fails on malformed input
+  }
+
   return encodeURI(normalized)
 }
 
@@ -99,6 +107,18 @@ interface FilterCounts {
   aiReview: number
 }
 
+function areCountsEqual(a: FilterCounts | null, b: FilterCounts) {
+  if (!a) return false
+  return (
+    a.allResponses === b.allResponses &&
+    a.attention === b.attention &&
+    a.previousAttention === b.previousAttention &&
+    a.needsRepair === b.needsRepair &&
+    a.aiSent === b.aiSent &&
+    a.aiReview === b.aiReview
+  )
+}
+
 export function Sidebar({
   activeChannels,
   onChannelsChange,
@@ -106,6 +126,7 @@ export function Sidebar({
   onFilterChange,
   activeView,
   onViewChange,
+  onViewIntent,
   activeWorkspace,
   onWorkspaceChange,
   workspaces,
@@ -115,6 +136,7 @@ export function Sidebar({
   const [workspaceSearch, setWorkspaceSearch] = useState("")
   const hasLoadedCountsRef = useRef(false)
   const lastWorkspaceRef = useRef<string | null>(activeWorkspace)
+  const isFetchingCountsRef = useRef(false)
   const { user } = useUser()
   const workspaceCollator = useMemo(
     () => new Intl.Collator(undefined, { sensitivity: "base", numeric: true }),
@@ -125,29 +147,46 @@ export function Sidebar({
   // Don't fetch until workspace is set to avoid showing all-workspace counts
   useEffect(() => {
     let cancelled = false
+    if (!activeWorkspace || activeView !== "inbox") {
+      setIsLoadingCounts(false)
+      return () => {
+        cancelled = true
+      }
+    }
+
     if (lastWorkspaceRef.current !== activeWorkspace) {
       hasLoadedCountsRef.current = false
       lastWorkspaceRef.current = activeWorkspace
     }
 
+    const canFetch = () => {
+      if (typeof document === "undefined") return true
+      return document.visibilityState === "visible"
+    }
+
     async function fetchCounts() {
+      if (isFetchingCountsRef.current) return
+      if (!canFetch()) return
+
       // Only start loading indicator on initial fetch, not periodic refreshes
       if (!hasLoadedCountsRef.current) {
         setIsLoadingCounts(true)
       }
 
+      isFetchingCountsRef.current = true
       try {
         const result = await getInboxCounts(activeWorkspace)
+        const nextCounts: FilterCounts = {
+          allResponses: result.allResponses,
+          attention: result.requiresAttention,
+          previousAttention: result.previouslyRequiredAttention,
+          needsRepair: result.needsRepair,
+          aiSent: result.aiSent,
+          aiReview: result.aiReview,
+        }
 
         if (!cancelled) {
-          setCounts({
-            allResponses: result.allResponses,
-            attention: result.requiresAttention,
-            previousAttention: result.previouslyRequiredAttention,
-            needsRepair: result.needsRepair,
-            aiSent: result.aiSent,
-            aiReview: result.aiReview,
-          })
+          setCounts((current) => (areCountsEqual(current, nextCounts) ? current : nextCounts))
           hasLoadedCountsRef.current = true
           setIsLoadingCounts(false)
         }
@@ -155,27 +194,42 @@ export function Sidebar({
         if (!cancelled) {
           setIsLoadingCounts(false)
         }
+      } finally {
+        isFetchingCountsRef.current = false
       }
     }
 
     fetchCounts()
-    
-    // Refresh counts every 30 seconds
-    const interval = setInterval(fetchCounts, 30000)
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void fetchCounts()
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    // Refresh counts every 60 seconds while inbox is visible
+    const interval = setInterval(() => {
+      void fetchCounts()
+    }, 60000)
     return () => {
       cancelled = true
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
       clearInterval(interval)
     }
-  }, [activeWorkspace])
+  }, [activeWorkspace, activeView])
 
-  const filterItems = [
-    { id: "responses", label: "All Responses", icon: MessageSquare, count: counts?.allResponses ?? 0, variant: "outline" as const },
-    { id: "attention", label: "Requires Attention", icon: AlertCircle, count: counts?.attention ?? 0, variant: "destructive" as const },
-    { id: "ai_sent", label: "AI Sent", icon: Bot, count: counts?.aiSent ?? 0, variant: "outline" as const },
-    { id: "ai_review", label: "AI Needs Review", icon: FileEdit, count: counts?.aiReview ?? 0, variant: "warning" as const },
-    { id: "needs_repair", label: "Needs Repair", icon: Wrench, count: counts?.needsRepair ?? 0, variant: "outline" as const },
-    { id: "previous_attention", label: "Previously Required Attention", icon: FileEdit, count: counts?.previousAttention ?? 0, variant: "warning" as const },
-  ]
+  const filterItems = useMemo(
+    () => [
+      { id: "responses", label: "All Responses", icon: MessageSquare, count: counts?.allResponses ?? 0, variant: "outline" as const },
+      { id: "attention", label: "Requires Attention", icon: AlertCircle, count: counts?.attention ?? 0, variant: "destructive" as const },
+      { id: "ai_sent", label: "AI Sent", icon: Bot, count: counts?.aiSent ?? 0, variant: "outline" as const },
+      { id: "ai_review", label: "AI Needs Review", icon: FileEdit, count: counts?.aiReview ?? 0, variant: "warning" as const },
+      { id: "needs_repair", label: "Needs Repair", icon: Wrench, count: counts?.needsRepair ?? 0, variant: "outline" as const },
+      { id: "previous_attention", label: "Previously Required Attention", icon: FileEdit, count: counts?.previousAttention ?? 0, variant: "warning" as const },
+    ],
+    [counts]
+  )
 
   const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)
   const displayBrandName = (selectedWorkspace?.brandName || selectedWorkspace?.name || "Inbox").trim()
@@ -213,8 +267,9 @@ export function Sidebar({
   }
 
   useEffect(() => {
-    setBrandLogoSrc(displayBrandLogoUrl ?? "/images/zrg-logo-3.png")
-    setLogoErrored(false)
+    const nextBrandLogo = displayBrandLogoUrl ?? "/images/zrg-logo-3.png"
+    setBrandLogoSrc((current) => (current === nextBrandLogo ? current : nextBrandLogo))
+    setLogoErrored((current) => (current ? false : current))
   }, [displayBrandLogoUrl])
 
   const channelToggleValue: string[] =
@@ -314,6 +369,8 @@ export function Sidebar({
             variant={activeView === item.id ? "secondary" : "ghost"}
             className="w-full justify-start gap-3"
             onClick={() => onViewChange(item.id)}
+            onMouseEnter={() => onViewIntent?.(item.id)}
+            onFocus={() => onViewIntent?.(item.id)}
           >
             <item.icon className="h-4 w-4" />
             {item.label}

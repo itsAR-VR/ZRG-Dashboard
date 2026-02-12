@@ -10,6 +10,7 @@ import {
 import { SNIPPET_DEFAULTS } from "@/lib/ai/prompt-snippets";
 import { estimateCostUsd } from "@/lib/ai/pricing";
 import { pruneOldAIInteractionsMaybe } from "@/lib/ai/retention";
+import { AI_ROUTE_SKIP_FEATURE_ID } from "@/lib/ai/route-skip-observability";
 
 export type AiObservabilityWindow = "24h" | "7d" | "30d";
 
@@ -75,6 +76,27 @@ export type ErrorSampleGroup = {
   model: string;
   errors: number;
   samples: ErrorSample[];
+};
+
+export type AiRouteSkipSummary = {
+  window: AiObservabilityWindow;
+  rangeStart: string;
+  rangeEnd: string;
+  counts: {
+    draftGeneration: number;
+    draftGenerationStep2: number;
+    draftVerificationStep3: number;
+    meetingOverseer: number;
+  };
+  events: Array<{
+    id: string;
+    createdAt: string;
+    route: "draft_generation" | "draft_generation_step2" | "draft_verification_step3" | "meeting_overseer";
+    source: string | null;
+    leadId: string | null;
+    channel: string | null;
+    reason: string;
+  }>;
 };
 
 // =============================================================================
@@ -160,6 +182,28 @@ function buildSourceName(source: string | null): string {
     return rest ? `Action: ${rest}` : "Action";
   }
   return source;
+}
+
+const ROUTE_PROMPT_KEYS = {
+  draftGeneration: "ai.route_skip.draft_generation.v1",
+  draftGenerationStep2: "ai.route_skip.draft_generation_step2.v1",
+  draftVerificationStep3: "ai.route_skip.draft_verification_step3.v1",
+  meetingOverseerDraft: "ai.route_skip.meeting_overseer_draft.v1",
+  meetingOverseerFollowup: "ai.route_skip.meeting_overseer_followup.v1",
+} as const;
+
+function mapRouteFromPromptKey(
+  promptKey: string | null
+): "draft_generation" | "draft_generation_step2" | "draft_verification_step3" | "meeting_overseer" {
+  if (promptKey === ROUTE_PROMPT_KEYS.draftGenerationStep2) return "draft_generation_step2";
+  if (promptKey === ROUTE_PROMPT_KEYS.draftVerificationStep3) return "draft_verification_step3";
+  if (
+    promptKey === ROUTE_PROMPT_KEYS.meetingOverseerDraft ||
+    promptKey === ROUTE_PROMPT_KEYS.meetingOverseerFollowup
+  ) {
+    return "meeting_overseer";
+  }
+  return "draft_generation";
 }
 
 export async function getAiPromptTemplates(clientId: string): Promise<{
@@ -469,6 +513,106 @@ export async function getAiObservabilitySummary(
     return { success: true, data };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : "Failed to load AI metrics" };
+  }
+}
+
+export async function getAiRouteSkipSummary(
+  clientId: string,
+  window: AiObservabilityWindow = "24h"
+): Promise<{ success: boolean; data?: AiRouteSkipSummary; error?: string }> {
+  try {
+    await requireWorkspaceAdmin(clientId);
+
+    const rangeEnd = new Date();
+    const rangeStart = new Date(rangeEnd.getTime() - windowToMs(window));
+
+    const groups = await prisma.aIInteraction.groupBy({
+      by: ["promptKey"],
+      where: {
+        clientId,
+        featureId: AI_ROUTE_SKIP_FEATURE_ID,
+        createdAt: { gte: rangeStart, lte: rangeEnd },
+      },
+      _count: { _all: true },
+    });
+
+    const counts = {
+      draftGeneration: 0,
+      draftGenerationStep2: 0,
+      draftVerificationStep3: 0,
+      meetingOverseer: 0,
+    };
+
+    for (const group of groups) {
+      const count = group._count._all || 0;
+      if (group.promptKey === ROUTE_PROMPT_KEYS.draftGenerationStep2) {
+        counts.draftGenerationStep2 += count;
+      } else if (group.promptKey === ROUTE_PROMPT_KEYS.draftVerificationStep3) {
+        counts.draftVerificationStep3 += count;
+      } else if (
+        group.promptKey === ROUTE_PROMPT_KEYS.meetingOverseerDraft ||
+        group.promptKey === ROUTE_PROMPT_KEYS.meetingOverseerFollowup
+      ) {
+        counts.meetingOverseer += count;
+      } else {
+        counts.draftGeneration += count;
+      }
+    }
+
+    const rows = await prisma.aIInteraction.findMany({
+      where: {
+        clientId,
+        featureId: AI_ROUTE_SKIP_FEATURE_ID,
+        createdAt: { gte: rangeStart, lte: rangeEnd },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 30,
+      select: {
+        id: true,
+        createdAt: true,
+        source: true,
+        leadId: true,
+        promptKey: true,
+        metadata: true,
+      },
+    });
+
+    const events = rows.map((row) => {
+      const metadata = row.metadata && typeof row.metadata === "object" ? (row.metadata as Record<string, any>) : null;
+      const routeSkip =
+        metadata && metadata.routeSkip && typeof metadata.routeSkip === "object"
+          ? (metadata.routeSkip as Record<string, any>)
+          : null;
+
+      return {
+        id: row.id,
+        createdAt: row.createdAt.toISOString(),
+        route: mapRouteFromPromptKey(row.promptKey),
+        source: row.source ?? null,
+        leadId: row.leadId ?? null,
+        channel: typeof routeSkip?.channel === "string" ? routeSkip.channel : null,
+        reason:
+          typeof routeSkip?.reason === "string" && routeSkip.reason.trim().length > 0
+            ? routeSkip.reason
+            : "disabled_by_workspace_settings",
+      } as AiRouteSkipSummary["events"][number];
+    });
+
+    return {
+      success: true,
+      data: {
+        window,
+        rangeStart: rangeStart.toISOString(),
+        rangeEnd: rangeEnd.toISOString(),
+        counts,
+        events,
+      },
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to load AI route skip summary",
+    };
   }
 }
 

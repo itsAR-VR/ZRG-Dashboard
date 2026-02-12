@@ -45,6 +45,7 @@ rollback-sequence-messaging-*.json
 .backfill-ai-auto-send.state.json
 .backfill-ai-auto-send.state.json.bak.*
 scripts/logs/*.log
+.artifacts/ai-replay/*.json
 
 # local AI/editor tooling
 .claude/

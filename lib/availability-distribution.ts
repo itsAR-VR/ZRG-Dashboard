@@ -1,3 +1,5 @@
+import { isValidIanaTimezone } from "@/lib/timezone-inference";
+
 export type SlotDistributionHalf = "morning" | "afternoon";
 
 function normalizeIso(iso: string): string | null {
@@ -6,7 +8,7 @@ function normalizeIso(iso: string): string | null {
   return d.toISOString();
 }
 
-function getLocalParts(date: Date, timeZone: string): { dayKey: string; hour: number } | null {
+function getLocalParts(date: Date, timeZone: string): { dayKey: string; hour: number; minute: number } | null {
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
       timeZone,
@@ -14,6 +16,7 @@ function getLocalParts(date: Date, timeZone: string): { dayKey: string; hour: nu
       month: "2-digit",
       day: "2-digit",
       hour: "2-digit",
+      minute: "2-digit",
       hourCycle: "h23",
       hour12: false,
     }).formatToParts(date);
@@ -22,12 +25,15 @@ function getLocalParts(date: Date, timeZone: string): { dayKey: string; hour: nu
     const month = parts.find((p) => p.type === "month")?.value;
     const day = parts.find((p) => p.type === "day")?.value;
     const hourStr = parts.find((p) => p.type === "hour")?.value;
+    const minuteStr = parts.find((p) => p.type === "minute")?.value;
 
-    if (!year || !month || !day || !hourStr) return null;
+    if (!year || !month || !day || !hourStr || !minuteStr) return null;
     const hour = Number.parseInt(hourStr, 10);
+    const minute = Number.parseInt(minuteStr, 10);
     if (!Number.isFinite(hour)) return null;
+    if (!Number.isFinite(minute)) return null;
 
-    return { dayKey: `${year}-${month}-${day}`, hour };
+    return { dayKey: `${year}-${month}-${day}`, hour, minute };
   } catch {
     return null;
   }
@@ -41,6 +47,7 @@ export function selectDistributedAvailabilitySlots(opts: {
   slotsUtcIso: string[];
   offeredCountBySlotUtcIso: Map<string, number>;
   timeZone: string;
+  leadTimeZone?: string | null;
   excludeUtcIso?: Set<string>;
   startAfterUtc?: Date | null;
   preferWithinDays?: number;
@@ -65,6 +72,28 @@ export function selectDistributedAvailabilitySlots(opts: {
   const windowEndMs = anchorMs + preferWithinDays * 24 * 60 * 60 * 1000;
   const withinWindow = normalized.filter((iso) => new Date(iso).getTime() <= windowEndMs);
   const pool = withinWindow.length > 0 ? withinWindow : normalized;
+  const leadTimeZone = isValidIanaTimezone(opts.leadTimeZone) ? opts.leadTimeZone! : null;
+  const distributionTimeZone = leadTimeZone || opts.timeZone;
+
+  let businessPool = pool;
+  if (leadTimeZone) {
+    const leadBusinessHoursFiltered = pool.filter((iso) => {
+      const d = new Date(iso);
+      const local = getLocalParts(d, leadTimeZone);
+      if (!local) return false;
+      const minutesSinceMidnight = local.hour * 60 + local.minute;
+      return minutesSinceMidnight >= 7 * 60 && minutesSinceMidnight < 21 * 60;
+    });
+
+    if (leadBusinessHoursFiltered.length > 0) {
+      businessPool = leadBusinessHoursFiltered;
+    } else {
+      console.debug("[AvailabilityDistribution] Lead business-hours filter returned no slots; failing open", {
+        leadTimeZone,
+        candidateCount: pool.length,
+      });
+    }
+  }
 
   type Scored = {
     iso: string;
@@ -75,9 +104,9 @@ export function selectDistributedAvailabilitySlots(opts: {
   };
 
   const scored: Scored[] = [];
-  for (const iso of pool) {
+  for (const iso of businessPool) {
     const d = new Date(iso);
-    const parts = getLocalParts(d, opts.timeZone);
+    const parts = getLocalParts(d, distributionTimeZone);
     if (!parts) continue;
     scored.push({
       iso,
@@ -109,4 +138,3 @@ export function selectDistributedAvailabilitySlots(opts: {
 
   return second ? [first.iso, second.iso] : [first.iso];
 }
-

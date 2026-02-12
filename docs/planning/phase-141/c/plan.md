@@ -2,45 +2,54 @@
 
 ## Focus
 
-Add 3 conditional checks in `lib/ai-drafts.ts` that read the workspace settings and skip the corresponding AI route when disabled.
+Add conditional checks in `lib/ai-drafts.ts` that read workspace settings and skip corresponding AI routes when disabled, while preserving idempotent existing-draft behavior.
 
 ## Inputs
 
 - Phase 141a schema fields available via `settings` object
 - `lib/ai-drafts.ts` — `generateResponseDraft()` function
-  - `settings` loaded at line 1521: `const settings = lead?.client?.settings;`
-  - Step 3 block at lines 2938-2983
-  - Meeting Overseer block at lines 2985-3100
+  - `settings` assignment around `const settings = lead?.client?.settings;`
+  - Step 3 verifier block (email path)
+  - Meeting Overseer gate block (draft path)
+  - Existing-draft idempotency block (`triggerMessageId` lookup path)
 
 ## Work
 
-1. **Draft generation gate** — after line 1521:
+1. **Draft generation gate** — after settings load and after existing-draft idempotency lookup:
    ```typescript
    if (!(settings?.draftGenerationEnabled ?? true)) {
      console.log("[AI Drafts] Draft generation disabled for workspace", lead.clientId);
      return { success: true, draftId: null, content: null, runId: null };
    }
    ```
-   This covers ALL callers (pipeline, SMS, LinkedIn, email background jobs).
+   Keep idempotent return behavior for existing drafts keyed by `triggerMessageId`.
 
-2. **Step 3 verification gate** — change line 2938 condition:
+2. **Step 3 verification gate** — conditionally run Step 3 only when enabled:
    ```typescript
    if (channel === "email" && draftContent && (settings?.draftVerificationStep3Enabled ?? true)) {
    ```
+   When disabled, log/persist explicit skip reason for observability.
 
-3. **Meeting Overseer gate** — change line 2985 condition:
+3. **Meeting Overseer gate (draft path)** — conditionally run only when enabled:
    ```typescript
    if (draftContent && triggerMessageId && (settings?.meetingOverseerEnabled ?? true)) {
    ```
+   When disabled, log/persist explicit skip reason.
 
-4. Run `npm run lint` and `npm run build`.
+4. Add/update structured skip artifacts/metadata for disabled routes:
+   - `draft_generation`
+   - `draft_verification_step3`
+   - `meeting_overseer_draft_path`
+
+5. Run `npm run lint` and `npm run build`.
 
 ## Output
 
-- 3 runtime gates active
+- ai-drafts runtime gates active with structured skip visibility
 - Each defaults to enabled (`?? true`) when settings are null
-- Deterministic post-processing (Step 4) always runs regardless of toggles
+- Existing-draft idempotent return behavior preserved when generation is disabled
+- Deterministic post-processing still runs for drafts that are produced
 
 ## Handoff
 
-Phase 141 complete. Verify all success criteria from root plan.
+Phase 141d extends `meetingOverseerEnabled` to follow-up engine overseer paths and wires manual toasts + admin settings visibility.

@@ -24,6 +24,7 @@ import { toast } from "sonner";
 import Link from "next/link";
 
 interface InboxViewProps {
+  isActive?: boolean;
   activeChannels: Channel[];
   activeFilter: string;
   activeWorkspace: string | null;
@@ -36,8 +37,11 @@ interface InboxViewProps {
   onClearFilters?: () => void;
 }
 
-// Polling interval in milliseconds (30 seconds)
-const POLLING_INTERVAL = 30000;
+// Polling interval in milliseconds (60 seconds)
+const POLLING_INTERVAL = 60000;
+// Keep a slower heartbeat when realtime is connected.
+const REALTIME_HEARTBEAT_INTERVAL = 60000;
+const EMPTY_SMS_CLIENT_OPTIONS: Array<{ id: string; name: string; leadCount: number }> = [];
 
 // Extended Conversation type with sentimentTag
 type ConversationWithSentiment = Conversation & { 
@@ -125,6 +129,7 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
 }
 
 export function InboxView({
+  isActive = true,
   activeChannels,
   activeFilter,
   activeWorkspace,
@@ -156,6 +161,10 @@ export function InboxView({
   const [activeScoreFilter, setActiveScoreFilter] = useState<ScoreFilter>("all");
   const [newConversationCount, setNewConversationCount] = useState(0);
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [isPageVisible, setIsPageVisible] = useState<boolean>(() => {
+    if (typeof document === "undefined") return true;
+    return document.visibilityState === "visible";
+  });
   
   // Sync state management - track which leads are currently syncing
   const [syncingLeadIds, setSyncingLeadIds] = useState<Set<string>>(new Set());
@@ -173,6 +182,9 @@ export function InboxView({
   const prevConversationIdRef = useRef<string | null>(null);
   const lastAutoSyncRef = useRef<Map<string, number>>(new Map());
   const activeConversationRequestRef = useRef(0);
+  const activeConversationLastFetchedAtRef = useRef<Map<string, number>>(new Map());
+  const activeConversationListTimestampRef = useRef<number>(0);
+  const conversationsByIdRef = useRef<Map<string, ConversationWithSentiment>>(new Map());
 
   // Reset SMS sub-client and score filters when switching workspaces
   useEffect(() => {
@@ -191,7 +203,21 @@ export function InboxView({
     setSyncAllCursor(null);
     leadLastMessageAtRef.current = new Map();
     workspaceLastMessageAtRef.current = 0;
+    activeConversationLastFetchedAtRef.current = new Map();
   }, [activeWorkspace, initialConversationId]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+
+    const handleVisibilityChange = () => {
+      setIsPageVisible(document.visibilityState === "visible");
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   // Load workspace auto-followups-on-reply setting for the inbox sidebar switch
   useEffect(() => {
@@ -213,7 +239,7 @@ export function InboxView({
   // Fetch SMS sub-clients for campaign filtering
   const smsCampaignFiltersQuery = useQuery({
     queryKey: ["smsCampaignFilters", activeWorkspace],
-    enabled: Boolean(activeWorkspace),
+    enabled: Boolean(activeWorkspace) && isActive,
     queryFn: async () => {
       if (!activeWorkspace) {
         return { success: false as const, error: "No workspace selected" };
@@ -226,6 +252,14 @@ export function InboxView({
   const smsCampaignFilters = smsCampaignFiltersQuery.data?.success
     ? smsCampaignFiltersQuery.data.data
     : null;
+  const smsClientOptions = useMemo(
+    () => (activeWorkspace ? smsCampaignFilters?.campaigns ?? EMPTY_SMS_CLIENT_OPTIONS : EMPTY_SMS_CLIENT_OPTIONS),
+    [activeWorkspace, smsCampaignFilters]
+  );
+  const smsClientUnattributedCount = useMemo(
+    () => (activeWorkspace ? smsCampaignFilters?.unattributedLeadCount ?? 0 : 0),
+    [activeWorkspace, smsCampaignFilters]
+  );
 
   const normalizedChannels = useMemo(
     () => [...activeChannels].sort(),
@@ -303,7 +337,7 @@ export function InboxView({
     refetch,
   } = useInfiniteQuery({
     queryKey: ["conversations", baseQueryOptions, queryOptions.search ?? ""],
-    enabled: workspacesReady && hasWorkspaces,
+    enabled: isActive && workspacesReady && hasWorkspaces,
     queryFn: async ({ pageParam }) => {
       const result = await getConversationsCursor({
         ...queryOptions,
@@ -324,11 +358,21 @@ export function InboxView({
     },
     staleTime: 30000,
     refetchInterval: (query) => {
+      if (!isActive) return false;
       if (!(workspacesReady && hasWorkspaces)) return false;
       if (query.state.status === "error") return false;
+      if (!isPageVisible) return false;
+      if (isLive) return REALTIME_HEARTBEAT_INTERVAL;
       return POLLING_INTERVAL;
     },
   });
+
+  useEffect(() => {
+    if (!isActive) return;
+    if (!isPageVisible) return;
+    if (!(workspacesReady && hasWorkspaces)) return;
+    void refetch();
+  }, [hasWorkspaces, isActive, isPageVisible, refetch, workspacesReady]);
 
   // Manage delayed loading spinner (only show after 300ms)
   useEffect(() => {
@@ -349,6 +393,18 @@ export function InboxView({
   const conversations: ConversationWithSentiment[] = useMemo(() => {
     return allConversations.map(convertToComponentFormat);
   }, [allConversations]);
+
+  const conversationsById = useMemo(() => {
+    const byId = new Map<string, ConversationWithSentiment>();
+    for (const conversation of conversations) {
+      byId.set(conversation.id, conversation);
+    }
+    return byId;
+  }, [conversations]);
+
+  useEffect(() => {
+    conversationsByIdRef.current = conversationsById;
+  }, [conversationsById]);
 
   // Track the most recent message timestamp we know about for each lead currently in view.
   // Supabase realtime UPDATE payloads typically do not include the full previous row, so we
@@ -388,7 +444,28 @@ export function InboxView({
     activeConversationRequestRef.current = requestId;
 
     // Optimistic UI: Immediately show conversation with data from list
-    const baseConv = conversations.find((c) => c.id === conversationId);
+    const baseConv = conversationsByIdRef.current.get(conversationId);
+    const baseLastMessageMs =
+      baseConv?.lastMessageTime instanceof Date
+        ? baseConv.lastMessageTime.getTime()
+        : baseConv?.lastMessageTime
+          ? Date.parse(String(baseConv.lastMessageTime))
+          : null;
+    const hasBaseLastMessageMs =
+      typeof baseLastMessageMs === "number" &&
+      Number.isFinite(baseLastMessageMs) &&
+      baseLastMessageMs > 0;
+    const lastFetchedMessageMs = activeConversationLastFetchedAtRef.current.get(conversationId) ?? 0;
+
+    // For background refreshes, skip server fetch when the list already indicates no new messages.
+    if (
+      !showLoading &&
+      hasBaseLastMessageMs &&
+      baseLastMessageMs <= lastFetchedMessageMs
+    ) {
+      return;
+    }
+
     if (baseConv) {
       // Only show loading state and clear messages for initial/explicit loads
       // For background polling, keep existing messages visible
@@ -425,6 +502,16 @@ export function InboxView({
         ...m,
         timestamp: toDateOrNull(m.timestamp) ?? new Date(),
       }));
+      const newestMessageMs = messages.reduce((max, message) => {
+        const ms = message.timestamp instanceof Date ? message.timestamp.getTime() : Date.parse(String(message.timestamp));
+        if (!Number.isFinite(ms)) return max;
+        return ms > max ? ms : max;
+      }, 0);
+      if (newestMessageMs > 0) {
+        activeConversationLastFetchedAtRef.current.set(conversationId, newestMessageMs);
+      } else if (hasBaseLastMessageMs) {
+        activeConversationLastFetchedAtRef.current.set(conversationId, baseLastMessageMs);
+      }
 
 	      if (baseConv) {
 	        // Keep lead automation flags in sync with server-side updates (e.g. enabling follow-ups on first setter reply).
@@ -515,7 +602,7 @@ export function InboxView({
     if (showLoading && activeConversationRequestRef.current === requestId) {
       setIsLoadingMessages(false);
     }
-  }, [activeConversationId, conversations, refetch]);
+  }, [activeConversationId]);
 
   // Sync a single conversation (SMS and/or Email based on lead's external IDs)
   const handleSyncConversation = useCallback(async (leadId: string) => {
@@ -760,13 +847,37 @@ export function InboxView({
 
   // Fetch active conversation when selection changes
   useEffect(() => {
+    if (!isActive) return;
     // Only show loading spinner when the conversation ID actually changes (user switched conversations)
     // For background updates triggered by conversations list changes, do silent refresh
     const isNewConversation = activeConversationId !== prevConversationIdRef.current;
     prevConversationIdRef.current = activeConversationId;
     
     fetchActiveConversation(isNewConversation);
-  }, [fetchActiveConversation, activeConversationId]);
+  }, [fetchActiveConversation, activeConversationId, isActive]);
+
+  // Background-refresh the selected conversation only when that conversation's list timestamp advances.
+  useEffect(() => {
+    if (!isActive) return;
+    if (!activeConversationId) {
+      activeConversationListTimestampRef.current = 0;
+      return;
+    }
+
+    const activeConversationFromList = conversationsById.get(activeConversationId);
+    if (!activeConversationFromList) return;
+
+    const listTimestampMs =
+      activeConversationFromList.lastMessageTime instanceof Date
+        ? activeConversationFromList.lastMessageTime.getTime()
+        : Date.parse(String(activeConversationFromList.lastMessageTime));
+
+    if (!Number.isFinite(listTimestampMs)) return;
+    if (listTimestampMs <= activeConversationListTimestampRef.current) return;
+
+    activeConversationListTimestampRef.current = listTimestampMs;
+    fetchActiveConversation(false);
+  }, [activeConversationId, conversationsById, fetchActiveConversation, isActive]);
 
   const parseRealtimeTimestampMs = (value: unknown): number | null => {
     if (!value) return null;
@@ -781,6 +892,11 @@ export function InboxView({
   // Workspace-scoped realtime subscription for "new" badge.
   // IMPORTANT: do NOT subscribe to Message rows in the browser (too noisy + higher PII risk).
   useEffect(() => {
+    if (!isActive) {
+      setIsLive(false);
+      return;
+    }
+
     if (!activeWorkspace) {
       setIsLive(false);
       return;
@@ -833,7 +949,7 @@ export function InboxView({
       clearTimeout(checkConnection);
       unsubscribe(channel);
     };
-  }, [activeWorkspace]);
+  }, [activeWorkspace, isActive]);
 
   // Handle new conversations badge click
   const handleNewConversationsClick = useCallback(() => {
@@ -869,6 +985,10 @@ export function InboxView({
       }
     }
   }, [conversations, activeConversationId, handleLeadSelect]);
+
+  const handleLoadMore = useCallback(() => {
+    void fetchNextPage();
+  }, [fetchNextPage]);
 
   // Only show full-page loading spinner on initial load after 300ms delay
   // This prevents blocking when switching workspaces (cached data shows immediately)
@@ -1017,8 +1137,8 @@ export function InboxView({
 		        onSentimentsChange={setActiveSentiments}
 		        activeSmsClient={activeSmsClient}
 		        onSmsClientChange={activeWorkspace ? setActiveSmsClient : undefined}
-		        smsClientOptions={activeWorkspace ? smsCampaignFilters?.campaigns || [] : []}
-		        smsClientUnattributedCount={activeWorkspace ? smsCampaignFilters?.unattributedLeadCount || 0 : 0}
+		        smsClientOptions={smsClientOptions}
+		        smsClientUnattributedCount={smsClientUnattributedCount}
 	        isLoadingSmsClients={activeWorkspace ? smsCampaignFiltersQuery.isLoading : false}
 	        activeScoreFilter={activeScoreFilter}
 	        onScoreFilterChange={activeWorkspace ? setActiveScoreFilter : undefined}
@@ -1032,7 +1152,7 @@ export function InboxView({
 	        isTogglingAutoFollowUpsOnReply={isTogglingAutoFollowUpsOnReply}
 	        hasMore={hasNextPage}
 	        isLoadingMore={isFetchingNextPage}
-	        onLoadMore={() => fetchNextPage()}
+	        onLoadMore={handleLoadMore}
 	      />
 
 	      <ActionStation

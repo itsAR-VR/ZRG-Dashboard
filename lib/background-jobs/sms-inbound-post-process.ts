@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { buildSentimentTranscriptFromMessages, classifySentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
+import { buildSentimentTranscriptFromMessages, classifySentiment, isPositiveSentiment, SENTIMENT_TO_STATUS } from "@/lib/sentiment";
 import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { executeAutoSend } from "@/lib/auto-send";
 import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBooking } from "@/lib/followup-engine";
@@ -16,6 +16,8 @@ import { ensureCallRequestedTask } from "@/lib/call-requested";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
+import { resolveBookingLink } from "@/lib/meeting-booking-provider";
+import { detectActionSignals, EMPTY_ACTION_SIGNAL_RESULT, notifyActionSignals } from "@/lib/action-signal-detector";
 
 export async function runSmsInboundPostProcessJob(params: {
   clientId: string;
@@ -87,7 +89,7 @@ export async function runSmsInboundPostProcessJob(params: {
 
   // 1. Timezone Inference
   // SMS messages may contain timezone hints like "I'm in PST"
-  await ensureLeadTimezone(lead.id);
+  await ensureLeadTimezone(lead.id, { conversationText: messageBody });
 
   // 2. Snooze Detection
   // If the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
@@ -97,7 +99,7 @@ export async function runSmsInboundPostProcessJob(params: {
     /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
 
   if (snoozeKeywordHit) {
-    const tzResult = await ensureLeadTimezone(lead.id);
+    const tzResult = await ensureLeadTimezone(lead.id, { conversationText: inboundText });
     const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
       messageText: inboundText,
       timeZone: tzResult.timezone || "UTC",
@@ -265,6 +267,39 @@ export async function runSmsInboundPostProcessJob(params: {
 
   handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
 
+  let actionSignals = EMPTY_ACTION_SIGNAL_RESULT;
+  try {
+    if (isPositiveSentiment(newSentiment)) {
+      const workspaceBookingLink = await resolveBookingLink(client.id, null)
+        .then((result) => result.bookingLink)
+        .catch(() => null);
+      actionSignals = await detectActionSignals({
+        strippedText: inboundText,
+        fullText: messageBody,
+        sentimentTag: newSentiment,
+        workspaceBookingLink,
+        clientId: client.id,
+        leadId: lead.id,
+        channel: "sms",
+        provider: "ghl",
+        aiRouteBookingProcessEnabled: settings?.aiRouteBookingProcessEnabled ?? true,
+      });
+      if (actionSignals.signals.length > 0) {
+        console.log("[SMS Post-Process] Action signals:", actionSignals.signals.map((signal) => signal.type).join(", "));
+        notifyActionSignals({
+          clientId: client.id,
+          leadId: lead.id,
+          messageId: message.id,
+          signals: actionSignals.signals,
+          latestInboundText: messageBody,
+          route: actionSignals.route,
+        }).catch((error) => console.warn("[SMS Post-Process] Action signal notify failed:", error));
+      }
+    }
+  } catch (error) {
+    console.warn("[SMS Post-Process] Action signal detection failed (non-fatal):", error);
+  }
+
   // Phase 66: Removed sentiment-based Meeting Requested auto-start.
   // Meeting Requested is now triggered by setter email reply only
   // (see autoStartMeetingRequestedSequenceOnSetterEmailReply in lib/followup-automation.ts)
@@ -292,12 +327,32 @@ export async function runSmsInboundPostProcessJob(params: {
         timeoutMs: webhookDraftTimeoutMs,
         triggerMessageId: message.id,
         autoBookingContext: autoBook.context?.schedulingDetected ? autoBook.context : null,
+        actionSignals: actionSignals.signals.length > 0 || actionSignals.route ? actionSignals : null,
       }
     );
 
     if (draftResult.success && draftResult.draftId && draftResult.content) {
       const draftId = draftResult.draftId;
       const draftContent = draftResult.content;
+      const leadAutoSendContext = await prisma.lead.findUnique({
+        where: { id: lead.id },
+        select: {
+          offeredSlots: true,
+          externalSchedulingLink: true,
+        },
+      });
+      const offeredSlots = (() => {
+        if (!leadAutoSendContext?.offeredSlots) return [];
+        try {
+          const parsed = JSON.parse(leadAutoSendContext.offeredSlots);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      })();
+      const workspaceBookingLink = await resolveBookingLink(client.id, null)
+        .then((result) => result.bookingLink)
+        .catch(() => null);
 
       console.log(`[SMS Post-Process] Generated AI draft: ${draftId}`);
 
@@ -319,6 +374,9 @@ export async function runSmsInboundPostProcessJob(params: {
         leadLastName: lead.lastName,
         leadEmail: lead.email,
         leadTimezone: lead.timezone ?? null,
+        offeredSlots,
+        bookingLink: workspaceBookingLink,
+        leadSchedulerLink: leadAutoSendContext?.externalSchedulingLink ?? null,
         emailCampaign: lead.emailCampaign,
         autoReplyEnabled: lead.autoReplyEnabled,
         workspaceSettings: settings,

@@ -1,0 +1,22 @@
+{
+  "id": "quarterly-only-normalizes-monthly-plan-wording",
+  "description": "Monthly payment-plan wording must be normalized when context is quarterly-only billing.",
+  "input": {
+    "draft": "Our monthly payment plan is $1,700.",
+    "serviceDescription": "Pricing is quarterly only. No monthly payment plan. $1,700 per quarter.",
+    "knowledgeContext": null
+  },
+  "expected": {
+    "removedAmounts": [],
+    "removedCadenceAmounts": [1700],
+    "addedClarifier": false,
+    "normalizedCadencePhrase": true,
+    "draftIncludes": ["quarterly billing"],
+    "draftExcludes": ["monthly payment plan"],
+    "detection": {
+      "hallucinated": [],
+      "valid": [],
+      "cadenceMismatched": [1700]
+    }
+  }
+}

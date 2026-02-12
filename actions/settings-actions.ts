@@ -43,6 +43,12 @@ export interface UserSettingsData {
   draftGenerationReasoningEffort: string | null;
   // Email Draft Verification (Step 3) Model Settings (workspace-level, admin-gated updates)
   emailDraftVerificationModel: string | null;
+  // Phase 141: Per-workspace AI route switches (admin-gated)
+  draftGenerationEnabled: boolean;
+  draftGenerationStep2Enabled: boolean;
+  draftVerificationStep3Enabled: boolean;
+  meetingOverseerEnabled: boolean;
+  aiRouteBookingProcessEnabled: boolean;
   // AI Context Fields
   serviceDescription: string | null;
   qualificationQuestions: string | null; // JSON array
@@ -93,6 +99,9 @@ export interface UserSettingsData {
   calendlyEventTypeUri: string | null;
   calendlyDirectBookEventTypeLink: string | null;
   calendlyDirectBookEventTypeUri: string | null;
+  bookingQualificationCheckEnabled: boolean;
+  bookingQualificationCriteria: string | null;
+  bookingDisqualificationMessage: string | null;
 }
 
 export interface KnowledgeAssetData {
@@ -168,6 +177,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           draftGenerationModel: "gpt-5.1",
           draftGenerationReasoningEffort: "medium",
           emailDraftVerificationModel: "gpt-5.2",
+          draftGenerationEnabled: true,
+          draftGenerationStep2Enabled: true,
+          draftVerificationStep3Enabled: true,
+          meetingOverseerEnabled: true,
+          aiRouteBookingProcessEnabled: true,
           serviceDescription: null,
           qualificationQuestions: null,
           companyName: null,
@@ -212,6 +226,9 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           calendlyEventTypeUri: null,
           calendlyDirectBookEventTypeLink: null,
           calendlyDirectBookEventTypeUri: null,
+          bookingQualificationCheckEnabled: false,
+          bookingQualificationCriteria: null,
+          bookingDisqualificationMessage: null,
         },
         knowledgeAssets: [],
       };
@@ -238,6 +255,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           aiGoals: null,
           serviceDescription: null,
           qualificationQuestions: null,
+          draftGenerationEnabled: true,
+          draftGenerationStep2Enabled: true,
+          draftVerificationStep3Enabled: true,
+          meetingOverseerEnabled: true,
+          aiRouteBookingProcessEnabled: true,
           autoApproveMeetings: true,
           flagUncertainReplies: true,
           pauseForOOO: true,
@@ -296,6 +318,11 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         draftGenerationModel: settings.draftGenerationModel ?? "gpt-5.1",
         draftGenerationReasoningEffort: settings.draftGenerationReasoningEffort ?? "medium",
         emailDraftVerificationModel: settings.emailDraftVerificationModel ?? "gpt-5.2",
+        draftGenerationEnabled: settings.draftGenerationEnabled ?? true,
+        draftGenerationStep2Enabled: settings.draftGenerationStep2Enabled ?? true,
+        draftVerificationStep3Enabled: settings.draftVerificationStep3Enabled ?? true,
+        meetingOverseerEnabled: settings.meetingOverseerEnabled ?? true,
+        aiRouteBookingProcessEnabled: settings.aiRouteBookingProcessEnabled ?? true,
         serviceDescription: settings.serviceDescription,
         qualificationQuestions: settings.qualificationQuestions,
         companyName: settings.companyName,
@@ -344,6 +371,9 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         calendlyEventTypeUri: settings.calendlyEventTypeUri,
         calendlyDirectBookEventTypeLink: settings.calendlyDirectBookEventTypeLink,
         calendlyDirectBookEventTypeUri: settings.calendlyDirectBookEventTypeUri,
+        bookingQualificationCheckEnabled: settings.bookingQualificationCheckEnabled,
+        bookingQualificationCriteria: settings.bookingQualificationCriteria,
+        bookingDisqualificationMessage: settings.bookingDisqualificationMessage,
       },
       knowledgeAssets,
     };
@@ -380,7 +410,12 @@ export async function updateUserSettings(
       data.messagePerformanceWeeklyEnabled !== undefined;
     const wantsDraftGenerationUpdate =
       data.draftGenerationModel !== undefined ||
-      data.draftGenerationReasoningEffort !== undefined;
+      data.draftGenerationReasoningEffort !== undefined ||
+      data.draftGenerationEnabled !== undefined ||
+      data.draftGenerationStep2Enabled !== undefined ||
+      data.draftVerificationStep3Enabled !== undefined ||
+      data.meetingOverseerEnabled !== undefined ||
+      data.aiRouteBookingProcessEnabled !== undefined;
     const wantsEmailDraftVerificationUpdate =
       data.emailDraftVerificationModel !== undefined;
     const wantsNotificationUpdate =
@@ -405,6 +440,10 @@ export async function updateUserSettings(
     const wantsBrandingUpdate =
       data.brandName !== undefined ||
       data.brandLogoUrl !== undefined;
+    const wantsBookingQualificationSettingsUpdate =
+      data.bookingQualificationCheckEnabled !== undefined ||
+      data.bookingQualificationCriteria !== undefined ||
+      data.bookingDisqualificationMessage !== undefined;
 
     let normalizedCustomSchedule = data.autoSendCustomSchedule;
     const normalizedCalendarHealthMinSlots =
@@ -434,6 +473,9 @@ export async function updateUserSettings(
     if (wantsBrandingUpdate) {
       await requireClientAdminAccess(clientId);
     }
+    if (wantsBookingQualificationSettingsUpdate) {
+      await requireClientAdminAccess(clientId);
+    }
 
     await prisma.workspaceSettings.upsert({
       where: { clientId },
@@ -455,6 +497,11 @@ export async function updateUserSettings(
         draftGenerationModel: data.draftGenerationModel,
         draftGenerationReasoningEffort: data.draftGenerationReasoningEffort,
         emailDraftVerificationModel: data.emailDraftVerificationModel,
+        draftGenerationEnabled: data.draftGenerationEnabled,
+        draftGenerationStep2Enabled: data.draftGenerationStep2Enabled,
+        draftVerificationStep3Enabled: data.draftVerificationStep3Enabled,
+        meetingOverseerEnabled: data.meetingOverseerEnabled,
+        aiRouteBookingProcessEnabled: data.aiRouteBookingProcessEnabled,
         serviceDescription: data.serviceDescription,
         qualificationQuestions: data.qualificationQuestions,
         companyName: data.companyName,
@@ -504,6 +551,9 @@ export async function updateUserSettings(
         calendlyEventTypeUri: data.calendlyEventTypeUri,
         calendlyDirectBookEventTypeLink: data.calendlyDirectBookEventTypeLink,
         calendlyDirectBookEventTypeUri: data.calendlyDirectBookEventTypeUri,
+        bookingQualificationCheckEnabled: data.bookingQualificationCheckEnabled,
+        bookingQualificationCriteria: data.bookingQualificationCriteria,
+        bookingDisqualificationMessage: data.bookingDisqualificationMessage,
       },
       create: {
         clientId,
@@ -524,6 +574,11 @@ export async function updateUserSettings(
         draftGenerationModel: data.draftGenerationModel,
         draftGenerationReasoningEffort: data.draftGenerationReasoningEffort,
         emailDraftVerificationModel: data.emailDraftVerificationModel,
+        draftGenerationEnabled: data.draftGenerationEnabled ?? true,
+        draftGenerationStep2Enabled: data.draftGenerationStep2Enabled ?? true,
+        draftVerificationStep3Enabled: data.draftVerificationStep3Enabled ?? true,
+        meetingOverseerEnabled: data.meetingOverseerEnabled ?? true,
+        aiRouteBookingProcessEnabled: data.aiRouteBookingProcessEnabled ?? true,
         serviceDescription: data.serviceDescription,
         qualificationQuestions: data.qualificationQuestions,
         companyName: data.companyName,
@@ -569,6 +624,9 @@ export async function updateUserSettings(
         calendlyEventTypeUri: data.calendlyEventTypeUri,
         calendlyDirectBookEventTypeLink: data.calendlyDirectBookEventTypeLink,
         calendlyDirectBookEventTypeUri: data.calendlyDirectBookEventTypeUri,
+        bookingQualificationCheckEnabled: data.bookingQualificationCheckEnabled ?? false,
+        bookingQualificationCriteria: data.bookingQualificationCriteria,
+        bookingDisqualificationMessage: data.bookingDisqualificationMessage,
       },
     });
 

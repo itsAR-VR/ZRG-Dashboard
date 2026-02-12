@@ -20,6 +20,7 @@ function buildDecision(overrides: Partial<MeetingOverseerExtractDecision>): Meet
     qualification_confidence: 1,
     qualification_evidence: [],
     time_from_body_only: true,
+    detected_timezone: null,
     time_extraction_confidence: 1,
     needs_clarification: false,
     clarification_reason: null,

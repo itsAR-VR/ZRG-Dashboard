@@ -75,3 +75,16 @@ Instead:
 ## Handoff
 
 Phase 139d will complete booking confirmation enforcement and meeting-overseer timezone extraction (`v2`) so auto-booking and confirmations follow the same lead-timezone policy.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Extended `selectDistributedAvailabilitySlots(...)` in `lib/availability-distribution.ts` with optional `leadTimeZone`.
+  - Implemented lead-local business-hours filter at minute precision (07:00 inclusive, 21:00 exclusive) and fail-open fallback when filtering empties the candidate pool.
+  - Threaded `leadTimeZone` into scheduling callsites in `lib/ai-drafts.ts` and `lib/followup-engine.ts`.
+  - Kept user-visible slot label rendering lead-timezone-first by using resolved lead timezone in touched scheduling paths.
+- Commands run:
+  - `DATABASE_URL='postgresql://test:test@localhost:5432/test?schema=public' DIRECT_URL='postgresql://test:test@localhost:5432/test?schema=public' OPENAI_API_KEY='test' node --conditions=react-server --import tsx --test lib/__tests__/availability-distribution.test.ts` — pass.
+- Blockers:
+  - None.
+- Next concrete steps:
+  - Completed in this turn; confirmation-path timezone enforcement is finalized in 139d.

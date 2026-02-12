@@ -1,0 +1,21 @@
+{
+  "id": "service-precedence-over-knowledge",
+  "description": "When serviceDescription conflicts with knowledgeContext, serviceDescription must win.",
+  "input": {
+    "draft": "Our fee is $791 per month.",
+    "serviceDescription": "Pricing: $791 per year.",
+    "knowledgeContext": "Pricing: $791 per month."
+  },
+  "expected": {
+    "removedAmounts": [],
+    "removedCadenceAmounts": [791],
+    "addedClarifier": false,
+    "normalizedCadencePhrase": false,
+    "draftExcludes": ["$791"],
+    "detection": {
+      "hallucinated": [],
+      "valid": [],
+      "cadenceMismatched": [791]
+    }
+  }
+}

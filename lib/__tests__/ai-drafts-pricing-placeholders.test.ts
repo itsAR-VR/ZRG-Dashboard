@@ -72,24 +72,42 @@ test("detectPricingHallucinations flags unsupported pricing", () => {
   const result = detectPricingHallucinations("Our fee is $3,000", "Pricing: $791 per month", null);
   assert.deepEqual(result.hallucinated, [3000]);
   assert.deepEqual(result.valid, []);
+  assert.deepEqual(result.cadenceMismatched, []);
 });
 
 test("detectPricingHallucinations accepts supported pricing", () => {
   const result = detectPricingHallucinations("It works out to $791/month", "Pricing: $791 per month", null);
   assert.deepEqual(result.hallucinated, []);
   assert.deepEqual(result.valid, [791]);
+  assert.deepEqual(result.cadenceMismatched, []);
 });
 
-test("detectPricingHallucinations ignores knowledgeContext as pricing source", () => {
+test("detectPricingHallucinations uses knowledgeContext when serviceDescription is silent", () => {
   const result = detectPricingHallucinations("It works out to $791/month", null, "Pricing: $791 per month");
-  assert.deepEqual(result.hallucinated, [791]);
+  assert.deepEqual(result.hallucinated, []);
+  assert.deepEqual(result.valid, [791]);
+  assert.deepEqual(result.cadenceMismatched, []);
+});
+
+test("detectPricingHallucinations prefers serviceDescription on conflict", () => {
+  const result = detectPricingHallucinations("It is $791/month", "Pricing: $791 per year", "Pricing: $791 per month");
+  assert.deepEqual(result.hallucinated, []);
   assert.deepEqual(result.valid, []);
+  assert.deepEqual(result.cadenceMismatched, [791]);
+});
+
+test("detectPricingHallucinations flags cadence mismatch with same amount", () => {
+  const result = detectPricingHallucinations("It is $9500/month", "Pricing: $9,500 per year", null);
+  assert.deepEqual(result.hallucinated, []);
+  assert.deepEqual(result.valid, []);
+  assert.deepEqual(result.cadenceMismatched, [9500]);
 });
 
 test("enforcePricingAmountSafety removes unsupported dollar amounts", () => {
   const result = enforcePricingAmountSafety("Our fee is $3,000.", "Pricing: $791 per month");
   assert.equal(result.draft.includes("$3,000"), false);
   assert.deepEqual(result.removedAmounts, [3000]);
+  assert.deepEqual(result.removedCadenceAmounts, []);
   assert.equal(result.addedClarifier, false);
 });
 
@@ -97,14 +115,43 @@ test("enforcePricingAmountSafety keeps supported dollar amounts", () => {
   const result = enforcePricingAmountSafety("Our fee is $791 per month.", "Pricing: $791 per month");
   assert.equal(result.draft.includes("$791"), true);
   assert.deepEqual(result.removedAmounts, []);
+  assert.deepEqual(result.removedCadenceAmounts, []);
   assert.equal(result.addedClarifier, false);
 });
 
-test("enforcePricingAmountSafety adds clarifier when no source pricing exists", () => {
+test("enforcePricingAmountSafety keeps knowledgeContext pricing when serviceDescription is silent", () => {
+  const result = enforcePricingAmountSafety("Our fee is $1,700 per month.", null, "Pricing: $1,700 per month");
+  assert.equal(result.draft.includes("$1,700"), true);
+  assert.deepEqual(result.removedAmounts, []);
+  assert.deepEqual(result.removedCadenceAmounts, []);
+  assert.equal(result.addedClarifier, false);
+});
+
+test("enforcePricingAmountSafety removes cadence-mismatched amount when serviceDescription conflicts", () => {
+  const result = enforcePricingAmountSafety("Our fee is $791 per month.", "Pricing: $791 per year", "Pricing: $791 per month");
+  assert.equal(result.draft.includes("$791"), false);
+  assert.deepEqual(result.removedAmounts, []);
+  assert.deepEqual(result.removedCadenceAmounts, [791]);
+  assert.equal(result.addedClarifier, false);
+});
+
+test("enforcePricingAmountSafety normalizes monthly plan phrasing under quarterly-only billing", () => {
+  const result = enforcePricingAmountSafety(
+    "Our monthly payment plan is $1,700.",
+    "Pricing: Quarterly only. No monthly payment plan. $1,700 per quarter",
+    null
+  );
+  assert.equal(result.draft.includes("monthly payment plan"), false);
+  assert.equal(result.draft.includes("quarterly billing"), true);
+  assert.equal(result.normalizedCadencePhrase, true);
+});
+
+test("enforcePricingAmountSafety adds cadence-safe clarifier when no source pricing exists", () => {
   const result = enforcePricingAmountSafety("Our fee is $3,000.", null);
   assert.equal(result.draft.includes("$3,000"), false);
-  assert.equal(result.draft.includes("monthly or annual details"), true);
+  assert.equal(result.draft.includes("which pricing details you want"), true);
   assert.deepEqual(result.removedAmounts, [3000]);
+  assert.deepEqual(result.removedCadenceAmounts, []);
   assert.equal(result.addedClarifier, true);
 });
 
@@ -112,5 +159,6 @@ test("enforcePricingAmountSafety does not strip revenue-threshold amounts", () =
   const result = enforcePricingAmountSafety("We typically work with $1M+ revenue founders.", null);
   assert.equal(result.draft.includes("$1M+"), true);
   assert.deepEqual(result.removedAmounts, []);
+  assert.deepEqual(result.removedCadenceAmounts, []);
   assert.equal(result.addedClarifier, false);
 });

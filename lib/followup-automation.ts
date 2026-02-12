@@ -150,6 +150,7 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
       id: true,
       clientId: true,
       status: true,
+      bookingQualificationStatus: true,
       sentimentTag: true,
       autoFollowUpEnabled: true,
       ghlAppointmentId: true,
@@ -172,6 +173,9 @@ export async function autoStartPostBookingSequenceIfEligible(opts: {
   }
   if (lead.status === "blacklisted" || lead.status === "unqualified" || lead.sentimentTag === "Blacklist") {
     return { started: false, reason: lead.status === "unqualified" ? "unqualified" : "blacklisted" };
+  }
+  if (lead.bookingQualificationStatus === "disqualified") {
+    return { started: false, reason: "booking_disqualified" };
   }
   const postBookingProvider = lead.client.settings?.meetingBookingProvider ?? "GHL";
   if (!isMeetingBooked(lead, { meetingBookingProvider: postBookingProvider })) return { started: false, reason: "no_appointment" };

@@ -82,5 +82,33 @@ describe("buildAutoSendEvaluatorInput", () => {
     assert.ok("service_description" in payload);
     assert.ok("goals" in payload);
     assert.ok("knowledge_context" in payload);
+    assert.ok("pricing_terms_verified" in payload);
+    assert.ok("pricing_terms_draft" in payload);
+    assert.ok("pricing_terms_mismatch" in payload);
+    assert.ok("pricingCadence" in input.stats);
+  });
+
+  it("flags pricing cadence mismatch when draft conflicts with verified context", () => {
+    const input = buildAutoSendEvaluatorInput({
+      channel: "email",
+      subject: "Pricing details",
+      latestInbound: "Can you share pricing?",
+      conversationHistory: "Lead asked for pricing",
+      categorization: "Information Requested",
+      automatedReply: null,
+      replyReceivedAtIso: "2026-02-05T00:00:00Z",
+      draft: "Our plan is $1,700 per month.",
+      workspaceContext: {
+        serviceDescription: "Pricing is $1,700 per quarter. Quarterly only. No monthly payment plan.",
+        goals: null,
+        knowledgeAssets: [],
+      },
+    });
+
+    const payload = JSON.parse(input.inputJson) as any;
+    assert.equal(payload.pricing_terms_mismatch?.has_mismatch, true);
+    assert.equal(Array.isArray(payload.pricing_terms_mismatch?.mismatches), true);
+    assert.equal(payload.pricing_terms_mismatch.mismatches.length > 0, true);
+    assert.equal(input.stats.pricingCadence.hasMismatch, true);
   });
 });

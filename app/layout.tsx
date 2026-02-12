@@ -1,9 +1,6 @@
 import type React from "react"
 import type { Metadata } from "next"
-import { Analytics } from "@vercel/analytics/next"
-import { Toaster } from "sonner"
-import { UserProvider } from "@/contexts/user-context"
-import { QueryProvider } from "@/components/providers/query-provider"
+import { PostHydrationEnhancements } from "@/components/providers/post-hydration-enhancements"
 import "./globals.css"
 
 export const metadata: Metadata = {
@@ -38,13 +35,8 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className={`font-sans antialiased`}>
-        <QueryProvider>
-          <UserProvider>
-            {children}
-          </UserProvider>
-        </QueryProvider>
-        <Toaster richColors position="bottom-right" />
-        <Analytics />
+        {children}
+        <PostHydrationEnhancements />
       </body>
     </html>
   )

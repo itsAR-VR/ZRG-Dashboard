@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import dynamic from "next/dynamic"
+import { useState, useEffect, useMemo, useRef } from "react"
 import { Users, MessageSquare, Calendar, CalendarClock, ArrowUpRight, ArrowDownRight, Loader2, BarChart3, Send, Inbox, Info } from "lucide-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -10,8 +11,6 @@ import { Badge } from "@/components/ui/badge"
 import { ChatgptExportControls } from "@/components/dashboard/chatgpt-export-controls"
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { AnalyticsCrmTable } from "@/components/dashboard/analytics-crm-table"
-import { BookingProcessAnalytics } from "@/components/dashboard/settings/booking-process-analytics"
 import {
   Cell,
   BarChart,
@@ -44,6 +43,19 @@ import {
   getResponseTimingAnalytics,
   type ResponseTimingAnalyticsData,
 } from "@/actions/response-timing-analytics-actions"
+
+const AnalyticsCrmTable = dynamic(
+  () => import("@/components/dashboard/analytics-crm-table").then((mod) => mod.AnalyticsCrmTable),
+  { loading: () => <div className="h-64 animate-pulse rounded bg-muted/30" /> }
+)
+
+const BookingProcessAnalytics = dynamic(
+  () =>
+    import("@/components/dashboard/settings/booking-process-analytics").then(
+      (mod) => mod.BookingProcessAnalytics
+    ),
+  { loading: () => <div className="h-64 animate-pulse rounded bg-muted/30" /> }
+)
 
 // Sentiment colors for charts
 const SENTIMENT_COLORS: Record<string, string> = {
@@ -138,9 +150,14 @@ function buildCapacityTooltip(capacity: AnalyticsData["overview"]["capacity"] | 
 
 interface AnalyticsViewProps {
   activeWorkspace?: string | null
+  isActive?: boolean
 }
 
-export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
+type AnalyticsTab = "overview" | "workflows" | "campaigns" | "booking" | "crm" | "response-timing"
+const ANALYTICS_CACHE_TTL_MS = 90_000
+
+export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsViewProps) {
+  const [activeTab, setActiveTab] = useState<AnalyticsTab>("overview")
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [campaignRows, setCampaignRows] = useState<EmailCampaignKpiRow[] | null>(null)
@@ -160,6 +177,14 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
   const [datePreset, setDatePreset] = useState<"7d" | "30d" | "90d" | "custom">("30d")
   const [customFrom, setCustomFrom] = useState("")
   const [customTo, setCustomTo] = useState("")
+  const overviewFetchKeyRef = useRef<string | null>(null)
+  const overviewFetchedAtRef = useRef(0)
+  const workflowFetchKeyRef = useRef<string | null>(null)
+  const workflowFetchedAtRef = useRef(0)
+  const campaignsFetchKeyRef = useRef<string | null>(null)
+  const campaignsFetchedAtRef = useRef(0)
+  const responseTimingFetchKeyRef = useRef<string | null>(null)
+  const responseTimingFetchedAtRef = useRef(0)
 
   const windowRange = useMemo(() => {
     if (datePreset === "custom") {
@@ -193,112 +218,229 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
     return "Selected window"
   }, [datePreset, customFrom, customTo, windowRange])
 
+  const overviewFetchKey = activeWorkspace ? `${activeWorkspace}:${windowKey}` : null
+  const workflowFetchKey = activeWorkspace ? `${activeWorkspace}:${windowKey}` : null
+  const campaignsFetchKey = activeWorkspace ? `${activeWorkspace}:${windowKey}` : null
+  const responseTimingFetchKey = activeWorkspace
+    ? `${activeWorkspace}:${windowKey}:${responseTimingChannel}:${responseTimingResponder}`
+    : null
+
   useEffect(() => {
+    if (!isActive || activeTab !== "overview") {
+      if (!isActive) setIsLoading(false)
+      return
+    }
+    if (!activeWorkspace) {
+      setData(null)
+      setIsLoading(false)
+      overviewFetchKeyRef.current = null
+      overviewFetchedAtRef.current = 0
+      return
+    }
+    const isOverviewCacheFresh =
+      overviewFetchKey &&
+      overviewFetchKeyRef.current === overviewFetchKey &&
+      Date.now() - overviewFetchedAtRef.current < ANALYTICS_CACHE_TTL_MS
+
+    if (isOverviewCacheFresh) {
+      setIsLoading(false)
+      return
+    }
+
     let cancelled = false
 
-    async function fetchAnalytics() {
+    async function fetchOverviewAnalytics() {
       setIsLoading(true)
       const result = await getAnalytics(activeWorkspace, { window: windowParams })
-      if (!cancelled) {
-        if (result.success && result.data) {
-          setData(result.data)
-        } else {
-          setData(null)
-        }
-        setIsLoading(false)
+      if (cancelled) return
+      if (result.success && result.data) {
+        setData(result.data)
+        overviewFetchKeyRef.current = overviewFetchKey
+        overviewFetchedAtRef.current = Date.now()
+      } else {
+        setData(null)
       }
+      setIsLoading(false)
     }
 
-    async function fetchCampaignAnalytics() {
-      setCampaignLoading(true)
-      const result = await getEmailCampaignAnalytics(
-        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
-      )
-      if (!cancelled) {
-        if (result.success && result.data) {
-          setCampaignRows(result.data.campaigns)
-        } else {
-          setCampaignRows(null)
-        }
-        setCampaignLoading(false)
-      }
+    fetchOverviewAnalytics()
+
+    return () => {
+      cancelled = true
     }
+  }, [activeTab, activeWorkspace, isActive, overviewFetchKey, windowParams])
+
+  useEffect(() => {
+    if (!isActive || activeTab !== "workflows") {
+      if (!isActive) setWorkflowLoading(false)
+      return
+    }
+    if (!activeWorkspace) {
+      setWorkflowData(null)
+      setWorkflowLoading(false)
+      workflowFetchKeyRef.current = null
+      workflowFetchedAtRef.current = 0
+      return
+    }
+    const isWorkflowCacheFresh =
+      workflowFetchKey &&
+      workflowFetchKeyRef.current === workflowFetchKey &&
+      Date.now() - workflowFetchedAtRef.current < ANALYTICS_CACHE_TTL_MS
+
+    if (isWorkflowCacheFresh) {
+      setWorkflowLoading(false)
+      return
+    }
+
+    let cancelled = false
 
     async function fetchWorkflowAnalytics() {
       setWorkflowLoading(true)
       const result = await getWorkflowAttributionAnalytics(
         windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
       )
-      if (!cancelled) {
-        if (result.success && result.data) {
-          setWorkflowData(result.data)
-        } else {
-          setWorkflowData(null)
-        }
-        setWorkflowLoading(false)
+      if (cancelled) return
+      if (result.success && result.data) {
+        setWorkflowData(result.data)
+        workflowFetchKeyRef.current = workflowFetchKey
+        workflowFetchedAtRef.current = Date.now()
+      } else {
+        setWorkflowData(null)
       }
+      setWorkflowLoading(false)
     }
 
-    async function fetchReactivationAnalytics() {
-      setReactivationLoading(true)
-      const result = await getReactivationCampaignAnalytics(
-        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
-      )
-      if (!cancelled) {
-        if (result.success && result.data) {
-          setReactivationData(result.data)
-        } else {
-          setReactivationData(null)
-        }
-        setReactivationLoading(false)
-      }
-    }
-
-    async function fetchAiDraftOutcomes() {
-      setAiDraftOutcomeLoading(true)
-      const result = await getAiDraftResponseOutcomeStats(
-        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
-      )
-      if (!cancelled) {
-        if (result.success && result.data) {
-          setAiDraftOutcomeStats(result.data)
-        } else {
-          setAiDraftOutcomeStats(null)
-        }
-        setAiDraftOutcomeLoading(false)
-      }
-    }
-
-    async function fetchAiDraftBookingConversions() {
-      setAiDraftBookingLoading(true)
-      const result = await getAiDraftBookingConversionStats(
-        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
-      )
-      if (!cancelled) {
-        if (result.success && result.data) {
-          setAiDraftBookingStats(result.data)
-        } else {
-          setAiDraftBookingStats(null)
-        }
-        setAiDraftBookingLoading(false)
-      }
-    }
-
-    fetchAnalytics()
-    fetchCampaignAnalytics()
     fetchWorkflowAnalytics()
-    fetchReactivationAnalytics()
-    fetchAiDraftOutcomes()
-    fetchAiDraftBookingConversions()
-
     return () => {
       cancelled = true
     }
-  }, [activeWorkspace, windowKey, windowParams])
+  }, [activeTab, activeWorkspace, isActive, windowParams, workflowFetchKey])
 
   useEffect(() => {
+    if (!isActive || activeTab !== "campaigns") {
+      if (!isActive) {
+        setCampaignLoading(false)
+        setReactivationLoading(false)
+        setAiDraftOutcomeLoading(false)
+        setAiDraftBookingLoading(false)
+      }
+      return
+    }
+    if (!activeWorkspace) {
+      setCampaignRows(null)
+      setReactivationData(null)
+      setAiDraftOutcomeStats(null)
+      setAiDraftBookingStats(null)
+      setCampaignLoading(false)
+      setReactivationLoading(false)
+      setAiDraftOutcomeLoading(false)
+      setAiDraftBookingLoading(false)
+      campaignsFetchKeyRef.current = null
+      campaignsFetchedAtRef.current = 0
+      return
+    }
+    const isCampaignsCacheFresh =
+      campaignsFetchKey &&
+      campaignsFetchKeyRef.current === campaignsFetchKey &&
+      Date.now() - campaignsFetchedAtRef.current < ANALYTICS_CACHE_TTL_MS
+
+    if (isCampaignsCacheFresh) {
+      setCampaignLoading(false)
+      setReactivationLoading(false)
+      setAiDraftOutcomeLoading(false)
+      setAiDraftBookingLoading(false)
+      return
+    }
+
+    let cancelled = false
+
+    async function fetchCampaignData() {
+      setCampaignLoading(true)
+      setReactivationLoading(true)
+      setAiDraftOutcomeLoading(true)
+      setAiDraftBookingLoading(true)
+
+      const [campaignResult, workflowResult, aiOutcomeResult, aiBookingResult] = await Promise.all([
+        getEmailCampaignAnalytics(
+          windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
+        ),
+        getReactivationCampaignAnalytics(
+          windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
+        ),
+        getAiDraftResponseOutcomeStats(
+          windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
+        ),
+        getAiDraftBookingConversionStats(
+          windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
+        ),
+      ])
+
+      if (cancelled) return
+
+      if (campaignResult.success && campaignResult.data) {
+        setCampaignRows(campaignResult.data.campaigns)
+      } else {
+        setCampaignRows(null)
+      }
+      setCampaignLoading(false)
+
+      if (workflowResult.success && workflowResult.data) {
+        setReactivationData(workflowResult.data)
+      } else {
+        setReactivationData(null)
+      }
+      setReactivationLoading(false)
+
+      if (aiOutcomeResult.success && aiOutcomeResult.data) {
+        setAiDraftOutcomeStats(aiOutcomeResult.data)
+      } else {
+        setAiDraftOutcomeStats(null)
+      }
+      setAiDraftOutcomeLoading(false)
+
+      if (aiBookingResult.success && aiBookingResult.data) {
+        setAiDraftBookingStats(aiBookingResult.data)
+      } else {
+        setAiDraftBookingStats(null)
+      }
+      setAiDraftBookingLoading(false)
+
+      const allCampaignCallsSucceeded =
+        campaignResult.success &&
+        workflowResult.success &&
+        aiOutcomeResult.success &&
+        aiBookingResult.success
+
+      if (allCampaignCallsSucceeded) {
+        campaignsFetchKeyRef.current = campaignsFetchKey
+        campaignsFetchedAtRef.current = Date.now()
+      }
+    }
+
+    fetchCampaignData()
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, activeWorkspace, campaignsFetchKey, isActive, windowParams])
+
+  useEffect(() => {
+    if (!isActive || activeTab !== "response-timing") {
+      if (!isActive) setResponseTimingLoading(false)
+      return
+    }
     if (!activeWorkspace) {
       setResponseTimingStats(null)
+      setResponseTimingLoading(false)
+      responseTimingFetchKeyRef.current = null
+      responseTimingFetchedAtRef.current = 0
+      return
+    }
+    const isResponseTimingCacheFresh =
+      responseTimingFetchKey &&
+      responseTimingFetchKeyRef.current === responseTimingFetchKey &&
+      Date.now() - responseTimingFetchedAtRef.current < ANALYTICS_CACHE_TTL_MS
+
+    if (isResponseTimingCacheFresh) {
       setResponseTimingLoading(false)
       return
     }
@@ -324,6 +466,8 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
       if (!cancelled) {
         if (result.success && result.data) {
           setResponseTimingStats(result.data)
+          responseTimingFetchKeyRef.current = responseTimingFetchKey
+          responseTimingFetchedAtRef.current = Date.now()
         } else {
           setResponseTimingStats(null)
         }
@@ -336,69 +480,87 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
     return () => {
       cancelled = true
     }
-  }, [activeWorkspace, windowKey, windowParams, responseTimingChannel, responseTimingResponder])
+  }, [
+    activeTab,
+    activeWorkspace,
+    isActive,
+    responseTimingChannel,
+    responseTimingFetchKey,
+    responseTimingResponder,
+    windowParams,
+  ])
 
-  const kpiCards = [
-    { label: "Total Leads", value: data?.overview.totalLeads.toLocaleString() || "0", icon: Users },
-    { label: "Outbound Leads Contacted", value: data?.overview.outboundLeadsContacted.toLocaleString() || "0", icon: ArrowUpRight },
-    { label: "Responses", value: data?.overview.responses.toLocaleString() || "0", icon: ArrowDownRight },
-    { label: "Response Rate", value: `${data?.overview.responseRate || 0}%`, icon: MessageSquare },
-    { label: "Meetings Booked", value: data?.overview.meetingsBooked.toString() || "0", icon: Calendar },
-    {
-      label: "Setter Response",
-      value: data?.overview.setterResponseTime || "—",
-      icon: Send,
-      tooltip: "How fast setters reply to client messages (9am-5pm EST, weekdays)"
-    },
-    {
-      label: "Client Response",
-      value: data?.overview.clientResponseTime || "—",
-      icon: Inbox,
-      tooltip: "How fast clients reply to our messages (9am-5pm EST, weekdays)"
-    },
-    {
-      label: "Capacity (30d)",
-      value: data?.overview.capacity?.bookedPct != null ? formatPct01(data.overview.capacity.bookedPct) : "—",
-      icon: CalendarClock,
-      tooltip: buildCapacityTooltip(data?.overview.capacity),
-    },
-  ]
+  const kpiCards = useMemo(
+    () => [
+      { label: "Total Leads", value: data?.overview.totalLeads.toLocaleString() || "0", icon: Users },
+      { label: "Outbound Leads Contacted", value: data?.overview.outboundLeadsContacted.toLocaleString() || "0", icon: ArrowUpRight },
+      { label: "Responses", value: data?.overview.responses.toLocaleString() || "0", icon: ArrowDownRight },
+      { label: "Response Rate", value: `${data?.overview.responseRate || 0}%`, icon: MessageSquare },
+      { label: "Meetings Booked", value: data?.overview.meetingsBooked.toString() || "0", icon: Calendar },
+      {
+        label: "Setter Response",
+        value: data?.overview.setterResponseTime || "—",
+        icon: Send,
+        tooltip: "How fast setters reply to client messages (9am-5pm EST, weekdays)"
+      },
+      {
+        label: "Client Response",
+        value: data?.overview.clientResponseTime || "—",
+        icon: Inbox,
+        tooltip: "How fast clients reply to our messages (9am-5pm EST, weekdays)"
+      },
+      {
+        label: "Capacity (30d)",
+        value: data?.overview.capacity?.bookedPct != null ? formatPct01(data.overview.capacity.bookedPct) : "—",
+        icon: CalendarClock,
+        tooltip: buildCapacityTooltip(data?.overview.capacity),
+      },
+    ],
+    [data]
+  )
 
-  const workflowCards = workflowData
-    ? [
-        { label: "Total Booked", value: workflowData.totalBooked.toLocaleString(), icon: Calendar },
-        { label: "Booked from Initial", value: workflowData.bookedFromInitial.toLocaleString(), icon: ArrowDownRight },
-        { label: "Booked from Workflow", value: workflowData.bookedFromWorkflow.toLocaleString(), icon: ArrowUpRight },
-        {
-          label: "Workflow Share",
-          value: formatPercent((workflowData.workflowRate || 0) * 100),
-          icon: BarChart3,
-        },
-      ]
-    : []
+  const workflowCards = useMemo(
+    () =>
+      workflowData
+        ? [
+            { label: "Total Booked", value: workflowData.totalBooked.toLocaleString(), icon: Calendar },
+            { label: "Booked from Initial", value: workflowData.bookedFromInitial.toLocaleString(), icon: ArrowDownRight },
+            { label: "Booked from Workflow", value: workflowData.bookedFromWorkflow.toLocaleString(), icon: ArrowUpRight },
+            {
+              label: "Workflow Share",
+              value: formatPercent((workflowData.workflowRate || 0) * 100),
+              icon: BarChart3,
+            },
+          ]
+        : [],
+    [workflowData]
+  )
 
-  const reactivationSummaryCards = reactivationData
-    ? [
-        { label: "Sent", value: reactivationData.totals.totalSent.toLocaleString(), icon: Send },
-        { label: "Responded", value: reactivationData.totals.responded.toLocaleString(), icon: MessageSquare },
-        {
-          label: "Response Rate",
-          value: formatPercent((reactivationData.totals.responseRate || 0) * 100),
-          icon: ArrowDownRight,
-        },
-        { label: "Meetings Booked", value: reactivationData.totals.meetingsBooked.toLocaleString(), icon: Calendar },
-        {
-          label: "Booking Rate",
-          value: formatPercent((reactivationData.totals.bookingRate || 0) * 100),
-          icon: ArrowUpRight,
-        },
-      ]
-    : []
+  const reactivationSummaryCards = useMemo(
+    () =>
+      reactivationData
+        ? [
+            { label: "Sent", value: reactivationData.totals.totalSent.toLocaleString(), icon: Send },
+            { label: "Responded", value: reactivationData.totals.responded.toLocaleString(), icon: MessageSquare },
+            {
+              label: "Response Rate",
+              value: formatPercent((reactivationData.totals.responseRate || 0) * 100),
+              icon: ArrowDownRight,
+            },
+            { label: "Meetings Booked", value: reactivationData.totals.meetingsBooked.toLocaleString(), icon: Calendar },
+            {
+              label: "Booking Rate",
+              value: formatPercent((reactivationData.totals.bookingRate || 0) * 100),
+              icon: ArrowUpRight,
+            },
+          ]
+        : [],
+    [reactivationData]
+  )
 
   // Prepare response sentiment breakdown for bar chart
-  const sentimentBarData = (() => {
+  const sentimentBarData = useMemo(() => {
     const breakdown = data?.sentimentBreakdown ?? []
-
     return breakdown
       .map((row) => {
         const sentiment = row.sentiment?.trim() || "Unknown"
@@ -411,23 +573,31 @@ export function AnalyticsView({ activeWorkspace }: AnalyticsViewProps) {
       })
       .filter((row) => row.count > 0)
       .sort((a, b) => b.count - a.count)
-  })()
+  }, [data?.sentimentBreakdown])
 
   const sentimentChartHeight = Math.max(250, sentimentBarData.length * 28)
 
   // Prepare weekly stats for line chart
-  const weeklyData = data?.weeklyStats.map((s) => ({
-    day: s.day,
-    inbound: s.inbound,
-    outbound: s.outbound,
-  })) || []
+  const weeklyData = useMemo(
+    () =>
+      data?.weeklyStats.map((s) => ({
+        day: s.day,
+        inbound: s.inbound,
+        outbound: s.outbound,
+      })) || [],
+    [data?.weeklyStats]
+  )
 
-  const sortedCampaignRows = (campaignRows || [])
-    .slice()
-    .sort((a, b) => b.rates.bookedPerPositive - a.rates.bookedPerPositive)
+  const sortedCampaignRows = useMemo(
+    () =>
+      (campaignRows || [])
+        .slice()
+        .sort((a, b) => b.rates.bookedPerPositive - a.rates.bookedPerPositive),
+    [campaignRows]
+  )
 
   return (
-    <Tabs defaultValue="overview" className="flex flex-col h-full overflow-auto">
+    <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as AnalyticsTab)} className="flex flex-col h-full overflow-auto">
       <div className="border-b px-6 py-4 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>

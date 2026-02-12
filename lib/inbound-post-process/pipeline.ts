@@ -29,6 +29,8 @@ import { maybeAssignLead } from "@/lib/lead-assignment";
 import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
+import { detectActionSignals, notifyActionSignals, EMPTY_ACTION_SIGNAL_RESULT } from "@/lib/action-signal-detector";
+import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
 import { stripEmailQuotedSectionsForAutomation } from "@/lib/email-cleaning";
@@ -114,6 +116,7 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
                   autoSendRevisionModel: true,
                   autoSendRevisionReasoningEffort: true,
                   autoSendRevisionMaxIterations: true,
+                  aiRouteBookingProcessEnabled: true,
                 },
               },
             },
@@ -343,6 +346,41 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   pushStage("resume_enrichment_followups");
   resumeAwaitingEnrichmentFollowUpsForLead(lead.id).catch(() => undefined);
 
+  // Action signal detection (Phase 143) — detect call requests + external calendar links
+  pushStage("action_signal_detection");
+  let actionSignals = EMPTY_ACTION_SIGNAL_RESULT;
+  try {
+    if (isPositiveSentiment(sentimentTag)) {
+      const workspaceBookingLink = await resolveBookingLink(client.id, null)
+        .then((r) => r.bookingLink)
+        .catch(() => null);
+      actionSignals = await detectActionSignals({
+        strippedText: inboundReplyOnly,
+        fullText: rawText,
+        sentimentTag,
+        workspaceBookingLink,
+        clientId: client.id,
+        leadId: lead.id,
+        channel: params.adapter.channel,
+        provider: params.adapter.provider,
+        aiRouteBookingProcessEnabled: client.settings?.aiRouteBookingProcessEnabled ?? true,
+      });
+      if (actionSignals.signals.length > 0) {
+        console.log(prefix, "Action signals:", actionSignals.signals.map((s) => s.type).join(", "));
+        notifyActionSignals({
+          clientId: client.id,
+          leadId: lead.id,
+          messageId: message.id,
+          signals: actionSignals.signals,
+          latestInboundText: messageBody,
+          route: actionSignals.route,
+        }).catch((err) => console.warn(prefix, "Action signal notify failed:", err));
+      }
+    }
+  } catch (err) {
+    console.warn(prefix, "Action signal detection failed (non-fatal):", err);
+  }
+
   pushStage("draft_generation");
   const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated);
   if (schedulingHandled) {
@@ -363,6 +401,7 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
         timeoutMs: webhookDraftTimeoutMs,
         triggerMessageId: message.id,
         autoBookingContext: autoBook.context?.schedulingDetected ? autoBook.context : null,
+        actionSignals: actionSignals.signals.length > 0 || actionSignals.route ? actionSignals : null,
       }
     );
 
@@ -371,6 +410,26 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
       if (!draftId) {
         console.log(prefix, "Draft created:", draftId, "(no auto-send)");
       } else {
+        const workspaceBookingLink = await resolveBookingLink(client.id, null)
+          .then((result) => result.bookingLink)
+          .catch(() => null);
+        const leadAutoSendContext = await prisma.lead.findUnique({
+          where: { id: lead.id },
+          select: {
+            offeredSlots: true,
+            externalSchedulingLink: true,
+          },
+        });
+        const offeredSlots = (() => {
+          if (!leadAutoSendContext?.offeredSlots) return [];
+          try {
+            const parsed = JSON.parse(leadAutoSendContext.offeredSlots);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        })();
+
         const autoSendResult = await executeAutoSend({
           clientId: client.id,
           leadId: lead.id,
@@ -389,6 +448,9 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
           leadLastName: lead.lastName,
           leadEmail: lead.email,
           leadTimezone: lead.timezone ?? null,
+          offeredSlots,
+          bookingLink: workspaceBookingLink,
+          leadSchedulerLink: leadAutoSendContext?.externalSchedulingLink ?? null,
           emailCampaign,
           autoReplyEnabled: lead.autoReplyEnabled,
           workspaceSettings: lead.client?.settings ?? null,

@@ -5,6 +5,12 @@ export type AutoSendMode =
 
 export type AutoSendPath = "campaign_ai_auto_send" | "legacy_per_lead" | "disabled";
 
+export type AutoSendOfferedSlot = {
+  label?: string | null;
+  datetime?: string | null;
+  offeredAt?: string | null;
+};
+
 export type AutoSendOutcome =
   | { action: "send_immediate"; draftId: string; messageId?: string }
   | { action: "send_delayed"; draftId: string; runAt: Date }
@@ -14,6 +20,7 @@ export type AutoSendOutcome =
       reason: string;
       confidence: number;
       threshold: number;
+      invariantCodes?: string[];
       slackDm: {
         sent: boolean;
         skipped?: boolean;
@@ -49,6 +56,9 @@ export interface AutoSendContext {
   leadLastName?: string | null;
   leadEmail?: string | null;
   leadTimezone?: string | null;
+  offeredSlots?: AutoSendOfferedSlot[] | null;
+  bookingLink?: string | null;
+  leadSchedulerLink?: string | null;
 
   // Campaign context (determines which path)
   emailCampaign?: {

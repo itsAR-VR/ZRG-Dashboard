@@ -589,6 +589,13 @@ export interface GHLContact {
   source?: string;
   dateAdded?: string;
   dateUpdated?: string;
+  customFields?: Array<{
+    id?: string;
+    key?: string;
+    name?: string;
+    fieldKey?: string;
+    value?: unknown;
+  }>;
 }
 
 /**

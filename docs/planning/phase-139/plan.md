@@ -76,12 +76,12 @@ Additional verified callsite impact:
 
 ## Objectives
 
-* [ ] Detect timezone from conversation content using regex-first extraction with AI fallback only when needed.
-* [ ] Inject explicit date context into prompt builders so relative phrases resolve correctly.
-* [ ] Pre-filter availability by timing preference and lead-local business hours.
-* [ ] Ensure all user-visible suggested/confirmation times use lead timezone when known.
-* [ ] Add timezone extraction to meeting overseer via versioned schema rollout.
-* [ ] Integrate safely with active Phase 138 changes in shared files.
+* [x] Detect timezone from conversation content using regex-first extraction with AI fallback only when needed.
+* [x] Inject explicit date context into prompt builders so relative phrases resolve correctly.
+* [x] Pre-filter availability by timing preference and lead-local business hours.
+* [x] Ensure all user-visible suggested/confirmation times use lead timezone when known.
+* [x] Add timezone extraction to meeting overseer via versioned schema rollout.
+* [x] Integrate safely with active Phase 138 changes in shared files.
 
 ## Constraints
 
@@ -94,13 +94,13 @@ Additional verified callsite impact:
 
 ## Success Criteria
 
-- Lead message "before noon PST" -> suggested slots and booking confirmation display in PST.
-- Lead mention "mostly in Miami now" -> timezone resolves to `America/New_York` without asking timezone again.
-- Lead in Dubai -> no slots outside 7:00 to <21:00 lead-local when filtered candidates exist.
-- "This Friday" preference narrows offered slots to Friday candidates when available.
-- Overseer `v2` extraction can return `detected_timezone` without breaking existing flows.
-- `npm run lint` passes.
-- `npm run build` succeeds.
+- [x] Lead message "before noon PST" -> suggested slots and booking confirmation display in PST.
+- [x] Lead mention "mostly in Miami now" -> timezone resolves to `America/New_York` without asking timezone again.
+- [x] Lead in Dubai -> no slots outside 7:00 to <21:00 lead-local when filtered candidates exist.
+- [x] "This Friday" preference narrows offered slots to Friday candidates when available.
+- [x] Overseer `v2` extraction can return `detected_timezone` without breaking existing flows.
+- [x] `npm run lint` passes.
+- [x] `npm run build` succeeds.
 
 ## Subphase Index
 
@@ -109,3 +109,42 @@ Additional verified callsite impact:
 * c — Lead-Local Business-Hours Filtering + Lead-Timezone Labels
 * d — Booking Confirmation + Meeting Overseer v2 Timezone Integration
 * e — Cross-Phase Integration and Verification Hardening
+
+## Repo Reality Check (Post-Implementation)
+
+- `lib/timezone-inference.ts` now exports `isValidIanaTimezone`, supports `extractTimezoneFromConversation(...)`, and accepts optional `conversationText` in `ensureLeadTimezone(...)`.
+- `lib/ai-drafts.ts` now injects date + lead-timezone context into draft prompt builders and pre-filters slot candidates by weekday/relative-week timing preferences.
+- `lib/availability-distribution.ts` now supports optional `leadTimeZone` with 07:00-<21:00 lead-local filtering and fail-open fallback.
+- `lib/followup-engine.ts` now resolves timezone with conversation text for auto-booking and enforces lead-timezone-first confirmation rendering.
+- `lib/meeting-overseer.ts` now uses `meeting.overseer.extract.v2` and normalizes compatibility for older payloads without `detected_timezone`.
+
+## Phase Summary (running)
+
+- 2026-02-11 23:38:38Z — Implemented lead-timezone scheduling corrections across timezone inference, draft prompts, slot distribution, booking confirmations, and meeting overseer v2 extraction; added regression tests and validated gates. (files: `lib/timezone-inference.ts`, `lib/ai-drafts.ts`, `lib/availability-distribution.ts`, `lib/followup-engine.ts`, `lib/meeting-overseer.ts`, `lib/background-jobs/sms-inbound-post-process.ts`, `lib/__tests__/timezone-inference-conversation.test.ts`, `lib/__tests__/availability-distribution.test.ts`, `lib/__tests__/followup-booking-signal.test.ts`)
+- 2026-02-11 23:38:38Z — Validation evidence: targeted timezone/distribution/booking-signal tests passed; `npm run lint` passed (warnings only); `npm run build` passed after clearing stale `.next/lock`.
+- 2026-02-11 23:38:38Z — Post-implementation review documented in `docs/planning/phase-139/review.md`; final RED TEAM pass reported no critical blockers for Phase 139 scope.
+
+## Multi-Agent Coordination Check (2026-02-11)
+
+### Overlaps Confirmed
+
+- Phase 138: `lib/followup-engine.ts`, `lib/meeting-overseer.ts`, `lib/ai-drafts.ts` (auto-booking pipeline, overseer schema, draft suppression).
+- Phase 140: `lib/ai-drafts.ts` (pricing validation/prompt Step 3).
+- Phase 141: `lib/ai-drafts.ts` runtime toggles (planned).
+- Phase 137: no direct code overlap with Phase 139 scope; shared repo-wide lint/build gates only.
+
+### Conflict / Race Risks
+
+- `lib/ai-drafts.ts` is a three-phase hot spot (138/139/140) and upcoming 141; merge by function/symbol, not line numbers.
+- `lib/meeting-overseer.ts` schema v2 (139) must stay compatible with 138 booking qualification logic.
+- Build gate interpretation differs: Phase 138 reports a repo-wide build blocker unrelated to scheduling; Phase 139 recorded build passing after `.next/lock` cleanup. Treat build status as environment-dependent, not definitive across phases.
+
+### Required Cross-Phase Checks
+
+- Re-verify `lib/ai-drafts.ts` changes after Phase 140/141 merges to ensure timezone context and pricing/toggles coexist.
+- Re-verify `lib/followup-engine.ts` and `lib/meeting-overseer.ts` after Phase 138 updates to confirm return-shape/schema compatibility.
+
+### Residual Risks
+
+- Build gate can regress due to unrelated prerender errors noted in Phase 138; Phase 139 validation is not a global build guarantee.
+- Lint warnings remain pre-existing; no Phase 139-specific warning reductions tracked.

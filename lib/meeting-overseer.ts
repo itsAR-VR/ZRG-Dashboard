@@ -3,8 +3,15 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import { coerceEmailDraftVerificationModel } from "@/lib/ai-drafts/config";
+import {
+  deriveAIDecisionContractV1FromExtraction,
+  repairAIDecisionContractV1,
+  validateAIDecisionContractV1,
+  type AIDecisionContractV1,
+} from "@/lib/ai/decision-contract";
 import type { OfferedSlot } from "@/lib/booking";
 import { isAutoBookingBlockedSentiment } from "@/lib/sentiment-shared";
+import { isValidIanaTimezone } from "@/lib/timezone-inference";
 
 export type MeetingOverseerStage = "extract" | "gate";
 export type MeetingOverseerIntent =
@@ -30,11 +37,15 @@ export type MeetingOverseerExtractDecision = {
   qualification_confidence: number;
   qualification_evidence: string[];
   time_from_body_only: boolean;
+  detected_timezone: string | null;
   time_extraction_confidence: number;
   needs_clarification: boolean;
   clarification_reason: string | null;
   confidence: number;
   evidence: string[];
+  decision_contract_v1?: AIDecisionContractV1 | null;
+  decision_contract_status?: "ok" | "decision_error";
+  decision_contract_error?: string | null;
 };
 
 export type MeetingOverseerGateDecision = {
@@ -43,6 +54,12 @@ export type MeetingOverseerGateDecision = {
   confidence: number;
   issues: string[];
   rationale: string;
+};
+
+export type MeetingOverseerGateResult = {
+  finalDraft: string | null;
+  decision: MeetingOverseerGateDecision | null;
+  fromCache: boolean;
 };
 
 const MEETING_OVERSEER_EXTRACT_SCHEMA = {
@@ -63,6 +80,7 @@ const MEETING_OVERSEER_EXTRACT_SCHEMA = {
     qualification_confidence: { type: "number" },
     qualification_evidence: { type: "array", items: { type: "string" } },
     time_from_body_only: { type: "boolean" },
+    detected_timezone: { type: ["string", "null"] },
     time_extraction_confidence: { type: "number" },
     needs_clarification: { type: "boolean" },
     clarification_reason: { type: ["string", "null"] },
@@ -84,6 +102,7 @@ const MEETING_OVERSEER_EXTRACT_SCHEMA = {
     "qualification_confidence",
     "qualification_evidence",
     "time_from_body_only",
+    "detected_timezone",
     "time_extraction_confidence",
     "needs_clarification",
     "clarification_reason",
@@ -171,6 +190,65 @@ function normalizeQualificationStatus(
   if (raw === "qualified") return "qualified";
   if (raw === "unqualified") return "unqualified";
   return "unknown";
+}
+
+function normalizeDetectedTimezone(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || !isValidIanaTimezone(trimmed)) return null;
+  return trimmed;
+}
+
+function attachDecisionContractV1(
+  decision: MeetingOverseerExtractDecision,
+  messageText: string
+): MeetingOverseerExtractDecision {
+  const derived = deriveAIDecisionContractV1FromExtraction({
+    extraction: {
+      is_scheduling_related: decision.is_scheduling_related,
+      intent_to_book: decision.intent_to_book,
+      qualification_status: decision.qualification_status,
+      preferred_day_of_week: decision.preferred_day_of_week,
+      preferred_time_of_day: decision.preferred_time_of_day,
+      relative_preference: decision.relative_preference,
+      relative_preference_detail: decision.relative_preference_detail,
+      needs_clarification: decision.needs_clarification,
+      detected_timezone: decision.detected_timezone,
+      evidence: decision.evidence,
+      qualification_evidence: decision.qualification_evidence,
+    },
+    messageText,
+  });
+
+  const validated = validateAIDecisionContractV1(derived);
+  if (validated.success) {
+    return {
+      ...decision,
+      decision_contract_v1: validated.data,
+      decision_contract_status: "ok",
+      decision_contract_error: null,
+    };
+  }
+
+  const repaired = repairAIDecisionContractV1(derived);
+  if (repaired) {
+    const repairedValidation = validateAIDecisionContractV1(repaired);
+    if (repairedValidation.success) {
+      return {
+        ...decision,
+        decision_contract_v1: repairedValidation.data,
+        decision_contract_status: "ok",
+        decision_contract_error: null,
+      };
+    }
+  }
+
+  return {
+    ...decision,
+    decision_contract_v1: null,
+    decision_contract_status: "decision_error",
+    decision_contract_error: validated.success ? "contract_validation_failed" : validated.error,
+  };
 }
 
 export function shouldRunMeetingOverseer(opts: {
@@ -268,7 +346,24 @@ export async function getMeetingOverseerDecision(
   stage: MeetingOverseerStage
 ): Promise<MeetingOverseerExtractDecision | MeetingOverseerGateDecision | null> {
   if (!messageId) return null;
-  return loadExistingDecision(messageId, stage);
+  const existing = await loadExistingDecision(messageId, stage);
+  if (
+    stage === "extract" &&
+    existing &&
+    typeof existing === "object" &&
+    "intent_to_book" in existing &&
+    "time_from_body_only" in existing
+  ) {
+    const extract = existing as MeetingOverseerExtractDecision & { detected_timezone?: unknown };
+    return attachDecisionContractV1(
+      {
+      ...extract,
+      detected_timezone: normalizeDetectedTimezone(extract.detected_timezone),
+      },
+      ""
+    );
+  }
+  return existing;
 }
 
 export async function runMeetingOverseerExtraction(opts: {
@@ -276,13 +371,18 @@ export async function runMeetingOverseerExtraction(opts: {
   leadId: string;
   messageId?: string | null;
   messageText: string;
+  leadTimezone?: string | null;
   offeredSlots: OfferedSlot[];
   qualificationContext?: string | null;
   conversationContext?: string | null;
   businessContext?: string | null;
+  reuseExistingDecision?: boolean;
+  persistDecision?: boolean;
 }): Promise<MeetingOverseerExtractDecision | null> {
+  const reuseExistingDecision = opts.reuseExistingDecision !== false;
+  const shouldPersistDecision = opts.persistDecision !== false;
   const messageId = (opts.messageId || "").trim();
-  if (messageId) {
+  if (messageId && reuseExistingDecision) {
     const existing = await loadExistingDecision(messageId, "extract");
     if (
       existing &&
@@ -291,7 +391,14 @@ export async function runMeetingOverseerExtraction(opts: {
       "qualification_status" in existing &&
       "time_from_body_only" in existing
     ) {
-      return existing as MeetingOverseerExtractDecision;
+      const existingDecision = existing as MeetingOverseerExtractDecision & { detected_timezone?: unknown };
+      return attachDecisionContractV1(
+        {
+        ...existingDecision,
+        detected_timezone: normalizeDetectedTimezone(existingDecision.detected_timezone),
+        },
+        opts.messageText
+      );
     }
   }
 
@@ -301,8 +408,11 @@ export async function runMeetingOverseerExtraction(opts: {
   const qualificationContext = (opts.qualificationContext || "").trim() || "None.";
   const conversationContext = (opts.conversationContext || "").trim() || "None.";
   const businessContext = (opts.businessContext || "").trim() || "None.";
+  const leadTimezoneHint = isValidIanaTimezone((opts.leadTimezone || "").trim())
+    ? (opts.leadTimezone || "").trim()
+    : "None.";
 
-  const promptKey = "meeting.overseer.extract.v1";
+  const promptKey = "meeting.overseer.extract.v2";
 
   const result = await runStructuredJsonPrompt<MeetingOverseerExtractDecision>({
     pattern: "structured_json",
@@ -326,6 +436,9 @@ Business context:
 
 Conversation context (recent thread summary):
 {{conversationContext}}
+
+Known lead timezone hint (if available):
+{{leadTimezoneHint}}
 
 Rules:
 - If NOT scheduling-related, set is_scheduling_related=false, intent="other", acceptance_specificity="none", needs_clarification=false.
@@ -361,6 +474,10 @@ Rules:
 - time_from_body_only:
   - true only if timing details come from the inbound message body itself.
   - false when timing appears to come from signature/footer/contact lines or cannot be grounded.
+- detected_timezone:
+  - return a valid IANA timezone when the message includes explicit timezone/location scheduling signal (e.g., "PST", "Miami", "Dubai").
+  - if message text is ambiguous but a valid lead timezone hint is provided, use that hint.
+  - otherwise return null.
 - confidence fields (intent_confidence, qualification_confidence, time_extraction_confidence) must be 0..1.
 - If the message is ambiguous about scheduling intent, prefer is_scheduling_related=false and intent="other" (fail closed).
 - Do NOT invent dates or times. Use only the message and offered slots list.
@@ -373,8 +490,9 @@ Output JSON only.`,
       qualificationContext,
       conversationContext,
       businessContext,
+      leadTimezoneHint,
     },
-    schemaName: "meeting_overseer_extract",
+    schemaName: "meeting_overseer_extract_v2",
     strict: true,
     schema: MEETING_OVERSEER_EXTRACT_SCHEMA,
     budget: {
@@ -398,11 +516,20 @@ Output JSON only.`,
   decision.preferred_time_of_day = normalizeTimeOfDay(decision.preferred_time_of_day);
   decision.relative_preference = normalizeRelativePreference(decision.relative_preference);
   decision.qualification_status = normalizeQualificationStatus(decision.qualification_status);
+  decision.detected_timezone = normalizeDetectedTimezone(decision.detected_timezone);
+  if (!decision.detected_timezone) {
+    const knownLeadTimezone = (opts.leadTimezone || "").trim();
+    if (isValidIanaTimezone(knownLeadTimezone)) {
+      decision.detected_timezone = knownLeadTimezone;
+    }
+  }
   if (!Number.isFinite(decision.accepted_slot_index ?? NaN)) {
     decision.accepted_slot_index = null;
   }
 
-  if (messageId) {
+  const decisionWithContract = attachDecisionContractV1(decision, opts.messageText);
+
+  if (messageId && shouldPersistDecision) {
     await persistDecision({
       messageId,
       leadId: opts.leadId,
@@ -410,15 +537,15 @@ Output JSON only.`,
       stage: "extract",
       promptKey,
       model: result.telemetry.model,
-      confidence: decision.confidence,
-      payload: decision,
+      confidence: decisionWithContract.confidence,
+      payload: decisionWithContract,
     });
   }
 
-  return decision;
+  return decisionWithContract;
 }
 
-export async function runMeetingOverseerGate(opts: {
+export async function runMeetingOverseerGateDecision(opts: {
   clientId: string;
   leadId: string;
   messageId?: string | null;
@@ -432,14 +559,21 @@ export async function runMeetingOverseerGate(opts: {
   metadata?: unknown;
   leadSchedulerLink: string | null;
   timeoutMs: number;
-}): Promise<string | null> {
+  reuseExistingDecision?: boolean;
+  persistDecision?: boolean;
+}): Promise<MeetingOverseerGateResult> {
+  const reuseExistingDecision = opts.reuseExistingDecision !== false;
+  const shouldPersistDecision = opts.persistDecision !== false;
   const messageId = (opts.messageId || "").trim();
-  if (messageId) {
+  if (messageId && reuseExistingDecision) {
     const existing = await loadExistingDecision(messageId, "gate");
     if (existing && typeof existing === "object") {
       const decision = existing as MeetingOverseerGateDecision;
-      if (decision.decision === "revise" && decision.final_draft) return decision.final_draft;
-      return null;
+      return {
+        finalDraft: decision.decision === "revise" && decision.final_draft ? decision.final_draft : null,
+        decision,
+        fromCache: true,
+      };
     }
   }
 
@@ -496,11 +630,24 @@ Memory context (if any):
 
 RULES
 - If the lead accepted a time, keep the reply short and acknowledgment-only. Do NOT ask new questions.
-- Never imply a meeting is booked unless the lead explicitly confirmed a time or says they booked/accepted an invite.
+- Never imply a meeting is booked unless either:
+  - the lead explicitly confirmed/accepted a time, or
+  - extraction.decision_contract_v1.shouldBookNow is "yes" and the selected slot comes directly from provided availability.
 - If extraction.needs_clarification is true, ask ONE concise clarifying question.
-- If the lead requests times and availability is provided, offer exactly 2 options (verbatim) and ask which works.
+- If extraction.decision_contract_v1.shouldBookNow is "yes":
+  - Keep the reply booking-first and concise.
+  - Do NOT add new qualification questions.
+  - Do NOT add extra selling/community/pitch content.
+- If the lead already confirmed qualification thresholds in the latest inbound, do NOT ask repeat qualification questions.
+- When extraction.decision_contract_v1.needsPricingAnswer is "yes", the draft must answer pricing directly using only provided context (no invented numbers or cadence).
+- If the lead asked explicit questions (pricing, frequency, location, scheduling), ensure each explicit question is answered before extra context.
+- If extraction.decision_contract_v1.shouldBookNow is "yes" and the lead provided a day/window preference (for example, "Friday between 12-3"), choose exactly ONE best-matching slot from availability (verbatim) and send a concise booked-confirmation style reply. Do not add fallback options or extra selling content.
+- If the lead requests times and availability is provided (without a day/window constraint), offer exactly 2 options (verbatim) and ask which works.
 - If availability is not provided, ask for their preferred windows.
 - If the lead provided their own scheduling link, do NOT offer our times or our booking link; acknowledge their link.
+- If extraction.decision_contract_v1.needsPricingAnswer is "no", avoid introducing pricing details not explicitly requested.
+- When times are offered and extraction.detected_timezone exists, keep displayed options in that timezone context only.
+- Do not request revision solely for first-person voice ("I") or a personal sign-off if the message is otherwise compliant.
 - If the draft already complies, decision="approve" and final_draft=null.
 - Respect channel formatting:
   - sms: 1-2 short sentences, <= 3 parts of 160 chars max, no markdown.
@@ -533,12 +680,18 @@ OUTPUT JSON ONLY.`,
     timeoutMs: Math.max(5000, opts.timeoutMs),
   });
 
-  if (!result.success) return null;
+  if (!result.success) {
+    return {
+      finalDraft: null,
+      decision: null,
+      fromCache: false,
+    };
+  }
 
   const decision = result.data;
   decision.confidence = clamp01(decision.confidence);
 
-  if (messageId) {
+  if (messageId && shouldPersistDecision) {
     await persistDecision({
       messageId,
       leadId: opts.leadId,
@@ -551,9 +704,30 @@ OUTPUT JSON ONLY.`,
     });
   }
 
-  if (decision.decision === "revise" && decision.final_draft) {
-    return decision.final_draft.trim() || null;
-  }
+  return {
+    finalDraft: decision.decision === "revise" && decision.final_draft ? decision.final_draft.trim() || null : null,
+    decision,
+    fromCache: false,
+  };
+}
 
-  return null;
+export async function runMeetingOverseerGate(opts: {
+  clientId: string;
+  leadId: string;
+  messageId?: string | null;
+  channel: "sms" | "email" | "linkedin";
+  latestInbound: string;
+  draft: string;
+  availability: string[];
+  bookingLink: string | null;
+  extraction: MeetingOverseerExtractDecision | null;
+  memoryContext?: string | null;
+  metadata?: unknown;
+  leadSchedulerLink: string | null;
+  timeoutMs: number;
+  reuseExistingDecision?: boolean;
+  persistDecision?: boolean;
+}): Promise<string | null> {
+  const result = await runMeetingOverseerGateDecision(opts);
+  return result.finalDraft;
 }

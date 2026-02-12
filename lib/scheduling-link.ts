@@ -26,7 +26,11 @@ export function extractSchedulerLinkFromText(text: string): string | null {
   if (!raw.trim()) return null;
 
   // Quick scan for obvious calendar providers before doing more work.
-  if (!/(calendly\.com|meetings\.hubspot\.com|hubspot\.com\/meetings|leadconnectorhq\.com|gohighlevel\.com|msgsndr\.com|\/widget\/booking\/|\/widget\/bookings\/)/i.test(raw)) {
+  if (
+    !/(calendly\.com|meetings\.hubspot\.com|hubspot\.com\/meetings|leadconnectorhq\.com|gohighlevel\.com|msgsndr\.com|\/widget\/booking\/|\/widget\/bookings\/|calendar\.google\.com\/appointments\/schedules\/)/i.test(
+      raw
+    )
+  ) {
     return null;
   }
 
@@ -36,8 +40,8 @@ export function extractSchedulerLinkFromText(text: string): string | null {
     if (!normalized) continue;
     const type = detectCalendarType(normalized);
     if (type !== "unknown") return normalized;
+    if (/calendar\.google\.com\/appointments\/schedules\//i.test(normalized)) return normalized;
   }
 
   return null;
 }
-

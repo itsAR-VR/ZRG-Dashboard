@@ -126,6 +126,7 @@ Hard blockers (always require human review, safe_to_send=false, confidence<=0.2)
 - Any unsubscribe/opt-out/stop/remove language in the inbound reply or subject
 - The inbound asks for specifics the draft cannot safely answer without missing context (pricing specifics, exact terms, attachments, etc.)
 - The draft appears hallucinated, mismatched to the inbound, or references facts not in the transcript
+- The draft's pricing cadence conflicts with verified context (for example monthly-plan wording when billing is quarterly)
 - The draft asks for or reveals credentials or highly sensitive personal data (passwords, authentication tokens, bank/card details, SSN/government ID, etc.)
 
 Consistency:
@@ -190,6 +191,15 @@ HARD RULES
 - Do NOT invent emails, phone numbers, or URLs. If the current draft already contains a booking link or contact details, you may preserve them, but do not add new ones.
 - Output must be plain text (no markdown styling). No subject line.
 
+HARD CONSTRAINT CONTRACT
+- The input includes hard_constraints.hard_requirements and hard_constraints.hard_forbidden.
+- You MUST satisfy every hard requirement unless impossible from context.
+- If any hard requirement cannot be satisfied safely, list it in unresolved_requirements and ask a single concise clarification question in revised_draft.
+- If hard_constraints.offered_slots_verbatim is present and you propose times, use only those slots verbatim.
+- For day/window preference constraints, do not offer multiple fallback times in one message unless explicitly required by hard_requirements.
+- Respect hard_constraints.current_day_iso + hard_constraints.lead_timezone when interpreting relative date words (today/tomorrow/Friday).
+- Never add a URL not present in hard_constraints.booking_link or hard_constraints.lead_scheduler_link.
+
 MEMORY PROPOSALS (OPTIONAL)
 If you can infer stable, reusable preferences from the inbound + conversation history, propose durable memory items.
 
@@ -211,6 +221,7 @@ Return ONLY valid JSON (no markdown, no extra keys):
   "revised_draft": string,
   "changes_made": string[],
   "issues_addressed": string[],
+  "unresolved_requirements": string[],
   "confidence": number,
   "memory_proposals": [
     {
@@ -221,6 +232,45 @@ Return ONLY valid JSON (no markdown, no extra keys):
       "confidence": number
     }
   ]
+}`;
+
+const AI_REPLAY_JUDGE_SYSTEM = `You are evaluating a real AI-generated reply from production draft-generation paths.
+
+Your output is used for replay QA and regression detection.
+
+CRITICAL:
+- Be strict about factual alignment to inbound/transcript/context.
+- Be strict about pricing and cadence wording (monthly vs annual vs quarterly).
+- Penalize unsupported prices, cadence mismatch, or implied billing plans not present in context.
+- Penalize hallucinated claims, invented links, invented commitments, or unsafe/confusing replies.
+- Use "observedNextOutbound" as a reference response when present (do not require exact wording).
+- Use "historicalReplyExamples" to calibrate tone, specificity, and pricing/cadence consistency to prior real outbound replies.
+
+Scoring:
+- pass=true only if this draft is safe and high-confidence for intended use.
+- confidence is 0..1.
+- overallScore and each dimension are 0..100.
+
+Dimensions:
+- pricingCadenceAccuracy
+- factualAlignment
+- safetyAndPolicy
+- responseQuality
+
+Return ONLY valid JSON with exact keys:
+{
+  "pass": true,
+  "confidence": 0.0,
+  "overallScore": 0,
+  "dimensions": {
+    "pricingCadenceAccuracy": 0,
+    "factualAlignment": 0,
+    "safetyAndPolicy": 0,
+    "responseQuality": 0
+  },
+  "failureReasons": [],
+  "suggestedFixes": [],
+  "summary": ""
 }`;
 
 const EMAIL_DRAFT_VERIFY_STEP3_SYSTEM = `You are a strict verifier for outbound email drafts.
@@ -238,7 +288,7 @@ NON-NEGOTIABLE RULES:
   3) Remove forbidden terms/phrases when they appear.
   4) Remove unneeded repetition.
   5) Correct factual/proprietary info ONLY when the correct information is explicitly present in the provided context (service description / knowledge context / booking instructions). If a claim is not supported, remove it rather than inventing.
-     - PRICING VALIDATION: If the draft includes any dollar amount that implies pricing (price/fee/cost/membership/investment, per month/year, /mo, /yr), the numeric dollar amount MUST match an explicit price/fee/cost in <service_description> only. Ignore <knowledge_context> for pricing validation. If an amount does not match, replace it with the best supported price from <service_description>. If multiple supported prices exist, match cadence (monthly vs annual); if cadence is unclear, include both supported options. If no explicit pricing exists in <service_description>, remove all dollar amounts and ask one clarifying pricing question with a quick-call next step. Treat negated unsupported amounts (for example, "not $3,000") as unsupported and remove/replace them too. Ignore revenue/funding thresholds (e.g., "$1M+ in revenue", "$2.5M raised", "$50M ARR") and do NOT treat them as pricing.
+     - PRICING VALIDATION: If the draft includes any dollar amount that implies pricing (price/fee/cost/membership/investment, per month/year/quarter, /mo, /yr, /qtr), the numeric dollar amount MUST match an explicit price/fee/cost in <service_description>. If <service_description> is silent for that amount, fallback to <knowledge_context>. If <service_description> and <knowledge_context> conflict, prefer <service_description>. Cadence must also match supported terms (monthly, annual, quarterly). Do NOT imply a monthly payment plan when context says billing is quarterly; if monthly-equivalent wording is used, keep billing cadence explicit. If an amount/cadence does not match supported context, replace with the best supported option. If multiple supported prices exist, match cadence (monthly vs annual vs quarterly); if cadence is unclear, include supported options with explicit billing cadence. If no explicit pricing exists in either source, remove all dollar amounts and ask one clarifying pricing question with a quick-call next step. Treat negated unsupported amounts (for example, "not $3,000") as unsupported and remove/replace them too. Ignore revenue/funding thresholds (e.g., "$1M+ in revenue", "$2.5M raised", "$50M ARR") and do NOT treat them as pricing.
   6) Fix obvious logical contradictions with the latest inbound message (especially date/time windows like "first week of February").
   7) Ensure EXACTLY ONE booking link appears in the draft. If multiple booking links are present, keep only the first occurrence and remove duplicates.
   8) Never use markdown link syntax where the display text is a URL (e.g., [https://...](https://...)). Always use plain URLs.
@@ -605,11 +655,15 @@ Memory context (if any):
 
 RULES
 - If the lead accepted a time, keep the reply short and acknowledgment-only. Do NOT ask new questions.
-- Never imply a meeting is booked unless the lead explicitly confirmed a time or says they booked/accepted an invite.
+- Never imply a meeting is booked unless either:
+  - the lead explicitly confirmed/accepted a time, or
+  - extraction.decision_contract_v1.shouldBookNow is "yes" and the selected slot comes directly from provided availability.
 - If extraction.needs_clarification is true, ask ONE concise clarifying question.
-- If the lead requests times and availability is provided, offer exactly 2 options (verbatim) and ask which works.
+- If extraction.decision_contract_v1.shouldBookNow is "yes" and the lead provided a day/window preference (for example, "Friday between 12-3"), choose exactly ONE best-matching slot from availability (verbatim) and send a concise booked-confirmation style reply. Do not add fallback options or extra selling content.
+- If the lead requests times and availability is provided (without a day/window constraint), offer exactly 2 options (verbatim) and ask which works.
 - If availability is not provided, ask for their preferred windows.
 - If the lead provided their own scheduling link, do NOT offer our times or our booking link; acknowledge their link.
+- Do not request revision solely for first-person voice ("I") or a personal sign-off if the message is otherwise compliant.
 - If the draft already complies, decision="approve" and final_draft=null.
 - Respect channel formatting:
   - sms: 1-2 short sentences, <= 3 parts of 160 chars max, no markdown.
@@ -1219,6 +1273,21 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       ],
     },
     {
+      key: "ai.replay.judge.v1",
+      featureId: "ai.replay.judge",
+      name: "AI Replay Judge",
+      description: "Scores live replay draft outputs for pass/fail QA and regression tracking.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [
+        { role: "system", content: AI_REPLAY_JUDGE_SYSTEM },
+        {
+          role: "user",
+          content: "{{inputJson}}",
+        },
+      ],
+    },
+    {
       key: "signature.extract.v1",
       featureId: "signature.extract",
       name: "Signature Extraction",
@@ -1319,6 +1388,18 @@ export function listAIPromptTemplates(): AIPromptTemplate[] {
       featureId: "meeting.overseer.extract",
       name: "Meeting Overseer: Extract",
       description: "Extracts scheduling intent + timing preferences for meeting-related inbounds.",
+      model: "gpt-5.2",
+      apiType: "responses",
+      messages: [
+        { role: "system", content: MEETING_OVERSEER_EXTRACT_SYSTEM_TEMPLATE },
+        { role: "user", content: "{{message}}" },
+      ],
+    },
+    {
+      key: "meeting.overseer.extract.v2",
+      featureId: "meeting.overseer.extract",
+      name: "Meeting Overseer: Extract (Decision Contract)",
+      description: "Extracts scheduling intent + timing preferences with decision-contract support.",
       model: "gpt-5.2",
       apiType: "responses",
       messages: [
@@ -1513,6 +1594,69 @@ Return ONLY valid JSON with this exact structure:
   "overallScore": <1-4>,
   "reasoning": "<brief explanation>"
 }`,
+        },
+      ],
+    },
+    // Action Signal Detection — Tier 2 disambiguation (Phase 143)
+    {
+      key: "action_signal.detect.v1",
+      featureId: "action_signal.detect",
+      name: "Action Signal: Signature Link Disambiguation",
+      description: "Determines if a scheduling link in an email signature is being actively referenced by the sender.",
+      model: "gpt-5-nano",
+      apiType: "responses",
+      messages: [
+        {
+          role: "system",
+          content: `You are analyzing an email reply to determine if the sender is actively directing us to book a meeting via a specific scheduling link found in their email signature, or if the link is just passive contact information.
+
+Analyze the email body text. Consider:
+1. Does the body text reference scheduling, booking, or meeting?
+2. Is there language that directs the recipient to use a link (even if the link itself is in the signature)?
+3. Is the email just a generic reply that happens to have a scheduling link in the signature?
+
+Return JSON only.`,
+        },
+        {
+          role: "user",
+          content: "{{payload}}",
+        },
+      ],
+    },
+    {
+      key: "action_signal.route_booking_process.v1",
+      featureId: "action_signal.route_booking_process",
+      name: "Action Signal: Booking Process Router",
+      description: "Classifies inbound messages into booking process IDs (1-5) for routing context.",
+      model: "gpt-5-mini",
+      apiType: "responses",
+      messages: [
+        {
+          role: "system",
+          content: `Classify the inbound message into exactly one booking process ID.
+
+Return JSON only with:
+- processId: integer 1..5
+- confidence: number 0..1
+- rationale: short reason
+- uncertain: boolean
+
+Process taxonomy:
+1 = Link + Qualification (lead needs qualification/context before final booking).
+2 = Initial Email Times / Offered Slots (lead is responding to offered availability windows).
+3 = Lead Proposes Times (lead suggests a specific time/day for scheduling).
+4 = Call Requested (lead wants a phone call).
+5 = Lead-Provided Scheduler Link (lead asks us to use their own calendar link).
+
+Rules:
+- Pick exactly one process ID.
+- Use process 4 for explicit call intent.
+- Use process 5 when lead explicitly directs to their own scheduling link.
+- If intent is ambiguous between 1/2/3, choose the best fit and set uncertain=true when needed.`,
+        },
+        {
+          role: "user",
+          content: "{{payload}}",
         },
       ],
     },

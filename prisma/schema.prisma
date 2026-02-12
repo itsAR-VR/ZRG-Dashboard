@@ -184,6 +184,18 @@ enum WebhookEventStatus {
   FAILED
 }
 
+enum BookingQualificationProvider {
+  CALENDLY
+  GHL
+}
+
+enum BookingQualificationJobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
 enum BookingProcessLinkType {
   PLAIN_URL
   HYPERLINKED_TEXT
@@ -250,6 +262,7 @@ model Client {
   responseTimingEvents ResponseTimingEvent[]
   meetingOverseerDecisions MeetingOverseerDecision[]
   backgroundJobs BackgroundJob[]
+  bookingQualificationJobs BookingQualificationJob[]
   draftPipelineRuns DraftPipelineRun[]
   notificationEvents NotificationEvent[]
   notificationSendLogs NotificationSendLog[]
@@ -332,6 +345,12 @@ model WorkspaceSettings {
   draftGenerationReasoningEffort String? @default("medium")  // low | medium | high | extra_high (gpt-5.2 only)
   // Email Draft Verification Model Settings (Step 3 verifier)
   emailDraftVerificationModel    String? @default("gpt-5.2") // gpt-5-mini | gpt-5.1 | gpt-5.2
+  // Phase 141: Per-workspace AI route switches (safe defaults on).
+  draftGenerationEnabled         Boolean @default(true)
+  draftGenerationStep2Enabled    Boolean @default(true)
+  draftVerificationStep3Enabled  Boolean @default(true)
+  meetingOverseerEnabled         Boolean @default(true)
+  aiRouteBookingProcessEnabled   Boolean @default(true)
   // AI Context Fields (for better AI responses)
   serviceDescription      String?  @db.Text  // Business/service description for AI context
   qualificationQuestions  String?  @db.Text  // JSON array of qualification questions
@@ -422,6 +441,9 @@ model WorkspaceSettings {
   calendlyEventTypeUri   String?              // API URI for the event type (https://api.calendly.com/event_types/...)
   calendlyDirectBookEventTypeLink String?      // Calendly event type link without qualification questions (Phase 62)
   calendlyDirectBookEventTypeUri  String?      // API URI for the direct-book event type (Phase 62)
+  bookingQualificationCheckEnabled Boolean      @default(false)
+  bookingQualificationCriteria      String?      @db.Text
+  bookingDisqualificationMessage    String?      @db.Text
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
   // Relations
@@ -518,6 +540,9 @@ model Lead {
   offeredSlots            String?   @db.Text         // JSON array of offered time slots
   qualificationAnswers        Json?                  // Extracted qualification answers (Phase 62)
   qualificationAnswersExtractedAt DateTime?           // When answers were last extracted (Phase 62)
+  bookingQualificationStatus    String?
+  bookingQualificationCheckedAt DateTime?
+  bookingQualificationReason    String?   @db.Text
   bookedSlot              String?                    // ISO datetime of booked slot (for filtering availability)
   ghlAppointmentId        String?                    // GHL appointment ID after booking
   calendlyInviteeUri          String? @unique        // Calendly invitee resource URI after booking
@@ -556,6 +581,7 @@ model Lead {
   messages          Message[]
   responseTimingEvents ResponseTimingEvent[]
   backgroundJobs    BackgroundJob[]
+  bookingQualificationJobs BookingQualificationJob[]
   followUps         FollowUpTask[]
   notificationEvents NotificationEvent[]
   notificationSendLogs NotificationSendLog[]
@@ -1372,6 +1398,38 @@ model BackgroundJob {
   @@index([leadId])
   @@index([messageId])
   @@index([draftId])
+}
+
+model BookingQualificationJob {
+  id        String                     @id @default(uuid())
+  provider  BookingQualificationProvider
+  status    BookingQualificationJobStatus @default(PENDING)
+  anchorId  String
+  dedupeKey String                     @unique
+
+  clientId  String
+  client    Client                     @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  leadId    String
+  lead      Lead                       @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  payload   Json?
+  runAt       DateTime @default(now())
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(3)
+  lockedAt    DateTime?
+  lockedBy    String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  lastError   String?  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, runAt])
+  @@index([clientId])
+  @@index([leadId])
+  @@index([provider])
+  @@index([clientId, leadId, provider])
 }
 
 // Phase 53: durable queue for bursty webhook events (e.g., Inboxxia EMAIL_SENT).

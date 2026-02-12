@@ -13,6 +13,8 @@ export function QueryProvider({ children }: { children: ReactNode }) {
             // above 0 to avoid refetching immediately on the client
             staleTime: 30 * 1000, // 30 seconds
             refetchOnWindowFocus: false,
+            // Avoid interval refetch churn while tabs are backgrounded.
+            refetchIntervalInBackground: false,
           },
         },
       })

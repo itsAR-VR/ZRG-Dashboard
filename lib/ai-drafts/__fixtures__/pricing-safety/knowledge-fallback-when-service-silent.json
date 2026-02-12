@@ -1,0 +1,21 @@
+{
+  "id": "knowledge-fallback-when-service-silent",
+  "description": "Knowledge context should support pricing when serviceDescription is silent.",
+  "input": {
+    "draft": "Our fee is $1,700 per month.",
+    "serviceDescription": null,
+    "knowledgeContext": "Pricing: $1,700 per month."
+  },
+  "expected": {
+    "removedAmounts": [],
+    "removedCadenceAmounts": [],
+    "addedClarifier": false,
+    "normalizedCadencePhrase": false,
+    "draftIncludes": ["$1,700 per month"],
+    "detection": {
+      "hallucinated": [],
+      "valid": [1700],
+      "cadenceMismatched": []
+    }
+  }
+}

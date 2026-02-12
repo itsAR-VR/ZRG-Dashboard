@@ -8,11 +8,12 @@ import { sendLinkedInMessageSystem, sendSmsSystem } from "@/lib/system-sender";
 import { sendEmailReply } from "@/actions/email-actions";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
-import { ensureLeadTimezone } from "@/lib/timezone-inference";
+import { ensureLeadTimezone, isValidIanaTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlotLabel, formatAvailabilitySlots } from "@/lib/availability-format";
 import { selectDistributedAvailabilitySlots } from "@/lib/availability-distribution";
 import { getWorkspaceSlotOfferCountsForRange, incrementWorkspaceSlotOffersBatch } from "@/lib/slot-offer-ledger";
 import { computeStepDeltaMs } from "@/lib/followup-schedule";
+import { recordAiRouteSkip } from "@/lib/ai/route-skip-observability";
 import {
   shouldAutoBook,
   bookMeetingForLead,
@@ -80,6 +81,7 @@ interface WorkspaceSettings {
   leadContextBundleEnabled?: boolean | null;
   leadContextBundleBudgets?: unknown | null;
   followupBookingGateEnabled?: boolean | null;
+  meetingOverseerEnabled?: boolean | null;
   // New fields for template variables
   aiPersonaName: string | null;
   aiSignature: string | null;
@@ -335,7 +337,12 @@ function findNearestAvailableSlot(
   proposedUtcIso: string,
   slotsUtcIso: string[],
   windowMs: number
-): { slotUtcIso: string; strategy: Exclude<AutoBookingMatchStrategy, "exact" | null> } | null {
+): {
+  slotUtcIso: string;
+  strategy: Exclude<AutoBookingMatchStrategy, "exact" | null>;
+  deltaMinutes: number;
+  direction: "before" | "after" | "exact";
+} | null {
   const proposedMs = new Date(proposedUtcIso).getTime();
   if (!Number.isFinite(proposedMs)) return null;
 
@@ -362,12 +369,55 @@ function findNearestAvailableSlot(
 
   if (candidates.length === 0) return null;
   if (candidates.length === 1) {
-    return { slotUtcIso: candidates[0]!.slotUtcIso, strategy: "nearest" };
+    const chosen = candidates[0]!;
+    const direction = chosen.slotMs === proposedMs ? "exact" : chosen.slotMs > proposedMs ? "after" : "before";
+    return {
+      slotUtcIso: chosen.slotUtcIso,
+      strategy: "nearest",
+      deltaMinutes: Math.round(bestDelta / 60000),
+      direction,
+    };
   }
 
   // Product decision (Phase 138): for equal-distance ties, book the later slot.
   const later = candidates.sort((a, b) => b.slotMs - a.slotMs)[0]!;
-  return { slotUtcIso: later.slotUtcIso, strategy: "nearest_tie_later" };
+  const direction = later.slotMs === proposedMs ? "exact" : later.slotMs > proposedMs ? "after" : "before";
+  return {
+    slotUtcIso: later.slotUtcIso,
+    strategy: "nearest_tie_later",
+    deltaMinutes: Math.round(bestDelta / 60000),
+    direction,
+  };
+}
+
+function findNearestAvailableSlotOptions(
+  proposedUtcIso: string,
+  slotsUtcIso: string[],
+  windowMs: number,
+  limit = 2
+): Array<{ slotUtcIso: string; deltaMinutes: number; direction: "before" | "after" | "exact" }> {
+  const proposedMs = new Date(proposedUtcIso).getTime();
+  if (!Number.isFinite(proposedMs)) return [];
+  const rows: Array<{ slotUtcIso: string; slotMs: number; deltaMs: number }> = [];
+
+  for (const slotUtcIso of slotsUtcIso) {
+    const slotMs = new Date(slotUtcIso).getTime();
+    if (!Number.isFinite(slotMs)) continue;
+    const deltaMs = Math.abs(slotMs - proposedMs);
+    if (deltaMs > windowMs) continue;
+    rows.push({ slotUtcIso, slotMs, deltaMs });
+  }
+
+  rows.sort((a, b) => {
+    if (a.deltaMs !== b.deltaMs) return a.deltaMs - b.deltaMs;
+    return a.slotMs - b.slotMs;
+  });
+
+  return rows.slice(0, Math.max(1, limit)).map((row) => ({
+    slotUtcIso: row.slotUtcIso,
+    deltaMinutes: Math.round(row.deltaMs / 60000),
+    direction: row.slotMs === proposedMs ? "exact" : row.slotMs > proposedMs ? "after" : "before",
+  }));
 }
 
 function addDaysToYmd(ymd: { year: number; month: number; day: number }, days: number): {
@@ -709,6 +759,7 @@ export async function generateFollowUpMessage(
           slotsUtcIso: slotsUtc,
           offeredCountBySlotUtcIso: offerCounts,
           timeZone,
+          leadTimeZone: tzResult.timezone ?? null,
           excludeUtcIso: existingOffered,
           startAfterUtc,
           preferWithinDays: 5,
@@ -3133,6 +3184,7 @@ function summarizeOverseerForGate(decision: MeetingOverseerExtractDecision | nul
       qualification_status: decision.qualification_status,
       qualification_confidence: decision.qualification_confidence,
       time_from_body_only: decision.time_from_body_only,
+      detected_timezone: decision.detected_timezone,
       time_extraction_confidence: decision.time_extraction_confidence,
       needs_clarification: decision.needs_clarification,
       clarification_reason: decision.clarification_reason,
@@ -3587,14 +3639,18 @@ async function sendAutoBookingConfirmation(opts: {
   channel: "sms" | "email" | "linkedin";
   slot: OfferedSlot;
   timeZone: string;
+  leadTimeZone?: string | null;
   bookingLink: string | null;
   includeCorrectionOption?: boolean;
 }): Promise<{ success: boolean; error?: string }> {
   if (!opts.lead) return { success: false, error: "Lead not found" };
 
+  const formatterTimeZone =
+    opts.leadTimeZone && isValidIanaTimezone(opts.leadTimeZone) ? opts.leadTimeZone : opts.timeZone;
+
   const slotLabel = formatAvailabilitySlotLabel({
     datetimeUtcIso: opts.slot.datetime,
-    timeZone: opts.timeZone,
+    timeZone: formatterTimeZone,
     mode: "explicit_tz",
   }).label;
 
@@ -3687,6 +3743,19 @@ export async function processMessageForAutoBooking(
 
     if (!lead) {
       return fail("overseer_error", { error: "Lead not found" });
+    }
+
+    if (lead.client.settings?.meetingOverseerEnabled === false) {
+      await recordAiRouteSkip({
+        clientId: lead.clientId,
+        leadId: lead.id,
+        route: "meeting_overseer_followup",
+        channel: meta?.channel ?? null,
+        triggerMessageId: meta?.messageId ?? null,
+        reason: "disabled_by_workspace_settings",
+        source: "lib:followup_engine.process_auto_booking",
+      });
+      return fail("disabled", { error: "Meeting overseer disabled in workspace settings" });
     }
 
     // Defense-in-depth for callers that don't pass sentimentTag via meta.
@@ -3807,20 +3876,52 @@ export async function processMessageForAutoBooking(
       return fail("overseer_error");
     }
 
+    if (overseerDecision.decision_contract_status === "decision_error") {
+      return fail("overseer_error", {
+        error: overseerDecision.decision_contract_error || "decision_contract_error",
+      });
+    }
+
+    const decisionContract = overseerDecision.decision_contract_v1 ?? null;
+    const contractHasBookingIntent =
+      decisionContract?.hasBookingIntent === "yes" ? true : decisionContract?.hasBookingIntent === "no" ? false : null;
+    const contractShouldBookNow =
+      decisionContract?.shouldBookNow === "yes" ? true : decisionContract?.shouldBookNow === "no" ? false : null;
+    const contractIsQualified =
+      decisionContract?.isQualified === "yes" ? true : decisionContract?.isQualified === "no" ? false : null;
+
     const signal = deriveBookingSignal({ overseerDecision, hasOfferedSlots: offeredSlots.length > 0 });
     context.schedulingDetected = Boolean(overseerDecision.is_scheduling_related);
     context.schedulingIntent = overseerDecision.intent || null;
     context.route = signal.route;
     context.qualificationEvaluated = true;
     context.isQualifiedForBooking =
-      overseerDecision.qualification_status === "qualified"
-        ? true
-        : overseerDecision.qualification_status === "unqualified"
-          ? false
-          : null;
-    context.qualificationReason = (overseerDecision.qualification_evidence || [])[0] || null;
+      contractIsQualified !== null
+        ? contractIsQualified
+        : overseerDecision.qualification_status === "qualified"
+          ? true
+          : overseerDecision.qualification_status === "unqualified"
+            ? false
+            : null;
+    context.qualificationReason =
+      (decisionContract?.evidence || [])[0] || (overseerDecision.qualification_evidence || [])[0] || null;
 
-    const tzResult = await ensureLeadTimezone(leadId);
+    const contractDetectedTimezone = (decisionContract?.leadTimezone || "").trim();
+    const overseerDetectedTimezone = (overseerDecision.detected_timezone || "").trim();
+    const detectedTimezone = contractDetectedTimezone || overseerDetectedTimezone;
+    if (
+      detectedTimezone &&
+      isValidIanaTimezone(detectedTimezone) &&
+      lead.timezone !== detectedTimezone
+    ) {
+      await prisma.lead.update({
+        where: { id: leadId },
+        data: { timezone: detectedTimezone },
+      });
+      lead.timezone = detectedTimezone;
+    }
+
+    const tzResult = await ensureLeadTimezone(leadId, { conversationText: messageTrimmed });
     const timeZone = tzResult.timezone || lead.timezone || lead.client.settings?.timezone || "UTC";
 
     const leadContextBundleEnabled =
@@ -3859,8 +3960,15 @@ export async function processMessageForAutoBooking(
     context.route = route;
 
     if (route !== "none") {
-      if (!overseerDecision.intent_to_book) {
+      if ((contractHasBookingIntent ?? overseerDecision.intent_to_book) !== true) {
         await createClarificationTask("Just to confirm, would you like to book a meeting time now?");
+        return fail("needs_clarification");
+      }
+      if (
+        (contractShouldBookNow ?? !overseerDecision.needs_clarification) !== true &&
+        decisionContract?.responseMode === "clarify_only"
+      ) {
+        await createClarificationTask("Before we schedule, can you confirm the key booking detail you want us to use?");
         return fail("needs_clarification");
       }
       if (route === "accept_offered" && !overseerDecision.time_from_body_only) {
@@ -3868,9 +3976,9 @@ export async function processMessageForAutoBooking(
         await createClarificationTask(bodyClarification);
         return fail("needs_clarification");
       }
-      if (overseerDecision.qualification_status !== "qualified") {
+      if ((contractIsQualified ?? (overseerDecision.qualification_status === "qualified")) !== true) {
         const qualificationClarification =
-          overseerDecision.qualification_status === "unqualified"
+          (contractIsQualified === false || overseerDecision.qualification_status === "unqualified")
             ? "Before we schedule, I need to confirm a quick qualification detail. Could you share a bit more so we can make sure this is the right fit?"
             : "Before I schedule this, could you confirm a quick qualification detail so we can make sure this is the right fit?";
         await createClarificationTask(qualificationClarification);
@@ -4059,6 +4167,7 @@ export async function processMessageForAutoBooking(
                 channel: confirmationChannel,
                 slot: weekdaySlot,
                 timeZone,
+                leadTimeZone: tzResult.timezone || null,
                 bookingLink,
               });
               if (!confirmResult.success) {
@@ -4191,6 +4300,7 @@ export async function processMessageForAutoBooking(
             channel: confirmationChannel,
             slot: acceptedSlot,
             timeZone,
+            leadTimeZone: tzResult.timezone || null,
             bookingLink,
           });
           if (!confirmResult.success) {
@@ -4295,17 +4405,56 @@ export async function processMessageForAutoBooking(
     const slotMatchWindowMs = Number.isFinite(slotMatchWindowMsRaw) && slotMatchWindowMsRaw >= 0
       ? slotMatchWindowMsRaw
       : 30 * 60 * 1000;
+    const nearestAutoHoldMaxMinutesRaw = Number.parseInt(process.env.AUTO_BOOK_NEAREST_AUTO_HOLD_MAX_MINUTES || "15", 10);
+    const nearestAutoHoldMaxMinutes = Number.isFinite(nearestAutoHoldMaxMinutesRaw) && nearestAutoHoldMaxMinutesRaw >= 0
+      ? nearestAutoHoldMaxMinutesRaw
+      : 15;
+    const nearestOfferFallbackMinutesRaw = Number.parseInt(process.env.AUTO_BOOK_NEAREST_OFFER_FALLBACK_MINUTES || "25", 10);
+    const nearestOfferFallbackMinutes =
+      Number.isFinite(nearestOfferFallbackMinutesRaw) && nearestOfferFallbackMinutesRaw >= nearestAutoHoldMaxMinutes
+        ? nearestOfferFallbackMinutesRaw
+        : Math.max(25, nearestAutoHoldMaxMinutes);
+    const nearestOfferFallbackWindowMs = nearestOfferFallbackMinutes * 60 * 1000;
 
     let match = proposed.proposedStartTimesUtc.find((iso) => availabilitySet.has(iso)) ?? null;
+    let nearestMatch: ReturnType<typeof findNearestAvailableSlot> | null = null;
+    const nearestFallbackCandidates = new Map<
+      string,
+      { slotUtcIso: string; deltaMinutes: number; direction: "before" | "after" | "exact" }
+    >();
+
     if (match) {
       context.matchStrategy = "exact";
     } else if (slotMatchWindowMs > 0) {
       for (const proposedIso of proposed.proposedStartTimesUtc) {
         const nearest = findNearestAvailableSlot(proposedIso, availability.slotsUtc, slotMatchWindowMs);
         if (!nearest) continue;
-        match = nearest.slotUtcIso;
-        context.matchStrategy = nearest.strategy;
-        break;
+        if (
+          !nearestMatch ||
+          nearest.deltaMinutes < nearestMatch.deltaMinutes ||
+          (nearest.deltaMinutes === nearestMatch.deltaMinutes && nearest.direction === "after")
+        ) {
+          nearestMatch = nearest;
+          match = nearest.slotUtcIso;
+          context.matchStrategy = nearest.strategy;
+        }
+      }
+    }
+
+    if (nearestOfferFallbackWindowMs > 0) {
+      for (const proposedIso of proposed.proposedStartTimesUtc) {
+        const options = findNearestAvailableSlotOptions(
+          proposedIso,
+          availability.slotsUtc,
+          Math.max(slotMatchWindowMs, nearestOfferFallbackWindowMs),
+          3
+        );
+        for (const option of options) {
+          const existing = nearestFallbackCandidates.get(option.slotUtcIso);
+          if (!existing || option.deltaMinutes < existing.deltaMinutes) {
+            nearestFallbackCandidates.set(option.slotUtcIso, option);
+          }
+        }
       }
     }
 
@@ -4325,7 +4474,21 @@ export async function processMessageForAutoBooking(
     }
 
     let shouldAutoBookMatched = Boolean(match) && proposed.confidence >= highConfidenceThreshold;
+    if (match && context.matchStrategy !== "exact" && nearestMatch) {
+      const canAutoHoldNearest =
+        nearestMatch.direction === "after" && nearestMatch.deltaMinutes <= nearestAutoHoldMaxMinutes;
+      if (!canAutoHoldNearest) shouldAutoBookMatched = false;
+    }
     const hasMatchButLowConfidence = Boolean(match) && proposed.confidence < highConfidenceThreshold;
+    const nearestFallbackOptions = Array.from(nearestFallbackCandidates.values())
+      .sort((a, b) => {
+        if (a.deltaMinutes !== b.deltaMinutes) return a.deltaMinutes - b.deltaMinutes;
+        if (a.direction === b.direction) return 0;
+        if (a.direction === "after") return -1;
+        if (b.direction === "after") return 1;
+        return 0;
+      })
+      .slice(0, 2);
 
     if (shouldAutoBookMatched && bookingGateEnabled) {
       const matchLabel = formatAvailabilitySlotLabel({
@@ -4421,6 +4584,7 @@ export async function processMessageForAutoBooking(
               availabilitySource: availability.availabilitySource,
             },
             timeZone,
+            leadTimeZone: tzResult.timezone || null,
             bookingLink,
             includeCorrectionOption: context.matchStrategy === "nearest_tie_later",
           });
@@ -4544,6 +4708,7 @@ export async function processMessageForAutoBooking(
                 channel: confirmationChannel,
                 slot: dayOnlySlot,
                 timeZone,
+                leadTimeZone: tzResult.timezone || null,
                 bookingLink,
               });
               if (!confirmResult.success) {
@@ -4574,18 +4739,24 @@ export async function processMessageForAutoBooking(
     const mode = "explicit_tz"; // Always show explicit timezone (e.g., "EST", "PST")
 
     const anchor = new Date();
-    const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
-    const offerCounts = await getWorkspaceSlotOfferCountsForRange(lead.clientId, anchor, rangeEnd, {
-      availabilitySource: availability.availabilitySource,
-    });
+    let selectedUtcIso: string[] = [];
+    if (nearestFallbackOptions.length > 0) {
+      selectedUtcIso = nearestFallbackOptions.map((option) => option.slotUtcIso);
+    } else {
+      const rangeEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
+      const offerCounts = await getWorkspaceSlotOfferCountsForRange(lead.clientId, anchor, rangeEnd, {
+        availabilitySource: availability.availabilitySource,
+      });
 
-    const selectedUtcIso = selectDistributedAvailabilitySlots({
-      slotsUtcIso: availability.slotsUtc,
-      offeredCountBySlotUtcIso: offerCounts,
-      timeZone,
-      preferWithinDays: 5,
-      now: anchor,
-    });
+      selectedUtcIso = selectDistributedAvailabilitySlots({
+        slotsUtcIso: availability.slotsUtc,
+        offeredCountBySlotUtcIso: offerCounts,
+        timeZone,
+        leadTimeZone: tzResult.timezone || null,
+        preferWithinDays: 5,
+        now: anchor,
+      });
+    }
 
     const formatted = formatAvailabilitySlots({
       slotsUtcIso: selectedUtcIso,
@@ -4612,14 +4783,19 @@ export async function processMessageForAutoBooking(
       }).catch(() => undefined);
 
       const hasExactProposal = proposed.proposedStartTimesUtc.length > 0;
+      const usingNearestFallback = nearestFallbackOptions.length > 0;
       const suggestion =
         offered.length === 2
-          ? hasExactProposal
-            ? `I don’t have that exact time available — does (1) ${offered[0]!.label} or (2) ${offered[1]!.label} work instead?`
-            : `Does (1) ${offered[0]!.label} or (2) ${offered[1]!.label} work for you?`
-          : hasExactProposal
-            ? `I don’t have that exact time available — does ${offered[0]!.label} work instead?`
-            : `Does ${offered[0]!.label} work for you?`;
+          ? usingNearestFallback
+            ? `Closest to your requested time, does (1) ${offered[0]!.label} or (2) ${offered[1]!.label} work instead?`
+            : hasExactProposal
+              ? `I don’t have that exact time available — does (1) ${offered[0]!.label} or (2) ${offered[1]!.label} work instead?`
+              : `Does (1) ${offered[0]!.label} or (2) ${offered[1]!.label} work for you?`
+          : usingNearestFallback
+            ? `Closest to your requested time, does ${offered[0]!.label} work instead?`
+            : hasExactProposal
+              ? `I don’t have that exact time available — does ${offered[0]!.label} work instead?`
+              : `Does ${offered[0]!.label} work for you?`;
 
       await prisma.followUpTask.create({
         data: {

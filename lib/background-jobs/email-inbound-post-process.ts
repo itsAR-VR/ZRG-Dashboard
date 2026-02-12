@@ -46,6 +46,8 @@ import { ensureCallRequestedTask } from "@/lib/call-requested";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
+import { resolveBookingLink } from "@/lib/meeting-booking-provider";
+import { detectActionSignals, EMPTY_ACTION_SIGNAL_RESULT, notifyActionSignals } from "@/lib/action-signal-detector";
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   for (const dateStr of dateStrs) {
@@ -568,6 +570,7 @@ export async function runEmailInboundPostProcessJob(opts: {
             autoSendRevisionModel: true,
             autoSendRevisionReasoningEffort: true,
             autoSendRevisionMaxIterations: true,
+            aiRouteBookingProcessEnabled: true,
           },
         },
       },
@@ -715,6 +718,7 @@ export async function runEmailInboundPostProcessJob(opts: {
 
   const inboundText = (message.body || "").trim();
   const inboundReplyOnly = stripEmailQuotedSectionsForAutomation(inboundText).trim();
+  const fullEmailBody = message.rawText || message.rawHtml || inboundText || "";
   const schedulerLink = extractSchedulerLinkFromText(message.rawText || message.rawHtml || inboundText);
   if (schedulerLink) {
     prisma.lead
@@ -933,7 +937,6 @@ export async function runEmailInboundPostProcessJob(opts: {
       };
 
   // Enrichment sequence.
-  const fullEmailBody = message.rawText || message.rawHtml || inboundText || "";
 
   // STEP 1: Extract contact info from message content FIRST.
   const messageExtraction = extractContactFromMessageContent(fullEmailBody);
@@ -985,6 +988,39 @@ export async function runEmailInboundPostProcessJob(opts: {
 
   await ensureCallRequestedTask({ leadId: lead.id, latestInboundText: inboundText }).catch(() => undefined);
   await handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: inboundText }).catch(() => undefined);
+
+  let actionSignals = EMPTY_ACTION_SIGNAL_RESULT;
+  try {
+    if (isPositiveSentiment(lead.sentimentTag)) {
+      const workspaceBookingLink = await resolveBookingLink(client.id, null)
+        .then((result) => result.bookingLink)
+        .catch(() => null);
+      actionSignals = await detectActionSignals({
+        strippedText: inboundReplyOnly,
+        fullText: fullEmailBody,
+        sentimentTag: lead.sentimentTag,
+        workspaceBookingLink,
+        clientId: client.id,
+        leadId: lead.id,
+        channel: "email",
+        provider: "emailbison",
+        aiRouteBookingProcessEnabled: client.settings?.aiRouteBookingProcessEnabled ?? true,
+      });
+      if (actionSignals.signals.length > 0) {
+        console.log("[Email PostProcess] Action signals:", actionSignals.signals.map((signal) => signal.type).join(", "));
+        notifyActionSignals({
+          clientId: client.id,
+          leadId: lead.id,
+          messageId: message.id,
+          signals: actionSignals.signals,
+          latestInboundText: inboundReplyOnly || inboundText,
+          route: actionSignals.route,
+        }).catch((error) => console.warn("[Email PostProcess] Action signal notify failed:", error));
+      }
+    }
+  } catch (error) {
+    console.warn("[Email PostProcess] Action signal detection failed (non-fatal):", error);
+  }
 
   // If the lead is a positive reply, ensure they exist in GHL for SMS syncing.
   if (isPositiveSentiment(lead.sentimentTag)) {
@@ -1048,13 +1084,33 @@ export async function runEmailInboundPostProcessJob(opts: {
       const draftResult = await generateResponseDraft(lead.id, transcript || latestInbound, lead.sentimentTag, "email", {
         triggerMessageId: message.id,
         autoBookingContext: autoBook.context?.schedulingDetected ? autoBook.context : null,
+        actionSignals: actionSignals.signals.length > 0 || actionSignals.route ? actionSignals : null,
       });
 
       if (draftResult.success && draftResult.draftId && draftResult.content) {
         const draftId = draftResult.draftId;
         const draftContent = draftResult.content;
+        const workspaceBookingLink = await resolveBookingLink(client.id, null)
+          .then((result) => result.bookingLink)
+          .catch(() => null);
 
         let autoReplySent = false;
+        const leadAutoSendContext = await prisma.lead.findUnique({
+          where: { id: lead.id },
+          select: {
+            offeredSlots: true,
+            externalSchedulingLink: true,
+          },
+        });
+        const offeredSlots = (() => {
+          if (!leadAutoSendContext?.offeredSlots) return [];
+          try {
+            const parsed = JSON.parse(leadAutoSendContext.offeredSlots);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        })();
 
         const autoSendResult = await executeAutoSend({
           clientId: client.id,
@@ -1074,6 +1130,9 @@ export async function runEmailInboundPostProcessJob(opts: {
           leadLastName: lead.lastName,
           leadEmail: lead.email,
           leadTimezone: lead.timezone ?? null,
+          offeredSlots,
+          bookingLink: workspaceBookingLink,
+          leadSchedulerLink: leadAutoSendContext?.externalSchedulingLink ?? null,
           emailCampaign: lead.emailCampaign,
           autoReplyEnabled: lead.autoReplyEnabled,
           workspaceSettings: client.settings ?? null,
