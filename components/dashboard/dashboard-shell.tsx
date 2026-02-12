@@ -63,7 +63,7 @@ function parseViewParam(value: string | null): ViewType | null {
 
 type SettingsTab = "general" | "integrations" | "ai" | "booking" | "team" | "admin"
 
-function parseSettingsTabParam(value: string | null): SettingsTab {
+function parseSettingsTabParam(value: string | null): SettingsTab | null {
   if (
     value === "general" ||
     value === "integrations" ||
@@ -74,7 +74,11 @@ function parseSettingsTabParam(value: string | null): SettingsTab {
   ) {
     return value
   }
-  return "general"
+  return null
+}
+
+function coerceSettingsTab(value: string | null): SettingsTab {
+  return parseSettingsTabParam(value) ?? "general"
 }
 
 interface Client {
@@ -168,13 +172,14 @@ function DashboardPageInner() {
     const clientIdParam = searchParams.get("clientId")
     return clientIdParam ? clientIdParam : null
   })
+  const workspaceSelectionModeRef = useRef<"auto" | "manual">(workspaceSelectionMode)
   const [workspaces, setWorkspaces] = useState<Client[]>([])
   const [workspacesReady, setWorkspacesReady] = useState(false)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
   const [workspaceFetchNonce, setWorkspaceFetchNonce] = useState(0)
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(() => leadIdParam)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(() =>
-    parseSettingsTabParam(settingsTabParam)
+    coerceSettingsTab(settingsTabParam)
   )
   const [dismissedUnipileBanner, setDismissedUnipileBanner] = useState<string | null>(null)
 
@@ -215,16 +220,20 @@ function DashboardPageInner() {
     [activeView, prefetchView]
   )
 
+  useEffect(() => {
+    workspaceSelectionModeRef.current = workspaceSelectionMode
+  }, [workspaceSelectionMode])
+
   const syncWorkspaces = useCallback((nextWorkspaces: Client[]) => {
     setWorkspaces(nextWorkspaces)
     setActiveWorkspace((prev) => {
       if (nextWorkspaces.length === 0) return null
-      if (workspaceSelectionMode === "manual" && prev === null) return null
+      if (workspaceSelectionModeRef.current === "manual" && prev === null) return null
       if (!prev) return nextWorkspaces[0].id
       if (nextWorkspaces.some((w) => w.id === prev)) return prev
       return nextWorkspaces[0].id
     })
-  }, [workspaceSelectionMode])
+  }, [])
 
   // Handler to open a lead in the Master Inbox from CRM
   const handleOpenInInbox = useCallback((leadId: string) => {
@@ -233,7 +242,7 @@ function DashboardPageInner() {
   }, [])
 
   const handleSettingsTabChange = useCallback((tab: string) => {
-    setSettingsTab(parseSettingsTabParam(tab))
+    setSettingsTab(coerceSettingsTab(tab))
   }, [])
 
   // Handler to clear all filters (channel and sidebar filter)
@@ -272,22 +281,14 @@ function DashboardPageInner() {
 
     if (leadIdParam) {
       // Lead links should always land in inbox
-      if (activeView !== "inbox") {
-        setActiveView("inbox")
-      }
-      if (selectedLeadId !== leadIdParam) {
-        setSelectedLeadId(leadIdParam)
-      }
+      setActiveView((current) => (current === "inbox" ? current : "inbox"))
+      setSelectedLeadId((current) => (current === leadIdParam ? current : leadIdParam))
 
       // Prefer explicit workspace selection from the deep-link.
       if (clientIdParam) {
         resolvedLeadWorkspaceRef.current = leadIdParam
-        if (workspaceSelectionMode !== "manual") {
-          setWorkspaceSelectionMode("manual")
-        }
-        if (activeWorkspace !== clientIdParam) {
-          setActiveWorkspace(clientIdParam)
-        }
+        setWorkspaceSelectionMode((current) => (current === "manual" ? current : "manual"))
+        setActiveWorkspace((current) => (current === clientIdParam ? current : clientIdParam))
       } else {
         if (resolvedLeadWorkspaceRef.current === leadIdParam) return
         resolvedLeadWorkspaceRef.current = leadIdParam
@@ -311,25 +312,20 @@ function DashboardPageInner() {
 
     resolvedLeadWorkspaceRef.current = null
 
-    if (parsedView && parsedView !== activeView) {
-      setActiveView(parsedView)
+    if (parsedView) {
+      setActiveView((current) => (current === parsedView ? current : parsedView))
     }
 
-    if (parsedView === "settings") {
-      if (settingsTab !== parsedSettingsTab) {
-        setSettingsTab(parsedSettingsTab)
-      }
+    // Only honor URL tab overrides when an explicit settingsTab query param exists.
+    // This prevents render churn from repeatedly forcing "general" while users navigate tabs.
+    if (parsedView === "settings" && parsedSettingsTab) {
+      setSettingsTab((current) => (current === parsedSettingsTab ? current : parsedSettingsTab))
     }
   }, [
-    activeView,
-    activeWorkspace,
     clientIdParam,
     leadIdParam,
-    selectedLeadId,
-    settingsTab,
     settingsTabParam,
     viewParam,
-    workspaceSelectionMode,
   ])
 
   useEffect(() => {

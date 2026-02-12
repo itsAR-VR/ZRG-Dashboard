@@ -260,12 +260,22 @@ export function ActionStation({
   // Determine current channel type
   const isEmail = activeChannel === "email"
   const isLinkedIn = activeChannel === "linkedin"
+  const conversationId = conversation?.id ?? null
+  const primaryChannel = conversation?.primaryChannel ?? null
+  const leadSentimentTag = conversation?.lead?.sentimentTag ?? null
   
   // Get available channels for this conversation
-  const channels = conversation?.channels?.length ? conversation.channels : DEFAULT_CHANNELS
-  const availableChannels = conversation?.availableChannels?.length
-    ? conversation.availableChannels
-    : DEFAULT_CHANNELS
+  const channels = useMemo<Channel[]>(
+    () => (conversation?.channels?.length ? conversation.channels : DEFAULT_CHANNELS),
+    [conversation?.channels]
+  )
+  const availableChannels = useMemo<Channel[]>(
+    () =>
+      conversation?.availableChannels?.length
+        ? conversation.availableChannels
+        : DEFAULT_CHANNELS,
+    [conversation?.availableChannels]
+  )
   
   // Check if LinkedIn is available (lead has linkedinUrl)
   const hasLinkedIn = conversation?.lead?.linkedinUrl !== undefined && conversation?.lead?.linkedinUrl !== null
@@ -359,12 +369,23 @@ export function ActionStation({
   
   // Reset active channel when conversation changes
   useEffect(() => {
-    if (conversation?.primaryChannel) {
-      setActiveChannel(conversation.primaryChannel)
+    if (!conversationId) return
+
+    let nextChannel: Channel | null = null
+    if (primaryChannel && availableChannels.includes(primaryChannel)) {
+      nextChannel = primaryChannel
+    } else if (availableChannels.includes(activeChannel)) {
+      nextChannel = activeChannel
+    } else if (availableChannels.length > 0) {
+      nextChannel = availableChannels[0]
     } else if (channels.length > 0) {
-      setActiveChannel(channels[0])
+      nextChannel = channels[0]
     }
-  }, [conversation?.id, conversation?.primaryChannel, channels])
+
+    if (nextChannel && nextChannel !== activeChannel) {
+      setActiveChannel(nextChannel)
+    }
+  }, [activeChannel, availableChannels, channels, conversationId, primaryChannel])
 
   // Reset editable To selection when switching conversations
   useEffect(() => {
@@ -492,19 +513,20 @@ export function ActionStation({
     draftFetchSeqRef.current = requestSeq
 
     async function fetchDrafts() {
-      if (!conversation) {
-        setDrafts([])
-        setComposeMessage("")
-        setHasAiDraft(false)
-        setOriginalDraft("")
-        setFastRegenCycleSeed(null)
-        setFastRegenCount(0)
+      if (!conversationId) {
+        setIsLoadingDrafts(false)
+        setDrafts((prev) => (prev.length > 0 ? [] : prev))
+        setComposeMessage((prev) => (prev.length > 0 ? "" : prev))
+        setHasAiDraft((prev) => (prev ? false : prev))
+        setOriginalDraft((prev) => (prev.length > 0 ? "" : prev))
+        setFastRegenCycleSeed((prev) => (prev !== null ? null : prev))
+        setFastRegenCount((prev) => (prev !== 0 ? 0 : prev))
         return
       }
 
-      console.log("[ActionStation] Fetching drafts for conversation:", conversation.id, "channel:", activeChannel)
+      console.log("[ActionStation] Fetching drafts for conversation:", conversationId, "channel:", activeChannel)
       setIsLoadingDrafts(true)
-      const result = await getPendingDrafts(conversation.id, activeChannel)
+      const result = await getPendingDrafts(conversationId, activeChannel)
       if (cancelled || requestSeq !== draftFetchSeqRef.current) return
       console.log("[ActionStation] Draft fetch result:", result)
       
@@ -530,12 +552,12 @@ export function ActionStation({
       } else {
         // No drafts found
         console.log("[ActionStation] No drafts found")
-        setComposeMessage("")
-        setOriginalDraft("")
-        setHasAiDraft(false)
-        setDrafts([])
-        setFastRegenCycleSeed(null)
-        setFastRegenCount(0)
+        setComposeMessage((prev) => (prev.length > 0 ? "" : prev))
+        setOriginalDraft((prev) => (prev.length > 0 ? "" : prev))
+        setHasAiDraft((prev) => (prev ? false : prev))
+        setDrafts((prev) => (prev.length > 0 ? [] : prev))
+        setFastRegenCycleSeed((prev) => (prev !== null ? null : prev))
+        setFastRegenCount((prev) => (prev !== 0 ? 0 : prev))
       }
       if (!cancelled && requestSeq === draftFetchSeqRef.current) {
         setIsLoadingDrafts(false)
@@ -546,7 +568,7 @@ export function ActionStation({
     return () => {
       cancelled = true
     }
-  }, [conversation?.id, activeChannel, deepLinkedDraftId, conversation?.lead?.sentimentTag])
+  }, [conversationId, activeChannel, deepLinkedDraftId, leadSentimentTag])
 
   const handleSendMessage = async () => {
     if (isSending || isRegenerating) return
