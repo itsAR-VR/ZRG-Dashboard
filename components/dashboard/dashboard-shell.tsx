@@ -66,10 +66,17 @@ function parseViewParam(value: string | null): ViewType | null {
   return null
 }
 
-type SettingsTab = "general" | "integrations" | "ai" | "team"
+type SettingsTab = "general" | "integrations" | "ai" | "booking" | "team" | "admin"
 
 function parseSettingsTabParam(value: string | null): SettingsTab {
-  if (value === "general" || value === "integrations" || value === "ai" || value === "team") {
+  if (
+    value === "general" ||
+    value === "integrations" ||
+    value === "ai" ||
+    value === "booking" ||
+    value === "team" ||
+    value === "admin"
+  ) {
     return value
   }
   return "general"
