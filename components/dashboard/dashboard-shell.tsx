@@ -47,11 +47,6 @@ const PREFETCH_BY_VIEW: Record<ViewType, ViewType[]> = {
   settings: ["inbox"],
 }
 
-// Keep a single active view mounted.
-// Retaining hidden panes can keep heavy hooks (virtualizers/query trees) alive across
-// workspace switches and has produced client-side render-loop crashes in production.
-const MAX_RETAINED_VIEWS = 1
-
 function parseViewParam(value: string | null): ViewType | null {
   if (
     value === "inbox" ||
@@ -162,7 +157,6 @@ function DashboardPageInner() {
   const prefetchingViewsRef = useRef<Set<ViewType>>(new Set())
   const resolvedLeadWorkspaceRef = useRef<string | null>(null)
   const [activeView, setActiveView] = useState<ViewType>(initialView)
-  const [mountedViews, setMountedViews] = useState<ViewType[]>(() => [initialView])
   const [activeChannels, setActiveChannels] = useState<Channel[]>([])
   const [activeFilter, setActiveFilter] = useState("")
   // If a deep-link includes clientId, initialize the workspace immediately so the inbox
@@ -220,13 +214,6 @@ function DashboardPageInner() {
     },
     [activeView, prefetchView]
   )
-
-  useEffect(() => {
-    setMountedViews((previous) => {
-      const next = [activeView, ...previous.filter((view) => view !== activeView)]
-      return next.slice(0, MAX_RETAINED_VIEWS)
-    })
-  }, [activeView])
 
   const syncWorkspaces = useCallback((nextWorkspaces: Client[]) => {
     setWorkspaces(nextWorkspaces)
@@ -480,18 +467,7 @@ function DashboardPageInner() {
               </div>
             )}
             <main id="main-content" className="flex flex-1 overflow-hidden">
-              {mountedViews.map((view) => {
-                const isActiveView = view === activeView
-                return (
-                  <section
-                    key={view}
-                    aria-hidden={!isActiveView}
-                    className={cn("h-full min-h-0 flex-1", isActiveView ? "block" : "hidden")}
-                  >
-                    {renderContent(view, isActiveView)}
-                  </section>
-                )
-              })}
+              <section className={cn("h-full min-h-0 flex-1")}>{renderContent(activeView, true)}</section>
             </main>
           </div>
         </div>

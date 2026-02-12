@@ -56,6 +56,8 @@ const CHANNEL_LABELS = {
   linkedin: "LinkedIn",
 } as const;
 
+const DEFAULT_CHANNELS: Channel[] = ["sms"]
+
 type EmailRecipientOption = {
   email: string
   name: string | null
@@ -260,8 +262,10 @@ export function ActionStation({
   const isLinkedIn = activeChannel === "linkedin"
   
   // Get available channels for this conversation
-  const channels = conversation?.channels || ["sms"]
-  const availableChannels = conversation?.availableChannels || ["sms"]
+  const channels = conversation?.channels?.length ? conversation.channels : DEFAULT_CHANNELS
+  const availableChannels = conversation?.availableChannels?.length
+    ? conversation.availableChannels
+    : DEFAULT_CHANNELS
   
   // Check if LinkedIn is available (lead has linkedinUrl)
   const hasLinkedIn = conversation?.lead?.linkedinUrl !== undefined && conversation?.lead?.linkedinUrl !== null
