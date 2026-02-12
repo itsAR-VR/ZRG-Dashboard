@@ -47,7 +47,10 @@ const PREFETCH_BY_VIEW: Record<ViewType, ViewType[]> = {
   settings: ["inbox"],
 }
 
-const MAX_RETAINED_VIEWS = 3
+// Keep a single active view mounted.
+// Retaining hidden panes can keep heavy hooks (virtualizers/query trees) alive across
+// workspace switches and has produced client-side render-loop crashes in production.
+const MAX_RETAINED_VIEWS = 1
 
 function parseViewParam(value: string | null): ViewType | null {
   if (
