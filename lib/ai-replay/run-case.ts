@@ -1,8 +1,8 @@
-import { generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
+import { detectPricingHallucinations, extractPricingAmounts, generateResponseDraft, shouldGenerateDraft } from "@/lib/ai-drafts";
 import { evaluateReplayInvariantFailures } from "@/lib/ai-replay/invariants";
 import { getReplayJudgeSystemPrompt, REPLAY_JUDGE_PROMPT_KEY, runReplayJudge } from "@/lib/ai-replay/judge";
 import { AUTO_SEND_CONSTANTS } from "@/lib/auto-send/types";
-import { evaluateAutoSend } from "@/lib/auto-send-evaluator";
+import { evaluateAutoSend, type AutoSendEvaluation } from "@/lib/auto-send-evaluator";
 import { maybeReviseAutoSendDraft } from "@/lib/auto-send/revision-agent";
 import { buildRevisionHardConstraints, validateRevisionAgainstHardConstraints } from "@/lib/auto-send/revision-constraints";
 import type { OfferedSlot } from "@/lib/booking";
@@ -62,6 +62,7 @@ type ReplayRevisionLoopRuntime = {
   iterationsUsed: number;
   attempted: boolean;
   applied: boolean;
+  iterations?: NonNullable<ReplayCaseResult["revisionLoop"]>["iterations"];
 };
 
 function parseOfferedSlotsJson(value: string | null | undefined): OfferedSlot[] {
@@ -165,6 +166,33 @@ function clip(text: string, maxChars: number): string {
   return `${trimmed.slice(0, maxChars)}\n...[truncated]`;
 }
 
+const PRICING_INTENT_REGEX =
+  /\b(how much|price|pricing|cost|fee|investment|monthly|annual|quarterly|per\s+month|per\s+year|per\s+quarter)\b/i;
+const PRICING_TERMS_REGEX =
+  /\b(price|pricing|cost|fee|membership|billing|monthly|annual|annually|quarterly|per\s+month|per\s+year|per\s+quarter)\b/i;
+const ORPHAN_PRICING_CADENCE_LINE_REGEX =
+  /(^|\n)[^\n$]*(membership|fee|price|pricing|cost|billing)[^\n$]*(\/\s?(mo|month|yr|year|qtr|quarter)|per\s+(month|year|quarter))[^\n]*(\n|$)/i;
+const NON_BLOCKING_JUDGE_REASON_REGEX =
+  /\b(exact|verbatim|required phrasing|required wording|prescribed phrasing|supported phrasing|scripted|playbook|approved phrasing|standard phrasing|minor|slight|tone|wording|style|second sentence|list-heavy|over-explains|conversational|equivalent|booking intent|qualify first|unrequested qualification|qualification detail|single-question format|single required alignment question|extra alternative criteria|longer than needed|adds friction|not needed|isn't needed|wasn't asked|wasn’t asked|cta could be clearer|low-friction|vague call ask|booking link \(available\)|clear next step)\b/i;
+const BLOCKING_JUDGE_REASON_REGEX =
+  /\b(unsupported|hallucinat|mismatch|wrong recipient|wrong timezone|fabricated|missing answer|no supported pricing|no dollar amount|in the past|banned phrase|discovery call|opt-out|unsubscribe|unsafe|policy|slot|date|booking link|contradiction|invented|conflict)\b/i;
+
+function hasExplicitPricingIntent(text: string): boolean {
+  return PRICING_INTENT_REGEX.test(text || "");
+}
+
+function hasOrphanPricingCadenceLine(text: string): boolean {
+  return ORPHAN_PRICING_CADENCE_LINE_REGEX.test(text || "");
+}
+
+function isBlockingJudgeReason(reason: string): boolean {
+  const normalized = (reason || "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (NON_BLOCKING_JUDGE_REASON_REGEX.test(normalized)) return false;
+  if (BLOCKING_JUDGE_REASON_REGEX.test(normalized)) return true;
+  return true;
+}
+
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   if (value <= 0) return 0;
@@ -191,7 +219,7 @@ function resolveRevisionEnabled(opts: {
 }): { enabled: boolean; stopReason: ReplayRevisionStopReason } {
   if (opts.channel !== "email") return { enabled: false, stopReason: "not_applicable" };
   if (opts.mode === "off") return { enabled: false, stopReason: "disabled" };
-  if (opts.mode === "force") return { enabled: true, stopReason: "exhausted" };
+  if (opts.mode === "force" || opts.mode === "overseer") return { enabled: true, stopReason: "exhausted" };
   if (opts.workspaceSettingEnabled) return { enabled: true, stopReason: "exhausted" };
   return { enabled: false, stopReason: "disabled" };
 }
@@ -528,6 +556,231 @@ async function applyReplayRevisionLoop(opts: ReplayAutoSendContext): Promise<Rep
   };
 }
 
+function mapJudgeToAutoSendEvaluation(judge: {
+  pass: boolean;
+  confidence: number;
+  summary: string;
+  failureReasons: string[];
+}): AutoSendEvaluation {
+  const confidence = clamp01(Number(judge.confidence));
+  const safeToSend = judge.pass === true && confidence >= 0.01;
+  const failureReason = (judge.failureReasons || []).slice(0, 3).join(" | ");
+  return {
+    confidence,
+    safeToSend,
+    requiresHumanReview: !safeToSend,
+    reason: failureReason || judge.summary || (safeToSend ? "Overseer approved draft" : "Overseer requested revision"),
+    source: "model",
+  };
+}
+
+async function applyReplayOverseerRevisionLoop(opts:
+  ReplayAutoSendContext & {
+    judgeClientId: string | null;
+    judgeModel: string;
+    judgeProfile: ReplayJudgeProfile;
+    judgeThreshold: number;
+    adjudicationBand: {
+      min: number;
+      max: number;
+    };
+    adjudicateBorderline: boolean;
+    source: string;
+    caseId: string;
+    messageId: string;
+    baseJudgeInput: Omit<ReplayJudgeInput, "generatedDraft">;
+  }
+): Promise<ReplayRevisionLoopRuntime> {
+  let draftContent = (opts.draftContent || "").trim();
+  if (!draftContent) {
+    return {
+      draftContent: "",
+      startConfidence: null,
+      endConfidence: null,
+      stopReason: "error",
+      finalReason: "missing_draft_content",
+      iterationsUsed: 0,
+      attempted: false,
+      applied: false,
+      iterations: [],
+    };
+  }
+
+  const iterations: NonNullable<ReplayCaseResult["revisionLoop"]>["iterations"] = [];
+
+  const runJudgeForDraft = async (candidateDraft: string) =>
+    runReplayJudge({
+      clientId: opts.clientId,
+      judgeClientId: opts.judgeClientId,
+      leadId: opts.leadId,
+      model: opts.judgeModel,
+      judgeProfile: opts.judgeProfile,
+      judgeThreshold: opts.judgeThreshold,
+      adjudicationBand: opts.adjudicationBand,
+      adjudicateBorderline: opts.adjudicateBorderline,
+      input: {
+        ...opts.baseJudgeInput,
+        generatedDraft: candidateDraft,
+      },
+      offeredSlots: opts.offeredSlots,
+      bookingLink: opts.bookingLink,
+      leadSchedulerLink: opts.leadSchedulerLink,
+      source: opts.source,
+      metadata: {
+        replay: true,
+        caseId: opts.caseId,
+        messageId: opts.messageId,
+        revisionLoop: "overseer",
+      },
+    });
+
+  let currentJudge = await runJudgeForDraft(draftContent);
+  let currentEvaluation = mapJudgeToAutoSendEvaluation({
+    pass: currentJudge.pass,
+    confidence: currentJudge.confidence,
+    summary: currentJudge.summary,
+    failureReasons: currentJudge.failureReasons || [],
+  });
+
+  const startConfidence = clamp01(Number(currentEvaluation.confidence));
+  if (currentJudge.pass) {
+    return {
+      draftContent,
+      startConfidence,
+      endConfidence: startConfidence,
+      stopReason: "threshold_met",
+      finalReason: currentJudge.summary || null,
+      iterationsUsed: 0,
+      attempted: false,
+      applied: false,
+      iterations,
+    };
+  }
+
+  let applied = false;
+  let attempted = false;
+  let iterationsUsed = 0;
+  let stopReason: ReplayRevisionStopReason = "exhausted";
+  let previousScore = clampScore(currentJudge.overallScore ?? currentJudge.llmOverallScore);
+
+  for (let iteration = 1; iteration <= opts.maxIterations; iteration += 1) {
+    iterationsUsed = iteration;
+    const revisionConstraints = buildRevisionHardConstraints({
+      inboundBody: opts.latestInbound,
+      offeredSlots: opts.offeredSlots,
+      bookingLink: opts.bookingLink,
+      leadSchedulerLink: opts.leadSchedulerLink,
+      currentDraft: draftContent,
+    });
+
+    const revision = await maybeReviseAutoSendDraft({
+      clientId: opts.clientId,
+      leadId: opts.leadId,
+      emailCampaignId: opts.emailCampaignId,
+      draftId: opts.draftId,
+      channel: opts.channel,
+      draftPipelineRunId: opts.draftRunId,
+      iteration,
+      subject: opts.subject,
+      latestInbound: opts.latestInbound,
+      conversationHistory: opts.conversationHistory,
+      draft: draftContent,
+      evaluation: currentEvaluation,
+      threshold: opts.threshold,
+      model: opts.revisionModel || undefined,
+      hardRequirements: revisionConstraints.hardRequirements,
+      hardForbidden: revisionConstraints.hardForbidden,
+      currentDayIso: opts.currentDayIso,
+      leadTimezone: opts.leadTimezone,
+      offeredSlots: opts.offeredSlots,
+      bookingLink: opts.bookingLink,
+      leadSchedulerLink: opts.leadSchedulerLink,
+      validateRevisedDraft: async (candidateDraft) =>
+        validateRevisionAgainstHardConstraints({
+          inboundBody: opts.latestInbound,
+          offeredSlots: opts.offeredSlots,
+          bookingLink: opts.bookingLink,
+          leadSchedulerLink: opts.leadSchedulerLink,
+          draft: candidateDraft,
+        }),
+      reEvaluate: async (candidateDraft) => {
+        const judge = await runJudgeForDraft(candidateDraft);
+        return mapJudgeToAutoSendEvaluation({
+          pass: judge.pass,
+          confidence: judge.confidence,
+          summary: judge.summary,
+          failureReasons: judge.failureReasons || [],
+        });
+      },
+    });
+
+    attempted = attempted || revision.telemetry.attempted === true;
+
+    if (!revision.revisedDraft) {
+      stopReason = "no_improvement";
+      break;
+    }
+
+    applied = true;
+    draftContent = revision.revisedDraft;
+    currentJudge = await runJudgeForDraft(draftContent);
+    currentEvaluation = mapJudgeToAutoSendEvaluation({
+      pass: currentJudge.pass,
+      confidence: currentJudge.confidence,
+      summary: currentJudge.summary,
+      failureReasons: currentJudge.failureReasons || [],
+    });
+
+    const currentScore = clampScore(currentJudge.overallScore ?? currentJudge.llmOverallScore);
+    const improved = currentScore > previousScore;
+    previousScore = currentScore;
+
+    iterations.push({
+      iteration,
+      judgePass: currentJudge.pass,
+      judgeScore: currentScore,
+      judgeConfidence: clamp01(currentJudge.confidence),
+      judgeFailureReasons: [...(currentJudge.failureReasons || [])],
+      judgeSummary: currentJudge.summary || "",
+      revisionAttempted: revision.telemetry.attempted === true,
+      revisionApplied: revision.revisedDraft != null,
+      revisionImproved: improved,
+      validationPassed:
+        typeof revision.telemetry.validationPassed === "boolean"
+          ? revision.telemetry.validationPassed
+          : null,
+      validationReasons: revision.telemetry.validationReasons || [],
+    });
+
+    if (currentJudge.pass) {
+      stopReason = "threshold_met";
+      break;
+    }
+
+    if (!improved) {
+      stopReason = "no_improvement";
+      break;
+    }
+  }
+
+  const endConfidence = clamp01(Number(currentEvaluation.confidence));
+  const finalReason =
+    currentJudge.summary ||
+    (currentJudge.failureReasons && currentJudge.failureReasons.length > 0 ? currentJudge.failureReasons[0] || null : null);
+
+  return {
+    draftContent,
+    startConfidence,
+    endConfidence,
+    stopReason,
+    finalReason,
+    iterationsUsed,
+    attempted,
+    applied,
+    iterations,
+  };
+}
+
 export async function runReplayCase(opts: {
   selectionCase: ReplaySelectionCase;
   judgeModel: string;
@@ -677,8 +930,8 @@ export async function runReplayCase(opts: {
         triggerMessageId: opts.selectionCase.messageId,
         reuseExistingDraft: false,
         leadSchedulerLinkOverride: leadSchedulerLink,
-        meetingOverseerMode: "fresh",
-        persistMeetingOverseerDecisions: false,
+        meetingOverseerMode: opts.overseerDecisionMode,
+        persistMeetingOverseerDecisions: opts.overseerDecisionMode === "persisted",
       }
     );
 
@@ -703,6 +956,47 @@ export async function runReplayCase(opts: {
     } catch {
       // Best-effort only.
     }
+
+    let workspaceContext = opts.workspaceContextCache.get(opts.selectionCase.clientId);
+    if (!workspaceContext) {
+      workspaceContext = await loadWorkspaceContext(opts.selectionCase.clientId);
+      opts.workspaceContextCache.set(opts.selectionCase.clientId, workspaceContext);
+    }
+
+    const observedNextOutbound = await findObservedNextOutbound({
+      leadId: opts.selectionCase.leadId,
+      channel: opts.selectionCase.channel,
+      inboundSentAt: new Date(opts.selectionCase.sentAt),
+    });
+    const historicalCacheKey = [
+      opts.selectionCase.clientId,
+      opts.selectionCase.channel,
+      normalizeSentiment(sentimentTag) || "neutral",
+    ].join(":");
+    let historicalReplyExamples = opts.historicalReplyCache.get(historicalCacheKey);
+    if (!historicalReplyExamples) {
+      historicalReplyExamples = await loadHistoricalReplyExamples({
+        clientId: opts.selectionCase.clientId,
+        channel: opts.selectionCase.channel,
+        targetSentiment: sentimentTag,
+        excludeLeadId: opts.selectionCase.leadId,
+      });
+      opts.historicalReplyCache.set(historicalCacheKey, historicalReplyExamples);
+    }
+
+    const baseJudgeInput: Omit<ReplayJudgeInput, "generatedDraft"> = {
+      channel: opts.selectionCase.channel,
+      leadSentiment: sentimentTag,
+      inboundSubject: opts.selectionCase.inboundSubject,
+      inboundBody: opts.selectionCase.inboundBody,
+      conversationTranscript: transcript,
+      serviceDescription: workspaceContext.serviceDescription,
+      knowledgeContext: workspaceContext.knowledgeContext,
+      companyName: workspaceContext.companyName,
+      targetResult: workspaceContext.targetResult,
+      observedNextOutbound,
+      historicalReplyExamples,
+    };
     const threshold =
       typeof lead.emailCampaign?.autoSendConfidenceThreshold === "number" &&
       Number.isFinite(lead.emailCampaign.autoSendConfidenceThreshold)
@@ -739,27 +1033,60 @@ export async function runReplayCase(opts: {
           finalReason: "missing_draft_id",
         };
       } else {
-        const revisionRuntime = await applyReplayRevisionLoop({
-          draftId,
-          draftRunId: null,
-          draftContent: generatedDraft,
-          channel: opts.selectionCase.channel,
-          clientId: opts.selectionCase.clientId,
-          leadId: opts.selectionCase.leadId,
-          latestInbound: opts.selectionCase.inboundBody,
-          subject: opts.selectionCase.inboundSubject,
-          conversationHistory: transcript,
-          sentimentTag,
-          emailCampaignId: lead.emailCampaign?.id || null,
-          threshold,
-          revisionModel: workspaceRevision?.autoSendRevisionModel || null,
-          maxIterations: clampRevisionIterations(workspaceRevision?.autoSendRevisionMaxIterations),
-          offeredSlots,
-          bookingLink: workspaceBookingLink || null,
-          leadSchedulerLink,
-          leadTimezone: lead.timezone || null,
-          currentDayIso: opts.selectionCase.sentAt,
-        });
+        const revisionRuntime =
+          opts.revisionLoopMode === "overseer"
+            ? await applyReplayOverseerRevisionLoop({
+                draftId,
+                draftRunId: null,
+                draftContent: generatedDraft,
+                channel: opts.selectionCase.channel,
+                clientId: opts.selectionCase.clientId,
+                leadId: opts.selectionCase.leadId,
+                latestInbound: opts.selectionCase.inboundBody,
+                subject: opts.selectionCase.inboundSubject,
+                conversationHistory: transcript,
+                sentimentTag,
+                emailCampaignId: lead.emailCampaign?.id || null,
+                threshold,
+                revisionModel: workspaceRevision?.autoSendRevisionModel || null,
+                maxIterations: clampRevisionIterations(workspaceRevision?.autoSendRevisionMaxIterations),
+                offeredSlots,
+                bookingLink: workspaceBookingLink || null,
+                leadSchedulerLink,
+                leadTimezone: lead.timezone || null,
+                currentDayIso: opts.selectionCase.sentAt,
+                judgeClientId: opts.judgeClientId,
+                judgeModel: opts.judgeModel,
+                judgeProfile: opts.judgeProfile,
+                judgeThreshold: opts.judgeThreshold,
+                adjudicationBand: opts.adjudicationBand,
+                adjudicateBorderline: opts.adjudicateBorderline,
+                source: opts.source,
+                caseId: opts.selectionCase.caseId,
+                messageId: opts.selectionCase.messageId,
+                baseJudgeInput,
+              })
+            : await applyReplayRevisionLoop({
+                draftId,
+                draftRunId: null,
+                draftContent: generatedDraft,
+                channel: opts.selectionCase.channel,
+                clientId: opts.selectionCase.clientId,
+                leadId: opts.selectionCase.leadId,
+                latestInbound: opts.selectionCase.inboundBody,
+                subject: opts.selectionCase.inboundSubject,
+                conversationHistory: transcript,
+                sentimentTag,
+                emailCampaignId: lead.emailCampaign?.id || null,
+                threshold,
+                revisionModel: workspaceRevision?.autoSendRevisionModel || null,
+                maxIterations: clampRevisionIterations(workspaceRevision?.autoSendRevisionMaxIterations),
+                offeredSlots,
+                bookingLink: workspaceBookingLink || null,
+                leadSchedulerLink,
+                leadTimezone: lead.timezone || null,
+                currentDayIso: opts.selectionCase.sentAt,
+              });
         generatedDraft = revisionRuntime.draftContent || generatedDraft;
         revisionLoop = {
           ...revisionLoop,
@@ -770,50 +1097,14 @@ export async function runReplayCase(opts: {
           endConfidence: revisionRuntime.endConfidence,
           stopReason: revisionRuntime.stopReason,
           finalReason: revisionRuntime.finalReason,
+          iterations: revisionRuntime.iterations,
         };
       }
     }
 
-    let workspaceContext = opts.workspaceContextCache.get(opts.selectionCase.clientId);
-    if (!workspaceContext) {
-      workspaceContext = await loadWorkspaceContext(opts.selectionCase.clientId);
-      opts.workspaceContextCache.set(opts.selectionCase.clientId, workspaceContext);
-    }
-
-    const observedNextOutbound = await findObservedNextOutbound({
-      leadId: opts.selectionCase.leadId,
-      channel: opts.selectionCase.channel,
-      inboundSentAt: new Date(opts.selectionCase.sentAt),
-    });
-    const historicalCacheKey = [
-      opts.selectionCase.clientId,
-      opts.selectionCase.channel,
-      normalizeSentiment(sentimentTag) || "neutral",
-    ].join(":");
-    let historicalReplyExamples = opts.historicalReplyCache.get(historicalCacheKey);
-    if (!historicalReplyExamples) {
-      historicalReplyExamples = await loadHistoricalReplyExamples({
-        clientId: opts.selectionCase.clientId,
-        channel: opts.selectionCase.channel,
-        targetSentiment: sentimentTag,
-        excludeLeadId: opts.selectionCase.leadId,
-      });
-      opts.historicalReplyCache.set(historicalCacheKey, historicalReplyExamples);
-    }
-
     const judgeInput: ReplayJudgeInput = {
-      channel: opts.selectionCase.channel,
-      leadSentiment: sentimentTag,
-      inboundSubject: opts.selectionCase.inboundSubject,
-      inboundBody: opts.selectionCase.inboundBody,
-      conversationTranscript: transcript,
+      ...baseJudgeInput,
       generatedDraft,
-      serviceDescription: workspaceContext.serviceDescription,
-      knowledgeContext: workspaceContext.knowledgeContext,
-      companyName: workspaceContext.companyName,
-      targetResult: workspaceContext.targetResult,
-      observedNextOutbound,
-      historicalReplyExamples,
     };
 
     const judge = await runReplayJudge({
@@ -844,15 +1135,59 @@ export async function runReplayCase(opts: {
       leadSchedulerLink,
     });
     const objectiveCriticalReasons = invariantFailures.map((entry) => `[${entry.code}] ${entry.message}`);
+    const pricingObjectiveWarnings: string[] = [];
+    const pricingCheck = detectPricingHallucinations(
+      generatedDraft,
+      workspaceContext.serviceDescription,
+      workspaceContext.knowledgeContext
+    );
+    if (pricingCheck.hallucinated.length > 0) {
+      const reason = `[pricing_hallucination] unsupported dollar amounts: $${pricingCheck.hallucinated.join(", $")}`;
+      objectiveCriticalReasons.push(reason);
+      pricingObjectiveWarnings.push(reason);
+    }
+    if (pricingCheck.cadenceMismatched.length > 0) {
+      const reason = `[pricing_cadence_mismatch] unsupported cadence for amounts: $${pricingCheck.cadenceMismatched.join(", $")}`;
+      objectiveCriticalReasons.push(reason);
+      pricingObjectiveWarnings.push(reason);
+    }
+    const inboundPricingText = `${opts.selectionCase.inboundSubject || ""}\n${opts.selectionCase.inboundBody || ""}`;
+    const sourcePricingAmounts = Array.from(
+      new Set([
+        ...extractPricingAmounts(workspaceContext.serviceDescription || ""),
+        ...extractPricingAmounts(workspaceContext.knowledgeContext || ""),
+      ])
+    );
+    if (hasExplicitPricingIntent(inboundPricingText) && sourcePricingAmounts.length > 0 && pricingCheck.allDraft.length === 0) {
+      const reason = `[pricing_missing_answer] lead asked for pricing but draft provided no supported pricing amount (available: $${sourcePricingAmounts.join(", $")})`;
+      objectiveCriticalReasons.push(reason);
+      pricingObjectiveWarnings.push(reason);
+    }
+    if (
+      hasExplicitPricingIntent(inboundPricingText) &&
+      PRICING_TERMS_REGEX.test(generatedDraft || "") &&
+      pricingCheck.allDraft.length === 0
+    ) {
+      const reason = "[pricing_missing_answer] pricing intent detected but draft references pricing terms without any dollar amount";
+      objectiveCriticalReasons.push(reason);
+      pricingObjectiveWarnings.push(reason);
+    }
+    if (hasOrphanPricingCadenceLine(generatedDraft || "")) {
+      const reason = "[pricing_malformed_cadence] draft contains cadence wording without a paired dollar amount";
+      objectiveCriticalReasons.push(reason);
+      pricingObjectiveWarnings.push(reason);
+    }
     const objectivePass = objectiveCriticalReasons.length === 0;
     const objectiveOverallScore = objectivePass ? 100 : 0;
     const llmOverallScore = clampScore(judge.llmOverallScore ?? judge.overallScore);
+    const blockingJudgeReasons = (judge.failureReasons || []).filter((reason) => isBlockingJudgeReason(reason));
     const blendedScore = clampScore(llmOverallScore * 0.7 + objectiveOverallScore * 0.3);
-    const finalPass = objectivePass && blendedScore >= opts.judgeThreshold;
+    const finalPass =
+      objectivePass && (llmOverallScore >= opts.judgeThreshold || (judge.llmPass === false && blockingJudgeReasons.length === 0));
     const finalFailureReasons = finalPass
       ? []
       : [
-          ...(!judge.llmPass ? judge.failureReasons : []),
+          ...(!judge.llmPass ? blockingJudgeReasons : []),
           ...(!objectivePass ? objectiveCriticalReasons : []),
         ];
     const finalSummary = finalPass
@@ -867,7 +1202,7 @@ export async function runReplayCase(opts: {
       objectiveOverallScore,
       objectiveCriticalReasons,
       blendedScore,
-      overallScore: blendedScore,
+      overallScore: llmOverallScore,
       failureReasons: finalFailureReasons,
       summary: finalSummary,
     };
@@ -878,6 +1213,7 @@ export async function runReplayCase(opts: {
       status: "evaluated",
       skipReason: null,
       error: null,
+      warnings: [...resultBase.warnings, ...pricingObjectiveWarnings],
       generation: {
         draftId,
         runId: generation.runId || null,

@@ -11,8 +11,8 @@
     "removedCadenceAmounts": [1700],
     "addedClarifier": false,
     "normalizedCadencePhrase": true,
-    "draftIncludes": ["quarterly billing"],
-    "draftExcludes": ["monthly payment plan"],
+    "draftIncludes": ["$1,700 per quarter"],
+    "draftExcludes": ["monthly payment plan", "quarterly billing is."],
     "detection": {
       "hallucinated": [],
       "valid": [],

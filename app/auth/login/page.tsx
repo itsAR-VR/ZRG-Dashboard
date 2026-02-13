@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
+import { signInWithEmailPassword } from "@/actions/auth-actions";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,27 +20,28 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const router = useRouter();
-  const supabase = createClient();
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const result = await signInWithEmailPassword({
         email,
         password,
       });
 
-      if (error) {
-        toast.error(error.message);
-      } else {
-        toast.success("Logged in successfully!");
-        router.push("/");
-        router.refresh();
+      if (!result.success) {
+        toast.error(result.error || "Failed to sign in.");
+        return;
       }
+
+      toast.success("Logged in successfully!");
+      router.push("/");
+      router.refresh();
     } catch (error) {
-      toast.error("An unexpected error occurred");
+      const message = error instanceof Error ? error.message : "An unexpected error occurred";
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -49,6 +51,7 @@ export default function LoginPage() {
     setIsGoogleLoading(true);
 
     try {
+      const supabase = createClient();
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
@@ -158,7 +161,3 @@ export default function LoginPage() {
     </div>
   );
 }
-
-
-
-

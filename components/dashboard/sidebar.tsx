@@ -366,6 +366,7 @@ export function Sidebar({
         {navItems.map((item) => (
           <Button
             key={item.id}
+            type="button"
             variant={activeView === item.id ? "secondary" : "ghost"}
             className="w-full justify-start gap-3"
             onClick={() => onViewChange(item.id)}
@@ -387,6 +388,7 @@ export function Sidebar({
               {filterItems.map((item) => (
                 <Button
                   key={item.id}
+                  type="button"
                   variant={activeFilter === item.id ? "secondary" : "ghost"}
                   className="w-full justify-between overflow-hidden"
                   onClick={() => onFilterChange(activeFilter === item.id ? "" : item.id)}

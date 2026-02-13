@@ -7,7 +7,7 @@
 import "@/lib/server-dns";
 import { runStructuredJsonPrompt, runTextPrompt } from "@/lib/ai/prompt-runner";
 import { extractFirstCompleteJsonObjectFromText } from "@/lib/ai/response-utils";
-import { normalizeLinkedInUrl } from "./linkedin-utils";
+import { normalizeLinkedInUrl, normalizeLinkedInUrlAny } from "./linkedin-utils";
 import { toStoredPhone } from "./phone-utils";
 
 export interface SignatureExtractionResult {
@@ -162,7 +162,7 @@ ${emailBody.slice(0, 5000)}`;
     const result: SignatureExtractionResult = {
       isFromLead: parsed.isFromLead ? "yes" : "no",
       phone: parsed.phone ? toStoredPhone(parsed.phone) : null,
-      linkedinUrl: parsed.linkedinUrl ? normalizeLinkedInUrl(parsed.linkedinUrl) : null,
+      linkedinUrl: parsed.linkedinUrl ? normalizeLinkedInUrlAny(parsed.linkedinUrl) : null,
       confidence: parsed.confidence,
       reasoning: parsed.reasoning,
     };
@@ -227,7 +227,7 @@ export function extractLinkedInFromText(text: string): string | null {
   for (const pattern of patterns) {
     const match = text.match(pattern);
     if (match && match[0]) {
-      return normalizeLinkedInUrl(match[0]);
+      return normalizeLinkedInUrlAny(match[0]);
     }
   }
 
@@ -281,9 +281,14 @@ export function extractContactFromMessageContent(
   // Extract LinkedIn from message body
   const linkedin = extractLinkedInFromText(messageBody);
   if (linkedin) {
-    result.linkedinUrl = linkedin;
     result.foundInMessage = true;
-    console.log(`[MessageExtractor] Found LinkedIn in message: ${linkedin}`);
+    const normalized = normalizeLinkedInUrlAny(linkedin);
+    if (normalized) {
+      result.linkedinUrl = normalized;
+      console.log(`[MessageExtractor] Found LinkedIn in message: ${normalized}`);
+    } else {
+      console.log(`[MessageExtractor] Found non-profile LinkedIn in message: ${linkedin}`);
+    }
   }
 
   return result;

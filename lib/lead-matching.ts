@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { mergeLinkedInUrl, normalizeLinkedInUrlAny } from "@/lib/linkedin-utils";
 import { normalizePhoneDigits, toStoredPhone } from "@/lib/phone-utils";
 
 /**
@@ -84,7 +84,7 @@ export async function findOrCreateLead(
 ): Promise<FindOrCreateLeadResult> {
   const normalizedEmail = normalizeEmail(contactInfo.email);
   const normalizedPhone = normalizePhone(contactInfo.phone);
-  const normalizedLinkedInUrl = normalizeLinkedInUrl(contactInfo.linkedinUrl || externalIds?.linkedinUrl);
+  const normalizedLinkedInUrl = normalizeLinkedInUrlAny(contactInfo.linkedinUrl || externalIds?.linkedinUrl);
 
   // Try to find existing lead with explicit priority
   let existingLead = null;
@@ -172,8 +172,9 @@ export async function findOrCreateLead(
     if (!existingLead.linkedinId && externalIds?.linkedinId) {
       updates.linkedinId = externalIds.linkedinId;
     }
-    if (!existingLead.linkedinUrl && normalizedLinkedInUrl) {
-      updates.linkedinUrl = normalizedLinkedInUrl;
+    const mergedLinkedIn = mergeLinkedInUrl(existingLead.linkedinUrl, normalizedLinkedInUrl);
+    if (mergedLinkedIn && mergedLinkedIn !== existingLead.linkedinUrl) {
+      updates.linkedinUrl = mergedLinkedIn;
     }
 
     // Add campaign associations if not present

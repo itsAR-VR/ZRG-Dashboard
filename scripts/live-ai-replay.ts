@@ -82,10 +82,11 @@ function normalizeAbModes(input: string[]): ReplayRevisionLoopMode[] {
     if (token === "all") {
       set.add("off");
       set.add("platform");
+      set.add("overseer");
       set.add("force");
       continue;
     }
-    if (token === "off" || token === "platform" || token === "force") {
+    if (token === "off" || token === "platform" || token === "force" || token === "overseer") {
       set.add(token);
     }
   }
@@ -254,7 +255,7 @@ function buildAbComparison(
   modeResults: Partial<Record<ReplayRevisionLoopMode, ReplayCaseResult[]>>
 ): ReplayRunArtifact["abComparison"] {
   type ReplayAbComparison = NonNullable<ReplayRunArtifact["abComparison"]>;
-  const modes: ReplayRevisionLoopMode[] = ["off", "platform", "force"];
+  const modes: ReplayRevisionLoopMode[] = ["off", "platform", "overseer", "force"];
   const modeSummaries = modes.reduce(
     (acc, mode) => {
       const cases = modeResults[mode] || [];
@@ -314,7 +315,7 @@ async function main(): Promise<void> {
     requestedAbModes.length > 0
       ? requestedAbModes
       : args.threadIdsFile && !args.dryRun
-        ? (["off", "platform", "force"] as ReplayRevisionLoopMode[])
+        ? (["off", "platform", "overseer", "force"] as ReplayRevisionLoopMode[])
         : [];
   const runId = `ai_replay_${new Date().toISOString().replace(/[:.]/g, "-")}_${randomUUID().slice(0, 8)}`;
   const artifactPath = path.resolve(args.out || defaultArtifactPath(new Date()));
@@ -334,8 +335,9 @@ async function main(): Promise<void> {
       // ignore and use provided/default model for config metadata
     }
   }
+  const cliThreadIds = args.threadIds.map((id) => parseCaseOrMessageId(id)).filter(Boolean);
   const fileThreadIds = args.threadIdsFile ? await loadThreadIdsFromFile(path.resolve(args.threadIdsFile)) : [];
-  const threadIds = Array.from(new Set([...args.threadIds, ...fileThreadIds]));
+  const threadIds = Array.from(new Set([...cliThreadIds, ...fileThreadIds]));
 
   console.log("[AI Replay] Starting run");
   console.log(`- runId: ${runId}`);
@@ -640,7 +642,7 @@ async function main(): Promise<void> {
     `[AI Replay] CriticalInvariants: total=${artifact.summary.criticalMisses}, ${formatInvariantCounts(artifact.summary.criticalInvariantCounts)}`
   );
   if (artifact.abComparison) {
-    for (const mode of ["off", "platform", "force"] as const) {
+    for (const mode of ["off", "platform", "overseer", "force"] as const) {
       const entry = artifact.abComparison.modes[mode];
       if (!entry) continue;
       console.log(

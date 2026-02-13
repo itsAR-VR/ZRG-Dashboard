@@ -191,6 +191,156 @@ function applyShouldBookNowConfirmationIfNeeded(params: {
   });
 }
 
+const PRICING_MODE_SCHEDULING_PARAGRAPH_REGEX =
+  /\b(schedule|scheduling|book|booking|calendar|availability|slot|slots|time options?|which works|does .* work|15[- ]?minute|30[- ]?minute)\b/i;
+const PRICING_MODE_TIME_TOKEN_REGEX = /\b([01]?\d(?::[0-5]\d)?\s?(?:am|pm)|\d{1,2}:\d{2})\b/i;
+const PRICING_MODE_MEETING_ASK_REGEX = /\b(call|meeting)\b/i;
+const PRICING_MODE_ACTION_VERB_REGEX = /\b(does|would|can|could|works?)\b/i;
+const PRICING_MODE_BOOKING_URL_REGEX = /https?:\/\/\S+/i;
+
+export function applyPricingAnswerNoSchedulingGuard(params: {
+  draft: string;
+  extraction: MeetingOverseerExtractDecision | null;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, changed: false };
+
+  const contract = params.extraction?.decision_contract_v1;
+  if (!contract) return { draft, changed: false };
+  if (contract.needsPricingAnswer !== "yes") return { draft, changed: false };
+  if (contract.shouldBookNow === "yes" || contract.hasBookingIntent === "yes") {
+    return { draft, changed: false };
+  }
+
+  const safeBookingLink =
+    params.leadSchedulerLink && params.leadSchedulerLink.trim()
+      ? null
+      : (params.bookingLink || "").trim() || null;
+  const nextStepSentence = safeBookingLink
+    ? `If helpful, we can walk through details on a quick 15-minute call. You can grab a time here: ${safeBookingLink}`
+    : PRICING_MODE_NEXT_STEP_SENTENCE;
+
+  const paragraphs = draft
+    .split(/\n{2,}/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (paragraphs.length === 0) return { draft, changed: false };
+
+  let changed = false;
+  const kept = paragraphs.filter((paragraph) => {
+    const hasSchedulingCue = PRICING_MODE_SCHEDULING_PARAGRAPH_REGEX.test(paragraph);
+    if (!hasSchedulingCue) return true;
+
+    const hasTimeToken = PRICING_MODE_TIME_TOKEN_REGEX.test(paragraph);
+    const hasMeetingAsk =
+      PRICING_MODE_MEETING_ASK_REGEX.test(paragraph) && PRICING_MODE_ACTION_VERB_REGEX.test(paragraph);
+    const hasBookingUrl =
+      PRICING_MODE_BOOKING_URL_REGEX.test(paragraph) &&
+      /\b(calendly|calendar|book|schedule)\b/i.test(paragraph);
+
+    if (hasTimeToken || hasMeetingAsk || hasBookingUrl) {
+      changed = true;
+      return false;
+    }
+
+    return true;
+  });
+
+  if (!changed || kept.length === 0) return { draft, changed: false };
+
+  return {
+    draft: kept.join("\n\n").trim(),
+    changed: true,
+  };
+}
+
+const PRICING_MODE_ALT_QUALIFIER_REGEX = /\?\s*(?:if not|if you'?re not|or if not)[^?]*\?/gi;
+const PRICING_MODE_INLINE_ALT_CRITERIA_REGEX = /\s*\((?:or|and\/or)[^)]+\)/gi;
+const PRICING_MODE_QUALIFIER_PARAGRAPH_HINT_REGEX = /\b(annual revenue|\$\s*1\s*m|\$\s*1,?000,?000|qualified|fit)\b/i;
+const PRICING_MODE_NEXT_STEP_SENTENCE =
+  "If helpful, we can walk through details on a quick 15-minute call.";
+
+export function applyPricingAnswerQualificationGuard(params: {
+  draft: string;
+  extraction: MeetingOverseerExtractDecision | null;
+  bookingLink?: string | null;
+  leadSchedulerLink?: string | null;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, changed: false };
+
+  const contract = params.extraction?.decision_contract_v1;
+  if (!contract) return { draft, changed: false };
+  if (contract.needsPricingAnswer !== "yes") return { draft, changed: false };
+  if (contract.shouldBookNow === "yes" || contract.hasBookingIntent === "yes") {
+    return { draft, changed: false };
+  }
+
+  const safeBookingLink =
+    params.leadSchedulerLink && params.leadSchedulerLink.trim()
+      ? null
+      : (params.bookingLink || "").trim() || null;
+  const nextStepSentence = safeBookingLink
+    ? `If helpful, we can walk through details on a quick 15-minute call. You can grab a time here: ${safeBookingLink}`
+    : PRICING_MODE_NEXT_STEP_SENTENCE;
+
+  const paragraphs = draft
+    .split(/\n{2,}/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (paragraphs.length === 0) return { draft, changed: false };
+
+  let changed = false;
+  const normalizedParagraphs = paragraphs.map((paragraph) => {
+    if (!PRICING_MODE_QUALIFIER_PARAGRAPH_HINT_REGEX.test(paragraph)) return paragraph;
+
+    let next = paragraph.replace(PRICING_MODE_INLINE_ALT_CRITERIA_REGEX, "");
+    next = next.replace(PRICING_MODE_ALT_QUALIFIER_REGEX, "?");
+
+    const firstQuestionMark = next.indexOf("?");
+    if (firstQuestionMark >= 0) {
+      next = next.slice(0, firstQuestionMark + 1);
+    }
+
+    next = next.replace(/\s{2,}/g, " ").trim();
+    if (!next) return paragraph;
+
+    if (next !== paragraph) {
+      changed = true;
+    }
+
+    return next;
+  });
+
+  let nextDraft = normalizedParagraphs.join("\n\n").trim();
+
+  if (contract.responseMode === "info_then_booking") {
+    const hasNextStep = /\b(15[- ]?minute call|quick call|walk through details)\b/i.test(nextDraft);
+    if (!hasNextStep) {
+      const signOffMatch = nextDraft.match(/\n\n(?:best|thanks|regards|sincerely|cheers),\n/i);
+      if (signOffMatch && typeof signOffMatch.index === "number") {
+        nextDraft =
+          `${nextDraft.slice(0, signOffMatch.index).trim()}\n\n${nextStepSentence}\n\n${nextDraft
+            .slice(signOffMatch.index + 2)
+            .trim()}`;
+      } else {
+        nextDraft = `${nextDraft}\n\n${nextStepSentence}`;
+      }
+      changed = true;
+    }
+  }
+
+  if (!changed) return { draft, changed: false };
+
+  return {
+    draft: nextDraft
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+    changed: true,
+  };
+}
+
 function hasActionSignal(result: ActionSignalDetectionResult | null | undefined, type: "call_requested" | "book_on_external_calendar"): boolean {
   return Boolean(result?.signals?.some((signal) => signal.type === type));
 }
@@ -286,8 +436,15 @@ const ANNUAL_CADENCE_REGEX = /\b(annual|annually|yearly|per\s+year|\/\s?(?:yr|ye
 const QUARTERLY_CADENCE_REGEX = /\b(quarterly|per\s+quarter|\/\s?(?:qtr|quarter))\b/i;
 const NEGATED_MONTHLY_CADENCE_REGEX = /\b(no\s+monthly\s+(?:payment\s+)?plan|not\s+monthly|without\s+monthly)\b/i;
 const MONTHLY_PLAN_REGEX = /\bmonthly\s+(?:payment\s+)?plan\b/i;
+const MONTHLY_BILLING_STYLE_REGEX = /\b(monthly\s+(?:payment\s+)?plan|monthly\s+billing|month[-\s]?to[-\s]?month(?:\s+billing)?|billed\s+monthly)\b/i;
+const MONTHLY_EQUIVALENT_PHRASE_REGEX = /\bequates?\s+to\s+\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)\s*month\b/i;
+const WORKS_OUT_TO_MONTHLY_REGEX = /\bworks?\s+out\s+to\s+\$\s*(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)\s*month\b/gi;
+const ORPHAN_PRICING_CADENCE_REGEX = /(?:\/\s?(?:mo|month|yr|year|qtr|quarter)|per\s+(?:month|year|quarter))\b/i;
+const PRICING_LINE_HINT_REGEX = /\b(membership|fee|price|pricing|cost|billing)\b/i;
 const QUARTERLY_ONLY_BILLING_REGEX =
-  /\b(no\s+monthly\s+(?:payment\s+)?plan|no\s+monthly\s+option|quarterly\s+only|billed\s+quarterly\s+only)\b/i;
+  /\b(no\s+monthly\s+(?:payment\s+)?plan|no\s+monthly\s+option|quarterly\s+only|billed\s+quarterly(?:\s+only)?)\b/i;
+const PRICING_CONTEXT_LINE_REGEX =
+  /\$\s*\d|\b(price|pricing|cost|fee|investment|monthly|annual|quarterly|billing|billed|per\s+month|per\s+year|per\s+quarter)\b/i;
 
 function isMaxOutputTokensIncomplete(response: any): boolean {
   return response?.status === "incomplete" && response?.incomplete_details?.reason === "max_output_tokens";
@@ -445,10 +602,53 @@ function extractCadencesFromNearby(text: string): Set<PricingCadence> {
   return cadences;
 }
 
-function buildPricingClaimWindow(text: string, index: number, rawToken: string): string {
-  const windowStart = Math.max(0, index - 80);
-  const windowEnd = Math.min(text.length, index + rawToken.length + 80);
-  return text.slice(windowStart, windowEnd);
+function findLastIndexOfAny(text: string, chars: string[], beforeIndex: number): number {
+  let best = -1;
+  for (const char of chars) {
+    const idx = text.lastIndexOf(char, beforeIndex);
+    if (idx > best) best = idx;
+  }
+  return best;
+}
+
+function findNextIndexOfAny(text: string, chars: string[], fromIndex: number): number {
+  let best = -1;
+  for (const char of chars) {
+    const idx = text.indexOf(char, fromIndex);
+    if (idx !== -1 && (best === -1 || idx < best)) best = idx;
+  }
+  return best;
+}
+
+function extractCadencesNearToken(text: string, index: number, rawToken: string): Set<PricingCadence> {
+  const tokenEnd = index + rawToken.length;
+  const clauseBreaks = ["\n", ".", "!", "?", ";", ":"];
+  const localLeftBoundary = findLastIndexOfAny(text, clauseBreaks, index - 1);
+  const localRightBoundary = findNextIndexOfAny(text, clauseBreaks, tokenEnd);
+  const localStart = Math.max(localLeftBoundary === -1 ? 0 : localLeftBoundary + 1, index - 40);
+  const localEnd = Math.min(localRightBoundary === -1 ? text.length : localRightBoundary, tokenEnd + 50);
+  const before = text.slice(localStart, index);
+  const after = text.slice(tokenEnd, localEnd);
+  const local = `${before}${rawToken}${after}`;
+
+  const cadences = new Set<PricingCadence>();
+  const hasNegatedMonthly = NEGATED_MONTHLY_CADENCE_REGEX.test(local);
+  if (MONTHLY_CADENCE_REGEX.test(local) && !hasNegatedMonthly) cadences.add("monthly");
+  if (ANNUAL_CADENCE_REGEX.test(local)) cadences.add("annual");
+  if (QUARTERLY_CADENCE_REGEX.test(local)) cadences.add("quarterly");
+  if (cadences.size > 0) return cadences;
+
+  const clauseStart = findLastIndexOfAny(text, clauseBreaks, index - 1);
+  const clauseEnd = findNextIndexOfAny(text, clauseBreaks, tokenEnd);
+  const start = clauseStart === -1 ? 0 : clauseStart + 1;
+  const end = clauseEnd === -1 ? text.length : clauseEnd;
+  const clause = text.slice(start, end);
+  const amountMatches = clause.match(DOLLAR_AMOUNT_REGEX) || [];
+  if (amountMatches.length > 1) {
+    return new Set(["unknown"]);
+  }
+
+  return extractCadencesFromNearby(clause);
 }
 
 function extractPricingClaims(text: string): PricingClaim[] {
@@ -463,15 +663,69 @@ function extractPricingClaims(text: string): PricingClaim[] {
     const amount = parseDollarAmountToNumber(raw);
     if (amount === null) continue;
 
-    const nearby = buildPricingClaimWindow(text, index, raw);
+    const cadences = extractCadencesNearToken(text, index, raw);
     claims.push({
       amount,
-      cadences: extractCadencesFromNearby(nearby),
+      cadences,
       index,
       token: raw,
     });
   }
   return claims;
+}
+
+function collectPricingSnippetsFromText(text: string, maxSnippets: number): string[] {
+  if (!text || !text.trim()) return [];
+  const snippets: string[] = [];
+  const pushSnippet = (value: string) => {
+    const normalized = value.trim().replace(/\s+/g, " ");
+    if (!normalized || normalized.length < 8) return;
+    if (!PRICING_CONTEXT_LINE_REGEX.test(normalized)) return;
+    if (snippets.some((existing) => existing.toLowerCase() === normalized.toLowerCase())) return;
+    snippets.push(normalized.length > 220 ? `${normalized.slice(0, 220)}...` : normalized);
+  };
+
+  for (const line of text.split(/\n+/)) {
+    if (snippets.length >= maxSnippets) break;
+    pushSnippet(line);
+  }
+
+  if (snippets.length < maxSnippets) {
+    for (const sentence of text.split(/(?<=[.!?])\s+/)) {
+      if (snippets.length >= maxSnippets) break;
+      pushSnippet(sentence);
+    }
+  }
+
+  return snippets.slice(0, maxSnippets);
+}
+
+function buildVerifiedPricingContext(opts: {
+  serviceDescription: string | null;
+  knowledgeAssets: KnowledgeAssetForContext[];
+}): string | null {
+  const lines: string[] = [];
+  const appendLines = (prefix: string, text: string, maxSnippets: number) => {
+    const snippets = collectPricingSnippetsFromText(text, maxSnippets);
+    for (const snippet of snippets) {
+      lines.push(`${prefix}${snippet}`);
+    }
+  };
+
+  if (opts.serviceDescription) {
+    appendLines("SERVICE: ", opts.serviceDescription, 4);
+  }
+
+  for (const asset of opts.knowledgeAssets.slice(0, 8)) {
+    const source = resolveKnowledgeAssetContextSource(asset).content;
+    if (!source || !source.trim()) continue;
+    const prefix = asset.name ? `${asset.name}: ` : "ASSET: ";
+    appendLines(prefix, source, 2);
+    if (lines.length >= 10) break;
+  }
+
+  if (lines.length === 0) return null;
+  return `VERIFIED PRICING CONTEXT:\n${lines.slice(0, 10).map((line) => `- ${line}`).join("\n")}`;
 }
 
 function buildPricingCadenceMap(text: string): Map<number, Set<PricingCadence>> {
@@ -500,7 +754,7 @@ function cadenceMatchesDraftClaim(
   if (draftKnown.size === 0) return true;
 
   const supportedKnown = getKnownCadences(supportedCadences);
-  if (supportedKnown.size === 0) return true;
+  if (supportedKnown.size === 0) return false;
 
   for (const cadence of draftKnown) {
     if (supportedKnown.has(cadence)) return true;
@@ -526,6 +780,213 @@ function resolvePricingClaimSupport(
 
   const supported = cadenceMatchesDraftClaim(claim.cadences, knowledgeCadences);
   return { supported, cadenceMismatch: !supported };
+}
+
+function formatUsdAmount(amount: number): string {
+  return `$${new Intl.NumberFormat("en-US").format(amount)}`;
+}
+
+function buildMonthlyEquivalentSentence(amount: number): string {
+  return `It equates to ${formatUsdAmount(amount)}/month for founders who want to explore before committing annually.`;
+}
+
+type SupportedPricingOption = {
+  amount: number;
+  cadence: PricingCadence;
+};
+
+function preferredCadenceOrder(opts: { preferQuarterlyCadence: boolean }): PricingCadence[] {
+  return opts.preferQuarterlyCadence
+    ? ["quarterly", "annual", "unknown", "monthly"]
+    : ["annual", "quarterly", "monthly", "unknown"];
+}
+
+function collectSupportedPricingOptions(params: {
+  serviceDescriptionMap: Map<number, Set<PricingCadence>>;
+  knowledgeContextMap: Map<number, Set<PricingCadence>>;
+  preferQuarterlyCadence: boolean;
+}): SupportedPricingOption[] {
+  const sourceMap = params.serviceDescriptionMap.size > 0 ? params.serviceDescriptionMap : params.knowledgeContextMap;
+  if (sourceMap.size === 0) return [];
+
+  const cadenceOrder = preferredCadenceOrder({ preferQuarterlyCadence: params.preferQuarterlyCadence });
+  const options: SupportedPricingOption[] = [];
+  for (const [amount, cadences] of sourceMap.entries()) {
+    const knownCadences = getKnownCadences(cadences);
+    if (knownCadences.size === 0) {
+      options.push({ amount, cadence: "unknown" });
+      continue;
+    }
+    for (const cadence of knownCadences) {
+      options.push({ amount, cadence });
+    }
+  }
+
+  return options.sort((a, b) => {
+    const cadenceDelta = cadenceOrder.indexOf(a.cadence) - cadenceOrder.indexOf(b.cadence);
+    if (cadenceDelta !== 0) return cadenceDelta;
+    return a.amount - b.amount;
+  });
+}
+
+function selectPreferredMonthlyEquivalentAmount(options: SupportedPricingOption[]): number | null {
+  const monthly = options.find((option) => option.cadence === "monthly");
+  return monthly?.amount ?? null;
+}
+
+function normalizeMonthlyEquivalentPhrasing(
+  draft: string,
+  monthlyAmount: number | null
+): { draft: string; normalized: boolean } {
+  if (!draft.trim() || monthlyAmount === null) return { draft, normalized: false };
+
+  let normalized = false;
+  let next = draft.replace(WORKS_OUT_TO_MONTHLY_REGEX, (_match, rawAmount: string) => {
+    const parsed = parseDollarAmountToNumber(`$${rawAmount}`);
+    const amount = parsed ?? monthlyAmount;
+    normalized = true;
+    return `equates to ${formatUsdAmount(amount)}/month`;
+  });
+
+  const lines = next.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] || "";
+    if (!MONTHLY_BILLING_STYLE_REGEX.test(line)) continue;
+    lines[i] = buildMonthlyEquivalentSentence(monthlyAmount);
+    normalized = true;
+  }
+
+  if (!normalized) return { draft, normalized: false };
+
+  next = lines
+    .join("\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  next = next
+    .replace(/(equates?\s+to\s+\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)\s*month)\s+equivalent\b/gi, "$1")
+    .replace(/(\$\s*\d[\d,]*(?:\.\d{1,2})?\s*\/?\s*month)\s+equivalent\b/gi, "$1");
+
+  if (!MONTHLY_EQUIVALENT_PHRASE_REGEX.test(next)) {
+    next = `${buildMonthlyEquivalentSentence(monthlyAmount)}\n\n${next}`.trim();
+  }
+
+  return { draft: next, normalized: true };
+}
+function enforceAnnualThenMonthlyEquivalentOrdering(params: {
+  draft: string;
+  annualAmount: number;
+  monthlyAmount: number;
+}): { draft: string; normalized: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, normalized: false };
+
+  const paragraphs = draft.split(/\n{2,}/);
+  const annualLabel = formatUsdAmount(params.annualAmount);
+  const monthlyEqRegex =
+    /\b(equates?|works?\s+out)\s+to\s+\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)month\b/i;
+
+  let normalized = false;
+  const nextParagraphs = paragraphs.map((rawParagraph) => {
+    const paragraph = (rawParagraph || "").trim();
+    if (!paragraph) return rawParagraph;
+    if (!monthlyEqRegex.test(paragraph)) return rawParagraph;
+
+    const annualIndex = paragraph.indexOf(annualLabel);
+    const monthlyIndex = paragraph.search(monthlyEqRegex);
+    const hasAnnualReference = annualIndex >= 0 || /\b(annual|annually|per\s+year|yearly)\b/i.test(paragraph);
+
+    if (hasAnnualReference && (annualIndex < 0 || annualIndex <= monthlyIndex)) {
+      return rawParagraph;
+    }
+
+    normalized = true;
+    return `The membership fee is ${annualLabel} per year. ${buildMonthlyEquivalentSentence(params.monthlyAmount)}`;
+  });
+
+  if (!normalized) return { draft, normalized: false };
+
+  return {
+    draft: nextParagraphs
+      .join("\n\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim(),
+    normalized: true,
+  };
+}
+
+function formatPricingOption(option: SupportedPricingOption, opts: { preferQuarterlyCadence: boolean }): string {
+  const amount = formatUsdAmount(option.amount);
+
+  if (option.cadence === "annual") {
+    if (opts.preferQuarterlyCadence) {
+      return `${amount} per year (billed quarterly)`;
+    }
+    return `${amount} per year`;
+  }
+  if (option.cadence === "quarterly") {
+    return `${amount} per quarter`;
+  }
+  if (option.cadence === "monthly") {
+    return opts.preferQuarterlyCadence
+      ? `${amount} monthly equivalent (billed quarterly)`
+      : `${amount}/month`;
+  }
+  return amount;
+}
+
+function replaceBrokenPricingSentence(draft: string, sentence: string): string {
+  const collapsedSentence = sentence.trim().replace(/\s+/g, " ");
+  if (!collapsedSentence) return draft;
+
+  const lines = draft.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]?.trim() || "";
+    if (!line) continue;
+    if (/confirm\s+which\s+pricing\s+option/i.test(line)) continue;
+    if (DOLLAR_AMOUNT_PRESENCE_REGEX.test(line)) continue;
+
+    const looksPricingRelated =
+      /\b(the\s+)?membership\s+(fee|price|cost)\s+is\b/i.test(line) ||
+      /\b(the\s+)?(fee|price|cost)\s+is\b/i.test(line) ||
+      /\b(happy\s+to\s+share\s+pricing)\b/i.test(line) ||
+      /\b(monthly\s+(?:payment\s+)?plan|quarterly\s+billing)\b/i.test(line);
+
+    if (!looksPricingRelated) continue;
+
+    lines[i] = collapsedSentence;
+    return lines
+      .join("\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  return `${collapsedSentence}\n\n${draft}`.trim();
+}
+
+function stripOrphanPricingCadenceLines(draft: string): { draft: string; removedLines: number } {
+  const lines = draft.split("\n");
+  let removedLines = 0;
+  const kept = lines.filter((line) => {
+    const trimmed = (line || "").trim();
+    if (!trimmed) return true;
+    if (DOLLAR_AMOUNT_PRESENCE_REGEX.test(trimmed)) return true;
+    if (!PRICING_LINE_HINT_REGEX.test(trimmed)) return true;
+    if (!ORPHAN_PRICING_CADENCE_REGEX.test(trimmed)) return true;
+    removedLines += 1;
+    return false;
+  });
+
+  const normalized = kept
+    .join("\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return { draft: normalized, removedLines };
 }
 
 export function extractPricingAmounts(text: string): number[] {
@@ -578,7 +1039,10 @@ export function detectPricingHallucinations(
 export function enforcePricingAmountSafety(
   draft: string,
   serviceDescription: string | null,
-  knowledgeContext?: string | null
+  knowledgeContext?: string | null,
+  opts?: {
+    requirePricingAnswer?: boolean;
+  }
 ): {
   draft: string;
   removedAmounts: number[];
@@ -586,9 +1050,11 @@ export function enforcePricingAmountSafety(
   normalizedCadencePhrase: boolean;
   addedClarifier: boolean;
 } {
+  const requirePricingAnswer = opts?.requirePricingAnswer === true;
   const serviceDescriptionMap = buildPricingCadenceMap(serviceDescription ?? "");
   const knowledgeContextMap = buildPricingCadenceMap(knowledgeContext ?? "");
   const sourceHasPricing = serviceDescriptionMap.size > 0 || knowledgeContextMap.size > 0;
+  const preferQuarterlyCadence = QUARTERLY_ONLY_BILLING_REGEX.test(`${serviceDescription || ""}\n${knowledgeContext || ""}`);
   const removedAmounts: number[] = [];
   const removedCadenceAmounts: number[] = [];
 
@@ -600,10 +1066,10 @@ export function enforcePricingAmountSafety(
     const amount = parseDollarAmountToNumber(token);
     if (amount === null) return token;
 
-    const nearby = typeof offset === "number" ? buildPricingClaimWindow(fullText, offset, token) : token;
+    const cadences = typeof offset === "number" ? extractCadencesNearToken(fullText, offset, token) : extractCadencesFromNearby(token);
     const claim: PricingClaim = {
       amount,
-      cadences: extractCadencesFromNearby(nearby),
+      cadences,
       index: typeof offset === "number" ? offset : -1,
       token,
     };
@@ -626,16 +1092,75 @@ export function enforcePricingAmountSafety(
     .trim();
 
   let normalizedCadencePhrase = false;
-  if (serviceDescription && QUARTERLY_ONLY_BILLING_REGEX.test(serviceDescription) && MONTHLY_PLAN_REGEX.test(next)) {
+  if (preferQuarterlyCadence && MONTHLY_PLAN_REGEX.test(next)) {
     next = next.replace(MONTHLY_PLAN_REGEX, "quarterly billing");
     normalizedCadencePhrase = true;
   }
 
+  const strippedOrphanCadence = stripOrphanPricingCadenceLines(next);
+  if (strippedOrphanCadence.removedLines > 0) {
+    next = strippedOrphanCadence.draft;
+  }
+
   let addedClarifier = false;
   const removedAny = removedAmounts.length > 0 || removedCadenceAmounts.length > 0;
+  const hasAnyDollarAmount = DOLLAR_AMOUNT_PRESENCE_REGEX.test(next);
+  const supportedOptions = collectSupportedPricingOptions({
+    serviceDescriptionMap,
+    knowledgeContextMap,
+    preferQuarterlyCadence,
+  });
+  const buildSupportedPricingSentence = (): string | null => {
+    if (supportedOptions.length === 0) return null;
+    const [primary, secondary] = supportedOptions;
+    if (primary && secondary && primary.cadence === "annual" && secondary.cadence === "monthly") {
+      return `The membership fee is ${formatUsdAmount(primary.amount)} per year. ${buildMonthlyEquivalentSentence(secondary.amount)}`;
+    }
+    if (primary && primary.cadence === "monthly") {
+      return buildMonthlyEquivalentSentence(primary.amount);
+    }
+    const primaryText = formatPricingOption(primary, { preferQuarterlyCadence });
+    const secondaryText = secondary ? formatPricingOption(secondary, { preferQuarterlyCadence }) : null;
+    return secondaryText
+      ? `The membership fee is ${primaryText}. We also offer ${secondaryText}.`
+      : `The membership fee is ${primaryText}.`;
+  };
+
+  if (removedAny && !hasAnyDollarAmount) {
+    const replacementSentence = buildSupportedPricingSentence();
+    if (replacementSentence) {
+      next = replaceBrokenPricingSentence(next, replacementSentence);
+    }
+  }
+
+  if (requirePricingAnswer && !DOLLAR_AMOUNT_PRESENCE_REGEX.test(next)) {
+    const replacementSentence = buildSupportedPricingSentence();
+    if (replacementSentence) {
+      next = replaceBrokenPricingSentence(next, replacementSentence);
+    }
+  }
+
+  const monthlyEquivalentAmount = selectPreferredMonthlyEquivalentAmount(supportedOptions);
+  const monthlyNormalization = normalizeMonthlyEquivalentPhrasing(next, monthlyEquivalentAmount);
+  if (monthlyNormalization.normalized) {
+    next = monthlyNormalization.draft;
+    normalizedCadencePhrase = true;
+  }
+
+  const annualOption = supportedOptions.find((option) => option.cadence === "annual") || null;
+  if (annualOption && monthlyEquivalentAmount !== null) {
+    const annualMonthlyOrdering = enforceAnnualThenMonthlyEquivalentOrdering({
+      draft: next,
+      annualAmount: annualOption.amount,
+      monthlyAmount: monthlyEquivalentAmount,
+    });
+    if (annualMonthlyOrdering.normalized) {
+      next = annualMonthlyOrdering.draft;
+      normalizedCadencePhrase = true;
+    }
+  }
   if (
-    removedAny &&
-    !sourceHasPricing &&
+    (removedAny || (requirePricingAnswer && supportedOptions.length === 0)) &&
     !DOLLAR_AMOUNT_PRESENCE_REGEX.test(next) &&
     !/confirm\s+which\s+pricing\s+option/i.test(next)
   ) {
@@ -2075,7 +2600,7 @@ export async function generateResponseDraft(
               include: {
                 knowledgeAssets: {
                   orderBy: { updatedAt: "desc" },
-                  take: 5,
+                  take: 10,
                   select: {
                     name: true,
                     type: true,
@@ -2374,7 +2899,7 @@ export async function generateResponseDraft(
             source: resolveKnowledgeAssetContextSource(a).content,
           }))
           .filter((a) => a.source && a.name !== PRIMARY_WEBSITE_ASSET_NAME)
-          .map((a) => `[${a.name}]: ${a.source.slice(0, 1000)}${a.source.length > 1000 ? "..." : ""}`);
+          .map((a) => `[${a.name}]: ${a.source.slice(0, 1600)}${a.source.length > 1600 ? "..." : ""}`);
 
         if (assetSnippets.length > 0) {
           knowledgeContext = assetSnippets.join("\n\n");
@@ -2394,6 +2919,14 @@ export async function generateResponseDraft(
       if (draftMemoryContext) {
         knowledgeContext = [knowledgeContext, `LEAD MEMORY:\n${draftMemoryContext}`].filter(Boolean).join("\n\n");
       }
+    }
+
+    const verifiedPricingContext = buildVerifiedPricingContext({
+      serviceDescription: serviceDescription || null,
+      knowledgeAssets,
+    });
+    if (verifiedPricingContext && !/VERIFIED PRICING CONTEXT:/i.test(knowledgeContext)) {
+      knowledgeContext = [knowledgeContext, verifiedPricingContext].filter(Boolean).join("\n\n");
     }
 
     const primaryFirstName = lead?.firstName || "there";
@@ -3964,6 +4497,8 @@ Generate an appropriate ${channel} response following the guidelines above.
                 bookingLink,
                 extraction: extractionDecision,
                 memoryContext: gateMemoryContext,
+                serviceDescription: serviceDescription || null,
+                knowledgeContext: knowledgeContext || null,
                 metadata: gatePromptMetadata,
                 leadSchedulerLink,
                 timeoutMs: emailVerifierTimeoutMs,
@@ -4004,6 +4539,32 @@ Generate an appropriate ${channel} response following the guidelines above.
         extraction: meetingOverseerExtractionDecision,
         availability,
       });
+
+      const pricingNoSchedulingGuard = applyPricingAnswerNoSchedulingGuard({
+        draft: draftContent,
+        extraction: meetingOverseerExtractionDecision,
+      });
+      if (pricingNoSchedulingGuard.changed) {
+        draftContent = pricingNoSchedulingGuard.draft;
+        console.log("[AI Drafts] Applied pricing-mode scheduling suppression guard", {
+          leadId,
+          channel,
+        });
+      }
+
+      const pricingQualificationGuard = applyPricingAnswerQualificationGuard({
+        draft: draftContent,
+        extraction: meetingOverseerExtractionDecision,
+        bookingLink,
+        leadSchedulerLink,
+      });
+      if (pricingQualificationGuard.changed) {
+        draftContent = pricingQualificationGuard.draft;
+        console.log("[AI Drafts] Applied pricing-mode qualification guard", {
+          leadId,
+          channel,
+        });
+      }
     }
 
     if (channel === "email" && draftContent) {
@@ -4028,30 +4589,29 @@ Generate an appropriate ${channel} response following the guidelines above.
     draftContent = sanitizeDraftContent(draftContent, leadId, channel);
     let pricingSafety: ReturnType<typeof enforcePricingAmountSafety> | null = null;
     if (channel === "email") {
-      const pricingSafetyPreview = enforcePricingAmountSafety(draftContent, serviceDescription, knowledgeContext);
-      pricingSafety = {
-        ...pricingSafetyPreview,
-        // Keep model output unchanged; this stage is detect-and-report only.
-        draft: draftContent,
-      };
+      const pricingSafetyResult = enforcePricingAmountSafety(draftContent, serviceDescription, knowledgeContext, {
+        requirePricingAnswer: meetingOverseerExtractionDecision?.decision_contract_v1?.needsPricingAnswer === "yes",
+      });
+      pricingSafety = pricingSafetyResult;
+      draftContent = pricingSafetyResult.draft;
 
       if (
-        pricingSafetyPreview.removedAmounts.length > 0 ||
-        pricingSafetyPreview.removedCadenceAmounts.length > 0 ||
-        pricingSafetyPreview.normalizedCadencePhrase
+        pricingSafetyResult.removedAmounts.length > 0 ||
+        pricingSafetyResult.removedCadenceAmounts.length > 0 ||
+        pricingSafetyResult.normalizedCadencePhrase
       ) {
-        const removedAmountLabel = pricingSafetyPreview.removedAmounts.length
-          ? `would remove unsupported $${pricingSafetyPreview.removedAmounts.join(", $")}`
+        const removedAmountLabel = pricingSafetyResult.removedAmounts.length
+          ? `removed unsupported $${pricingSafetyResult.removedAmounts.join(", $")}`
           : "";
-        const removedCadenceLabel = pricingSafetyPreview.removedCadenceAmounts.length
-          ? `would remove cadence-mismatched $${pricingSafetyPreview.removedCadenceAmounts.join(", $")}`
+        const removedCadenceLabel = pricingSafetyResult.removedCadenceAmounts.length
+          ? `removed cadence-mismatched $${pricingSafetyResult.removedCadenceAmounts.join(", $")}`
           : "";
-        const normalizedCadenceLabel = pricingSafetyPreview.normalizedCadencePhrase
-          ? "would normalize unsupported monthly-plan wording to quarterly billing"
+        const normalizedCadenceLabel = pricingSafetyResult.normalizedCadencePhrase
+          ? "normalized pricing cadence phrasing to approved equivalent language"
           : "";
         const summary = [removedAmountLabel, removedCadenceLabel, normalizedCadenceLabel].filter(Boolean).join("; ");
         console.warn(
-          `[pricing-safety] Lead ${leadId}: detected but not auto-applied (${summary || "no-op"})`
+          `[pricing-safety] Lead ${leadId}: auto-applied (${summary || "no-op"})`
         );
       }
     }

@@ -1,0 +1,45 @@
+artifact: .artifacts/ai-replay/fc-large40-overseer-persisted-2026-02-13.json
+runId: ai_replay_2026-02-13T02-21-17-626Z_62e4598f
+selected=40 scanned=240 evaluated=29 passed=3 failedJudge=26 failed=0 avg=62.45
+
+index | caseId | status | pass | score | failureType | invariants | topFailureReason
+01 | 9c6a674a-04a3-4e03-a01d-c3d7929fef6b:email | evaluated | false | 92 | draft_quality_error | - | [pricing_missing_answer] lead asked for pricing but draft provided no supported pricing amount (available: $791, $9500)
+02 | 0828caec-8c4f-42bc-b57a-4cd78310c9dd:email | evaluated | false | 57 | draft_quality_error | - | Draft doesn’t anchor the meeting to the specific date from provided availability; could create ambiguity if multiple Mondays are in play.
+03 | 6081e062-4e40-43cd-af0c-ee6786853911:email | evaluated | false | 60 | draft_quality_error | - | Lead asked what the plan is; draft answers but then adds a new qualification question instead of moving scheduling forward with available times.
+04 | 1026cae8-a961-4f65-b4a7-5f01db7a1f5a:email | evaluated | false | 60 | draft_quality_error | slot_mismatch | Draft offered times in EST that do not match the provided availability (PST).
+05 | eec31bf4-fd20-4108-8886-77effd72e901:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Not Interested"
+06 | a54521bf-a802-46f2-9d7a-6d3068e8fdfb:email | evaluated | false | 54 | draft_quality_error | - | Draft does not answer the pricing question directly despite extraction indicating a pricing answer is needed.
+07 | 9b8ce1a1-c7fb-479a-a634-c3d56f5f3abe:email | evaluated | false | 52 | draft_quality_error | fabricated_link | Lead offered relative timing (tomorrow/next week) but no specific time or timezone; extraction flags needs_clarification=true.
+08 | d8253629-8ab4-4887-b79b-21b99a76e324:email | evaluated | false | 60 | draft_quality_error | - | Draft proposed times that do not match the provided availability (3:00 PM EST Mon, Feb 16 and 11:00 AM EST Tue, Feb 17).
+09 | 86d6afd3-c1c2-48b9-8469-86df6d5a3fc9:email | evaluated | false | 57 | draft_quality_error | - | Lead offered two possible times; draft assumes 11:30 without a clear confirmation question.
+10 | 12284c4d-7d5f-46e0-868e-d7ef552cc660:email | evaluated | false | 60 | draft_quality_error | slot_mismatch,date_mismatch | Proposed times in the draft do not match the provided availability (and one date differs).
+11 | 4722b352-3b87-48d2-be77-c7f77d0090ae:email | evaluated | false | 55 | draft_quality_error | - | The link provided in the draft is a Calendly scheduling page, not an information page; the lead explicitly asked for info they can’t find online.
+12 | acd5f702-e64f-4bed-95b1-d80fdd02cfd3:email | evaluated | false | 60 | draft_quality_error | date_mismatch | Proposed times in the draft (Fri, Feb 13 and Tue, Feb 17 11:30 AM) do not match the provided availability.
+13 | 48f7a07f-9719-4327-ab32-ab98e77b448a:email | evaluated | true | 92 | - | - | -
+14 | 56e0734e-9a52-40b6-930b-3676ee433642:email | evaluated | false | 55 | draft_quality_error | - | Draft proposes meeting times that do not match the provided availability.
+15 | 52a7cf24-fce0-41dd-9445-d3937e38697f:email | evaluated | false | 55 | draft_quality_error | slot_mismatch,date_mismatch | Lead said they are traveling next week and not available; draft proposes times that may fall during/too close to that period and uses dates that appear inconsistent with current context.
+16 | 2b1c0a67-3867-475f-9bc6-a19b0477f37d:email | evaluated | false | 60 | draft_quality_error | - | Draft greets Scott but the inbound is signed Bob; this risks replying to the wrong person.
+17 | 8fc67a97-fb22-4c23-af06-a202f146f2d9:email | evaluated | false | 60 | draft_quality_error | - | Draft is not scheduling-aligned with the current thread; it asks for windows instead of offering available times.
+18 | a78d3e52-15ac-498c-8193-0fac57624289:email | evaluated | false | 58 | draft_quality_error | - | Draft includes a thank-you line; guidance prefers avoiding thank-yous and keeping replies tighter.
+19 | 5012daad-9f16-491c-8506-9135b5dc40e4:email | evaluated | false | 60 | draft_quality_error | - | Draft adds new qualification/sales questions instead of following the lead’s instruction to text for fastest response.
+20 | 16d8eb7b-149f-49fb-9d19-d88e0b5f9766:email | evaluated | true | 92 | - | - | -
+21 | f770beb3-9bf9-4212-b7ec-41b5c71e5e2a:email | evaluated | false | 60 | draft_quality_error | - | Draft adds extra positioning and multiple questions beyond what’s needed for a non-scheduling, redirect-only inbound.
+22 | 94a226ce-eb55-4ae5-b8be-ec0cde634e29:email | evaluated | true | 92 | - | - | -
+23 | e12ff025-4629-4f64-a358-83d14a551fcc:email | evaluated | false | 57 | draft_quality_error | - | Extraction indicates needs_clarification=true; reply should ask one concise clarifying question only.
+24 | 5d4f0b71-5f79-4ddd-8c6f-300982ce7e6e:email | evaluated | false | 58 | draft_quality_error | - | Draft adds an extra multi-part question about timing/checking back that isn’t necessary and increases friction.
+25 | 03a35fbc-3629-426d-9823-ad1eca16e124:email | evaluated | false | 54 | draft_quality_error | slot_mismatch | Draft offers times that are not in the provided availability.
+26 | 3de01f08-61a4-445a-9118-6fba95b1bb66:email | evaluated | false | 54 | draft_quality_error | slot_mismatch,date_mismatch | Proposed times (Feb 16/17) are not supported by the provided availability (Feb 19/23).
+27 | 7f5352c9-a9a0-4052-90b7-4e58557f3a35:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Not Interested"
+28 | 3d4e9a0f-3198-4d41-831f-15ccf9f65b1c:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Not Interested"
+29 | af92aebd-c9d1-4e23-a88e-2514c4994928:email | evaluated | false | 60 | draft_quality_error | slot_mismatch,date_mismatch | Proposed times in the draft do not match the provided availability.
+30 | 062ceffd-07d9-4698-bdf4-8ce8e3452396:email | evaluated | false | 60 | draft_quality_error | date_mismatch | Proposed times in the draft (Fri Feb 13, Tue Feb 17 11:00 AM) do not match the provided availability.
+31 | 06fdc939-e292-49a8-99cb-6ba1a0bb1998:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Not Interested"
+32 | 05e33f96-c4f1-48e9-99ea-e7c0ca51ddb7:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Blacklist"
+33 | 2611f797-87cc-44c0-be4c-9b58ef850189:email | evaluated | false | 60 | draft_quality_error | fabricated_link | Draft uses the lead’s HubSpot link as the booking link; our provided booking link is Calendly and should be used instead.
+34 | 9b94e0e6-b367-42f2-8447-f880825174f3:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Blacklist"
+35 | d4beb349-fd0b-444c-bde9-aae8312e9141:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Blacklist"
+36 | 455424ad-6733-4b31-b114-fd48fef7159a:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Out of Office"
+37 | cc6087ff-5fc9-442e-aae6-decddfe368cc:email | evaluated | false | 57 | draft_quality_error | slot_mismatch | Proposed times in the draft (EST) do not match the provided availability (PST).
+38 | 88ee7a41-c998-470a-858c-6af563f74cc2:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Automated Reply"
+39 | 8f3f8bfc-fbf4-4906-bb92-cd0fc65b084d:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Blacklist"
+40 | 93833e9e-e7e9-4161-88ee-9b0793a1af23:email | skipped | - | - | - | - | Draft generation disabled for sentiment "Blacklist"

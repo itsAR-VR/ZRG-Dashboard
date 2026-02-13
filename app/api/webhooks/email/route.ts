@@ -19,6 +19,7 @@ import { addToAlternateEmails, detectCcReplier, normalizeOptionalEmail } from "@
 import { getDbSchemaMissingColumnsForModels, isPrismaMissingTableOrColumnError } from "@/lib/db-schema-compat";
 import { sendSlackDmByUserIdWithToken } from "@/lib/slack-dm";
 import { getSlackAutoSendApprovalConfig } from "@/lib/auto-send/get-approval-recipients";
+import { mergeLinkedInUrl, normalizeLinkedInUrl, normalizeLinkedInUrlAny } from "@/lib/linkedin-utils";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 // Reduced from 800s to 60s after moving AI classification to background jobs (Phase 31g).
@@ -860,9 +861,15 @@ async function handleLeadReplied(request: NextRequest, payload: InboxxiaWebhook)
       messageUpdates.phone = toStoredPhone(messageExtraction.phone) || messageExtraction.phone;
       console.log(`[Enrichment] Found phone in message for lead ${lead.id}`);
     }
-    if (messageExtraction.linkedinUrl && !currentLead?.linkedinUrl) {
-      messageUpdates.linkedinUrl = messageExtraction.linkedinUrl;
-      console.log(`[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${messageExtraction.linkedinUrl}`);
+    if (messageExtraction.linkedinUrl) {
+      const normalizedMessageLinkedIn = normalizeLinkedInUrlAny(messageExtraction.linkedinUrl);
+      if (normalizedMessageLinkedIn) {
+        const mergedMessageLinkedIn = mergeLinkedInUrl(currentLead?.linkedinUrl, normalizedMessageLinkedIn);
+        if (mergedMessageLinkedIn && mergedMessageLinkedIn !== currentLead?.linkedinUrl) {
+          messageUpdates.linkedinUrl = mergedMessageLinkedIn;
+        }
+        console.log(`[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${normalizedMessageLinkedIn}`);
+      }
     }
 
     if (Object.keys(messageUpdates).length > 0) {
@@ -1930,9 +1937,15 @@ async function handleUntrackedReply(request: NextRequest, payload: InboxxiaWebho
       messageUpdates.phone = toStoredPhone(messageExtraction.phone) || messageExtraction.phone;
       console.log(`[Enrichment] Found phone in message for lead ${lead.id}`);
     }
-    if (messageExtraction.linkedinUrl && !currentLead?.linkedinUrl) {
-      messageUpdates.linkedinUrl = messageExtraction.linkedinUrl;
-      console.log(`[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${messageExtraction.linkedinUrl}`);
+    if (messageExtraction.linkedinUrl) {
+      const normalizedMessageLinkedIn = normalizeLinkedInUrlAny(messageExtraction.linkedinUrl);
+      if (normalizedMessageLinkedIn) {
+        const mergedMessageLinkedIn = mergeLinkedInUrl(currentLead?.linkedinUrl, normalizedMessageLinkedIn);
+        if (mergedMessageLinkedIn && mergedMessageLinkedIn !== currentLead?.linkedinUrl) {
+          messageUpdates.linkedinUrl = mergedMessageLinkedIn;
+        }
+        console.log(`[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${normalizedMessageLinkedIn}`);
+      }
     }
 
     if (Object.keys(messageUpdates).length > 0) {

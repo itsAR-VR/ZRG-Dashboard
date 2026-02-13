@@ -119,6 +119,17 @@ test("parseReplayCliArgs accepts judge-client-id override", () => {
   assert.equal(parsed.args.judgeClientId, "fc-client-id");
 });
 
+test("parseReplayCliArgs accepts overseer revision-loop mode", () => {
+  const parsed = parseReplayCliArgs(
+    ["node", "scripts/live-ai-replay.ts", "--client-id", "client-123", "--revision-loop", "overseer"],
+    NOW
+  );
+
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+  assert.equal(parsed.args.revisionLoopMode, "overseer");
+});
+
 test("parseReplayCliArgs rejects invalid revision-loop value", () => {
   const parsed = parseReplayCliArgs(
     ["node", "scripts/live-ai-replay.ts", "--client-id", "client-123", "--revision-loop", "always_on"],
@@ -237,13 +248,15 @@ test("parseReplayCliArgs accepts repeatable/csv ab-mode values", () => {
       "off,platform",
       "--ab-mode",
       "force",
+      "--ab-mode",
+      "overseer",
     ],
     NOW
   );
 
   assert.equal(parsed.ok, true);
   if (!parsed.ok) return;
-  assert.deepEqual(parsed.args.abModes, ["off", "platform", "force"]);
+  assert.deepEqual(parsed.args.abModes, ["off", "platform", "force", "overseer"]);
 });
 
 test("parseReplayCliArgs rejects invalid ab-mode value", () => {

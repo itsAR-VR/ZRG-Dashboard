@@ -1,6 +1,6 @@
 export type ReplayChannel = "email" | "sms" | "linkedin";
 export type ReplayChannelFilter = ReplayChannel | "any";
-export type ReplayRevisionLoopMode = "platform" | "force" | "off";
+export type ReplayRevisionLoopMode = "platform" | "force" | "off" | "overseer";
 export type ReplayOverseerDecisionMode = "fresh" | "persisted";
 export type ReplayJudgeProfile = "strict" | "balanced" | "lenient";
 
@@ -184,6 +184,19 @@ export type ReplayCaseResult = {
     endConfidence: number | null;
     stopReason: "disabled" | "not_applicable" | "threshold_met" | "hard_block" | "no_improvement" | "exhausted" | "error";
     finalReason: string | null;
+    iterations?: Array<{
+      iteration: number;
+      judgePass: boolean;
+      judgeScore: number;
+      judgeConfidence: number;
+      judgeFailureReasons: string[];
+      judgeSummary: string;
+      revisionAttempted: boolean;
+      revisionApplied: boolean;
+      revisionImproved: boolean;
+      validationPassed: boolean | null;
+      validationReasons: string[];
+    }>;
   } | null;
   generatedDraft: string | null;
   judge: ReplayJudgeScore | null;

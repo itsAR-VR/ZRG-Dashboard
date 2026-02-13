@@ -69,6 +69,11 @@ function getSendFailureMessage(channel: Channel): string {
   return "SMS send failed. Please try again."
 }
 
+function areEmailsEqual(a: string[], b: string[]) {
+  if (a.length !== b.length) return false
+  return a.every((email, index) => email.toLowerCase() === b[index]?.toLowerCase())
+}
+
 // Phase 50: Email recipient editor for CC management
 interface EmailRecipientEditorProps {
   toEmail: string
@@ -262,7 +267,6 @@ export function ActionStation({
   const isLinkedIn = activeChannel === "linkedin"
   const conversationId = conversation?.id ?? null
   const primaryChannel = conversation?.primaryChannel ?? null
-  const leadSentimentTag = conversation?.lead?.sentimentTag ?? null
   
   // Get available channels for this conversation
   const channels = useMemo<Channel[]>(
@@ -412,25 +416,31 @@ export function ActionStation({
     originalDraftRef.current = originalDraft
   }, [originalDraft])
 
-  // Phase 50: Initialize CC recipients from latest inbound email when channel/conversation/messages change
-  // Use conversation?.messages directly (not ref) so CC updates when new emails arrive
+  // Phase 50: Initialize CC recipients from latest inbound email when channel/conversation/messages change.
+  // Guard state writes to avoid churn on every polling update with referentially-new message arrays.
   useEffect(() => {
     const messages = conversation?.messages || []
+    let nextCcRecipients: string[] = []
+
     if (activeChannel === "email" && messages.length > 0) {
       const latestInbound = messages
         .filter(m => m.direction === "inbound" && m.channel === "email")
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0]
 
       if (latestInbound?.cc?.length) {
-        setCcRecipients(latestInbound.cc)
-      } else {
-        setCcRecipients([])
+        nextCcRecipients = latestInbound.cc
+          .map((email) => email.trim())
+          .filter((email) => email.length > 0)
       }
-    } else {
-      setCcRecipients([])
     }
-    setCcInput("")
+
+    setCcRecipients((current) => (areEmailsEqual(current, nextCcRecipients) ? current : nextCcRecipients))
   }, [conversation?.id, conversation?.messages, activeChannel])
+
+  // Reset CC input only when changing conversation/channel, not on every message poll.
+  useEffect(() => {
+    setCcInput((current) => (current.length > 0 ? "" : current))
+  }, [conversation?.id, activeChannel])
 
   // Scroll to bottom only on initial load or when user sends a message
   // NOT during background polling updates to preserve scroll position
@@ -506,7 +516,9 @@ export function ActionStation({
     }
   }, [fetchLinkedInStatus])
 
-  // Fetch real AI drafts when conversation or active channel changes
+  // Fetch real AI drafts when conversation/channel context changes.
+  // Avoid binding this effect to mutable lead sentiment metadata, which can
+  // oscillate during pipeline updates and trigger render/fetch feedback loops.
   useEffect(() => {
     let cancelled = false
     const requestSeq = draftFetchSeqRef.current + 1
@@ -568,7 +580,7 @@ export function ActionStation({
     return () => {
       cancelled = true
     }
-  }, [conversationId, activeChannel, deepLinkedDraftId, leadSentimentTag])
+  }, [conversationId, activeChannel, deepLinkedDraftId])
 
   const handleSendMessage = async () => {
     if (isSending || isRegenerating) return

@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyClayWebhookSignature } from "@/lib/clay-api";
-import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { mergeLinkedInUrl, normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 import { resumeAwaitingEnrichmentFollowUpsForLead } from "@/lib/followup-engine";
 import { toStoredPhone } from "@/lib/phone-utils";
@@ -175,9 +175,9 @@ export async function POST(request: NextRequest) {
       if (payload.enrichmentType === "linkedin" && payload.linkedinUrl) {
         const normalizedUrl = normalizeLinkedInUrl(payload.linkedinUrl);
         const existingNormalized = normalizeLinkedInUrl(lead.linkedinUrl);
-
-        if (normalizedUrl && !existingNormalized) {
-          updateData.linkedinUrl = normalizedUrl;
+        const mergedLinkedIn = mergeLinkedInUrl(existingNormalized, normalizedUrl);
+        if (mergedLinkedIn && mergedLinkedIn !== existingNormalized) {
+          updateData.linkedinUrl = mergedLinkedIn;
         }
         if (payload.linkedinId && !lead.linkedinId) {
           updateData.linkedinId = payload.linkedinId;

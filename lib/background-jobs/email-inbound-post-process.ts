@@ -14,7 +14,7 @@ import {
   extractLinkedInFromText,
   extractPhoneFromText,
 } from "@/lib/signature-extractor";
-import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { mergeLinkedInUrl, normalizeLinkedInUrl, normalizeLinkedInUrlAny } from "@/lib/linkedin-utils";
 import { normalizePhone } from "@/lib/lead-matching";
 import { toStoredPhone } from "@/lib/phone-utils";
 import {
@@ -231,10 +231,16 @@ async function enrichLeadFromEmailBison(
     const linkedinUrlRaw =
       getCustomVariable(customVars, "linkedin url") ||
       getCustomVariable(customVars, "linkedin_url") ||
-      getCustomVariable(customVars, "linkedinurl");
+      getCustomVariable(customVars, "linkedinurl") ||
+      getCustomVariable(customVars, "linkedin") ||
+      getCustomVariable(customVars, "linkedin profile") ||
+      getCustomVariable(customVars, "profile") ||
+      getCustomVariable(customVars, "company") ||
+      getCustomVariable(customVars, "company linkedin") ||
+      getCustomVariable(customVars, "company_linkedin");
 
     if (linkedinUrlRaw) {
-      const normalized = normalizeLinkedInUrl(linkedinUrlRaw);
+      const normalized = normalizeLinkedInUrlAny(linkedinUrlRaw) || normalizeLinkedInUrl(linkedinUrlRaw);
       if (normalized) {
         result.linkedinUrl = normalized;
         result.clayData.linkedInProfile = normalized;
@@ -324,7 +330,10 @@ async function enrichLeadFromEmailBison(
     });
 
     const updates: Record<string, unknown> = {};
-    if (result.linkedinUrl && !currentLead?.linkedinUrl) updates.linkedinUrl = result.linkedinUrl;
+    const mergedResultLinkedIn = mergeLinkedInUrl(currentLead?.linkedinUrl, result.linkedinUrl);
+    if (mergedResultLinkedIn && mergedResultLinkedIn !== currentLead?.linkedinUrl) {
+      updates.linkedinUrl = mergedResultLinkedIn;
+    }
     if (result.phone && !currentLead?.phone) updates.phone = result.phone;
     if (result.companyName && !currentLead?.companyName) updates.companyName = result.companyName;
     if (result.companyWebsite && !currentLead?.companyWebsite) updates.companyWebsite = result.companyWebsite;
@@ -421,7 +430,7 @@ async function enrichLeadFromSignature(opts: {
       if (!looksLikeMatchesSender(tail, opts.leadEmail, opts.leadName)) return result;
 
       const fallbackPhone = !currentLead?.phone ? extractPhoneFromText(tail) : null;
-      const fallbackLinkedIn = !currentLead?.linkedinUrl ? extractLinkedInFromText(tail) : null;
+      const fallbackLinkedIn = normalizeLinkedInUrlAny(extractLinkedInFromText(tail));
       if (!fallbackPhone && !fallbackLinkedIn) return result;
 
       const updates: Record<string, unknown> = {};
@@ -429,9 +438,10 @@ async function enrichLeadFromSignature(opts: {
         updates.phone = fallbackPhone;
         result.phone = fallbackPhone;
       }
-      if (!currentLead?.linkedinUrl && fallbackLinkedIn) {
-        updates.linkedinUrl = fallbackLinkedIn;
-        result.linkedinUrl = fallbackLinkedIn;
+      const mergedFallbackLinkedIn = mergeLinkedInUrl(currentLead?.linkedinUrl, fallbackLinkedIn);
+      if (mergedFallbackLinkedIn && mergedFallbackLinkedIn !== currentLead?.linkedinUrl) {
+        updates.linkedinUrl = mergedFallbackLinkedIn;
+        result.linkedinUrl = mergedFallbackLinkedIn;
       }
 
       if (Object.keys(updates).length > 0) {
@@ -450,9 +460,15 @@ async function enrichLeadFromSignature(opts: {
       updates.phone = extraction.phone;
       result.phone = extraction.phone;
     }
-    if (!currentLead?.linkedinUrl && extraction.linkedinUrl) {
-      updates.linkedinUrl = extraction.linkedinUrl;
-      result.linkedinUrl = extraction.linkedinUrl;
+    if (extraction.linkedinUrl) {
+      const normalizedSignatureLinkedIn = normalizeLinkedInUrlAny(extraction.linkedinUrl);
+      if (normalizedSignatureLinkedIn) {
+        const mergedSignatureLinkedIn = mergeLinkedInUrl(currentLead?.linkedinUrl, normalizedSignatureLinkedIn);
+        if (mergedSignatureLinkedIn && mergedSignatureLinkedIn !== currentLead?.linkedinUrl) {
+          updates.linkedinUrl = mergedSignatureLinkedIn;
+          result.linkedinUrl = mergedSignatureLinkedIn;
+        }
+      }
     }
 
     if (Object.keys(updates).length > 0) {
@@ -948,9 +964,15 @@ export async function runEmailInboundPostProcessJob(opts: {
       messageUpdates.phone = toStoredPhone(messageExtraction.phone) || messageExtraction.phone;
       console.log(`[Enrichment] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
     }
-    if (messageExtraction.linkedinUrl && !currentLead?.linkedinUrl) {
-      messageUpdates.linkedinUrl = messageExtraction.linkedinUrl;
-      console.log(`[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${messageExtraction.linkedinUrl}`);
+    if (messageExtraction.linkedinUrl) {
+      const normalizedMessageLinkedIn = normalizeLinkedInUrlAny(messageExtraction.linkedinUrl);
+      if (normalizedMessageLinkedIn) {
+        const mergedMessageLinkedIn = mergeLinkedInUrl(currentLead?.linkedinUrl, normalizedMessageLinkedIn);
+        if (mergedMessageLinkedIn && mergedMessageLinkedIn !== currentLead?.linkedinUrl) {
+          messageUpdates.linkedinUrl = mergedMessageLinkedIn;
+        }
+        console.log(`[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${normalizedMessageLinkedIn}`);
+      }
     }
 
     if (Object.keys(messageUpdates).length > 0) {

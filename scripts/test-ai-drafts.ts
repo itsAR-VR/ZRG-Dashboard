@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 const DEFAULT_TEST_FILES = [
   "lib/__tests__/ai-drafts-pricing-placeholders.test.ts",
+  "lib/__tests__/ai-drafts-pricing-scheduling-guard.test.ts",
   "lib/ai-drafts/__tests__/step3-verifier.test.ts",
   "lib/ai-drafts/__tests__/step3-guardrail.test.ts",
   "lib/ai-drafts/__tests__/response-disposition.test.ts",

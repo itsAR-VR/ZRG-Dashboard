@@ -216,3 +216,27 @@ This subphase must decide whether dual-track mode is in scope for 146 or deferre
 - `npm run test:ai-replay -- --thread-ids <manifest-11-ids> --concurrency 3 --judge-client-id ef824aca-a3c9-4cde-b51f-2e421ebb6b6e --out .artifacts/ai-replay/phase146-fix4-live-all11-platform.json` — pass (`evaluated=7`, `passed=7`, `failedJudge=0`, `criticalMisses=0`).
 - `npm run lint` — pass (warnings only).
 - `npm run build` — pass.
+
+## Output (2026-02-12 19:36 UTC)
+
+- Implemented replay gate hardening to prevent false-green passes on low-quality drafts:
+  - Replay final pass no longer gets rescued by objective `+30` blending when LLM quality is below threshold.
+  - Added judge-reason blocking classification in `lib/ai-replay/run-case.ts` so deterministic/objective failures remain hard-fail while style-only criticisms can be handled as non-blocking.
+- Implemented pricing objective guardrails for malformed responses:
+  - Added explicit replay objective failures for pricing-intent drafts that reference pricing terms without any dollar amount.
+  - Added explicit replay objective failures for malformed cadence lines (e.g., cadence tokens without paired amounts).
+- Calibrated overseer judge instructions (`lib/ai/prompt-registry.ts`, `lib/ai-replay/judge.ts`) to avoid failing solely on non-verbatim scripted wording.
+- Confirmed remaining root-cause data issue via live workspace inspection: FC active knowledge assets still encode `$9,500 annual` + `$791/month` and "do not say quarterly" guidance, which explains persistent monthly/annual outputs until workspace source-of-truth pricing content is changed.
+
+### Validation (2026-02-12)
+
+- `npm run test:ai-drafts` — pass.
+- `npm run lint` — pass (warnings only).
+- `npm run build` — pass.
+- Focused replay runs:
+  - `.artifacts/ai-replay/focus-pricing-2cases-ab-2026-02-12-v7.json`
+  - `.artifacts/ai-replay/focus-pricing-2cases-ab-2026-02-12-v8.json`
+  - `.artifacts/ai-replay/focus-pricing-2cases-ab-2026-02-12-v9.json`
+  - `.artifacts/ai-replay/focus-pricing-2cases-ab-2026-02-12-v10.json`
+- Larger-sample replay run:
+  - `.artifacts/ai-replay/fc-large80-live-2026-02-12-v1.json` (`evaluated=46`, `passed=2`, `failedJudge=44`, critical invariants `slot_mismatch=2`).

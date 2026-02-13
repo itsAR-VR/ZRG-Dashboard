@@ -103,6 +103,21 @@ test("detectPricingHallucinations flags cadence mismatch with same amount", () =
   assert.deepEqual(result.cadenceMismatched, [9500]);
 });
 
+test("detectPricingHallucinations does not infer cadence from unknown source cadence", () => {
+  const result = detectPricingHallucinations("It is $9,500 per year.", "Membership fee is $9,500.", null);
+  assert.deepEqual(result.hallucinated, []);
+  assert.deepEqual(result.valid, []);
+  assert.deepEqual(result.cadenceMismatched, [9500]);
+});
+
+test("detectPricingHallucinations keeps cadence scoped to each amount", () => {
+  const source = "Membership is $9,500 annually. Flexible options work out to $791 per month.";
+  const result = detectPricingHallucinations("Membership is $791 per year.", source, null);
+  assert.deepEqual(result.hallucinated, []);
+  assert.deepEqual(result.valid, []);
+  assert.deepEqual(result.cadenceMismatched, [791]);
+});
+
 test("enforcePricingAmountSafety removes unsupported dollar amounts", () => {
   const result = enforcePricingAmountSafety("Our fee is $3,000.", "Pricing: $791 per month");
   assert.equal(result.draft.includes("$3,000"), false);
@@ -127,9 +142,10 @@ test("enforcePricingAmountSafety keeps knowledgeContext pricing when serviceDesc
   assert.equal(result.addedClarifier, false);
 });
 
-test("enforcePricingAmountSafety removes cadence-mismatched amount when serviceDescription conflicts", () => {
+test("enforcePricingAmountSafety rewrites cadence-mismatched amount to service-supported cadence", () => {
   const result = enforcePricingAmountSafety("Our fee is $791 per month.", "Pricing: $791 per year", "Pricing: $791 per month");
-  assert.equal(result.draft.includes("$791"), false);
+  assert.equal(result.draft.includes("$791 per year"), true);
+  assert.equal(result.draft.includes("per month"), false);
   assert.deepEqual(result.removedAmounts, []);
   assert.deepEqual(result.removedCadenceAmounts, [791]);
   assert.equal(result.addedClarifier, false);
@@ -142,8 +158,20 @@ test("enforcePricingAmountSafety normalizes monthly plan phrasing under quarterl
     null
   );
   assert.equal(result.draft.includes("monthly payment plan"), false);
-  assert.equal(result.draft.includes("quarterly billing"), true);
+  assert.equal(result.draft.includes("$1,700 per quarter"), true);
+  assert.equal(result.addedClarifier, false);
   assert.equal(result.normalizedCadencePhrase, true);
+});
+
+test("enforcePricingAmountSafety removes orphan cadence-only pricing lines", () => {
+  const result = enforcePricingAmountSafety(
+    "The membership fee is $791 per year.\n\nMembership is /year.\n\nBest,\nChris",
+    "Pricing: $9,500 per year. Flexible options: $791 per month",
+    null,
+    { requirePricingAnswer: true }
+  );
+  assert.equal(result.draft.includes("Membership is /year"), false);
+  assert.equal(result.draft.includes("$791"), true);
 });
 
 test("enforcePricingAmountSafety adds cadence-safe clarifier when no source pricing exists", () => {

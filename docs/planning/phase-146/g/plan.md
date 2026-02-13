@@ -215,3 +215,24 @@ If accepted, split implementation into:
 
 - Repo remains a multi-agent dirty tree with overlapping AI/message edits from active phases 141-146.
 - This execution constrained code changes to replay-specific surfaces (`lib/ai-replay/*`, `scripts/live-ai-replay.ts`) and phase-146 docs to reduce cross-phase merge risk.
+
+## Output (2026-02-12 19:36 UTC)
+
+- Refined hybrid judge runtime behavior after observing over-harsh replay outcomes:
+  - Added non-blocking reason classification path so wording-only/verbatim-playbook deltas are distinguished from hard quality/safety defects.
+  - Preserved objective critical hard-fails (`slot_mismatch`, pricing malformed/no-dollar intent, fabricated link, etc.) while reducing dependence on style-only judge complaints.
+- Added stricter pricing extraction semantics in draft safety (`lib/ai-drafts.ts`) to reduce cadence leakage across adjacent amounts and to treat unknown source cadence as non-authoritative for explicit cadence claims.
+- Result: focused FC pricing runs now consistently fail/pass based on substantive defects instead of infra instability; infra/judge transport failures remain zero.
+
+## Output (2026-02-12 20:12 UTC)
+
+- Implemented pricing-language normalization for FC replay quality regressions:
+  - Preserve `$791/month` usage while rewriting monthly-billing-style phrasing to monthly-equivalent framing (`equates to $791/month ... before committing annually`).
+  - Added post-pass cleanup for duplicated wording (`/month equivalent`) and expanded monthly phrase detection (`/month` and `per month`).
+- Calibrated judge harshness handling for phrasing-only feedback:
+  - Expanded non-blocking reason classifier in replay gate (`supported phrasing`, qualification-detail friction phrasing).
+  - Added explicit overseer/judge instruction allowance for monthly-equivalent wording.
+- Validation:
+  - `npm run test:ai-drafts` ✅
+  - Focused replay (`f800...`, `0617...`): `.artifacts/ai-replay/focus-pricing-2cases-ab-2026-02-12-v14.json` → `evaluated=2`, `passed=1`, `failedJudge=1` (remaining fail = qualification-format/scheduling friction).
+  - Larger sample replay: `.artifacts/ai-replay/fc-large80-live-2026-02-12-v2.json` → `evaluated=45`, `passed=8`, `failedJudge=37`, critical invariants `slot_mismatch=2`.

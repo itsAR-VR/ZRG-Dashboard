@@ -8,7 +8,7 @@
 import { prisma } from "@/lib/prisma";
 import { triggerEnrichmentForLead, type ClayEnrichmentRequest } from "@/lib/clay-api";
 import { fetchEmailBisonLead, getCustomVariable } from "@/lib/emailbison-api";
-import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { mergeLinkedInUrl, normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { normalizePhone } from "@/lib/lead-matching";
 import { toStoredPhone } from "@/lib/phone-utils";
 
@@ -267,8 +267,9 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
   } = {};
 
   // Only update if we found new data that the lead doesn't have
-  if (normalizedLinkedIn && !lead.linkedinUrl) {
-    updateData.linkedinUrl = normalizedLinkedIn;
+  const mergedLinkedIn = mergeLinkedInUrl(lead.linkedinUrl, normalizedLinkedIn);
+  if (mergedLinkedIn && mergedLinkedIn !== lead.linkedinUrl) {
+    updateData.linkedinUrl = mergedLinkedIn;
   }
   if (normalizedPhone && !lead.phone) {
     updateData.phone = toStoredPhone(extractedPhone) || normalizedPhone;

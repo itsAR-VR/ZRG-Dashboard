@@ -82,7 +82,7 @@ function normalizeChannel(raw: string | undefined): ReplayChannelFilter | null {
 function normalizeRevisionLoopMode(raw: string | undefined): ReplayRevisionLoopMode | null {
   if (!raw) return DEFAULT_REVISION_LOOP_MODE;
   const lowered = raw.trim().toLowerCase();
-  if (lowered === "platform" || lowered === "force" || lowered === "off") return lowered;
+  if (lowered === "platform" || lowered === "force" || lowered === "off" || lowered === "overseer") return lowered;
   return null;
 }
 
@@ -142,13 +142,13 @@ export function formatReplayUsage(): string {
     "  --concurrency <n>            Concurrent case workers (default: 3)",
     "  --retries <n>                Retry attempts per failed case (default: 1)",
     "  --judge-model <name>         Override replay judge model",
-    "  --revision-loop <platform|force|off>  Replay revision loop mode (default: platform)",
+    "  --revision-loop <platform|force|off|overseer>  Replay revision loop mode (default: platform)",
     "  --overseer-mode <fresh|persisted>     Meeting overseer decision mode (default: fresh)",
     "  --judge-profile <strict|balanced|lenient>  Hybrid judge profile (default: balanced)",
     "  --judge-threshold <0..100>      Override pass threshold for hybrid judge",
     "  --adjudication-band <min,max>   Borderline band for second-pass adjudication (default: 40,80)",
     "  --no-adjudicate-borderline      Disable second-pass adjudication in borderline band",
-    "  --ab-mode <off|platform|force|all>   Run additional A/B modes (repeatable or CSV)",
+    "  --ab-mode <off|platform|force|overseer|all>   Run additional A/B modes (repeatable or CSV)",
     "  --baseline <path>            Compare results against a prior artifact",
     "  --out <path>                 Artifact output path (default: .artifacts/ai-replay/run-<timestamp>.json)",
     "  --dry-run                    Selection only; skip live generation/judging",
@@ -247,7 +247,7 @@ export function parseReplayCliArgs(argv: string[], now: Date = new Date()): {
     }
     if (token === "--revision-loop") {
       const parsed = normalizeRevisionLoopMode(argv[++i]);
-      if (!parsed) return { ok: false, error: "Invalid --revision-loop value. Use platform|force|off." };
+      if (!parsed) return { ok: false, error: "Invalid --revision-loop value. Use platform|force|off|overseer." };
       args.revisionLoopMode = parsed;
       continue;
     }
@@ -292,8 +292,8 @@ export function parseReplayCliArgs(argv: string[], now: Date = new Date()): {
       if (!raw) return { ok: false, error: "Missing value for --ab-mode." };
       const values = parseCsv(raw);
       if (values.length === 0) return { ok: false, error: "Missing value for --ab-mode." };
-      const invalid = values.find((value) => !["off", "platform", "force", "all"].includes(value.toLowerCase()));
-      if (invalid) return { ok: false, error: `Invalid --ab-mode value: ${invalid}. Use off|platform|force|all.` };
+      const invalid = values.find((value) => !["off", "platform", "force", "overseer", "all"].includes(value.toLowerCase()));
+      if (invalid) return { ok: false, error: `Invalid --ab-mode value: ${invalid}. Use off|platform|force|overseer|all.` };
       args.abModes.push(...values);
       continue;
     }

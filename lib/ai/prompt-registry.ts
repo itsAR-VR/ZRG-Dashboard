@@ -653,6 +653,12 @@ Lead scheduler link (if provided):
 Memory context (if any):
 {{memoryContext}}
 
+Service description:
+{{serviceDescription}}
+
+Knowledge context:
+{{knowledgeContext}}
+
 RULES
 - If the lead accepted a time, keep the reply short and acknowledgment-only. Do NOT ask new questions.
 - Never imply a meeting is booked unless either:
@@ -663,7 +669,15 @@ RULES
 - If the lead requests times and availability is provided (without a day/window constraint), offer exactly 2 options (verbatim) and ask which works.
 - If availability is not provided, ask for their preferred windows.
 - If the lead provided their own scheduling link, do NOT offer our times or our booking link; acknowledge their link.
+- If extraction.decision_contract_v1.needsPricingAnswer is "yes":
+  - Answer pricing directly before extra context.
+  - Use only amounts/cadence explicitly supported by service description or knowledge context.
+  - If service description and knowledge context conflict, prefer service description.
+- If pricing details are uncertain/unsupported, ask one concise pricing clarifier instead of guessing.
+- If extraction.decision_contract_v1.needsPricingAnswer is "no", avoid introducing pricing details not explicitly requested.
 - Do not request revision solely for first-person voice ("I") or a personal sign-off if the message is otherwise compliant.
+- Do not fail solely because exact scripted phrasing from playbooks/knowledge assets is not verbatim. If meaning, safety, and factual constraints are satisfied, approve.
+- Treat monthly-equivalent wording as compliant when it clearly frames annual commitment context (for example, "equates to $791/month ... before committing annually").
 - If the draft already complies, decision="approve" and final_draft=null.
 - Respect channel formatting:
   - sms: 1-2 short sentences, <= 3 parts of 160 chars max, no markdown.

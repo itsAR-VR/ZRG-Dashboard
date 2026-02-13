@@ -142,6 +142,21 @@ const SCHEDULING_KEYWORDS = [
   "this week",
 ];
 
+const PRICING_KEYWORDS = [
+  "how much",
+  "price",
+  "pricing",
+  "cost",
+  "fee",
+  "investment",
+  "monthly",
+  "annual",
+  "quarterly",
+  "per month",
+  "per year",
+  "per quarter",
+];
+
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   if (value <= 0) return 0;
@@ -261,7 +276,8 @@ export function shouldRunMeetingOverseer(opts: {
   if (!message) return false;
   if (typeof opts.offeredSlotsCount === "number" && opts.offeredSlotsCount > 0) return true;
   if (opts.sentimentTag && ["Meeting Requested", "Call Requested", "Meeting Booked"].includes(opts.sentimentTag)) return true;
-  return SCHEDULING_KEYWORDS.some((keyword) => message.includes(keyword));
+  if (SCHEDULING_KEYWORDS.some((keyword) => message.includes(keyword))) return true;
+  return PRICING_KEYWORDS.some((keyword) => message.includes(keyword));
 }
 
 export function selectOfferedSlotByPreference(opts: {
@@ -556,6 +572,8 @@ export async function runMeetingOverseerGateDecision(opts: {
   bookingLink: string | null;
   extraction: MeetingOverseerExtractDecision | null;
   memoryContext?: string | null;
+  serviceDescription?: string | null;
+  knowledgeContext?: string | null;
   metadata?: unknown;
   leadSchedulerLink: string | null;
   timeoutMs: number;
@@ -583,6 +601,8 @@ export async function runMeetingOverseerGateDecision(opts: {
   const bookingLink = (opts.bookingLink || "").trim() || "None.";
   const leadSchedulerLink = (opts.leadSchedulerLink || "").trim() || "None.";
   const memoryContext = (opts.memoryContext || "").trim() || "None.";
+  const serviceDescription = (opts.serviceDescription || "").trim() || "None.";
+  const knowledgeContext = (opts.knowledgeContext || "").trim() || "None.";
 
   const verifierModel = coerceEmailDraftVerificationModel(
     (
@@ -628,6 +648,12 @@ Lead scheduler link (if provided):
 Memory context (if any):
 {{memoryContext}}
 
+Service description:
+{{serviceDescription}}
+
+Knowledge context:
+{{knowledgeContext}}
+
 RULES
 - If the lead accepted a time, keep the reply short and acknowledgment-only. Do NOT ask new questions.
 - Never imply a meeting is booked unless either:
@@ -640,6 +666,8 @@ RULES
   - Do NOT add extra selling/community/pitch content.
 - If the lead already confirmed qualification thresholds in the latest inbound, do NOT ask repeat qualification questions.
 - When extraction.decision_contract_v1.needsPricingAnswer is "yes", the draft must answer pricing directly using only provided context (no invented numbers or cadence).
+- Never introduce numeric pricing unless that amount and cadence are explicitly supported by service description or knowledge context.
+- If a price amount is uncertain/unsupported, ask one concise pricing clarifier instead of guessing.
 - If the lead asked explicit questions (pricing, frequency, location, scheduling), ensure each explicit question is answered before extra context.
 - If extraction.decision_contract_v1.shouldBookNow is "yes" and the lead provided a day/window preference (for example, "Friday between 12-3"), choose exactly ONE best-matching slot from availability (verbatim) and send a concise booked-confirmation style reply. Do not add fallback options or extra selling content.
 - If the lead requests times and availability is provided (without a day/window constraint), offer exactly 2 options (verbatim) and ask which works.
@@ -665,6 +693,8 @@ OUTPUT JSON ONLY.`,
       bookingLink,
       memoryContext,
       leadSchedulerLink,
+      serviceDescription,
+      knowledgeContext,
     },
     schemaName: "meeting_overseer_gate",
     strict: true,
@@ -722,6 +752,8 @@ export async function runMeetingOverseerGate(opts: {
   bookingLink: string | null;
   extraction: MeetingOverseerExtractDecision | null;
   memoryContext?: string | null;
+  serviceDescription?: string | null;
+  knowledgeContext?: string | null;
   metadata?: unknown;
   leadSchedulerLink: string | null;
   timeoutMs: number;

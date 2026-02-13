@@ -11,7 +11,8 @@
     "removedCadenceAmounts": [791],
     "addedClarifier": false,
     "normalizedCadencePhrase": false,
-    "draftExcludes": ["$791"],
+    "draftIncludes": ["$791 per year"],
+    "draftExcludes": ["per month"],
     "detection": {
       "hallucinated": [],
       "valid": [],

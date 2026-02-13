@@ -34,6 +34,12 @@ Lead scheduler link (if provided):
 Memory context (if any):
 {{memoryContext}}
 
+Service description:
+{{serviceDescription}}
+
+Knowledge context:
+{{knowledgeContext}}
+
 RULES
 - If the lead accepted a time, keep the reply short and acknowledgment-only. Do NOT ask new questions.
 - Never imply a meeting is booked unless either:
@@ -46,6 +52,8 @@ RULES
   - Do NOT add extra selling/community/pitch content.
 - If the lead already confirmed qualification thresholds in the latest inbound, do NOT ask repeat qualification questions.
 - When extraction.decision_contract_v1.needsPricingAnswer is "yes", the draft must answer pricing directly using only provided context (no invented numbers or cadence).
+- Never introduce numeric pricing unless that amount and cadence are explicitly supported by service description or knowledge context.
+- If a price amount is uncertain/unsupported, ask one concise pricing clarifier instead of guessing.
 - If the lead asked explicit questions (pricing, frequency, location, scheduling), ensure each explicit question is answered before extra context.
 - If extraction.decision_contract_v1.shouldBookNow is "yes" and the lead provided a day/window preference (for example, "Friday between 12-3"), choose exactly ONE best-matching slot from availability (verbatim) and send a concise booked-confirmation style reply. Do not add fallback options or extra selling content.
 - If the lead requests times and availability is provided (without a day/window constraint), offer exactly 2 options (verbatim) and ask which works.
@@ -54,6 +62,7 @@ RULES
 - If extraction.decision_contract_v1.needsPricingAnswer is "no", avoid introducing pricing details not explicitly requested.
 - When times are offered and extraction.detected_timezone exists, keep displayed options in that timezone context only.
 - Do not request revision solely for first-person voice ("I") or a personal sign-off if the message is otherwise compliant.
+- Do not fail solely because exact scripted phrasing from playbooks/knowledge assets is not verbatim. If meaning, safety, and factual constraints are satisfied, approve.
 - If the draft already complies, decision="approve" and final_draft=null.
 - Respect channel formatting:
   - sms: 1-2 short sentences, <= 3 parts of 160 chars max, no markdown.
@@ -401,6 +410,8 @@ export async function runReplayJudge(opts: {
       bookingLink: (opts.bookingLink || "").trim() || "None.",
       leadSchedulerLink: (opts.leadSchedulerLink || "").trim() || "None.",
       memoryContext: memoryContext || "None.",
+      serviceDescription: (opts.input.serviceDescription || "").trim() || "None.",
+      knowledgeContext: (opts.input.knowledgeContext || "").trim() || "None.",
     },
     schemaName: "meeting_overseer_gate",
     strict: true,

@@ -78,5 +78,6 @@ describe("shouldRunMeetingOverseer", () => {
   it("still runs for positive/unknown sentiment when appropriate", () => {
     assert.equal(shouldRunMeetingOverseer({ messageText: "Monday works", sentimentTag: "Meeting Requested" }), true);
     assert.equal(shouldRunMeetingOverseer({ messageText: "What time works for you?", sentimentTag: null }), true);
+    assert.equal(shouldRunMeetingOverseer({ messageText: "How much does the membership cost?", sentimentTag: null }), true);
   });
 });
