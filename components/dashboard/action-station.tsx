@@ -375,21 +375,21 @@ export function ActionStation({
   useEffect(() => {
     if (!conversationId) return
 
-    let nextChannel: Channel | null = null
-    if (primaryChannel && availableChannels.includes(primaryChannel)) {
-      nextChannel = primaryChannel
-    } else if (availableChannels.includes(activeChannel)) {
-      nextChannel = activeChannel
-    } else if (availableChannels.length > 0) {
-      nextChannel = availableChannels[0]
-    } else if (channels.length > 0) {
-      nextChannel = channels[0]
-    }
-
-    if (nextChannel && nextChannel !== activeChannel) {
-      setActiveChannel(nextChannel)
-    }
-  }, [activeChannel, availableChannels, channels, conversationId, primaryChannel])
+    setActiveChannel((current) => {
+      let nextChannel: Channel | null = null
+      if (primaryChannel && availableChannels.includes(primaryChannel)) {
+        nextChannel = primaryChannel
+      } else if (availableChannels.includes(current)) {
+        nextChannel = current
+      } else if (availableChannels.length > 0) {
+        nextChannel = availableChannels[0]
+      } else if (channels.length > 0) {
+        nextChannel = channels[0]
+      }
+      if (!nextChannel || nextChannel === current) return current
+      return nextChannel
+    })
+  }, [availableChannels, channels, conversationId, primaryChannel])
 
   // Reset editable To selection when switching conversations
   useEffect(() => {
@@ -401,8 +401,8 @@ export function ActionStation({
     if (!conversation || activeChannel !== "email") return
     if (hasEditedTo) return
     const next = toOptions[0]?.email || ""
-    if (next !== toEmail) setToEmail(next)
-  }, [conversation, activeChannel, hasEditedTo, toOptions, toEmail])
+    setToEmail((current) => (next === current ? current : next))
+  }, [conversation, activeChannel, hasEditedTo, toOptions])
 
   useEffect(() => {
     conversationMessagesRef.current = conversation?.messages || []

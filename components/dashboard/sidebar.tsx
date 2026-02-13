@@ -119,6 +119,13 @@ function areCountsEqual(a: FilterCounts | null, b: FilterCounts) {
   )
 }
 
+function areChannelsEqual(a: readonly Channel[], b: readonly Channel[]) {
+  if (a.length !== b.length) return false
+  return a.every((channel) => b.includes(channel))
+}
+
+const ALL_CHANNELS_TOGGLE_VALUE: string[] = ["all"]
+
 export function Sidebar({
   activeChannels,
   onChannelsChange,
@@ -273,7 +280,7 @@ export function Sidebar({
   }, [displayBrandLogoUrl])
 
   const channelToggleValue: string[] =
-    activeChannels.length === 0 ? ["all"] : activeChannels;
+    activeChannels.length === 0 ? ALL_CHANNELS_TOGGLE_VALUE : activeChannels;
 
   return (
     <aside className="flex h-full w-[18.5rem] flex-col border-r border-border bg-card overflow-x-hidden">
@@ -436,6 +443,7 @@ export function Sidebar({
                   const nextChannels = nextValues.filter(
                     (v): v is Channel => v === "email" || v === "sms" || v === "linkedin"
                   );
+                  if (areChannelsEqual(activeChannels, nextChannels)) return;
                   onChannelsChange(nextChannels);
                 }}
                 className="flex flex-col gap-1 px-3"
