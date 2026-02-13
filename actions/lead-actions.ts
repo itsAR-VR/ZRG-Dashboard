@@ -40,6 +40,10 @@ export interface ConversationData {
     autoFollowUpEnabled: boolean;
     autoBookMeetingsEnabled: boolean;
     smsDndActive: boolean;
+    smsLastBlockedAt: string | null;
+    smsLastBlockedReason: string | null;
+    smsConsecutiveBlockedCount: number;
+    smsLastSuccessAt: string | null;
     clientId: string;  // For follow-up sequence management
     smsCampaignId: string | null;
     smsCampaignName: string | null;
@@ -424,6 +428,10 @@ export async function getConversations(clientId?: string | null): Promise<{
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
           autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
           smsDndActive: lead.smsDndActive,
+          smsLastBlockedAt: lead.smsLastBlockedAt ? lead.smsLastBlockedAt.toISOString() : null,
+          smsLastBlockedReason: lead.smsLastBlockedReason ?? null,
+          smsConsecutiveBlockedCount: lead.smsConsecutiveBlockedCount ?? 0,
+          smsLastSuccessAt: lead.smsLastSuccessAt ? lead.smsLastSuccessAt.toISOString() : null,
           clientId: lead.clientId,
           smsCampaignId: lead.smsCampaignId,
           smsCampaignName: lead.smsCampaign?.name ?? null,
@@ -818,6 +826,10 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
         autoFollowUpEnabled: true,
         autoBookMeetingsEnabled: true,
         smsDndActive: true,
+        smsLastBlockedAt: true,
+        smsLastBlockedReason: true,
+        smsConsecutiveBlockedCount: true,
+        smsLastSuccessAt: true,
         smsCampaignId: true,
         senderAccountId: true,
         linkedinUrl: true,
@@ -934,6 +946,10 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
           autoFollowUpEnabled: lead.autoFollowUpEnabled,
           autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
           smsDndActive: lead.smsDndActive,
+          smsLastBlockedAt: lead.smsLastBlockedAt ? lead.smsLastBlockedAt.toISOString() : null,
+          smsLastBlockedReason: lead.smsLastBlockedReason ?? null,
+          smsConsecutiveBlockedCount: lead.smsConsecutiveBlockedCount ?? 0,
+          smsLastSuccessAt: lead.smsLastSuccessAt ? lead.smsLastSuccessAt.toISOString() : null,
           clientId: lead.clientId,
           smsCampaignId: lead.smsCampaignId,
           smsCampaignName: lead.smsCampaign?.name ?? null,
@@ -1099,6 +1115,11 @@ function transformLeadToConversation(
       autoBookMeetingsEnabled:
         typeof lead.autoBookMeetingsEnabled === "boolean" ? lead.autoBookMeetingsEnabled : true,
       smsDndActive: Boolean(lead.smsDndActive),
+      smsLastBlockedAt: lead.smsLastBlockedAt instanceof Date ? lead.smsLastBlockedAt.toISOString() : null,
+      smsLastBlockedReason: typeof lead.smsLastBlockedReason === "string" ? lead.smsLastBlockedReason : null,
+      smsConsecutiveBlockedCount:
+        typeof lead.smsConsecutiveBlockedCount === "number" ? lead.smsConsecutiveBlockedCount : 0,
+      smsLastSuccessAt: lead.smsLastSuccessAt instanceof Date ? lead.smsLastSuccessAt.toISOString() : null,
       clientId: lead.clientId,
       smsCampaignId: lead.smsCampaignId ?? null,
       smsCampaignName: lead.smsCampaign?.name ?? null,
@@ -1424,6 +1445,10 @@ export async function getConversationsCursor(
         autoFollowUpEnabled: true,
         autoBookMeetingsEnabled: true,
         smsDndActive: true,
+        smsLastBlockedAt: true,
+        smsLastBlockedReason: true,
+        smsConsecutiveBlockedCount: true,
+        smsLastSuccessAt: true,
         clientId: true,
         smsCampaignId: true,
         emailCampaignId: true,

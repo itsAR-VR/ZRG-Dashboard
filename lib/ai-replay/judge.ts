@@ -346,10 +346,24 @@ export async function runReplayJudge(opts: {
     .join("\n\n")
     .trim();
 
+  let leadTimezone: string | null = null;
+  try {
+    leadTimezone =
+      (
+        await prisma.lead.findUnique({
+          where: { id: opts.leadId },
+          select: { timezone: true },
+        })
+      )?.timezone || null;
+  } catch {
+    // Best-effort only; replay judge should still run without DB timezone.
+  }
+
   const extraction = await runMeetingOverseerExtraction({
     clientId: opts.clientId,
     leadId: opts.leadId,
     messageText: latestInboundWithSubject || opts.input.inboundBody,
+    leadTimezone,
     offeredSlots: opts.offeredSlots,
     qualificationContext: `Lead sentiment: ${opts.input.leadSentiment || "unknown"}`,
     conversationContext: clip(opts.input.conversationTranscript || "", 7000),

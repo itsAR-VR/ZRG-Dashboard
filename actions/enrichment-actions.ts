@@ -9,9 +9,8 @@ import { prisma } from "@/lib/prisma";
 import { triggerEnrichmentForLead, type ClayEnrichmentRequest } from "@/lib/clay-api";
 import { fetchEmailBisonLead, getCustomVariable } from "@/lib/emailbison-api";
 import {
-  classifyLinkedInUrl,
-  mergeLinkedInCompanyUrl,
-  mergeLinkedInUrl,
+  extractLinkedInUrlsFromValues,
+  mergeLinkedInFields,
   normalizeLinkedInUrl,
 } from "@/lib/linkedin-utils";
 import { normalizePhone } from "@/lib/lead-matching";
@@ -243,16 +242,15 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
   const customVars = emailBisonResult.data.custom_variables;
 
   // 3. Extract custom variables
-  const extractedLinkedIn = getCustomVariable(customVars, "linkedin url");
+  const extractedLinkedIn = extractLinkedInUrlsFromValues([customVars?.map((cv) => cv.value) ?? []]);
   const extractedPhone = getCustomVariable(customVars, "phone");
   const extractedWebsite = getCustomVariable(customVars, "website");
   const extractedCompanyState = getCustomVariable(customVars, "company state");
   const extractedCompanyName = emailBisonResult.data.company || getCustomVariable(customVars, "company");
 
   // Normalize the extracted data
-  const classifiedLinkedIn = classifyLinkedInUrl(extractedLinkedIn);
-  const normalizedLinkedIn = classifiedLinkedIn.profileUrl;
-  const normalizedLinkedInCompany = classifiedLinkedIn.companyUrl;
+  const normalizedLinkedIn = extractedLinkedIn.profileUrl;
+  const normalizedLinkedInCompany = extractedLinkedIn.companyUrl;
   const normalizedPhone = normalizePhone(extractedPhone);
 
   result.fromEmailBison = {
@@ -265,8 +263,8 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
 
   // 4. Update lead in DB with extracted data
   const updateData: {
-    linkedinUrl?: string;
-    linkedinCompanyUrl?: string;
+    linkedinUrl?: string | null;
+    linkedinCompanyUrl?: string | null;
     phone?: string;
     companyName?: string;
     companyWebsite?: string;
@@ -276,16 +274,17 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
   } = {};
 
   // Only update if we found new data that the lead doesn't have
-  const mergedLinkedIn = mergeLinkedInUrl(lead.linkedinUrl, normalizedLinkedIn);
-  if (mergedLinkedIn && mergedLinkedIn !== lead.linkedinUrl) {
-    updateData.linkedinUrl = mergedLinkedIn;
+  const mergedLinkedIn = mergeLinkedInFields({
+    currentProfileUrl: lead.linkedinUrl,
+    currentCompanyUrl: lead.linkedinCompanyUrl,
+    incomingProfileUrl: normalizedLinkedIn,
+    incomingCompanyUrl: normalizedLinkedInCompany,
+  });
+  if (mergedLinkedIn.profileUrl !== (lead.linkedinUrl ?? null)) {
+    updateData.linkedinUrl = mergedLinkedIn.profileUrl;
   }
-  const mergedLinkedInCompany = mergeLinkedInCompanyUrl(
-    lead.linkedinCompanyUrl,
-    normalizedLinkedInCompany
-  );
-  if (mergedLinkedInCompany && mergedLinkedInCompany !== lead.linkedinCompanyUrl) {
-    updateData.linkedinCompanyUrl = mergedLinkedInCompany;
+  if (mergedLinkedIn.companyUrl !== (lead.linkedinCompanyUrl ?? null)) {
+    updateData.linkedinCompanyUrl = mergedLinkedIn.companyUrl;
   }
   if (normalizedPhone && !lead.phone) {
     updateData.phone = toStoredPhone(extractedPhone) || normalizedPhone;

@@ -18,6 +18,7 @@ import { getCalendarLinkForLead } from "@/actions/settings-actions"
 import { toast } from "sonner"
 import { useUser } from "@/contexts/user-context"
 import { useSearchParams } from "next/navigation"
+import { isSmsSendBlocked } from "@/lib/sms-send-audit"
 
 interface ActionStationProps {
   conversation: Conversation | null
@@ -263,6 +264,7 @@ export function ActionStation({
   const isRegenerating = isRegeneratingFast || isRegeneratingFull
   
   // Determine current channel type
+  const isSms = activeChannel === "sms"
   const isEmail = activeChannel === "email"
   const isLinkedIn = activeChannel === "linkedin"
   const conversationId = conversation?.id ?? null
@@ -284,6 +286,12 @@ export function ActionStation({
   // Check if LinkedIn is available (lead has linkedinUrl)
   const hasLinkedIn = conversation?.lead?.linkedinUrl !== undefined && conversation?.lead?.linkedinUrl !== null
   const isLinkedInSendBlocked = isLinkedIn && !hasLinkedIn
+  const isSmsSendBlockedForLead = isSmsSendBlocked({
+    smsLastBlockedAt: conversation?.lead?.smsLastBlockedAt ?? null,
+    smsLastSuccessAt: conversation?.lead?.smsLastSuccessAt ?? null,
+  })
+  const smsBlockedReason = conversation?.lead?.smsLastBlockedReason?.trim() || "Latest SMS send attempt was blocked."
+  const smsBlockedCount = Math.max(0, conversation?.lead?.smsConsecutiveBlockedCount ?? 0)
   
   // Calculate message counts per channel
   const messageCounts = useMemo(() => {
@@ -1207,6 +1215,13 @@ export function ActionStation({
         {isEmail && !lead?.email ? (
           <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
             No recipient email found for this lead. Add an email in CRM before sending.
+          </div>
+        ) : null}
+        {isSms && isSmsSendBlockedForLead ? (
+          <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            <div className="font-medium">SMS is currently blocked for this lead.</div>
+            <div className="mt-1">{smsBlockedReason}</div>
+            <div className="mt-1">Consecutive blocked sends: {smsBlockedCount}. This clears after the next successful SMS send.</div>
           </div>
         ) : null}
         {isLinkedInSendBlocked ? (

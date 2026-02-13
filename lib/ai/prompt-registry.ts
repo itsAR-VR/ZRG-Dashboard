@@ -579,19 +579,36 @@ Output JSON only:
   "rationale": string
 }`;
 
-const MEETING_OVERSEER_EXTRACT_SYSTEM_TEMPLATE = `You are a scheduling overseer. Determine if the inbound message is about scheduling and extract timing preferences.
+const MEETING_OVERSEER_EXTRACT_SYSTEM_TEMPLATE = `You are a scheduling overseer. Determine if the inbound message is about scheduling and extract timing preferences and related intent signals.
 
 Offered slots (if any):
 {{offeredSlots}}
 
+Qualification context:
+{{qualificationContext}}
+
+Business context:
+{{businessContext}}
+
+Conversation context (recent thread summary):
+{{conversationContext}}
+
+Known lead timezone hint (IANA, if available):
+{{leadTimezoneHint}}
+
+Subject lines may be included inside the message text (prefixed with "Subject:"). Treat any location or timezone clue found there with equal weight when inferring timezone and scheduling signals.
+
 Rules:
-- If NOT scheduling-related, set is_scheduling_related=false, intent="other", acceptance_specificity="none", needs_clarification=false.
+- If NOT scheduling-related, set is_scheduling_related=false, intent="other", intent_to_book=false, acceptance_specificity="none", needs_clarification=false.
 - intent:
   - accept_offer: they accept one of the offered slots or confirm a proposed time.
   - request_times: they ask for availability or meeting options.
   - propose_time: they propose a time/date not explicitly tied to offered slots.
   - reschedule: they want to move an already scheduled time.
   - decline: they explicitly say no meeting (e.g., "not interested", "no thanks", "stop", "cancel").
+- intent_to_book:
+  - true when the lead is actively trying to schedule/confirm a meeting time now.
+  - false when they are only asking general questions or not trying to pick a time yet.
 - acceptance_specificity:
   - specific: clear selection of a specific offered slot or exact time.
   - day_only: they mention a day (e.g., "Thursday works") without a time.
@@ -607,6 +624,9 @@ Rules:
 - If offered slots are "None." and they give a weekday-only preference ("Thursday works"), set intent="propose_time" and acceptance_specificity="day_only".
 - If they mention "later this week", "next week", or "sometime" without a specific day/time, set needs_clarification=true.
 - If they mention relative timing ("later this week", "next week", "tomorrow"), set relative_preference + relative_preference_detail to the exact phrase.
+- needs_clarification:
+  - true only when scheduling intent exists but the timing details are ambiguous or missing (for example, only relative phrases, no day/time, conflicting times, or timezone is unclear with no usable hint).
+  - false when the lead proposed a concrete day/date/time window or accepted an offered slot, even if qualification status is unqualified/unknown.
 - accepted_slot_index is 1-based and ONLY when confidently matching offered slots; otherwise null.
 - needs_pricing_answer:
   - true only when the lead explicitly asks about pricing/cost/fees/billing/cadence.
@@ -617,17 +637,40 @@ Rules:
 - If the message is ambiguous about scheduling intent, prefer is_scheduling_related=false and intent="other" (fail closed).
 - Do NOT invent dates/times. Use only the message and offered slots list.
 - Provide short evidence quotes.
+- detected_timezone:
+  - Prefer explicit timezone text (e.g., "PST", "America/Los_Angeles", "GMT") that appears near scheduling language in the body or subject.
+  - If a clear city/state/region is mentioned anywhere in the inbound (including the subject line), you may map it to the matching IANA timezone and use that value for detected_timezone.
+  - Past-travel statements (for example, "returned from Europe", "was in London last week") are NOT evidence of current timezone unless the lead clearly says they are currently there (for example, "I'm in London now", "I'm currently in Dubai").
+  - If both an explicit timezone token and an inferred city/location are present and they conflict, trust the explicit timezone token.
+  - When no explicit geographic/timezone signal exists, fall back to the provided lead timezone hint (unless it is "None.").
+
+- qualification_status must be one of: qualified, unqualified, unknown.
+  - Use qualification context first, then conversation context.
+  - If evidence is insufficient or conflicting, return unknown.
+  - Add concise supporting quotes to qualification_evidence.
+- time_from_body_only:
+  - true only if timing details come from the inbound message body itself.
+  - false when timing appears to come from signature/footer/contact lines or cannot be grounded.
+- confidence fields (intent_confidence, qualification_confidence, time_extraction_confidence) must be 0..1.
 
 Output JSON only:
 {
   "is_scheduling_related": boolean,
   "intent": "accept_offer" | "request_times" | "propose_time" | "reschedule" | "decline" | "other",
+  "intent_to_book": boolean,
+  "intent_confidence": number,
   "acceptance_specificity": "specific" | "day_only" | "generic" | "none",
   "accepted_slot_index": number | null,
   "preferred_day_of_week": string | null,
   "preferred_time_of_day": string | null,
   "relative_preference": string | null,
   "relative_preference_detail": string | null,
+  "qualification_status": "qualified" | "unqualified" | "unknown",
+  "qualification_confidence": number,
+  "qualification_evidence": string[],
+  "time_from_body_only": boolean,
+  "detected_timezone": string | null,
+  "time_extraction_confidence": number,
   "needs_pricing_answer": boolean,
   "needs_community_details": boolean,
   "needs_clarification": boolean,
@@ -673,19 +716,30 @@ RULES
   - the lead explicitly confirmed/accepted a time, or
   - extraction.decision_contract_v1.shouldBookNow is "yes" and the selected slot comes directly from provided availability.
 - If extraction.needs_clarification is true, ask ONE concise clarifying question.
+- ONE question means: ask for exactly one missing detail (do not combine two asks with "and" or ask for backups).
+- If the lead proposed a specific day/window (for example, "Tuesday after 10am") and availability is not provided, your ONE clarifying question should pin down an exact start time (and timezone only if truly unknown). Do not introduce qualification gating questions in the same message.
 - If extraction.decision_contract_v1.shouldBookNow is "yes" and the lead provided a day/window preference (for example, "Friday between 12-3"), choose exactly ONE best-matching slot from availability (verbatim) and send a concise booked-confirmation style reply. Do not add fallback options or extra selling content.
 - If the lead requests times and availability is provided (without a day/window constraint), offer exactly 2 options (verbatim) and ask which works.
 - If availability is not provided, ask for their preferred windows.
 - If the lead provided their own scheduling link, do NOT offer our times or our booking link; acknowledge their link.
+- If extraction.decision_contract_v1.responseMode is "info_then_booking" and extraction.decision_contract_v1.hasBookingIntent is "no":
+  - Focus on answering the lead's questions first.
+  - Do NOT require offering availability/time options unless the lead explicitly asked for times.
+  - Including the booking link as an optional next step is acceptable.
 - If extraction.decision_contract_v1.needsPricingAnswer is "yes":
   - Answer pricing directly before extra context.
-  - Use only amounts/cadence explicitly supported by service description or knowledge context.
+  - Use only amounts/cadence explicitly supported by service description OR knowledge context.
+  - Absence in one source is NOT a conflict. Conflict means both sources explicitly provide different amounts/cadences for the same offer.
+  - If service description is silent on pricing but knowledge context supports it, that pricing is allowed.
   - If service description and knowledge context conflict, prefer service description.
 - If pricing details are uncertain/unsupported, ask one concise pricing clarifier instead of guessing.
+- If extraction.decision_contract_v1.needsCommunityDetails is "yes":
+  - Answer the lead's explicit community/logistics questions (what's included, frequency/attendance expectations, location/venue) briefly (1-2 sentences) using knowledge context when available.
+- If the lead explicitly asks whether being below a revenue/fit threshold is a problem, address it in one sentence (state the baseline from context). Do not turn it into an additional question when extraction.needs_clarification is true.
 - If extraction.decision_contract_v1.needsPricingAnswer is "no", avoid introducing pricing details not explicitly requested.
 - Do not request revision solely for first-person voice ("I") or a personal sign-off if the message is otherwise compliant.
 - Do not fail solely because exact scripted phrasing from playbooks/knowledge assets is not verbatim. If meaning, safety, and factual constraints are satisfied, approve.
-- Treat monthly-equivalent wording as compliant when it clearly frames annual commitment context (for example, "equates to $791/month ... before committing annually").
+- Treat monthly-equivalent wording as compliant when it clearly frames annual commitment context (for example, "works out to $791 per month ... before committing annually" or "equates to $791/month ... before committing annually").
 - If the draft already complies, decision="approve" and final_draft=null.
 - Respect channel formatting:
   - sms: 1-2 short sentences, <= 3 parts of 160 chars max, no markdown.

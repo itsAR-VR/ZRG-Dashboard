@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyLinkedInUrl, mergeLinkedInCompanyUrl, mergeLinkedInUrl } from "@/lib/linkedin-utils";
+import {
+  classifyLinkedInUrl,
+  extractLinkedInUrlsFromValues,
+  mergeLinkedInCompanyUrl,
+  mergeLinkedInFields,
+  mergeLinkedInUrl,
+} from "@/lib/linkedin-utils";
 
 test("classifyLinkedInUrl classifies profile URLs", () => {
   assert.deepEqual(classifyLinkedInUrl("https://www.linkedin.com/in/jane-doe/?trk=foo"), {
@@ -64,4 +70,34 @@ test("mergeLinkedInCompanyUrl keeps existing company URL", () => {
     ),
     "https://linkedin.com/company/existing-company"
   );
+});
+
+test("mergeLinkedInFields repairs company URL stored in profile field when incoming profile arrives", () => {
+  const merged = mergeLinkedInFields({
+    currentProfileUrl: "https://linkedin.com/company/acme",
+    currentCompanyUrl: null,
+    incomingProfileUrl: "https://linkedin.com/in/jane-doe",
+  });
+
+  assert.deepEqual(merged, {
+    profileUrl: "https://linkedin.com/in/jane-doe",
+    companyUrl: "https://linkedin.com/company/acme",
+  });
+});
+
+test("extractLinkedInUrlsFromValues finds both profile and company URLs across mixed payload values", () => {
+  const extracted = extractLinkedInUrlsFromValues([
+    { Company: "Acme Inc" },
+    {
+      customData: {
+        profile: "https://www.linkedin.com/in/jane-doe/?trk=foo",
+        company: "https://linkedin.com/company/acme-inc/about",
+      },
+    },
+  ]);
+
+  assert.deepEqual(extracted, {
+    profileUrl: "https://linkedin.com/in/jane-doe",
+    companyUrl: "https://linkedin.com/company/acme-inc",
+  });
 });

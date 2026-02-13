@@ -4,7 +4,7 @@ import { BackgroundJobType } from "@prisma/client";
 import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
 import { findOrCreateLead } from "@/lib/lead-matching";
 import { normalizeSmsCampaignLabel } from "@/lib/sms-campaign";
-import { classifyLinkedInUrl } from "@/lib/linkedin-utils";
+import { extractLinkedInUrlsFromValues } from "@/lib/linkedin-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { enqueueBackgroundJob, buildJobDedupeKey } from "@/lib/background-jobs/enqueue";
 import { computeGhlSmsDedupeKey } from "@/lib/webhook-dedupe";
@@ -35,23 +35,6 @@ function coerceToLabelString(value: unknown): string | null {
         if (s) return s;
       }
     }
-  }
-
-  return null;
-}
-
-function getCustomDataValue(
-  customData: GHLWebhookPayload["customData"] | undefined,
-  candidateKeys: string[]
-): string | null {
-  if (!customData) return null;
-  const candidates = new Set(candidateKeys.map((key) => normalizeLooseKey(key)));
-
-  for (const [rawKey, rawValue] of Object.entries(customData)) {
-    if (!rawKey) continue;
-    if (!candidates.has(normalizeLooseKey(rawKey))) continue;
-    const value = coerceToLabelString(rawValue);
-    if (value) return value;
   }
 
   return null;
@@ -248,20 +231,7 @@ export async function POST(request: NextRequest) {
     const lastName = payload.last_name || payload.customData?.["Last Name"] || null;
     const email = payload.email || payload.customData?.Email || null;
     const phone = payload.phone || payload.customData?.["Phone Number"] || null;
-    const linkedInUrlRaw = getCustomDataValue(payload.customData, [
-      "linkedin",
-      "linkedin url",
-      "linkedin_url",
-      "linkedinurl",
-      "linkedin profile",
-      "company",
-      "company linkedin",
-      "company_linkedin",
-      "companylinkedin",
-      "company profile",
-      "profile",
-    ]);
-    const classifiedLinkedIn = classifyLinkedInUrl(linkedInUrlRaw);
+    const classifiedLinkedIn = extractLinkedInUrlsFromValues([payload.customData, payload.triggerData]);
 
     // Resolve SMS campaign (sub-client label) if present.
     const extractedSubClientLabel = extractSmsSubClientLabelFromWebhookPayload(payload);

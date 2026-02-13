@@ -5,6 +5,7 @@ import dynamic from "next/dynamic"
 import { useSearchParams } from "next/navigation"
 import { AlertTriangle, X } from "lucide-react"
 import { Sidebar, type ViewType } from "@/components/dashboard/sidebar"
+import { DashboardErrorBoundary } from "@/components/dashboard/dashboard-error-boundary"
 import { Button } from "@/components/ui/button"
 import { QueryProvider } from "@/components/providers/query-provider"
 import { UserProvider } from "@/contexts/user-context"
@@ -199,6 +200,12 @@ function DashboardPageInner() {
 
   const handleWorkspaceChange = (nextWorkspace: string | null) => {
     setWorkspaceSelectionMode("manual")
+    // Manual workspace switches should not "pin" a previously deep-linked lead selection.
+    // If a leadId is present in the URL, we keep it; otherwise clear selection so the inbox
+    // can pick a valid conversation for the new workspace.
+    if (!leadIdParam) {
+      setSelectedLeadId(null)
+    }
     setActiveWorkspace(nextWorkspace)
   }
 
@@ -346,18 +353,32 @@ function DashboardPageInner() {
   }, [activeView, prefetchView])
 
   const renderContent = (view: ViewType, isActiveView: boolean) => {
+    const workspaceKey = activeWorkspace ?? "all"
     switch (view) {
       case "followups":
-        return <FollowUpsPane activeWorkspace={activeWorkspace} />
+        return <FollowUpsPane key={`followups:${workspaceKey}`} activeWorkspace={activeWorkspace} />
       case "crm":
-        return <CRMPane activeWorkspace={activeWorkspace} onOpenInInbox={handleOpenInInbox} />
+        return (
+          <CRMPane
+            key={`crm:${workspaceKey}`}
+            activeWorkspace={activeWorkspace}
+            onOpenInInbox={handleOpenInInbox}
+          />
+        )
       case "analytics":
-        return <AnalyticsPane activeWorkspace={activeWorkspace} isActive={isActiveView} />
+        return (
+          <AnalyticsPane
+            key={`analytics:${workspaceKey}`}
+            activeWorkspace={activeWorkspace}
+            isActive={isActiveView}
+          />
+        )
       case "insights":
-        return <InsightsPane activeWorkspace={activeWorkspace} />
+        return <InsightsPane key={`insights:${workspaceKey}`} activeWorkspace={activeWorkspace} />
       case "settings":
         return (
           <SettingsPane
+            key={`settings:${workspaceKey}`}
             activeWorkspace={activeWorkspace}
             settingsTab={settingsTab}
             onSettingsTabChange={handleSettingsTabChange}
@@ -368,6 +389,7 @@ function DashboardPageInner() {
       default:
         return (
           <InboxView
+            key={`inbox:${workspaceKey}`}
             isActive={isActiveView}
             activeChannels={activeChannels}
             activeFilter={activeFilter}
@@ -396,79 +418,90 @@ function DashboardPageInner() {
   }
 
   return (
-    <QueryProvider>
-      <UserProvider>
-        <div className="flex h-screen bg-background">
-          <a
-            href="#main-content"
-            className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:ring-2 focus:ring-ring"
-          >
-            Skip to main content
-          </a>
-          <Sidebar
-            activeChannels={activeChannels}
-            onChannelsChange={setActiveChannels}
-            activeFilter={activeFilter}
-            onFilterChange={setActiveFilter}
-            activeView={activeView}
-            onViewChange={handleViewChange}
-            onViewIntent={handleViewIntent}
-            activeWorkspace={activeWorkspace}
-            onWorkspaceChange={handleWorkspaceChange}
-            workspaces={workspaces}
-          />
-          <div className="flex flex-1 flex-col overflow-hidden">
-            {workspaceError && (
-              <div className="flex items-center gap-3 bg-destructive/10 border-b border-destructive/20 px-4 py-2.5 text-destructive">
-                <AlertTriangle className="h-4 w-4 shrink-0" />
-                <span className="flex-1 text-sm">{workspaceError}</span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-destructive/40 text-destructive hover:bg-destructive/10"
-                  onClick={() => setWorkspaceFetchNonce((n) => n + 1)}
-                >
-                  Retry
-                </Button>
-                <button
-                  onClick={() => setWorkspaceError(null)}
-                  className="p-1 hover:bg-destructive/20 rounded"
-                  aria-label="Dismiss"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            )}
-            {showUnipileBanner && (
-              <div className="flex items-center gap-3 bg-amber-500/10 border-b border-amber-500/20 px-4 py-2.5 text-amber-700 dark:text-amber-400">
-                <AlertTriangle className="h-4 w-4 shrink-0" />
-                <span className="flex-1 text-sm">
-                  LinkedIn integration disconnected. Follow-ups via LinkedIn are paused until reconnected.
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-amber-500/50 text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
-                  onClick={handleNavigateToIntegrations}
-                >
-                  Reconnect
-                </Button>
-                <button
-                  onClick={() => setDismissedUnipileBanner(activeWorkspace)}
-                  className="p-1 hover:bg-amber-500/20 rounded"
-                  aria-label="Dismiss"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            )}
-            <main id="main-content" className="flex flex-1 overflow-hidden">
-              <section className={cn("h-full min-h-0 flex-1")}>{renderContent(activeView, true)}</section>
-            </main>
+    <DashboardErrorBoundary
+      scope="DashboardShell"
+      context={{
+        activeView,
+        activeWorkspace,
+      }}
+    >
+      <QueryProvider>
+        <UserProvider>
+          <div className="flex h-screen bg-background">
+            <a
+              href="#main-content"
+              className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:ring-2 focus:ring-ring"
+            >
+              Skip to main content
+            </a>
+            <Sidebar
+              activeChannels={activeChannels}
+              onChannelsChange={setActiveChannels}
+              activeFilter={activeFilter}
+              onFilterChange={setActiveFilter}
+              activeView={activeView}
+              onViewChange={handleViewChange}
+              onViewIntent={handleViewIntent}
+              activeWorkspace={activeWorkspace}
+              onWorkspaceChange={handleWorkspaceChange}
+              workspaces={workspaces}
+            />
+            <div className="flex flex-1 flex-col overflow-hidden">
+              {workspaceError && (
+                <div className="flex items-center gap-3 bg-destructive/10 border-b border-destructive/20 px-4 py-2.5 text-destructive">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span className="flex-1 text-sm">{workspaceError}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="border-destructive/40 text-destructive hover:bg-destructive/10"
+                    onClick={() => setWorkspaceFetchNonce((n) => n + 1)}
+                  >
+                    Retry
+                  </Button>
+                  <button
+                    onClick={() => setWorkspaceError(null)}
+                    className="p-1 hover:bg-destructive/20 rounded"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+              {showUnipileBanner && (
+                <div className="flex items-center gap-3 bg-amber-500/10 border-b border-amber-500/20 px-4 py-2.5 text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span className="flex-1 text-sm">
+                    LinkedIn integration disconnected. Follow-ups via LinkedIn are paused until
+                    reconnected.
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="border-amber-500/50 text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
+                    onClick={handleNavigateToIntegrations}
+                  >
+                    Reconnect
+                  </Button>
+                  <button
+                    onClick={() => setDismissedUnipileBanner(activeWorkspace)}
+                    className="p-1 hover:bg-amber-500/20 rounded"
+                    aria-label="Dismiss"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+              <main id="main-content" className="flex flex-1 overflow-hidden">
+                <section className={cn("h-full min-h-0 flex-1")}>
+                  {renderContent(activeView, true)}
+                </section>
+              </main>
+            </div>
           </div>
-        </div>
-      </UserProvider>
-    </QueryProvider>
+        </UserProvider>
+      </QueryProvider>
+    </DashboardErrorBoundary>
   )
 }
 

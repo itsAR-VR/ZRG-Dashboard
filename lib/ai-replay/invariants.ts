@@ -146,20 +146,25 @@ export function evaluateReplayInvariantFailures(input: EvaluateReplayInvariantsI
     }
   }
 
-  const knownLink = normalizeText(input.bookingLink || input.leadSchedulerLink || "");
+  const knownLinks = [input.bookingLink, input.leadSchedulerLink]
+    .map((value) => normalizeText(value))
+    .filter(Boolean);
   const inboundUrls = extractUrls(inbound);
   const draftUrls = extractUrls(draft);
   const draftMentionsLink =
     draftUrls.length > 0 || /\b(link|calendar|calendly|book here|schedule here|scheduling link)\b/i.test(draft);
 
-  if (draftMentionsLink && !knownLink && inboundUrls.length === 0) {
+  if (draftMentionsLink && knownLinks.length === 0 && inboundUrls.length === 0) {
     failures.push({
       code: "fabricated_link",
       message: "Draft references a scheduling link that is not present in context.",
       severity: "critical",
     });
-  } else if (draftUrls.length > 0 && knownLink) {
-    const hasUnknownUrl = draftUrls.some((url) => !normalizeText(url).includes(knownLink));
+  } else if (draftUrls.length > 0 && knownLinks.length > 0) {
+    const hasUnknownUrl = draftUrls.some((url) => {
+      const normalizedUrl = normalizeText(url);
+      return !knownLinks.some((knownLink) => normalizedUrl.includes(knownLink));
+    });
     if (hasUnknownUrl) {
       failures.push({
         code: "fabricated_link",

@@ -135,6 +135,95 @@ export function mergeLinkedInCompanyUrl(
   return classifyLinkedInUrl(incomingUrl).companyUrl;
 }
 
+type LinkedInFieldMergeInput = {
+  currentProfileUrl?: string | null;
+  currentCompanyUrl?: string | null;
+  incomingUrl?: string | null;
+  incomingProfileUrl?: string | null;
+  incomingCompanyUrl?: string | null;
+};
+
+/**
+ * Merge profile/company LinkedIn fields with repair semantics.
+ *
+ * Repair rule:
+ * - If the current profile field actually contains a company URL, preserve it in company field.
+ * - If a valid incoming profile URL arrives later, it replaces the invalid company value in profile field.
+ */
+export function mergeLinkedInFields(input: LinkedInFieldMergeInput): {
+  profileUrl: string | null;
+  companyUrl: string | null;
+} {
+  const currentProfile = classifyLinkedInUrl(input.currentProfileUrl);
+  const currentCompany = classifyLinkedInUrl(input.currentCompanyUrl);
+  const incomingAny = classifyLinkedInUrl(input.incomingUrl);
+  const incomingProfile = classifyLinkedInUrl(input.incomingProfileUrl);
+  const incomingCompany = classifyLinkedInUrl(input.incomingCompanyUrl);
+
+  const mergedProfile = currentProfile.profileUrl || incomingProfile.profileUrl || incomingAny.profileUrl;
+  const mergedCompany =
+    currentCompany.companyUrl ||
+    currentProfile.companyUrl ||
+    incomingCompany.companyUrl ||
+    incomingProfile.companyUrl ||
+    incomingAny.companyUrl;
+
+  return {
+    profileUrl: mergedProfile || null,
+    companyUrl: mergedCompany || null,
+  };
+}
+
+function collectLinkedInValueCandidates(value: unknown, out: string[], depth: number): void {
+  if (depth > 3 || value == null) return;
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) out.push(trimmed);
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectLinkedInValueCandidates(item, out, depth + 1);
+    }
+    return;
+  }
+
+  if (typeof value === "object") {
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      collectLinkedInValueCandidates(nested, out, depth + 1);
+    }
+  }
+}
+
+/**
+ * Scan arbitrary values and pick first profile/company LinkedIn URLs found.
+ * Useful for webhook/custom-variable payloads where key names are inconsistent.
+ */
+export function extractLinkedInUrlsFromValues(values: unknown[]): {
+  profileUrl: string | null;
+  companyUrl: string | null;
+} {
+  const candidates: string[] = [];
+  for (const value of values) {
+    collectLinkedInValueCandidates(value, candidates, 0);
+  }
+
+  let profileUrl: string | null = null;
+  let companyUrl: string | null = null;
+
+  for (const candidate of candidates) {
+    if (!candidate.toLowerCase().includes("linkedin")) continue;
+    const classified = classifyLinkedInUrl(candidate);
+    if (!profileUrl && classified.profileUrl) profileUrl = classified.profileUrl;
+    if (!companyUrl && classified.companyUrl) companyUrl = classified.companyUrl;
+    if (profileUrl && companyUrl) break;
+  }
+
+  return { profileUrl, companyUrl };
+}
+
 /**
  * Normalize any LinkedIn URL (profile or company) to a consistent format.
  * Preserved for compatibility in places that intentionally need company links.

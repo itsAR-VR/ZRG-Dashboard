@@ -536,6 +536,10 @@ model Lead {
   // SMS deliverability flags
   smsDndActive Boolean @default(false) // GHL indicates contact is in SMS DND window
   smsDndUpdatedAt DateTime? // Last time we detected/cleared SMS DND
+  smsLastBlockedAt DateTime? // Last time an SMS send attempt was blocked
+  smsLastBlockedReason String? @db.Text // Reason for the most recent blocked SMS send attempt
+  smsConsecutiveBlockedCount Int @default(0) // Consecutive blocked SMS sends since the last successful SMS send
+  smsLastSuccessAt DateTime? // Last successful outbound SMS send time
   // Meeting booking settings
   autoBookMeetingsEnabled Boolean   @default(true)   // Lead-level auto-book toggle
   offeredSlots            String?   @db.Text         // JSON array of offered time slots
@@ -612,6 +616,8 @@ model Lead {
   @@index([phone])          // For cross-channel matching
   @@index([linkedinUrl])    // For LinkedIn profile matching
   @@index([linkedinCompanyUrl]) // For LinkedIn company URL diagnostics/backfill
+  @@index([smsLastBlockedAt])
+  @@index([smsLastSuccessAt])
   @@index([industry])
   @@index([employeeHeadcount])
   @@index([enrichmentStatus]) // For batch enrichment queries

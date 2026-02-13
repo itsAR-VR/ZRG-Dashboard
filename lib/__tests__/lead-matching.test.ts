@@ -111,4 +111,31 @@ describe("findOrCreateLead", () => {
     assert.equal(result.lead.linkedinUrl, "https://linkedin.com/in/morgan-lee");
     assert.equal(result.lead.linkedinCompanyUrl, "https://linkedin.com/company/example-corp");
   });
+
+  it("repairs legacy company URL in linkedinUrl when a profile URL is discovered", async () => {
+    const client = await ensureClient();
+
+    const existing = await prisma.lead.create({
+      data: {
+        clientId: client.id,
+        email: "legacy@example.com",
+        firstName: "Legacy",
+        lastName: "Lead",
+        linkedinUrl: "https://linkedin.com/company/legacy-corp",
+        status: "new",
+        autoReplyEnabled: false,
+        autoFollowUpEnabled: false,
+      },
+    });
+
+    const result = await findOrCreateLead(
+      client.id,
+      { email: "legacy@example.com", firstName: "Legacy", lastName: "Lead" },
+      { linkedinUrl: "https://linkedin.com/in/legacy-lead" }
+    );
+
+    assert.equal(result.lead.id, existing.id);
+    assert.equal(result.lead.linkedinUrl, "https://linkedin.com/in/legacy-lead");
+    assert.equal(result.lead.linkedinCompanyUrl, "https://linkedin.com/company/legacy-corp");
+  });
 });

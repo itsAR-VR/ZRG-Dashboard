@@ -13,7 +13,6 @@ import { ensureGhlContactIdForLead, resolveGhlContactIdForLead } from "@/lib/ghl
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
 import { sendSmsSystem } from "@/lib/system-sender";
-import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { syncEmailConversationHistorySystem, syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { getAccessibleClientIdsForUser, requireAuthUser, requireClientAdminAccess } from "@/lib/workspace-access";
 import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
@@ -31,7 +30,7 @@ import { recordOutboundForBookingProgress } from "@/lib/booking-progress";
 import { coerceSmsDraftPartsOrThrow } from "@/lib/sms-multipart";
 import { BackgroundJobType } from "@prisma/client";
 import { enqueueBackgroundJob } from "@/lib/background-jobs/enqueue";
-import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { mergeLinkedInFields, normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 
 const AI_ROUTE_SETTINGS_PATH = "Settings -> Admin -> Admin Dashboard";
 const DRAFT_GENERATION_DISABLED_ERROR =
@@ -233,7 +232,14 @@ export async function reanalyzeLeadSentiment(leadId: string): Promise<{
 interface SendMessageResult {
   success: boolean;
   messageId?: string;
-  errorCode?: "sms_dnd" | "invalid_country_code" | "draft_already_sending" | "send_outcome_unknown";
+  errorCode?:
+    | "sms_dnd"
+    | "invalid_country_code"
+    | "phone_normalization_failed"
+    | "missing_phone"
+    | "ghl_not_configured"
+    | "draft_already_sending"
+    | "send_outcome_unknown";
   error?: string;
 }
 
@@ -989,7 +995,7 @@ export async function sendLinkedInMessage(
     }
 
     // Get the lead with their client (for Unipile account)
-    const lead = await prisma.lead.findUnique({
+    let lead = await prisma.lead.findUnique({
       where: { id: leadId },
       include: {
         client: {
@@ -1009,13 +1015,41 @@ export async function sendLinkedInMessage(
       return { success: false, error: "Lead is blacklisted" };
     }
 
+    const repairedLinkedIn = mergeLinkedInFields({
+      currentProfileUrl: lead.linkedinUrl,
+      currentCompanyUrl: lead.linkedinCompanyUrl,
+    });
+    if (
+      repairedLinkedIn.profileUrl !== (lead.linkedinUrl ?? null) ||
+      repairedLinkedIn.companyUrl !== (lead.linkedinCompanyUrl ?? null)
+    ) {
+      lead = await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          linkedinUrl: repairedLinkedIn.profileUrl,
+          linkedinCompanyUrl: repairedLinkedIn.companyUrl,
+        },
+        include: {
+          client: {
+            select: {
+              id: true,
+              unipileAccountId: true,
+            },
+          },
+        },
+      });
+    }
+
     if (!lead.linkedinUrl && !lead.linkedinId) {
       return { success: false, error: "Lead has no LinkedIn profile linked" };
     }
 
     // Require linkedinUrl for Unipile API - linkedinId alone is not sufficient
     if (!lead.linkedinUrl) {
-      return { success: false, error: "Lead has linkedinId but no LinkedIn URL - cannot send message" };
+      return {
+        success: false,
+        error: "LinkedIn send requires a personal /in/ profile URL. This lead currently has no usable profile URL.",
+      };
     }
 
     if (!lead.client.unipileAccountId) {
@@ -1026,7 +1060,7 @@ export async function sendLinkedInMessage(
     if (!linkedinUrl) {
       return {
         success: false,
-        error: "LinkedIn URL is not a personal profile - a /in/ profile URL is required",
+        error: "LinkedIn send requires a personal /in/ profile URL. Company pages cannot be messaged.",
       };
     }
 

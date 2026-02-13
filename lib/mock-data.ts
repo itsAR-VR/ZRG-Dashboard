@@ -59,6 +59,10 @@ export interface Lead {
   sentimentTag?: string | null
   // SMS deliverability flags
   smsDndActive?: boolean
+  smsLastBlockedAt?: string | Date | null
+  smsLastBlockedReason?: string | null
+  smsConsecutiveBlockedCount?: number
+  smsLastSuccessAt?: string | Date | null
   // Lead scoring (Phase 33)
   overallScore?: number | null
   scoredAt?: Date | null

@@ -8,8 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { verifyClayWebhookSignature } from "@/lib/clay-api";
 import {
   classifyLinkedInUrl,
-  mergeLinkedInCompanyUrl,
-  mergeLinkedInUrl,
+  mergeLinkedInFields,
   normalizeLinkedInUrl,
 } from "@/lib/linkedin-utils";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
@@ -183,16 +182,17 @@ export async function POST(request: NextRequest) {
     if (effectiveStatus === "success") {
       if (payload.enrichmentType === "linkedin" && payload.linkedinUrl) {
         const classified = classifyLinkedInUrl(payload.linkedinUrl);
-        const mergedLinkedIn = mergeLinkedInUrl(lead.linkedinUrl, classified.profileUrl);
-        const mergedLinkedInCompany = mergeLinkedInCompanyUrl(
-          lead.linkedinCompanyUrl,
-          classified.companyUrl
-        );
-        if (mergedLinkedIn && mergedLinkedIn !== lead.linkedinUrl) {
-          updateData.linkedinUrl = mergedLinkedIn;
+        const mergedLinkedIn = mergeLinkedInFields({
+          currentProfileUrl: lead.linkedinUrl,
+          currentCompanyUrl: lead.linkedinCompanyUrl,
+          incomingProfileUrl: classified.profileUrl,
+          incomingCompanyUrl: classified.companyUrl,
+        });
+        if (mergedLinkedIn.profileUrl !== (lead.linkedinUrl ?? null)) {
+          updateData.linkedinUrl = mergedLinkedIn.profileUrl;
         }
-        if (mergedLinkedInCompany && mergedLinkedInCompany !== lead.linkedinCompanyUrl) {
-          updateData.linkedinCompanyUrl = mergedLinkedInCompany;
+        if (mergedLinkedIn.companyUrl !== (lead.linkedinCompanyUrl ?? null)) {
+          updateData.linkedinCompanyUrl = mergedLinkedIn.companyUrl;
         }
         if (payload.linkedinId && !lead.linkedinId) {
           updateData.linkedinId = payload.linkedinId;

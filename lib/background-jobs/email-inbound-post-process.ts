@@ -16,8 +16,8 @@ import {
 } from "@/lib/signature-extractor";
 import {
   classifyLinkedInUrl,
-  mergeLinkedInCompanyUrl,
-  mergeLinkedInUrl,
+  extractLinkedInUrlsFromValues,
+  mergeLinkedInFields,
   normalizeLinkedInUrl,
 } from "@/lib/linkedin-utils";
 import { normalizePhone } from "@/lib/lead-matching";
@@ -217,16 +217,18 @@ function buildLinkedInFieldUpdates(opts: {
   currentCompanyUrl: string | null | undefined;
   incomingUrl: string | null | undefined;
 }): { linkedinUrl?: string; linkedinCompanyUrl?: string } {
-  const classified = classifyLinkedInUrl(opts.incomingUrl);
-  const mergedProfile = mergeLinkedInUrl(opts.currentProfileUrl, classified.profileUrl);
-  const mergedCompany = mergeLinkedInCompanyUrl(opts.currentCompanyUrl, classified.companyUrl);
+  const merged = mergeLinkedInFields({
+    currentProfileUrl: opts.currentProfileUrl,
+    currentCompanyUrl: opts.currentCompanyUrl,
+    incomingUrl: opts.incomingUrl,
+  });
   const updates: { linkedinUrl?: string; linkedinCompanyUrl?: string } = {};
 
-  if (mergedProfile && mergedProfile !== opts.currentProfileUrl) {
-    updates.linkedinUrl = mergedProfile;
+  if (merged.profileUrl !== (opts.currentProfileUrl ?? null)) {
+    updates.linkedinUrl = merged.profileUrl ?? undefined;
   }
-  if (mergedCompany && mergedCompany !== opts.currentCompanyUrl) {
-    updates.linkedinCompanyUrl = mergedCompany;
+  if (merged.companyUrl !== (opts.currentCompanyUrl ?? null)) {
+    updates.linkedinCompanyUrl = merged.companyUrl ?? undefined;
   }
 
   return updates;
@@ -253,29 +255,20 @@ async function enrichLeadFromEmailBison(
     const leadData = leadDetails.data;
     const customVars = leadData.custom_variables;
 
-    // Extract LinkedIn URL from custom variables
-    const linkedinUrlRaw =
-      getCustomVariable(customVars, "linkedin url") ||
-      getCustomVariable(customVars, "linkedin_url") ||
-      getCustomVariable(customVars, "linkedinurl") ||
-      getCustomVariable(customVars, "linkedin") ||
-      getCustomVariable(customVars, "linkedin profile") ||
-      getCustomVariable(customVars, "profile") ||
-      getCustomVariable(customVars, "company") ||
-      getCustomVariable(customVars, "company linkedin") ||
-      getCustomVariable(customVars, "company_linkedin");
-
-    if (linkedinUrlRaw) {
-      const classified = classifyLinkedInUrl(linkedinUrlRaw);
-      if (classified.profileUrl) {
-        result.linkedinUrl = classified.profileUrl;
-        result.clayData.linkedInProfile = classified.profileUrl;
-        console.log(`[EmailBison Enrichment] Found LinkedIn profile URL for lead ${leadId}: ${classified.profileUrl}`);
-      }
-      if (classified.companyUrl) {
-        result.linkedinCompanyUrl = classified.companyUrl;
-        console.log(`[EmailBison Enrichment] Found LinkedIn company URL for lead ${leadId}: ${classified.companyUrl}`);
-      }
+    // Extract LinkedIn profile/company URLs by scanning all custom variable values.
+    const extractedLinkedIn = extractLinkedInUrlsFromValues([customVars?.map((cv) => cv.value) ?? []]);
+    if (extractedLinkedIn.profileUrl) {
+      result.linkedinUrl = extractedLinkedIn.profileUrl;
+      result.clayData.linkedInProfile = extractedLinkedIn.profileUrl;
+      console.log(
+        `[EmailBison Enrichment] Found LinkedIn profile URL for lead ${leadId}: ${extractedLinkedIn.profileUrl}`
+      );
+    }
+    if (extractedLinkedIn.companyUrl) {
+      result.linkedinCompanyUrl = extractedLinkedIn.companyUrl;
+      console.log(
+        `[EmailBison Enrichment] Found LinkedIn company URL for lead ${leadId}: ${extractedLinkedIn.companyUrl}`
+      );
     }
 
     // Extract phone from custom variables

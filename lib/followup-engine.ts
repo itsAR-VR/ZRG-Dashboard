@@ -23,8 +23,7 @@ import {
 } from "@/lib/booking";
 import { sendSlackNotification } from "@/lib/slack-notifications";
 import { isWorkspaceFollowUpsPaused } from "@/lib/workspace-followups-pause";
-import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
-import { resolveGhlContactIdForLead } from "@/lib/ghl-contacts";
+import { triggerEnrichmentForLead } from "@/lib/clay-api";
 import { getBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
 import type { AvailabilitySource, Prisma } from "@prisma/client";
@@ -38,7 +37,7 @@ import {
 } from "@/lib/followup-template";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 import { sendEmailReplySystem } from "@/lib/email-send";
-import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { mergeLinkedInFields, normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import {
   runMeetingOverseerExtraction,
   selectOfferedSlotByPreference,
@@ -913,6 +912,46 @@ async function ensureFollowUpTaskRecorded(opts: {
     .catch(() => undefined);
 }
 
+async function triggerLinkedInClayEnrichmentBestEffort(opts: {
+  leadId: string;
+  email: string | null;
+  firstName: string | null;
+  lastName: string | null;
+  companyName: string | null;
+  companyWebsite: string | null;
+  companyState: string | null;
+  enrichmentStatus?: string | null;
+}): Promise<boolean> {
+  if (!opts.email) return false;
+  if ((opts.enrichmentStatus || "").toLowerCase() === "pending") return false;
+
+  const request = {
+    leadId: opts.leadId,
+    emailAddress: opts.email,
+    firstName: opts.firstName || undefined,
+    lastName: opts.lastName || undefined,
+    fullName: [opts.firstName, opts.lastName].filter(Boolean).join(" ") || undefined,
+    companyName: opts.companyName || undefined,
+    companyDomain: opts.companyWebsite || undefined,
+    state: opts.companyState || undefined,
+  };
+
+  const triggerResult = await triggerEnrichmentForLead(request, true, false).catch(() => null);
+  if (!triggerResult?.linkedInSent) return false;
+
+  await prisma.lead
+    .update({
+      where: { id: opts.leadId },
+      data: {
+        enrichmentStatus: "pending",
+        enrichmentLastRetry: new Date(),
+      },
+    })
+    .catch(() => undefined);
+
+  return true;
+}
+
 // =============================================================================
 // Step Execution
 // =============================================================================
@@ -1020,132 +1059,25 @@ export async function executeFollowUpStep(
       };
     }
 
-    // For SMS channel: check if we can actually send (phone + GHL configuration).
-    // Important: a lead may have a phone number in GoHighLevel even when our DB phone is missing.
-    // We attempt a fast-path hydration before blocking/pause decisions.
+    // SMS automation should never stall waiting on enrichment when no phone exists.
     if (step.channel === "sms" && !lead.phone) {
-      // Fetch latest lead data to check enrichment status.
-      // (LeadContext comes from a cached include on the instance query and may be stale.)
-      let currentLead = await prisma.lead.findUnique({
-        where: { id: lead.id },
-        select: {
-          id: true,
-          phone: true,
-          enrichmentStatus: true,
-          enrichmentLastRetry: true,
-          updatedAt: true,
-        },
+      const suggestedMessage = "SMS skipped — lead has no phone number. Automation advanced to the next step.";
+
+      await ensureFollowUpTaskRecorded({
+        leadId: lead.id,
+        type: "sms",
+        instanceId,
+        stepOrder: step.stepOrder,
+        status: "pending",
+        suggestedMessage,
       });
 
-      // Best-effort hydration from GHL by email (no create).
-      if (!currentLead?.phone) {
-        const resolve = await resolveGhlContactIdForLead(lead.id).catch(() => null);
-        const resolveError = (resolve?.success === false ? resolve.error : null) || "";
-        if ((resolveError || "").toLowerCase().includes("missing ghl configuration")) {
-          await prisma.followUpInstance.update({
-            where: { id: instanceId },
-            data: {
-              status: "paused",
-              pausedReason: "blocked_sms_config",
-              nextStepDue: null,
-            },
-          });
-
-          await ensureFollowUpTaskRecorded({
-            leadId: lead.id,
-            type: "sms",
-            instanceId,
-            stepOrder: step.stepOrder,
-            status: "pending",
-            suggestedMessage: "SMS blocked — GoHighLevel is not configured for this workspace.",
-          });
-
-          return {
-            success: true,
-            action: "skipped",
-            message: "SMS blocked — GoHighLevel not configured",
-          };
-        }
-
-        currentLead =
-          (await prisma.lead
-            .findUnique({
-              where: { id: lead.id },
-              select: {
-                id: true,
-                phone: true,
-                enrichmentStatus: true,
-                enrichmentLastRetry: true,
-                updatedAt: true,
-              },
-            })
-            .catch(() => null)) || currentLead;
-      }
-
-      // Still no phone after hydration: best-effort trigger enrichment for future steps, but do not block the sequence.
-      if (currentLead && !currentLead.phone) {
-        const enrichmentStatus = (currentLead.enrichmentStatus || "").trim().toLowerCase();
-        const enrichmentPending = enrichmentStatus === "pending";
-        const enrichmentTerminal = enrichmentStatus === "failed" || enrichmentStatus === "not_found";
-
-        let pipelineSource: string | null = null;
-        if (!enrichmentPending && !enrichmentTerminal) {
-          const includeSignatureAi = process.env.PHONE_ENRICHMENT_SIGNATURE_AI_ENABLED === "true";
-          const enriched = await enrichPhoneThenSyncToGhl(lead.id, { includeSignatureAi }).catch(() => null);
-          pipelineSource = enriched?.source ?? null;
-
-          if (enriched?.phoneFound) {
-            currentLead =
-              (await prisma.lead
-                .findUnique({
-                  where: { id: lead.id },
-                  select: {
-                    id: true,
-                    phone: true,
-                    enrichmentStatus: true,
-                    enrichmentLastRetry: true,
-                    updatedAt: true,
-                  },
-                })
-                .catch(() => null)) || currentLead;
-          }
-        }
-
-        if (!currentLead.phone) {
-          // If the step condition is explicitly "phone_provided", skipping is expected when we cannot find a phone.
-          if (step.condition?.type === "phone_provided") {
-            return {
-              success: true,
-              action: "skipped",
-              message: "SMS skipped — phone not available",
-              advance: true,
-            };
-          }
-
-          const detailParts = [
-            currentLead.enrichmentStatus ? `enrichment: ${currentLead.enrichmentStatus}` : null,
-            pipelineSource ? `pipeline: ${pipelineSource}` : null,
-          ].filter(Boolean);
-          const detail = detailParts.length > 0 ? ` (${detailParts.join(", ")})` : "";
-          const suggestedMessage = `SMS skipped — missing phone${detail}.`;
-
-          await ensureFollowUpTaskRecorded({
-            leadId: lead.id,
-            type: "sms",
-            instanceId,
-            stepOrder: step.stepOrder,
-            status: "pending",
-            suggestedMessage,
-          });
-
-          return {
-            success: true,
-            action: "skipped",
-            message: suggestedMessage,
-            advance: true,
-          };
-        }
-      }
+      return {
+        success: true,
+        action: "skipped",
+        message: suggestedMessage,
+        advance: true,
+      };
     }
 
     // Evaluate step condition (LinkedIn steps re-check against current DB state below)
@@ -1160,13 +1092,15 @@ export async function executeFollowUpStep(
 
     // LinkedIn steps: connection request (if not connected) and DMs once connected
     if (step.channel === "linkedin") {
-      const currentLead = await prisma.lead.findUnique({
+      let currentLead = await prisma.lead.findUnique({
         where: { id: lead.id },
         select: {
           id: true,
           firstName: true,
           lastName: true,
           companyName: true,
+          companyWebsite: true,
+          companyState: true,
           email: true,
           phone: true,
           linkedinUrl: true,
@@ -1183,6 +1117,30 @@ export async function executeFollowUpStep(
 
       if (!currentLead) {
         return { success: false, action: "error", error: "Lead not found" };
+      }
+
+      const repairedLinkedIn = mergeLinkedInFields({
+        currentProfileUrl: currentLead.linkedinUrl,
+        currentCompanyUrl: currentLead.linkedinCompanyUrl,
+      });
+      if (
+        repairedLinkedIn.profileUrl !== (currentLead.linkedinUrl ?? null) ||
+        repairedLinkedIn.companyUrl !== (currentLead.linkedinCompanyUrl ?? null)
+      ) {
+        await prisma.lead
+          .update({
+            where: { id: currentLead.id },
+            data: {
+              linkedinUrl: repairedLinkedIn.profileUrl,
+              linkedinCompanyUrl: repairedLinkedIn.companyUrl,
+            },
+          })
+          .catch(() => undefined);
+        currentLead = {
+          ...currentLead,
+          linkedinUrl: repairedLinkedIn.profileUrl,
+          linkedinCompanyUrl: repairedLinkedIn.companyUrl,
+        };
       }
 
       const effectiveLead: LeadContext = {
@@ -1208,6 +1166,17 @@ export async function executeFollowUpStep(
       }
 
       if (!normalizedLinkedInProfileUrl) {
+        const enrichmentTriggered = await triggerLinkedInClayEnrichmentBestEffort({
+          leadId: currentLead.id,
+          email: currentLead.email,
+          firstName: currentLead.firstName,
+          lastName: currentLead.lastName,
+          companyName: currentLead.companyName,
+          companyWebsite: currentLead.companyWebsite,
+          companyState: currentLead.companyState,
+          enrichmentStatus: currentLead.enrichmentStatus,
+        });
+
         if (currentLead.linkedinCompanyUrl) {
           console.warn(
             `[LINKEDIN] Company URL skipped — leadId=${currentLead.id}, url=${currentLead.linkedinCompanyUrl}`
@@ -1215,43 +1184,19 @@ export async function executeFollowUpStep(
           return {
             success: true,
             action: "skipped",
-            message: "LinkedIn skipped - lead has company page URL only (no personal profile)",
+            message: enrichmentTriggered
+              ? "LinkedIn skipped - lead has company page URL only (no personal profile). Clay enrichment requested."
+              : "LinkedIn skipped - lead has company page URL only (no personal profile).",
             advance: true,
-          };
-        }
-
-        if (currentLead.enrichmentStatus === "pending") {
-          const enrichmentStarted = currentLead.enrichmentLastRetry || currentLead.updatedAt;
-          const pendingDuration = Date.now() - enrichmentStarted.getTime();
-          const ENRICHMENT_WAIT_MS = 30 * 60 * 1000; // 30 minutes
-
-          if (pendingDuration < ENRICHMENT_WAIT_MS) {
-            return {
-              success: true,
-              action: "skipped",
-              message: `Waiting for LinkedIn URL enrichment (${Math.round(pendingDuration / 1000)}s elapsed)`,
-            };
-          }
-
-          await prisma.followUpInstance.update({
-            where: { id: instanceId },
-            data: {
-              status: "paused",
-              pausedReason: "awaiting_enrichment",
-            },
-          });
-
-          return {
-            success: true,
-            action: "skipped",
-            message: "Sequence paused - LinkedIn enrichment timeout. Manual intervention required.",
           };
         }
 
         return {
           success: true,
           action: "skipped",
-          message: "LinkedIn skipped - lead has no LinkedIn URL",
+          message: enrichmentTriggered
+            ? "LinkedIn skipped - lead has no personal LinkedIn profile URL. Clay enrichment requested."
+            : "LinkedIn skipped - lead has no LinkedIn URL",
           advance: true,
         };
       }
@@ -1970,6 +1915,8 @@ export async function executeFollowUpStep(
         // Avoid hard-failing and retry-spamming cron when SMS is impossible (most commonly: no phone on contact).
         if (
           sendResult.errorCode === "invalid_country_code" ||
+          sendResult.errorCode === "phone_normalization_failed" ||
+          sendResult.errorCode === "missing_phone" ||
           lower.includes("invalid_country_code") ||
           lower.includes("invalid country code") ||
           lower.includes("missing phone") ||
@@ -1995,7 +1942,11 @@ export async function executeFollowUpStep(
           };
         }
 
-        if (lower.includes("no ghl api key") || lower.includes("missing ghl configuration")) {
+        if (
+          sendResult.errorCode === "ghl_not_configured" ||
+          lower.includes("no ghl api key") ||
+          lower.includes("missing ghl configuration")
+        ) {
           await prisma.followUpInstance.update({
             where: { id: instanceId },
             data: {

@@ -1,8 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import {
   classifyLinkedInUrl,
-  mergeLinkedInCompanyUrl,
-  mergeLinkedInUrl,
+  mergeLinkedInFields,
   normalizeLinkedInUrl,
 } from "@/lib/linkedin-utils";
 import { normalizePhoneDigits, toStoredPhone } from "@/lib/phone-utils";
@@ -188,16 +187,17 @@ export async function findOrCreateLead(
     if (!existingLead.linkedinId && externalIds?.linkedinId) {
       updates.linkedinId = externalIds.linkedinId;
     }
-    const mergedLinkedIn = mergeLinkedInUrl(existingLead.linkedinUrl, normalizedLinkedInUrl);
-    if (mergedLinkedIn && mergedLinkedIn !== existingLead.linkedinUrl) {
-      updates.linkedinUrl = mergedLinkedIn;
+    const mergedLinkedIn = mergeLinkedInFields({
+      currentProfileUrl: existingLead.linkedinUrl,
+      currentCompanyUrl: existingLead.linkedinCompanyUrl,
+      incomingProfileUrl: normalizedLinkedInUrl,
+      incomingCompanyUrl: normalizedLinkedInCompanyUrl,
+    });
+    if (mergedLinkedIn.profileUrl !== (existingLead.linkedinUrl ?? null)) {
+      updates.linkedinUrl = mergedLinkedIn.profileUrl;
     }
-    const mergedLinkedInCompany = mergeLinkedInCompanyUrl(
-      existingLead.linkedinCompanyUrl,
-      normalizedLinkedInCompanyUrl
-    );
-    if (mergedLinkedInCompany && mergedLinkedInCompany !== existingLead.linkedinCompanyUrl) {
-      updates.linkedinCompanyUrl = mergedLinkedInCompany;
+    if (mergedLinkedIn.companyUrl !== (existingLead.linkedinCompanyUrl ?? null)) {
+      updates.linkedinCompanyUrl = mergedLinkedIn.companyUrl;
     }
 
     // Add campaign associations if not present

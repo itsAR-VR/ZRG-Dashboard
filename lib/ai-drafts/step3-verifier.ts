@@ -11,6 +11,8 @@ const SCHEDULING_LINK_PLACEHOLDER_REGEX = /\[(?:calendly|calendar|booking|schedu
 // Avoid capturing trailing punctuation (common in sentences like "... here: <url>.").
 const SCHEDULING_LINK_URL_REGEX =
   /\bhttps?:\/\/(?:www\.)?(?:calendly\.com|cal\.com)\/[^\s)<>\]]*[^\s)<>\].,!?]/gi;
+const GOOGLE_APPOINTMENTS_SCHEDULING_URL_REGEX =
+  /\bhttps?:\/\/(?:calendar\.google\.com)\/appointments\/schedules\/[^\s)<>\]]*[^\s)<>\].,!?]/gi;
 const GHL_WIDGET_BOOKING_URL_REGEX =
   /\bhttps?:\/\/[^\s)<>\]]*\/widget\/booking(?:s)?\/[^\s)<>\]]*[^\s)<>\].,!?]/gi;
 const ANY_HTTP_URL_REGEX = /\bhttps?:\/\/[^\s)<>\]]*[^\s)<>\].,!?]/gi;
@@ -93,6 +95,11 @@ export function enforceCanonicalBookingLink(
   // Step 3: Replace scheduling URLs (Calendly, Cal.com)
   if (SCHEDULING_LINK_URL_REGEX.test(result)) {
     result = result.replace(SCHEDULING_LINK_URL_REGEX, hasCanonical ? trimmedCanonical : "");
+  }
+
+  // Step 3b: Replace Google appointment scheduler URLs (avoid fabricated links)
+  if (GOOGLE_APPOINTMENTS_SCHEDULING_URL_REGEX.test(result)) {
+    result = result.replace(GOOGLE_APPOINTMENTS_SCHEDULING_URL_REGEX, hasCanonical ? trimmedCanonical : "");
   }
 
   // Step 4: Replace GHL widget booking URLs

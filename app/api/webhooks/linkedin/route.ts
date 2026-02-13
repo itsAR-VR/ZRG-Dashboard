@@ -8,8 +8,7 @@ import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
 import { verifyUnipileWebhookSecret } from "@/lib/unipile-api";
 import {
   classifyLinkedInUrl,
-  mergeLinkedInCompanyUrl,
-  mergeLinkedInUrl,
+  mergeLinkedInFields,
 } from "@/lib/linkedin-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { enqueueBackgroundJob, buildJobDedupeKey } from "@/lib/background-jobs/enqueue";
@@ -167,20 +166,21 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
 
     console.log(`[LinkedIn Webhook] Created lead ${lead.id} from LinkedIn`);
   } else if (lead) {
-    const mergedLinkedInUrl = mergeLinkedInUrl(lead.linkedinUrl, incomingProfileUrl);
-    const mergedLinkedInCompanyUrl = mergeLinkedInCompanyUrl(
-      lead.linkedinCompanyUrl,
-      incomingCompanyUrl
-    );
-    const leadUpdates: Record<string, string> = {};
+    const mergedLinkedIn = mergeLinkedInFields({
+      currentProfileUrl: lead.linkedinUrl,
+      currentCompanyUrl: lead.linkedinCompanyUrl,
+      incomingProfileUrl,
+      incomingCompanyUrl,
+    });
+    const leadUpdates: Record<string, string | null> = {};
     if (!lead.linkedinId && incomingLeadId) {
       leadUpdates.linkedinId = incomingLeadId;
     }
-    if (mergedLinkedInUrl && mergedLinkedInUrl !== lead.linkedinUrl) {
-      leadUpdates.linkedinUrl = mergedLinkedInUrl;
+    if (mergedLinkedIn.profileUrl !== (lead.linkedinUrl ?? null)) {
+      leadUpdates.linkedinUrl = mergedLinkedIn.profileUrl;
     }
-    if (mergedLinkedInCompanyUrl && mergedLinkedInCompanyUrl !== lead.linkedinCompanyUrl) {
-      leadUpdates.linkedinCompanyUrl = mergedLinkedInCompanyUrl;
+    if (mergedLinkedIn.companyUrl !== (lead.linkedinCompanyUrl ?? null)) {
+      leadUpdates.linkedinCompanyUrl = mergedLinkedIn.companyUrl;
     }
     if (Object.keys(leadUpdates).length > 0) {
       await prisma.lead.update({
@@ -286,17 +286,22 @@ async function handleConnectionAccepted(clientId: string, payload: UnipileWebhoo
 
   if (lead) {
     // Update with member ID now that we're connected
-    const mergedLinkedInUrl = mergeLinkedInUrl(lead.linkedinUrl, incomingProfileUrl);
-    const mergedLinkedInCompanyUrl = mergeLinkedInCompanyUrl(
-      lead.linkedinCompanyUrl,
-      incomingCompanyUrl
-    );
+    const mergedLinkedIn = mergeLinkedInFields({
+      currentProfileUrl: lead.linkedinUrl,
+      currentCompanyUrl: lead.linkedinCompanyUrl,
+      incomingProfileUrl,
+      incomingCompanyUrl,
+    });
     await prisma.lead.update({
       where: { id: lead.id },
       data: {
         ...(incomingMemberId ? { linkedinId: incomingMemberId } : {}),
-        ...(mergedLinkedInUrl ? { linkedinUrl: mergedLinkedInUrl } : {}),
-        ...(mergedLinkedInCompanyUrl ? { linkedinCompanyUrl: mergedLinkedInCompanyUrl } : {}),
+        ...(mergedLinkedIn.profileUrl !== (lead.linkedinUrl ?? null)
+          ? { linkedinUrl: mergedLinkedIn.profileUrl }
+          : {}),
+        ...(mergedLinkedIn.companyUrl !== (lead.linkedinCompanyUrl ?? null)
+          ? { linkedinCompanyUrl: mergedLinkedIn.companyUrl }
+          : {}),
       },
     });
 

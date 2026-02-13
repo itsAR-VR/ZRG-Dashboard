@@ -189,9 +189,9 @@ function clip(text: string, maxChars: number): string {
 const PRICING_TERMS_REGEX =
   /\b(price|pricing|cost|fee|membership|billing|monthly|annual|annually|quarterly|per\s+month|per\s+year|per\s+quarter)\b/i;
 const ORPHAN_PRICING_CADENCE_LINE_REGEX =
-  /(^|\n)[^\n$]*(membership|fee|price|pricing|cost|billing)[^\n$]*(\/\s?(mo|month|yr|year|qtr|quarter)|per\s+(month|year|quarter))[^\n]*(\n|$)/i;
+  /(^|\n)[^\n$]*(?:membership\s+(?:fee|price|cost)|fee|price|pricing|cost|billing|billed|payment|pay)[^\n$]*(?:\/\s?(?:mo|month|yr|year|qtr|quarter)|per\s+(?:month|year|quarter))[^\n]*(\n|$)/i;
 const NON_BLOCKING_JUDGE_REASON_REGEX =
-  /\b(exact|verbatim|required phrasing|required wording|prescribed phrasing|supported phrasing|scripted|playbook|approved phrasing|standard phrasing|minor|slight|tone|wording|style|second sentence|list-heavy|over-explains|conversational|equivalent|booking intent|qualify first|unrequested qualification|qualification detail|single-question format|single required alignment question|extra alternative criteria|longer than needed|adds friction|not needed|isn't needed|wasn't asked|wasn’t asked|cta could be clearer|low-friction|vague call ask|booking link \(available\)|clear next step)\b/i;
+  /\b(exact|verbatim|required phrasing|required wording|prescribed phrasing|preferred phrasing|preferred wording|supported phrasing|scripted|playbook|approved phrasing|standard phrasing|minor|slight|tone|wording|style|second sentence|list-heavy|over-explains|conversational|equivalent|booking intent|qualify first|unrequested qualification|qualification detail|single-question format|single required alignment question|extra alternative criteria|longer than needed|adds friction|not needed|isn't needed|wasn't asked|wasn’t asked|cta could be clearer|cta can better match|high[- ]?signal framing|low-friction|vague call ask|booking link \(available\)|clear next step)\b/i;
 const BLOCKING_JUDGE_REASON_REGEX =
   /\b(unsupported|hallucinat|mismatch|wrong recipient|wrong timezone|fabricated|missing answer|no supported pricing|no dollar amount|in the past|banned phrase|discovery call|opt-out|unsubscribe|unsafe|policy|slot|date|booking link|contradiction|invented|conflict)\b/i;
 
@@ -205,6 +205,86 @@ function isBlockingJudgeReason(reason: string): boolean {
   if (NON_BLOCKING_JUDGE_REASON_REGEX.test(normalized)) return false;
   if (BLOCKING_JUDGE_REASON_REGEX.test(normalized)) return true;
   return true;
+}
+
+const DRAFT_TIMEZONE_TOKEN_REGEX =
+  /\b(pst|pdt|pt|mst|mdt|mt|cst|cdt|ct|est|edt|et|utc|gmt|[a-z_]+\/[a-z_]+(?:\/[a-z_]+)?)\b/i;
+const DRAFT_MONTH_TOKEN_REGEX =
+  /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t)?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i;
+
+function countLinkOccurrences(text: string, link: string | null): number {
+  const draft = (text || "").trim();
+  const normalizedLink = (link || "").trim();
+  if (!draft || !normalizedLink) return 0;
+  const lower = draft.toLowerCase();
+  const needle = normalizedLink.toLowerCase();
+  let idx = 0;
+  let count = 0;
+  while (true) {
+    const found = lower.indexOf(needle, idx);
+    if (found < 0) break;
+    count += 1;
+    idx = found + needle.length;
+  }
+  return count;
+}
+
+function extractDecisionContractScalar(value: unknown, key: string): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const raw = record[key];
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed ? trimmed : null;
+}
+
+function computeBlockingJudgeReasons(opts: {
+  failureReasons: string[];
+  draft: string;
+  availability: string[];
+  bookingLink: string | null;
+  leadSchedulerLink: string | null;
+  decisionContract: unknown;
+}): string[] {
+  const draft = (opts.draft || "").trim();
+  const availability = Array.isArray(opts.availability) ? opts.availability : [];
+  const link = opts.leadSchedulerLink || opts.bookingLink || null;
+  const responseMode = extractDecisionContractScalar(opts.decisionContract, "responseMode");
+  const hasBookingIntent = extractDecisionContractScalar(opts.decisionContract, "hasBookingIntent");
+
+  const blocking: string[] = [];
+  for (const reason of opts.failureReasons || []) {
+    if (!isBlockingJudgeReason(reason)) continue;
+    const normalized = (reason || "").trim().toLowerCase();
+    if (!normalized) continue;
+
+    // Drop obviously unsupported complaints where the draft contains the required signal.
+    if (normalized.includes("omits the timezone") || normalized.includes("timezone") && normalized.includes("omit")) {
+      if (DRAFT_TIMEZONE_TOKEN_REGEX.test(draft)) continue;
+    }
+    if (normalized.includes("omits the date") || normalized.includes("date context")) {
+      if (DRAFT_MONTH_TOKEN_REGEX.test(draft)) continue;
+    }
+    if (normalized.includes("duplicate calendly link") || normalized.includes("repeats the calendly link")) {
+      if (countLinkOccurrences(draft, link) <= 1) continue;
+    }
+    if (
+      normalized.includes("doesn’t use provided availability") ||
+      normalized.includes("didn’t use provided availability") ||
+      normalized.includes("doesn't use provided availability") ||
+      normalized.includes("didn't use provided availability")
+    ) {
+      // If we're in info_then_booking with no booking intent, availability usage is optional.
+      if (responseMode === "info_then_booking" && hasBookingIntent === "no") continue;
+      if (availability.length === 0) continue;
+      const usesAnySlot = availability.some((slot) => slot && draft.includes(slot));
+      if (usesAnySlot) continue;
+    }
+
+    blocking.push(reason);
+  }
+
+  return blocking;
 }
 
 function clamp01(value: number): number {
@@ -955,12 +1035,21 @@ export async function runReplayCase(opts: {
 
     let generatedDraft = generation.content;
     const draftId = generation.draftId || null;
+    const bookingEscalationReason =
+      typeof generation.bookingEscalationReason === "string" && generation.bookingEscalationReason.trim()
+        ? generation.bookingEscalationReason.trim()
+        : null;
     const generationOfferedSlots = normalizeOfferedSlots(generation.offeredSlots);
-    let offeredSlots: OfferedSlot[] = generationOfferedSlots.length > 0 ? generationOfferedSlots : parseOfferedSlotsJson(lead.offeredSlots);
+    let offeredSlots: OfferedSlot[] =
+      bookingEscalationReason
+        ? []
+        : generationOfferedSlots.length > 0
+          ? generationOfferedSlots
+          : parseOfferedSlotsJson(lead.offeredSlots);
 
     // Prefer in-memory generation slots. If unavailable (reused drafts / legacy path),
     // refresh from DB to pick up any slots generated during this pass.
-    if (generationOfferedSlots.length === 0) {
+    if (!bookingEscalationReason && generationOfferedSlots.length === 0) {
       try {
         const refreshedLead = await prisma.lead.findUnique({
           where: { id: opts.selectionCase.leadId },
@@ -1201,7 +1290,16 @@ export async function runReplayCase(opts: {
     const objectivePass = objectiveCriticalReasons.length === 0;
     const objectiveOverallScore = objectivePass ? 100 : 0;
     const llmOverallScore = clampScore(judge.llmOverallScore ?? judge.overallScore);
-    const blockingJudgeReasons = (judge.failureReasons || []).filter((reason) => isBlockingJudgeReason(reason));
+    const blockingJudgeReasons = computeBlockingJudgeReasons({
+      failureReasons: judge.failureReasons || [],
+      draft: generatedDraft,
+      availability: offeredSlots
+        .map((slot) => (typeof slot?.label === "string" ? slot.label.trim() : ""))
+        .filter((label) => label.length > 0),
+      bookingLink: workspaceBookingLink || null,
+      leadSchedulerLink,
+      decisionContract: judge.decisionContract,
+    });
     const blendedScore = clampScore(llmOverallScore * 0.7 + objectiveOverallScore * 0.3);
     const finalPass =
       objectivePass && (llmOverallScore >= opts.judgeThreshold || (judge.llmPass === false && blockingJudgeReasons.length === 0));
