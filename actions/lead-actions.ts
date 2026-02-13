@@ -800,7 +800,38 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
     const accessible = await getAccessibleClientIdsForUser(user.id, user.email);
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
-      include: {
+      // Same reasoning as the cursor inbox fetch: keep this payload explicit and schema-resilient.
+      select: {
+        id: true,
+        clientId: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        alternateEmails: true,
+        currentReplierEmail: true,
+        currentReplierName: true,
+        currentReplierSince: true,
+        status: true,
+        sentimentTag: true,
+        autoReplyEnabled: true,
+        autoFollowUpEnabled: true,
+        autoBookMeetingsEnabled: true,
+        smsDndActive: true,
+        smsCampaignId: true,
+        senderAccountId: true,
+        linkedinUrl: true,
+        linkedinId: true,
+        companyName: true,
+        companyWebsite: true,
+        companyState: true,
+        emailBisonLeadId: true,
+        enrichmentStatus: true,
+        ghlContactId: true,
+        overallScore: true,
+        scoredAt: true,
+        assignedToUserId: true,
+        assignedAt: true,
         client: {
           select: {
             id: true,
@@ -817,6 +848,27 @@ export async function getConversation(leadId: string, channelFilter?: Channel) {
         messages: {
           where: channelFilter ? { channel: channelFilter } : undefined,
           orderBy: { sentAt: "asc" }, // Order by actual message time
+          select: {
+            id: true,
+            body: true,
+            subject: true,
+            rawHtml: true,
+            rawText: true,
+            cc: true,
+            bcc: true,
+            source: true,
+            fromEmail: true,
+            fromName: true,
+            toEmail: true,
+            toName: true,
+            emailBisonReplyId: true,
+            channel: true,
+            direction: true,
+            sentAt: true,
+            sentBy: true,
+            sentByUserId: true,
+            aiDraftId: true,
+          },
         },
         followUpInstances: {
           where: {
@@ -1020,7 +1072,8 @@ function transformLeadToConversation(
     linkedinUrl: lead.linkedinUrl,
     linkedinId: lead.linkedinId,
   });
-  const campaignId = primaryChannel === "email" ? lead.emailCampaignId ?? lead.campaignId : lead.campaignId;
+  const campaignId: string | null =
+    (primaryChannel === "email" ? lead.emailCampaignId ?? lead.campaignId : lead.campaignId) ?? null;
   const channelDrafts = lead.aiDrafts?.filter(
     (draft: any) => draft.channel === primaryChannel || (!draft.channel && primaryChannel === "sms")
   ) || [];
@@ -1030,35 +1083,36 @@ function transformLeadToConversation(
     lead: {
       id: lead.id,
       name: fullName,
-      firstName: lead.firstName,
-      lastName: lead.lastName,
-      email: lead.email,
+      firstName: typeof lead.firstName === "string" ? lead.firstName : null,
+      lastName: typeof lead.lastName === "string" ? lead.lastName : null,
+      email: typeof lead.email === "string" ? lead.email : null,
       alternateEmails: lead.alternateEmails ?? [],
       currentReplierEmail: lead.currentReplierEmail ?? null,
       currentReplierName: lead.currentReplierName ?? null,
       currentReplierSince: lead.currentReplierSince ? lead.currentReplierSince.toISOString() : null,
-      phone: lead.phone,
-      company: lead.client.name,
+      phone: typeof lead.phone === "string" ? lead.phone : null,
+      company: lead.client?.name ?? "Unknown",
       title: "",
-      status: lead.status,
-      autoReplyEnabled: lead.autoReplyEnabled,
-      autoFollowUpEnabled: lead.autoFollowUpEnabled,
-      autoBookMeetingsEnabled: lead.autoBookMeetingsEnabled,
-      smsDndActive: lead.smsDndActive,
+      status: typeof lead.status === "string" ? lead.status : "new",
+      autoReplyEnabled: Boolean(lead.autoReplyEnabled),
+      autoFollowUpEnabled: Boolean(lead.autoFollowUpEnabled),
+      autoBookMeetingsEnabled:
+        typeof lead.autoBookMeetingsEnabled === "boolean" ? lead.autoBookMeetingsEnabled : true,
+      smsDndActive: Boolean(lead.smsDndActive),
       clientId: lead.clientId,
-      smsCampaignId: lead.smsCampaignId,
+      smsCampaignId: lead.smsCampaignId ?? null,
       smsCampaignName: lead.smsCampaign?.name ?? null,
-      linkedinUrl: lead.linkedinUrl,
-      companyName: lead.companyName,
-      companyWebsite: lead.companyWebsite,
-      companyState: lead.companyState,
-      emailBisonLeadId: lead.emailBisonLeadId,
-      enrichmentStatus: lead.enrichmentStatus,
+      linkedinUrl: typeof lead.linkedinUrl === "string" ? lead.linkedinUrl : null,
+      companyName: typeof lead.companyName === "string" ? lead.companyName : null,
+      companyWebsite: typeof lead.companyWebsite === "string" ? lead.companyWebsite : null,
+      companyState: typeof lead.companyState === "string" ? lead.companyState : null,
+      emailBisonLeadId: typeof lead.emailBisonLeadId === "string" ? lead.emailBisonLeadId : null,
+      enrichmentStatus: typeof lead.enrichmentStatus === "string" ? lead.enrichmentStatus : null,
       followUpBlockedReason,
-      ghlContactId: lead.ghlContactId,
-      ghlLocationId: lead.client.ghlLocationId,
+      ghlContactId: typeof lead.ghlContactId === "string" ? lead.ghlContactId : null,
+      ghlLocationId: lead.client?.ghlLocationId ?? null,
       // Lead scoring (Phase 33)
-      overallScore: lead.overallScore,
+      overallScore: typeof lead.overallScore === "number" ? lead.overallScore : null,
       scoredAt: lead.scoredAt ? lead.scoredAt.toISOString() : null,
       // Lead assignment (Phase 43)
       assignedToUserId: lead.assignedToUserId ?? null,
@@ -1083,9 +1137,9 @@ function transformLeadToConversation(
       typeof opts?.hasOpenReply === "boolean"
         ? opts.hasOpenReply && lead.status !== "blacklisted" && lead.status !== "unqualified" && isAttentionSentimentTag(lead.sentimentTag)
         : leadRequiresAttention(lead),
-    sentimentTag: lead.sentimentTag,
+    sentimentTag: typeof lead.sentimentTag === "string" ? lead.sentimentTag : null,
     campaignId,
-    emailCampaignId: lead.emailCampaignId,
+    emailCampaignId: lead.emailCampaignId ?? null,
   };
 }
 
@@ -1097,20 +1151,92 @@ export async function getConversationsCursor(
   options: ConversationsCursorOptions
 ): Promise<ConversationsCursorResult> {
   try {
-    const {
-      clientId,
-      cursor,
-      limit = 50,
-      search,
-      channels,
-      channel,
-      sentimentTag,
-      sentimentTags,
-      smsCampaignId,
-      smsCampaignUnattributed,
-      filter,
-      scoreFilter,
-    } = options;
+    // Server Actions can be invoked from the client with malformed args (or args that serialize
+    // poorly across the RSC boundary). Coerce aggressively so we never throw for basic input issues.
+    const raw = (options && typeof options === "object" ? options : {}) as Record<string, unknown>;
+
+    const clientIdRaw = raw.clientId;
+    const clientId =
+      typeof clientIdRaw === "string" && clientIdRaw.trim() && clientIdRaw !== "$undefined"
+        ? clientIdRaw
+        : null;
+
+    const cursorRaw = raw.cursor;
+    const cursor =
+      typeof cursorRaw === "string" && cursorRaw.trim() && cursorRaw !== "$undefined"
+        ? cursorRaw
+        : null;
+
+    const limitRaw = raw.limit;
+    const limit =
+      typeof limitRaw === "number" && Number.isFinite(limitRaw)
+        ? Math.min(Math.max(1, Math.trunc(limitRaw)), 200)
+        : 50;
+
+    const searchRaw = raw.search;
+    const search =
+      typeof searchRaw === "string" && searchRaw.trim()
+        ? searchRaw.trim()
+        : undefined;
+
+    const channelsRaw = raw.channels;
+    const channels = Array.isArray(channelsRaw)
+      ? channelsRaw.filter((value): value is Channel =>
+          value === "sms" || value === "email" || value === "linkedin"
+        )
+      : undefined;
+
+    const channelRaw = raw.channel;
+    const channel =
+      channelRaw === "sms" || channelRaw === "email" || channelRaw === "linkedin" || channelRaw === "all"
+        ? (channelRaw as Channel | "all")
+        : undefined;
+
+    const sentimentTagRaw = raw.sentimentTag;
+    const sentimentTag =
+      typeof sentimentTagRaw === "string" && sentimentTagRaw.trim()
+        ? sentimentTagRaw
+        : undefined;
+
+    const sentimentTagsRaw = raw.sentimentTags;
+    const sentimentTags = Array.isArray(sentimentTagsRaw)
+      ? sentimentTagsRaw.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : undefined;
+
+    const smsCampaignIdRaw = raw.smsCampaignId;
+    const smsCampaignId =
+      typeof smsCampaignIdRaw === "string" && smsCampaignIdRaw.trim()
+        ? smsCampaignIdRaw
+        : undefined;
+
+    const smsCampaignUnattributedRaw = raw.smsCampaignUnattributed;
+    const smsCampaignUnattributed =
+      typeof smsCampaignUnattributedRaw === "boolean" ? smsCampaignUnattributedRaw : undefined;
+
+    const filterRaw = raw.filter;
+    const filter =
+      filterRaw === "responses" ||
+      filterRaw === "attention" ||
+      filterRaw === "needs_repair" ||
+      filterRaw === "previous_attention" ||
+      filterRaw === "drafts" ||
+      filterRaw === "ai_sent" ||
+      filterRaw === "ai_review" ||
+      filterRaw === "all"
+        ? (filterRaw as ConversationsCursorOptions["filter"])
+        : undefined;
+
+    const scoreFilterRaw = raw.scoreFilter;
+    const scoreFilter =
+      scoreFilterRaw === "all" ||
+      scoreFilterRaw === "4" ||
+      scoreFilterRaw === "3+" ||
+      scoreFilterRaw === "2+" ||
+      scoreFilterRaw === "1+" ||
+      scoreFilterRaw === "unscored" ||
+      scoreFilterRaw === "disqualified"
+        ? (scoreFilterRaw as ConversationsCursorOptions["scoreFilter"])
+        : undefined;
 
     const scope = await resolveClientScope(clientId);
     if (scope.clientIds.length === 0) {
@@ -1271,10 +1397,56 @@ export async function getConversationsCursor(
       ? { AND: whereConditions }
       : undefined;
 
-    const baseQueryOptions: any = {
+    // Schema-safe fallback where:
+    // keep only the workspace scope filter so we can recover from missing-column/table errors
+    // in optional filters/features during staged rollouts or when the DB lags the Prisma schema.
+    const safeWhere: any = { AND: [{ clientId: { in: scope.clientIds } }] };
+
+    // Avoid selecting every Lead scalar column in inbox queries.
+    // In db-push workflows (no migrations), production DBs can temporarily lag the Prisma schema;
+    // selecting only the fields we actually need makes the inbox much more resilient.
+    const baseQueryOptionsFull: any = {
       where,
       orderBy: { updatedAt: "desc" },
-      include: {
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        alternateEmails: true,
+        currentReplierEmail: true,
+        currentReplierName: true,
+        currentReplierSince: true,
+        status: true,
+        sentimentTag: true,
+        autoReplyEnabled: true,
+        autoFollowUpEnabled: true,
+        autoBookMeetingsEnabled: true,
+        smsDndActive: true,
+        clientId: true,
+        smsCampaignId: true,
+        emailCampaignId: true,
+        campaignId: true,
+        senderAccountId: true,
+        companyName: true,
+        companyWebsite: true,
+        companyState: true,
+        emailBisonLeadId: true,
+        enrichmentStatus: true,
+        ghlContactId: true,
+        linkedinUrl: true,
+        linkedinId: true,
+        // Lead scoring (Phase 33)
+        overallScore: true,
+        scoredAt: true,
+        // Lead assignment (Phase 43)
+        assignedToUserId: true,
+        assignedAt: true,
+        // Reply-state filter support
+        lastInboundAt: true,
+        lastMessageDirection: true,
+        createdAt: true,
         client: {
           select: {
             id: true,
@@ -1323,8 +1495,55 @@ export async function getConversationsCursor(
       },
     };
 
-    const collectLeads = async (): Promise<any[]> => {
-      const needsReplyStateFilter = replyStateFilter !== null;
+    const baseQueryOptionsSafe: any = {
+      where: safeWhere,
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        phone: true,
+        clientId: true,
+        smsCampaignId: true,
+        emailCampaignId: true,
+        campaignId: true,
+        createdAt: true,
+        client: {
+          select: {
+            id: true,
+            name: true,
+            ghlLocationId: true,
+          },
+        },
+        smsCampaign: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        messages: {
+          orderBy: { sentAt: "desc" },
+          take: 1,
+          select: {
+            id: true,
+            body: true,
+            subject: true,
+            channel: true,
+            direction: true,
+            emailBisonReplyId: true,
+            rawHtml: true,
+            sentAt: true,
+          },
+        },
+      },
+    };
+
+    const collectLeads = async (
+      baseQueryOptions: any,
+      opts?: { forceNoReplyStateFilter?: boolean }
+    ): Promise<any[]> => {
+      const needsReplyStateFilter = replyStateFilter !== null && !opts?.forceNoReplyStateFilter;
       if (!needsReplyStateFilter) {
         const queryOptions: any = { ...baseQueryOptions, take: limit + 1 };
         if (cursor) {
@@ -1385,7 +1604,22 @@ export async function getConversationsCursor(
       return matched;
     };
 
-    const leads = await collectLeads();
+    let leads: any[];
+    try {
+      leads = await collectLeads(baseQueryOptionsFull);
+    } catch (error) {
+      const anyError = error as { code?: unknown };
+      if (anyError?.code === "P2021" || anyError?.code === "P2022") {
+        console.warn("[Inbox] getConversationsCursor falling back to schema-safe query:", {
+          code: anyError.code,
+        });
+        // When the DB is behind, the reply-state filter may rely on columns that don't exist yet.
+        // Fall back to "no reply-state filter" so the inbox still renders.
+        leads = await collectLeads(baseQueryOptionsSafe, { forceNoReplyStateFilter: true });
+      } else {
+        throw error;
+      }
+    }
 
     // Check if there are more records
     const hasMore = leads.length > limit;

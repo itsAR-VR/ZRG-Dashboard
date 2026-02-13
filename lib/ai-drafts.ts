@@ -73,6 +73,8 @@ interface DraftGenerationResult {
   draftId?: string;
   content?: string;
   runId?: string | null;
+  offeredSlots?: OfferedSlot[];
+  availability?: string[];
   reusedExistingDraft?: boolean;
   skippedRoutes?: DraftRouteSkip[];
   blockedBySetting?: "draftGenerationEnabled";
@@ -4691,6 +4693,8 @@ Generate an appropriate ${channel} response following the guidelines above.
         draftId: draft.id,
         content: draftContent,
         runId: draftPipelineRunId,
+        ...(offeredSlotsForOverseer.length ? { offeredSlots: offeredSlotsForOverseer } : {}),
+        ...(availability.length ? { availability } : {}),
         ...(skippedRoutes.length ? { skippedRoutes } : {}),
       };
     } catch (error) {
@@ -4724,6 +4728,8 @@ Generate an appropriate ${channel} response following the guidelines above.
                 draftId: existing.id,
                 content: draftContent,
                 runId: draftPipelineRunId,
+                ...(offeredSlotsForOverseer.length ? { offeredSlots: offeredSlotsForOverseer } : {}),
+                ...(availability.length ? { availability } : {}),
                 reusedExistingDraft: true,
                 ...(skippedRoutes.length ? { skippedRoutes } : {}),
               };
@@ -4737,6 +4743,8 @@ Generate an appropriate ${channel} response following the guidelines above.
             draftId: existing.id,
             content: existing.content,
             runId: draftPipelineRunId,
+            ...(offeredSlotsForOverseer.length ? { offeredSlots: offeredSlotsForOverseer } : {}),
+            ...(availability.length ? { availability } : {}),
             reusedExistingDraft: true,
             ...(skippedRoutes.length ? { skippedRoutes } : {}),
           };

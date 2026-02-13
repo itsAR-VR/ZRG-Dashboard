@@ -343,7 +343,9 @@ export function InboxView({
     queryFn: async ({ pageParam }) => {
       const result = await getConversationsCursor({
         ...queryOptions,
-        cursor: pageParam as string | null,
+        // Jam evidence shows cursor can serialize as `{}` across the RSC boundary.
+        // Only pass it through when it is a real cursor string.
+        cursor: typeof pageParam === "string" ? pageParam : undefined,
       });
       if (!result.success) {
         throw new Error(result.error || "Failed to fetch conversations");

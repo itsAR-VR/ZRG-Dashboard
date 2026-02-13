@@ -65,11 +65,30 @@ type ReplayRevisionLoopRuntime = {
   iterations?: NonNullable<ReplayCaseResult["revisionLoop"]>["iterations"];
 };
 
+function normalizeOfferedSlots(value: unknown): OfferedSlot[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const label = typeof (entry as { label?: unknown }).label === "string" ? (entry as { label: string }).label.trim() : "";
+      const datetime =
+        typeof (entry as { datetime?: unknown }).datetime === "string"
+          ? (entry as { datetime: string }).datetime.trim()
+          : "";
+      const offeredAt =
+        typeof (entry as { offeredAt?: unknown }).offeredAt === "string"
+          ? (entry as { offeredAt: string }).offeredAt.trim()
+          : "";
+      if (!label || !datetime) return null;
+      return { label, datetime, offeredAt };
+    })
+    .filter((entry): entry is OfferedSlot => Boolean(entry));
+}
+
 function parseOfferedSlotsJson(value: string | null | undefined): OfferedSlot[] {
   if (!value) return [];
   try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? (parsed as OfferedSlot[]) : [];
+    return normalizeOfferedSlots(JSON.parse(value));
   } catch {
     return [];
   }
@@ -936,20 +955,23 @@ export async function runReplayCase(opts: {
 
     let generatedDraft = generation.content;
     const draftId = generation.draftId || null;
-    let offeredSlots: OfferedSlot[] = parseOfferedSlotsJson(lead.offeredSlots);
+    const generationOfferedSlots = normalizeOfferedSlots(generation.offeredSlots);
+    let offeredSlots: OfferedSlot[] = generationOfferedSlots.length > 0 ? generationOfferedSlots : parseOfferedSlotsJson(lead.offeredSlots);
 
-    // Keep replay invariants and judging aligned with the actual slot set used by
-    // this generation pass (generateResponseDraft may refresh offeredSlots).
-    try {
-      const refreshedLead = await prisma.lead.findUnique({
-        where: { id: opts.selectionCase.leadId },
-        select: { offeredSlots: true },
-      });
-      if (refreshedLead) {
-        offeredSlots = parseOfferedSlotsJson(refreshedLead.offeredSlots);
+    // Prefer in-memory generation slots. If unavailable (reused drafts / legacy path),
+    // refresh from DB to pick up any slots generated during this pass.
+    if (generationOfferedSlots.length === 0) {
+      try {
+        const refreshedLead = await prisma.lead.findUnique({
+          where: { id: opts.selectionCase.leadId },
+          select: { offeredSlots: true },
+        });
+        if (refreshedLead) {
+          offeredSlots = parseOfferedSlotsJson(refreshedLead.offeredSlots);
+        }
+      } catch {
+        // Best-effort only.
       }
-    } catch {
-      // Best-effort only.
     }
 
     let workspaceContext = opts.workspaceContextCache.get(opts.selectionCase.clientId);
