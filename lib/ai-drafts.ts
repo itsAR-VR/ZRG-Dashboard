@@ -201,6 +201,8 @@ const PRICING_MODE_BOOKING_URL_REGEX = /https?:\/\/\S+/i;
 export function applyPricingAnswerNoSchedulingGuard(params: {
   draft: string;
   extraction: MeetingOverseerExtractDecision | null;
+  bookingLink?: string | null;
+  leadSchedulerLink?: string | null;
 }): { draft: string; changed: boolean } {
   const draft = (params.draft || "").trim();
   if (!draft) return { draft, changed: false };
