@@ -759,6 +759,11 @@ function InsightsConsoleBody({
   const sending = selectedSessionId ? Boolean(sendingBySession[selectedSessionId]) : false;
   const pendingAssistant = selectedSessionId ? pendingAssistantBySession[selectedSessionId] ?? null : null;
 
+  const selectedSessionExists = useMemo(() => {
+    if (!selectedSessionId) return false;
+    return sessions.some((s) => s.id === selectedSessionId);
+  }, [selectedSessionId, sessions]);
+
   const hasEmailCampaigns = campaigns.length > 0;
 
   const campaignScopeLabel = useMemo(() => {
@@ -868,9 +873,9 @@ function InsightsConsoleBody({
   useEffect(() => {
     if (!activeWorkspace) return;
     if (!selectedSessionId) return;
-    if (!sessions.some((s) => s.id === selectedSessionId)) return;
+    if (!selectedSessionExists) return;
     safeLocalStorageSet(cacheKeySelectedSession(activeWorkspace), selectedSessionId);
-  }, [activeWorkspace, selectedSessionId, sessions]);
+  }, [activeWorkspace, selectedSessionId, selectedSessionExists]);
 
   const loadSession = useCallback(
     async (sessionId: string) => {
@@ -967,9 +972,9 @@ function InsightsConsoleBody({
     if (!isVisible) return;
     if (!activeWorkspace) return;
     if (!selectedSessionId) return;
-    if (!sessions.some((s) => s.id === selectedSessionId)) return;
+    if (!selectedSessionExists) return;
     loadSession(selectedSessionId);
-  }, [activeWorkspace, isVisible, loadSession, selectedSessionId, sessions]);
+  }, [activeWorkspace, isVisible, loadSession, selectedSessionId, selectedSessionExists]);
 
   useEffect(() => {
     const activeBuilds = activePackBuildsRef.current;

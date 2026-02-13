@@ -63,3 +63,20 @@ const mergedCompany = existingLead.linkedinCompanyUrl || classified.companyUrl;
 
 ## Handoff
 Proceed to Phase 148c to ensure runtime follow-up execution and sender behavior cannot starve on company-only data.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - `app/api/webhooks/ghl/sms/route.ts`: classified custom LinkedIn URLs and routed them to `linkedinUrl` (profile) and `linkedinCompanyUrl` (company).
+  - `app/api/webhooks/linkedin/route.ts`: replaced any-URL lookup with profile-only lookup keys; new-lead and update paths now store company URLs only in `linkedinCompanyUrl`.
+  - `app/api/webhooks/clay/route.ts`: classified Clay LinkedIn payload values and routed company URLs to `linkedinCompanyUrl` (defense in depth).
+  - `lib/background-jobs/email-inbound-post-process.ts`: added shared classify+merge helper, split routing for message/custom-vars/signature extraction, and profile-only enrichment trigger inputs.
+  - `actions/enrichment-actions.ts`: updated manual enrichment paths to treat LinkedIn prerequisites as profile-only and persist company URLs separately.
+  - `lib/__tests__/signature-extractor.test.ts`: updated expectation to preserve company URL extraction for split-field routing.
+- Commands run:
+  - `DATABASE_URL='postgresql://test:test@localhost:5432/test?schema=public' DIRECT_URL='postgresql://test:test@localhost:5432/test?schema=public' OPENAI_API_KEY=test node --conditions=react-server --import tsx --test lib/__tests__/signature-extractor.test.ts` — pass.
+- Blockers:
+  - None at code level for ingestion path edits.
+  - Full end-to-end DB-backed ingestion validation remains blocked by DB connectivity in this environment.
+- Next concrete steps:
+  - Execute live webhook sanity checks against a reachable environment (Tim workspace + one control workspace).
+  - Proceed with global backfill only after DB access is available.

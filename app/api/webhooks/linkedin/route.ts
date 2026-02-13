@@ -6,7 +6,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
 import { verifyUnipileWebhookSecret } from "@/lib/unipile-api";
-import { mergeLinkedInUrl, normalizeLinkedInUrl, normalizeLinkedInUrlAny } from "@/lib/linkedin-utils";
+import {
+  classifyLinkedInUrl,
+  mergeLinkedInCompanyUrl,
+  mergeLinkedInUrl,
+} from "@/lib/linkedin-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { enqueueBackgroundJob, buildJobDedupeKey } from "@/lib/background-jobs/enqueue";
 import { BackgroundJobType } from "@prisma/client";
@@ -116,22 +120,27 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
     return;
   }
 
-  const incomingLinkedInUrl = normalizeLinkedInUrlAny(message.sender_linkedin_url);
-  const incomingProfileUrl = normalizeLinkedInUrl(message.sender_linkedin_url);
+  const incomingLinkedIn = classifyLinkedInUrl(message.sender_linkedin_url);
+  const incomingProfileUrl = incomingLinkedIn.profileUrl;
+  const incomingCompanyUrl = incomingLinkedIn.companyUrl;
   const incomingLeadId = message.sender_id || null;
 
-  // Find or create lead by LinkedIn ID and any LinkedIn URL
+  // Find or create lead by LinkedIn ID and profile URL only.
+  // Company URLs are never person identifiers.
   const leadLookupOr = [
     ...(incomingLeadId ? [{ linkedinId: incomingLeadId }] : []),
-    ...(incomingLinkedInUrl ? [{ linkedinUrl: incomingLinkedInUrl }] : []),
+    ...(incomingProfileUrl ? [{ linkedinUrl: incomingProfileUrl }] : []),
   ];
 
-  let lead = await prisma.lead.findFirst({
-    where: {
-      clientId,
-      OR: leadLookupOr,
-    },
-  });
+  let lead =
+    leadLookupOr.length > 0
+      ? await prisma.lead.findFirst({
+          where: {
+            clientId,
+            OR: leadLookupOr,
+          },
+        })
+      : null;
 
   if (!lead) {
     // Try to find by email if sender name contains "@"
@@ -146,8 +155,9 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
     lead = await prisma.lead.create({
       data: {
         clientId,
-        linkedinId: message.sender_id,
-        ...(incomingLinkedInUrl || incomingProfileUrl ? { linkedinUrl: incomingLinkedInUrl || incomingProfileUrl } : {}),
+        linkedinId: incomingLeadId,
+        ...(incomingProfileUrl ? { linkedinUrl: incomingProfileUrl } : {}),
+        ...(incomingCompanyUrl ? { linkedinCompanyUrl: incomingCompanyUrl } : {}),
         firstName,
         lastName,
         status: "new",
@@ -156,16 +166,28 @@ async function handleInboundMessage(clientId: string, payload: UnipileWebhookPay
     });
 
     console.log(`[LinkedIn Webhook] Created lead ${lead.id} from LinkedIn`);
-  } else if (lead && !lead.linkedinId) {
-    // Update lead with LinkedIn ID if not set
-    const mergedLinkedInUrl = mergeLinkedInUrl(lead.linkedinUrl, incomingLinkedInUrl || incomingProfileUrl);
-    await prisma.lead.update({
-      where: { id: lead.id },
-      data: {
-        linkedinId: message.sender_id,
-        ...(mergedLinkedInUrl ? { linkedinUrl: mergedLinkedInUrl } : {}),
-      },
-    });
+  } else if (lead) {
+    const mergedLinkedInUrl = mergeLinkedInUrl(lead.linkedinUrl, incomingProfileUrl);
+    const mergedLinkedInCompanyUrl = mergeLinkedInCompanyUrl(
+      lead.linkedinCompanyUrl,
+      incomingCompanyUrl
+    );
+    const leadUpdates: Record<string, string> = {};
+    if (!lead.linkedinId && incomingLeadId) {
+      leadUpdates.linkedinId = incomingLeadId;
+    }
+    if (mergedLinkedInUrl && mergedLinkedInUrl !== lead.linkedinUrl) {
+      leadUpdates.linkedinUrl = mergedLinkedInUrl;
+    }
+    if (mergedLinkedInCompanyUrl && mergedLinkedInCompanyUrl !== lead.linkedinCompanyUrl) {
+      leadUpdates.linkedinCompanyUrl = mergedLinkedInCompanyUrl;
+    }
+    if (Object.keys(leadUpdates).length > 0) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: leadUpdates,
+      });
+    }
   }
 
   if (!lead) {
@@ -242,37 +264,48 @@ async function handleConnectionAccepted(clientId: string, payload: UnipileWebhoo
     return;
   }
 
-  const incomingLinkedInUrl = normalizeLinkedInUrlAny(connection.linkedin_url);
+  const incomingLinkedIn = classifyLinkedInUrl(connection.linkedin_url);
+  const incomingProfileUrl = incomingLinkedIn.profileUrl;
+  const incomingCompanyUrl = incomingLinkedIn.companyUrl;
   const incomingMemberId = connection.linkedin_member_id || connection.id || null;
 
   const leadLookupOr = [
     ...(incomingMemberId ? [{ linkedinId: incomingMemberId }] : []),
-    ...(incomingLinkedInUrl ? [{ linkedinUrl: incomingLinkedInUrl }] : []),
+    ...(incomingProfileUrl ? [{ linkedinUrl: incomingProfileUrl }] : []),
   ];
 
-  // Find lead by LinkedIn URL
-  const lead = await prisma.lead.findFirst({
-    where: {
-      clientId,
-      OR: leadLookupOr,
-    },
-  });
+  const lead =
+    leadLookupOr.length > 0
+      ? await prisma.lead.findFirst({
+          where: {
+            clientId,
+            OR: leadLookupOr,
+          },
+        })
+      : null;
 
   if (lead) {
     // Update with member ID now that we're connected
-    const mergedLinkedInUrl = mergeLinkedInUrl(lead.linkedinUrl, incomingLinkedInUrl);
+    const mergedLinkedInUrl = mergeLinkedInUrl(lead.linkedinUrl, incomingProfileUrl);
+    const mergedLinkedInCompanyUrl = mergeLinkedInCompanyUrl(
+      lead.linkedinCompanyUrl,
+      incomingCompanyUrl
+    );
     await prisma.lead.update({
       where: { id: lead.id },
       data: {
         ...(incomingMemberId ? { linkedinId: incomingMemberId } : {}),
         ...(mergedLinkedInUrl ? { linkedinUrl: mergedLinkedInUrl } : {}),
+        ...(mergedLinkedInCompanyUrl ? { linkedinCompanyUrl: mergedLinkedInCompanyUrl } : {}),
       },
     });
 
     console.log(`[LinkedIn Webhook] Updated lead ${lead.id} with LinkedIn connection data after accepted`);
   } else {
     console.log(
-      `[LinkedIn Webhook] Connection accepted but no matching lead found for: ${incomingLinkedInUrl || "n/a"}`
+      `[LinkedIn Webhook] Connection accepted but no matching lead found for: ${
+        incomingProfileUrl || incomingCompanyUrl || "n/a"
+      }`
     );
   }
 }

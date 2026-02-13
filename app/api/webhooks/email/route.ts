@@ -19,7 +19,6 @@ import { addToAlternateEmails, detectCcReplier, normalizeOptionalEmail } from "@
 import { getDbSchemaMissingColumnsForModels, isPrismaMissingTableOrColumnError } from "@/lib/db-schema-compat";
 import { sendSlackDmByUserIdWithToken } from "@/lib/slack-dm";
 import { getSlackAutoSendApprovalConfig } from "@/lib/auto-send/get-approval-recipients";
-import { mergeLinkedInUrl, normalizeLinkedInUrl, normalizeLinkedInUrlAny } from "@/lib/linkedin-utils";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 // Reduced from 800s to 60s after moving AI classification to background jobs (Phase 31g).

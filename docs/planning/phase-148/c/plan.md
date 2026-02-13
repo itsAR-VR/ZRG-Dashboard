@@ -73,3 +73,20 @@ Prevent follow-up task starvation and confusing runtime failures when leads have
 
 ## Handoff
 Proceed to Phase 148d to backfill existing data globally so historical leads stop triggering the old failure mode.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - `lib/system-sender.ts`: added explicit profile validation with typed `isInvalidProfileUrl` result and `[LINKEDIN] Invalid profile URL rejected` logging.
+  - `lib/system-sender.ts` + `lib/followup-engine.ts`: promoted `invalid_country_code` SMS failures to skip-and-advance classification (prevents SMS task starvation on bad contact country metadata).
+  - `lib/unipile-api.ts`: hardened `extractLinkedInPublicIdentifier()` to reject `/company/` paths.
+  - `lib/followup-engine.ts`: treated LinkedIn eligibility as profile-only (`normalizeLinkedInUrl`), added explicit company-only skip-and-advance with `[LINKEDIN] Company URL skipped` log, and normalized LinkedIn channel checks in resume filters/auto-booking channel selection.
+  - `actions/message-actions.ts`: manual LinkedIn send and status check paths now require normalized `/in/` profile URLs.
+  - `lib/booking-progress.ts` and `lib/reactivation-sequence-prereqs.ts`: channel readiness now requires a valid profile URL instead of any LinkedIn URL.
+- Commands run:
+  - `npm run lint` — pass (warnings only, pre-existing frontend hook/compiler warnings).
+  - `npm run build` — pass.
+- Blockers:
+  - Follow-up runtime behavior for real Tim leads cannot be verified in this environment without DB/runtime access.
+- Next concrete steps:
+  - Run production verification checklist against Tim workspace once DB access is available.
+  - Confirm skip reasons are visible in `FollowUpTask.suggestedMessage` for company-only leads.

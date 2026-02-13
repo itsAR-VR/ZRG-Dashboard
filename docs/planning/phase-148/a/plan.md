@@ -53,3 +53,22 @@ Introduce the data-model and utility primitives needed to treat LinkedIn profile
 
 ## Handoff
 Proceed to Phase 148b to update every ingestion write-path to use the new split+classify utilities.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Added `Lead.linkedinCompanyUrl` field index in `prisma/schema.prisma`.
+  - Implemented `classifyLinkedInUrl` and `mergeLinkedInCompanyUrl` in `lib/linkedin-utils.ts`.
+  - Switched `lib/lead-matching.ts` to profile-only LinkedIn matching and added split-field persistence (`linkedinUrl` + `linkedinCompanyUrl`).
+  - Updated `getAvailableChannels()` to require a valid profile URL for LinkedIn eligibility.
+  - Rewrote `lib/__tests__/lead-matching.test.ts` to assert company URLs do not match by identity and are stored separately.
+  - Expanded `lib/__tests__/linkedin-utils.test.ts` coverage for classification + split merge behavior.
+- Commands run:
+  - `npx prisma generate` — pass.
+  - `node --import tsx --test lib/__tests__/linkedin-utils.test.ts` — pass.
+  - `DATABASE_URL='postgres://...' DIRECT_URL='postgres://...' OPENAI_API_KEY=test node --conditions=react-server --import tsx --test lib/__tests__/lead-matching.test.ts` — fail (`P1001` / DB unreachable in current environment).
+- Blockers:
+  - Database connectivity is unavailable from this execution environment, so DB-backed lead-matching tests cannot run.
+  - `npm run db:push` cannot complete (`P1001`), so schema application is blocked pending DB access.
+- Next concrete steps:
+  - Complete Phase 148d backfill once DB connectivity is available.
+  - Re-run `lib/__tests__/lead-matching.test.ts` after DB access is restored.

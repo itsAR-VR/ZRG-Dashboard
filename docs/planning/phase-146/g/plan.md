@@ -236,3 +236,32 @@ If accepted, split implementation into:
   - `npm run test:ai-drafts` ✅
   - Focused replay (`f800...`, `0617...`): `.artifacts/ai-replay/focus-pricing-2cases-ab-2026-02-12-v14.json` → `evaluated=2`, `passed=1`, `failedJudge=1` (remaining fail = qualification-format/scheduling friction).
   - Larger sample replay: `.artifacts/ai-replay/fc-large80-live-2026-02-12-v2.json` → `evaluated=45`, `passed=8`, `failedJudge=37`, critical invariants `slot_mismatch=2`.
+
+## Output (2026-02-13 09:24 UTC)
+
+- Implemented LLM-first pricing/community intent contract to eliminate deterministic misclassification of qualification language:
+  - `lib/ai/decision-contract.ts`: removed regex intent detection (`detectPricingRequest`, `detectCommunityDetailRequest`); contract now consumes overseer extraction booleans (`needs_pricing_answer`, `needs_community_details`).
+  - `lib/meeting-overseer.ts`: extraction schema/type now requires `needs_pricing_answer` + `needs_community_details`; extraction fallback prompt explicitly treats qualification-revenue mentions (e.g. `$1M annual revenue`) as non-pricing unless pricing is asked.
+  - `lib/meeting-overseer.ts`: narrowed `PRICING_KEYWORDS` trigger list to explicit pricing terms and removed cadence-only tokens (`monthly|annual|quarterly`) from run-trigger heuristics.
+- Replay gate alignment updates:
+  - `lib/ai-replay/judge.ts` + `lib/ai-replay/types.ts` + `lib/ai-replay/judge-schema.ts`: replay judge now emits `decisionContract` in judge artifacts.
+  - `lib/ai-replay/run-case.ts`: removed inbound pricing-intent regex gating (`PRICING_INTENT_REGEX`/`hasExplicitPricingIntent`) and switched `[pricing_missing_answer]` objective checks to `judge.decisionContract.needsPricingAnswer === "yes"`.
+  - `lib/ai-replay/run-case.ts`: evidence packets now include `decisionContract`.
+- Test updates:
+  - `lib/__tests__/ai-decision-contract.test.ts` updated for extractor-derived pricing intent and added explicit regression case ensuring qualification context does not imply pricing intent.
+  - `lib/__tests__/ai-drafts-pricing-scheduling-guard.test.ts` and `lib/__tests__/followup-booking-signal.test.ts` updated for new overseer extraction required fields.
+
+### Validation (2026-02-13)
+
+- Targeted tests:
+  - `DATABASE_URL='postgresql://user:pass@localhost:5432/testdb' node --require ./scripts/server-only-mock.cjs --import tsx --test lib/__tests__/ai-decision-contract.test.ts lib/__tests__/followup-booking-signal.test.ts lib/__tests__/ai-drafts-pricing-scheduling-guard.test.ts` — pass.
+- Quality gates:
+  - `npm run test:ai-drafts` — pass.
+  - `npm run lint` — pass (warnings only).
+  - `npm run build` — pass.
+- NTTAN replay gate (manifest):
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-146/replay-case-manifest.json --dry-run --overseer-mode fresh --out .artifacts/ai-replay/phase146-pricing-intent-dry.json` — blocked preflight (`db_connectivity_failed`, `schema_preflight_failed`, cannot reach `db.pzaptpgrcezknnsfytob.supabase.co`).
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-146/replay-case-manifest.json --concurrency 3 --overseer-mode fresh --out .artifacts/ai-replay/phase146-pricing-intent-live.json` — blocked preflight with same DB connectivity errors.
+  - Artifacts captured with failure attribution:
+    - dry: `.artifacts/ai-replay/phase146-pricing-intent-dry.json` (`failureTypeCounts.infra_error=1`)
+    - live: `.artifacts/ai-replay/phase146-pricing-intent-live.json` (`failureTypeCounts.infra_error=2`)

@@ -80,36 +80,59 @@ function normalizeLinkedInUrlWithKind(url: string | null | undefined): { kind: L
 }
 
 /**
- * Merge incoming LinkedIn URL into an existing value with strict precedence.
+ * Classify and split a LinkedIn URL into profile/company variants.
+ * Use this when writing to Lead.linkedinUrl (profile-only) and Lead.linkedinCompanyUrl.
+ */
+export function classifyLinkedInUrl(
+  url: string | null | undefined
+): { profileUrl: string | null; companyUrl: string | null } {
+  const normalized = normalizeLinkedInUrlWithKind(url);
+
+  if (!normalized.value) {
+    return { profileUrl: null, companyUrl: null };
+  }
+
+  if (normalized.kind === "profile") {
+    return { profileUrl: normalized.value, companyUrl: null };
+  }
+
+  if (normalized.kind === "company") {
+    return { profileUrl: null, companyUrl: normalized.value };
+  }
+
+  return { profileUrl: null, companyUrl: null };
+}
+
+/**
+ * Merge incoming LinkedIn profile URL into the profile field.
  *
  * Rules:
- * - New profile URL always wins over existing company URL.
- * - Existing profile is preserved unless incoming is a profile replacement.
- * - Company URL can only fill a missing existing value.
+ * - Existing profile URL is preserved (fill-only).
+ * - Only profile URLs are considered.
+ * - Company URLs are ignored here; use mergeLinkedInCompanyUrl instead.
  */
 export function mergeLinkedInUrl(currentUrl: string | null | undefined, incomingUrl: string | null | undefined): string | null {
-  if (!incomingUrl) return currentUrl ?? null;
+  const current = classifyLinkedInUrl(currentUrl).profileUrl;
+  const incoming = classifyLinkedInUrl(incomingUrl).profileUrl;
 
-  const current = normalizeLinkedInUrlWithKind(currentUrl);
-  const incoming = normalizeLinkedInUrlWithKind(incomingUrl);
+  if (current) return current;
+  return incoming;
+}
 
-  if (!incoming.value) {
-    return current.value;
-  }
-
-  if (!current.value) {
-    return incoming.value;
-  }
-
-  if (current.kind === "profile" && incoming.kind === "company") {
-    return current.value;
-  }
-
-  if (current.kind === "company" && incoming.kind === "profile") {
-    return incoming.value;
-  }
-
-  return current.value;
+/**
+ * Merge incoming LinkedIn company URL into the dedicated company field.
+ *
+ * Rules:
+ * - Fill-only: never overwrite an existing company URL.
+ * - Never stores profile URLs.
+ */
+export function mergeLinkedInCompanyUrl(
+  currentCompanyUrl: string | null | undefined,
+  incomingUrl: string | null | undefined
+): string | null {
+  const current = classifyLinkedInUrl(currentCompanyUrl).companyUrl;
+  if (current) return current;
+  return classifyLinkedInUrl(incomingUrl).companyUrl;
 }
 
 /**

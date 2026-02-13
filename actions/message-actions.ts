@@ -31,6 +31,7 @@ import { recordOutboundForBookingProgress } from "@/lib/booking-progress";
 import { coerceSmsDraftPartsOrThrow } from "@/lib/sms-multipart";
 import { BackgroundJobType } from "@prisma/client";
 import { enqueueBackgroundJob } from "@/lib/background-jobs/enqueue";
+import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 
 const AI_ROUTE_SETTINGS_PATH = "Settings -> Admin -> Admin Dashboard";
 const DRAFT_GENERATION_DISABLED_ERROR =
@@ -232,7 +233,7 @@ export async function reanalyzeLeadSentiment(leadId: string): Promise<{
 interface SendMessageResult {
   success: boolean;
   messageId?: string;
-  errorCode?: "sms_dnd" | "draft_already_sending" | "send_outcome_unknown";
+  errorCode?: "sms_dnd" | "invalid_country_code" | "draft_already_sending" | "send_outcome_unknown";
   error?: string;
 }
 
@@ -1021,7 +1022,13 @@ export async function sendLinkedInMessage(
       return { success: false, error: "Workspace has no LinkedIn account configured" };
     }
 
-    const linkedinUrl = lead.linkedinUrl;
+    const linkedinUrl = normalizeLinkedInUrl(lead.linkedinUrl);
+    if (!linkedinUrl) {
+      return {
+        success: false,
+        error: "LinkedIn URL is not a personal profile - a /in/ profile URL is required",
+      };
+    }
 
     console.log(`[sendLinkedInMessage] Sending to lead ${leadId} via LinkedIn (${linkedinUrl})`);
 
@@ -2254,7 +2261,13 @@ export async function checkLinkedInStatus(leadId: string): Promise<LinkedInStatu
       return { ...defaultResult, error: "Workspace has no LinkedIn account configured" };
     }
 
-    const linkedinUrl = lead.linkedinUrl;
+    const linkedinUrl = normalizeLinkedInUrl(lead.linkedinUrl);
+    if (!linkedinUrl) {
+      return {
+        ...defaultResult,
+        error: "LinkedIn URL is not a personal profile - a /in/ profile URL is required",
+      };
+    }
     const accountId = lead.client.unipileAccountId;
 
     // Check connection status and InMail balance in parallel

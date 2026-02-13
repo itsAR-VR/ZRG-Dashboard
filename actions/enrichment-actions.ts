@@ -8,7 +8,12 @@
 import { prisma } from "@/lib/prisma";
 import { triggerEnrichmentForLead, type ClayEnrichmentRequest } from "@/lib/clay-api";
 import { fetchEmailBisonLead, getCustomVariable } from "@/lib/emailbison-api";
-import { mergeLinkedInUrl, normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import {
+  classifyLinkedInUrl,
+  mergeLinkedInCompanyUrl,
+  mergeLinkedInUrl,
+  normalizeLinkedInUrl,
+} from "@/lib/linkedin-utils";
 import { normalizePhone } from "@/lib/lead-matching";
 import { toStoredPhone } from "@/lib/phone-utils";
 
@@ -51,8 +56,9 @@ export async function markLeadsForEnrichment(clientId: string): Promise<{ marked
       enrichmentStatus: null, // Not yet processed
       email: { not: null }, // Email leads only
       OR: [
-        { linkedinUrl: null },
         { phone: null },
+        { linkedinUrl: null },
+        { linkedinUrl: { not: { contains: "/in/" } } },
       ],
     },
     data: {
@@ -85,7 +91,7 @@ export async function enrichSingleLead(leadId: string): Promise<{
     return { success: false, message: "Lead has no email address" };
   }
 
-  const missingLinkedIn = !lead.linkedinUrl;
+  const missingLinkedIn = !normalizeLinkedInUrl(lead.linkedinUrl);
   const missingPhone = !lead.phone;
 
   if (!missingLinkedIn && !missingPhone) {
@@ -111,7 +117,7 @@ export async function enrichSingleLead(leadId: string): Promise<{
     companyName: lead.companyName || undefined,
     companyDomain: lead.companyWebsite || undefined,
     state: lead.companyState || undefined,
-    linkedInProfile: lead.linkedinUrl || undefined,
+    linkedInProfile: normalizeLinkedInUrl(lead.linkedinUrl) || undefined,
   };
 
   // Trigger enrichment
@@ -244,7 +250,9 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
   const extractedCompanyName = emailBisonResult.data.company || getCustomVariable(customVars, "company");
 
   // Normalize the extracted data
-  const normalizedLinkedIn = normalizeLinkedInUrl(extractedLinkedIn);
+  const classifiedLinkedIn = classifyLinkedInUrl(extractedLinkedIn);
+  const normalizedLinkedIn = classifiedLinkedIn.profileUrl;
+  const normalizedLinkedInCompany = classifiedLinkedIn.companyUrl;
   const normalizedPhone = normalizePhone(extractedPhone);
 
   result.fromEmailBison = {
@@ -258,6 +266,7 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
   // 4. Update lead in DB with extracted data
   const updateData: {
     linkedinUrl?: string;
+    linkedinCompanyUrl?: string;
     phone?: string;
     companyName?: string;
     companyWebsite?: string;
@@ -270,6 +279,13 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
   const mergedLinkedIn = mergeLinkedInUrl(lead.linkedinUrl, normalizedLinkedIn);
   if (mergedLinkedIn && mergedLinkedIn !== lead.linkedinUrl) {
     updateData.linkedinUrl = mergedLinkedIn;
+  }
+  const mergedLinkedInCompany = mergeLinkedInCompanyUrl(
+    lead.linkedinCompanyUrl,
+    normalizedLinkedInCompany
+  );
+  if (mergedLinkedInCompany && mergedLinkedInCompany !== lead.linkedinCompanyUrl) {
+    updateData.linkedinCompanyUrl = mergedLinkedInCompany;
   }
   if (normalizedPhone && !lead.phone) {
     updateData.phone = toStoredPhone(extractedPhone) || normalizedPhone;
@@ -297,7 +313,7 @@ export async function refreshAndEnrichLead(leadId: string): Promise<RefreshEnric
   }
 
   // 5. Check if LinkedIn or phone is still missing after EmailBison update
-  const currentLinkedIn = updateData.linkedinUrl || lead.linkedinUrl;
+  const currentLinkedIn = normalizeLinkedInUrl(updateData.linkedinUrl || lead.linkedinUrl);
   const currentPhone = updateData.phone || lead.phone;
 
   const missingLinkedIn = !currentLinkedIn;

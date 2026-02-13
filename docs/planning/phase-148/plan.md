@@ -33,9 +33,9 @@ The working tree has ~250 lines of uncommitted LinkedIn utility and webhook chan
 | Phase 143 | Recent | Message handling / booking routing context | Ensure changes do not regress message ingestion contracts used by action-signal detection / booking routing. |
 
 ## Objectives
-* [ ] Enforce `Lead.linkedinUrl` as **profile-only** (`/in/...`) across matching, ingestion, and runtime send paths.
-* [ ] Add `Lead.linkedinCompanyUrl` to preserve `/company/...` without breaking outbound logic.
-* [ ] Make LinkedIn extraction deterministic (prefer profile when both exist).
+* [x] Enforce `Lead.linkedinUrl` as **profile-only** (`/in/...`) across matching, ingestion, and runtime send paths.
+* [x] Add `Lead.linkedinCompanyUrl` to preserve `/company/...` without breaking outbound logic.
+* [x] Make LinkedIn extraction deterministic (prefer profile when both exist).
 * [ ] Backfill existing leads globally to move company URLs out of `linkedinUrl`.
 * [ ] Validate with unit tests + NTTAN gates and verify Tim Blais workspace behavior.
 
@@ -110,3 +110,15 @@ The working tree has ~250 lines of uncommitted LinkedIn utility and webhook chan
 3. Tim Blais clientId `779e97c3-e7bd-4c1a-9c46-fe54310ae71f` is correct and workspace has leads with company URLs (99%).
 4. `linkedinCompanyUrl` is safe to add as nullable with no default — existing queries won't break (99%).
 5. `normalizeLinkedInUrl` (profile-only) is the correct function for matching (95%).
+
+## RED TEAM — Turn Delta (2026-02-13)
+
+- New finding (MEDIUM): `db:push` + DB-backed tests/replay are blocked by environment DB connectivity (`P1001`), so backfill and production verification remain open.
+- New finding (LOW): `docs/planning/phase-148/replay-case-manifest.json` is still missing; fallback replay path is in use.
+- Coordination check: latest 10 phases scanned (`148, 147, 146, 145, 143, 144, 141, 140, 142, 139`). No direct file-level conflict detected with this turn’s edits beyond previously-documented Phase 147 LinkedIn supersession.
+
+## Phase Summary (running)
+
+- 2026-02-13 08:21 UTC — Implemented Phase 148a/148b/148c code changes for split LinkedIn profile/company semantics and runtime guards; ran lint/build/ai-drafts and fallback replay commands (files: `prisma/schema.prisma`, `lib/linkedin-utils.ts`, `lib/lead-matching.ts`, `app/api/webhooks/ghl/sms/route.ts`, `app/api/webhooks/linkedin/route.ts`, `app/api/webhooks/clay/route.ts`, `lib/background-jobs/email-inbound-post-process.ts`, `lib/system-sender.ts`, `lib/unipile-api.ts`, `lib/followup-engine.ts`, `actions/message-actions.ts`, `actions/enrichment-actions.ts`, `lib/booking-progress.ts`, `lib/reactivation-sequence-prereqs.ts`, `lib/__tests__/linkedin-utils.test.ts`, `lib/__tests__/lead-matching.test.ts`, `lib/__tests__/signature-extractor.test.ts`).
+- 2026-02-13 08:21 UTC — Validation blockers recorded: DB connectivity blocked `db:push`, DB-backed tests, and ai-replay preflight.
+- 2026-02-13 08:22 UTC — Added SMS `invalid_country_code` skip-and-advance handling in follow-up runtime (`lib/system-sender.ts`, `lib/followup-engine.ts`) and aligned `actions/message-actions.ts` result typing; build re-verified.

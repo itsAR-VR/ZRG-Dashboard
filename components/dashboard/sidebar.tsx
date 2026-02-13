@@ -155,6 +155,9 @@ export function Sidebar({
   useEffect(() => {
     let cancelled = false
     if (!activeWorkspace || activeView !== "inbox") {
+      hasLoadedCountsRef.current = false
+      lastWorkspaceRef.current = activeWorkspace
+      setCounts((current) => (current === null ? current : null))
       setIsLoadingCounts(false)
       return () => {
         cancelled = true

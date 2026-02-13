@@ -85,6 +85,7 @@ export type ReplayJudgeScore = {
   promptKey: string;
   promptClientId: string | null;
   systemPrompt: string;
+  decisionContract: Record<string, unknown> | null;
   dimensions: {
     pricingCadenceAccuracy: number;
     factualAlignment: number;

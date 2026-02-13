@@ -1,7 +1,5 @@
-import { PrismaClient } from "@prisma/client";
-
-import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { afterEach, describe, it } from "node:test";
 
 import { findOrCreateLead } from "@/lib/lead-matching";
 import { prisma } from "@/lib/prisma";
@@ -12,7 +10,7 @@ async function ensureClient() {
   return prisma.client.upsert({
     where: { id: TEST_CLIENT_ID },
     update: {
-      name: "Lead Matching Test".concat(""),
+      name: "Lead Matching Test",
     },
     create: {
       id: TEST_CLIENT_ID,
@@ -34,7 +32,7 @@ describe("findOrCreateLead", () => {
     await prisma.lead.deleteMany({ where: { clientId: TEST_CLIENT_ID } });
   });
 
-  it("matches by incoming company URL when existing lead has profile URL", async () => {
+  it("does not match an existing lead by incoming company URL", async () => {
     const client = await ensureClient();
 
     await prisma.lead.create({
@@ -42,8 +40,7 @@ describe("findOrCreateLead", () => {
         clientId: client.id,
         firstName: "Jane",
         lastName: "Doe",
-        email: "jane@example.com",
-        linkedinUrl: "https://linkedin.com/company/acme",
+        linkedinUrl: "https://linkedin.com/in/jane-doe",
         status: "new",
         autoReplyEnabled: false,
         autoFollowUpEnabled: false,
@@ -53,49 +50,65 @@ describe("findOrCreateLead", () => {
     const result = await findOrCreateLead(
       client.id,
       {
-        firstName: "Jane",
-        lastName: "Doe",
+        firstName: "Another",
+        lastName: "Person",
       },
       {
-        linkedinUrl: "https://www.linkedin.com/in/jane-doe",
+        linkedinUrl: "https://linkedin.com/company/acme",
       }
     );
 
-    assert.equal(result.matchedBy, "linkedinUrl");
-    assert.equal(result.lead.linkedinUrl, "https://linkedin.com/in/jane-doe");
+    const totalLeads = await prisma.lead.count({ where: { clientId: client.id } });
+
+    assert.equal(result.matchedBy, "new");
+    assert.equal(totalLeads, 2);
+    assert.equal(result.lead.linkedinUrl, null);
+    assert.equal(result.lead.linkedinCompanyUrl, "https://linkedin.com/company/acme");
   });
 
-  it("does not create a duplicate lead when URL variants are mixed", async () => {
+  it("stores company URL separately when matching an existing lead by email", async () => {
     const client = await ensureClient();
 
-    const first = await prisma.lead.create({
+    const existing = await prisma.lead.create({
       data: {
         clientId: client.id,
+        email: "alex@example.com",
         firstName: "Alex",
         lastName: "Taylor",
-        email: "alex@example.com",
-        linkedinUrl: "https://linkedin.com/company/acme",
+        linkedinUrl: "https://linkedin.com/in/alex-taylor",
         status: "new",
         autoReplyEnabled: false,
         autoFollowUpEnabled: false,
       },
     });
 
-    const firstResult = await findOrCreateLead(
+    const result = await findOrCreateLead(
       client.id,
       { email: "alex@example.com", firstName: "Alex", lastName: "Taylor" },
-      { linkedinUrl: "https://linkedin.com/in/alex-taylor" }
+      { linkedinUrl: "https://linkedin.com/company/acme" }
     );
 
-    const totalLeads = await prisma.lead.count({ where: { clientId: client.id } });
-
-    assert.equal(first.id, firstResult.lead.id);
-    assert.equal(totalLeads, 1);
+    assert.equal(result.lead.id, existing.id);
+    assert.equal(result.matchedBy, "email");
+    assert.equal(result.lead.linkedinUrl, "https://linkedin.com/in/alex-taylor");
+    assert.equal(result.lead.linkedinCompanyUrl, "https://linkedin.com/company/acme");
   });
-});
 
-describe("lead-matching test utils", () => {
-  it("has no-op", () => {
-    assert.equal(true, true);
+  it("persists explicit linkedinCompanyUrl while keeping profile-only linkedinUrl", async () => {
+    const client = await ensureClient();
+
+    const result = await findOrCreateLead(
+      client.id,
+      { email: "morgan@example.com", firstName: "Morgan", lastName: "Lee" },
+      {
+        linkedinUrl: "https://www.linkedin.com/in/morgan-lee/",
+        linkedinCompanyUrl: "https://www.linkedin.com/company/example-corp/about/",
+      }
+    );
+
+    assert.equal(result.isNew, true);
+    assert.equal(result.matchedBy, "new");
+    assert.equal(result.lead.linkedinUrl, "https://linkedin.com/in/morgan-lee");
+    assert.equal(result.lead.linkedinCompanyUrl, "https://linkedin.com/company/example-corp");
   });
 });

@@ -14,7 +14,12 @@ import {
   extractLinkedInFromText,
   extractPhoneFromText,
 } from "@/lib/signature-extractor";
-import { mergeLinkedInUrl, normalizeLinkedInUrl, normalizeLinkedInUrlAny } from "@/lib/linkedin-utils";
+import {
+  classifyLinkedInUrl,
+  mergeLinkedInCompanyUrl,
+  mergeLinkedInUrl,
+  normalizeLinkedInUrl,
+} from "@/lib/linkedin-utils";
 import { normalizePhone } from "@/lib/lead-matching";
 import { toStoredPhone } from "@/lib/phone-utils";
 import {
@@ -196,6 +201,7 @@ interface EmailBisonEnrichmentData {
  */
 interface EmailBisonEnrichmentResult {
   linkedinUrl?: string;
+  linkedinCompanyUrl?: string;
   phone?: string;
   companyName?: string;
   companyWebsite?: string;
@@ -204,6 +210,26 @@ interface EmailBisonEnrichmentResult {
   employeeHeadcount?: string;
   timezoneRaw?: string;
   clayData: EmailBisonEnrichmentData;
+}
+
+function buildLinkedInFieldUpdates(opts: {
+  currentProfileUrl: string | null | undefined;
+  currentCompanyUrl: string | null | undefined;
+  incomingUrl: string | null | undefined;
+}): { linkedinUrl?: string; linkedinCompanyUrl?: string } {
+  const classified = classifyLinkedInUrl(opts.incomingUrl);
+  const mergedProfile = mergeLinkedInUrl(opts.currentProfileUrl, classified.profileUrl);
+  const mergedCompany = mergeLinkedInCompanyUrl(opts.currentCompanyUrl, classified.companyUrl);
+  const updates: { linkedinUrl?: string; linkedinCompanyUrl?: string } = {};
+
+  if (mergedProfile && mergedProfile !== opts.currentProfileUrl) {
+    updates.linkedinUrl = mergedProfile;
+  }
+  if (mergedCompany && mergedCompany !== opts.currentCompanyUrl) {
+    updates.linkedinCompanyUrl = mergedCompany;
+  }
+
+  return updates;
 }
 
 async function enrichLeadFromEmailBison(
@@ -240,11 +266,15 @@ async function enrichLeadFromEmailBison(
       getCustomVariable(customVars, "company_linkedin");
 
     if (linkedinUrlRaw) {
-      const normalized = normalizeLinkedInUrlAny(linkedinUrlRaw) || normalizeLinkedInUrl(linkedinUrlRaw);
-      if (normalized) {
-        result.linkedinUrl = normalized;
-        result.clayData.linkedInProfile = normalized;
-        console.log(`[EmailBison Enrichment] Found LinkedIn URL for lead ${leadId}: ${normalized}`);
+      const classified = classifyLinkedInUrl(linkedinUrlRaw);
+      if (classified.profileUrl) {
+        result.linkedinUrl = classified.profileUrl;
+        result.clayData.linkedInProfile = classified.profileUrl;
+        console.log(`[EmailBison Enrichment] Found LinkedIn profile URL for lead ${leadId}: ${classified.profileUrl}`);
+      }
+      if (classified.companyUrl) {
+        result.linkedinCompanyUrl = classified.companyUrl;
+        console.log(`[EmailBison Enrichment] Found LinkedIn company URL for lead ${leadId}: ${classified.companyUrl}`);
       }
     }
 
@@ -319,6 +349,7 @@ async function enrichLeadFromEmailBison(
       where: { id: leadId },
       select: {
         linkedinUrl: true,
+        linkedinCompanyUrl: true,
         phone: true,
         companyName: true,
         companyWebsite: true,
@@ -330,10 +361,14 @@ async function enrichLeadFromEmailBison(
     });
 
     const updates: Record<string, unknown> = {};
-    const mergedResultLinkedIn = mergeLinkedInUrl(currentLead?.linkedinUrl, result.linkedinUrl);
-    if (mergedResultLinkedIn && mergedResultLinkedIn !== currentLead?.linkedinUrl) {
-      updates.linkedinUrl = mergedResultLinkedIn;
-    }
+    Object.assign(
+      updates,
+      buildLinkedInFieldUpdates({
+        currentProfileUrl: currentLead?.linkedinUrl,
+        currentCompanyUrl: currentLead?.linkedinCompanyUrl,
+        incomingUrl: result.linkedinUrl ?? result.linkedinCompanyUrl,
+      })
+    );
     if (result.phone && !currentLead?.phone) updates.phone = result.phone;
     if (result.companyName && !currentLead?.companyName) updates.companyName = result.companyName;
     if (result.companyWebsite && !currentLead?.companyWebsite) updates.companyWebsite = result.companyWebsite;
@@ -386,8 +421,8 @@ async function enrichLeadFromSignature(opts: {
   leadName: string;
   leadEmail: string;
   emailBody: string;
-}): Promise<{ phone?: string; linkedinUrl?: string }> {
-  const result: { phone?: string; linkedinUrl?: string } = {};
+}): Promise<{ phone?: string; linkedinUrl?: string; linkedinCompanyUrl?: string }> {
+  const result: { phone?: string; linkedinUrl?: string; linkedinCompanyUrl?: string } = {};
 
   try {
     const getSignatureTail = (text: string) => {
@@ -410,10 +445,10 @@ async function enrichLeadFromSignature(opts: {
 
     const currentLead = await prisma.lead.findUnique({
       where: { id: opts.leadId },
-      select: { phone: true, linkedinUrl: true },
+      select: { phone: true, linkedinUrl: true, linkedinCompanyUrl: true },
     });
 
-    if (currentLead?.phone && currentLead?.linkedinUrl) {
+    if (currentLead?.phone && normalizeLinkedInUrl(currentLead.linkedinUrl)) {
       return result;
     }
 
@@ -430,7 +465,7 @@ async function enrichLeadFromSignature(opts: {
       if (!looksLikeMatchesSender(tail, opts.leadEmail, opts.leadName)) return result;
 
       const fallbackPhone = !currentLead?.phone ? extractPhoneFromText(tail) : null;
-      const fallbackLinkedIn = normalizeLinkedInUrlAny(extractLinkedInFromText(tail));
+      const fallbackLinkedIn = extractLinkedInFromText(tail);
       if (!fallbackPhone && !fallbackLinkedIn) return result;
 
       const updates: Record<string, unknown> = {};
@@ -438,10 +473,17 @@ async function enrichLeadFromSignature(opts: {
         updates.phone = fallbackPhone;
         result.phone = fallbackPhone;
       }
-      const mergedFallbackLinkedIn = mergeLinkedInUrl(currentLead?.linkedinUrl, fallbackLinkedIn);
-      if (mergedFallbackLinkedIn && mergedFallbackLinkedIn !== currentLead?.linkedinUrl) {
-        updates.linkedinUrl = mergedFallbackLinkedIn;
-        result.linkedinUrl = mergedFallbackLinkedIn;
+      const linkedInUpdates = buildLinkedInFieldUpdates({
+        currentProfileUrl: currentLead?.linkedinUrl,
+        currentCompanyUrl: currentLead?.linkedinCompanyUrl,
+        incomingUrl: fallbackLinkedIn,
+      });
+      Object.assign(updates, linkedInUpdates);
+      if (linkedInUpdates.linkedinUrl) {
+        result.linkedinUrl = linkedInUpdates.linkedinUrl;
+      }
+      if (linkedInUpdates.linkedinCompanyUrl) {
+        result.linkedinCompanyUrl = linkedInUpdates.linkedinCompanyUrl;
       }
 
       if (Object.keys(updates).length > 0) {
@@ -461,13 +503,17 @@ async function enrichLeadFromSignature(opts: {
       result.phone = extraction.phone;
     }
     if (extraction.linkedinUrl) {
-      const normalizedSignatureLinkedIn = normalizeLinkedInUrlAny(extraction.linkedinUrl);
-      if (normalizedSignatureLinkedIn) {
-        const mergedSignatureLinkedIn = mergeLinkedInUrl(currentLead?.linkedinUrl, normalizedSignatureLinkedIn);
-        if (mergedSignatureLinkedIn && mergedSignatureLinkedIn !== currentLead?.linkedinUrl) {
-          updates.linkedinUrl = mergedSignatureLinkedIn;
-          result.linkedinUrl = mergedSignatureLinkedIn;
-        }
+      const linkedInUpdates = buildLinkedInFieldUpdates({
+        currentProfileUrl: currentLead?.linkedinUrl,
+        currentCompanyUrl: currentLead?.linkedinCompanyUrl,
+        incomingUrl: extraction.linkedinUrl,
+      });
+      Object.assign(updates, linkedInUpdates);
+      if (linkedInUpdates.linkedinUrl) {
+        result.linkedinUrl = linkedInUpdates.linkedinUrl;
+      }
+      if (linkedInUpdates.linkedinCompanyUrl) {
+        result.linkedinCompanyUrl = linkedInUpdates.linkedinCompanyUrl;
       }
     }
 
@@ -511,7 +557,8 @@ async function triggerClayEnrichmentIfNeeded(opts: {
     // One-time policy: only attempt Clay enrichment once per lead.
     if (lead.enrichmentStatus) return;
 
-    const missingLinkedIn = !lead.linkedinUrl && !opts.emailBisonData?.linkedInProfile;
+    const leadProfileUrl = normalizeLinkedInUrl(lead.linkedinUrl);
+    const missingLinkedIn = !leadProfileUrl && !opts.emailBisonData?.linkedInProfile;
     const existingPhone = lead.phone || opts.emailBisonData?.existingPhone;
     const hasValidPhone = existingPhone && normalizePhone(existingPhone);
     const missingPhone = !hasValidPhone;
@@ -544,7 +591,7 @@ async function triggerClayEnrichmentIfNeeded(opts: {
         companyName: opts.emailBisonData?.companyName || lead.companyName || undefined,
         companyDomain: opts.emailBisonData?.companyDomain,
         state: opts.emailBisonData?.state,
-        linkedInProfile: opts.emailBisonData?.linkedInProfile || lead.linkedinUrl || undefined,
+        linkedInProfile: opts.emailBisonData?.linkedInProfile || leadProfileUrl || undefined,
       },
       missingLinkedIn,
       missingPhone && !opts.emailBisonData?.existingPhone
@@ -965,14 +1012,18 @@ export async function runEmailInboundPostProcessJob(opts: {
       console.log(`[Enrichment] Found phone in message for lead ${lead.id}: ${messageExtraction.phone}`);
     }
     if (messageExtraction.linkedinUrl) {
-      const normalizedMessageLinkedIn = normalizeLinkedInUrlAny(messageExtraction.linkedinUrl);
-      if (normalizedMessageLinkedIn) {
-        const mergedMessageLinkedIn = mergeLinkedInUrl(currentLead?.linkedinUrl, normalizedMessageLinkedIn);
-        if (mergedMessageLinkedIn && mergedMessageLinkedIn !== currentLead?.linkedinUrl) {
-          messageUpdates.linkedinUrl = mergedMessageLinkedIn;
-        }
-        console.log(`[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${normalizedMessageLinkedIn}`);
-      }
+      const linkedInUpdates = buildLinkedInFieldUpdates({
+        currentProfileUrl: currentLead?.linkedinUrl,
+        currentCompanyUrl: currentLead?.linkedinCompanyUrl,
+        incomingUrl: messageExtraction.linkedinUrl,
+      });
+      Object.assign(messageUpdates, linkedInUpdates);
+      const classified = classifyLinkedInUrl(messageExtraction.linkedinUrl);
+      console.log(
+        `[Enrichment] Found LinkedIn in message for lead ${lead.id}: ${
+          classified.profileUrl || classified.companyUrl || "unclassified"
+        }`
+      );
     }
 
     if (Object.keys(messageUpdates).length > 0) {

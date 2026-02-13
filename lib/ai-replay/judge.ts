@@ -508,6 +508,10 @@ export async function runReplayJudge(opts: {
     promptKey: REPLAY_JUDGE_PROMPT_KEY,
     promptClientId: effectiveClientId || null,
     systemPrompt,
+    decisionContract:
+      extraction?.decision_contract_v1 && typeof extraction.decision_contract_v1 === "object"
+        ? (extraction.decision_contract_v1 as Record<string, unknown>)
+        : null,
     dimensions: finalDimensions,
     failureReasons: llmIssues,
     suggestedFixes: llmSuggestedFixes,

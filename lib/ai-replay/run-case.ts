@@ -119,6 +119,7 @@ function buildEvidencePacket(opts: {
   generatedDraft: string | null;
   generationError: string | null;
   judge: ReplayCaseResult["judge"];
+  decisionContract?: Record<string, unknown> | null;
   invariants?: ReplayInvariantFailure[];
   notes?: string | null;
 }): ReplayEvidencePacket {
@@ -132,7 +133,7 @@ function buildEvidencePacket(opts: {
       body: opts.inboundBody,
       transcript: opts.transcript,
     },
-    decisionContract: null,
+    decisionContract: opts.decisionContract || null,
     generation: {
       status: opts.generationStatus,
       draftId: opts.draftId,
@@ -166,8 +167,6 @@ function clip(text: string, maxChars: number): string {
   return `${trimmed.slice(0, maxChars)}\n...[truncated]`;
 }
 
-const PRICING_INTENT_REGEX =
-  /\b(how much|price|pricing|cost|fee|investment|monthly|annual|quarterly|per\s+month|per\s+year|per\s+quarter)\b/i;
 const PRICING_TERMS_REGEX =
   /\b(price|pricing|cost|fee|membership|billing|monthly|annual|annually|quarterly|per\s+month|per\s+year|per\s+quarter)\b/i;
 const ORPHAN_PRICING_CADENCE_LINE_REGEX =
@@ -176,10 +175,6 @@ const NON_BLOCKING_JUDGE_REASON_REGEX =
   /\b(exact|verbatim|required phrasing|required wording|prescribed phrasing|supported phrasing|scripted|playbook|approved phrasing|standard phrasing|minor|slight|tone|wording|style|second sentence|list-heavy|over-explains|conversational|equivalent|booking intent|qualify first|unrequested qualification|qualification detail|single-question format|single required alignment question|extra alternative criteria|longer than needed|adds friction|not needed|isn't needed|wasn't asked|wasn’t asked|cta could be clearer|low-friction|vague call ask|booking link \(available\)|clear next step)\b/i;
 const BLOCKING_JUDGE_REASON_REGEX =
   /\b(unsupported|hallucinat|mismatch|wrong recipient|wrong timezone|fabricated|missing answer|no supported pricing|no dollar amount|in the past|banned phrase|discovery call|opt-out|unsubscribe|unsafe|policy|slot|date|booking link|contradiction|invented|conflict)\b/i;
-
-function hasExplicitPricingIntent(text: string): boolean {
-  return PRICING_INTENT_REGEX.test(text || "");
-}
 
 function hasOrphanPricingCadenceLine(text: string): boolean {
   return ORPHAN_PRICING_CADENCE_LINE_REGEX.test(text || "");
@@ -1151,20 +1146,24 @@ export async function runReplayCase(opts: {
       objectiveCriticalReasons.push(reason);
       pricingObjectiveWarnings.push(reason);
     }
-    const inboundPricingText = `${opts.selectionCase.inboundSubject || ""}\n${opts.selectionCase.inboundBody || ""}`;
+    const requiresPricingAnswer = Boolean(
+      judge.decisionContract &&
+        typeof judge.decisionContract === "object" &&
+        judge.decisionContract.needsPricingAnswer === "yes"
+    );
     const sourcePricingAmounts = Array.from(
       new Set([
         ...extractPricingAmounts(workspaceContext.serviceDescription || ""),
         ...extractPricingAmounts(workspaceContext.knowledgeContext || ""),
       ])
     );
-    if (hasExplicitPricingIntent(inboundPricingText) && sourcePricingAmounts.length > 0 && pricingCheck.allDraft.length === 0) {
+    if (requiresPricingAnswer && sourcePricingAmounts.length > 0 && pricingCheck.allDraft.length === 0) {
       const reason = `[pricing_missing_answer] lead asked for pricing but draft provided no supported pricing amount (available: $${sourcePricingAmounts.join(", $")})`;
       objectiveCriticalReasons.push(reason);
       pricingObjectiveWarnings.push(reason);
     }
     if (
-      hasExplicitPricingIntent(inboundPricingText) &&
+      requiresPricingAnswer &&
       PRICING_TERMS_REGEX.test(generatedDraft || "") &&
       pricingCheck.allDraft.length === 0
     ) {
@@ -1236,6 +1235,7 @@ export async function runReplayCase(opts: {
         generatedDraft,
         generationError: null,
         judge: judgedResult,
+        decisionContract: judge.decisionContract,
         invariants: invariantFailures,
       }),
       transcript,
@@ -1280,6 +1280,7 @@ export async function runReplayCase(opts: {
         generatedDraft: null,
         generationError: errorMessage,
         judge: null,
+        decisionContract: null,
       }),
       completedAt: completedAt.toISOString(),
       durationMs: completedAt.getTime() - startedAt.getTime(),

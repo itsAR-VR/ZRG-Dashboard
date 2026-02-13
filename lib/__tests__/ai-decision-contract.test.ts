@@ -17,6 +17,8 @@ const baseExtraction = {
   relative_preference_detail: null,
   needs_clarification: false,
   detected_timezone: "America/Los_Angeles",
+  needs_pricing_answer: false,
+  needs_community_details: false,
   evidence: ["Lead asks to chat Friday afternoon"],
   qualification_evidence: ["Lead confirms revenue threshold"],
 };
@@ -25,7 +27,6 @@ describe("ai decision contract v1", () => {
   it("derives booking_only contract for qualified booking intent", () => {
     const contract = deriveAIDecisionContractV1FromExtraction({
       extraction: baseExtraction,
-      messageText: "Friday 12-3pm PST works for me",
     });
 
     assert.equal(contract.contractVersion, "v1");
@@ -43,13 +44,25 @@ describe("ai decision contract v1", () => {
         ...baseExtraction,
         intent_to_book: false,
         needs_clarification: false,
+        needs_pricing_answer: true,
       },
-      messageText: "What is the monthly pricing before we schedule?",
     });
 
     assert.equal(contract.hasBookingIntent, "no");
     assert.equal(contract.needsPricingAnswer, "yes");
     assert.equal(contract.responseMode, "info_then_booking");
+  });
+
+  it("does not infer pricing intent from qualification context", () => {
+    const contract = deriveAIDecisionContractV1FromExtraction({
+      extraction: {
+        ...baseExtraction,
+        intent_to_book: false,
+        needs_pricing_answer: false,
+      },
+    });
+
+    assert.equal(contract.needsPricingAnswer, "no");
   });
 
   it("validates strict yes/no and mode fields", () => {

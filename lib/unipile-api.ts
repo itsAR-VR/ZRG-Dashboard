@@ -166,6 +166,11 @@ export function extractLinkedInPublicIdentifier(linkedinUrl: string): string {
     const parsedUrl = new URL(url);
     const pathname = parsedUrl.pathname;
 
+    // Company pages are not valid person identifiers for messaging.
+    if (/\/company\//i.test(pathname)) {
+      return "";
+    }
+
     // Match /in/username or /in/username/
     const match = pathname.match(/\/in\/([^\/]+)\/?/);
     if (match && match[1]) {

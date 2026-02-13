@@ -78,6 +78,10 @@ export function validateReplayJudgeScore(value: unknown): ReplayJudgeScore {
     promptKey: typeof record.promptKey === "string" && record.promptKey.trim() ? record.promptKey.trim() : "meeting.overseer.gate.v1",
     promptClientId: typeof record.promptClientId === "string" && record.promptClientId.trim() ? record.promptClientId.trim() : null,
     systemPrompt: typeof record.systemPrompt === "string" && record.systemPrompt.trim() ? record.systemPrompt.trim() : "N/A",
+    decisionContract:
+      record.decisionContract && typeof record.decisionContract === "object"
+        ? (record.decisionContract as Record<string, unknown>)
+        : null,
     dimensions: {
       pricingCadenceAccuracy: validateScore100(dimensions.pricingCadenceAccuracy, "dimensions.pricingCadenceAccuracy"),
       factualAlignment: validateScore100(dimensions.factualAlignment, "dimensions.factualAlignment"),

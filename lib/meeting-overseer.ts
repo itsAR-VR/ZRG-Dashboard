@@ -41,6 +41,8 @@ export type MeetingOverseerExtractDecision = {
   time_extraction_confidence: number;
   needs_clarification: boolean;
   clarification_reason: string | null;
+  needs_pricing_answer: boolean;
+  needs_community_details: boolean;
   confidence: number;
   evidence: string[];
   decision_contract_v1?: AIDecisionContractV1 | null;
@@ -84,6 +86,8 @@ const MEETING_OVERSEER_EXTRACT_SCHEMA = {
     time_extraction_confidence: { type: "number" },
     needs_clarification: { type: "boolean" },
     clarification_reason: { type: ["string", "null"] },
+    needs_pricing_answer: { type: "boolean" },
+    needs_community_details: { type: "boolean" },
     confidence: { type: "number" },
     evidence: { type: "array", items: { type: "string" } },
   },
@@ -106,6 +110,8 @@ const MEETING_OVERSEER_EXTRACT_SCHEMA = {
     "time_extraction_confidence",
     "needs_clarification",
     "clarification_reason",
+    "needs_pricing_answer",
+    "needs_community_details",
     "confidence",
     "evidence",
   ],
@@ -149,12 +155,10 @@ const PRICING_KEYWORDS = [
   "cost",
   "fee",
   "investment",
-  "monthly",
-  "annual",
-  "quarterly",
-  "per month",
-  "per year",
-  "per quarter",
+  "billing",
+  "membership",
+  "quote",
+  "rates",
 ];
 
 function clamp01(value: number): number {
@@ -214,9 +218,18 @@ function normalizeDetectedTimezone(value: unknown): string | null {
   return trimmed;
 }
 
+function normalizeDecisionBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "yes" || normalized === "true") return true;
+    if (normalized === "no" || normalized === "false") return false;
+  }
+  return false;
+}
+
 function attachDecisionContractV1(
-  decision: MeetingOverseerExtractDecision,
-  messageText: string
+  decision: MeetingOverseerExtractDecision
 ): MeetingOverseerExtractDecision {
   const derived = deriveAIDecisionContractV1FromExtraction({
     extraction: {
@@ -229,10 +242,11 @@ function attachDecisionContractV1(
       relative_preference_detail: decision.relative_preference_detail,
       needs_clarification: decision.needs_clarification,
       detected_timezone: decision.detected_timezone,
+      needs_pricing_answer: decision.needs_pricing_answer,
+      needs_community_details: decision.needs_community_details,
       evidence: decision.evidence,
       qualification_evidence: decision.qualification_evidence,
     },
-    messageText,
   });
 
   const validated = validateAIDecisionContractV1(derived);
@@ -375,8 +389,9 @@ export async function getMeetingOverseerDecision(
       {
       ...extract,
       detected_timezone: normalizeDetectedTimezone(extract.detected_timezone),
-      },
-      ""
+      needs_pricing_answer: normalizeDecisionBoolean((extract as { needs_pricing_answer?: unknown }).needs_pricing_answer),
+      needs_community_details: normalizeDecisionBoolean((extract as { needs_community_details?: unknown }).needs_community_details),
+      }
     );
   }
   return existing;
@@ -412,8 +427,9 @@ export async function runMeetingOverseerExtraction(opts: {
         {
         ...existingDecision,
         detected_timezone: normalizeDetectedTimezone(existingDecision.detected_timezone),
-        },
-        opts.messageText
+        needs_pricing_answer: normalizeDecisionBoolean((existingDecision as { needs_pricing_answer?: unknown }).needs_pricing_answer),
+        needs_community_details: normalizeDecisionBoolean((existingDecision as { needs_community_details?: unknown }).needs_community_details),
+        }
       );
     }
   }
@@ -495,6 +511,12 @@ Rules:
   - if message text is ambiguous but a valid lead timezone hint is provided, use that hint.
   - otherwise return null.
 - confidence fields (intent_confidence, qualification_confidence, time_extraction_confidence) must be 0..1.
+- needs_pricing_answer:
+  - true only when the lead explicitly asks about cost/price/pricing/fees/billing/cadence for the offer.
+  - false for qualification-only mentions (for example "$1M annual revenue" or growth metrics) when they are not asking for membership pricing.
+- needs_community_details:
+  - true when the lead explicitly asks what is included, benefits, how the community works, or similar details.
+  - false otherwise.
 - If the message is ambiguous about scheduling intent, prefer is_scheduling_related=false and intent="other" (fail closed).
 - Do NOT invent dates or times. Use only the message and offered slots list.
 - Provide short evidence quotes from the message.
@@ -533,6 +555,8 @@ Output JSON only.`,
   decision.relative_preference = normalizeRelativePreference(decision.relative_preference);
   decision.qualification_status = normalizeQualificationStatus(decision.qualification_status);
   decision.detected_timezone = normalizeDetectedTimezone(decision.detected_timezone);
+  decision.needs_pricing_answer = normalizeDecisionBoolean(decision.needs_pricing_answer);
+  decision.needs_community_details = normalizeDecisionBoolean(decision.needs_community_details);
   if (!decision.detected_timezone) {
     const knownLeadTimezone = (opts.leadTimezone || "").trim();
     if (isValidIanaTimezone(knownLeadTimezone)) {
@@ -543,7 +567,7 @@ Output JSON only.`,
     decision.accepted_slot_index = null;
   }
 
-  const decisionWithContract = attachDecisionContractV1(decision, opts.messageText);
+  const decisionWithContract = attachDecisionContractV1(decision);
 
   if (messageId && shouldPersistDecision) {
     await persistDecision({

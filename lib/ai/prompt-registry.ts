@@ -608,6 +608,12 @@ Rules:
 - If they mention "later this week", "next week", or "sometime" without a specific day/time, set needs_clarification=true.
 - If they mention relative timing ("later this week", "next week", "tomorrow"), set relative_preference + relative_preference_detail to the exact phrase.
 - accepted_slot_index is 1-based and ONLY when confidently matching offered slots; otherwise null.
+- needs_pricing_answer:
+  - true only when the lead explicitly asks about pricing/cost/fees/billing/cadence.
+  - false for qualification-only mentions (for example "$1M annual revenue") when pricing is not requested.
+- needs_community_details:
+  - true when the lead explicitly asks what is included, benefits, or how the community works.
+  - false otherwise.
 - If the message is ambiguous about scheduling intent, prefer is_scheduling_related=false and intent="other" (fail closed).
 - Do NOT invent dates/times. Use only the message and offered slots list.
 - Provide short evidence quotes.
@@ -622,6 +628,8 @@ Output JSON only:
   "preferred_time_of_day": string | null,
   "relative_preference": string | null,
   "relative_preference_detail": string | null,
+  "needs_pricing_answer": boolean,
+  "needs_community_details": boolean,
   "needs_clarification": boolean,
   "clarification_reason": string | null,
   "confidence": number,

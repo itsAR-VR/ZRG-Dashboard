@@ -87,3 +87,15 @@ WHERE "clientId" = '779e97c3-e7bd-4c1a-9c46-fe54310ae71f'
 
 ## Handoff
 Proceed to Phase 148e to run validation gates, replay checks, and a production rollout verification checklist.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Backfill script/SQL implementation not started in this turn.
+  - Verified prerequisite schema/index changes are in place in code (`linkedinCompanyUrl` field + index).
+- Commands run:
+  - `DATABASE_URL='postgres://...' DIRECT_URL='postgres://...' npm run db:push` — fail (`P1001`, DB unreachable from current environment).
+- Blockers:
+  - Database connectivity is currently unavailable, blocking all global backfill execution and verification queries.
+- Next concrete steps:
+  - Re-run `npm run db:push` when DB access is available.
+  - Execute Stage 1 SQL migration + Stage 2 batched normalization script with recorded before/after counts.

@@ -75,3 +75,26 @@ If this phase ships:
 1. Update Phase 147 plan to mark 147b (LinkedIn unstick) as **superseded by Phase 148c**.
 2. Drop `_phase148_backfill_backup` table after 7-day observation window.
 3. Consider whether `normalizeLinkedInUrlAny` can be deprecated now that all callers use `classifyLinkedInUrl`.
+
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Ran mandatory local validation (`lint`, `build`, `test:ai-drafts`).
+  - Executed fallback NTTAN replay commands with Tim client ID due missing manifest file.
+  - Captured replay artifacts for failed preflight in `.artifacts/ai-replay/`.
+- Commands run:
+  - `npm run lint` — pass (warnings only).
+  - `npm run build` — pass.
+  - `npm run test:ai-drafts` — pass.
+  - `npm run test:ai-replay -- --client-id 779e97c3-e7bd-4c1a-9c46-fe54310ae71f --dry-run --limit 20` — fail (preflight DB connectivity).
+  - `npm run test:ai-replay -- --client-id 779e97c3-e7bd-4c1a-9c46-fe54310ae71f --limit 20 --concurrency 3` — fail (preflight DB connectivity).
+- Replay artifacts:
+  - `.artifacts/ai-replay/run-2026-02-13T08-20-36-808Z.json` (`failureTypeCounts.infra_error=1`).
+  - `.artifacts/ai-replay/run-2026-02-13T08-20-40-728Z.json` (`failureTypeCounts.infra_error=2`).
+  - `judgePromptKey` / `judgeSystemPrompt` not present because replay aborted during DB preflight before case evaluation.
+- Blockers:
+  - Replay preflight cannot connect to DB (`Can't reach database server at db.pzaptpgrcezknnsfytob.supabase.co`).
+  - `docs/planning/phase-148/replay-case-manifest.json` still missing (fallback path used).
+- Next concrete steps:
+  - Create replay manifest once DB/thread IDs are accessible.
+  - Re-run replay dry/live commands and document `judgePromptKey`, `judgeSystemPrompt`, and per-case `failureType`.
+  - Complete Tim workspace production verification checklist.

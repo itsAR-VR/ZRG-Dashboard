@@ -8,6 +8,7 @@ import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { recordOutboundForBookingProgress, handleSmsDndForBookingProgress } from "@/lib/booking-progress";
 import { sendLinkedInMessageWithWaterfall } from "@/lib/unipile-api";
 import { updateUnipileConnectionHealth } from "@/lib/workspace-integration-health";
+import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 
 export type OutboundSentBy = "ai" | "setter";
 
@@ -22,7 +23,7 @@ export type SystemSendMeta = {
 export type SystemSendResult = {
   success: boolean;
   messageId?: string;
-  errorCode?: "sms_dnd";
+  errorCode?: "sms_dnd" | "invalid_country_code";
   error?: string;
 };
 
@@ -32,6 +33,7 @@ export type LinkedInSystemSendResult = {
   error?: string;
   messageType?: "dm" | "inmail" | "connection_request";
   attemptedMethods?: string[];
+  isInvalidProfileUrl?: boolean;
 };
 
 function isGhlSmsDndErrorText(errorText: string): boolean {
@@ -190,7 +192,21 @@ export async function sendSmsSystem(
     }
 
     if (!result.success) {
-      return { success: false, error: result.error || "Failed to send message via GHL" };
+      const errorText = result.error || "Failed to send message via GHL";
+      const lowerError = errorText.toLowerCase();
+      if (
+        result.errorCode === "invalid_country_code" ||
+        lowerError.includes("invalid_country_code") ||
+        lowerError.includes("invalid country code")
+      ) {
+        return {
+          success: false,
+          errorCode: "invalid_country_code",
+          error: "Cannot send SMS right now (invalid country code in GoHighLevel contact).",
+        };
+      }
+
+      return { success: false, error: errorText };
     }
 
     const ghlMessageId = result.data?.messageId || null;
@@ -299,13 +315,26 @@ export async function sendLinkedInMessageSystem(
       return { success: false, error: "Lead has linkedinId but no LinkedIn URL - cannot send message" };
     }
 
+    const validLinkedInProfileUrl = normalizeLinkedInUrl(lead.linkedinUrl);
+    if (!validLinkedInProfileUrl) {
+      console.warn(
+        `[LINKEDIN] Invalid profile URL rejected — leadId=${lead.id}, url=${lead.linkedinUrl || "n/a"}`
+      );
+      return {
+        success: false,
+        error:
+          "LinkedIn URL is not a personal profile — cannot send. Lead needs a /in/ profile URL.",
+        isInvalidProfileUrl: true,
+      };
+    }
+
     if (!lead.client.unipileAccountId) {
       return { success: false, error: "Workspace has no LinkedIn account configured" };
     }
 
     const result = await sendLinkedInMessageWithWaterfall(
       lead.client.unipileAccountId,
-      lead.linkedinUrl,
+      validLinkedInProfileUrl,
       body,
       undefined,
       undefined

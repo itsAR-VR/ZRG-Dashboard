@@ -489,6 +489,7 @@ model Lead {
   emailBisonLeadId String?   // Inboxxia/EmailBison lead ID (for Email)
   linkedinId       String?   // Unipile LinkedIn member ID (populated after connection)
   linkedinUrl      String?   // LinkedIn profile URL (normalized format)
+  linkedinCompanyUrl String?  // LinkedIn company page URL (normalized format)
   linkedinUnreachableAt DateTime? // When Unipile reports the recipient cannot be reached (Phase 53)
   linkedinUnreachableReason String? @db.Text
   // Contact information
@@ -609,7 +610,8 @@ model Lead {
   @@index([sentimentTag])
   @@index([email])          // For cross-channel matching
   @@index([phone])          // For cross-channel matching
-  @@index([linkedinUrl])    // For LinkedIn matching
+  @@index([linkedinUrl])    // For LinkedIn profile matching
+  @@index([linkedinCompanyUrl]) // For LinkedIn company URL diagnostics/backfill
   @@index([industry])
   @@index([employeeHeadcount])
   @@index([enrichmentStatus]) // For batch enrichment queries

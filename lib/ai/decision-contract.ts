@@ -33,6 +33,8 @@ type ExtractionForDecisionContract = {
   relative_preference_detail: string | null;
   needs_clarification: boolean;
   detected_timezone: string | null;
+  needs_pricing_answer?: unknown;
+  needs_community_details?: unknown;
   evidence: string[];
   qualification_evidence: string[];
 };
@@ -53,20 +55,6 @@ function normalizeResponseMode(value: unknown): DecisionResponseMode {
     return value;
   }
   return "clarify_only";
-}
-
-function detectPricingRequest(messageText: string): DecisionYesNo {
-  const text = (messageText || "").toLowerCase();
-  if (!text) return "no";
-  return /\b(price|pricing|cost|fee|investment|monthly|annual|quarterly|per month|per year|per quarter)\b/.test(text)
-    ? "yes"
-    : "no";
-}
-
-function detectCommunityDetailRequest(messageText: string): DecisionYesNo {
-  const text = (messageText || "").toLowerCase();
-  if (!text) return "no";
-  return /\b(community|club|what.?s included|benefits|details|how does it work|learn more)\b/.test(text) ? "yes" : "no";
 }
 
 function buildProposedWindows(extraction: ExtractionForDecisionContract): DecisionProposedWindow[] {
@@ -97,15 +85,14 @@ function buildProposedWindows(extraction: ExtractionForDecisionContract): Decisi
 
 export function deriveAIDecisionContractV1FromExtraction(opts: {
   extraction: ExtractionForDecisionContract;
-  messageText: string;
 }): AIDecisionContractV1 {
   const isQualified: DecisionYesNo = opts.extraction.qualification_status === "qualified" ? "yes" : "no";
   const hasBookingIntent: DecisionYesNo =
     opts.extraction.is_scheduling_related && opts.extraction.intent_to_book ? "yes" : "no";
   const shouldBookNow: DecisionYesNo =
     hasBookingIntent === "yes" && isQualified === "yes" && !opts.extraction.needs_clarification ? "yes" : "no";
-  const needsPricingAnswer = detectPricingRequest(opts.messageText);
-  const needsCommunityDetails = detectCommunityDetailRequest(opts.messageText);
+  const needsPricingAnswer = normalizeYesNo(opts.extraction.needs_pricing_answer, "no");
+  const needsCommunityDetails = normalizeYesNo(opts.extraction.needs_community_details, "no");
   const responseMode: DecisionResponseMode = opts.extraction.needs_clarification
     ? "clarify_only"
     : shouldBookNow === "yes"

@@ -38,6 +38,7 @@ import {
 } from "@/lib/followup-template";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 import { sendEmailReplySystem } from "@/lib/email-send";
+import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import {
   runMeetingOverseerExtraction,
   selectOfferedSlotByPreference,
@@ -1169,6 +1170,7 @@ export async function executeFollowUpStep(
           email: true,
           phone: true,
           linkedinUrl: true,
+          linkedinCompanyUrl: true,
           linkedinId: true,
           linkedinUnreachableAt: true,
           linkedinUnreachableReason: true,
@@ -1190,9 +1192,11 @@ export async function executeFollowUpStep(
         companyName: currentLead.companyName ?? lead.companyName,
         email: currentLead.email ?? lead.email,
         phone: currentLead.phone ?? lead.phone,
-        linkedinUrl: currentLead.linkedinUrl,
+        linkedinUrl: normalizeLinkedInUrl(currentLead.linkedinUrl),
         linkedinId: currentLead.linkedinId,
       };
+
+      const normalizedLinkedInProfileUrl = normalizeLinkedInUrl(currentLead.linkedinUrl);
 
       if (!evaluateCondition(effectiveLead, step.condition)) {
         return {
@@ -1203,7 +1207,19 @@ export async function executeFollowUpStep(
         };
       }
 
-      if (!currentLead.linkedinUrl) {
+      if (!normalizedLinkedInProfileUrl) {
+        if (currentLead.linkedinCompanyUrl) {
+          console.warn(
+            `[LINKEDIN] Company URL skipped — leadId=${currentLead.id}, url=${currentLead.linkedinCompanyUrl}`
+          );
+          return {
+            success: true,
+            action: "skipped",
+            message: "LinkedIn skipped - lead has company page URL only (no personal profile)",
+            advance: true,
+          };
+        }
+
         if (currentLead.enrichmentStatus === "pending") {
           const enrichmentStarted = currentLead.enrichmentLastRetry || currentLead.updatedAt;
           const pendingDuration = Date.now() - enrichmentStarted.getTime();
@@ -1324,7 +1340,7 @@ export async function executeFollowUpStep(
       if (currentLead.linkedinId) {
         const dmResult = await sendLinkedInDM(
           accountId,
-          currentLead.linkedinUrl,
+          normalizedLinkedInProfileUrl,
           content,
           currentLead.linkedinId
         );
@@ -1441,7 +1457,7 @@ export async function executeFollowUpStep(
 
       const inviteResult = await sendLinkedInConnectionRequest(
         accountId,
-        currentLead.linkedinUrl,
+        normalizedLinkedInProfileUrl,
         content
       );
 
@@ -1953,6 +1969,9 @@ export async function executeFollowUpStep(
 
         // Avoid hard-failing and retry-spamming cron when SMS is impossible (most commonly: no phone on contact).
         if (
+          sendResult.errorCode === "invalid_country_code" ||
+          lower.includes("invalid_country_code") ||
+          lower.includes("invalid country code") ||
           lower.includes("missing phone") ||
           lower.includes("phone missing") ||
           lower.includes("no usable phone") ||
@@ -2204,7 +2223,7 @@ export async function processFollowUpsDue(): Promise<{
         email: instance.lead.email,
         phone: instance.lead.phone,
         companyName: instance.lead.companyName ?? null,
-        linkedinUrl: instance.lead.linkedinUrl,
+        linkedinUrl: normalizeLinkedInUrl(instance.lead.linkedinUrl),
         linkedinId: instance.lead.linkedinId,
         sentimentTag: instance.lead.sentimentTag,
         clientId: instance.lead.clientId,
@@ -2738,7 +2757,7 @@ export async function resumeAwaitingEnrichmentFollowUps(opts?: {
     const enrichmentTerminal =
       instance.lead.enrichmentStatus === "failed" || instance.lead.enrichmentStatus === "not_found";
     if (channel === "sms" && !instance.lead.phone && !enrichmentTerminal) continue;
-    if (channel === "linkedin" && !instance.lead.linkedinUrl) continue;
+    if (channel === "linkedin" && !normalizeLinkedInUrl(instance.lead.linkedinUrl)) continue;
 
     try {
       if (channel === "sms" && !instance.lead.phone && enrichmentTerminal) {
@@ -2844,7 +2863,7 @@ export async function resumeAwaitingEnrichmentFollowUpsForLead(
       const enrichmentTerminal =
         instance.lead.enrichmentStatus === "failed" || instance.lead.enrichmentStatus === "not_found";
       if (channel === "sms" && !instance.lead.phone && !enrichmentTerminal) continue;
-      if (channel === "linkedin" && !instance.lead.linkedinUrl) continue;
+      if (channel === "linkedin" && !normalizeLinkedInUrl(instance.lead.linkedinUrl)) continue;
 
       if (channel === "sms" && !instance.lead.phone && enrichmentTerminal) {
         await ensureFollowUpTaskRecorded({
@@ -3773,6 +3792,7 @@ export async function processMessageForAutoBooking(
     const offeredSlots = await getOfferedSlots(leadId);
     const preferred = meta?.channel;
     const messageTrimmed = (messageBody || "").trim();
+    const leadHasLinkedInProfile = Boolean(normalizeLinkedInUrl(lead.linkedinUrl));
 
     const pickTaskType = async (): Promise<"sms" | "email" | "linkedin" | "call"> => {
       const preferredSendable =
@@ -3781,13 +3801,13 @@ export async function processMessageForAutoBooking(
           : preferred === "email"
             ? Boolean(lead.email)
             : preferred === "linkedin"
-              ? Boolean(lead.linkedinUrl)
+              ? leadHasLinkedInProfile
               : false;
 
       if (preferredSendable) return preferred!;
       if (lead.phone) return "sms";
       if (lead.email) return "email";
-      if (lead.linkedinUrl) return "linkedin";
+      if (leadHasLinkedInProfile) return "linkedin";
       return "call";
     };
 
@@ -3800,7 +3820,7 @@ export async function processMessageForAutoBooking(
           : preferred === "email"
             ? Boolean(lead.email)
             : preferred === "linkedin"
-              ? Boolean(lead.linkedinUrl)
+              ? leadHasLinkedInProfile
               : false;
 
       return preferredSendable ? preferred : "call";

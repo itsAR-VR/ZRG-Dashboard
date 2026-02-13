@@ -1,5 +1,10 @@
 import { prisma } from "@/lib/prisma";
-import { mergeLinkedInUrl, normalizeLinkedInUrlAny } from "@/lib/linkedin-utils";
+import {
+  classifyLinkedInUrl,
+  mergeLinkedInCompanyUrl,
+  mergeLinkedInUrl,
+  normalizeLinkedInUrl,
+} from "@/lib/linkedin-utils";
 import { normalizePhoneDigits, toStoredPhone } from "@/lib/phone-utils";
 
 /**
@@ -31,6 +36,7 @@ export interface ExternalIds {
   emailBisonLeadId?: string | null;
   linkedinId?: string | null;
   linkedinUrl?: string | null;
+  linkedinCompanyUrl?: string | null;
 }
 
 export interface CampaignIds {
@@ -47,6 +53,7 @@ export interface FindOrCreateLeadResult {
     emailBisonLeadId: string | null;
     linkedinId: string | null;
     linkedinUrl: string | null;
+    linkedinCompanyUrl: string | null;
     firstName: string | null;
     lastName: string | null;
     email: string | null;
@@ -84,7 +91,16 @@ export async function findOrCreateLead(
 ): Promise<FindOrCreateLeadResult> {
   const normalizedEmail = normalizeEmail(contactInfo.email);
   const normalizedPhone = normalizePhone(contactInfo.phone);
-  const normalizedLinkedInUrl = normalizeLinkedInUrlAny(contactInfo.linkedinUrl || externalIds?.linkedinUrl);
+  const contactLinkedIn = classifyLinkedInUrl(contactInfo.linkedinUrl);
+  const externalLinkedIn = classifyLinkedInUrl(externalIds?.linkedinUrl);
+  const externalLinkedInCompany = classifyLinkedInUrl(externalIds?.linkedinCompanyUrl);
+  const normalizedLinkedInUrl = normalizeLinkedInUrl(
+    externalLinkedIn.profileUrl || contactLinkedIn.profileUrl
+  );
+  const normalizedLinkedInCompanyUrl =
+    externalLinkedInCompany.companyUrl ||
+    externalLinkedIn.companyUrl ||
+    contactLinkedIn.companyUrl;
 
   // Try to find existing lead with explicit priority
   let existingLead = null;
@@ -176,6 +192,13 @@ export async function findOrCreateLead(
     if (mergedLinkedIn && mergedLinkedIn !== existingLead.linkedinUrl) {
       updates.linkedinUrl = mergedLinkedIn;
     }
+    const mergedLinkedInCompany = mergeLinkedInCompanyUrl(
+      existingLead.linkedinCompanyUrl,
+      normalizedLinkedInCompanyUrl
+    );
+    if (mergedLinkedInCompany && mergedLinkedInCompany !== existingLead.linkedinCompanyUrl) {
+      updates.linkedinCompanyUrl = mergedLinkedInCompany;
+    }
 
     // Add campaign associations if not present
     if (!existingLead.campaignId && campaignIds?.campaignId) {
@@ -236,6 +259,7 @@ export async function findOrCreateLead(
         email: normalizedEmail,
         phone: toStoredPhone(contactInfo.phone),
         linkedinUrl: normalizedLinkedInUrl,
+        linkedinCompanyUrl: normalizedLinkedInCompanyUrl,
         linkedinId: externalIds?.linkedinId || null,
         firstName: contactInfo.firstName || null,
         lastName: contactInfo.lastName || null,
@@ -252,7 +276,7 @@ export async function findOrCreateLead(
     });
 
     console.log(
-      `[Lead Matching] Created new lead ${newLead.id} (hasEmail: ${!!normalizedEmail}, hasPhone: ${!!normalizedPhone}, hasLinkedIn: ${!!normalizedLinkedInUrl})`
+      `[Lead Matching] Created new lead ${newLead.id} (hasEmail: ${!!normalizedEmail}, hasPhone: ${!!normalizedPhone}, hasLinkedInProfile: ${!!normalizedLinkedInUrl}, hasLinkedInCompany: ${!!normalizedLinkedInCompanyUrl})`
     );
 
     return {
@@ -316,7 +340,7 @@ export function getAvailableChannels(lead: {
   if (lead.email) {
     channels.push("email");
   }
-  if (lead.linkedinUrl || lead.linkedinId) {
+  if (normalizeLinkedInUrl(lead.linkedinUrl)) {
     channels.push("linkedin");
   }
 

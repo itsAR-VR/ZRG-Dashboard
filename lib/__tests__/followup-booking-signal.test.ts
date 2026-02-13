@@ -24,6 +24,8 @@ function buildDecision(overrides: Partial<MeetingOverseerExtractDecision>): Meet
     time_extraction_confidence: 1,
     needs_clarification: false,
     clarification_reason: null,
+    needs_pricing_answer: false,
+    needs_community_details: false,
     confidence: 1,
     evidence: [],
     ...overrides,

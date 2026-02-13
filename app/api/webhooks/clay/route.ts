@@ -6,7 +6,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyClayWebhookSignature } from "@/lib/clay-api";
-import { mergeLinkedInUrl, normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import {
+  classifyLinkedInUrl,
+  mergeLinkedInCompanyUrl,
+  mergeLinkedInUrl,
+  normalizeLinkedInUrl,
+} from "@/lib/linkedin-utils";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 import { resumeAwaitingEnrichmentFollowUpsForLead } from "@/lib/followup-engine";
 import { toStoredPhone } from "@/lib/phone-utils";
@@ -153,8 +158,12 @@ export async function POST(request: NextRequest) {
     let effectiveStatus: ClayEnrichmentStatus = payload.status;
     if (payload.status === "success") {
       if (payload.enrichmentType === "linkedin") {
-        const normalizedUrl = normalizeLinkedInUrl(payload.linkedinUrl);
-        if (!normalizedUrl && !normalizeLinkedInUrl(lead.linkedinUrl)) {
+        const classified = classifyLinkedInUrl(payload.linkedinUrl);
+        const hasIncomingLinkedIn = Boolean(classified.profileUrl || classified.companyUrl);
+        const hasExistingLinkedIn = Boolean(
+          normalizeLinkedInUrl(lead.linkedinUrl) || classifyLinkedInUrl(lead.linkedinCompanyUrl).companyUrl
+        );
+        if (!hasIncomingLinkedIn && !hasExistingLinkedIn) {
           effectiveStatus = "not_found";
         }
       } else if (payload.enrichmentType === "phone") {
@@ -173,11 +182,17 @@ export async function POST(request: NextRequest) {
 
     if (effectiveStatus === "success") {
       if (payload.enrichmentType === "linkedin" && payload.linkedinUrl) {
-        const normalizedUrl = normalizeLinkedInUrl(payload.linkedinUrl);
-        const existingNormalized = normalizeLinkedInUrl(lead.linkedinUrl);
-        const mergedLinkedIn = mergeLinkedInUrl(existingNormalized, normalizedUrl);
-        if (mergedLinkedIn && mergedLinkedIn !== existingNormalized) {
+        const classified = classifyLinkedInUrl(payload.linkedinUrl);
+        const mergedLinkedIn = mergeLinkedInUrl(lead.linkedinUrl, classified.profileUrl);
+        const mergedLinkedInCompany = mergeLinkedInCompanyUrl(
+          lead.linkedinCompanyUrl,
+          classified.companyUrl
+        );
+        if (mergedLinkedIn && mergedLinkedIn !== lead.linkedinUrl) {
           updateData.linkedinUrl = mergedLinkedIn;
+        }
+        if (mergedLinkedInCompany && mergedLinkedInCompany !== lead.linkedinCompanyUrl) {
+          updateData.linkedinCompanyUrl = mergedLinkedInCompany;
         }
         if (payload.linkedinId && !lead.linkedinId) {
           updateData.linkedinId = payload.linkedinId;

@@ -19,6 +19,7 @@ import type {
   BookingProcessStage,
   LeadCampaignBookingProgress,
 } from "@prisma/client";
+import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 
 export type MessageChannel = "email" | "sms" | "linkedin";
 
@@ -261,7 +262,7 @@ export function isChannelSendable(
     case "sms":
       return Boolean(lead.phone);
     case "linkedin":
-      return Boolean(lead.linkedinId || lead.linkedinUrl);
+      return Boolean(normalizeLinkedInUrl(lead.linkedinUrl));
   }
 }
 

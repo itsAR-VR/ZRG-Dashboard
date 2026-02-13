@@ -7,7 +7,7 @@
 import "@/lib/server-dns";
 import { runStructuredJsonPrompt, runTextPrompt } from "@/lib/ai/prompt-runner";
 import { extractFirstCompleteJsonObjectFromText } from "@/lib/ai/response-utils";
-import { normalizeLinkedInUrl, normalizeLinkedInUrlAny } from "./linkedin-utils";
+import { normalizeLinkedInUrlAny } from "./linkedin-utils";
 import { toStoredPhone } from "./phone-utils";
 
 export interface SignatureExtractionResult {

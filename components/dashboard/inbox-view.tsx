@@ -324,6 +324,8 @@ export function InboxView({
     search: searchQuery.trim() ? searchQuery.trim() : undefined,
   }), [baseQueryOptions, searchQuery]);
 
+  const conversationsQueryEnabled = isActive && workspacesReady && hasWorkspaces;
+
   // Infinite query for conversations
   const {
     data,
@@ -337,7 +339,7 @@ export function InboxView({
     refetch,
   } = useInfiniteQuery({
     queryKey: ["conversations", baseQueryOptions, queryOptions.search ?? ""],
-    enabled: isActive && workspacesReady && hasWorkspaces,
+    enabled: conversationsQueryEnabled,
     queryFn: async ({ pageParam }) => {
       const result = await getConversationsCursor({
         ...queryOptions,
@@ -358,8 +360,7 @@ export function InboxView({
     },
     staleTime: 30000,
     refetchInterval: (query) => {
-      if (!isActive) return false;
-      if (!(workspacesReady && hasWorkspaces)) return false;
+      if (!conversationsQueryEnabled) return false;
       if (query.state.status === "error") return false;
       if (!isPageVisible) return false;
       if (isLive) return REALTIME_HEARTBEAT_INTERVAL;
@@ -367,12 +368,24 @@ export function InboxView({
     },
   });
 
+  const wasConversationsQueryEnabledRef = useRef(conversationsQueryEnabled);
+  const wasPageVisibleRef = useRef(isPageVisible);
+
   useEffect(() => {
-    if (!isActive) return;
+    const wasEnabled = wasConversationsQueryEnabledRef.current;
+    const wasVisible = wasPageVisibleRef.current;
+    wasConversationsQueryEnabledRef.current = conversationsQueryEnabled;
+    wasPageVisibleRef.current = isPageVisible;
+
+    if (!conversationsQueryEnabled) return;
     if (!isPageVisible) return;
-    if (!(workspacesReady && hasWorkspaces)) return;
-    void refetch();
-  }, [hasWorkspaces, isActive, isPageVisible, refetch, workspacesReady]);
+
+    const becameEnabled = !wasEnabled && conversationsQueryEnabled;
+    const becameVisible = !wasVisible && isPageVisible;
+    if (becameEnabled || becameVisible) {
+      void refetch();
+    }
+  }, [conversationsQueryEnabled, isPageVisible, refetch]);
 
   // Manage delayed loading spinner (only show after 300ms)
   useEffect(() => {

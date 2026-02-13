@@ -1,3 +1,5 @@
+import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+
 export type ReactivationPrereqInput = {
   channels: Array<string | null | undefined>;
   lead: {
@@ -35,7 +37,7 @@ export function getMissingReactivationPrereqs(input: ReactivationPrereqInput): s
   }
 
   if (channels.has("linkedin")) {
-    if (!input.lead.linkedinUrl) missing.push("lead.linkedinUrl");
+    if (!normalizeLinkedInUrl(input.lead.linkedinUrl)) missing.push("lead.linkedinUrl");
     if (!input.client.unipileAccountId) missing.push("client.unipileAccountId");
   }
 

@@ -4,7 +4,7 @@ import { BackgroundJobType } from "@prisma/client";
 import { prisma, isPrismaUniqueConstraintError } from "@/lib/prisma";
 import { findOrCreateLead } from "@/lib/lead-matching";
 import { normalizeSmsCampaignLabel } from "@/lib/sms-campaign";
-import { normalizeLinkedInUrlAny } from "@/lib/linkedin-utils";
+import { classifyLinkedInUrl } from "@/lib/linkedin-utils";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { enqueueBackgroundJob, buildJobDedupeKey } from "@/lib/background-jobs/enqueue";
 import { computeGhlSmsDedupeKey } from "@/lib/webhook-dedupe";
@@ -261,7 +261,7 @@ export async function POST(request: NextRequest) {
       "company profile",
       "profile",
     ]);
-    const normalizedLinkedInUrl = linkedInUrlRaw ? normalizeLinkedInUrlAny(linkedInUrlRaw) : null;
+    const classifiedLinkedIn = classifyLinkedInUrl(linkedInUrlRaw);
 
     // Resolve SMS campaign (sub-client label) if present.
     const extractedSubClientLabel = extractSmsSubClientLabelFromWebhookPayload(payload);
@@ -294,7 +294,11 @@ export async function POST(request: NextRequest) {
     const leadResult = await findOrCreateLead(
       client.id,
       { email, phone, firstName, lastName },
-      { ghlContactId: contactId, linkedinUrl: normalizedLinkedInUrl },
+      {
+        ghlContactId: contactId,
+        linkedinUrl: classifiedLinkedIn.profileUrl,
+        linkedinCompanyUrl: classifiedLinkedIn.companyUrl,
+      },
       { smsCampaignId }
     );
 

@@ -27,6 +27,8 @@ function buildExtraction(overrides?: Partial<MeetingOverseerExtractDecision>): M
     time_extraction_confidence: 0.5,
     needs_clarification: false,
     clarification_reason: null,
+    needs_pricing_answer: true,
+    needs_community_details: false,
     confidence: 0.8,
     evidence: [],
     decision_contract_v1: {
