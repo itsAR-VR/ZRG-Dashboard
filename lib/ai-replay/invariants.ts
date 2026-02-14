@@ -10,7 +10,7 @@ type EvaluateReplayInvariantsInput = {
 };
 
 const MONTH_PATTERN =
-  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}\b/gi;
+  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?\b/gi;
 const TIME_PATTERN = /\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s?(am|pm)\b/gi;
 const URL_PATTERN = /https?:\/\/[^\s)]+|www\.[^\s)]+/gi;
 
@@ -32,9 +32,13 @@ function normalizeTimeToken(raw: string): string {
   return `${hour}:${minute}${meridiem}`;
 }
 
+function normalizeDateToken(raw: string): string {
+  return normalizeText(raw).replace(/\b(\d{1,2})(st|nd|rd|th)\b/g, "$1");
+}
+
 function extractDateTokens(value: string): string[] {
   const matches = value.match(MONTH_PATTERN) || [];
-  return Array.from(new Set(matches.map((entry) => normalizeText(entry))));
+  return Array.from(new Set(matches.map((entry) => normalizeDateToken(entry))));
 }
 
 function extractTimeTokens(value: string): string[] {
@@ -44,6 +48,12 @@ function extractTimeTokens(value: string): string[] {
 
 function extractUrls(value: string): string[] {
   return value.match(URL_PATTERN) || [];
+}
+
+function looksLikeSchedulingUrl(url: string): boolean {
+  return /(calendly\.com|meetings\.hubspot\.com|hubspot\.com\/meetings|leadconnectorhq\.com|gohighlevel\.com|msgsndr\.com|\/widget\/booking\/|\/widget\/bookings\/|calendar\.google\.com\/appointments\/schedules\/)/i.test(
+    url || ""
+  );
 }
 
 function looksLikeBookingIntent(text: string): boolean {
@@ -110,6 +120,8 @@ export function evaluateReplayInvariantFailures(input: EvaluateReplayInvariantsI
 
   const normalizedDraft = normalizeText(draft);
   const normalizedInbound = normalizeText(inbound);
+  const inboundTimes = new Set(extractTimeTokens(inbound));
+  const inboundDates = new Set(extractDateTokens(inbound));
   const offeredSlots = Array.isArray(input.offeredSlots) ? input.offeredSlots : [];
   const offered = buildOfferedSlotCorpus(offeredSlots);
 
@@ -119,11 +131,20 @@ export function evaluateReplayInvariantFailures(input: EvaluateReplayInvariantsI
 
   if (offeredSlots.length > 0) {
     const mentionsOfferedPhrase = offered.normalizedPhrases.some((phrase) => phrase && normalizedDraft.includes(phrase));
-    const mentionsOfferedTime = draftTimes.some((token) => offered.timeTokens.has(token));
 
-    if ((draftTimes.length > 0 || /\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(draft)) &&
-      !mentionsOfferedPhrase &&
-      !mentionsOfferedTime) {
+    const looksLikeWindowClarifier =
+      draft.includes("?") &&
+      (/\bwhat\s+(?:(?:exact|specific)\s+)?start\s+time\b/i.test(draft) || /\bwhat\s+time\b/i.test(draft)) &&
+      (/\b(after|before|between)\b/i.test(draft) || /\b\d{1,2}\s*[-–]\s*\d{1,2}\s*(?:am|pm)\b/i.test(draft));
+
+    // If the lead proposed an exact time and we are simply confirming it, do not require
+    // it to be present in the offered slot list (the lead may be proposing a new time).
+    const introducedTimes = draftTimes.filter((token) => !offered.timeTokens.has(token) && !inboundTimes.has(token));
+
+    // Only flag slot mismatches when the draft proposes concrete times. Clarifying-only
+    // questions like "What time next Monday afternoon works?" should not fail simply
+    // because offered slots exist in the record.
+    if (introducedTimes.length > 0 && !mentionsOfferedPhrase && !looksLikeWindowClarifier) {
       failures.push({
         code: "slot_mismatch",
         message: "Draft proposes time options that do not match offered availability.",
@@ -135,7 +156,7 @@ export function evaluateReplayInvariantFailures(input: EvaluateReplayInvariantsI
       draftTimes.length > 0 || /\b(booked|confirmed|confirming|scheduled|let'?s do|would either of these work|which works)\b/i.test(draft);
 
     if (offered.dateTokens.size > 0 && draftDates.length > 0 && dateIsCommittal) {
-      const hasUnsupportedDate = draftDates.some((token) => !offered.dateTokens.has(token));
+      const hasUnsupportedDate = draftDates.some((token) => !offered.dateTokens.has(token) && !inboundDates.has(token));
       if (hasUnsupportedDate) {
         failures.push({
           code: "date_mismatch",
@@ -150,20 +171,24 @@ export function evaluateReplayInvariantFailures(input: EvaluateReplayInvariantsI
     .map((value) => normalizeText(value))
     .filter(Boolean);
   const inboundUrls = extractUrls(inbound);
+  const inboundSchedulingUrls = inboundUrls.filter(looksLikeSchedulingUrl);
   const draftUrls = extractUrls(draft);
-  const draftMentionsLink =
-    draftUrls.length > 0 || /\b(link|calendar|calendly|book here|schedule here|scheduling link)\b/i.test(draft);
+  const draftSchedulingUrls = draftUrls.filter(looksLikeSchedulingUrl);
+  const SCHEDULING_LINK_CTA_REGEX =
+    /\b(calendly|calendar\s+link|scheduling\s+link|scheduler\s+link|booking\s+link|book\s+here|schedule\s+here|grab\s+a\s+time\s+here|use\s+(?:my|this)\s+(?:calendly|calendar)|book\s+via\s+(?:my|this)\s+link)\b/i;
+  const draftMentionsLink = draftSchedulingUrls.length > 0 || SCHEDULING_LINK_CTA_REGEX.test(draft);
 
-  if (draftMentionsLink && knownLinks.length === 0 && inboundUrls.length === 0) {
+  if (draftMentionsLink && knownLinks.length === 0 && inboundSchedulingUrls.length === 0) {
     failures.push({
       code: "fabricated_link",
       message: "Draft references a scheduling link that is not present in context.",
       severity: "critical",
     });
-  } else if (draftUrls.length > 0 && knownLinks.length > 0) {
-    const hasUnknownUrl = draftUrls.some((url) => {
+  } else if (draftSchedulingUrls.length > 0 && (knownLinks.length > 0 || inboundSchedulingUrls.length > 0)) {
+    const allowedLinks = knownLinks.length > 0 ? knownLinks : inboundSchedulingUrls.map((value) => normalizeText(value)).filter(Boolean);
+    const hasUnknownUrl = draftSchedulingUrls.some((url) => {
       const normalizedUrl = normalizeText(url);
-      return !knownLinks.some((knownLink) => normalizedUrl.includes(knownLink));
+      return !allowedLinks.some((knownLink) => normalizedUrl.includes(knownLink));
     });
     if (hasUnknownUrl) {
       failures.push({

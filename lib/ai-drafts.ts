@@ -34,7 +34,7 @@ import type { OfferedSlot } from "@/lib/booking";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 import { getLeadQualificationAnswerState } from "@/lib/qualification-answer-extraction";
 import { extractImportantEmailSignatureContext, type EmailSignatureContextExtraction } from "@/lib/email-signature-context";
-import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
+import { extractSchedulerLinkFromText, hasExplicitSchedulerLinkInstruction } from "@/lib/scheduling-link";
 import { emailsMatch, extractFirstName } from "@/lib/email-participants";
 import {
   buildLeadContextBundle,
@@ -51,6 +51,7 @@ import { getLeadMemoryContext } from "@/lib/lead-memory-context";
 import { recordAiRouteSkip } from "@/lib/ai/route-skip-observability";
 import {
   getMeetingOverseerDecision,
+  repairShouldBookNowAgainstOfferedSlots,
   runMeetingOverseerExtraction,
   runMeetingOverseerGateDecision,
   shouldRunMeetingOverseer,
@@ -271,7 +272,7 @@ function buildBookedConfirmationDraft(params: {
   return `${greeting}You're booked for ${slotLabel}.\n\nBest,\n${params.aiName}`;
 }
 
-function applyShouldBookNowConfirmationIfNeeded(params: {
+export function applyShouldBookNowConfirmationIfNeeded(params: {
   draft: string;
   channel: DraftChannel;
   firstName: string | null;
@@ -294,10 +295,12 @@ function applyShouldBookNowConfirmationIfNeeded(params: {
 
   const acceptedIndex = typeof params.extraction?.accepted_slot_index === "number" ? params.extraction.accepted_slot_index : null;
   const selectedSlot =
-    matchedSlot ||
-    (acceptedIndex && acceptedIndex > 0 && acceptedIndex <= params.availability.length
+    acceptedIndex && acceptedIndex > 0 && acceptedIndex <= params.availability.length
       ? params.availability[acceptedIndex - 1]!
-      : params.availability[0]!);
+      : matchedSlot;
+  // If we can't map to a concrete offered slot, don't "helpfully" pick an arbitrary time.
+  // Let the overseer/generator handle the reply using lead-stated timing instead.
+  if (!selectedSlot) return draft;
 
   return buildBookedConfirmationDraft({
     channel: params.channel,
@@ -305,6 +308,84 @@ function applyShouldBookNowConfirmationIfNeeded(params: {
     aiName: params.aiName,
     slotLabel: selectedSlot,
   });
+}
+
+export function applySchedulingConfirmationWordingGuard(params: {
+  draft: string;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, changed: false };
+
+  // "Locked for" reads like internal ops language and can imply a booking without explicit confirmation.
+  // Normalize to "Confirmed for" which is clearer and matches our scheduling playbook.
+  const next = draft.replace(/\blocked\s+for\b/gi, "Confirmed for");
+  if (next === draft) return { draft, changed: false };
+  return { draft: next, changed: true };
+}
+
+const CONTACT_UPDATE_EMAIL_REGEX = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+const CONTACT_UPDATE_CUE_REGEX =
+  /\b(please use|use\s+[^.\n]{0,40}\bemail\b|do not regularly receive|not monitored|no longer with|reach me personally|email me directly|please contact)\b/i;
+const CONTACT_UPDATE_SCHEDULING_CUE_REGEX =
+  /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm|schedule|scheduling|book|booking|call|meeting|availability|slot|time)\b/i;
+const CONTACT_UPDATE_DRAFT_SCHEDULING_CUE_REGEX =
+  /\b(schedule|scheduling|book|booking|call|meeting|availability|slot)\b/i;
+
+function extractEmailsFromText(text: string): string[] {
+  const raw = text || "";
+  const matches = raw.match(CONTACT_UPDATE_EMAIL_REGEX) || [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const match of matches) {
+    const email = (match || "").trim();
+    if (!email) continue;
+    const key = email.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(email);
+  }
+  return result;
+}
+
+export function applyContactUpdateNoSchedulingGuard(params: {
+  draft: string;
+  latestInboundText: string | null;
+  channel: DraftChannel;
+  firstName: string | null;
+  aiName: string;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  const inbound = (params.latestInboundText || "").trim();
+  if (!draft || !inbound) return { draft, changed: false };
+  if (!CONTACT_UPDATE_CUE_REGEX.test(inbound)) return { draft, changed: false };
+  // If the inbound is explicitly scheduling-related, don't suppress scheduling in the draft.
+  if (CONTACT_UPDATE_SCHEDULING_CUE_REGEX.test(inbound)) return { draft, changed: false };
+
+  const emails = extractEmailsFromText(inbound);
+  if (emails.length === 0) return { draft, changed: false };
+
+  const draftMentionsScheduling =
+    CONTACT_UPDATE_DRAFT_SCHEDULING_CUE_REGEX.test(draft) ||
+    /https?:\/\/\S+/i.test(draft) ||
+    /\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b/i.test(draft);
+  if (!draftMentionsScheduling) return { draft, changed: false };
+
+  const greeting = params.channel === "email" ? (params.firstName ? `Hi ${params.firstName},\n\n` : "Hi,\n\n") : "";
+  const signOff = params.channel === "email" ? `\n\nBest,\n${params.aiName}` : "";
+
+  const contactLineMatch = inbound.match(/contact[^\n]{0,160}?\b([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\b/i);
+  const personalLineMatch = inbound.match(/(?:reach me|email me)[^\n]{0,160}?\b([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\b/i);
+  const businessEmail = (contactLineMatch?.[1] || "").trim() || null;
+  const personalEmail = (personalLineMatch?.[1] || "").trim() || null;
+
+  const sentence =
+    businessEmail && personalEmail && businessEmail.toLowerCase() !== personalEmail.toLowerCase()
+      ? `Got it, thanks for the update. We'll use ${businessEmail} for business matters, and ${personalEmail} to reach you directly.`
+      : `Got it, we'll use ${emails[0]} going forward.`;
+
+  const nextDraft = `${greeting}${sentence}${signOff}`.trim();
+  if (!nextDraft || nextDraft === draft) return { draft, changed: false };
+  return { draft: nextDraft, changed: true };
 }
 
 const PRICING_MODE_SCHEDULING_PARAGRAPH_REGEX =
@@ -463,6 +544,8 @@ const NEEDS_CLARIFICATION_SCHEDULING_HINT_REGEX =
   /\b(time|start time|which|when|works?|after|before|am|pm|pt|pst|pdt|et|est|edt|utc|mon|tue|wed|thu|fri|sat|sun|tomorrow|today|schedule|scheduling|book|booking|calendar|availability|slot|slots)\b/i;
 const NEEDS_CLARIFICATION_QUALIFICATION_HINT_REGEX =
   /\b(annual revenue|revenue|qualified|unqualified|fit|exit|raised|raise|sold|\$\s*1\s*m|\$\s*1,?000,?000|\$\s*2\.5\s*m|\$\s*2,?500,?000)\b/i;
+const NEEDS_CLARIFICATION_COMPOUND_OR_CLAUSE_REGEX =
+  /\bor\s+(?:is|are|was|were|do|does|did|can|could|would|will|have|has|had|should|may|might)\b/i;
 
 export function applyNeedsClarificationSingleQuestionGuard(params: {
   draft: string;
@@ -473,22 +556,52 @@ export function applyNeedsClarificationSingleQuestionGuard(params: {
   const extraction = params.extraction;
   if (!extraction) return { draft, changed: false };
   const contract = extraction.decision_contract_v1;
-  const shouldEnforceSingleQuestion =
-    extraction.needs_clarification === true || contract?.responseMode === "clarify_only";
-  if (!shouldEnforceSingleQuestion) return { draft, changed: false };
+  if (!contract) return { draft, changed: false };
+
+  const shouldEnforceSingleQuestion = extraction.needs_clarification === true || contract.responseMode === "clarify_only";
+  const shouldTrimCompoundOrClause = shouldEnforceSingleQuestion || contract.hasBookingIntent !== "yes";
+  if (!shouldEnforceSingleQuestion && !shouldTrimCompoundOrClause) return { draft, changed: false };
 
   const questionCount = (draft.match(/\?/g) || []).length;
-  if (questionCount <= 1) return { draft, changed: false };
-
   const paragraphs = draft
     .split(/\n{2,}/)
     .map((entry) => entry.trim())
     .filter(Boolean);
-  if (paragraphs.length <= 1) return { draft, changed: false };
 
   const questionParagraphs = paragraphs
     .map((text, idx) => ({ text, idx }))
     .filter((entry) => entry.text.includes("?"));
+
+  if (questionCount <= 1) {
+    if (!shouldTrimCompoundOrClause) return { draft, changed: false };
+    const onlyQuestion = questionParagraphs.length === 1 ? questionParagraphs[0] : null;
+    if (!onlyQuestion) return { draft, changed: false };
+
+    const questionMarkIndex = onlyQuestion.text.indexOf("?");
+    if (questionMarkIndex < 0) return { draft, changed: false };
+
+    const questionSentence = onlyQuestion.text.slice(0, questionMarkIndex + 1);
+    const compoundMatch = questionSentence.match(NEEDS_CLARIFICATION_COMPOUND_OR_CLAUSE_REGEX);
+    if (!compoundMatch || typeof compoundMatch.index !== "number") return { draft, changed: false };
+
+    const beforeOr = questionSentence
+      .slice(0, compoundMatch.index)
+      .replace(/[\s,;:()]+$/g, "")
+      .trim();
+    if (!beforeOr) return { draft, changed: false };
+
+    const simplifiedQuestion = `${beforeOr.replace(/[?.,;:]+$/g, "").trim()}?`;
+    const remainder = onlyQuestion.text.slice(questionMarkIndex + 1).trimStart();
+    const nextParagraph = remainder ? `${simplifiedQuestion} ${remainder}` : simplifiedQuestion;
+    if (nextParagraph === onlyQuestion.text) return { draft, changed: false };
+
+    const nextParagraphs = paragraphs.slice();
+    nextParagraphs[onlyQuestion.idx] = nextParagraph;
+    return { draft: nextParagraphs.join("\n\n").trim(), changed: true };
+  }
+
+  if (!shouldEnforceSingleQuestion) return { draft, changed: false };
+  if (paragraphs.length <= 1) return { draft, changed: false };
   if (questionParagraphs.length <= 1) return { draft, changed: false };
 
   const ranked = questionParagraphs
@@ -512,6 +625,69 @@ export function applyNeedsClarificationSingleQuestionGuard(params: {
   if (!nextDraft || nextDraft === draft) return { draft, changed: false };
 
   return { draft: nextDraft, changed: true };
+}
+
+const RELATIVE_WEEKDAY_NEXT_REGEX =
+  /\bnext\s+(mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b/i;
+const RELATIVE_WEEKDAY_HAS_EXPLICIT_DATE_REGEX =
+  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?\b/i;
+
+function findNextWeekdayInTimeZone(opts: {
+  referenceDate: Date;
+  timeZone: string;
+  weekdayToken: string;
+}): Date | null {
+  for (let offsetDays = 1; offsetDays <= 7; offsetDays += 1) {
+    const candidate = new Date(opts.referenceDate.getTime() + offsetDays * 24 * 60 * 60 * 1000);
+    const weekday = new Intl.DateTimeFormat("en-US", { timeZone: opts.timeZone, weekday: "short" }).format(candidate);
+    if (normalizeWeekdayToken(weekday) === opts.weekdayToken) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+export function applyRelativeWeekdayDateDisambiguationGuard(params: {
+  draft: string;
+  extraction: MeetingOverseerExtractDecision | null;
+  timeZone: string;
+  referenceDate?: Date | null;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, changed: false };
+  if (!draft.includes("?")) return { draft, changed: false };
+  if (RELATIVE_WEEKDAY_HAS_EXPLICIT_DATE_REGEX.test(draft)) return { draft, changed: false };
+
+  const extraction = params.extraction;
+  const contract = extraction?.decision_contract_v1;
+  if (!contract) return { draft, changed: false };
+
+  const shouldApply =
+    extraction?.needs_clarification === true ||
+    contract.responseMode === "clarify_only" ||
+    contract.responseMode === "offer_times";
+  if (!shouldApply) return { draft, changed: false };
+
+  const match = draft.match(RELATIVE_WEEKDAY_NEXT_REGEX);
+  if (!match) return { draft, changed: false };
+  const weekdayToken = normalizeWeekdayToken(match[1] || "");
+  if (!weekdayToken) return { draft, changed: false };
+
+  const timeZone = (params.timeZone || "").trim() || "UTC";
+  const referenceDate = params.referenceDate instanceof Date ? params.referenceDate : new Date();
+  const targetDate = findNextWeekdayInTimeZone({ referenceDate, timeZone, weekdayToken });
+  if (!targetDate) return { draft, changed: false };
+
+  const explicit = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+  }).format(targetDate);
+
+  const next = draft.replace(RELATIVE_WEEKDAY_NEXT_REGEX, explicit);
+  if (next === draft) return { draft, changed: false };
+  return { draft: next, changed: true };
 }
 
 const CLARIFY_ONLY_WINDOW_EVIDENCE_REGEX =
@@ -898,15 +1074,22 @@ function normalizeEmailDraftLineBreaks(draft: string): string {
 const MISSING_BOOKING_LINK_CALL_CUE_REGEX = /\b(15[- ]?minute|quick)\s+(call|chat)\b|\b(grab|book|schedule)\s+(?:a\s+)?(?:time|call|chat|meeting)\b/i;
 const EMAIL_SIGNOFF_REGEX = /\n\n(?:best|thanks|regards|sincerely|cheers),\n/i;
 
-function applyMissingBookingLinkForCallCue(params: {
+export function applyMissingBookingLinkForCallCue(params: {
   draft: string;
   bookingLink: string | null;
   leadSchedulerLink: string | null;
+  extraction?: MeetingOverseerExtractDecision | null;
 }): { draft: string; changed: boolean } {
   const draft = (params.draft || "").trim();
   const bookingLink = (params.bookingLink || "").trim();
   if (!draft || !bookingLink) return { draft, changed: false };
   if ((params.leadSchedulerLink || "").trim()) return { draft, changed: false };
+
+  const contract = params.extraction?.decision_contract_v1;
+  if (params.extraction?.needs_clarification === true || contract?.responseMode === "clarify_only") {
+    return { draft, changed: false };
+  }
+  if (contract?.shouldBookNow === "yes") return { draft, changed: false };
 
   // If there's already any URL present, don't add another.
   if (/https?:\/\//i.test(draft)) return { draft, changed: false };
@@ -1011,8 +1194,11 @@ const PRICING_PLACEHOLDER_REGEX = /\$\{[A-Z_]+\}|\$[A-Z](?:\s*-\s*\$[A-Z])?(?![A
 const PRICING_PLACEHOLDER_GLOBAL_REGEX = /\$\{[A-Z_]+\}|\$[A-Z](?:\s*-\s*\$[A-Z])?(?![A-Za-z0-9])/g;
 const DOLLAR_AMOUNT_REGEX = /\$\s*\d[\d,]*(?:\.\d{1,2})?/g;
 const DOLLAR_AMOUNT_PRESENCE_REGEX = /\$\s*\d[\d,]*(?:\.\d{1,2})?/;
-const PRICING_NEARBY_REGEX =
-  /\b(price|pricing|fee|fees|cost|costs|membership|investment|per\s+(month|year|quarter)|\/\s?(mo|month|yr|year|qtr|quarter))\b/i;
+// For threshold contexts (ARR/revenue/etc), we only consider strong pricing nouns as evidence that
+// a nearby dollar amount is actually a price. Cadence tokens like "per year" are ambiguous (ARR is annual),
+// and "membership" alone is frequently used in qualification language.
+const PRICING_STRONG_NEARBY_REGEX = /\b(price|pricing|fee|fees|cost|costs|investment|billing|billed|payment|pay)\b/i;
+const MEMBERSHIP_PRICING_NEARBY_REGEX = /\bmembership\s+(?:fee|cost|price|is)\b/i;
 const THRESHOLD_NEARBY_REGEX = /\b(revenue|arr|mrr|raised|raise|funding|valuation|gmv|run[\s-]?rate)\b/i;
 const MONTHLY_CADENCE_REGEX = /\b(monthly|per\s+month|\/\s?(?:mo|month))\b/i;
 const ANNUAL_CADENCE_REGEX = /\b(annual|annually|yearly|per\s+year|\/\s?(?:yr|year))\b/i;
@@ -1174,7 +1360,14 @@ function isLikelyNonPricingDollarAmount(text: string, index: number, rawToken: s
   const windowStart = Math.max(0, index - 40);
   const windowEnd = Math.min(text.length, index + rawToken.length + 40);
   const nearby = text.slice(windowStart, windowEnd);
-  if (THRESHOLD_NEARBY_REGEX.test(nearby) && !PRICING_NEARBY_REGEX.test(nearby)) return true;
+  if (THRESHOLD_NEARBY_REGEX.test(nearby)) {
+    // Avoid treating qualification thresholds like "$1M ARR" as pricing, even when "membership"
+    // appears nearby ("membership requirement"). Only treat as pricing when there's a strong
+    // pricing signal ("fee", "cost", "pricing", etc.) or an explicit "membership is $X" pattern.
+    if (!PRICING_STRONG_NEARBY_REGEX.test(nearby) && !MEMBERSHIP_PRICING_NEARBY_REGEX.test(nearby)) {
+      return true;
+    }
+  }
 
   return false;
 }
@@ -2206,8 +2399,8 @@ export function mergeServiceDescriptions(
   return `${a}\n\n${b}`;
 }
 
-function buildDateContext(timeZone: string): string {
-  const now = new Date();
+function buildDateContext(timeZone: string, nowOverride?: Date | null): string {
+  const now = nowOverride ? new Date(nowOverride) : new Date();
   const dayFormat = new Intl.DateTimeFormat("en-US", {
     timeZone,
     weekday: "long",
@@ -3190,22 +3383,23 @@ export async function generateResponseDraft(
       }
     }
 
-    let triggerMessageRecord: {
-      body: string;
-      subject: string | null;
-      rawText: string | null;
-      rawHtml: string | null;
-    } | null = null;
-    if (triggerMessageId) {
-      try {
-        triggerMessageRecord = await prisma.message.findFirst({
-          where: { id: triggerMessageId, leadId },
-          select: { body: true, subject: true, rawText: true, rawHtml: true },
-        });
-      } catch (error) {
-        console.warn("[AI Drafts] Failed to load trigger message:", error);
-      }
-    }
+	    let triggerMessageRecord: {
+	      body: string;
+	      subject: string | null;
+	      rawText: string | null;
+	      rawHtml: string | null;
+        sentAt: Date;
+	    } | null = null;
+	    if (triggerMessageId) {
+	      try {
+	        triggerMessageRecord = await prisma.message.findFirst({
+	          where: { id: triggerMessageId, leadId },
+	          select: { body: true, subject: true, rawText: true, rawHtml: true, sentAt: true },
+	        });
+	      } catch (error) {
+	        console.warn("[AI Drafts] Failed to load trigger message:", error);
+	      }
+	    }
 
     // Capture timestamp at start for archetype seed (stable within this request)
     const draftRequestStartedAtMs = Date.now();
@@ -3577,21 +3771,18 @@ export async function generateResponseDraft(
     const currentReplierName = hasCcReplier ? lead.currentReplierName : null;
     const responseStrategy = getResponseStrategy(sentimentTag);
 
+    const schedulerInstructionText = [triggerMessageRecord?.subject, triggerMessageRecord?.body].filter(Boolean).join("\n\n");
+    const hasExplicitSchedulerInstruction = hasExplicitSchedulerLinkInstruction(schedulerInstructionText);
     const triggerMessageSchedulerLink = (() => {
       const bodyText = (triggerMessageRecord?.body || "").trim();
       const rawText = (triggerMessageRecord?.rawText || "").trim();
-      const candidate = extractSchedulerLinkFromText(`${bodyText}\n${rawText}`);
-      if (!candidate) return null;
-      if (!/\b(schedule|scheduling|book|booking|calendar|availability|slot|time|works?)\b/i.test(bodyText)) {
-        return null;
-      }
-      return candidate;
+      return extractSchedulerLinkFromText(`${bodyText}\n${rawText}`);
     })();
     const leadSchedulerLink =
       (opts.leadSchedulerLinkOverride || "").trim() ||
-      (lead.externalSchedulingLink || "").trim() ||
-      triggerMessageSchedulerLink ||
-      null;
+      (hasExplicitSchedulerInstruction
+        ? triggerMessageSchedulerLink || (lead.externalSchedulingLink || "").trim() || null
+        : null);
     const leadHasSchedulerLink = Boolean(leadSchedulerLink);
 
     const shouldConsiderScheduling = [
@@ -3617,16 +3808,16 @@ export async function generateResponseDraft(
         console.warn("[AI Drafts] Failed to load latest inbound message for timezone inference:", error);
       }
     }
-    const tzResult = await ensureLeadTimezone(leadId, {
-      conversationText: latestMessageBody || null,
-      subjectText: latestMessageSubject || null,
-    });
-    const leadTimeZone = tzResult.timezone || null;
-    const workspaceTimeZone = settings?.timezone || "America/New_York";
-    const dateContext = buildDateContext(leadTimeZone || workspaceTimeZone);
-    const leadTimezoneContext = leadTimeZone
-      ? `Lead's timezone: ${leadTimeZone}`
-      : "Lead's timezone: unknown";
+	    const tzResult = await ensureLeadTimezone(leadId, {
+	      conversationText: latestMessageBody || null,
+	      subjectText: latestMessageSubject || null,
+	    });
+	    const leadTimeZone = tzResult.timezone || null;
+	    const workspaceTimeZone = settings?.timezone || "America/New_York";
+	    const dateContext = buildDateContext(leadTimeZone || workspaceTimeZone, triggerMessageRecord?.sentAt ?? null);
+	    const leadTimezoneContext = leadTimeZone
+	      ? `Lead's timezone: ${leadTimeZone}`
+	      : "Lead's timezone: unknown";
 
     let bookingEscalationReason: string | null = null;
     // Best-effort early check: if the booking process has exceeded max waves, avoid
@@ -5083,6 +5274,13 @@ Generate an appropriate ${channel} response following the guidelines above.
                 }
               }
 
+              if (extractionDecision) {
+                extractionDecision = repairShouldBookNowAgainstOfferedSlots({
+                  decision: extractionDecision,
+                  offeredSlots: offeredSlotsForOverseer,
+                  leadTimezoneHint: leadTimeZone || null,
+                });
+              }
               meetingOverseerExtractionDecision = extractionDecision;
 
               await persistDraftPipelineArtifact({
@@ -5191,35 +5389,61 @@ Generate an appropriate ${channel} response following the guidelines above.
       }
     }
 
-	    if (draftContent) {
-	      const latestInboundTextForGuards = (() => {
-	        const body = (triggerMessageRecord?.body || "").trim();
-	        const subject = (triggerMessageRecord?.subject || "").trim();
+		    if (draftContent) {
+		      const latestInboundTextForGuards = (() => {
+		        const body = (triggerMessageRecord?.body || "").trim();
+		        const subject = (triggerMessageRecord?.subject || "").trim();
 	        const combined = [subject ? `Subject: ${subject}` : "", body].filter(Boolean).join("\n\n").trim();
 	        return combined || null;
 	      })();
 
-	      draftContent = applyShouldBookNowConfirmationIfNeeded({
-	        draft: draftContent,
-	        channel,
-	        firstName: firstName || null,
-	        aiName,
-	        extraction: meetingOverseerExtractionDecision,
-	        availability,
-	      });
+		      draftContent = applyShouldBookNowConfirmationIfNeeded({
+		        draft: draftContent,
+		        channel,
+		        firstName: firstName || null,
+		        aiName,
+		        extraction: meetingOverseerExtractionDecision,
+		        availability,
+		      });
 
-	      if (channel === "email") {
-	        const normalized = normalizeEmailDraftLineBreaks(draftContent);
-	        if (normalized && normalized !== draftContent) {
-	          draftContent = normalized;
-	          console.log("[AI Drafts] Normalized email draft line breaks", { leadId, channel });
-	        }
-	      }
+          const confirmationWordingGuard = applySchedulingConfirmationWordingGuard({
+            draft: draftContent,
+          });
+          if (confirmationWordingGuard.changed) {
+            draftContent = confirmationWordingGuard.draft;
+            console.log("[AI Drafts] Applied booking confirmation wording guard", {
+              leadId,
+              channel,
+            });
+          }
 
-	      const pricingNoSchedulingGuard = applyPricingAnswerNoSchedulingGuard({
-	        draft: draftContent,
-	        extraction: meetingOverseerExtractionDecision,
-	      });
+			      if (channel === "email") {
+			        const normalized = normalizeEmailDraftLineBreaks(draftContent);
+			        if (normalized && normalized !== draftContent) {
+			          draftContent = normalized;
+		          console.log("[AI Drafts] Normalized email draft line breaks", { leadId, channel });
+		        }
+		      }
+
+		      const contactUpdateGuard = applyContactUpdateNoSchedulingGuard({
+		        draft: draftContent,
+		        latestInboundText: latestInboundTextForGuards,
+		        channel,
+		        firstName: firstName || null,
+		        aiName,
+		      });
+		      if (contactUpdateGuard.changed) {
+		        draftContent = contactUpdateGuard.draft;
+		        console.log("[AI Drafts] Applied contact-update scheduling suppression guard", {
+		          leadId,
+		          channel,
+		        });
+		      }
+
+		      const pricingNoSchedulingGuard = applyPricingAnswerNoSchedulingGuard({
+		        draft: draftContent,
+		        extraction: meetingOverseerExtractionDecision,
+		      });
       if (pricingNoSchedulingGuard.changed) {
         draftContent = pricingNoSchedulingGuard.draft;
         console.log("[AI Drafts] Applied pricing-mode scheduling suppression guard", {
@@ -5266,23 +5490,37 @@ Generate an appropriate ${channel} response following the guidelines above.
         });
       }
 
-      const timezoneGuard = applyTimezoneQuestionSuppressionGuard({
-        draft: draftContent,
-        extraction: meetingOverseerExtractionDecision,
-      });
-      if (timezoneGuard.changed) {
-        draftContent = timezoneGuard.draft;
-        console.log("[AI Drafts] Applied timezone-question suppression guard", {
-          leadId,
-          channel,
-        });
-      }
+	      const timezoneGuard = applyTimezoneQuestionSuppressionGuard({
+	        draft: draftContent,
+	        extraction: meetingOverseerExtractionDecision,
+	      });
+	      if (timezoneGuard.changed) {
+	        draftContent = timezoneGuard.draft;
+	        console.log("[AI Drafts] Applied timezone-question suppression guard", {
+	          leadId,
+	          channel,
+	        });
+	      }
 
-      const infoThenBookingGuard = applyInfoThenBookingNoTimeRequestGuard({
-        draft: draftContent,
-        extraction: meetingOverseerExtractionDecision,
-      });
-      if (infoThenBookingGuard.changed) {
+        const relativeDateGuard = applyRelativeWeekdayDateDisambiguationGuard({
+          draft: draftContent,
+          extraction: meetingOverseerExtractionDecision,
+          timeZone: leadTimeZone || settings?.timezone || "UTC",
+          referenceDate: triggerMessageRecord?.sentAt ?? null,
+        });
+        if (relativeDateGuard.changed) {
+          draftContent = relativeDateGuard.draft;
+          console.log("[AI Drafts] Applied relative-weekday date disambiguation guard", {
+            leadId,
+            channel,
+          });
+        }
+
+	      const infoThenBookingGuard = applyInfoThenBookingNoTimeRequestGuard({
+	        draft: draftContent,
+	        extraction: meetingOverseerExtractionDecision,
+	      });
+	      if (infoThenBookingGuard.changed) {
         draftContent = infoThenBookingGuard.draft;
         console.log("[AI Drafts] Applied info_then_booking scheduling suppression guard", {
           leadId,
@@ -5343,16 +5581,17 @@ Generate an appropriate ${channel} response following the guidelines above.
         });
       }
 
-      if (channel === "email") {
-        const missingBookingLinkGuard = applyMissingBookingLinkForCallCue({
-          draft: draftContent,
-          bookingLink,
-          leadSchedulerLink,
-        });
-        if (missingBookingLinkGuard.changed) {
-          draftContent = missingBookingLinkGuard.draft;
-          console.log("[AI Drafts] Applied missing booking-link call-cue guard", {
-            leadId,
+	      if (channel === "email") {
+	        const missingBookingLinkGuard = applyMissingBookingLinkForCallCue({
+	          draft: draftContent,
+	          bookingLink,
+	          leadSchedulerLink,
+	          extraction: meetingOverseerExtractionDecision,
+	        });
+	        if (missingBookingLinkGuard.changed) {
+	          draftContent = missingBookingLinkGuard.draft;
+	          console.log("[AI Drafts] Applied missing booking-link call-cue guard", {
+	            leadId,
             channel,
           });
         }

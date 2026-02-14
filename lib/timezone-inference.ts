@@ -41,6 +41,7 @@ const SCHEDULING_CONTEXT_REGEX =
 const IANA_TIMEZONE_REGEX = /\b([A-Za-z_]+\/[A-Za-z_]+(?:\/[A-Za-z_]+)?)\b/g;
 const LOCATION_TIMEZONE_HINTS: Array<{ keyword: string; iana: string; confidence: number }> = [
   { keyword: "miami", iana: "America/New_York", confidence: 0.95 },
+  { keyword: "houston", iana: "America/Chicago", confidence: 0.96 },
   { keyword: "seattle", iana: "America/Los_Angeles", confidence: 0.96 },
   { keyword: "dubai", iana: "Asia/Dubai", confidence: 0.95 },
   { keyword: "new york", iana: "America/New_York", confidence: 0.95 },
@@ -391,21 +392,29 @@ export async function ensureLeadTimezone(
     }
   }
 
-  if (isValidIanaTimezone(lead.timezone)) {
-    return { timezone: lead.timezone!, source: "existing", confidence: 1 };
-  }
-
   // Deterministic: if companyState is a US state code, use a best-effort timezone.
   const state = normalizeState(lead.companyState);
   if (state && /^[A-Z]{2}$/.test(state)) {
     const mapped = mapUsStateToTimezone(state);
     if (mapped?.timezone && isValidIanaTimezone(mapped.timezone) && mapped.confidence >= CONFIDENCE_THRESHOLD) {
-      await prisma.lead.update({
-        where: { id: leadId },
-        data: { timezone: mapped.timezone },
-      });
-      return { timezone: mapped.timezone, source: "deterministic", confidence: mapped.confidence };
+      const current = isValidIanaTimezone(lead.timezone) ? lead.timezone : null;
+      const workspaceTimezone = lead.client.settings?.timezone || null;
+      const shouldOverrideExisting =
+        !current ||
+        (workspaceTimezone && current === workspaceTimezone && mapped.timezone !== current);
+
+      if (shouldOverrideExisting) {
+        await prisma.lead.update({
+          where: { id: leadId },
+          data: { timezone: mapped.timezone },
+        });
+        return { timezone: mapped.timezone, source: "deterministic", confidence: mapped.confidence };
+      }
     }
+  }
+
+  if (isValidIanaTimezone(lead.timezone)) {
+    return { timezone: lead.timezone!, source: "existing", confidence: 1 };
   }
 
   // AI inference (only if configured)

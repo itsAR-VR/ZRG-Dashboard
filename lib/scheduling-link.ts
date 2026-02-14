@@ -45,3 +45,20 @@ export function extractSchedulerLinkFromText(text: string): string | null {
 
   return null;
 }
+
+// We only treat a lead-provided scheduler link as "explicitly shared" when the inbound
+// message clearly instructs us to use it. This avoids false positives from email signatures
+// that contain generic "Schedule a meeting" CTAs.
+const EXPLICIT_SCHEDULER_INSTRUCTION_PATTERNS: RegExp[] = [
+  /\b(feel\s+free|you\s+can|go\s+ahead(?:\s+and)?)\s+(?:to\s+)?(?:book|schedule|grab|pick|find)\b/i,
+  /\b(find|pick|grab)\s+(?:a|some)?\s*time\s+here\b/i,
+  /\bhere(?:'s| is)\s+my\s+(?:calendly|calendar|scheduler|scheduling\s+link|link)\b/i,
+  /\b(use|book|schedule)\s+(?:via\s+)?my\s+(?:calendly|calendar|scheduler|scheduling\s+link)\b/i,
+  /\b(use|book|schedule)\s+via\s+my\s+link\b/i,
+];
+
+export function hasExplicitSchedulerLinkInstruction(text: string): boolean {
+  const raw = (text || "").trim();
+  if (!raw) return false;
+  return EXPLICIT_SCHEDULER_INSTRUCTION_PATTERNS.some((pattern) => pattern.test(raw));
+}

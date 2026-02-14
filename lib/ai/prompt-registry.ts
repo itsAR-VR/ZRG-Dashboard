@@ -712,6 +712,7 @@ Knowledge context:
 
 RULES
 - If the lead accepted a time, keep the reply short and acknowledgment-only. Do NOT ask new questions.
+- If the lead explicitly states an exact time (e.g., "Tue Feb 17 10am PST"), do NOT counter with a different time from availability. Acknowledge/confirm their exact stated time (do not convert time zones).
 - Never imply a meeting is booked unless either:
   - the lead explicitly confirmed/accepted a time, or
   - extraction.decision_contract_v1.shouldBookNow is "yes" and the selected slot comes directly from provided availability.

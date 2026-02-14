@@ -63,6 +63,18 @@ test("extractPricingAmounts excludes revenue/threshold amounts", () => {
   assert.deepEqual(result, []);
 });
 
+test("extractPricingAmounts excludes qualification thresholds even when 'membership' is mentioned", () => {
+  const input = "Our membership requires $1,000,000 ARR (or more) to qualify.";
+  const result = extractPricingAmounts(input);
+  assert.deepEqual(result, []);
+});
+
+test("extractPricingAmounts still extracts pricing even when qualification thresholds appear nearby", () => {
+  const input = "We look for $1M ARR founders; membership is $9,500/year.";
+  const result = extractPricingAmounts(input);
+  assert.deepEqual(result, [9500]);
+});
+
 test("extractPricingAmounts still reads regular one-time prices", () => {
   const result = extractPricingAmounts("A one-time onboarding fee is $3,000.");
   assert.deepEqual(result, [3000]);
@@ -116,6 +128,15 @@ test("detectPricingHallucinations keeps cadence scoped to each amount", () => {
   assert.deepEqual(result.hallucinated, []);
   assert.deepEqual(result.valid, []);
   assert.deepEqual(result.cadenceMismatched, [791]);
+});
+
+test("detectPricingHallucinations ignores qualification thresholds even when membership is mentioned", () => {
+  const draft = "We require $1,000,000 ARR for membership to qualify.";
+  const result = detectPricingHallucinations(draft, "Pricing: $791 per month", null);
+  assert.deepEqual(result.hallucinated, []);
+  assert.deepEqual(result.valid, []);
+  assert.deepEqual(result.cadenceMismatched, []);
+  assert.deepEqual(result.allDraft, []);
 });
 
 test("enforcePricingAmountSafety removes unsupported dollar amounts", () => {
@@ -186,6 +207,14 @@ test("enforcePricingAmountSafety adds cadence-safe clarifier when no source pric
 test("enforcePricingAmountSafety does not strip revenue-threshold amounts", () => {
   const result = enforcePricingAmountSafety("We typically work with $1M+ revenue founders.", null);
   assert.equal(result.draft.includes("$1M+"), true);
+  assert.deepEqual(result.removedAmounts, []);
+  assert.deepEqual(result.removedCadenceAmounts, []);
+  assert.equal(result.addedClarifier, false);
+});
+
+test("enforcePricingAmountSafety does not strip revenue-threshold amounts when membership language is present", () => {
+  const result = enforcePricingAmountSafety("To qualify for membership, you need $1,000,000+ ARR.", null);
+  assert.equal(result.draft.includes("$1,000,000+"), true);
   assert.deepEqual(result.removedAmounts, []);
   assert.deepEqual(result.removedCadenceAmounts, []);
   assert.equal(result.addedClarifier, false);

@@ -7,6 +7,7 @@ import { maybeReviseAutoSendDraft } from "@/lib/auto-send/revision-agent";
 import { buildRevisionHardConstraints, validateRevisionAgainstHardConstraints } from "@/lib/auto-send/revision-constraints";
 import type { OfferedSlot } from "@/lib/booking";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
+import type { MeetingOverseerExtractDecision } from "@/lib/meeting-overseer";
 import type {
   ReplayCaseResult,
   ReplayEvidencePacket,
@@ -19,7 +20,7 @@ import type {
   ReplaySelectionCase,
 } from "@/lib/ai-replay/types";
 import { prisma } from "@/lib/prisma";
-import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
+import { extractSchedulerLinkFromText, hasExplicitSchedulerLinkInstruction } from "@/lib/scheduling-link";
 import { buildSentimentTranscriptFromMessages } from "@/lib/sentiment";
 
 type WorkspaceContext = {
@@ -253,12 +254,54 @@ function computeBlockingJudgeReasons(opts: {
   const responseMode = extractDecisionContractScalar(opts.decisionContract, "responseMode");
   const hasBookingIntent = extractDecisionContractScalar(opts.decisionContract, "hasBookingIntent");
   const shouldBookNow = extractDecisionContractScalar(opts.decisionContract, "shouldBookNow");
+  const usesAnyAvailabilitySlot = availability.length > 0 && availability.some((slot) => slot && draft.includes(slot));
+  const questionCount = (draft.match(/\?/g) || []).length;
+  const isSingleClarifyingQuestion = responseMode === "clarify_only" && questionCount === 1;
 
   const blocking: string[] = [];
   for (const reason of opts.failureReasons || []) {
     if (!isBlockingJudgeReason(reason)) continue;
     const normalized = (reason || "").trim().toLowerCase();
     if (!normalized) continue;
+
+    // Email addresses are case-insensitive; don't block replay on casing nitpicks.
+    if (normalized.includes("case mismatch") && normalized.includes("email")) {
+      continue;
+    }
+
+    // If we're already in clarify_only mode and asked exactly one question, don't block on
+    // generic "needs clarification" complaints (often just restating the situation).
+    if (isSingleClarifyingQuestion && normalized.includes("needs clarification")) {
+      continue;
+    }
+
+    // Drop "discovery call" complaints when the draft doesn't contain the phrase.
+    if (normalized.includes("discovery call") && !/\bdiscovery\s+call\b/i.test(draft)) {
+      continue;
+    }
+
+    // If we're explicitly allowed to book now and the draft uses a provided availability slot verbatim,
+    // don't block on nitpicks about "implying booking" or date/year context.
+    if (
+      shouldBookNow === "yes" &&
+      usesAnyAvailabilitySlot &&
+      normalized.includes("availability") &&
+      (normalized.includes("booked") || normalized.includes("booking") || normalized.includes("imply") || normalized.includes("align"))
+    ) {
+      continue;
+    }
+
+    // Similar: treat "tie it back to the lead's window" complaints as non-blocking when we're
+    // already booking within an offered slot under shouldBookNow=yes.
+    if (
+      shouldBookNow === "yes" &&
+      usesAnyAvailabilitySlot &&
+      normalized.includes("window") &&
+      (normalized.includes("tie") || normalized.includes("tying") || normalized.includes("tied")) &&
+      (normalized.includes("booked") || normalized.includes("booking") || normalized.includes("imply"))
+    ) {
+      continue;
+    }
 
     // Drop obviously unsupported complaints where the draft contains the required signal.
     if (normalized.includes("omits the timezone") || normalized.includes("timezone") && normalized.includes("omit")) {
@@ -724,6 +767,7 @@ async function applyReplayOverseerRevisionLoop(opts:
     caseId: string;
     messageId: string;
     baseJudgeInput: Omit<ReplayJudgeInput, "generatedDraft">;
+    extractionOverride?: MeetingOverseerExtractDecision | null;
   }
 ): Promise<ReplayRevisionLoopRuntime> {
   let draftContent = (opts.draftContent || "").trim();
@@ -760,6 +804,7 @@ async function applyReplayOverseerRevisionLoop(opts:
       offeredSlots: opts.offeredSlots,
       bookingLink: opts.bookingLink,
       leadSchedulerLink: opts.leadSchedulerLink,
+      extractionOverride: opts.extractionOverride ?? null,
       source: opts.source,
       metadata: {
         replay: true,
@@ -1008,17 +1053,14 @@ export async function runReplayCase(opts: {
       where: { id: opts.selectionCase.messageId },
       select: { body: true, rawText: true },
     });
+    const schedulerInstructionText = [opts.selectionCase.inboundSubject, triggerMessage?.body].filter(Boolean).join("\n\n");
+    const hasExplicitSchedulerInstruction = hasExplicitSchedulerLinkInstruction(schedulerInstructionText);
     const inferredSchedulerLink = (() => {
       const bodyText = (triggerMessage?.body || "").trim();
       const rawText = (triggerMessage?.rawText || "").trim();
-      const candidate = extractSchedulerLinkFromText(`${bodyText}\n${rawText}`);
-      if (!candidate) return null;
-      if (!/\b(schedule|scheduling|book|booking|calendar|availability|slot|time|works?)\b/i.test(bodyText)) {
-        return null;
-      }
-      return candidate;
+      return extractSchedulerLinkFromText(`${bodyText}\n${rawText}`);
     })();
-    const leadSchedulerLink = inferredSchedulerLink || lead.externalSchedulingLink || null;
+    const leadSchedulerLink = hasExplicitSchedulerInstruction ? inferredSchedulerLink || lead.externalSchedulingLink || null : null;
     const { bookingLink: workspaceBookingLink } = await resolveBookingLink(
       opts.selectionCase.clientId,
       lead.client?.settings || null
@@ -1064,7 +1106,6 @@ export async function runReplayCase(opts: {
       {
         triggerMessageId: opts.selectionCase.messageId,
         reuseExistingDraft: false,
-        leadSchedulerLinkOverride: leadSchedulerLink,
         meetingOverseerMode: opts.overseerDecisionMode,
         persistMeetingOverseerDecisions: opts.overseerDecisionMode === "persisted",
       }
@@ -1080,13 +1121,36 @@ export async function runReplayCase(opts: {
       typeof generation.bookingEscalationReason === "string" && generation.bookingEscalationReason.trim()
         ? generation.bookingEscalationReason.trim()
         : null;
-    const generationOfferedSlots = normalizeOfferedSlots(generation.offeredSlots);
-    let offeredSlots: OfferedSlot[] =
-      bookingEscalationReason
-        ? []
-        : generationOfferedSlots.length > 0
-          ? generationOfferedSlots
-          : parseOfferedSlotsJson(lead.offeredSlots);
+	    const generationOfferedSlots = normalizeOfferedSlots(generation.offeredSlots);
+	    let offeredSlots: OfferedSlot[] =
+	      bookingEscalationReason
+	        ? []
+	        : generationOfferedSlots.length > 0
+	          ? generationOfferedSlots
+	          : parseOfferedSlotsJson(lead.offeredSlots);
+
+	    // Replay judge should use the same overseer extraction that draft generation used.
+	    // This keeps replay aligned with platform behavior and avoids second-pass extraction drift.
+	    const draftRunId = (generation.runId || "").trim() || null;
+	    let judgeExtractionOverride: MeetingOverseerExtractDecision | null = null;
+	    if (draftRunId) {
+	      try {
+	        const artifact = await prisma.draftPipelineArtifact.findFirst({
+	          where: { runId: draftRunId, stage: "meeting_overseer_extract", iteration: 0 },
+	          select: { payload: true },
+	        });
+	        const payload = artifact?.payload;
+	        const extraction =
+	          payload && typeof payload === "object" && "extraction" in payload
+	            ? (payload as { extraction?: unknown }).extraction
+	            : null;
+	        if (extraction && typeof extraction === "object" && "needs_clarification" in extraction) {
+	          judgeExtractionOverride = extraction as MeetingOverseerExtractDecision;
+	        }
+	      } catch {
+	        // Best-effort only; judge can fall back to fresh extraction.
+	      }
+	    }
 
     // Prefer in-memory generation slots. If unavailable (reused drafts / legacy path),
     // refresh from DB to pick up any slots generated during this pass.
@@ -1183,9 +1247,9 @@ export async function runReplayCase(opts: {
           finalReason: "missing_draft_id",
         };
       } else {
-        const revisionRuntime =
-          opts.revisionLoopMode === "overseer"
-            ? await applyReplayOverseerRevisionLoop({
+	        const revisionRuntime =
+	          opts.revisionLoopMode === "overseer"
+	            ? await applyReplayOverseerRevisionLoop({
                 draftId,
                 draftRunId: null,
                 draftContent: generatedDraft,
@@ -1211,11 +1275,12 @@ export async function runReplayCase(opts: {
                 judgeThreshold: opts.judgeThreshold,
                 adjudicationBand: opts.adjudicationBand,
                 adjudicateBorderline: opts.adjudicateBorderline,
-                source: opts.source,
-                caseId: opts.selectionCase.caseId,
-                messageId: opts.selectionCase.messageId,
-                baseJudgeInput,
-              })
+	                source: opts.source,
+	                caseId: opts.selectionCase.caseId,
+	                messageId: opts.selectionCase.messageId,
+	                baseJudgeInput,
+	                extractionOverride: judgeExtractionOverride,
+	              })
             : await applyReplayRevisionLoop({
                 draftId,
                 draftRunId: null,
@@ -1257,7 +1322,7 @@ export async function runReplayCase(opts: {
       generatedDraft,
     };
 
-    const judge = await runReplayJudge({
+	    const judge = await runReplayJudge({
       clientId: opts.selectionCase.clientId,
       judgeClientId: opts.judgeClientId,
       leadId: opts.selectionCase.leadId,
@@ -1270,6 +1335,7 @@ export async function runReplayCase(opts: {
 	      offeredSlots,
 	      bookingLink: effectiveBookingLink,
 	      leadSchedulerLink,
+	      extractionOverride: judgeExtractionOverride,
 	      source: opts.source,
 	      metadata: {
 	        replay: true,

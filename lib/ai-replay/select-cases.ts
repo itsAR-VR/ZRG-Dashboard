@@ -149,10 +149,17 @@ function buildSelectionCase(opts: {
   const channel = normalizeChannel(opts.message.channel);
   if (!channel) return null;
 
+  const normalizedSentiment = (opts.message.lead.sentimentTag || "").trim();
+  // Replay is primarily used to validate "should we respond?" quality. Auto-selection should avoid
+  // known non-actionable inbound categories like out-of-office and opt-outs.
+  if (!opts.explicit && (normalizedSentiment === "Automated Reply" || normalizedSentiment === "Opt Out")) {
+    return null;
+  }
+
   const { score, reasons } = computeRiskSignals({
     body: opts.message.body,
     subject: opts.message.subject,
-    sentimentTag: opts.message.lead.sentimentTag,
+    sentimentTag: normalizedSentiment,
     explicit: opts.explicit,
   });
 

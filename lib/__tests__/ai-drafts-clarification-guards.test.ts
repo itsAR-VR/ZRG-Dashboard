@@ -3,9 +3,13 @@ import test from "node:test";
 
 import {
   applyClarifyOnlyWindowStartTimeGuard,
+  applyContactUpdateNoSchedulingGuard,
   applyInfoThenBookingNoTimeRequestGuard,
   applyInfoThenBookingNoQualificationGatingGuard,
   applyInfoThenBookingNoQualificationQuestionGuard,
+  applyMissingBookingLinkForCallCue,
+  applyNeedsClarificationSingleQuestionGuard,
+  applyShouldBookNowConfirmationIfNeeded,
   applyTimezoneQuestionSuppressionGuard,
 } from "../ai-drafts";
 import type { MeetingOverseerExtractDecision } from "../meeting-overseer";
@@ -94,6 +98,114 @@ test("applyTimezoneQuestionSuppressionGuard removes inline timezone add-on insid
   assert.ok(!/timezone should we use/i.test(result.draft));
 });
 
+test("applyNeedsClarificationSingleQuestionGuard removes a compound OR clause inside a single question", () => {
+  const input = [
+    "Hi Dave,",
+    "",
+    "Was this intended for us, or was it sent to you by mistake? It looks unrelated to our thread, and we don't open unknown document links.",
+    "",
+    "Best,",
+    "Chris",
+  ].join("\n");
+
+  const result = applyNeedsClarificationSingleQuestionGuard({
+    draft: input,
+    extraction: buildExtraction({
+      needs_clarification: false,
+      decision_contract_v1: {
+        ...buildExtraction().decision_contract_v1!,
+        hasBookingIntent: "no",
+        responseMode: "info_then_booking",
+      },
+    }),
+  });
+
+  assert.equal(result.changed, true);
+  assert.ok(!/\bor\s+was\b/i.test(result.draft));
+  assert.match(result.draft, /Was this intended for us\\?/i);
+  assert.match(result.draft, /don't open unknown document links/i);
+});
+
+test("applyNeedsClarificationSingleQuestionGuard does not modify scheduling option questions", () => {
+  const input = [
+    "Hi Blair,",
+    "",
+    "What specific start time works for you on Thursday (12-3pm ET) or Friday (after 2pm ET)?",
+    "",
+    "Best,",
+    "Chris",
+  ].join("\n");
+
+  const result = applyNeedsClarificationSingleQuestionGuard({
+    draft: input,
+    extraction: buildExtraction(),
+  });
+
+  assert.equal(result.changed, false);
+});
+
+test("applyNeedsClarificationSingleQuestionGuard trims trailing parenthetical OR clauses", () => {
+  const input = [
+    "Hi Brandon,",
+    "",
+    "Have you sold a business for $2.5m+ or raised $2.5m+ in funding (or is there a target date you expect to cross $1m)?",
+    "",
+    "Best,",
+    "Chris",
+  ].join("\n");
+
+  const result = applyNeedsClarificationSingleQuestionGuard({
+    draft: input,
+    extraction: buildExtraction(),
+  });
+
+  assert.equal(result.changed, true);
+  assert.ok(!/\bor\\s+is\\s+there\\s+a\\s+target\\s+date\\b/i.test(result.draft));
+  assert.ok(result.draft.includes("Have you sold a business for $2.5m+ or raised $2.5m+ in funding?"));
+});
+
+test("applyMissingBookingLinkForCallCue does not inject booking link in clarify_only mode", () => {
+  const bookingLink = "https://calendly.com/d/cx6g-rr7-zkd/intro-call-with-fc";
+  const input = ["Hi Blair,", "", "What start time works for a quick 15-minute chat?", "", "Best,", "Chris"].join("\n");
+
+  const result = applyMissingBookingLinkForCallCue({
+    draft: input,
+    bookingLink,
+    leadSchedulerLink: null,
+    extraction: buildExtraction({
+      needs_clarification: true,
+      decision_contract_v1: {
+        ...buildExtraction().decision_contract_v1!,
+        responseMode: "clarify_only",
+      },
+    }),
+  });
+
+  assert.equal(result.changed, false);
+  assert.ok(!result.draft.includes(bookingLink));
+});
+
+test("applyMissingBookingLinkForCallCue injects booking link when a call cue exists and clarify_only is not active", () => {
+  const bookingLink = "https://calendly.com/d/cx6g-rr7-zkd/intro-call-with-fc";
+  const input = ["Hi Blair,", "", "Happy to chat. Want to grab a quick 15-minute call?", "", "Best,", "Chris"].join("\n");
+
+  const result = applyMissingBookingLinkForCallCue({
+    draft: input,
+    bookingLink,
+    leadSchedulerLink: null,
+    extraction: buildExtraction({
+      needs_clarification: false,
+      decision_contract_v1: {
+        ...buildExtraction().decision_contract_v1!,
+        responseMode: "info_then_booking",
+      },
+    }),
+  });
+
+  assert.equal(result.changed, true);
+  assert.ok(result.draft.includes(bookingLink));
+});
+
 test("applyInfoThenBookingNoTimeRequestGuard removes time-picking request when lead wants info first", () => {
   const input = [
     "Hi Monica,",
@@ -167,7 +279,7 @@ test("applyInfoThenBookingNoTimeRequestGuard removes explicit time options even 
     "",
     "Membership includes mastermind groups and a 24/7 member network.",
     "",
-    "If it’s helpful, we can walk through it on a quick 15-minute call. Two options are 11:30 AM EST on Tue, Feb 17 or 4:00 PM EST on Wed, Feb 18.",
+    "If it's helpful, we can walk through it on a quick 15-minute call. Two options are 11:30 AM EST on Tue, Feb 17 or 4:00 PM EST on Wed, Feb 18.",
     "",
     "https://calendly.com/example/intro",
     "",
@@ -197,7 +309,7 @@ test("applyInfoThenBookingNoTimeRequestGuard removes explicit time options even 
   assert.equal(result.changed, true);
   assert.ok(!/Two options are/i.test(result.draft));
   assert.ok(!/Which time works/i.test(result.draft));
-  assert.match(result.draft, /calendly\\.com\\/example\\/intro/i);
+  assert.ok(result.draft.includes("calendly.com/example/intro"));
 });
 
 test("applyInfoThenBookingNoQualificationGatingGuard removes qualification gating clause when pricing isn't requested", () => {
@@ -229,7 +341,7 @@ test("applyInfoThenBookingNoQualificationGatingGuard removes qualification gatin
   const result = applyInfoThenBookingNoQualificationGatingGuard({ draft: input, extraction });
   assert.equal(result.changed, true);
   assert.ok(!/\\$1M\\+\\s+in\\s+annual\\s+revenue/i.test(result.draft));
-  assert.match(result.draft, /for founders\\/operators, with a mix/i);
+  assert.match(result.draft, /for founders\/operators, with a mix/i);
 });
 
 test("applyInfoThenBookingNoQualificationQuestionGuard removes revenue gating questions in info_then_booking", () => {
@@ -265,4 +377,100 @@ test("applyInfoThenBookingNoQualificationQuestionGuard removes revenue gating qu
   assert.equal(result.changed, true);
   assert.ok(!/annual revenue/i.test(result.draft));
   assert.match(result.draft, /If helpful, we can do a quick 15-minute call/i);
+});
+
+test("applyShouldBookNowConfirmationIfNeeded ignores incidental slot mentions when draft isn't a confirmation", () => {
+  const availability = ["Tue, Feb 17 at 9:00 AM PST", "Tue, Feb 17 at 1:30 PM PST"];
+  const extraction = buildExtraction({
+    accepted_slot_index: null,
+    decision_contract_v1: {
+      ...buildExtraction().decision_contract_v1!,
+      shouldBookNow: "yes",
+    },
+  });
+
+  const result = applyShouldBookNowConfirmationIfNeeded({
+    draft: "Great - Tue, Feb 17 at 1:30 PM PST works.",
+    channel: "sms",
+    firstName: null,
+    aiName: "Chris",
+    extraction,
+    availability,
+  });
+
+  assert.equal(result, "Booked for Tue, Feb 17 at 9:00 AM PST.");
+});
+
+test("applyShouldBookNowConfirmationIfNeeded prefers accepted_slot_index when provided", () => {
+  const availability = ["Tue, Feb 17 at 9:00 AM PST", "Tue, Feb 17 at 1:30 PM PST"];
+  const extraction = buildExtraction({
+    accepted_slot_index: 2,
+    decision_contract_v1: {
+      ...buildExtraction().decision_contract_v1!,
+      shouldBookNow: "yes",
+    },
+  });
+
+  const result = applyShouldBookNowConfirmationIfNeeded({
+    draft: "Thanks!",
+    channel: "sms",
+    firstName: null,
+    aiName: "Chris",
+    extraction,
+    availability,
+  });
+
+  assert.equal(result, "Booked for Tue, Feb 17 at 1:30 PM PST.");
+});
+
+test("applyShouldBookNowConfirmationIfNeeded keeps an existing booked confirmation that references an offered slot", () => {
+  const availability = ["Tue, Feb 17 at 9:00 AM PST", "Tue, Feb 17 at 1:30 PM PST"];
+  const extraction = buildExtraction({
+    accepted_slot_index: 1,
+    decision_contract_v1: {
+      ...buildExtraction().decision_contract_v1!,
+      shouldBookNow: "yes",
+    },
+  });
+
+  const draft = "Booked for Tue, Feb 17 at 1:30 PM PST.";
+  const result = applyShouldBookNowConfirmationIfNeeded({
+    draft,
+    channel: "sms",
+    firstName: null,
+    aiName: "Chris",
+    extraction,
+    availability,
+  });
+
+  assert.equal(result, draft);
+});
+
+test("applyContactUpdateNoSchedulingGuard rewrites scheduling content into a simple contact-update confirmation", () => {
+  const inbound = "Please use suzanne@agsmls.com as I do not regularly receive this email in my outlook account.";
+  const draft = [
+    "Hi Suzanne,",
+    "",
+    "Confirmed, we'll use suzanne@agsmls.com going forward.",
+    "",
+    "Does 12:30 PM EST on Tue, Feb 17 work for a quick 15-minute call?",
+    "",
+    "You can grab a time here: https://calendly.com/example/intro",
+    "",
+    "Best,",
+    "Aaron",
+  ].join("\n");
+
+  const result = applyContactUpdateNoSchedulingGuard({
+    draft,
+    latestInboundText: inbound,
+    channel: "email",
+    firstName: "Suzanne",
+    aiName: "Aaron",
+  });
+
+  assert.equal(result.changed, true);
+  assert.match(result.draft, /suzanne@agsmls\.com/i);
+  assert.ok(!/calendly/i.test(result.draft));
+  assert.ok(!/12:30/i.test(result.draft));
 });

@@ -843,7 +843,7 @@ export function InboxView({
 
   // Reset sentiment filter when workspace changes
   useEffect(() => {
-    setActiveSentiments([]);
+    setActiveSentiments((previous) => (previous.length === 0 ? previous : []));
   }, [activeWorkspace]);
 
   // Handle initial conversation selection (e.g., from CRM "Open in Master Inbox")

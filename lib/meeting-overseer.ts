@@ -331,6 +331,210 @@ export function selectOfferedSlotByPreference(opts: {
   return matches.sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime())[0] ?? null;
 }
 
+const EVIDENCE_TIME_TOKEN_REGEX = /\b([01]?\d)(?::([0-5]\d))?\s*(am|pm)\b/i;
+
+function parseMeridiemTimeToMinutes(match: RegExpMatchArray): number | null {
+  const hourRaw = match[1] || "";
+  const minuteRaw = match[2] || "00";
+  const meridiem = (match[3] || "").toLowerCase();
+  const hour = Number.parseInt(hourRaw, 10);
+  const minute = Number.parseInt(minuteRaw, 10);
+  if (!Number.isFinite(hour) || hour < 1 || hour > 12) return null;
+  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return null;
+  if (meridiem !== "am" && meridiem !== "pm") return null;
+
+  const hour24 = meridiem === "am" ? (hour === 12 ? 0 : hour) : hour === 12 ? 12 : hour + 12;
+  return hour24 * 60 + minute;
+}
+
+function extractPreferredStartMinutesFromEvidence(evidence: string[]): number | null {
+  for (const item of evidence || []) {
+    if (typeof item !== "string") continue;
+    const match = item.toLowerCase().match(EVIDENCE_TIME_TOKEN_REGEX);
+    if (!match) continue;
+    const minutes = parseMeridiemTimeToMinutes(match);
+    if (typeof minutes === "number") return minutes;
+  }
+  return null;
+}
+
+function evidenceContainsWindowLanguage(evidence: string[]): boolean {
+  for (const item of evidence || []) {
+    if (typeof item !== "string") continue;
+    const text = item.toLowerCase();
+    if (/\b(after|before|between|from|until|till|anytime)\b/.test(text)) return true;
+    // Ranges like "12-3" or "12–3".
+    if (/\b\d{1,2}\s*[-\u2013]\s*\d{1,2}\b/.test(text)) return true;
+  }
+  return false;
+}
+
+function getLocalMinutesSinceMidnight(date: Date, timeZone: string): number | null {
+  if (Number.isNaN(date.getTime())) return null;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(date);
+    const hourPart = parts.find((part) => part.type === "hour")?.value;
+    const minutePart = parts.find((part) => part.type === "minute")?.value;
+    const hour = Number.parseInt(hourPart || "", 10);
+    const minute = Number.parseInt(minutePart || "", 10);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+    return hour * 60 + minute;
+  } catch {
+    return null;
+  }
+}
+
+export function repairShouldBookNowAgainstOfferedSlots(opts: {
+  decision: MeetingOverseerExtractDecision;
+  offeredSlots: OfferedSlot[];
+  leadTimezoneHint?: string | null;
+}): MeetingOverseerExtractDecision {
+  const decision = opts.decision;
+  const contract = decision?.decision_contract_v1;
+  if (!decision || !contract) return decision;
+  if (contract.shouldBookNow !== "yes") return decision;
+
+  const offeredSlots = Array.isArray(opts.offeredSlots) ? opts.offeredSlots : [];
+  if (offeredSlots.length === 0) return decision;
+
+  const hasWindowPreference = Boolean(decision.preferred_day_of_week || decision.preferred_time_of_day || decision.relative_preference);
+  if (!hasWindowPreference) return decision;
+
+  const timeZoneCandidate =
+    contract.leadTimezone || decision.detected_timezone || (opts.leadTimezoneHint || "").trim() || "UTC";
+  const timeZone = isValidIanaTimezone(timeZoneCandidate) ? timeZoneCandidate : "UTC";
+
+  const mergedEvidence = Array.from(new Set([...(decision.evidence || []), ...(contract.evidence || [])])).filter(
+    (item): item is string => typeof item === "string"
+  );
+  const evidenceMinutes = extractPreferredStartMinutesFromEvidence(mergedEvidence);
+  const hasWindowLanguage = evidenceContainsWindowLanguage(mergedEvidence);
+
+  // If the lead gave an explicit exact time (not a window like "after 10am"), do NOT "helpfully"
+  // pick the next offered slot. Only set accepted_slot_index when an offered slot matches exactly.
+  // Otherwise keep the contract as-is so downstream logic can acknowledge the lead's time without swapping.
+  if (typeof evidenceMinutes === "number" && !hasWindowLanguage && decision.preferred_day_of_week) {
+    const dayPreference = normalizeDayToken(decision.preferred_day_of_week);
+    const timePreference = normalizeTimeOfDay(decision.preferred_time_of_day);
+
+    // If the model guessed an offered slot index, verify it matches the explicit time; otherwise clear it.
+    if (typeof decision.accepted_slot_index === "number" && decision.accepted_slot_index > 0) {
+      const slot = offeredSlots[decision.accepted_slot_index - 1];
+      if (slot?.datetime) {
+        const date = new Date(slot.datetime);
+        const minutes = getLocalMinutesSinceMidnight(date, timeZone);
+        if (typeof minutes === "number" && minutes !== evidenceMinutes) {
+          decision.accepted_slot_index = null;
+        }
+      }
+    }
+
+    const exactMatches = offeredSlots.filter((slot) => {
+      const date = new Date(slot.datetime);
+      if (Number.isNaN(date.getTime())) return false;
+      const dayToken = normalizeDayToken(
+        new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" }).format(date)
+      );
+      if (dayPreference && dayToken !== dayPreference) return false;
+      if (timePreference) {
+        const hourRaw = new Intl.DateTimeFormat("en-US", { timeZone, hour: "numeric", hour12: false }).format(date);
+        const hour = Number.parseInt(hourRaw, 10);
+        if (!Number.isFinite(hour)) return false;
+        if (timePreference === "morning" && (hour < 5 || hour >= 12)) return false;
+        if (timePreference === "afternoon" && (hour < 12 || hour >= 17)) return false;
+        if (timePreference === "evening" && (hour < 17 || hour >= 21)) return false;
+      }
+      const minutes = getLocalMinutesSinceMidnight(date, timeZone);
+      if (typeof minutes !== "number") return false;
+      return minutes === evidenceMinutes;
+    });
+
+    if (exactMatches.length === 0) return decision;
+
+    const preferredExact =
+      exactMatches.sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime())[0] ?? null;
+    if (!preferredExact) return decision;
+
+    const idx = offeredSlots.findIndex((slot) => (slot?.datetime || "").trim() === (preferredExact.datetime || "").trim());
+    if (idx >= 0) {
+      return {
+        ...decision,
+        accepted_slot_index: idx + 1,
+      };
+    }
+    return decision;
+  }
+
+  // If the model already identified a concrete accepted slot, do not second-guess it here
+  // in the broad window preference path.
+  if (typeof decision.accepted_slot_index === "number" && decision.accepted_slot_index > 0) return decision;
+
+  const preferred = (() => {
+    const basePreferred = selectOfferedSlotByPreference({
+      offeredSlots,
+      timeZone,
+      preferredDayOfWeek: decision.preferred_day_of_week,
+      preferredTimeOfDay: decision.preferred_time_of_day,
+    });
+    if (typeof evidenceMinutes !== "number") return basePreferred;
+    if (!decision.preferred_day_of_week) return basePreferred;
+
+    const dayPreference = normalizeDayToken(decision.preferred_day_of_week);
+    const timePreference = normalizeTimeOfDay(decision.preferred_time_of_day);
+    const matches = offeredSlots.filter((slot) => {
+      const date = new Date(slot.datetime);
+      if (Number.isNaN(date.getTime())) return false;
+      const dayToken = normalizeDayToken(
+        new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" }).format(date)
+      );
+      if (dayPreference && dayToken !== dayPreference) return false;
+      if (timePreference) {
+        const hourRaw = new Intl.DateTimeFormat("en-US", { timeZone, hour: "numeric", hour12: false }).format(date);
+        const hour = Number.parseInt(hourRaw, 10);
+        if (!Number.isFinite(hour)) return false;
+        if (timePreference === "morning" && (hour < 5 || hour >= 12)) return false;
+        if (timePreference === "afternoon" && (hour < 12 || hour >= 17)) return false;
+        if (timePreference === "evening" && (hour < 17 || hour >= 21)) return false;
+      }
+      const minutes = getLocalMinutesSinceMidnight(date, timeZone);
+      if (typeof minutes !== "number") return false;
+      return minutes >= evidenceMinutes;
+    });
+
+    if (matches.length === 0) return basePreferred;
+    return matches.sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime())[0] ?? basePreferred;
+  })();
+
+  if (preferred) {
+    const idx = offeredSlots.findIndex((slot) => (slot?.datetime || "").trim() === (preferred.datetime || "").trim());
+    if (idx >= 0) {
+      return {
+        ...decision,
+        accepted_slot_index: idx + 1,
+      };
+    }
+    return decision;
+  }
+
+  // Contract says we should book, but we have no offered slot that matches the lead's stated window.
+  // Degrade safely to clarify-only so the gate can ask one question rather than implying a bad booking.
+  return {
+    ...decision,
+    needs_clarification: true,
+    clarification_reason: decision.clarification_reason || "no_matching_offered_slot",
+    decision_contract_v1: {
+      ...contract,
+      shouldBookNow: "no",
+      responseMode: "clarify_only",
+    },
+  };
+}
+
 async function loadExistingDecision(messageId: string, stage: MeetingOverseerStage): Promise<MeetingOverseerExtractDecision | MeetingOverseerGateDecision | null> {
   const existing = await prisma.meetingOverseerDecision.findUnique({
     where: { messageId_stage: { messageId, stage } },
@@ -567,7 +771,11 @@ Output JSON only.`,
     decision.accepted_slot_index = null;
   }
 
-  const decisionWithContract = attachDecisionContractV1(decision);
+  const decisionWithContract = repairShouldBookNowAgainstOfferedSlots({
+    decision: attachDecisionContractV1(decision),
+    offeredSlots: opts.offeredSlots,
+    leadTimezoneHint: opts.leadTimezone || null,
+  });
 
   if (messageId && shouldPersistDecision) {
     await persistDecision({
@@ -680,6 +888,7 @@ Knowledge context:
 
 RULES
 - If the lead accepted a time, keep the reply short and acknowledgment-only. Do NOT ask new questions.
+- If the lead explicitly states an exact time (e.g., "Tue Feb 17 10am PST"), do NOT counter with a different time from availability. Acknowledge/confirm their exact stated time (do not convert time zones).
 - Never imply a meeting is booked unless either:
   - the lead explicitly confirmed/accepted a time, or
   - extraction.decision_contract_v1.shouldBookNow is "yes" and the selected slot comes directly from provided availability.
