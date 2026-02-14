@@ -514,6 +514,80 @@ export function applyNeedsClarificationSingleQuestionGuard(params: {
   return { draft: nextDraft, changed: true };
 }
 
+const CLARIFY_ONLY_WINDOW_EVIDENCE_REGEX =
+  /\b(after|before)\s+([01]?\d(?::[0-5]\d)?\s*(?:am|pm))\b/i;
+const CLARIFY_ONLY_TIME_TOKEN_REGEX = /\b([01]?\d(?::[0-5]\d)?\s*(?:am|pm)|\d{1,2}:\d{2})\b/i;
+const CLARIFY_ONLY_TIMEZONE_WORD_REGEX =
+  /\b(pacific|pt|pst|pdt|mountain|mt|mst|mdt|central|ct|cst|cdt|eastern|et|est|edt|utc|gmt)\b/i;
+const CLARIFY_ONLY_TIME_QUESTION_DAY_PART_REGEX =
+  /\b(?:does|would|is)\s+([^?]+?)\s+(?:at\s+)?([01]?\d(?::[0-5]\d)?\s*(?:am|pm)|\d{1,2}:\d{2})\b/i;
+
+export function applyClarifyOnlyWindowStartTimeGuard(params: {
+  draft: string;
+  extraction: MeetingOverseerExtractDecision | null;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  const extraction = params.extraction;
+  if (!draft || !extraction) return { draft, changed: false };
+
+  const contract = extraction.decision_contract_v1;
+  if (!contract) return { draft, changed: false };
+  if (contract.responseMode !== "clarify_only") return { draft, changed: false };
+  if (contract.hasBookingIntent !== "yes") return { draft, changed: false };
+
+  const evidence = Array.isArray(extraction.evidence) ? extraction.evidence : [];
+  let windowPhrase: string | null = null;
+  for (const item of evidence) {
+    if (typeof item !== "string") continue;
+    const match = item.match(CLARIFY_ONLY_WINDOW_EVIDENCE_REGEX);
+    if (!match) continue;
+    windowPhrase = `${match[1]} ${match[2]}`.replace(/\s+/g, " ").trim();
+    if (windowPhrase) break;
+  }
+  if (!windowPhrase) return { draft, changed: false };
+
+  const paragraphs = draft
+    .split(/\n{2,}/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (paragraphs.length === 0) return { draft, changed: false };
+
+  const questionIndex = (() => {
+    for (let i = paragraphs.length - 1; i >= 0; i -= 1) {
+      if (paragraphs[i]?.includes("?")) return i;
+    }
+    return -1;
+  })();
+  if (questionIndex < 0) return { draft, changed: false };
+
+  const question = paragraphs[questionIndex] || "";
+  if (!CLARIFY_ONLY_TIME_TOKEN_REGEX.test(question)) return { draft, changed: false };
+
+  const dayPartMatch = question.match(CLARIFY_ONLY_TIME_QUESTION_DAY_PART_REGEX);
+  if (!dayPartMatch?.[1]) return { draft, changed: false };
+
+  const dayPart = dayPartMatch[1].trim().replace(/[,.\s]+$/g, "").trim();
+  if (!dayPart) return { draft, changed: false };
+
+  const tzMatch = question.match(CLARIFY_ONLY_TIMEZONE_WORD_REGEX);
+  const tzWord = tzMatch?.[1] ? tzMatch[1].trim() : "";
+  const parenthetical = (() => {
+    if (!tzWord) return windowPhrase;
+    if (windowPhrase.toLowerCase().includes(tzWord.toLowerCase())) return windowPhrase;
+    return `${windowPhrase} ${tzWord}`.replace(/\s+/g, " ").trim();
+  })();
+
+  const nextQuestion = `What exact start time on ${dayPart} (${parenthetical}) should we lock in for a 15-minute chat?`;
+  if (!nextQuestion || nextQuestion === question) return { draft, changed: false };
+
+  const nextParagraphs = [...paragraphs];
+  nextParagraphs[questionIndex] = nextQuestion;
+
+  const nextDraft = nextParagraphs.join("\n\n").trim();
+  if (!nextDraft || nextDraft === draft) return { draft, changed: false };
+  return { draft: nextDraft, changed: true };
+}
+
 const TIMEZONE_QUESTION_REGEX =
   /\b(what|which)\s+time\s*zone\b|\btime\s*zone\s+should\s+we\b|\btimezone\s+should\s+we\b/i;
 const NON_TIMEZONE_TIME_REQUEST_HINT_REGEX =
@@ -572,7 +646,11 @@ export function applyTimezoneQuestionSuppressionGuard(params: {
 }
 
 const INFO_THEN_BOOKING_TIME_REQUEST_REGEX =
-  /\b(what\s+(?:2|two|3|three)\s*(?:-|–|—)?\s*(?:3|three)?\s*times?|what\s+times\b|what\s+time\b|grab\s+a\s+time|book\s+here|calendar)\b/i;
+  /\b(what\s+(?:2|two|3|three)\s*(?:-|–|—)?\s*(?:3|three)?\s*times?|what\s+times\b|what\s+time\b|which\s+time\s+works?|does\s+(?:either|one|that)\s+work|two\s+options?\b|options?\s+are\b|option\s+\d\b)\b/i;
+const INFO_THEN_BOOKING_DAY_OR_DATE_TOKEN_REGEX =
+  /\b(mon|tue|wed|thu|fri|sat|sun)\b|\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t)?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d{1,2}(?:st|nd|rd|th)?\b/i;
+const INFO_THEN_BOOKING_EXPLICIT_TIME_TOKEN_REGEX =
+  /\b([01]?\d(?::[0-5]\d)?\s*(?:am|pm)|\d{1,2}:\d{2})\b/i;
 
 export function applyInfoThenBookingNoTimeRequestGuard(params: {
   draft: string;
@@ -594,31 +672,112 @@ export function applyInfoThenBookingNoTimeRequestGuard(params: {
 
   let changed = false;
   const kept = paragraphs.filter((paragraph) => {
-    if (!paragraph.includes("?")) return true;
-    if (!INFO_THEN_BOOKING_TIME_REQUEST_REGEX.test(paragraph)) return true;
-    changed = true;
-    return false;
+    const hasQuestion = paragraph.includes("?");
+
+    // Remove explicit time-picking questions (e.g., "Which time works?").
+    if (hasQuestion && INFO_THEN_BOOKING_TIME_REQUEST_REGEX.test(paragraph)) {
+      changed = true;
+      return false;
+    }
+
+    // Remove paragraphs that offer concrete time options when lead didn't ask for times.
+    if (INFO_THEN_BOOKING_EXPLICIT_TIME_TOKEN_REGEX.test(paragraph) && INFO_THEN_BOOKING_DAY_OR_DATE_TOKEN_REGEX.test(paragraph)) {
+      changed = true;
+      return false;
+    }
+
+    return true;
   });
 
   if (!changed || kept.length === 0) return { draft, changed: false };
   return { draft: kept.join("\n\n").trim(), changed: true };
 }
 
-const REVENUE_TARGET_EVIDENCE_REVENUE_REGEX = /\b(revenue|arr|sales)\b/i;
-const REVENUE_TARGET_EVIDENCE_UNDER_TARGET_REGEX =
-  /\b(still\s+(?:a\s+)?target|not\s+(?:there|at)[^.!?]{0,40}yet|below|under|target|goal)\b/i;
-const REVENUE_TARGET_ANSWER_SENTENCE =
-  "Not a problem if you're not at the revenue target yet; we mainly look for founders who are building toward it.";
+const INFO_THEN_BOOKING_QUALIFICATION_CLAUSE_REGEX =
+  /\bfor\s+founders\/operators\s+doing\s+\$?\s*\d[\d,]*(?:\.\d+)?\s*(?:m|k|million|thousand)?\+?\s*(?:in\s+)?(?:annual\s+revenue|arr)\s*,?\s*/i;
+const INFO_THEN_BOOKING_QUALIFICATION_FALLBACK_REGEX =
+  /\b(?:doing|at)\s+\$?\s*\d[\d,]*(?:\.\d+)?\s*(?:m|k|million|thousand)?\+?\s*(?:in\s+)?(?:annual\s+revenue|arr)\b/i;
 
-export function applyRevenueTargetAnswerGuard(params: {
+export function applyInfoThenBookingNoQualificationGatingGuard(params: {
   draft: string;
   extraction: MeetingOverseerExtractDecision | null;
 }): { draft: string; changed: boolean } {
   const draft = (params.draft || "").trim();
   if (!draft) return { draft, changed: false };
 
+  const contract = params.extraction?.decision_contract_v1;
+  if (!contract) return { draft, changed: false };
+  if (contract.responseMode !== "info_then_booking") return { draft, changed: false };
+  if (contract.hasBookingIntent !== "no") return { draft, changed: false };
+  if (contract.needsPricingAnswer !== "no") return { draft, changed: false };
+
+  let next = draft;
+  const before = next;
+
+  next = next.replace(INFO_THEN_BOOKING_QUALIFICATION_CLAUSE_REGEX, "for founders/operators, ");
+  next = next.replace(INFO_THEN_BOOKING_QUALIFICATION_FALLBACK_REGEX, "").replace(/\s{2,}/g, " ");
+  next = next.replace(/\s+,/g, ",").replace(/\(\s*\)/g, "");
+
+  next = next
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (!next || next === before) return { draft, changed: false };
+  return { draft: next, changed: true };
+}
+
+const INFO_THEN_BOOKING_QUALIFICATION_QUESTION_REGEX =
+  /[^?\n]*\b(annual\s+revenue|arr|revenue\s+mark|revenue\s+target|qualified|unqualified|funding|raised|exit|sold|\$\s*\d[\d,]*(?:\.\d+)?\s*(?:m|million|k|thousand)?)\b[^?\n]*\?/gi;
+
+export function applyInfoThenBookingNoQualificationQuestionGuard(params: {
+  draft: string;
+  extraction: MeetingOverseerExtractDecision | null;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, changed: false };
+
+  const contract = params.extraction?.decision_contract_v1;
+  if (!contract) return { draft, changed: false };
+  if (contract.responseMode !== "info_then_booking") return { draft, changed: false };
+  if (contract.hasBookingIntent !== "no") return { draft, changed: false };
+  if (contract.needsPricingAnswer !== "no") return { draft, changed: false };
+
+  const before = draft;
+  let next = draft.replace(INFO_THEN_BOOKING_QUALIFICATION_QUESTION_REGEX, "");
+
+  if (next !== before) {
+    // If we removed a gating question, remove dependent phrasing.
+    next = next.replace(/\bif\s+yes,\s+/gi, "If helpful, ");
+    next = next.replace(/\bif\s+so,\s+/gi, "If helpful, ");
+  }
+
+  next = next
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+
+  if (!next || next === before) return { draft, changed: false };
+  return { draft: next, changed: true };
+}
+
+const REVENUE_TARGET_EVIDENCE_REVENUE_REGEX = /\b(revenue|arr|sales)\b/i;
+const REVENUE_TARGET_EVIDENCE_UNDER_TARGET_REGEX =
+  /\b(still\s+(?:a\s+)?target|not\s+(?:there|at)[^.!?]{0,40}yet|below|under|target|goal)\b/i;
+const REVENUE_TARGET_ANSWER_SENTENCE =
+  "If you're not at the revenue target yet, that's helpful context; we generally look for founders who are at or clearly building toward it.";
+
+export function applyRevenueTargetAnswerGuard(params: {
+  draft: string;
+  extraction: MeetingOverseerExtractDecision | null;
+  latestInboundText?: string | null;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, changed: false };
+
   const evidence = params.extraction?.evidence || [];
-  const shouldAnswer = Array.isArray(evidence)
+  const shouldAnswerFromEvidence = Array.isArray(evidence)
     ? evidence.some(
         (item) =>
           typeof item === "string" &&
@@ -626,9 +785,18 @@ export function applyRevenueTargetAnswerGuard(params: {
           REVENUE_TARGET_EVIDENCE_UNDER_TARGET_REGEX.test(item)
       )
     : false;
+  const inbound = (params.latestInboundText || "").trim();
+  const shouldAnswerFromInbound =
+    !!inbound &&
+    REVENUE_TARGET_EVIDENCE_REVENUE_REGEX.test(inbound) &&
+    REVENUE_TARGET_EVIDENCE_UNDER_TARGET_REGEX.test(inbound);
+  const shouldAnswer = shouldAnswerFromEvidence || shouldAnswerFromInbound;
   if (!shouldAnswer) return { draft, changed: false };
 
-  if (/\bnot a problem\b|\bno problem\b|\bnot an issue\b|\bno issue\b/i.test(draft)) {
+  if (
+    /\bnot a problem\b|\bno problem\b|\bnot an issue\b|\bno issue\b/i.test(draft) ||
+    (/\b(building|build)\s+toward\b/i.test(draft) && /\b(revenue|arr|target)\b/i.test(draft))
+  ) {
     return { draft, changed: false };
   }
 
@@ -654,7 +822,7 @@ function buildLeadSchedulerLinkClarificationDraft(params: {
   firstName: string | null;
   aiName: string;
 }): string {
-  const sentence = "Got it. Should we use your calendar link to book a time?";
+  const sentence = "Sounds good. I'll use your calendar link to book a time and send a confirmation.";
 
   if (params.channel === "sms") return sentence;
   if (params.channel === "linkedin") return sentence;
@@ -678,7 +846,8 @@ function applyLeadSchedulerLinkNoChoiceGuard(params: {
   const contract = params.extraction?.decision_contract_v1;
   if (contract?.hasBookingIntent !== "yes") return { draft, changed: false };
 
-  // If the lead provided a scheduler link and we still need clarification, ask ONE question to confirm we should use their link.
+  // If the lead provided a scheduler link and extraction still thinks clarification is needed,
+  // prefer a direct acknowledgement that we'll use their scheduler (avoids offering our times).
   if (contract?.responseMode === "clarify_only") {
     const target = buildLeadSchedulerLinkClarificationDraft({
       channel: params.channel,
@@ -705,6 +874,25 @@ function applyLeadSchedulerLinkNoChoiceGuard(params: {
     }),
     changed: true,
   };
+}
+
+function normalizeEmailDraftLineBreaks(draft: string): string {
+  const raw = (draft || "").trim();
+  if (!raw) return raw;
+
+  let next = raw;
+
+  // Ensure the greeting line isn't run-on with the first sentence.
+  next = next.replace(/^(Hi[^\n]*?,)\s+(?=\S)/, "$1\n\n");
+
+  // Ensure common sign-offs start on a new paragraph.
+  next = next.replace(/([?.!])\s+(Best|Thanks|Regards|Sincerely|Cheers),\n/gi, "$1\n\n$2,\n");
+
+  // Fix common run-on artifacts when bullet items accidentally include the next sentence.
+  next = next.replace(/(high[- ]signal)\s+(Member mix\b)/i, "$1.\n\n$2");
+  next = next.replace(/(throughout\s+the\s+year)\s+(If\s+(?:it['’]s\s+)?helpful\b)/i, "$1.\n\n$2");
+
+  return next.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 const MISSING_BOOKING_LINK_CALL_CUE_REGEX = /\b(15[- ]?minute|quick)\s+(call|chat)\b|\b(grab|book|schedule)\s+(?:a\s+)?(?:time|call|chat|meeting)\b/i;
@@ -2808,7 +2996,7 @@ ${opts.strategy.must_avoid.length > 0 ? opts.strategy.must_avoid.map(a => `- ${a
     : "";
 
   const leadSchedulerLinkSection = opts.leadSchedulerLink
-    ? `\nLEAD-PROVIDED SCHEDULING LINK (EXPLICITLY SHARED BY LEAD):\n${opts.leadSchedulerLink}\nIMPORTANT: Do NOT offer our availability times or our booking link. Acknowledge their link and express willingness to book via their scheduler (no need to repeat the full URL). Keep the response scheduling-only: no pitch, agenda, or extra qualification detours.`
+    ? `\nLEAD-PROVIDED SCHEDULING LINK (EXPLICITLY SHARED BY LEAD):\n${opts.leadSchedulerLink}\nIMPORTANT: Do NOT offer our availability times or our booking link. Acknowledge their link and confirm we will use their scheduler (no need to repeat the full URL). Do NOT imply the meeting is already booked. If a clarifier is truly needed, ask ONE short question. Keep the response scheduling-only: no pitch, agenda, or extra qualification detours.`
     : "";
 
   // Use workspace-specific forbidden terms if provided, otherwise default (Phase 47e)
@@ -2833,19 +3021,20 @@ ${strategySection}
 ${signatureContextSection}
 ${leadSchedulerLinkSection}
 
-OUTPUT RULES:
+  OUTPUT RULES:
 - Do not include a subject line.
 - Output the email reply in Markdown-friendly plain text (paragraphs and "-" bullets allowed).
 - Do not use bold, italics, underline, strikethrough, code, or headings.
 - Do not invent facts. Use only provided context.
-- Prefer collective voice ("we"/"our") when natural, but first-person voice and personal sign-offs are allowed when they fit the conversation.
-- If the lead opted out/unsubscribed/asked to stop, output an empty reply ("") and nothing else.
-- Do not imply a meeting is booked unless there is clear scheduling confirmation context (for example explicit lead acceptance or a should-book-now confirmation path with a selected slot).
-- If the lead is clearly ready to book, prioritize scheduling only: do not add extra pitch or re-qualification questions.
-- If the lead already confirmed qualification/thresholds, do not ask follow-up qualification questions.
-- If you present time options, keep them in one timezone context and align to any lead-provided window.
-- If the lead asked explicit questions, answer all of them before adding extra context.
-- If the lead asked for pricing/fee/cadence details, include concrete pricing/cadence details from provided context. Never invent missing numbers.
+  - Prefer collective voice ("we"/"our") when natural, but first-person voice and personal sign-offs are allowed when they fit the conversation.
+  - If the lead opted out/unsubscribed/asked to stop, output an empty reply ("") and nothing else.
+  - Do not imply a meeting is booked unless there is clear scheduling confirmation context (for example explicit lead acceptance or a should-book-now confirmation path with a selected slot).
+  - If the lead gives a timing window (for example, "after 10am") and you still need clarification, ask ONE question to pin down the exact start time. Do NOT propose a specific start time yourself.
+  - If the lead is clearly ready to book, prioritize scheduling only: do not add extra pitch or re-qualification questions.
+  - If the lead already confirmed qualification/thresholds, do not ask follow-up qualification questions.
+  - If you present time options, keep them in one timezone context and align to any lead-provided window.
+  - If the lead asked explicit questions, answer all of them before adding extra context.
+  - If the lead asked for pricing/fee/cadence details, include concrete pricing/cadence details from provided context. Never invent missing numbers.
 - If the lead asked for more info, include the concrete details from the strategy. Do not add a website or link unless it appears in the strategy or conversation.
 - Do not add extra polite closings beyond the provided signature block.
 
@@ -5002,20 +5191,35 @@ Generate an appropriate ${channel} response following the guidelines above.
       }
     }
 
-    if (draftContent) {
-      draftContent = applyShouldBookNowConfirmationIfNeeded({
-        draft: draftContent,
-        channel,
-        firstName: firstName || null,
-        aiName,
-        extraction: meetingOverseerExtractionDecision,
-        availability,
-      });
+	    if (draftContent) {
+	      const latestInboundTextForGuards = (() => {
+	        const body = (triggerMessageRecord?.body || "").trim();
+	        const subject = (triggerMessageRecord?.subject || "").trim();
+	        const combined = [subject ? `Subject: ${subject}` : "", body].filter(Boolean).join("\n\n").trim();
+	        return combined || null;
+	      })();
 
-      const pricingNoSchedulingGuard = applyPricingAnswerNoSchedulingGuard({
-        draft: draftContent,
-        extraction: meetingOverseerExtractionDecision,
-      });
+	      draftContent = applyShouldBookNowConfirmationIfNeeded({
+	        draft: draftContent,
+	        channel,
+	        firstName: firstName || null,
+	        aiName,
+	        extraction: meetingOverseerExtractionDecision,
+	        availability,
+	      });
+
+	      if (channel === "email") {
+	        const normalized = normalizeEmailDraftLineBreaks(draftContent);
+	        if (normalized && normalized !== draftContent) {
+	          draftContent = normalized;
+	          console.log("[AI Drafts] Normalized email draft line breaks", { leadId, channel });
+	        }
+	      }
+
+	      const pricingNoSchedulingGuard = applyPricingAnswerNoSchedulingGuard({
+	        draft: draftContent,
+	        extraction: meetingOverseerExtractionDecision,
+	      });
       if (pricingNoSchedulingGuard.changed) {
         draftContent = pricingNoSchedulingGuard.draft;
         console.log("[AI Drafts] Applied pricing-mode scheduling suppression guard", {
@@ -5050,6 +5254,18 @@ Generate an appropriate ${channel} response following the guidelines above.
         });
       }
 
+      const clarifyWindowGuard = applyClarifyOnlyWindowStartTimeGuard({
+        draft: draftContent,
+        extraction: meetingOverseerExtractionDecision,
+      });
+      if (clarifyWindowGuard.changed) {
+        draftContent = clarifyWindowGuard.draft;
+        console.log("[AI Drafts] Applied clarify-only window start-time guard", {
+          leadId,
+          channel,
+        });
+      }
+
       const timezoneGuard = applyTimezoneQuestionSuppressionGuard({
         draft: draftContent,
         extraction: meetingOverseerExtractionDecision,
@@ -5074,9 +5290,34 @@ Generate an appropriate ${channel} response following the guidelines above.
         });
       }
 
+      const infoThenBookingQualificationGuard = applyInfoThenBookingNoQualificationGatingGuard({
+        draft: draftContent,
+        extraction: meetingOverseerExtractionDecision,
+      });
+      if (infoThenBookingQualificationGuard.changed) {
+        draftContent = infoThenBookingQualificationGuard.draft;
+        console.log("[AI Drafts] Applied info_then_booking qualification suppression guard", {
+          leadId,
+          channel,
+        });
+      }
+
+      const infoThenBookingQualificationQuestionGuard = applyInfoThenBookingNoQualificationQuestionGuard({
+        draft: draftContent,
+        extraction: meetingOverseerExtractionDecision,
+      });
+      if (infoThenBookingQualificationQuestionGuard.changed) {
+        draftContent = infoThenBookingQualificationQuestionGuard.draft;
+        console.log("[AI Drafts] Applied info_then_booking qualification-question guard", {
+          leadId,
+          channel,
+        });
+      }
+
       const revenueTargetGuard = applyRevenueTargetAnswerGuard({
         draft: draftContent,
         extraction: meetingOverseerExtractionDecision,
+        latestInboundText: latestInboundTextForGuards,
       });
       if (revenueTargetGuard.changed) {
         draftContent = revenueTargetGuard.draft;

@@ -191,9 +191,9 @@ const PRICING_TERMS_REGEX =
 const ORPHAN_PRICING_CADENCE_LINE_REGEX =
   /(^|\n)[^\n$]*(?:membership\s+(?:fee|price|cost)|fee|price|pricing|cost|billing|billed|payment|pay)[^\n$]*(?:\/\s?(?:mo|month|yr|year|qtr|quarter)|per\s+(?:month|year|quarter))[^\n]*(\n|$)/i;
 const NON_BLOCKING_JUDGE_REASON_REGEX =
-  /\b(exact|verbatim|required phrasing|required wording|prescribed phrasing|preferred phrasing|preferred wording|supported phrasing|scripted|playbook|approved phrasing|standard phrasing|minor|slight|tone|wording|style|second sentence|list-heavy|over-explains|conversational|equivalent|booking intent|qualify first|unrequested qualification|qualification detail|single-question format|single required alignment question|extra alternative criteria|longer than needed|adds friction|not needed|isn't needed|wasn't asked|wasn’t asked|cta could be clearer|cta can better match|high[- ]?signal framing|low-friction|vague call ask|booking link \(available\)|clear next step)\b/i;
+  /\b(exact|verbatim|required phrasing|required wording|prescribed phrasing|preferred phrasing|preferred wording|supported phrasing|scripted|playbook|approved phrasing|standard phrasing|minor|slight|tone|wording|style|second sentence|list-heavy|bullet|bullets|bullet list|over-explains|conversational|equivalent|booking intent|qualify first|unrequested qualification|qualification detail|single-question format|single required alignment question|extra alternative criteria|longer than needed|adds friction|not needed|isn't needed|wasn't asked|wasn’t asked|keep it clean|extra framing|tighten|tighter|can be tightened|cta could be clearer|cta can better match|high[- ]?signal framing|high[- ]?signal fit check|low-friction|vague call ask|booking link \(available\)|clear next step)\b/i;
 const BLOCKING_JUDGE_REASON_REGEX =
-  /\b(unsupported|hallucinat|mismatch|wrong recipient|wrong timezone|fabricated|missing answer|no supported pricing|no dollar amount|in the past|banned phrase|discovery call|opt-out|unsubscribe|unsafe|policy|slot|date|booking link|contradiction|invented|conflict)\b/i;
+  /\b(hallucinat|mismatch|wrong recipient|wrong timezone|fabricated|missing answer|no supported pricing|unsupported pricing|no dollar amount|in the past|banned phrase|discovery call|opt-out|unsubscribe|unsafe|policy|slot|date|booked|confirmed|contradiction|invented|conflict)\b/i;
 
 function hasOrphanPricingCadenceLine(text: string): boolean {
   return ORPHAN_PRICING_CADENCE_LINE_REGEX.test(text || "");
@@ -204,7 +204,8 @@ function isBlockingJudgeReason(reason: string): boolean {
   if (!normalized) return false;
   if (NON_BLOCKING_JUDGE_REASON_REGEX.test(normalized)) return false;
   if (BLOCKING_JUDGE_REASON_REGEX.test(normalized)) return true;
-  return true;
+  // Unknown judge reasons should not block replay pass; only explicitly "blocking" patterns do.
+  return false;
 }
 
 const DRAFT_TIMEZONE_TOKEN_REGEX =
@@ -251,6 +252,7 @@ function computeBlockingJudgeReasons(opts: {
   const link = opts.leadSchedulerLink || opts.bookingLink || null;
   const responseMode = extractDecisionContractScalar(opts.decisionContract, "responseMode");
   const hasBookingIntent = extractDecisionContractScalar(opts.decisionContract, "hasBookingIntent");
+  const shouldBookNow = extractDecisionContractScalar(opts.decisionContract, "shouldBookNow");
 
   const blocking: string[] = [];
   for (const reason of opts.failureReasons || []) {
@@ -261,6 +263,12 @@ function computeBlockingJudgeReasons(opts: {
     // Drop obviously unsupported complaints where the draft contains the required signal.
     if (normalized.includes("omits the timezone") || normalized.includes("timezone") && normalized.includes("omit")) {
       if (DRAFT_TIMEZONE_TOKEN_REGEX.test(draft)) continue;
+    }
+    if (normalized.includes("timezone") && (normalized.includes("should include") || normalized.includes("should explicitly include"))) {
+      const tokenMatch =
+        reason.match(/\b(pacific|eastern|central|mountain)\b/i) ||
+        reason.match(/\b(pt|pst|pdt|et|est|edt|ct|cst|cdt|mt|mst|mdt|utc|gmt)\b/i);
+      if (tokenMatch?.[1] && draft.toLowerCase().includes(tokenMatch[1].toLowerCase())) continue;
     }
     if (normalized.includes("omits the date") || normalized.includes("date context")) {
       if (DRAFT_MONTH_TOKEN_REGEX.test(draft)) continue;
@@ -276,6 +284,39 @@ function computeBlockingJudgeReasons(opts: {
     ) {
       // If we're in info_then_booking with no booking intent, availability usage is optional.
       if (responseMode === "info_then_booking" && hasBookingIntent === "no") continue;
+      if (availability.length === 0) continue;
+      const usesAnySlot = availability.some((slot) => slot && draft.includes(slot));
+      if (usesAnySlot) continue;
+    }
+
+    if (
+      (normalized.includes("matches provided availability") ||
+        normalized.includes("match provided availability") ||
+        normalized.includes("booked time matches") ||
+        normalized.includes("booked slot matches")) &&
+      normalized.includes("availability")
+    ) {
+      if (availability.length === 0) continue;
+      const usesAnySlot = availability.some((slot) => slot && draft.includes(slot));
+      if (usesAnySlot) continue;
+    }
+
+    if (
+      (normalized.includes("implies a booking") || normalized.includes("implies booking")) &&
+      normalized.includes("provided availability")
+    ) {
+      if (shouldBookNow !== "yes") continue;
+      if (availability.length === 0) continue;
+      const usesAnySlot = availability.some((slot) => slot && draft.includes(slot));
+      if (usesAnySlot) continue;
+    }
+
+    if (
+      normalized.includes("prior thread") ||
+      normalized.includes("earlier outbound booking") ||
+      normalized.includes("earlier booking") ||
+      normalized.includes("previous booking")
+    ) {
       if (availability.length === 0) continue;
       const usesAnySlot = availability.some((slot) => slot && draft.includes(slot));
       if (usesAnySlot) continue;
@@ -1049,25 +1090,28 @@ export async function runReplayCase(opts: {
 
     // Prefer in-memory generation slots. If unavailable (reused drafts / legacy path),
     // refresh from DB to pick up any slots generated during this pass.
-    if (!bookingEscalationReason && generationOfferedSlots.length === 0) {
-      try {
-        const refreshedLead = await prisma.lead.findUnique({
-          where: { id: opts.selectionCase.leadId },
-          select: { offeredSlots: true },
-        });
-        if (refreshedLead) {
-          offeredSlots = parseOfferedSlotsJson(refreshedLead.offeredSlots);
-        }
-      } catch {
-        // Best-effort only.
-      }
-    }
+	    if (!bookingEscalationReason && generationOfferedSlots.length === 0) {
+	      try {
+	        const refreshedLead = await prisma.lead.findUnique({
+	          where: { id: opts.selectionCase.leadId },
+	          select: { offeredSlots: true },
+	        });
+	        if (refreshedLead) {
+	          offeredSlots = parseOfferedSlotsJson(refreshedLead.offeredSlots);
+	        }
+	      } catch {
+	        // Best-effort only.
+	      }
+	    }
 
-    let workspaceContext = opts.workspaceContextCache.get(opts.selectionCase.clientId);
-    if (!workspaceContext) {
-      workspaceContext = await loadWorkspaceContext(opts.selectionCase.clientId);
-      opts.workspaceContextCache.set(opts.selectionCase.clientId, workspaceContext);
-    }
+	    // Match platform behavior: booking escalation suppresses the workspace booking link.
+	    const effectiveBookingLink = bookingEscalationReason ? null : workspaceBookingLink || null;
+
+	    let workspaceContext = opts.workspaceContextCache.get(opts.selectionCase.clientId);
+	    if (!workspaceContext) {
+	      workspaceContext = await loadWorkspaceContext(opts.selectionCase.clientId);
+	      opts.workspaceContextCache.set(opts.selectionCase.clientId, workspaceContext);
+	    }
 
     const observedNextOutbound = await findObservedNextOutbound({
       leadId: opts.selectionCase.leadId,
@@ -1154,15 +1198,15 @@ export async function runReplayCase(opts: {
                 sentimentTag,
                 emailCampaignId: lead.emailCampaign?.id || null,
                 threshold,
-                revisionModel: workspaceRevision?.autoSendRevisionModel || null,
-                maxIterations: clampRevisionIterations(workspaceRevision?.autoSendRevisionMaxIterations),
-                offeredSlots,
-                bookingLink: workspaceBookingLink || null,
-                leadSchedulerLink,
-                leadTimezone: lead.timezone || null,
-                currentDayIso: opts.selectionCase.sentAt,
-                judgeClientId: opts.judgeClientId,
-                judgeModel: opts.judgeModel,
+	                revisionModel: workspaceRevision?.autoSendRevisionModel || null,
+	                maxIterations: clampRevisionIterations(workspaceRevision?.autoSendRevisionMaxIterations),
+	                offeredSlots,
+	                bookingLink: effectiveBookingLink,
+	                leadSchedulerLink,
+	                leadTimezone: lead.timezone || null,
+	                currentDayIso: opts.selectionCase.sentAt,
+	                judgeClientId: opts.judgeClientId,
+	                judgeModel: opts.judgeModel,
                 judgeProfile: opts.judgeProfile,
                 judgeThreshold: opts.judgeThreshold,
                 adjudicationBand: opts.adjudicationBand,
@@ -1185,14 +1229,14 @@ export async function runReplayCase(opts: {
                 sentimentTag,
                 emailCampaignId: lead.emailCampaign?.id || null,
                 threshold,
-                revisionModel: workspaceRevision?.autoSendRevisionModel || null,
-                maxIterations: clampRevisionIterations(workspaceRevision?.autoSendRevisionMaxIterations),
-                offeredSlots,
-                bookingLink: workspaceBookingLink || null,
-                leadSchedulerLink,
-                leadTimezone: lead.timezone || null,
-                currentDayIso: opts.selectionCase.sentAt,
-              });
+	                revisionModel: workspaceRevision?.autoSendRevisionModel || null,
+	                maxIterations: clampRevisionIterations(workspaceRevision?.autoSendRevisionMaxIterations),
+	                offeredSlots,
+	                bookingLink: effectiveBookingLink,
+	                leadSchedulerLink,
+	                leadTimezone: lead.timezone || null,
+	                currentDayIso: opts.selectionCase.sentAt,
+	              });
         generatedDraft = revisionRuntime.draftContent || generatedDraft;
         revisionLoop = {
           ...revisionLoop,
@@ -1221,25 +1265,25 @@ export async function runReplayCase(opts: {
       judgeProfile: opts.judgeProfile,
       judgeThreshold: opts.judgeThreshold,
       adjudicationBand: opts.adjudicationBand,
-      adjudicateBorderline: opts.adjudicateBorderline,
-      input: judgeInput,
-      offeredSlots,
-      bookingLink: workspaceBookingLink || null,
-      leadSchedulerLink,
-      source: opts.source,
-      metadata: {
-        replay: true,
-        caseId: opts.selectionCase.caseId,
+	      adjudicateBorderline: opts.adjudicateBorderline,
+	      input: judgeInput,
+	      offeredSlots,
+	      bookingLink: effectiveBookingLink,
+	      leadSchedulerLink,
+	      source: opts.source,
+	      metadata: {
+	        replay: true,
+	        caseId: opts.selectionCase.caseId,
         messageId: opts.selectionCase.messageId,
       },
     });
     const invariantFailures = evaluateReplayInvariantFailures({
-      inboundBody: opts.selectionCase.inboundBody,
-      draft: generatedDraft,
-      offeredSlots,
-      bookingLink: workspaceBookingLink || null,
-      leadSchedulerLink,
-    });
+	      inboundBody: opts.selectionCase.inboundBody,
+	      draft: generatedDraft,
+	      offeredSlots,
+	      bookingLink: effectiveBookingLink,
+	      leadSchedulerLink,
+	    });
     const objectiveCriticalReasons = invariantFailures.map((entry) => `[${entry.code}] ${entry.message}`);
     const pricingObjectiveWarnings: string[] = [];
     const pricingCheck = detectPricingHallucinations(
@@ -1293,13 +1337,13 @@ export async function runReplayCase(opts: {
     const blockingJudgeReasons = computeBlockingJudgeReasons({
       failureReasons: judge.failureReasons || [],
       draft: generatedDraft,
-      availability: offeredSlots
-        .map((slot) => (typeof slot?.label === "string" ? slot.label.trim() : ""))
-        .filter((label) => label.length > 0),
-      bookingLink: workspaceBookingLink || null,
-      leadSchedulerLink,
-      decisionContract: judge.decisionContract,
-    });
+	      availability: offeredSlots
+	        .map((slot) => (typeof slot?.label === "string" ? slot.label.trim() : ""))
+	        .filter((label) => label.length > 0),
+	      bookingLink: effectiveBookingLink,
+	      leadSchedulerLink,
+	      decisionContract: judge.decisionContract,
+	    });
     const blendedScore = clampScore(llmOverallScore * 0.7 + objectiveOverallScore * 0.3);
     const finalPass =
       objectivePass && (llmOverallScore >= opts.judgeThreshold || (judge.llmPass === false && blockingJudgeReasons.length === 0));

@@ -684,6 +684,7 @@ RULES
   - the lead explicitly confirmed/accepted a time, or
   - extraction.decision_contract_v1.shouldBookNow is "yes" and the selected slot comes directly from provided availability.
 - If extraction.needs_clarification is true, ask ONE concise clarifying question.
+- Exception: if leadSchedulerLink is provided and the latest inbound explicitly instructs you to use their scheduler link (e.g., "use my Calendly", "book via my link"), you may approve an acknowledgement-only reply that confirms you'll use their scheduler and send a confirmation. Do NOT require a clarifying question solely because extraction.needs_clarification is true.
 - If extraction.decision_contract_v1.shouldBookNow is "yes":
   - Keep the reply booking-first and concise.
   - Do NOT add new qualification questions.

@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyClarifyOnlyWindowStartTimeGuard,
   applyInfoThenBookingNoTimeRequestGuard,
+  applyInfoThenBookingNoQualificationGatingGuard,
+  applyInfoThenBookingNoQualificationQuestionGuard,
   applyTimezoneQuestionSuppressionGuard,
 } from "../ai-drafts";
 import type { MeetingOverseerExtractDecision } from "../meeting-overseer";
@@ -129,3 +132,137 @@ test("applyInfoThenBookingNoTimeRequestGuard removes time-picking request when l
   assert.match(result.draft, /\$1M annual revenue/);
 });
 
+test("applyClarifyOnlyWindowStartTimeGuard rewrites anchored time question into an exact start-time question", () => {
+  const input = [
+    "Hi Cellene,",
+    "",
+    "Pricing is $9,500/year.",
+    "",
+    "For timing, does Tuesday the 17th at 10:00am Pacific work for a 15-minute chat?",
+    "",
+    "Best,",
+    "Chris",
+  ].join("\n");
+
+  const result = applyClarifyOnlyWindowStartTimeGuard({
+    draft: input,
+    extraction: buildExtraction({
+      evidence: ["“a chat Tuesday 17th after 10am works for me.”"],
+      needs_clarification: true,
+      decision_contract_v1: {
+        ...buildExtraction().decision_contract_v1!,
+        responseMode: "clarify_only",
+      },
+    }),
+  });
+
+  assert.equal(result.changed, true);
+  assert.ok(!/10:00am/i.test(result.draft));
+  assert.match(result.draft, /What exact start time on Tuesday the 17th \(after 10am Pacific\)/i);
+});
+
+test("applyInfoThenBookingNoTimeRequestGuard removes explicit time options even when not phrased as a question", () => {
+  const input = [
+    "Hi Shane,",
+    "",
+    "Membership includes mastermind groups and a 24/7 member network.",
+    "",
+    "If it’s helpful, we can walk through it on a quick 15-minute call. Two options are 11:30 AM EST on Tue, Feb 17 or 4:00 PM EST on Wed, Feb 18.",
+    "",
+    "https://calendly.com/example/intro",
+    "",
+    "Which time works?",
+    "",
+    "Best,",
+    "Aaron",
+  ].join("\n");
+
+  const extraction = buildExtraction({
+    needs_clarification: false,
+    decision_contract_v1: {
+      contractVersion: "v1",
+      isQualified: "no",
+      hasBookingIntent: "no",
+      shouldBookNow: "no",
+      leadTimezone: "America/Denver",
+      leadProposedWindows: [],
+      needsPricingAnswer: "no",
+      needsCommunityDetails: "yes",
+      responseMode: "info_then_booking",
+      evidence: [],
+    },
+  });
+
+  const result = applyInfoThenBookingNoTimeRequestGuard({ draft: input, extraction });
+  assert.equal(result.changed, true);
+  assert.ok(!/Two options are/i.test(result.draft));
+  assert.ok(!/Which time works/i.test(result.draft));
+  assert.match(result.draft, /calendly\\.com\\/example\\/intro/i);
+});
+
+test("applyInfoThenBookingNoQualificationGatingGuard removes qualification gating clause when pricing isn't requested", () => {
+  const input = [
+    "Hi Shane,",
+    "",
+    "Membership is a private community for founders/operators doing $1M+ in annual revenue, with a mix of online access and in-person programming.",
+    "",
+    "Best,",
+    "Aaron",
+  ].join("\n");
+
+  const extraction = buildExtraction({
+    needs_clarification: false,
+    decision_contract_v1: {
+      contractVersion: "v1",
+      isQualified: "no",
+      hasBookingIntent: "no",
+      shouldBookNow: "no",
+      leadTimezone: "America/Denver",
+      leadProposedWindows: [],
+      needsPricingAnswer: "no",
+      needsCommunityDetails: "yes",
+      responseMode: "info_then_booking",
+      evidence: [],
+    },
+  });
+
+  const result = applyInfoThenBookingNoQualificationGatingGuard({ draft: input, extraction });
+  assert.equal(result.changed, true);
+  assert.ok(!/\\$1M\\+\\s+in\\s+annual\\s+revenue/i.test(result.draft));
+  assert.match(result.draft, /for founders\\/operators, with a mix/i);
+});
+
+test("applyInfoThenBookingNoQualificationQuestionGuard removes revenue gating questions in info_then_booking", () => {
+  const input = [
+    "Hi Monica,",
+    "",
+    "Membership includes masterminds and a 24/7 member network.",
+    "",
+    "To make sure it's aligned: are you currently at or above the $1m annual revenue mark?",
+    "If yes, we can do a quick 15-minute call to walk through details.",
+    "",
+    "Best,",
+    "Aaron",
+  ].join("\n");
+
+  const extraction = buildExtraction({
+    needs_clarification: false,
+    decision_contract_v1: {
+      contractVersion: "v1",
+      isQualified: "no",
+      hasBookingIntent: "no",
+      shouldBookNow: "no",
+      leadTimezone: "America/New_York",
+      leadProposedWindows: [],
+      needsPricingAnswer: "no",
+      needsCommunityDetails: "yes",
+      responseMode: "info_then_booking",
+      evidence: [],
+    },
+  });
+
+  const result = applyInfoThenBookingNoQualificationQuestionGuard({ draft: input, extraction });
+  assert.equal(result.changed, true);
+  assert.ok(!/annual revenue/i.test(result.draft));
+  assert.match(result.draft, /If helpful, we can do a quick 15-minute call/i);
+});
