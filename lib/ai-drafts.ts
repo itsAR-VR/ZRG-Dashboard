@@ -806,8 +806,7 @@ export function applyRelativeWeekdayDateDisambiguationGuard(params: {
 
   const shouldApply =
     extraction?.needs_clarification === true ||
-    contract.responseMode === "clarify_only" ||
-    contract.responseMode === "offer_times";
+    contract.responseMode === "clarify_only";
   if (!shouldApply) return { draft, changed: false };
 
   const match = draft.match(RELATIVE_WEEKDAY_NEXT_REGEX);

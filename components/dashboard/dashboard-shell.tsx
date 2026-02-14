@@ -183,6 +183,8 @@ function DashboardPageInner() {
     coerceSettingsTab(settingsTabParam)
   )
   const [dismissedUnipileBanner, setDismissedUnipileBanner] = useState<string | null>(null)
+  const [isWorkspaceTransitioning, setIsWorkspaceTransitioning] = useState(false)
+  const previousWorkspaceRef = useRef<string | null>(activeWorkspace)
 
   const prefetchView = useCallback((view: ViewType) => {
     if (prefetchedViewsRef.current.has(view)) return
@@ -230,6 +232,22 @@ function DashboardPageInner() {
   useEffect(() => {
     workspaceSelectionModeRef.current = workspaceSelectionMode
   }, [workspaceSelectionMode])
+
+  useEffect(() => {
+    if (previousWorkspaceRef.current === activeWorkspace) return
+    previousWorkspaceRef.current = activeWorkspace
+    setIsWorkspaceTransitioning(true)
+  }, [activeWorkspace])
+
+  useEffect(() => {
+    if (!isWorkspaceTransitioning) return
+    const frame = requestAnimationFrame(() => {
+      setIsWorkspaceTransitioning(false)
+    })
+    return () => {
+      cancelAnimationFrame(frame)
+    }
+  }, [isWorkspaceTransitioning])
 
   const syncWorkspaces = useCallback((nextWorkspaces: Client[]) => {
     setWorkspaces(nextWorkspaces)
@@ -353,6 +371,10 @@ function DashboardPageInner() {
   }, [activeView, prefetchView])
 
   const renderContent = (view: ViewType, isActiveView: boolean) => {
+    if (isWorkspaceTransitioning) {
+      return <div className="h-full w-full animate-pulse rounded bg-muted/30" />
+    }
+
     const workspaceKey = activeWorkspace ?? "all"
     switch (view) {
       case "followups":

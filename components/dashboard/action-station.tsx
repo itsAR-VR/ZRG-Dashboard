@@ -478,9 +478,8 @@ export function ActionStation({
   }, [conversation?.id, conversation?.messages])
 
   const fetchLinkedInStatus = useCallback(
-    async (isCancelled?: () => boolean) => {
+    async (conversationId: string | null, isCancelled?: () => boolean) => {
       const cancelled = () => Boolean(isCancelled?.())
-      const conversationId = conversation?.id ?? null
 
       if (!conversationId || activeChannel !== "linkedin" || !hasLinkedIn) {
         if (cancelled()) return
@@ -512,17 +511,17 @@ export function ActionStation({
         }
       }
     },
-    [conversation?.id, activeChannel, hasLinkedIn]
+    [activeChannel, hasLinkedIn]
   )
 
   // Fetch LinkedIn connection status when LinkedIn tab is active
   useEffect(() => {
     let cancelled = false
-    void fetchLinkedInStatus(() => cancelled)
+    void fetchLinkedInStatus(conversation?.id ?? null, () => cancelled)
     return () => {
       cancelled = true
     }
-  }, [fetchLinkedInStatus])
+  }, [conversation?.id, fetchLinkedInStatus])
 
   // Fetch real AI drafts when conversation/channel context changes.
   // Avoid binding this effect to mutable lead sentiment metadata, which can
@@ -1120,7 +1119,7 @@ export function ActionStation({
                 size="sm"
                 className="h-6 px-2 text-xs"
                 onClick={() => {
-                  void fetchLinkedInStatus()
+                  void fetchLinkedInStatus(conversation?.id ?? null)
                 }}
                 disabled={isLoadingLinkedInStatus}
               >

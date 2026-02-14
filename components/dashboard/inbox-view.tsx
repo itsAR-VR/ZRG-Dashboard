@@ -188,23 +188,29 @@ export function InboxView({
 
   // Reset SMS sub-client and score filters when switching workspaces
   useEffect(() => {
-    setActiveSmsClient("all");
-    setActiveScoreFilter("all");
+    setActiveSmsClient((previous) => (previous === "all" ? previous : "all"));
+    setActiveScoreFilter((previous) => (previous === "all" ? previous : "all"));
   }, [activeWorkspace]);
 
   // Reset selection when switching workspaces to avoid showing a lead from another workspace.
+  // Intentionally scoped to workspace transitions only.
   useEffect(() => {
     // If the inbox was opened via deep-link (e.g. Slack "Edit in dashboard"),
     // keep that lead selected when the workspace auto-switches.
-    setActiveConversationId(initialConversationId ?? null);
-    setActiveConversation(null);
-    setIsCrmOpen(false);
-    setNewConversationCount(0);
-    setSyncAllCursor(null);
+    const nextConversationId = initialConversationId ?? null;
+    setActiveConversationId((previous) =>
+      previous === nextConversationId ? previous : nextConversationId
+    );
+    setActiveConversation((previous) => (previous === null ? previous : null));
+    setIsCrmOpen((previous) => (previous ? false : previous));
+    setNewConversationCount((previous) => (previous === 0 ? previous : 0));
+    setSyncAllCursor((previous) => (previous === null ? previous : null));
     leadLastMessageAtRef.current = new Map();
     workspaceLastMessageAtRef.current = 0;
     activeConversationLastFetchedAtRef.current = new Map();
-  }, [activeWorkspace, initialConversationId]);
+    activeConversationListTimestampRef.current = 0;
+    prevConversationIdRef.current = null;
+  }, [activeWorkspace]);
 
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
@@ -646,7 +652,7 @@ export function InboxView({
         return next;
       });
     }
-  }, [activeConversationId, fetchActiveConversation]);
+  }, []);
 
   // Sync all SMS conversations
   const handleSyncAll = useCallback(async (forceReclassify: boolean = false) => {
@@ -849,7 +855,9 @@ export function InboxView({
   // Handle initial conversation selection (e.g., from CRM "Open in Master Inbox")
   useEffect(() => {
     if (initialConversationId) {
-      setActiveConversationId(initialConversationId);
+      setActiveConversationId((previous) =>
+        previous === initialConversationId ? previous : initialConversationId
+      );
     }
   }, [initialConversationId]);
 
