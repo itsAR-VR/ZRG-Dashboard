@@ -40,7 +40,7 @@ const DEFAULT_LIMIT = 20;
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_RETRIES = 1;
 const DEFAULT_CHANNEL: ReplayChannelFilter = "any";
-const DEFAULT_REVISION_LOOP_MODE: ReplayRevisionLoopMode = "platform";
+const DEFAULT_REVISION_LOOP_MODE: ReplayRevisionLoopMode = "overseer";
 const DEFAULT_OVERSEER_DECISION_MODE: ReplayOverseerDecisionMode = "fresh";
 const DEFAULT_JUDGE_PROFILE: ReplayJudgeProfile = "balanced";
 const DEFAULT_ADJUDICATION_BAND = { min: 40, max: 80 };
@@ -142,7 +142,7 @@ export function formatReplayUsage(): string {
     "  --concurrency <n>            Concurrent case workers (default: 3)",
     "  --retries <n>                Retry attempts per failed case (default: 1)",
     "  --judge-model <name>         Override replay judge model",
-    "  --revision-loop <platform|force|off|overseer>  Replay revision loop mode (default: platform)",
+    "  --revision-loop <platform|force|off|overseer>  Replay revision loop mode (default: overseer)",
     "  --overseer-mode <fresh|persisted>     Meeting overseer decision mode (default: fresh)",
     "  --judge-profile <strict|balanced|lenient>  Hybrid judge profile (default: balanced)",
     "  --judge-threshold <0..100>      Override pass threshold for hybrid judge",

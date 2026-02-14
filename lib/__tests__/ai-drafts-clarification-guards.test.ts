@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyBookingOnlyConcisionGuard,
+  applyClarifyOnlyThatDayDisambiguationGuard,
   applyClarifyOnlyWindowStartTimeGuard,
   applyContactUpdateNoSchedulingGuard,
   applyInfoThenBookingNoTimeRequestGuard,
@@ -9,6 +11,8 @@ import {
   applyInfoThenBookingNoQualificationQuestionGuard,
   applyMissingBookingLinkForCallCue,
   applyNeedsClarificationSingleQuestionGuard,
+  applyRelativeWeekdayDateDisambiguationGuard,
+  applySchedulingConfirmationWordingGuard,
   applyShouldBookNowConfirmationIfNeeded,
   applyTimezoneQuestionSuppressionGuard,
 } from "../ai-drafts";
@@ -162,6 +166,126 @@ test("applyNeedsClarificationSingleQuestionGuard trims trailing parenthetical OR
   assert.equal(result.changed, true);
   assert.ok(!/\bor\\s+is\\s+there\\s+a\\s+target\\s+date\\b/i.test(result.draft));
   assert.ok(result.draft.includes("Have you sold a business for $2.5m+ or raised $2.5m+ in funding?"));
+});
+
+test("applySchedulingConfirmationWordingGuard rewrites 'Locked for' to 'Confirmed for'", () => {
+  const input = ["Hi Danny,", "", "Locked for Tue, Feb 17 at 10:00 AM PST.", "", "Best,", "Chris"].join("\n");
+  const result = applySchedulingConfirmationWordingGuard({ draft: input });
+
+  assert.equal(result.changed, true);
+  assert.ok(!/\blocked for\b/i.test(result.draft));
+  assert.ok(/\bConfirmed for\b/.test(result.draft));
+});
+
+test("applyRelativeWeekdayDateDisambiguationGuard restores 'next Monday' phrasing when the draft drops next", () => {
+  const input = ["Hi Bill,", "", "What start time Monday afternoon (ET) should we use for a quick 15-minute call?", "", "Best,", "Chris"].join("\n");
+  const result = applyRelativeWeekdayDateDisambiguationGuard({
+    draft: input,
+    extraction: buildExtraction({
+      needs_clarification: true,
+      relative_preference_detail: "next Monday afternoon",
+      decision_contract_v1: {
+        ...buildExtraction().decision_contract_v1!,
+        leadProposedWindows: [
+          { type: "day_only", value: "mon", detail: null },
+          { type: "time_of_day", value: "afternoon", detail: null },
+          { type: "relative", value: "after_date", detail: "next Monday afternoon" },
+        ],
+        responseMode: "clarify_only",
+      },
+    }),
+    timeZone: "America/New_York",
+    referenceDate: new Date("2026-02-13T21:37:10.000Z"),
+  });
+
+  assert.equal(result.changed, true);
+  assert.match(result.draft, /\bnext\s+monday\b/i);
+});
+
+test("applyRelativeWeekdayDateDisambiguationGuard collapses 'Monday ... works' + generic start-time question", () => {
+  const input = ["Hi Bill,", "", "Monday afternoon ET works. What start time should we use?", "", "Best,", "Chris"].join("\n");
+  const result = applyRelativeWeekdayDateDisambiguationGuard({
+    draft: input,
+    extraction: buildExtraction({
+      needs_clarification: true,
+      relative_preference_detail: "next Monday afternoon",
+      decision_contract_v1: {
+        ...buildExtraction().decision_contract_v1!,
+        leadProposedWindows: [
+          { type: "day_only", value: "mon", detail: null },
+          { type: "time_of_day", value: "afternoon", detail: null },
+          { type: "relative", value: "after_date", detail: "next Monday afternoon" },
+        ],
+        responseMode: "clarify_only",
+      },
+    }),
+    timeZone: "America/New_York",
+    referenceDate: new Date("2026-02-13T21:37:10.000Z"),
+  });
+
+  assert.equal(result.changed, true);
+  assert.match(result.draft, /\bWhat start time next Monday afternoon ET\b/i);
+  assert.ok(!/\bworks\b/i.test(result.draft));
+});
+
+test("applyBookingOnlyConcisionGuard rewrites booking_only replies to be confirmation-forward and concise", () => {
+  const input = [
+    "Hi Danny,",
+    "",
+    "Tue, Feb 17 at 10:00 AM PST works.",
+    "",
+    "The membership fee is $9,500 per year. It works out to $791 per month for founders who want to explore before committing annually.",
+    "",
+    "On local founders: we generally keep the member roster private, but on the call we can share a feel for who’s in the Vancouver circle (roles, stage, and types of companies).",
+    "",
+    "Best,",
+    "Chris",
+  ].join("\n");
+
+  const result = applyBookingOnlyConcisionGuard({
+    draft: input,
+    channel: "email",
+    extraction: buildExtraction({
+      needs_clarification: false,
+      needs_pricing_answer: true,
+      needs_community_details: true,
+      decision_contract_v1: {
+        ...buildExtraction().decision_contract_v1!,
+        isQualified: "yes",
+        hasBookingIntent: "yes",
+        shouldBookNow: "yes",
+        needsPricingAnswer: "yes",
+        needsCommunityDetails: "yes",
+        responseMode: "booking_only",
+      },
+    }),
+  });
+
+  assert.equal(result.changed, true);
+  assert.ok(/\bConfirmed for Tue,\s+Feb\s+17\b/.test(result.draft));
+  assert.ok(!/\bworks\.\b/i.test(result.draft));
+  assert.ok(!/before committing annually/i.test(result.draft));
+  assert.ok(!/^On local founders:/im.test(result.draft));
+  assert.ok(!/[()]/.test(result.draft));
+});
+
+test("applyClarifyOnlyThatDayDisambiguationGuard rewrites 'that day' to 'on that <weekday>'", () => {
+  const input = ["Hi Ari,", "", "Yes, we can do the following Friday. What start time works for you that day?", "", "Best,", "Chris"].join("\n");
+
+  const result = applyClarifyOnlyThatDayDisambiguationGuard({
+    draft: input,
+    extraction: buildExtraction({
+      needs_clarification: true,
+      decision_contract_v1: {
+        ...buildExtraction().decision_contract_v1!,
+        responseMode: "clarify_only",
+      },
+    }),
+  });
+
+  assert.equal(result.changed, true);
+  assert.ok(!/\bthat\s+day\b/i.test(result.draft));
+  assert.match(result.draft, /\bon that Friday\b/i);
 });
 
 test("applyMissingBookingLinkForCallCue does not inject booking link in clarify_only mode", () => {

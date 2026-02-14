@@ -323,6 +323,130 @@ export function applySchedulingConfirmationWordingGuard(params: {
   return { draft: next, changed: true };
 }
 
+const BOOKING_ONLY_CONFIRMATION_WORKS_LINE_REGEX = /^\s*(?:thanks[,!]\s*)?(.+?)\s+works(?:\s+for\s+me)?\.?\s*$/i;
+const BOOKING_ONLY_CONFIRMATION_TIME_HINT_REGEX =
+  /\b(mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b(pst|pdt|pt|mst|mdt|mt|cst|cdt|ct|est|edt|et|utc|gmt)\b/i;
+const BOOKING_ONLY_MONTHLY_EQUIVALENT_SENTENCE_REGEX =
+  /(\bIt\s+(?:works\s+out\s+to|equates\s+to)\s+\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:per\s+month|\/\s?(?:mo|month))\b)[^.]*\./i;
+const BOOKING_ONLY_COMMUNITY_PREFIX_REGEX = /^\s*on\s+local\s+founders\s*:\s*/i;
+
+function shortenBookingOnlyPricingParagraph(paragraph: string): string {
+  let out = (paragraph || "").trim();
+  if (!out) return "";
+
+  // Remove trailing justification clauses after the monthly-equivalent amount.
+  out = out.replace(BOOKING_ONLY_MONTHLY_EQUIVALENT_SENTENCE_REGEX, "$1.");
+
+  // Avoid overly long paragraphs when booking_only; keep at most 2 sentences.
+  const sentences = out
+    .split(/(?<=\.)\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (sentences.length > 2) {
+    out = `${sentences[0]} ${sentences[1]}`.trim();
+  }
+
+  return out.replace(/\s+/g, " ").trim();
+}
+
+function shortenBookingOnlyCommunityParagraph(paragraph: string): string {
+  let out = (paragraph || "").trim();
+  if (!out) return "";
+
+  out = out.replace(BOOKING_ONLY_COMMUNITY_PREFIX_REGEX, "");
+  // Drop verbose asides like "(roles, stage, ...)".
+  out = out.replace(/\([^)]*\)/g, "");
+  out = out.replace(/\s+/g, " ").trim();
+  if (out && /^[a-z]/.test(out)) out = out[0]!.toUpperCase() + out.slice(1);
+  return out;
+}
+
+function rewriteBookingOnlyWorksParagraph(paragraph: string): { paragraph: string; changed: boolean } {
+  const trimmed = (paragraph || "").trim();
+  if (!trimmed) return { paragraph: trimmed, changed: false };
+  const match = trimmed.match(BOOKING_ONLY_CONFIRMATION_WORKS_LINE_REGEX);
+  if (!match?.[1]) return { paragraph: trimmed, changed: false };
+  const core = match[1].trim();
+  if (!core) return { paragraph: trimmed, changed: false };
+  if (!BOOKING_ONLY_CONFIRMATION_TIME_HINT_REGEX.test(core)) return { paragraph: trimmed, changed: false };
+  const next = `Confirmed for ${core}.`;
+  if (next === trimmed) return { paragraph: trimmed, changed: false };
+  return { paragraph: next, changed: true };
+}
+
+export function applyBookingOnlyConcisionGuard(params: {
+  draft: string;
+  extraction: MeetingOverseerExtractDecision | null;
+  channel: DraftChannel;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, changed: false };
+  if (params.channel !== "email") return { draft, changed: false };
+  if (draft.includes("?")) return { draft, changed: false };
+
+  const extraction = params.extraction;
+  const contract = extraction?.decision_contract_v1;
+  if (!contract) return { draft, changed: false };
+  if (contract.responseMode !== "booking_only") return { draft, changed: false };
+
+  const needsPricingAnswer = contract.needsPricingAnswer === "yes";
+  const needsCommunityDetails = contract.needsCommunityDetails === "yes";
+  if (!needsPricingAnswer && !needsCommunityDetails) return { draft, changed: false };
+
+  const paragraphs = draft
+    .split(/\n{2,}/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (paragraphs.length < 3) return { draft, changed: false };
+
+  const greeting = paragraphs[0] || "";
+  const signOff = paragraphs[paragraphs.length - 1] || "";
+  const body = paragraphs.slice(1, -1);
+  if (body.length === 0) return { draft, changed: false };
+
+  const nextBody: string[] = [];
+  let changed = false;
+
+  // Booking confirmation comes first; prefer rewriting a simple "X works." line to "Confirmed for X."
+  const confirmation = rewriteBookingOnlyWorksParagraph(body[0] || "");
+  if (confirmation.changed) changed = true;
+  nextBody.push(confirmation.paragraph || body[0] || "");
+
+  const pricingParagraph =
+    needsPricingAnswer
+      ? body.find((p, idx) => idx !== 0 && /\$\s*\d/.test(p))
+      : null;
+  const communityParagraph =
+    needsCommunityDetails
+      ? body.find(
+          (p, idx) =>
+            idx !== 0 &&
+            p !== pricingParagraph &&
+            /\b(founder|founders|member|members|roster|chapter|circle|local)\b/i.test(p)
+        )
+      : null;
+
+  const pricingShort = needsPricingAnswer && pricingParagraph ? shortenBookingOnlyPricingParagraph(pricingParagraph) : "";
+  const communityShort = needsCommunityDetails && communityParagraph ? shortenBookingOnlyCommunityParagraph(communityParagraph) : "";
+
+  const infoSentence = [pricingShort, communityShort].filter(Boolean).join(" ").trim();
+  if (infoSentence) {
+    nextBody.push(infoSentence);
+    if (pricingParagraph && pricingShort !== pricingParagraph.trim()) changed = true;
+    if (communityParagraph && communityShort !== communityParagraph.trim()) changed = true;
+  }
+
+  const nextDraft = [greeting, ...nextBody, signOff]
+    .filter(Boolean)
+    .join("\n\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (!nextDraft || nextDraft === draft) return { draft, changed: false };
+  return { draft: nextDraft, changed: true };
+}
+
 const CONTACT_UPDATE_EMAIL_REGEX = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const CONTACT_UPDATE_CUE_REGEX =
   /\b(please use|use\s+[^.\n]{0,40}\bemail\b|do not regularly receive|not monitored|no longer with|reach me personally|email me directly|please contact)\b/i;
@@ -628,23 +752,41 @@ export function applyNeedsClarificationSingleQuestionGuard(params: {
 }
 
 const RELATIVE_WEEKDAY_NEXT_REGEX =
-  /\bnext\s+(mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b/i;
+  /\b(?:next\s+)?(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b(?!\.[a-z])/i;
+const RELATIVE_WEEKDAY_NEXT_PREFIX_ONLY_REGEX =
+  /\bnext\s+(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b/i;
 const RELATIVE_WEEKDAY_HAS_EXPLICIT_DATE_REGEX =
-  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?\b/i;
+  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?\b|\b\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{2,4})?\b/i;
+const CLARIFY_ONLY_WEEKDAY_WORKS_START_TIME_REGEX =
+  /\b(?:next\s+)?(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b(?!\.[a-z])([^?]{0,80}?)\bworks\.?\s+What\s+(?:exact\s+)?(?:start\s+)?time\s+should\s+we\s+use\s*\?/i;
 
-function findNextWeekdayInTimeZone(opts: {
-  referenceDate: Date;
-  timeZone: string;
+function leadRequestedNextWeekday(opts: {
+  extraction: MeetingOverseerExtractDecision;
   weekdayToken: string;
-}): Date | null {
-  for (let offsetDays = 1; offsetDays <= 7; offsetDays += 1) {
-    const candidate = new Date(opts.referenceDate.getTime() + offsetDays * 24 * 60 * 60 * 1000);
-    const weekday = new Intl.DateTimeFormat("en-US", { timeZone: opts.timeZone, weekday: "short" }).format(candidate);
-    if (normalizeWeekdayToken(weekday) === opts.weekdayToken) {
-      return candidate;
+}): boolean {
+  const details: string[] = [];
+  const rawDetail = typeof opts.extraction.relative_preference_detail === "string" ? opts.extraction.relative_preference_detail.trim() : "";
+  if (rawDetail) details.push(rawDetail);
+
+  const windows = opts.extraction.decision_contract_v1?.leadProposedWindows;
+  if (Array.isArray(windows)) {
+    for (const window of windows) {
+      if (!window || typeof window !== "object") continue;
+      if (window.type !== "relative") continue;
+      if (typeof window.detail === "string" && window.detail.trim()) {
+        details.push(window.detail.trim());
+      }
     }
   }
-  return null;
+
+  for (const detail of details) {
+    const match = detail.match(RELATIVE_WEEKDAY_NEXT_PREFIX_ONLY_REGEX);
+    if (!match?.[1]) continue;
+    const token = normalizeWeekdayToken(match[1]);
+    if (token && token === opts.weekdayToken) return true;
+  }
+
+  return false;
 }
 
 export function applyRelativeWeekdayDateDisambiguationGuard(params: {
@@ -673,19 +815,66 @@ export function applyRelativeWeekdayDateDisambiguationGuard(params: {
   const weekdayToken = normalizeWeekdayToken(match[1] || "");
   if (!weekdayToken) return { draft, changed: false };
 
-  const timeZone = (params.timeZone || "").trim() || "UTC";
-  const referenceDate = params.referenceDate instanceof Date ? params.referenceDate : new Date();
-  const targetDate = findNextWeekdayInTimeZone({ referenceDate, timeZone, weekdayToken });
-  if (!targetDate) return { draft, changed: false };
+  const wantsNextPrefix = extraction ? leadRequestedNextWeekday({ extraction, weekdayToken }) : false;
 
-  const explicit = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    weekday: "long",
-    month: "short",
-    day: "numeric",
-  }).format(targetDate);
+  // Special-case: when the model writes "Monday afternoon ... works. What start time should we use?"
+  // it can read like an implicit acceptance + a separate question. Collapse into a single
+  // time-pinning question and preserve the lead's "next Monday" phrasing when present.
+  if (contract.responseMode === "clarify_only") {
+    const mergeMatch = draft.match(CLARIFY_ONLY_WEEKDAY_WORKS_START_TIME_REGEX);
+    if (mergeMatch) {
+      const suffix = (mergeMatch[2] || "").trim().replace(/\s+/g, " ").replace(/^[,;:.-]+/, "").trim();
+      const weekdayRaw = (mergeMatch[1] || "").trim();
+      const weekdayDisplay = weekdayRaw && /^[a-z]/.test(weekdayRaw) ? weekdayRaw[0]!.toUpperCase() + weekdayRaw.slice(1) : weekdayRaw;
+      const fullMatch = mergeMatch[0] || "";
+      const hasNextAlready = /\bnext\b/i.test(fullMatch);
+      const prefix = hasNextAlready || wantsNextPrefix ? "next " : "";
+      const question = `What start time ${prefix}${weekdayDisplay}${suffix ? ` ${suffix}` : ""} should we use?`;
+      const merged = draft.replace(CLARIFY_ONLY_WEEKDAY_WORKS_START_TIME_REGEX, question);
+      if (merged && merged !== draft) return { draft: merged, changed: true };
+    }
+  }
 
-  const next = draft.replace(RELATIVE_WEEKDAY_NEXT_REGEX, explicit);
+  if (!wantsNextPrefix) return { draft, changed: false };
+
+  const next = draft.replace(RELATIVE_WEEKDAY_NEXT_REGEX, (full, weekday) => {
+    if (/\bnext\b/i.test(full)) return full;
+    const rawWeekday = typeof weekday === "string" ? weekday.trim() : "";
+    if (!rawWeekday) return full;
+    return `next ${rawWeekday}`;
+  });
+  if (next === draft) return { draft, changed: false };
+  return { draft: next, changed: true };
+}
+
+const CLARIFY_ONLY_THAT_DAY_REGEX = /\bthat\s+day\b/i;
+const CLARIFY_ONLY_WEEKDAY_WORD_REGEX =
+  /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
+
+export function applyClarifyOnlyThatDayDisambiguationGuard(params: {
+  draft: string;
+  extraction: MeetingOverseerExtractDecision | null;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, changed: false };
+  if (!draft.includes("?")) return { draft, changed: false };
+  if (!CLARIFY_ONLY_THAT_DAY_REGEX.test(draft)) return { draft, changed: false };
+
+  const contract = params.extraction?.decision_contract_v1;
+  if (!contract) return { draft, changed: false };
+  if (contract.responseMode !== "clarify_only") return { draft, changed: false };
+
+  const lower = draft.toLowerCase();
+  const idx = lower.indexOf("that day");
+  if (idx < 0) return { draft, changed: false };
+
+  const prior = draft.slice(0, idx);
+  const matches = Array.from(prior.matchAll(new RegExp(CLARIFY_ONLY_WEEKDAY_WORD_REGEX.source, "gi")));
+  const last = matches.length > 0 ? matches[matches.length - 1] : null;
+  const weekday = last?.[1] ? last[1].trim() : "";
+  if (!weekday) return { draft, changed: false };
+
+  const next = draft.replace(/\bthat\s+day\b/gi, `on that ${weekday}`);
   if (next === draft) return { draft, changed: false };
   return { draft: next, changed: true };
 }
@@ -5406,6 +5595,19 @@ Generate an appropriate ${channel} response following the guidelines above.
 		        availability,
 		      });
 
+          const bookingOnlyGuard = applyBookingOnlyConcisionGuard({
+            draft: draftContent,
+            extraction: meetingOverseerExtractionDecision,
+            channel,
+          });
+          if (bookingOnlyGuard.changed) {
+            draftContent = bookingOnlyGuard.draft;
+            console.log("[AI Drafts] Applied booking_only concision guard", {
+              leadId,
+              channel,
+            });
+          }
+
           const confirmationWordingGuard = applySchedulingConfirmationWordingGuard({
             draft: draftContent,
           });
@@ -5511,6 +5713,18 @@ Generate an appropriate ${channel} response following the guidelines above.
         if (relativeDateGuard.changed) {
           draftContent = relativeDateGuard.draft;
           console.log("[AI Drafts] Applied relative-weekday date disambiguation guard", {
+            leadId,
+            channel,
+          });
+        }
+
+        const thatDayGuard = applyClarifyOnlyThatDayDisambiguationGuard({
+          draft: draftContent,
+          extraction: meetingOverseerExtractionDecision,
+        });
+        if (thatDayGuard.changed) {
+          draftContent = thatDayGuard.draft;
+          console.log("[AI Drafts] Applied clarify_only that-day disambiguation guard", {
             leadId,
             channel,
           });
