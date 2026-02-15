@@ -130,37 +130,6 @@ const MEETING_OVERSEER_GATE_SCHEMA = {
   required: ["decision", "final_draft", "confidence", "issues", "rationale"],
 } as const;
 
-const SCHEDULING_KEYWORDS = [
-  "schedule",
-  "scheduling",
-  "book",
-  "booking",
-  "meeting",
-  "call",
-  "calendar",
-  "availability",
-  "available",
-  "time",
-  "tomorrow",
-  "today",
-  "next week",
-  "later this week",
-  "this week",
-];
-
-const PRICING_KEYWORDS = [
-  "how much",
-  "price",
-  "pricing",
-  "cost",
-  "fee",
-  "investment",
-  "billing",
-  "membership",
-  "quote",
-  "rates",
-];
-
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   if (value <= 0) return 0;
@@ -288,10 +257,33 @@ export function shouldRunMeetingOverseer(opts: {
   if (isAutoBookingBlockedSentiment(opts.sentimentTag)) return false;
   const message = (opts.messageText || "").toLowerCase();
   if (!message) return false;
-  if (typeof opts.offeredSlotsCount === "number" && opts.offeredSlotsCount > 0) return true;
-  if (opts.sentimentTag && ["Meeting Requested", "Call Requested", "Meeting Booked"].includes(opts.sentimentTag)) return true;
-  if (SCHEDULING_KEYWORDS.some((keyword) => message.includes(keyword))) return true;
-  return PRICING_KEYWORDS.some((keyword) => message.includes(keyword));
+  // LLM-first routing: once a message is eligible, extraction decides whether
+  // scheduling/pricing/community intent exists. This avoids deterministic pre-routing drift.
+  return true;
+}
+
+function buildOverseerDateContext(opts: {
+  leadTimezone: string | null;
+  referenceDate?: Date | string | null;
+}): string {
+  const fallbackTimezone = "UTC";
+  const timeZone =
+    typeof opts.leadTimezone === "string" && isValidIanaTimezone(opts.leadTimezone) ? opts.leadTimezone : fallbackTimezone;
+  const rawDate = opts.referenceDate ? new Date(opts.referenceDate) : new Date();
+  const now = Number.isNaN(rawDate.getTime()) ? new Date() : rawDate;
+  const dayFormat = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const tzParts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "short",
+  }).formatToParts(now);
+  const shortTz = tzParts.find((part) => part.type === "timeZoneName")?.value || timeZone;
+  return `Current lead-local date: ${dayFormat.format(now)} (${shortTz}).`;
 }
 
 export function selectOfferedSlotByPreference(opts: {
@@ -607,6 +599,7 @@ export async function runMeetingOverseerExtraction(opts: {
   messageId?: string | null;
   messageText: string;
   leadTimezone?: string | null;
+  referenceDate?: Date | string | null;
   offeredSlots: OfferedSlot[];
   qualificationContext?: string | null;
   conversationContext?: string | null;
@@ -647,6 +640,10 @@ export async function runMeetingOverseerExtraction(opts: {
   const leadTimezoneHint = isValidIanaTimezone((opts.leadTimezone || "").trim())
     ? (opts.leadTimezone || "").trim()
     : "None.";
+  const dateContext = buildOverseerDateContext({
+    leadTimezone: leadTimezoneHint !== "None." ? leadTimezoneHint : null,
+    referenceDate: opts.referenceDate,
+  });
 
   const promptKey = "meeting.overseer.extract.v2";
 
@@ -675,6 +672,9 @@ Conversation context (recent thread summary):
 
 Known lead timezone hint (if available):
 {{leadTimezoneHint}}
+
+Date context (lead-local anchor for relative timing):
+{{dateContext}}
 
 Rules:
 - If NOT scheduling-related, set is_scheduling_related=false, intent="other", acceptance_specificity="none", needs_clarification=false.
@@ -721,6 +721,7 @@ Rules:
 - needs_community_details:
   - true when the lead explicitly asks what is included, benefits, how the community works, or similar details.
   - false otherwise.
+- Resolve relative timing phrases ("today", "tomorrow", "next week", "this Friday") using dateContext and timezone context.
 - If the message is ambiguous about scheduling intent, prefer is_scheduling_related=false and intent="other" (fail closed).
 - Do NOT invent dates or times. Use only the message and offered slots list.
 - Provide short evidence quotes from the message.
@@ -733,6 +734,7 @@ Output JSON only.`,
       conversationContext,
       businessContext,
       leadTimezoneHint,
+      dateContext,
     },
     schemaName: "meeting_overseer_extract_v2",
     strict: true,

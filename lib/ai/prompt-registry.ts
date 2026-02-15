@@ -596,6 +596,9 @@ Conversation context (recent thread summary):
 Known lead timezone hint (IANA, if available):
 {{leadTimezoneHint}}
 
+Date context (lead-local anchor for relative timing):
+{{dateContext}}
+
 Subject lines may be included inside the message text (prefixed with "Subject:"). Treat any location or timezone clue found there with equal weight when inferring timezone and scheduling signals.
 
 Rules:
@@ -636,6 +639,7 @@ Rules:
   - false otherwise.
 - If the message is ambiguous about scheduling intent, prefer is_scheduling_related=false and intent="other" (fail closed).
 - Do NOT invent dates/times. Use only the message and offered slots list.
+- Resolve relative timing phrases ("today", "tomorrow", "next week", "this Friday") using dateContext and timezone context.
 - Provide short evidence quotes.
 - detected_timezone:
   - Prefer explicit timezone text (e.g., "PST", "America/Los_Angeles", "GMT") that appears near scheduling language in the body or subject.

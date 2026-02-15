@@ -1203,6 +1203,7 @@ export async function runReplayCase(opts: {
       leadSentiment: sentimentTag,
       inboundSubject: opts.selectionCase.inboundSubject,
       inboundBody: opts.selectionCase.inboundBody,
+      inboundSentAt: opts.selectionCase.sentAt,
       conversationTranscript: transcript,
       serviceDescription: workspaceContext.serviceDescription,
       knowledgeContext: workspaceContext.knowledgeContext,

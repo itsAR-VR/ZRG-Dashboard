@@ -134,6 +134,9 @@ function buildAvailability(slots: OfferedSlot[]): string[] {
 
 function buildMemoryContext(input: ReplayJudgeInput): string | null {
   const blocks: string[] = [];
+  if ((input.inboundSentAt || "").trim()) {
+    blocks.push(`Inbound sent at (UTC): ${input.inboundSentAt}`);
+  }
   if ((input.conversationTranscript || "").trim()) {
     blocks.push(`Conversation transcript:\n${clip(input.conversationTranscript, 6000)}`);
   }
@@ -369,6 +372,7 @@ export async function runReplayJudge(opts: {
       leadId: opts.leadId,
       messageText: latestInboundWithSubject || opts.input.inboundBody,
       leadTimezone,
+      referenceDate: opts.input.inboundSentAt || null,
       offeredSlots: opts.offeredSlots,
       qualificationContext: `Lead sentiment: ${opts.input.leadSentiment || "unknown"}`,
       conversationContext: clip(opts.input.conversationTranscript || "", 7000),

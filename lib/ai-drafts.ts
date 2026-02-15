@@ -5446,6 +5446,7 @@ Generate an appropriate ${channel} response following the guidelines above.
                   messageId: triggerMessageId,
                   messageText: latestInboundText,
                   leadTimezone: leadTimeZone || null,
+                  referenceDate: triggerMessageRecord?.sentAt ?? null,
                   offeredSlots: offeredSlotsForOverseer,
                   conversationContext: conversationTranscript || null,
                   businessContext: [serviceDescription, aiGoals].filter(Boolean).join(" | ") || null,
@@ -5532,6 +5533,19 @@ Generate an appropriate ${channel} response following the guidelines above.
                   ? `${gateMemoryContext}\n\nACTION SIGNAL CONTEXT:\n${actionSignalsGateSummary}`
                   : `ACTION SIGNAL CONTEXT:\n${actionSignalsGateSummary}`;
               }
+
+              const offeredSlotSummary = offeredSlotsForOverseer
+                .slice(0, 6)
+                .map((slot, idx) => `${idx + 1}. ${slot.label} (${slot.datetime})`)
+                .join("\n");
+              const gateDateAndSlotContext = [
+                `date_anchor: ${dateContext}`,
+                `lead_timezone: ${leadTimeZone || "unknown"}`,
+                `offered_slots_source_of_truth:\n${offeredSlotSummary || "None."}`,
+              ].join("\n");
+              gateMemoryContext = gateMemoryContext
+                ? `${gateMemoryContext}\n\nDATE & SLOT CONTEXT:\n${gateDateAndSlotContext}`
+                : `DATE & SLOT CONTEXT:\n${gateDateAndSlotContext}`;
 
               const gateResult = await runMeetingOverseerGateDecision({
                 clientId: lead.clientId,

@@ -44,6 +44,7 @@ export type ReplayJudgeInput = {
   leadSentiment: string;
   inboundSubject: string | null;
   inboundBody: string;
+  inboundSentAt?: string | null;
   conversationTranscript: string;
   generatedDraft: string;
   serviceDescription: string | null;
