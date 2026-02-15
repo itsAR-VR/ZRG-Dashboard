@@ -10,9 +10,9 @@ export class DashboardErrorBoundary extends React.Component<
     scope?: string
     context?: ErrorBoundaryContext
   },
-  { error: Error | null }
+  { error: Error | null; componentStack: string | null }
 > {
-  state: { error: Error | null } = { error: null }
+  state: { error: Error | null; componentStack: string | null } = { error: null, componentStack: null }
 
   static getDerivedStateFromError(error: Error) {
     return { error }
@@ -25,12 +25,20 @@ export class DashboardErrorBoundary extends React.Component<
     const context = this.props.context ?? {}
 
     // Avoid logging huge objects; keep it to a small JSON-ish payload.
-    console.error(`[${scope}] client crash`, {
+    const payload = {
       message: error?.message,
       stack: error?.stack,
       componentStack: errorInfo?.componentStack,
       context,
-    })
+    }
+    console.error(`[${scope}] client crash`, payload)
+    // Also log important fields as plain strings so they can be copy-pasted without expanding objects.
+    if (payload.componentStack) {
+      console.error(`[${scope}] componentStack:\n${payload.componentStack}`)
+    }
+    console.error(`[${scope}] context`, context)
+
+    this.setState({ componentStack: payload.componentStack ?? null })
   }
 
   private handleReload = () => {
@@ -41,6 +49,9 @@ export class DashboardErrorBoundary extends React.Component<
   render() {
     if (!this.state.error) return this.props.children
 
+    const showDebugDetails =
+      typeof window !== "undefined" && new URLSearchParams(window.location.search).get("debug") === "1"
+
     // Minimal, production-safe fallback. The important part is the console error above.
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center gap-3 bg-background px-6 text-center">
@@ -48,6 +59,18 @@ export class DashboardErrorBoundary extends React.Component<
         <div className="max-w-md text-sm text-muted-foreground">
           A client-side exception occurred. Reload the page and try again.
         </div>
+        {showDebugDetails ? (
+          <div className="mt-3 w-full max-w-2xl text-left">
+            <div className="text-xs font-semibold text-muted-foreground">Debug details (?debug=1)</div>
+            <pre className="mt-2 max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs text-foreground">
+              {this.state.error.message}
+              {"\n\n"}
+              {this.state.componentStack ?? "(no componentStack)"}
+              {"\n\n"}
+              {JSON.stringify(this.props.context ?? {}, null, 2)}
+            </pre>
+          </div>
+        ) : null}
         <button
           type="button"
           onClick={this.handleReload}
@@ -59,4 +82,3 @@ export class DashboardErrorBoundary extends React.Component<
     )
   }
 }
-
