@@ -1203,3 +1203,6 @@ export function InboxView({
     </>
   );
 }
+
+// Preserve a readable name for production component stacks (webpack minification renames functions).
+;(InboxView as any).displayName = "InboxView"

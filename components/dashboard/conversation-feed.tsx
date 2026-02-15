@@ -605,4 +605,7 @@ export const ConversationFeed = memo(function ConversationFeed({
   )
 })
 
+// Preserve a readable name for production component stacks (webpack minification renames functions).
+;(ConversationFeed as any).displayName = "ConversationFeed"
+
 ConversationFeed.displayName = "ConversationFeed"

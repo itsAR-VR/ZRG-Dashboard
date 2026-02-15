@@ -1480,3 +1480,6 @@ export function ActionStation({
     </div>
   )
 }
+
+// Preserve a readable name for production component stacks (webpack minification renames functions).
+;(ActionStation as any).displayName = "ActionStation"

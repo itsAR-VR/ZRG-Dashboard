@@ -508,3 +508,6 @@ export function Sidebar({
     </aside>
   )
 }
+
+// Preserve a readable name for production component stacks (webpack minification renames functions).
+;(Sidebar as any).displayName = "Sidebar"

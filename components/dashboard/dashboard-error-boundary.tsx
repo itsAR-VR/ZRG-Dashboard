@@ -65,6 +65,8 @@ export class DashboardErrorBoundary extends React.Component<
             <pre className="mt-2 max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs text-foreground">
               {this.state.error.message}
               {"\n\n"}
+              {this.state.error.stack || "(no stack)"}
+              {"\n\n"}
               {this.state.componentStack ?? "(no componentStack)"}
               {"\n\n"}
               {JSON.stringify(this.props.context ?? {}, null, 2)}

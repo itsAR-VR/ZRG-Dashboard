@@ -30,6 +30,14 @@ const AnalyticsView = dynamic(loadAnalyticsView, { loading: dynamicViewLoadingFa
 const InsightsView = dynamic(loadInsightsView, { loading: dynamicViewLoadingFallback })
 const SettingsView = dynamic(loadSettingsView, { loading: dynamicViewLoadingFallback })
 
+// Give dynamic wrappers stable names so production crash component stacks are actionable.
+;(InboxView as any).displayName = "InboxView"
+;(FollowUpsView as any).displayName = "FollowUpsView"
+;(CRMView as any).displayName = "CRMView"
+;(AnalyticsView as any).displayName = "AnalyticsView"
+;(InsightsView as any).displayName = "InsightsView"
+;(SettingsView as any).displayName = "SettingsView"
+
 const VIEW_PREFETCH_LOADERS: Record<ViewType, () => Promise<unknown>> = {
   inbox: loadInboxView,
   followups: loadFollowUpsView,
