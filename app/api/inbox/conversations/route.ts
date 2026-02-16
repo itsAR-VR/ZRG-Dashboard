@@ -100,6 +100,7 @@ function shouldFailOpenReadApi(request: NextRequest): boolean {
 }
 
 export async function GET(request: NextRequest) {
+  const startedAt = Date.now();
   const requestId = resolveRequestId(request.headers.get("x-request-id"));
   const clientId = request.nextUrl.searchParams.get("clientId");
 
@@ -121,6 +122,7 @@ export async function GET(request: NextRequest) {
     response.headers.set("x-zrg-read-api-enabled", "0");
     response.headers.set("x-zrg-read-api-reason", READ_API_DISABLED_REASON);
     response.headers.set("x-request-id", requestId);
+    response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
     response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
     return response;
   }
@@ -131,12 +133,14 @@ export async function GET(request: NextRequest) {
   if (!result.success) {
     const response = NextResponse.json(result, { status: mapActionErrorToStatus(result.error) });
     response.headers.set("x-request-id", requestId);
+    response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
     return response;
   }
 
   const response = NextResponse.json(result, { status: 200 });
   response.headers.set("x-zrg-read-api-enabled", "1");
   response.headers.set("x-request-id", requestId);
+  response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
   response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
   return response;
 }

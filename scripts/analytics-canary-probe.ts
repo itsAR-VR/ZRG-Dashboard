@@ -1,5 +1,8 @@
 #!/usr/bin/env tsx
 
+// Ensure this file is treated as a module (prevents type name collisions across scripts in `tsc --noEmit`).
+export {};
+
 type ProbeMode = "cold" | "warm";
 
 type ProbeSample = {
@@ -232,4 +235,3 @@ main().catch((error) => {
   console.error("[analytics-canary-probe] failed:", error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 });
-

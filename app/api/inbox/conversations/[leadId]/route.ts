@@ -41,6 +41,7 @@ function shouldFailOpenReadApi(request: NextRequest): boolean {
 }
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
+  const startedAt = Date.now();
   const requestId = resolveRequestId(request.headers.get("x-request-id"));
 
   if (!isInboxReadApiEnabled() && !shouldFailOpenReadApi(request)) {
@@ -60,6 +61,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     response.headers.set("x-zrg-read-api-enabled", "0");
     response.headers.set("x-zrg-read-api-reason", READ_API_DISABLED_REASON);
     response.headers.set("x-request-id", requestId);
+    response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
     response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
     return response;
   }
@@ -68,6 +70,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   if (!leadId) {
     const response = NextResponse.json({ success: false, error: "Lead ID is required" }, { status: 400 });
     response.headers.set("x-request-id", requestId);
+    response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
     return response;
   }
 
@@ -76,12 +79,14 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   if (!result.success) {
     const response = NextResponse.json(result, { status: mapConversationErrorToStatus(result.error) });
     response.headers.set("x-request-id", requestId);
+    response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
     return response;
   }
 
   const response = NextResponse.json(result, { status: 200 });
   response.headers.set("x-zrg-read-api-enabled", "1");
   response.headers.set("x-request-id", requestId);
+  response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
   response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
   return response;
 }

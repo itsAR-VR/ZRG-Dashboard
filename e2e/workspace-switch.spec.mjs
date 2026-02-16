@@ -3,6 +3,10 @@ import { expect, test } from "@playwright/test";
 const CRASH_PATTERN =
   /Minified React error #301|Too many re-renders|\[DashboardShell\] client crash|Application error/i;
 
+const REQUIRE_AUTH =
+  process.env.E2E_REQUIRE_AUTH === "1" ||
+  Boolean(process.env.PLAYWRIGHT_STORAGE_STATE || process.env.E2E_AUTH_STORAGE_STATE);
+
 function extractWorkspaceId(testId) {
   if (!testId) return null;
   if (!testId.startsWith("workspace-option-")) return null;
@@ -30,7 +34,11 @@ test.describe("workspace switch regression", () => {
 
     const currentUrl = page.url();
     const authRedirected = /\/auth|\/login|sign-in/i.test(currentUrl);
-    test.skip(authRedirected, "Authenticated dashboard session is required for workspace switching.");
+    test.skip(authRedirected && !REQUIRE_AUTH, "Authenticated dashboard session is required for workspace switching.");
+    expect(
+      authRedirected,
+      "Authenticated dashboard session is required for workspace switching. Provide an auth storage state via PLAYWRIGHT_STORAGE_STATE=./playwright/auth/storageState.json (or set E2E_REQUIRE_AUTH=0 to allow skipping)."
+    ).toBeFalsy();
 
     const selectorTrigger = page.getByTestId("workspace-selector-trigger");
     const selectorExists = (await selectorTrigger.count()) > 0;

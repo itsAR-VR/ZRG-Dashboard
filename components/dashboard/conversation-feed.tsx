@@ -115,8 +115,24 @@ export const ConversationFeed = memo(function ConversationFeed({
 
   // Debounced search
   const debouncedSetSearch = useDebouncedCallback((value: string) => {
-    if (!isServerSearch) setDebouncedSearch(value)
-    onDebouncedSearchChange?.(value)
+    const trimmed = value.trim()
+
+    if (!isServerSearch) setDebouncedSearch(trimmed)
+    if (!onDebouncedSearchChange) return
+
+    // Guardrail: server-side `contains/ILIKE` search on large workspaces is expensive.
+    // Only enable server search when the user provides a meaningful query (or clears the query).
+    if (trimmed.length === 0) {
+      onDebouncedSearchChange("")
+      return
+    }
+
+    if (trimmed.length < 3) {
+      onDebouncedSearchChange("")
+      return
+    }
+
+    onDebouncedSearchChange(trimmed)
   }, 300)
 
   useEffect(() => {
@@ -270,9 +286,13 @@ export const ConversationFeed = memo(function ConversationFeed({
             placeholder="Search conversations..."
             value={searchInput}
             onChange={handleSearchChange}
+            data-testid="inbox-search-input"
             className="pl-9"
           />
         </div>
+        {isServerSearch && searchInput.trim().length > 0 && searchInput.trim().length < 3 ? (
+          <p className="text-xs text-muted-foreground">Type at least 3 characters to search.</p>
+        ) : null}
 
         <Collapsible open={filtersOpen} onOpenChange={setFiltersOpen} className="space-y-3">
           <CollapsibleTrigger asChild>

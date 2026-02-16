@@ -1415,25 +1415,53 @@ export async function getConversationsCursor(
 
     // Search filter
     if (search && search.trim()) {
-      const searchTerm = search.trim();
-      const terms = searchTerm.split(/\s+/).filter(Boolean);
+      const rawSearchTerm = search.trim();
+      const normalizedSearchTerm = rawSearchTerm.replace(/[),.;:\]\}]+$/g, "").trim();
 
-      const buildTermFilter = (term: string) => ({
-        OR: [
-          { firstName: { contains: term, mode: "insensitive" } },
-          { lastName: { contains: term, mode: "insensitive" } },
-          { email: { contains: term, mode: "insensitive" } },
-          { companyName: { contains: term, mode: "insensitive" } },
-          { phone: { contains: term } },
-          { smsCampaign: { is: { name: { contains: term, mode: "insensitive" } } } },
-        ],
-      });
+      // Guardrail: very short queries are disproportionately expensive on large workspaces.
+      // The client also debounces, but this protects us from URL/state edge cases.
+      if (normalizedSearchTerm.length >= 3) {
+        const looksLikeFullEmail = (value: string): boolean => {
+          if (!value.includes("@")) return false;
+          if (/\s/.test(value)) return false;
+          const at = value.indexOf("@");
+          if (at <= 0) return false;
+          const dot = value.indexOf(".", at + 2);
+          return dot > at + 1;
+        };
 
-      whereConditions.push(
-        terms.length > 1
-          ? { AND: terms.map(buildTermFilter) }
-          : buildTermFilter(searchTerm)
-      );
+        if (looksLikeFullEmail(normalizedSearchTerm)) {
+          // Avoid `ILIKE %term%` scans on huge workspaces by treating full-email searches as exact matches.
+          // This keeps inbox search responsive even at 100k+ leads.
+          const emailTerm = normalizedSearchTerm.toLowerCase();
+          whereConditions.push({
+            OR: [
+              { email: { equals: emailTerm, mode: "insensitive" } },
+              { currentReplierEmail: { equals: emailTerm, mode: "insensitive" } },
+              { alternateEmails: { has: emailTerm } },
+            ],
+          });
+        } else {
+          const terms = normalizedSearchTerm.split(/\s+/).filter(Boolean);
+
+          const buildTermFilter = (term: string) => ({
+            OR: [
+              { firstName: { contains: term, mode: "insensitive" } },
+              { lastName: { contains: term, mode: "insensitive" } },
+              { email: { contains: term, mode: "insensitive" } },
+              { companyName: { contains: term, mode: "insensitive" } },
+              { phone: { contains: term } },
+              { smsCampaign: { is: { name: { contains: term, mode: "insensitive" } } } },
+            ],
+          });
+
+          whereConditions.push(
+            terms.length > 1
+              ? { AND: terms.map(buildTermFilter) }
+              : buildTermFilter(normalizedSearchTerm)
+          );
+        }
+      }
     }
 
     // Channel filter - filter by messages having any selected channel
@@ -1848,16 +1876,40 @@ export async function getConversationsFromEnd(
     whereConditions.push({ clientId: { in: scope.clientIds } });
 
     if (search && search.trim()) {
-      const searchTerm = search.trim();
-      whereConditions.push({
-        OR: [
-          { firstName: { contains: searchTerm, mode: "insensitive" } },
-          { lastName: { contains: searchTerm, mode: "insensitive" } },
-          { email: { contains: searchTerm, mode: "insensitive" } },
-          { companyName: { contains: searchTerm, mode: "insensitive" } },
-          { smsCampaign: { is: { name: { contains: searchTerm, mode: "insensitive" } } } },
-        ],
-      });
+      const rawSearchTerm = search.trim();
+      const normalizedSearchTerm = rawSearchTerm.replace(/[),.;:\]\}]+$/g, "").trim();
+
+      if (normalizedSearchTerm.length >= 3) {
+        const looksLikeFullEmail = (value: string): boolean => {
+          if (!value.includes("@")) return false;
+          if (/\s/.test(value)) return false;
+          const at = value.indexOf("@");
+          if (at <= 0) return false;
+          const dot = value.indexOf(".", at + 2);
+          return dot > at + 1;
+        };
+
+        if (looksLikeFullEmail(normalizedSearchTerm)) {
+          const emailTerm = normalizedSearchTerm.toLowerCase();
+          whereConditions.push({
+            OR: [
+              { email: { equals: emailTerm, mode: "insensitive" } },
+              { currentReplierEmail: { equals: emailTerm, mode: "insensitive" } },
+              { alternateEmails: { has: emailTerm } },
+            ],
+          });
+        } else {
+          whereConditions.push({
+            OR: [
+              { firstName: { contains: normalizedSearchTerm, mode: "insensitive" } },
+              { lastName: { contains: normalizedSearchTerm, mode: "insensitive" } },
+              { email: { contains: normalizedSearchTerm, mode: "insensitive" } },
+              { companyName: { contains: normalizedSearchTerm, mode: "insensitive" } },
+              { smsCampaign: { is: { name: { contains: normalizedSearchTerm, mode: "insensitive" } } } },
+            ],
+          });
+        }
+      }
     }
 
     const channelList =
