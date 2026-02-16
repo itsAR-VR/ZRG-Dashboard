@@ -297,6 +297,7 @@ model Message {
 | `INNGEST_EVENT_KEY` | Inngest event key (server-side) used when publishing events from API routes/cron triggers |
 | `INNGEST_SIGNING_KEY` | Inngest signing key used by `/api/inngest` to verify incoming function execution requests |
 | `INNGEST_APP_ID` | (Optional) Override Inngest app id (defaults to `zrg-dashboard`) |
+| `INNGEST_ENV` | (Optional) Override Inngest environment slug. Recommended `production` in prod if you want a stable non-branch environment. |
 | `BACKGROUND_JOBS_USE_INNGEST` | (Optional) When `true`, `/api/cron/background-jobs` only enqueues an Inngest event and returns `202` instead of processing inline (default `false`) |
 | `CALENDLY_WEBHOOK_SIGNING_KEY` | (Optional) Global Calendly webhook signing key fallback. In production, a signing key is required for verification; per-workspace keys are stored in the DB when available. |
 | `INBOXXIA_EMAIL_SENT_ASYNC` | (Optional) Enqueue Inboxxia `EMAIL_SENT` webhook events to the `WebhookEvent` queue for burst resilience (Phase 53) (default off) |
