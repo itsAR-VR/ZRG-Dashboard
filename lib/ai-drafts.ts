@@ -57,6 +57,7 @@ import {
   shouldRunMeetingOverseer,
   type MeetingOverseerExtractDecision,
 } from "@/lib/meeting-overseer";
+import { resolveWorkspacePolicyProfile } from "@/lib/workspace-policy-profile";
 import type { ActionSignalDetectionResult } from "@/lib/action-signal-detector";
 import type { AutoBookingContext } from "@/lib/followup-engine";
 import { DRAFT_PIPELINE_STAGES, type DraftPipelineStage } from "@/lib/draft-pipeline/types";
@@ -259,6 +260,7 @@ function buildBookedConfirmationDraft(params: {
   firstName: string | null;
   aiName: string;
   slotLabel: string;
+  acknowledgement?: string | null;
 }): string {
   const slotLabel = params.slotLabel.trim();
   if (params.channel === "sms") {
@@ -268,8 +270,38 @@ function buildBookedConfirmationDraft(params: {
     return `You're booked for ${slotLabel}.`;
   }
 
+  const acknowledgement =
+    typeof params.acknowledgement === "string" && params.acknowledgement.trim()
+      ? params.acknowledgement.trim()
+      : null;
   const greeting = params.firstName ? `Hi ${params.firstName},\n\n` : "Hi,\n\n";
-  return `${greeting}You're booked for ${slotLabel}.\n\nBest,\n${params.aiName}`;
+  const middle = acknowledgement ? `\n\n${acknowledgement}` : "";
+  return `${greeting}You're booked for ${slotLabel}.${middle}\n\nBest,\n${params.aiName}`;
+}
+
+function buildFoundersClubBookingAcknowledgement(params: {
+  latestInboundText: string | null | undefined;
+  extraction: MeetingOverseerExtractDecision | null;
+}): string | null {
+  const inbound = (params.latestInboundText || "").trim();
+  if (!inbound) return null;
+  const normalized = inbound.toLowerCase();
+  const hasOpenPointSignals =
+    /\b(founder|co-?founded|founding member|partner|entrepreneur|revenue|arr|context|background)\b/i.test(inbound) ||
+    /\b(fee|pricing|frequency|attend|attendance|community|include|included|location|venue)\b/i.test(inbound);
+  if (!hasOpenPointSignals) return null;
+
+  const contract = params.extraction?.decision_contract_v1 ?? null;
+  const asksLogisticsFollowUps =
+    contract?.needsPricingAnswer === "yes" ||
+    contract?.needsCommunityDetails === "yes" ||
+    /\b(fee|pricing|frequency|attend|attendance|community|location|venue)\b/i.test(normalized);
+
+  if (asksLogisticsFollowUps) {
+    return "Thanks for sharing those details and questions as well, we can cover them on the call.";
+  }
+
+  return "Thanks for sharing that extra context as well.";
 }
 
 export function applyShouldBookNowConfirmationIfNeeded(params: {
@@ -279,6 +311,8 @@ export function applyShouldBookNowConfirmationIfNeeded(params: {
   aiName: string;
   extraction: MeetingOverseerExtractDecision | null;
   availability: string[];
+  clientId?: string | null;
+  latestInboundText?: string | null;
 }): string {
   const draft = (params.draft || "").trim();
   const contract = params.extraction?.decision_contract_v1;
@@ -294,19 +328,30 @@ export function applyShouldBookNowConfirmationIfNeeded(params: {
   if (matchedSlot && looksLikeConfirmation) return draft;
 
   const acceptedIndex = typeof params.extraction?.accepted_slot_index === "number" ? params.extraction.accepted_slot_index : null;
+  const firstOfferedSlot = params.availability.find((slot) => Boolean(slot && slot.trim())) || null;
   const selectedSlot =
     acceptedIndex && acceptedIndex > 0 && acceptedIndex <= params.availability.length
       ? params.availability[acceptedIndex - 1]!
-      : matchedSlot;
+      : firstOfferedSlot;
   // If we can't map to a concrete offered slot, don't "helpfully" pick an arbitrary time.
   // Let the overseer/generator handle the reply using lead-stated timing instead.
   if (!selectedSlot) return draft;
+
+  const workspacePolicyProfile = resolveWorkspacePolicyProfile(params.clientId || null);
+  const acknowledgement =
+    workspacePolicyProfile === "founders_club" && params.channel === "email"
+      ? buildFoundersClubBookingAcknowledgement({
+          latestInboundText: params.latestInboundText || null,
+          extraction: params.extraction,
+        })
+      : null;
 
   return buildBookedConfirmationDraft({
     channel: params.channel,
     firstName: params.firstName,
     aiName: params.aiName,
     slotLabel: selectedSlot,
+    acknowledgement,
   });
 }
 
@@ -5591,22 +5636,24 @@ Generate an appropriate ${channel} response following the guidelines above.
       }
     }
 
-		    if (draftContent) {
-		      const latestInboundTextForGuards = (() => {
-		        const body = (triggerMessageRecord?.body || "").trim();
-		        const subject = (triggerMessageRecord?.subject || "").trim();
-	        const combined = [subject ? `Subject: ${subject}` : "", body].filter(Boolean).join("\n\n").trim();
-	        return combined || null;
-	      })();
+    if (draftContent) {
+      const latestInboundTextForGuards = (() => {
+        const body = (triggerMessageRecord?.body || "").trim();
+        const subject = (triggerMessageRecord?.subject || "").trim();
+        const combined = [subject ? `Subject: ${subject}` : "", body].filter(Boolean).join("\n\n").trim();
+        return combined || null;
+      })();
 
-		      draftContent = applyShouldBookNowConfirmationIfNeeded({
-		        draft: draftContent,
-		        channel,
-		        firstName: firstName || null,
-		        aiName,
-		        extraction: meetingOverseerExtractionDecision,
-		        availability,
-		      });
+      draftContent = applyShouldBookNowConfirmationIfNeeded({
+        draft: draftContent,
+        channel,
+        firstName: firstName || null,
+        aiName,
+        extraction: meetingOverseerExtractionDecision,
+        availability,
+        clientId: lead.clientId,
+        latestInboundText: latestInboundTextForGuards,
+      });
 
           const bookingOnlyGuard = applyBookingOnlyConcisionGuard({
             draft: draftContent,
@@ -5632,23 +5679,23 @@ Generate an appropriate ${channel} response following the guidelines above.
             });
           }
 
-			      if (channel === "email") {
-			        const normalized = normalizeEmailDraftLineBreaks(draftContent);
-			        if (normalized && normalized !== draftContent) {
-			          draftContent = normalized;
-		          console.log("[AI Drafts] Normalized email draft line breaks", { leadId, channel });
-		        }
-		      }
+      if (channel === "email") {
+        const normalized = normalizeEmailDraftLineBreaks(draftContent);
+        if (normalized && normalized !== draftContent) {
+          draftContent = normalized;
+          console.log("[AI Drafts] Normalized email draft line breaks", { leadId, channel });
+        }
+      }
 
-		      const contactUpdateGuard = applyContactUpdateNoSchedulingGuard({
-		        draft: draftContent,
-		        latestInboundText: latestInboundTextForGuards,
-		        channel,
-		        firstName: firstName || null,
-		        aiName,
-		      });
-		      if (contactUpdateGuard.changed) {
-		        draftContent = contactUpdateGuard.draft;
+      const contactUpdateGuard = applyContactUpdateNoSchedulingGuard({
+        draft: draftContent,
+        latestInboundText: latestInboundTextForGuards,
+        channel,
+        firstName: firstName || null,
+        aiName,
+      });
+      if (contactUpdateGuard.changed) {
+        draftContent = contactUpdateGuard.draft;
 		        console.log("[AI Drafts] Applied contact-update scheduling suppression guard", {
 		          leadId,
 		          channel,

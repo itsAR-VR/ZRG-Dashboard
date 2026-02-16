@@ -22,6 +22,7 @@ import type {
 import { prisma } from "@/lib/prisma";
 import { extractSchedulerLinkFromText, hasExplicitSchedulerLinkInstruction } from "@/lib/scheduling-link";
 import { buildSentimentTranscriptFromMessages } from "@/lib/sentiment";
+import { resolveWorkspacePolicyProfile } from "@/lib/workspace-policy-profile";
 
 type WorkspaceContext = {
   serviceDescription: string | null;
@@ -213,6 +214,10 @@ const DRAFT_TIMEZONE_TOKEN_REGEX =
   /\b(pst|pdt|pt|mst|mdt|mt|cst|cdt|ct|est|edt|et|utc|gmt|[a-z_]+\/[a-z_]+(?:\/[a-z_]+)?)\b/i;
 const DRAFT_MONTH_TOKEN_REGEX =
   /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t)?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i;
+const MONTH_DAY_TOKEN_REGEX =
+  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?\b/gi;
+const TIME_TOKEN_REGEX = /\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s?(am|pm)\b/gi;
+const WEEKDAY_TOKEN_REGEX = /\b(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b/gi;
 
 function countLinkOccurrences(text: string, link: string | null): number {
   const draft = (text || "").trim();
@@ -240,7 +245,96 @@ function extractDecisionContractScalar(value: unknown, key: string): string | nu
   return trimmed ? trimmed : null;
 }
 
+function normalizeDateToken(raw: string): string {
+  return raw.toLowerCase().replace(/\b(\d{1,2})(st|nd|rd|th)\b/g, "$1").replace(/\s+/g, " ").trim();
+}
+
+function normalizeTimeToken(raw: string): string {
+  const compact = raw.toLowerCase().replace(/\s+/g, "");
+  const match = compact.match(/^(\d{1,2})(?::([0-5]\d))?(am|pm)$/);
+  if (!match) return compact;
+  const hour = Number.parseInt(match[1] || "0", 10);
+  const minute = match[2] || "00";
+  const meridiem = match[3] || "";
+  return `${hour}:${minute}${meridiem}`;
+}
+
+function normalizeWeekdayToken(raw: string): string {
+  const value = raw.toLowerCase();
+  if (value.startsWith("mon")) return "mon";
+  if (value.startsWith("tue")) return "tue";
+  if (value.startsWith("wed")) return "wed";
+  if (value.startsWith("thu")) return "thu";
+  if (value.startsWith("fri")) return "fri";
+  if (value.startsWith("sat")) return "sat";
+  if (value.startsWith("sun")) return "sun";
+  return value;
+}
+
+function extractTokens(value: string, regex: RegExp, normalizer: (raw: string) => string): string[] {
+  const matches = value.match(regex) || [];
+  return Array.from(new Set(matches.map((entry) => normalizer(entry)).filter(Boolean)));
+}
+
+function hasSemanticAvailabilitySlotMatch(draft: string, availability: string[]): boolean {
+  if (!draft || availability.length === 0) return false;
+  if (availability.some((slot) => slot && draft.includes(slot))) return true;
+
+  const availabilityCorpus = availability.join("\n");
+  const availabilityTimes = new Set(extractTokens(availabilityCorpus, TIME_TOKEN_REGEX, normalizeTimeToken));
+  const availabilityDates = new Set(extractTokens(availabilityCorpus, MONTH_DAY_TOKEN_REGEX, normalizeDateToken));
+  const availabilityWeekdays = new Set(extractTokens(availabilityCorpus, WEEKDAY_TOKEN_REGEX, normalizeWeekdayToken));
+
+  const draftTimes = extractTokens(draft, TIME_TOKEN_REGEX, normalizeTimeToken);
+  const draftDates = extractTokens(draft, MONTH_DAY_TOKEN_REGEX, normalizeDateToken);
+  const draftWeekdays = extractTokens(draft, WEEKDAY_TOKEN_REGEX, normalizeWeekdayToken);
+
+  const hasTimeMatch = draftTimes.some((token) => availabilityTimes.has(token));
+  if (hasTimeMatch) return true;
+
+  const hasDateMatch = draftDates.some((token) => availabilityDates.has(token));
+  if (hasDateMatch) return true;
+
+  const hasWeekdayMatch = draftWeekdays.some((token) => availabilityWeekdays.has(token));
+  if (hasWeekdayMatch && draftTimes.length === 0) return true;
+
+  return false;
+}
+
+function normalizeJudgeDirective(value: string, maxChars = 240): string {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxChars);
+}
+
+function buildJudgeHardRequirements(opts: {
+  failureReasons: string[];
+  suggestedFixes: string[];
+  decisionContract: unknown;
+}): string[] {
+  const requirements: string[] = [];
+
+  for (const reason of opts.failureReasons || []) {
+    const normalized = normalizeJudgeDirective(reason);
+    if (!normalized) continue;
+    requirements.push(`Resolve judge issue: ${normalized}`);
+  }
+
+  for (const fix of opts.suggestedFixes || []) {
+    const normalized = normalizeJudgeDirective(fix);
+    if (!normalized) continue;
+    if (/apply adjudicator-revised draft output/i.test(normalized)) continue;
+    requirements.push(`Apply judge-suggested fix: ${normalized}`);
+  }
+
+  const shouldBookNow = extractDecisionContractScalar(opts.decisionContract, "shouldBookNow");
+  if (shouldBookNow === "yes") {
+    requirements.push("When confirming booking, keep one selected slot tied to provided availability/window context.");
+  }
+
+  return Array.from(new Set(requirements)).slice(0, 10);
+}
+
 function computeBlockingJudgeReasons(opts: {
+  clientId: string;
   failureReasons: string[];
   draft: string;
   availability: string[];
@@ -251,10 +345,13 @@ function computeBlockingJudgeReasons(opts: {
   const draft = (opts.draft || "").trim();
   const availability = Array.isArray(opts.availability) ? opts.availability : [];
   const link = opts.leadSchedulerLink || opts.bookingLink || null;
+  const policyProfile = resolveWorkspacePolicyProfile(opts.clientId);
   const responseMode = extractDecisionContractScalar(opts.decisionContract, "responseMode");
   const hasBookingIntent = extractDecisionContractScalar(opts.decisionContract, "hasBookingIntent");
   const shouldBookNow = extractDecisionContractScalar(opts.decisionContract, "shouldBookNow");
   const usesAnyAvailabilitySlot = availability.length > 0 && availability.some((slot) => slot && draft.includes(slot));
+  const usesSemanticallyMatchedAvailabilitySlot = hasSemanticAvailabilitySlotMatch(draft, availability);
+  const usesMatchedAvailabilitySlot = usesAnyAvailabilitySlot || usesSemanticallyMatchedAvailabilitySlot;
   const questionCount = (draft.match(/\?/g) || []).length;
   const isSingleClarifyingQuestion = responseMode === "clarify_only" && questionCount === 1;
 
@@ -280,11 +377,26 @@ function computeBlockingJudgeReasons(opts: {
       continue;
     }
 
+    if (
+      policyProfile === "founders_club" &&
+      (normalized.includes("first-person") ||
+        normalized.includes("first person") ||
+        normalized.includes("signoff") ||
+        normalized.includes("sign-off") ||
+        normalized.includes("voice") ||
+        normalized.includes("uses \"i\"") ||
+        normalized.includes("uses 'i'") ||
+        normalized.includes("use of \"i\"") ||
+        normalized.includes("we voice"))
+    ) {
+      continue;
+    }
+
     // If we're explicitly allowed to book now and the draft uses a provided availability slot verbatim,
     // don't block on nitpicks about "implying booking" or date/year context.
     if (
       shouldBookNow === "yes" &&
-      usesAnyAvailabilitySlot &&
+      usesMatchedAvailabilitySlot &&
       normalized.includes("availability") &&
       (normalized.includes("booked") || normalized.includes("booking") || normalized.includes("imply") || normalized.includes("align"))
     ) {
@@ -295,10 +407,20 @@ function computeBlockingJudgeReasons(opts: {
     // already booking within an offered slot under shouldBookNow=yes.
     if (
       shouldBookNow === "yes" &&
-      usesAnyAvailabilitySlot &&
+      usesMatchedAvailabilitySlot &&
       normalized.includes("window") &&
       (normalized.includes("tie") || normalized.includes("tying") || normalized.includes("tied")) &&
       (normalized.includes("booked") || normalized.includes("booking") || normalized.includes("imply"))
+    ) {
+      continue;
+    }
+
+    if (
+      policyProfile === "founders_club" &&
+      shouldBookNow === "yes" &&
+      usesMatchedAvailabilitySlot &&
+      normalized.includes("arbitrary") &&
+      (normalized.includes("availability") || normalized.includes("window"))
     ) {
       continue;
     }
@@ -328,7 +450,7 @@ function computeBlockingJudgeReasons(opts: {
       // If we're in info_then_booking with no booking intent, availability usage is optional.
       if (responseMode === "info_then_booking" && hasBookingIntent === "no") continue;
       if (availability.length === 0) continue;
-      const usesAnySlot = availability.some((slot) => slot && draft.includes(slot));
+      const usesAnySlot = hasSemanticAvailabilitySlotMatch(draft, availability);
       if (usesAnySlot) continue;
     }
 
@@ -340,7 +462,7 @@ function computeBlockingJudgeReasons(opts: {
       normalized.includes("availability")
     ) {
       if (availability.length === 0) continue;
-      const usesAnySlot = availability.some((slot) => slot && draft.includes(slot));
+      const usesAnySlot = hasSemanticAvailabilitySlotMatch(draft, availability);
       if (usesAnySlot) continue;
     }
 
@@ -350,7 +472,7 @@ function computeBlockingJudgeReasons(opts: {
     ) {
       if (shouldBookNow !== "yes") continue;
       if (availability.length === 0) continue;
-      const usesAnySlot = availability.some((slot) => slot && draft.includes(slot));
+      const usesAnySlot = hasSemanticAvailabilitySlotMatch(draft, availability);
       if (usesAnySlot) continue;
     }
 
@@ -361,7 +483,7 @@ function computeBlockingJudgeReasons(opts: {
       normalized.includes("previous booking")
     ) {
       if (availability.length === 0) continue;
-      const usesAnySlot = availability.some((slot) => slot && draft.includes(slot));
+      const usesAnySlot = hasSemanticAvailabilitySlotMatch(draft, availability);
       if (usesAnySlot) continue;
     }
 
@@ -651,6 +773,11 @@ async function applyReplayRevisionLoop(opts: ReplayAutoSendContext): Promise<Rep
       leadSchedulerLink: opts.leadSchedulerLink,
       currentDraft: draftContent,
     });
+    const evaluatorReason = normalizeJudgeDirective(currentEvaluation.reason || "", 240);
+    const evaluatorHardRequirements = evaluatorReason ? [`Address evaluator concern: ${evaluatorReason}`] : [];
+    const mergedHardRequirements = Array.from(
+      new Set([...revisionConstraints.hardRequirements, ...evaluatorHardRequirements])
+    ).slice(0, 16);
 
     const revision = await maybeReviseAutoSendDraft({
       clientId: opts.clientId,
@@ -667,13 +794,21 @@ async function applyReplayRevisionLoop(opts: ReplayAutoSendContext): Promise<Rep
       evaluation: currentEvaluation,
       threshold: opts.threshold,
       model: opts.revisionModel || undefined,
-      hardRequirements: revisionConstraints.hardRequirements,
+      hardRequirements: mergedHardRequirements,
       hardForbidden: revisionConstraints.hardForbidden,
       currentDayIso: opts.currentDayIso,
       leadTimezone: opts.leadTimezone,
       offeredSlots: opts.offeredSlots,
       bookingLink: opts.bookingLink,
       leadSchedulerLink: opts.leadSchedulerLink,
+      reviewFeedback: {
+        summary: evaluatorReason || null,
+        failureReasons: evaluatorReason ? [evaluatorReason] : [],
+        suggestedFixes: [],
+        decisionContract: null,
+        judgeScore: clampScore(currentEvaluation.confidence * 100),
+        judgePass: currentEvaluation.safeToSend && !currentEvaluation.requiresHumanReview,
+      },
       validateRevisedDraft: async (candidateDraft) =>
         validateRevisionAgainstHardConstraints({
           inboundBody: opts.latestInbound,
@@ -852,6 +987,14 @@ async function applyReplayOverseerRevisionLoop(opts:
       leadSchedulerLink: opts.leadSchedulerLink,
       currentDraft: draftContent,
     });
+    const judgeHardRequirements = buildJudgeHardRequirements({
+      failureReasons: currentJudge.failureReasons || [],
+      suggestedFixes: currentJudge.suggestedFixes || [],
+      decisionContract: currentJudge.decisionContract,
+    });
+    const mergedHardRequirements = Array.from(
+      new Set([...revisionConstraints.hardRequirements, ...judgeHardRequirements])
+    ).slice(0, 16);
 
     const revision = await maybeReviseAutoSendDraft({
       clientId: opts.clientId,
@@ -868,13 +1011,21 @@ async function applyReplayOverseerRevisionLoop(opts:
       evaluation: currentEvaluation,
       threshold: opts.threshold,
       model: opts.revisionModel || undefined,
-      hardRequirements: revisionConstraints.hardRequirements,
+      hardRequirements: mergedHardRequirements,
       hardForbidden: revisionConstraints.hardForbidden,
       currentDayIso: opts.currentDayIso,
       leadTimezone: opts.leadTimezone,
       offeredSlots: opts.offeredSlots,
       bookingLink: opts.bookingLink,
       leadSchedulerLink: opts.leadSchedulerLink,
+      reviewFeedback: {
+        summary: currentJudge.summary || null,
+        failureReasons: currentJudge.failureReasons || [],
+        suggestedFixes: currentJudge.suggestedFixes || [],
+        decisionContract: currentJudge.decisionContract || null,
+        judgeScore: clampScore(currentJudge.overallScore ?? currentJudge.llmOverallScore),
+        judgePass: currentJudge.pass,
+      },
       validateRevisedDraft: async (candidateDraft) =>
         validateRevisionAgainstHardConstraints({
           inboundBody: opts.latestInbound,
@@ -1232,6 +1383,7 @@ export async function runReplayCase(opts: {
       channel: opts.selectionCase.channel,
       workspaceSettingEnabled: workspaceRevision?.autoSendRevisionEnabled === true,
     });
+    const workspacePolicyProfile = resolveWorkspacePolicyProfile(opts.selectionCase.clientId);
     let revisionLoop: NonNullable<ReplayCaseResult["revisionLoop"]> = {
       ...baseRevisionLoop,
       enabled: enabledResolution.enabled,
@@ -1249,7 +1401,8 @@ export async function runReplayCase(opts: {
         };
       } else {
 	        const revisionRuntime =
-	          opts.revisionLoopMode === "overseer"
+	          opts.revisionLoopMode === "overseer" ||
+            (opts.revisionLoopMode === "platform" && workspacePolicyProfile === "founders_club")
 	            ? await applyReplayOverseerRevisionLoop({
                 draftId,
                 draftRunId: null,
@@ -1402,6 +1555,7 @@ export async function runReplayCase(opts: {
     const objectiveOverallScore = objectivePass ? 100 : 0;
     const llmOverallScore = clampScore(judge.llmOverallScore ?? judge.overallScore);
     const blockingJudgeReasons = computeBlockingJudgeReasons({
+      clientId: opts.selectionCase.clientId,
       failureReasons: judge.failureReasons || [],
       draft: generatedDraft,
 	      availability: offeredSlots

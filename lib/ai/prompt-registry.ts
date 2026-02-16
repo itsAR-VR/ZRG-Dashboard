@@ -200,6 +200,11 @@ HARD CONSTRAINT CONTRACT
 - Respect hard_constraints.current_day_iso + hard_constraints.lead_timezone when interpreting relative date words (today/tomorrow/Friday).
 - Never add a URL not present in hard_constraints.booking_link or hard_constraints.lead_scheduler_link.
 
+REVIEW FEEDBACK (when provided)
+- The input may include review_feedback.summary, review_feedback.failure_reasons, and review_feedback.suggested_fixes.
+- Treat review_feedback.failure_reasons and review_feedback.suggested_fixes as high-priority directives, unless they conflict with hard constraints.
+- Fix factual/logistics issues first; style-only feedback is secondary if core constraints are already satisfied.
+
 MEMORY PROPOSALS (OPTIONAL)
 If you can infer stable, reusable preferences from the inbound + conversation history, propose durable memory items.
 

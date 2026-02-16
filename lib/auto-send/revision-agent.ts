@@ -178,6 +178,14 @@ export async function maybeReviseAutoSendDraft(opts: {
   offeredSlots?: Array<{ label?: string | null; datetime?: string | null; offeredAt?: string | null }> | null;
   bookingLink?: string | null;
   leadSchedulerLink?: string | null;
+  reviewFeedback?: {
+    summary?: string | null;
+    failureReasons?: string[];
+    suggestedFixes?: string[];
+    decisionContract?: Record<string, unknown> | null;
+    judgeScore?: number | null;
+    judgePass?: boolean | null;
+  } | null;
   validateRevisedDraft?: (draft: string) => RevisionDraftValidation | Promise<RevisionDraftValidation>;
   optimizationContext?: AutoSendOptimizationSelection | null;
   selectOptimizationContext?: typeof selectAutoSendOptimizationContext;
@@ -559,6 +567,38 @@ export async function maybeReviseAutoSendDraft(opts: {
 
   const hardRequirements = Array.from(new Set((opts.hardRequirements || []).map((entry) => String(entry || "").trim()).filter(Boolean))).slice(0, 12);
   const hardForbidden = Array.from(new Set((opts.hardForbidden || []).map((entry) => String(entry || "").trim()).filter(Boolean))).slice(0, 12);
+  const reviewFeedback =
+    opts.reviewFeedback && typeof opts.reviewFeedback === "object"
+      ? {
+          summary:
+            typeof opts.reviewFeedback.summary === "string" && opts.reviewFeedback.summary.trim()
+              ? opts.reviewFeedback.summary.trim().slice(0, 400)
+              : null,
+          failure_reasons: Array.from(
+            new Set(
+              (opts.reviewFeedback.failureReasons || [])
+                .map((entry) => String(entry || "").replace(/\s+/g, " ").trim())
+                .filter(Boolean)
+            )
+          ).slice(0, 10),
+          suggested_fixes: Array.from(
+            new Set(
+              (opts.reviewFeedback.suggestedFixes || [])
+                .map((entry) => String(entry || "").replace(/\s+/g, " ").trim())
+                .filter(Boolean)
+            )
+          ).slice(0, 10),
+          decision_contract:
+            opts.reviewFeedback.decisionContract && typeof opts.reviewFeedback.decisionContract === "object"
+              ? opts.reviewFeedback.decisionContract
+              : null,
+          judge_score:
+            typeof opts.reviewFeedback.judgeScore === "number" && Number.isFinite(opts.reviewFeedback.judgeScore)
+              ? opts.reviewFeedback.judgeScore
+              : null,
+          judge_pass: typeof opts.reviewFeedback.judgePass === "boolean" ? opts.reviewFeedback.judgePass : null,
+        }
+      : null;
   const offeredSlots = (opts.offeredSlots || [])
     .map((slot) => {
       const label = String(slot?.label || "").trim();
@@ -581,6 +621,7 @@ export async function maybeReviseAutoSendDraft(opts: {
     ? {
         context_pack: { runId, iteration, chars: contextPackChars },
         context_pack_markdown: trimToMaxChars(contextPackMarkdown, 24_000),
+        review_feedback: reviewFeedback,
         hard_constraints: hardConstraints,
         case: {
           channel: opts.channel,
@@ -602,6 +643,7 @@ export async function maybeReviseAutoSendDraft(opts: {
             reason: String(opts.evaluation.reason || "").slice(0, 400),
           },
         },
+        review_feedback: reviewFeedback,
         hard_constraints: hardConstraints,
         optimization_context: selection
           ? {

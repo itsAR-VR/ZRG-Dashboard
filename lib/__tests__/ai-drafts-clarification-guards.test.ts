@@ -17,6 +17,7 @@ import {
   applyTimezoneQuestionSuppressionGuard,
 } from "../ai-drafts";
 import type { MeetingOverseerExtractDecision } from "../meeting-overseer";
+import { FOUNDERS_CLUB_CLIENT_ID } from "../workspace-policy-profile";
 
 function buildExtraction(overrides?: Partial<MeetingOverseerExtractDecision>): MeetingOverseerExtractDecision {
   return {
@@ -568,6 +569,64 @@ test("applyShouldBookNowConfirmationIfNeeded keeps an existing booked confirmati
   });
 
   assert.equal(result, draft);
+});
+
+test("applyShouldBookNowConfirmationIfNeeded adds a concise open-point acknowledgement for founders club email confirmations", () => {
+  const availability = ["Fri, Mar 6 at 12:30 PM PST", "Fri, Mar 6 at 2:00 PM PST"];
+  const extraction = buildExtraction({
+    accepted_slot_index: 1,
+    decision_contract_v1: {
+      ...buildExtraction().decision_contract_v1!,
+      shouldBookNow: "yes",
+      needsPricingAnswer: "yes",
+      needsCommunityDetails: "yes",
+    },
+  });
+
+  const result = applyShouldBookNowConfirmationIfNeeded({
+    draft: "Friday 12 to 3pm PST works for me.",
+    channel: "email",
+    firstName: "Taylor",
+    aiName: "Chris",
+    extraction,
+    availability,
+    clientId: FOUNDERS_CLUB_CLIENT_ID,
+    latestInboundText:
+      "Subject: Invite to Seattle founder-only event\n\nFriday 12 to 3pm PST works. Also what's included and how often can members attend?",
+  });
+
+  assert.match(result, /^Hi Taylor,/);
+  assert.match(result, /You're booked for Fri, Mar 6 at 12:30 PM PST\./);
+  assert.match(result, /we can cover them on the call/i);
+});
+
+test("applyShouldBookNowConfirmationIfNeeded does not add founders-club acknowledgement for non-founders workspaces", () => {
+  const availability = ["Fri, Mar 6 at 12:30 PM PST", "Fri, Mar 6 at 2:00 PM PST"];
+  const extraction = buildExtraction({
+    accepted_slot_index: 1,
+    decision_contract_v1: {
+      ...buildExtraction().decision_contract_v1!,
+      shouldBookNow: "yes",
+      needsPricingAnswer: "yes",
+      needsCommunityDetails: "yes",
+    },
+  });
+
+  const result = applyShouldBookNowConfirmationIfNeeded({
+    draft: "Friday 12 to 3pm PST works for me.",
+    channel: "email",
+    firstName: "Taylor",
+    aiName: "Chris",
+    extraction,
+    availability,
+    clientId: "0c6b94f8-8840-4a5e-938b-4864a9cfde8f",
+    latestInboundText:
+      "Subject: Invite to Seattle founder-only event\n\nFriday 12 to 3pm PST works. Also what's included and how often can members attend?",
+  });
+
+  assert.match(result, /^Hi Taylor,/);
+  assert.match(result, /You're booked for Fri, Mar 6 at 12:30 PM PST\./);
+  assert.ok(!/we can cover them on the call/i.test(result));
 });
 
 test("applyContactUpdateNoSchedulingGuard rewrites scheduling content into a simple contact-update confirmation", () => {
