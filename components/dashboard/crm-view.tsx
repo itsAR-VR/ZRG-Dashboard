@@ -428,6 +428,29 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
     limit: 50,
   }), [activeWorkspace, debouncedSearch, statusFilter, sortField, sortDirection])
 
+  const crmLeadsQueryKey = useMemo(() => {
+    const workspaceKey = activeWorkspace ?? "all"
+    const searchKey = debouncedSearch || ""
+    const statusKey = statusFilter || "all"
+
+    return ["crm-leads", workspaceKey, searchKey, statusKey, sortField, sortDirection] as const
+  }, [activeWorkspace, debouncedSearch, statusFilter, sortField, sortDirection])
+
+  const fetchCrmLeadsPage = useCallback(
+    async ({ pageParam }: { pageParam: unknown }) => {
+      const cursor = typeof pageParam === "string" ? pageParam : null
+      const result = await getCRMLeadsCursor({
+        ...queryOptions,
+        cursor,
+      })
+      if (!result.success) {
+        throw new Error(result.error || "Failed to fetch leads")
+      }
+      return result
+    },
+    [queryOptions]
+  )
+
   // Infinite query for leads
   const {
     data,
@@ -439,17 +462,8 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
     error,
     refetch,
   } = useInfiniteQuery({
-    queryKey: ["crm-leads", queryOptions],
-    queryFn: async ({ pageParam }) => {
-      const result = await getCRMLeadsCursor({
-        ...queryOptions,
-        cursor: pageParam as string | null,
-      })
-      if (!result.success) {
-        throw new Error(result.error || "Failed to fetch leads")
-      }
-      return result
-    },
+    queryKey: crmLeadsQueryKey,
+    queryFn: fetchCrmLeadsPage,
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     staleTime: 30000, // 30 seconds
