@@ -276,39 +276,7 @@ export function InboxView({
     () => [...activeSentiments].sort(),
     [activeSentiments]
   );
-
-  const isSameQueryFilters = useCallback((
-    previousBase: unknown,
-    nextBase: Omit<ConversationsCursorOptions, "search">
-  ) => {
-    if (!previousBase || typeof previousBase !== "object") return false;
-
-    const previous = previousBase as Partial<Omit<ConversationsCursorOptions, "search">>;
-
-    const isSameStringArray = (a?: string[], b?: string[]) => {
-      if (!a && !b) return true;
-      if (!a || !b) return false;
-      if (a.length !== b.length) return false;
-      for (let i = 0; i < a.length; i += 1) {
-        if (a[i] !== b[i]) return false;
-      }
-      return true;
-    };
-
-    return (
-      previous.clientId === nextBase.clientId &&
-      previous.smsCampaignId === nextBase.smsCampaignId &&
-      previous.smsCampaignUnattributed === nextBase.smsCampaignUnattributed &&
-      previous.filter === nextBase.filter &&
-      previous.scoreFilter === nextBase.scoreFilter &&
-      previous.limit === nextBase.limit &&
-      isSameStringArray(previous.channels as string[] | undefined, nextBase.channels as string[] | undefined) &&
-      isSameStringArray(previous.sentimentTags, nextBase.sentimentTags)
-    );
-  }, []);
-
-  // Build base query options for cursor-based pagination (everything except search)
-  const baseQueryOptions: Omit<ConversationsCursorOptions, "search"> = useMemo(() => ({
+  const queryOptions: ConversationsCursorOptions = useMemo(() => ({
     clientId: activeWorkspace,
     channels: normalizedChannels.length > 0 ? normalizedChannels : undefined,
     sentimentTags: normalizedSentiments.length > 0 ? normalizedSentiments : undefined,
@@ -322,13 +290,54 @@ export function InboxView({
       : undefined,
     scoreFilter: activeScoreFilter !== "all" ? activeScoreFilter : undefined,
     limit: 50,
-  }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter, activeScoreFilter]);
-
-  // Full query options (includes search)
-  const queryOptions: ConversationsCursorOptions = useMemo(() => ({
-    ...baseQueryOptions,
     search: searchQuery.trim() ? searchQuery.trim() : undefined,
-  }), [baseQueryOptions, searchQuery]);
+  }), [activeWorkspace, normalizedChannels, normalizedSentiments, activeSmsClient, activeFilter, activeScoreFilter, searchQuery]);
+
+  // React Query's subscriptions are backed by useSyncExternalStore. Keep the query key
+  // as primitives to avoid any chance of object identity/hash churn causing render loops.
+  const conversationsQueryKey = useMemo(() => {
+    const workspaceKey = activeWorkspace ?? "all";
+    const channelsKey = normalizedChannels.length > 0 ? normalizedChannels.join(",") : "all";
+    const sentimentsKey = normalizedSentiments.length > 0 ? normalizedSentiments.join(",") : "all";
+    const filterKey = activeFilter || "all";
+    const scoreKey = activeScoreFilter;
+    const searchKey = queryOptions.search ?? "";
+
+    return [
+      "conversations",
+      workspaceKey,
+      channelsKey,
+      sentimentsKey,
+      activeSmsClient,
+      filterKey,
+      scoreKey,
+      searchKey,
+    ] as const;
+  }, [
+    activeWorkspace,
+    normalizedChannels,
+    normalizedSentiments,
+    activeSmsClient,
+    activeFilter,
+    activeScoreFilter,
+    queryOptions.search,
+  ]);
+
+  const fetchConversationsPage = useCallback(
+    async ({ pageParam }: { pageParam: unknown }) => {
+      const result = await getConversationsCursor({
+        ...queryOptions,
+        // Jam evidence shows cursor can serialize as `{}` across the RSC boundary.
+        // Only pass it through when it is a real cursor string.
+        cursor: typeof pageParam === "string" ? pageParam : undefined,
+      });
+      if (!result.success) {
+        throw new Error(result.error || "Failed to fetch conversations");
+      }
+      return result;
+    },
+    [queryOptions]
+  );
 
   const conversationsQueryEnabled = isActive && workspacesReady && hasWorkspaces;
 
@@ -344,28 +353,11 @@ export function InboxView({
     error,
     refetch,
   } = useInfiniteQuery({
-    queryKey: ["conversations", baseQueryOptions, queryOptions.search ?? ""],
+    queryKey: conversationsQueryKey,
     enabled: conversationsQueryEnabled,
-    queryFn: async ({ pageParam }) => {
-      const result = await getConversationsCursor({
-        ...queryOptions,
-        // Jam evidence shows cursor can serialize as `{}` across the RSC boundary.
-        // Only pass it through when it is a real cursor string.
-        cursor: typeof pageParam === "string" ? pageParam : undefined,
-      });
-      if (!result.success) {
-        throw new Error(result.error || "Failed to fetch conversations");
-      }
-      return result;
-    },
+    queryFn: fetchConversationsPage,
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor,
-    placeholderData: (previousData, previousQuery) => {
-      const previousKey = previousQuery?.queryKey;
-      const previousBase = Array.isArray(previousKey) ? previousKey[1] : null;
-      if (!isSameQueryFilters(previousBase, baseQueryOptions)) return undefined;
-      return previousData;
-    },
     staleTime: 30000,
     refetchInterval: (query) => {
       if (!conversationsQueryEnabled) return false;
