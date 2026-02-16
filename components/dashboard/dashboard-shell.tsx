@@ -2,7 +2,7 @@
 
 import { Suspense, memo, useCallback, useEffect, useRef, useState } from "react"
 import dynamic from "next/dynamic"
-import { useSearchParams } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { AlertTriangle, X } from "lucide-react"
 import { Sidebar, type ViewType } from "@/components/dashboard/sidebar"
 import { DashboardErrorBoundary } from "@/components/dashboard/dashboard-error-boundary"
@@ -159,6 +159,8 @@ const SettingsPane = memo(function SettingsPane({
 })
 
 function DashboardPageInner() {
+  const router = useRouter()
+  const pathname = usePathname()
   const searchParams = useSearchParams()
   const viewParam = searchParams.get("view")
   const leadIdParam = searchParams.get("leadId")
@@ -217,6 +219,18 @@ function DashboardPageInner() {
       setSelectedLeadId(null)
     }
     setActiveWorkspace(nextWorkspace)
+
+    const params = new URLSearchParams(searchParams.toString())
+    if (nextWorkspace) {
+      params.set("clientId", nextWorkspace)
+    } else {
+      params.delete("clientId")
+    }
+    if (!leadIdParam) {
+      params.delete("leadId")
+    }
+    const query = params.toString()
+    router.replace(query ? `${pathname}?${query}` : pathname)
   }
 
   const handleViewChange = useCallback(

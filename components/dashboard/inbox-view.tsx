@@ -182,9 +182,20 @@ export function InboxView({
   const prevConversationIdRef = useRef<string | null>(null);
   const lastAutoSyncRef = useRef<Map<string, number>>(new Map());
   const activeConversationRequestRef = useRef(0);
+  const activeConversationRequestLeadRef = useRef<string | null>(null);
   const activeConversationLastFetchedAtRef = useRef<Map<string, number>>(new Map());
   const activeConversationListTimestampRef = useRef<number>(0);
   const conversationsByIdRef = useRef<Map<string, ConversationWithSentiment>>(new Map());
+  const activeConversationIdRef = useRef<string | null>(activeConversationId);
+  const isLoadingMessagesRef = useRef(isLoadingMessages);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    isLoadingMessagesRef.current = isLoadingMessages;
+  }, [isLoadingMessages]);
 
   // Reset workspace-scoped state when switching workspaces.
   // Uses functional setters to bail out when values are already defaults to avoid
@@ -447,14 +458,30 @@ export function InboxView({
   const fetchActiveConversation = useCallback(async (showLoading = true) => {
     if (!activeConversationId) {
       activeConversationRequestRef.current += 1;
+      activeConversationRequestLeadRef.current = null;
       setActiveConversation(null);
+      isLoadingMessagesRef.current = false;
       setIsLoadingMessages(false);
       return;
     }
 
     const conversationId = activeConversationId;
-    const requestId = activeConversationRequestRef.current + 1;
-    activeConversationRequestRef.current = requestId;
+    const shouldSupersedeRequest =
+      showLoading || activeConversationRequestLeadRef.current !== conversationId;
+    const requestId = shouldSupersedeRequest
+      ? activeConversationRequestRef.current + 1
+      : activeConversationRequestRef.current;
+
+    if (shouldSupersedeRequest) {
+      activeConversationRequestRef.current = requestId;
+      activeConversationRequestLeadRef.current = conversationId;
+    }
+
+    // Keep foreground loads authoritative: don't allow background refreshes to supersede
+    // or race the initial loading state clear.
+    if (!showLoading && isLoadingMessagesRef.current) {
+      return;
+    }
 
     // Optimistic UI: Immediately show conversation with data from list
     const baseConv = conversationsByIdRef.current.get(conversationId);
@@ -487,11 +514,13 @@ export function InboxView({
           ...baseConv,
           messages: [], // Empty initially, will load
         });
+        isLoadingMessagesRef.current = true;
         setIsLoadingMessages(true);
       }
     } else if (showLoading) {
       // When the lead isn't present in the current list (filters/pagination), avoid showing a stale conversation.
       setActiveConversation(null);
+      isLoadingMessagesRef.current = true;
       setIsLoadingMessages(true);
     }
 
@@ -509,7 +538,12 @@ export function InboxView({
 
     // Fetch full messages in background
     const result = await getConversation(conversationId);
-    if (activeConversationRequestRef.current !== requestId) return;
+    if (
+      activeConversationRequestRef.current !== requestId ||
+      activeConversationIdRef.current !== conversationId
+    ) {
+      return;
+    }
     if (result.success && result.data) {
       const messages = (result.data.messages ?? []).map((m) => ({
         ...m,
@@ -612,7 +646,12 @@ export function InboxView({
     }
     }
 
-    if (showLoading && activeConversationRequestRef.current === requestId) {
+    if (
+      showLoading &&
+      activeConversationRequestRef.current === requestId &&
+      activeConversationIdRef.current === conversationId
+    ) {
+      isLoadingMessagesRef.current = false;
       setIsLoadingMessages(false);
     }
   }, [activeConversationId]);
@@ -1004,8 +1043,10 @@ export function InboxView({
   // This prevents blocking when switching workspaces (cached data shows immediately)
   if (showDelayedSpinner) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <div className="relative flex h-full min-h-0 w-full overflow-hidden">
+        <div className="flex flex-1 items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        </div>
       </div>
     );
   }
@@ -1013,20 +1054,22 @@ export function InboxView({
   // Error state
   if (isError) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <div className="text-center space-y-4">
-          <div className="p-4 rounded-full bg-destructive/10 w-fit mx-auto">
-            <WifiOff className="h-12 w-12 text-destructive" />
-          </div>
-          <div>
-            <h3 className="text-lg font-semibold text-destructive">Error loading conversations</h3>
-            <p className="text-sm text-muted-foreground max-w-md font-mono bg-muted p-2 rounded mt-2">
-              {error?.message || "Unknown error"}
-            </p>
-            <Button variant="outline" onClick={() => refetch()} className="mt-4">
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Retry
-            </Button>
+      <div className="relative flex h-full min-h-0 w-full overflow-hidden">
+        <div className="flex flex-1 items-center justify-center">
+          <div className="text-center space-y-4">
+            <div className="p-4 rounded-full bg-destructive/10 w-fit mx-auto">
+              <WifiOff className="h-12 w-12 text-destructive" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold text-destructive">Error loading conversations</h3>
+              <p className="text-sm text-muted-foreground max-w-md font-mono bg-muted p-2 rounded mt-2">
+                {error?.message || "Unknown error"}
+              </p>
+              <Button variant="outline" onClick={() => refetch()} className="mt-4">
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Retry
+              </Button>
+            </div>
           </div>
         </div>
       </div>
@@ -1038,24 +1081,26 @@ export function InboxView({
     // Show different message if filters are active vs no conversations at all
     if (hasActiveFilters) {
       return (
-        <div className="flex flex-1 items-center justify-center">
-          <div className="text-center space-y-4">
-            <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
-              <FilterX className="h-12 w-12 text-muted-foreground" />
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold">No matching conversations</h3>
-              <p className="text-sm text-muted-foreground max-w-sm">
-                No conversations match your current filters. Try adjusting your filters or clear them to see all conversations.
-              </p>
-              <Button 
-                variant="outline" 
-                onClick={handleClearAllFilters} 
-                className="mt-4"
-              >
-                <FilterX className="h-4 w-4 mr-2" />
-                Clear all filters
-              </Button>
+        <div className="relative flex h-full min-h-0 w-full overflow-hidden">
+          <div className="flex flex-1 items-center justify-center">
+            <div className="text-center space-y-4">
+              <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
+                <FilterX className="h-12 w-12 text-muted-foreground" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold">No matching conversations</h3>
+                <p className="text-sm text-muted-foreground max-w-sm">
+                  No conversations match your current filters. Try adjusting your filters or clear them to see all conversations.
+                </p>
+                <Button 
+                  variant="outline" 
+                  onClick={handleClearAllFilters} 
+                  className="mt-4"
+                >
+                  <FilterX className="h-4 w-4 mr-2" />
+                  Clear all filters
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -1063,28 +1108,30 @@ export function InboxView({
     }
 
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <div className="text-center space-y-4">
-          <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
-            <Inbox className="h-12 w-12 text-muted-foreground" />
-          </div>
-          <div>
-            <h3 className="text-lg font-semibold">No conversations yet</h3>
-            <p className="text-sm text-muted-foreground max-w-sm">
-              {activeWorkspace 
-                ? (workspaceHasConnectedAccounts
-                    ? "This workspace doesn't have any conversations yet. They will appear here when leads start messaging."
-                    : "This workspace has no connected accounts yet. Connect an integration to start receiving messages here.")
-                : "Select a workspace or wait for incoming messages from your GHL integrations."
-              }
-            </p>
-            {activeWorkspace && !workspaceHasConnectedAccounts ? (
-              <Button asChild variant="outline" className="mt-4">
-                <Link href="/?view=settings&settingsTab=integrations">
-                  Go to Settings → Integrations
-                </Link>
-              </Button>
-            ) : null}
+      <div className="relative flex h-full min-h-0 w-full overflow-hidden">
+        <div className="flex flex-1 items-center justify-center">
+          <div className="text-center space-y-4">
+            <div className="p-4 rounded-full bg-muted/50 w-fit mx-auto">
+              <Inbox className="h-12 w-12 text-muted-foreground" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold">No conversations yet</h3>
+              <p className="text-sm text-muted-foreground max-w-sm">
+                {activeWorkspace 
+                  ? (workspaceHasConnectedAccounts
+                      ? "This workspace doesn't have any conversations yet. They will appear here when leads start messaging."
+                      : "This workspace has no connected accounts yet. Connect an integration to start receiving messages here.")
+                  : "Select a workspace or wait for incoming messages from your GHL integrations."
+                }
+              </p>
+              {activeWorkspace && !workspaceHasConnectedAccounts ? (
+                <Button asChild variant="outline" className="mt-4">
+                  <Link href="/?view=settings&settingsTab=integrations">
+                    Go to Settings → Integrations
+                  </Link>
+                </Button>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>
@@ -1092,7 +1139,7 @@ export function InboxView({
   }
 
   return (
-    <>
+    <div className="relative flex h-full min-h-0 w-full overflow-hidden">
       {/* Status indicators */}
       <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
         {/* Subtle fetching indicator for background refreshes */}
@@ -1137,44 +1184,44 @@ export function InboxView({
       <div className="sr-only" role="status" aria-live="polite">
         {newConversationCount > 0 ? `${newConversationCount} new conversations available.` : ""}
       </div>
-	      
-		      <ConversationFeed
-		        conversations={filteredConversations}
-		        activeConversationId={activeConversationId}
-		        onSelectConversation={handleLeadSelect}
-            onDebouncedSearchChange={setSearchQuery}
-		        activeSentiments={activeSentiments}
-		        onSentimentsChange={setActiveSentiments}
-		        activeSmsClient={activeSmsClient}
-		        onSmsClientChange={activeWorkspace ? setActiveSmsClient : undefined}
-		        smsClientOptions={smsClientOptions}
-		        smsClientUnattributedCount={smsClientUnattributedCount}
-	        isLoadingSmsClients={activeWorkspace ? smsCampaignFiltersQuery.isLoading : false}
-	        activeScoreFilter={activeScoreFilter}
-	        onScoreFilterChange={activeWorkspace ? setActiveScoreFilter : undefined}
-	        syncingLeadIds={syncingLeadIds}
-	        onSyncAll={handleSyncAll}
-	        isSyncingAll={isSyncingAll}
-	        onReanalyzeAllSentiments={handleReanalyzeAllSentiments}
-	        isReanalyzingAllSentiments={isReanalyzingAllSentiments}
-	        autoFollowUpsOnReplyEnabled={autoFollowUpsOnReplyEnabled}
-	        onToggleAutoFollowUpsOnReply={activeWorkspace ? handleToggleAutoFollowUpsOnReply : undefined}
-	        isTogglingAutoFollowUpsOnReply={isTogglingAutoFollowUpsOnReply}
-	        hasMore={hasNextPage}
-	        isLoadingMore={isFetchingNextPage}
-	        onLoadMore={handleLoadMore}
-	      />
 
-	      <ActionStation
-	        conversation={activeConversation}
-	        onToggleCrm={() => setIsCrmOpen(!isCrmOpen)}
-	        isCrmOpen={isCrmOpen}
-	        isSyncing={isCurrentConversationSyncing}
-	        onSync={handleSyncConversation}
-	        isReanalyzingSentiment={!!activeConversationId && reanalyzingLeadId === activeConversationId}
-	        onReanalyzeSentiment={handleReanalyzeSentiment}
-	        isLoadingMessages={isLoadingMessages}
-	      />
+      <ConversationFeed
+        conversations={filteredConversations}
+        activeConversationId={activeConversationId}
+        onSelectConversation={handleLeadSelect}
+        onDebouncedSearchChange={setSearchQuery}
+        activeSentiments={activeSentiments}
+        onSentimentsChange={setActiveSentiments}
+        activeSmsClient={activeSmsClient}
+        onSmsClientChange={activeWorkspace ? setActiveSmsClient : undefined}
+        smsClientOptions={smsClientOptions}
+        smsClientUnattributedCount={smsClientUnattributedCount}
+        isLoadingSmsClients={activeWorkspace ? smsCampaignFiltersQuery.isLoading : false}
+        activeScoreFilter={activeScoreFilter}
+        onScoreFilterChange={activeWorkspace ? setActiveScoreFilter : undefined}
+        syncingLeadIds={syncingLeadIds}
+        onSyncAll={handleSyncAll}
+        isSyncingAll={isSyncingAll}
+        onReanalyzeAllSentiments={handleReanalyzeAllSentiments}
+        isReanalyzingAllSentiments={isReanalyzingAllSentiments}
+        autoFollowUpsOnReplyEnabled={autoFollowUpsOnReplyEnabled}
+        onToggleAutoFollowUpsOnReply={activeWorkspace ? handleToggleAutoFollowUpsOnReply : undefined}
+        isTogglingAutoFollowUpsOnReply={isTogglingAutoFollowUpsOnReply}
+        hasMore={hasNextPage}
+        isLoadingMore={isFetchingNextPage}
+        onLoadMore={handleLoadMore}
+      />
+
+      <ActionStation
+        conversation={activeConversation}
+        onToggleCrm={() => setIsCrmOpen(!isCrmOpen)}
+        isCrmOpen={isCrmOpen}
+        isSyncing={isCurrentConversationSyncing}
+        onSync={handleSyncConversation}
+        isReanalyzingSentiment={!!activeConversationId && reanalyzingLeadId === activeConversationId}
+        onReanalyzeSentiment={handleReanalyzeSentiment}
+        isLoadingMessages={isLoadingMessages}
+      />
       {activeConversation && (
         <CrmDrawer
           lead={activeConversation.lead}
@@ -1187,7 +1234,7 @@ export function InboxView({
           }}
         />
       )}
-    </>
+    </div>
   );
 }
 
