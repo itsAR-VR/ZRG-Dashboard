@@ -1265,6 +1265,13 @@ function transformLeadToConversation(
   };
 }
 
+function hasOpenReplyFromLeadRollups(lead: { lastInboundAt?: Date | null; lastZrgOutboundAt?: Date | null }): boolean {
+  const lastInboundAt = lead.lastInboundAt ?? null;
+  if (!lastInboundAt) return false;
+  const lastZrgOutboundAt = lead.lastZrgOutboundAt ?? null;
+  return !lastZrgOutboundAt || lastZrgOutboundAt.getTime() < lastInboundAt.getTime();
+}
+
 /**
  * Get conversations with cursor-based pagination
  * Optimized for large datasets (50,000+ leads)
@@ -1596,6 +1603,7 @@ export async function getConversationsCursor(
         assignedAt: true,
         // Reply-state filter support
         lastInboundAt: true,
+        lastZrgOutboundAt: true,
         lastMessageDirection: true,
         createdAt: true,
         client: {
@@ -1723,29 +1731,8 @@ export async function getConversationsCursor(
         nextCursorId = batchLeads[batchLeads.length - 1]!.id;
         if (batchLeads.length < batchSize) exhausted = true;
 
-        const leadIds = batchLeads.map((lead: any) => lead.id);
-        const zrgOutboundRows = await prisma.message.groupBy({
-          by: ["leadId"],
-          where: {
-            leadId: { in: leadIds },
-            direction: "outbound",
-            source: "zrg",
-          },
-          _max: { sentAt: true },
-        });
-
-        const lastZrgOutboundAtByLeadId = new Map<string, Date>();
-        for (const row of zrgOutboundRows) {
-          const sentAt = row._max.sentAt;
-          if (sentAt instanceof Date) lastZrgOutboundAtByLeadId.set(row.leadId, sentAt);
-        }
-
         const filtered = batchLeads.filter((lead: any) => {
-          const lastInboundAt: Date | null = lead.lastInboundAt ?? null;
-          if (!lastInboundAt) return false;
-
-          const lastZrgOutboundAt = lastZrgOutboundAtByLeadId.get(lead.id) ?? null;
-          const hasOpenReply = !lastZrgOutboundAt || lastZrgOutboundAt.getTime() < lastInboundAt.getTime();
+          const hasOpenReply = hasOpenReplyFromLeadRollups(lead);
           return replyStateFilter === "open" ? hasOpenReply : !hasOpenReply;
         });
 
@@ -2010,29 +1997,8 @@ export async function getConversationsFromEnd(
     });
 
     if (replyStateFilter) {
-      const leadIds = leads.map((lead: any) => lead.id);
-      const zrgOutboundRows = await prisma.message.groupBy({
-        by: ["leadId"],
-        where: {
-          leadId: { in: leadIds },
-          direction: "outbound",
-          source: "zrg",
-        },
-        _max: { sentAt: true },
-      });
-
-      const lastZrgOutboundAtByLeadId = new Map<string, Date>();
-      for (const row of zrgOutboundRows) {
-        const sentAt = row._max.sentAt;
-        if (sentAt instanceof Date) lastZrgOutboundAtByLeadId.set(row.leadId, sentAt);
-      }
-
       leads = leads.filter((lead: any) => {
-        const lastInboundAt: Date | null = lead.lastInboundAt ?? null;
-        if (!lastInboundAt) return false;
-
-        const lastZrgOutboundAt = lastZrgOutboundAtByLeadId.get(lead.id) ?? null;
-        const hasOpenReply = !lastZrgOutboundAt || lastZrgOutboundAt.getTime() < lastInboundAt.getTime();
+        const hasOpenReply = hasOpenReplyFromLeadRollups(lead);
         return replyStateFilter === "open" ? hasOpenReply : !hasOpenReply;
       });
     }
