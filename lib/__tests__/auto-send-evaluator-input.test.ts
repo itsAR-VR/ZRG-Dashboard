@@ -62,6 +62,10 @@ describe("buildAutoSendEvaluatorInput", () => {
           },
         ],
       },
+      leadPhoneOnFile: true,
+      actionSignalCallRequested: true,
+      actionSignalExternalCalendar: false,
+      actionSignalRouteSummary: "route summary",
       budgets: {
         conversationHistoryTokens: 50,
         serviceDescriptionTokens: 40,
@@ -86,6 +90,10 @@ describe("buildAutoSendEvaluatorInput", () => {
     assert.ok("pricing_terms_draft" in payload);
     assert.ok("pricing_terms_mismatch" in payload);
     assert.ok("pricingCadence" in input.stats);
+    assert.equal(payload.lead_phone_on_file, true);
+    assert.equal(payload.action_signal_call_requested, true);
+    assert.equal(payload.action_signal_external_calendar, false);
+    assert.equal(payload.action_signal_route_summary, "route summary");
   });
 
   it("flags pricing cadence mismatch when draft conflicts with verified context", () => {

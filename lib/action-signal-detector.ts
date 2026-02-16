@@ -88,6 +88,39 @@ export const EMPTY_ACTION_SIGNAL_RESULT: ActionSignalDetectionResult = {
   route: null,
 };
 
+export function hasActionSignal(
+  result: ActionSignalDetectionResult | null | undefined,
+  type: "call_requested" | "book_on_external_calendar"
+): boolean {
+  return Boolean(result?.signals?.some((signal) => signal.type === type));
+}
+
+export function hasActionSignalOrRoute(result: ActionSignalDetectionResult | null | undefined): boolean {
+  return Boolean(result?.signals?.length || result?.route);
+}
+
+export function buildActionSignalsGateSummary(result: ActionSignalDetectionResult | null | undefined): string | null {
+  if (!hasActionSignalOrRoute(result)) return null;
+  if (!result) return null;
+
+  const evidence = result.signals
+    .map((signal) => `${signal.type}:${signal.evidence}`)
+    .slice(0, 3)
+    .join(" | ");
+
+  return [
+    `call_requested: ${hasActionSignal(result, "call_requested") ? "true" : "false"}`,
+    `book_on_external_calendar: ${hasActionSignal(result, "book_on_external_calendar") ? "true" : "false"}`,
+    result.route ? `route_process: ${result.route.processId}` : null,
+    result.route ? `route_confidence: ${result.route.confidence}` : null,
+    result.route ? `route_uncertain: ${result.route.uncertain ? "true" : "false"}` : null,
+    result.route?.rationale ? `route_rationale: ${result.route.rationale}` : null,
+    evidence ? `evidence: ${evidence}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 // ---------------------------------------------------------------------------
 // Tier 1: Call signal heuristic (pure — no I/O)
 // ---------------------------------------------------------------------------
@@ -356,19 +389,29 @@ export async function routeBookingProcessWithAi(opts: {
   provider?: string | null;
 }): Promise<BookingProcessRoutingOutcome> {
   try {
-    const payload = [
+    const payloadLines = [
       `Channel: ${opts.channel ?? "unknown"}`,
       `Provider: ${opts.provider ?? "unknown"}`,
       `Sentiment: ${opts.sentimentTag ?? "unknown"}`,
-      `Has call signal: ${opts.hasCallSignal ? "true" : "false"}`,
-      `Has external calendar signal: ${opts.hasExternalCalendarSignal ? "true" : "false"}`,
+    ];
+
+    if (opts.hasCallSignal) {
+      payloadLines.push("Has call signal: true");
+    }
+    if (opts.hasExternalCalendarSignal) {
+      payloadLines.push("Has external calendar signal: true");
+    }
+
+    payloadLines.push(
       `Workspace booking link: ${opts.workspaceBookingLink ?? "none"}`,
       "Message body (signature stripped):",
       opts.strippedText.slice(0, BOOKING_PROCESS_ROUTER_INPUT_MAX_CHARS),
       "",
       "Full message (may include signature/footer):",
-      opts.fullText.slice(0, BOOKING_PROCESS_ROUTER_INPUT_MAX_CHARS),
-    ].join("\n");
+      opts.fullText.slice(0, BOOKING_PROCESS_ROUTER_INPUT_MAX_CHARS)
+    );
+
+    const payload = payloadLines.join("\n");
 
     const result = await runStructuredJsonPrompt<BookingProcessRoute>({
       pattern: "structured_json",
@@ -480,8 +523,8 @@ export async function detectActionSignals(opts: {
     }
   }
 
-  const hasCallSignal = signals.some((s) => s.type === "call_requested");
-  const hasExternalCalendarSignal = signals.some((s) => s.type === "book_on_external_calendar");
+  const hasCallSignalBeforeRoute = signals.some((s) => s.type === "call_requested");
+  const hasExternalCalendarSignalBeforeRoute = signals.some((s) => s.type === "book_on_external_calendar");
   let route: BookingProcessRoute | null = null;
   let routeReason: BookingProcessRoutingOutcome["reason"] = "disabled_by_workspace_settings";
 
@@ -495,8 +538,8 @@ export async function detectActionSignals(opts: {
           workspaceBookingLink: opts.workspaceBookingLink,
           clientId: opts.clientId,
           leadId: opts.leadId,
-          hasCallSignal,
-          hasExternalCalendarSignal,
+          hasCallSignal: hasCallSignalBeforeRoute,
+          hasExternalCalendarSignal: hasExternalCalendarSignalBeforeRoute,
           channel: opts.channel,
           provider: opts.provider,
         });
@@ -513,8 +556,8 @@ export async function detectActionSignals(opts: {
         workspaceBookingLink: opts.workspaceBookingLink,
         clientId: opts.clientId,
         leadId: opts.leadId,
-        hasCallSignal,
-        hasExternalCalendarSignal,
+        hasCallSignal: hasCallSignalBeforeRoute,
+        hasExternalCalendarSignal: hasExternalCalendarSignalBeforeRoute,
         channel: opts.channel,
         provider: opts.provider,
       });
@@ -522,6 +565,21 @@ export async function detectActionSignals(opts: {
       routeReason = routeOutcome.reason;
     }
   }
+
+  if (!hasCallSignalBeforeRoute && route?.processId === 4) {
+    const evidence = route.rationale
+      ? `Booking process router rationale: ${route.rationale}`
+      : "Booking process router classified this reply as a call request";
+    const confidence = route.confidence >= 0.8 ? "high" : "medium";
+    signals.push({
+      type: "call_requested",
+      confidence,
+      evidence,
+    });
+  }
+
+  const hasCallSignal = signals.some((s) => s.type === "call_requested");
+  const hasExternalCalendarSignal = signals.some((s) => s.type === "book_on_external_calendar");
 
   await recordBookingProcessRouteOutcome({
     clientId: opts.clientId,

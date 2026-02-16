@@ -6,6 +6,10 @@ import Link from "next/link";
 import Image from "next/image";
 import { signInWithEmailPassword } from "@/actions/auth-actions";
 import { createClient } from "@/lib/supabase/client";
+import {
+  isServerActionVersionSkewError,
+  SERVER_ACTION_VERSION_SKEW_REFRESH_MESSAGE,
+} from "@/lib/server-action-version-skew";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -40,6 +44,11 @@ export default function LoginPage() {
       router.push("/");
       router.refresh();
     } catch (error) {
+      if (isServerActionVersionSkewError(error)) {
+        toast.error(SERVER_ACTION_VERSION_SKEW_REFRESH_MESSAGE);
+        window.location.reload();
+        return;
+      }
       const message = error instanceof Error ? error.message : "An unexpected error occurred";
       toast.error(message);
     } finally {

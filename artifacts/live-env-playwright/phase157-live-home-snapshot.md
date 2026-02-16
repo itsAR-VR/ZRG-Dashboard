@@ -1,0 +1,89 @@
+- generic [active] [ref=e1]:
+  - alert [ref=e3]
+  - generic [ref=e4]:
+    - link "Skip to main content" [ref=e5] [cursor=pointer]:
+      - /url: "#main-content"
+    - complementary [ref=e6]:
+      - generic [ref=e7]:
+        - img "Dale Barrett- Barrett Tax Law / iFinallyWill / Canadian Accountant Training Institute Logo" [ref=e8]
+        - generic [ref=e9]:
+          - generic [ref=e10]: Dale Barrett- Barrett Tax Law / iFinallyWill / Canadian Accountant Training Institute
+          - generic [ref=e11]: Inbox
+      - button "Dale Barrett- Barrett Tax Law / iFinallyWill / Canadian Accountant Training Institute" [ref=e13]:
+        - generic [ref=e14]:
+          - img
+          - generic [ref=e15]: Dale Barrett- Barrett Tax Law / iFinallyWill / Canadian Accountant Training Institute
+          - generic "No default calendar link configured" [ref=e16]:
+            - img
+        - img
+      - navigation [ref=e17]:
+        - button "Master Inbox" [ref=e18]:
+          - img
+          - text: Master Inbox
+        - button "Follow-ups" [ref=e19]:
+          - img
+          - text: Follow-ups
+        - button "CRM / Leads" [ref=e20]:
+          - img
+          - text: CRM / Leads
+        - button "Analytics" [ref=e21]:
+          - img
+          - text: Analytics
+        - button "Campaign Strategist" [ref=e22]:
+          - img
+          - text: Campaign Strategist
+        - button "Settings" [ref=e23]:
+          - img
+          - text: Settings
+        - generic [ref=e24]:
+          - paragraph [ref=e25]: Filters
+          - button "All Responses" [ref=e26]:
+            - generic [ref=e27]:
+              - img
+              - generic [ref=e28]: All Responses
+          - button "Requires Attention" [ref=e29]:
+            - generic [ref=e30]:
+              - img
+              - generic [ref=e31]: Requires Attention
+          - button "AI Sent" [ref=e32]:
+            - generic [ref=e33]:
+              - img
+              - generic [ref=e34]: AI Sent
+          - button "AI Needs Review" [ref=e35]:
+            - generic [ref=e36]:
+              - img
+              - generic [ref=e37]: AI Needs Review
+          - button "Needs Repair" [ref=e38]:
+            - generic [ref=e39]:
+              - img
+              - generic [ref=e40]: Needs Repair
+          - button "Previously Required Attention" [ref=e41]:
+            - generic [ref=e42]:
+              - img
+              - generic [ref=e43]: Previously Required Attention
+        - generic [ref=e44]:
+          - paragraph [ref=e45]: Channels
+          - group [ref=e46]:
+            - button "All channels" [pressed] [ref=e47]: All Channels
+            - button "Email" [ref=e48]:
+              - img
+              - text: Email
+            - button "SMS" [ref=e49]:
+              - img
+              - text: SMS
+            - button "LinkedIn" [ref=e50]:
+              - img
+              - text: LinkedIn
+      - button "AS AR Sajid ar@soramedia.co" [ref=e52]:
+        - generic [ref=e54]: AS
+        - generic [ref=e55]:
+          - generic [ref=e56]: AR Sajid
+          - generic [ref=e57]: ar@soramedia.co
+        - img
+    - main [ref=e59]:
+      - generic [ref=e65]:
+        - img [ref=e67]
+        - generic [ref=e70]:
+          - heading "No conversations yet" [level=3] [ref=e71]
+          - paragraph [ref=e72]: This workspace doesn't have any conversations yet. They will appear here when leads start messaging.
+  - region "Notifications alt+T"

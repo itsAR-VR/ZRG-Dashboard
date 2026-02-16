@@ -30,7 +30,13 @@ import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
 import { markInboxCountsDirty } from "@/lib/inbox-counts-dirty";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
-import { detectActionSignals, notifyActionSignals, EMPTY_ACTION_SIGNAL_RESULT } from "@/lib/action-signal-detector";
+import {
+  detectActionSignals,
+  notifyActionSignals,
+  EMPTY_ACTION_SIGNAL_RESULT,
+  buildActionSignalsGateSummary,
+  hasActionSignal,
+} from "@/lib/action-signal-detector";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
@@ -351,6 +357,9 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   // Action signal detection (Phase 143) — detect call requests + external calendar links
   pushStage("action_signal_detection");
   let actionSignals = EMPTY_ACTION_SIGNAL_RESULT;
+  let actionSignalCallRequested = false;
+  let actionSignalExternalCalendar = false;
+  let actionSignalRouteSummary: string | null = null;
   try {
     if (isPositiveSentiment(sentimentTag)) {
       const workspaceBookingLink = await resolveBookingLink(client.id, null)
@@ -367,6 +376,9 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
         provider: params.adapter.provider,
         aiRouteBookingProcessEnabled: client.settings?.aiRouteBookingProcessEnabled ?? true,
       });
+      actionSignalCallRequested = hasActionSignal(actionSignals, "call_requested");
+      actionSignalExternalCalendar = hasActionSignal(actionSignals, "book_on_external_calendar");
+      actionSignalRouteSummary = buildActionSignalsGateSummary(actionSignals);
       if (actionSignals.signals.length > 0) {
         console.log(prefix, "Action signals:", actionSignals.signals.map((s) => s.type).join(", "));
         notifyActionSignals({
@@ -453,6 +465,9 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
           offeredSlots,
           bookingLink: workspaceBookingLink,
           leadSchedulerLink: leadAutoSendContext?.externalSchedulingLink ?? null,
+          actionSignalCallRequested,
+          actionSignalExternalCalendar,
+          actionSignalRouteSummary,
           emailCampaign,
           autoReplyEnabled: lead.autoReplyEnabled,
           workspaceSettings: lead.client?.settings ?? null,

@@ -1,0 +1,277 @@
+{
+  "generatedAt": "2026-02-16T17:38:11.927Z",
+  "startedAt": "2026-02-16T17:38:09.298Z",
+  "config": {
+    "baseUrl": "https://zrg-dashboard.vercel.app",
+    "clientId": "ef824aca-a3c9-4cde-b51f-2e421ebb6b6e",
+    "from": "2026-01-17T17:38:09.293Z",
+    "to": "2026-02-16T17:38:09.293Z",
+    "coldSamples": 1,
+    "warmSamples": 1,
+    "usedCookie": false
+  },
+  "cold": {
+    "summary": [
+      {
+        "endpoint": "/api/analytics/overview(core)",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      },
+      {
+        "endpoint": "/api/analytics/overview(breakdowns)",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      },
+      {
+        "endpoint": "/api/analytics/workflows",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      },
+      {
+        "endpoint": "/api/analytics/campaigns",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      },
+      {
+        "endpoint": "/api/analytics/response-timing",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      },
+      {
+        "endpoint": "/api/analytics/crm/rows(summary)",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      }
+    ],
+    "samples": [
+      {
+        "mode": "cold",
+        "endpoint": "/api/analytics/overview(core)",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/overview?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A39%3A09.293Z&to=2026-02-16T17%3A39%3A09.293Z&parts=core",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "8b5db3a3-ed73-4ba2-9da7-7c0d845a03d7",
+        "runIndex": 1
+      },
+      {
+        "mode": "cold",
+        "endpoint": "/api/analytics/overview(breakdowns)",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/overview?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A39%3A09.293Z&to=2026-02-16T17%3A39%3A09.293Z&parts=breakdowns",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "8c70db01-c72d-4858-a347-09480d69f8ad",
+        "runIndex": 1
+      },
+      {
+        "mode": "cold",
+        "endpoint": "/api/analytics/workflows",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/workflows?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A39%3A09.293Z&to=2026-02-16T17%3A39%3A09.293Z",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "a518155b-e6a7-456a-8285-3f9d0e420b05",
+        "runIndex": 1
+      },
+      {
+        "mode": "cold",
+        "endpoint": "/api/analytics/campaigns",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/campaigns?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A39%3A09.293Z&to=2026-02-16T17%3A39%3A09.293Z",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "47300762-1931-4c31-9fab-c03ab83d565e",
+        "runIndex": 1
+      },
+      {
+        "mode": "cold",
+        "endpoint": "/api/analytics/response-timing",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/response-timing?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A39%3A09.293Z&to=2026-02-16T17%3A39%3A09.293Z",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "7e51d50e-3e82-49e6-ad04-5c339b4c4228",
+        "runIndex": 1
+      },
+      {
+        "mode": "cold",
+        "endpoint": "/api/analytics/crm/rows(summary)",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/crm/rows?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A39%3A09.293Z&to=2026-02-16T17%3A39%3A09.293Z&mode=summary",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "dc1b41b6-3b2f-499d-a947-85ba1bb9a899",
+        "runIndex": 1
+      }
+    ]
+  },
+  "warm": {
+    "summary": [
+      {
+        "endpoint": "/api/analytics/overview(core)",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      },
+      {
+        "endpoint": "/api/analytics/overview(breakdowns)",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      },
+      {
+        "endpoint": "/api/analytics/workflows",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      },
+      {
+        "endpoint": "/api/analytics/campaigns",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      },
+      {
+        "endpoint": "/api/analytics/response-timing",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      },
+      {
+        "endpoint": "/api/analytics/crm/rows(summary)",
+        "samples": 1,
+        "successRate": 0,
+        "hitRate": 0,
+        "p50Ms": null,
+        "p95Ms": null,
+        "statuses": {
+          "401": 1
+        }
+      }
+    ],
+    "samples": [
+      {
+        "mode": "warm",
+        "endpoint": "/api/analytics/overview(core)",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/overview?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A38%3A09.293Z&to=2026-02-16T17%3A38%3A09.293Z&parts=core",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "7b45d9f4-269e-4f0b-b304-afe74bb9aab2",
+        "runIndex": 1
+      },
+      {
+        "mode": "warm",
+        "endpoint": "/api/analytics/overview(breakdowns)",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/overview?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A38%3A09.293Z&to=2026-02-16T17%3A38%3A09.293Z&parts=breakdowns",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "80d783e4-f5c7-4a9e-be30-b285a842d3f2",
+        "runIndex": 1
+      },
+      {
+        "mode": "warm",
+        "endpoint": "/api/analytics/workflows",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/workflows?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A38%3A09.293Z&to=2026-02-16T17%3A38%3A09.293Z",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "fc51c89d-4363-4d73-b821-ecdae984627b",
+        "runIndex": 1
+      },
+      {
+        "mode": "warm",
+        "endpoint": "/api/analytics/campaigns",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/campaigns?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A38%3A09.293Z&to=2026-02-16T17%3A38%3A09.293Z",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "411c6a34-4181-4394-8205-868ab72b3576",
+        "runIndex": 1
+      },
+      {
+        "mode": "warm",
+        "endpoint": "/api/analytics/response-timing",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/response-timing?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A38%3A09.293Z&to=2026-02-16T17%3A38%3A09.293Z",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "e32a5e5b-843a-4662-a8f9-9febd9cfcfa8",
+        "runIndex": 1
+      },
+      {
+        "mode": "warm",
+        "endpoint": "/api/analytics/crm/rows(summary)",
+        "url": "https://zrg-dashboard.vercel.app/api/analytics/crm/rows?clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&from=2026-01-17T17%3A38%3A09.293Z&to=2026-02-16T17%3A38%3A09.293Z&mode=summary",
+        "status": 401,
+        "cache": null,
+        "durationMs": null,
+        "requestId": "96c3d688-281e-4789-a47d-4b74626f2615",
+        "runIndex": 1
+      }
+    ]
+  }
+}

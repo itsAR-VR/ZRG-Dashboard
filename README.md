@@ -283,6 +283,8 @@ model Message {
 | `OPENAI_LEAD_SCORING_MAX_RETRIES` | (Optional) OpenAI SDK request retries for lead scoring (default `2`) |
 | `SUPABASE_KNOWLEDGE_ASSETS_BUCKET` | (Optional) Supabase Storage bucket name for Knowledge Asset uploads (default `knowledge-assets`) |
 | `KNOWLEDGE_ASSET_MAX_BYTES` | (Optional) Max upload size for Knowledge Asset files (default `12582912` = 12MB) |
+| `KNOWLEDGE_ASSET_MAX_UPLOAD_BYTES` | (Optional) Max direct-to-storage upload size for Knowledge Asset files (default `524288000` = 500MB, and never lower than `KNOWLEDGE_ASSET_MAX_BYTES`) |
+| `NEXT_PUBLIC_KNOWLEDGE_ASSET_MAX_BYTES` | (Optional) Client-side cap for Knowledge Asset file uploads; set to match `KNOWLEDGE_ASSET_MAX_BYTES` (default `12582912` = 12MB) |
 | `CRAWL4AI_SERVICE_URL` | (Optional) Crawl4AI HTTP service URL for best website extraction (recommended for prod) |
 | `CRAWL4AI_SERVICE_SECRET` | (Optional) Bearer token for the Crawl4AI service |
 | `CRAWL4AI_LOCAL_RUNNER` | (Optional) Enable local Crawl4AI python runner (`true` for dev) |

@@ -21,6 +21,11 @@ describe("AI draft booking conversion analytics windowing", () => {
 
     assert.match(source, /appointmentBookedAt/, "expected booking timestamp evidence to be referenced");
     assert.match(source, /maturityBufferDays/, "expected pending buffer semantics to be present");
+    assert.match(source, /maturityCutoff/, "expected maturity cutoff to be precomputed to avoid SQL timestamp-interval inference");
+    assert.ok(
+      !source.includes("${to} - (${maturityBufferDays}"),
+      "expected pending cutoff to avoid `${to} - (${maturityBufferDays} * interval ...)` inside SQL"
+    );
 
     // Lead-level dedupe guard: this metric is per-lead, not per-draft.
     assert.match(

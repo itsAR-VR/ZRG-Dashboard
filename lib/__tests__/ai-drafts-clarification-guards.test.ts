@@ -504,7 +504,7 @@ test("applyInfoThenBookingNoQualificationQuestionGuard removes revenue gating qu
   assert.match(result.draft, /If helpful, we can do a quick 15-minute call/i);
 });
 
-test("applyShouldBookNowConfirmationIfNeeded ignores incidental slot mentions when draft isn't a confirmation", () => {
+test("applyShouldBookNowConfirmationIfNeeded avoids slot_mismatch by honoring the matched slot when available", () => {
   const availability = ["Tue, Feb 17 at 9:00 AM PST", "Tue, Feb 17 at 1:30 PM PST"];
   const extraction = buildExtraction({
     accepted_slot_index: null,
@@ -523,7 +523,30 @@ test("applyShouldBookNowConfirmationIfNeeded ignores incidental slot mentions wh
     availability,
   });
 
-  assert.equal(result, "Booked for Tue, Feb 17 at 9:00 AM PST.");
+  assert.equal(result, "Booked for Tue, Feb 17 at 1:30 PM PST.");
+});
+
+test("applyShouldBookNowConfirmationIfNeeded avoids date_mismatch when no offered slot matches the referenced time", () => {
+  const availability = ["Tue, Feb 17 at 9:00 AM PST", "Tue, Feb 17 at 1:30 PM PST"];
+  const extraction = buildExtraction({
+    accepted_slot_index: null,
+    decision_contract_v1: {
+      ...buildExtraction().decision_contract_v1!,
+      shouldBookNow: "yes",
+    },
+  });
+  const draft = "Wed, Feb 18 at 10:00 AM PST should work.";
+
+  const result = applyShouldBookNowConfirmationIfNeeded({
+    draft,
+    channel: "sms",
+    firstName: null,
+    aiName: "Chris",
+    extraction,
+    availability,
+  });
+
+  assert.equal(result, draft);
 });
 
 test("applyShouldBookNowConfirmationIfNeeded prefers accepted_slot_index when provided", () => {

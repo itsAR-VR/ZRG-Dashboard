@@ -59,6 +59,9 @@ export interface AutoSendContext {
   offeredSlots?: AutoSendOfferedSlot[] | null;
   bookingLink?: string | null;
   leadSchedulerLink?: string | null;
+  actionSignalCallRequested?: boolean;
+  actionSignalExternalCalendar?: boolean;
+  actionSignalRouteSummary?: string | null;
 
   // Campaign context (determines which path)
   emailCampaign?: {

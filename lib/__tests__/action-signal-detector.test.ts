@@ -231,6 +231,26 @@ describe("action signal detector: booking process routing", () => {
     assert.equal(result.route?.processId, 5);
   });
 
+  it("adds a call signal when the router routes to process 4 despite no heuristic hit", async () => {
+    const result = await detectActionSignals({
+      strippedText: "Reach me at direct contact number below.",
+      fullText: "Reach me at direct contact number below.\n\nPhone: 555-123-4567",
+      sentimentTag: "Interested",
+      workspaceBookingLink: null,
+      clientId: "client-1",
+      leadId: "lead-1",
+      routeBookingProcess: async () => processRoute(4),
+      channel: "email",
+      provider: "emailbison",
+    });
+
+    const callSignal = result.signals.find((signal) => signal.type === "call_requested");
+    assert.ok(callSignal, "call signal should be added from router outcome");
+    assert.match(callSignal?.evidence ?? "", /booking process router/i);
+    assert.equal(result.hasCallSignal, true);
+    assert.equal(result.route?.processId, 4);
+  });
+
   it("fails open when router throws and keeps signal detection", async () => {
     const result = await detectActionSignals({
       strippedText: "Can you call me?",

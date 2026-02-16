@@ -12,6 +12,10 @@ import { UserProvider } from "@/contexts/user-context"
 import { getClients } from "@/actions/client-actions"
 import { getLeadWorkspaceId } from "@/actions/lead-actions"
 import type { Channel } from "@/actions/lead-actions"
+import {
+  isServerActionVersionSkewError,
+  SERVER_ACTION_VERSION_SKEW_REFRESH_MESSAGE,
+} from "@/lib/server-action-version-skew"
 import { cn } from "@/lib/utils"
 
 const dynamicViewLoadingFallback = () => <div className="flex-1 animate-pulse rounded bg-muted/30" />
@@ -89,6 +93,8 @@ function parseSettingsTabParam(value: string | null): SettingsTab | null {
 function coerceSettingsTab(value: string | null): SettingsTab {
   return parseSettingsTabParam(value) ?? "general"
 }
+
+const WORKSPACE_LOAD_FAILED_MESSAGE = "Failed to load workspaces"
 
 interface Client {
   id: string
@@ -310,10 +316,18 @@ function DashboardPageInner() {
         if (result.success && result.data) {
           syncWorkspaces(result.data as Client[])
         } else {
-          setWorkspaceError(result.error || "Failed to load workspaces")
+          setWorkspaceError(
+            isServerActionVersionSkewError(result.error)
+              ? SERVER_ACTION_VERSION_SKEW_REFRESH_MESSAGE
+              : result.error || WORKSPACE_LOAD_FAILED_MESSAGE
+          )
         }
-      } catch {
-        setWorkspaceError("Failed to load workspaces")
+      } catch (error) {
+        setWorkspaceError(
+          isServerActionVersionSkewError(error)
+            ? SERVER_ACTION_VERSION_SKEW_REFRESH_MESSAGE
+            : WORKSPACE_LOAD_FAILED_MESSAGE
+        )
       } finally {
         setWorkspacesReady(true)
       }
@@ -455,6 +469,8 @@ function DashboardPageInner() {
   const selectedWorkspace = workspaces.find((w) => w.id === activeWorkspace)
   const isUnipileDisconnected = selectedWorkspace?.unipileConnectionStatus === "DISCONNECTED"
   const showUnipileBanner = isUnipileDisconnected && dismissedUnipileBanner !== activeWorkspace
+  const workspaceErrorNeedsReload =
+    workspaceError != null && workspaceError === SERVER_ACTION_VERSION_SKEW_REFRESH_MESSAGE
 
   const handleNavigateToIntegrations = () => {
     setActiveView("settings")
@@ -507,9 +523,15 @@ function DashboardPageInner() {
                     variant="outline"
                     size="sm"
                     className="border-destructive/40 text-destructive hover:bg-destructive/10"
-                    onClick={() => setWorkspaceFetchNonce((n) => n + 1)}
+                    onClick={() => {
+                      if (workspaceErrorNeedsReload) {
+                        window.location.reload()
+                        return
+                      }
+                      setWorkspaceFetchNonce((n) => n + 1)
+                    }}
                   >
-                    Retry
+                    {workspaceErrorNeedsReload ? "Reload" : "Retry"}
                   </Button>
                   <button
                     onClick={() => setWorkspaceError(null)}

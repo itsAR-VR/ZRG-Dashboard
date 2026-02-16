@@ -17,7 +17,13 @@ import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
-import { detectActionSignals, EMPTY_ACTION_SIGNAL_RESULT, notifyActionSignals } from "@/lib/action-signal-detector";
+import {
+  detectActionSignals,
+  EMPTY_ACTION_SIGNAL_RESULT,
+  notifyActionSignals,
+  buildActionSignalsGateSummary,
+  hasActionSignal,
+} from "@/lib/action-signal-detector";
 
 export async function runSmsInboundPostProcessJob(params: {
   clientId: string;
@@ -268,6 +274,9 @@ export async function runSmsInboundPostProcessJob(params: {
   handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
 
   let actionSignals = EMPTY_ACTION_SIGNAL_RESULT;
+  let actionSignalCallRequested = false;
+  let actionSignalExternalCalendar = false;
+  let actionSignalRouteSummary: string | null = null;
   try {
     if (isPositiveSentiment(newSentiment)) {
       const workspaceBookingLink = await resolveBookingLink(client.id, null)
@@ -284,6 +293,9 @@ export async function runSmsInboundPostProcessJob(params: {
         provider: "ghl",
         aiRouteBookingProcessEnabled: settings?.aiRouteBookingProcessEnabled ?? true,
       });
+      actionSignalCallRequested = hasActionSignal(actionSignals, "call_requested");
+      actionSignalExternalCalendar = hasActionSignal(actionSignals, "book_on_external_calendar");
+      actionSignalRouteSummary = buildActionSignalsGateSummary(actionSignals);
       if (actionSignals.signals.length > 0) {
         console.log("[SMS Post-Process] Action signals:", actionSignals.signals.map((signal) => signal.type).join(", "));
         notifyActionSignals({
@@ -377,6 +389,9 @@ export async function runSmsInboundPostProcessJob(params: {
         offeredSlots,
         bookingLink: workspaceBookingLink,
         leadSchedulerLink: leadAutoSendContext?.externalSchedulingLink ?? null,
+        actionSignalCallRequested,
+        actionSignalExternalCalendar,
+        actionSignalRouteSummary,
         emailCampaign: lead.emailCampaign,
         autoReplyEnabled: lead.autoReplyEnabled,
         workspaceSettings: settings,

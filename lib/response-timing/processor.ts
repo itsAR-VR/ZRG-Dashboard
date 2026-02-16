@@ -97,8 +97,8 @@ export async function processResponseTimingEvents(opts?: {
 
   const res = await db.$transaction(async (tx) => {
     // Keep the transaction bounded; this is cron-safe work.
-    const statementTimeoutMs = Math.max(5000, Math.min(30_000, maxMs + 2500));
-    await tx.$executeRaw`SET LOCAL statement_timeout = ${statementTimeoutMs}`;
+    const statementTimeoutMs = Math.max(5000, Math.min(30_000, Math.trunc(maxMs + 2500)));
+    await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = ${statementTimeoutMs}`);
 
     let inserted = 0;
     let updatedSetter = 0;
@@ -144,18 +144,24 @@ export async function processResponseTimingEvents(opts?: {
         const insertedRows = await tx.$queryRaw<Array<{ inboundMessageId: string }>>(
           Prisma.sql`
             insert into "ResponseTimingEvent" (
+              "id",
               "clientId",
               "leadId",
               "channel",
               "inboundMessageId",
-              "inboundSentAt"
+              "inboundSentAt",
+              "createdAt",
+              "updatedAt"
             )
             select
+              m.id as "id",
               l."clientId" as "clientId",
               m."leadId" as "leadId",
               m.channel as "channel",
               m.id as "inboundMessageId",
-              m."sentAt" as "inboundSentAt"
+              m."sentAt" as "inboundSentAt",
+              now() as "createdAt",
+              now() as "updatedAt"
             from "Message" m
             join "Lead" l on l.id = m."leadId"
             join lateral (

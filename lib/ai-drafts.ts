@@ -59,6 +59,7 @@ import {
   type MeetingOverseerExtractDecision,
 } from "@/lib/meeting-overseer";
 import { resolveWorkspacePolicyProfile } from "@/lib/workspace-policy-profile";
+import { buildActionSignalsGateSummary, hasActionSignal, hasActionSignalOrRoute } from "@/lib/action-signal-detector";
 import type { ActionSignalDetectionResult } from "@/lib/action-signal-detector";
 import type { AutoBookingContext } from "@/lib/followup-engine";
 import { DRAFT_PIPELINE_STAGES, type DraftPipelineStage } from "@/lib/draft-pipeline/types";
@@ -329,13 +330,12 @@ export function applyShouldBookNowConfirmationIfNeeded(params: {
   if (matchedSlot && looksLikeConfirmation) return draft;
 
   const acceptedIndex = typeof params.extraction?.accepted_slot_index === "number" ? params.extraction.accepted_slot_index : null;
-  const firstOfferedSlot = params.availability.find((slot) => Boolean(slot && slot.trim())) || null;
-  const selectedSlot =
+  const acceptedSlot =
     acceptedIndex && acceptedIndex > 0 && acceptedIndex <= params.availability.length
       ? params.availability[acceptedIndex - 1]!
-      : firstOfferedSlot;
-  // If we can't map to a concrete offered slot, don't "helpfully" pick an arbitrary time.
-  // Let the overseer/generator handle the reply using lead-stated timing instead.
+      : null;
+  const selectedSlot = acceptedSlot ?? matchedSlot;
+  // If we can't map to a concrete offered slot, let the overseer/generator keep the lead's own wording.
   if (!selectedSlot) return draft;
 
   const workspacePolicyProfile = resolveWorkspacePolicyProfile(params.clientId || null);
@@ -1341,14 +1341,6 @@ export function applyMissingBookingLinkForCallCue(params: {
   return next && next !== draft ? { draft: next, changed: true } : { draft, changed: false };
 }
 
-function hasActionSignal(result: ActionSignalDetectionResult | null | undefined, type: "call_requested" | "book_on_external_calendar"): boolean {
-  return Boolean(result?.signals?.some((signal) => signal.type === type));
-}
-
-function hasActionSignalOrRoute(result: ActionSignalDetectionResult | null | undefined): boolean {
-  return Boolean(result?.signals?.length || result?.route);
-}
-
 export function buildActionSignalsPromptAppendix(result: ActionSignalDetectionResult | null | undefined): string {
   if (!hasActionSignalOrRoute(result)) return "";
 
@@ -1387,29 +1379,6 @@ export function buildActionSignalsPromptAppendix(result: ActionSignalDetectionRe
 
   return lines.join("\n");
 }
-
-function buildActionSignalsGateSummary(result: ActionSignalDetectionResult | null | undefined): string | null {
-  if (!hasActionSignalOrRoute(result)) return null;
-  if (!result) return null;
-
-  const evidence = result.signals
-    .map((signal) => `${signal.type}:${signal.evidence}`)
-    .slice(0, 3)
-    .join(" | ");
-
-  return [
-    `call_requested: ${hasActionSignal(result, "call_requested") ? "true" : "false"}`,
-    `book_on_external_calendar: ${hasActionSignal(result, "book_on_external_calendar") ? "true" : "false"}`,
-    result.route ? `route_process: ${result.route.processId}` : null,
-    result.route ? `route_confidence: ${result.route.confidence}` : null,
-    result.route ? `route_uncertain: ${result.route.uncertain ? "true" : "false"}` : null,
-    result.route?.rationale ? `route_rationale: ${result.route.rationale}` : null,
-    evidence ? `evidence: ${evidence}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
 // ---------------------------------------------------------------------------
 // Draft Output Hardening (Phase 45)
 // ---------------------------------------------------------------------------
@@ -3640,11 +3609,12 @@ export async function generateResponseDraft(
 
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
-      select: {
+    select: {
         id: true,
         firstName: true,
         lastName: true,
         email: true,
+        phone: true,
         currentReplierEmail: true,
         currentReplierName: true,
         currentReplierSince: true,
@@ -3659,66 +3629,66 @@ export async function generateResponseDraft(
         externalSchedulingLink: true,
         snoozedUntil: true,
         client: {
-          select: {
-            name: true,
-            settings: {
-              include: {
-                knowledgeAssets: {
-                  orderBy: { updatedAt: "desc" },
-                  take: 10,
-                  select: {
-                    name: true,
-                    type: true,
-                    fileUrl: true,
-                    rawContent: true,
-                    textContent: true,
-                    aiContextMode: true,
-                    updatedAt: true,
-                  },
-                },
-              },
-            },
-            // Fetch default AI persona for fallback (Phase 39)
-            aiPersonas: {
-              where: { isDefault: true },
-              take: 1,
-              select: {
-                id: true,
+            select: {
                 name: true,
-                personaName: true,
-                tone: true,
-                greeting: true,
-                smsGreeting: true,
-                signature: true,
-                goals: true,
-                serviceDescription: true,
-                idealCustomerProfile: true,
-              },
+                settings: {
+                    include: {
+                        knowledgeAssets: {
+                            orderBy: { updatedAt: "desc" },
+                            take: 10,
+                            select: {
+                                name: true,
+                                type: true,
+                                fileUrl: true,
+                                rawContent: true,
+                                textContent: true,
+                                aiContextMode: true,
+                                updatedAt: true,
+                            },
+                        },
+                    },
+                },
+                // Fetch default AI persona for fallback (Phase 39)
+                aiPersonas: {
+                    where: { isDefault: true },
+                    take: 1,
+                    select: {
+                        id: true,
+                        name: true,
+                        personaName: true,
+                        tone: true,
+                        greeting: true,
+                        smsGreeting: true,
+                        signature: true,
+                        goals: true,
+                        serviceDescription: true,
+                        idealCustomerProfile: true,
+                    },
+                },
             },
-          },
         },
         // Fetch campaign-assigned AI persona (Phase 39)
         emailCampaign: {
-          select: {
-            id: true,
-            aiPersona: {
-              select: {
+            select: {
                 id: true,
-                name: true,
-                personaName: true,
-                tone: true,
-                greeting: true,
-                smsGreeting: true,
-                signature: true,
-                goals: true,
-                serviceDescription: true,
-                idealCustomerProfile: true,
-              },
+                aiPersona: {
+                    select: {
+                        id: true,
+                        name: true,
+                        personaName: true,
+                        tone: true,
+                        greeting: true,
+                        smsGreeting: true,
+                        signature: true,
+                        goals: true,
+                        serviceDescription: true,
+                        idealCustomerProfile: true,
+                    },
+                },
             },
-          },
         },
-      },
-    });
+    },
+});
 
     if (!lead) {
       return { success: false, error: "Lead not found" };

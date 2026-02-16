@@ -3,6 +3,8 @@
 ## Focus
 Improve perceived analytics speed and prevent unnecessary client churn under large CRM datasets.
 
+Decision lock: ship full row virtualization in this phase (not debounce-only), with safeguards for inline edit-state stability.
+
 ## Inputs
 - `components/dashboard/analytics-view.tsx`
 - `components/dashboard/analytics-crm-table.tsx`

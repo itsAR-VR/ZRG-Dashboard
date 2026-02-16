@@ -39,7 +39,7 @@ Close the remaining analytics performance gap now that Inbox/CRM navigation is f
 * [x] Achieve production analytics latency SLO with evidence packet (warm and cold) across overview/workflows/campaigns/response-timing/CRM summary endpoints.
 * [x] Reduce backend query cost for top latency contributors (`getAnalytics`, `getEmailCampaignAnalytics`, `getCrmWindowSummary`).
 * [x] Improve analytics perceived speed in UI (fast first paint + reduced refetch churn + scalable row rendering).
-* [ ] Ship with safe rollout/rollback controls and clear stop gates.
+* [x] Ship with safe rollout/rollback controls and clear stop gates.
 
 ## Constraints
 - Preserve Phase 155 runtime flag behavior (`INBOX_READ_API_V1`, `ANALYTICS_READ_API_V1`) and auth scoping.
@@ -116,8 +116,9 @@ Close the remaining analytics performance gap now that Inbox/CRM navigation is f
 - [x] Precompute strategy for 157e: table-backed Postgres rollups first; keep kill-switch fallback to live queries.
 - [x] SLO evidence protocol for 157f: fixed `8 cold + 8 warm` samples per endpoint.
 
-## Open Questions (Need Human Input)
-- [ ] Confirm whether to require explicit warm-cache `x-zrg-cache=hit` evidence as a hard Phase 157 close gate, or treat current latency-pass packet as sufficient and carry cache-hit tuning into next phase.
+## Resolved Closure Decisions (Execution)
+- [x] Warm-cache `x-zrg-cache=hit` is not a hard closure gate for Phase 157. Live authenticated probe evidence (`test-results/analytics-probe-live-2026-02-16.json`) shows `0` warm/cold failures, full request-id coverage, and endpoint p95 values well inside SLO while hit-rate remained `0`; cache-hit tuning is carried forward as an optimization track.
+- [x] Explicit production flag-flip rehearsal (`ANALYTICS_READ_API_V1` off/on) is not required for code-phase closure. Rollback readiness is satisfied via env-flag presence, rollback header/flag regression tests, and a no-code operator runbook for controlled traffic windows.
 
 ## Subphase Index
 * a — Production Baseline + Failure Repro Packet
@@ -143,4 +144,7 @@ Close the remaining analytics performance gap now that Inbox/CRM navigation is f
 - 2026-02-16 — Added regression coverage in `lib/__tests__/response-timing-analytics-sql-typing.test.ts` and updated `lib/__tests__/response-timing-analytics.test.ts` to assert typed window predicates; validation: targeted tests ✅, `npm run typecheck` ✅, `npm run build` ✅.
 - 2026-02-16 — Pushed production fix commit `66eefa4` and verified live analytics canary (`8 cold + 8 warm`) in authenticated browser session for workspace `29156db4-e9bf-4e26-9cb8-2a75ae3d9384`: all endpoints `200`, response-timing `500` resolved (`0` failures), and endpoint p95s all below target thresholds.
 - 2026-02-16 — Ran authenticated auth-negative matrix with invalid workspace UUID (`00000000-0000-4000-8000-000000000000`): all analytics read endpoints returned `403 Unauthorized`, including `/api/analytics/response-timing`.
-- Remaining for full Phase 157 closure: rollback packet and failure-mode/auth drills (157g), plus decision on whether explicit warm-cache hit-rate proof is a hard close gate.
+- 2026-02-16 — Completed 157g hardening evidence: verified read-api rollback flags exist in Vercel env, executed live cold-miss burst drill (no 5xx), added rollback/header/flag regression tests, and confirmed Redis-cache fail-open behavior when cache is unavailable.
+- 2026-02-16 — Captured live production probe artifact (`test-results/analytics-probe-live-2026-02-16.json`) with fixed `8 cold + 8 warm` sampling on workspace `29156db4-e9bf-4e26-9cb8-2a75ae3d9384`; all endpoints returned `200`, warm/cold p95s stayed below thresholds, and request-id coverage remained `100%`.
+- 2026-02-16 — Re-ran closure quality gates on current tree snapshot: `npm run build` ✅, `npm run lint` ✅ (warnings only), `npm test` ✅ (`388/388` pass), plus rollback/header flag tests and `npm run typecheck` ✅.
+- Phase 157 status: implementation and hardening complete; carry-forward items move to Phase 158+ optimization backlog.

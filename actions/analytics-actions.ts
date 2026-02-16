@@ -1124,45 +1124,48 @@ async function calculatePerSetterResponseTimesSql(opts: {
     const bh1 = sqlIsWithinEstBusinessHours(Prisma.sql`sent_at`);
     const bh2 = sqlIsWithinEstBusinessHours(Prisma.sql`next_sent_at`);
 
-    const rawRows = await prisma.$queryRaw<
-      Array<{
-        user_id: string;
-        avg_ms: number;
-        response_count: bigint;
-      }>
-    >`
-      WITH ordered AS (
+    const rawRows = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SET LOCAL statement_timeout = 5000`;
+      return tx.$queryRaw<
+        Array<{
+          user_id: string;
+          avg_ms: number;
+          response_count: bigint;
+        }>
+      >`
+        WITH ordered AS (
+          SELECT
+            m."sentAt" AS sent_at,
+            m.direction AS direction,
+            m.channel AS channel,
+            LEAD(m."sentAt") OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_sent_at,
+            LEAD(m.direction) OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_direction,
+            LEAD(m."sentByUserId") OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_sent_by_user_id
+          FROM "Message" m
+          INNER JOIN "Lead" l ON l.id = m."leadId"
+          WHERE m."sentAt" >= ${windowFrom}
+            AND m."sentAt" < ${windowTo}
+            AND l."clientId" = ${opts.clientId}
+        )
         SELECT
-          m."sentAt" AS sent_at,
-          m.direction AS direction,
-          m.channel AS channel,
-          LEAD(m."sentAt") OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_sent_at,
-          LEAD(m.direction) OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_direction,
-          LEAD(m."sentByUserId") OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_sent_by_user_id
-        FROM "Message" m
-        INNER JOIN "Lead" l ON l.id = m."leadId"
-        WHERE m."sentAt" >= ${windowFrom}
-          AND m."sentAt" < ${windowTo}
-          AND l."clientId" = ${opts.clientId}
-      )
-      SELECT
-        next_sent_by_user_id::text AS user_id,
-        AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)::double precision AS avg_ms,
-        COUNT(*)::bigint AS response_count
-      FROM ordered
-      WHERE
-        next_sent_at IS NOT NULL
-        AND next_sent_at > sent_at
-        AND next_sent_at < ${windowTo}
-        AND next_sent_at <= sent_at + INTERVAL '7 days'
-        AND direction = 'inbound'
-        AND next_direction = 'outbound'
-        AND next_sent_by_user_id IS NOT NULL
-        AND ${bh1}
-        AND ${bh2}
-      GROUP BY next_sent_by_user_id
-      ORDER BY response_count DESC
-    `;
+          next_sent_by_user_id::text AS user_id,
+          AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)::double precision AS avg_ms,
+          COUNT(*)::bigint AS response_count
+        FROM ordered
+        WHERE
+          next_sent_at IS NOT NULL
+          AND next_sent_at > sent_at
+          AND next_sent_at < ${windowTo}
+          AND next_sent_at <= sent_at + INTERVAL '7 days'
+          AND direction = 'inbound'
+          AND next_direction = 'outbound'
+          AND next_sent_by_user_id IS NOT NULL
+          AND ${bh1}
+          AND ${bh2}
+        GROUP BY next_sent_by_user_id
+        ORDER BY response_count DESC
+      `;
+    });
 
     if (rawRows.length === 0) return [];
 
@@ -1396,21 +1399,99 @@ export async function getAnalytics(
     }
 
     if (includeBreakdowns) {
-      const responsesForBreakdowns = includeCore
-        ? responses
-        : await prisma.lead.count({ where: respondedLeadFilter });
-      const totalLeadsForBreakdowns = includeCore
-        ? totalLeads
-        : await prisma.lead.count({ where: { ...leadWhere, ...leadCreatedWindow } });
+      // Message stats (windowed when provided; defaults to last 7 days)
+      const statsTo = hasWindow ? new Date(windowTo!) : new Date();
+      const statsFrom = hasWindow ? new Date(windowFrom!) : new Date(statsTo);
+      if (!hasWindow) {
+        statsFrom.setDate(statsFrom.getDate() - 6); // 6 days ago + today = 7 days
+      }
 
-      // Response sentiment breakdown (responded leads only)
-      const sentimentCounts = await prisma.lead.groupBy({
+      const responsesForBreakdownsPromise = includeCore
+        ? Promise.resolve(responses)
+        : prisma.lead.count({ where: respondedLeadFilter });
+      const totalLeadsForBreakdownsPromise = includeCore
+        ? Promise.resolve(totalLeads)
+        : prisma.lead.count({ where: { ...leadWhere, ...leadCreatedWindow } });
+      const sentimentCountsPromise = prisma.lead.groupBy({
         by: ["sentimentTag"],
         where: respondedLeadFilter,
         _count: {
           _all: true,
         },
       });
+      const statusCountsPromise = prisma.lead.groupBy({
+        by: ["status"],
+        where: { ...leadWhere, ...leadCreatedWindow },
+        _count: {
+          status: true,
+        },
+      });
+      const weeklyMessageStatsPromise = prisma.$queryRaw<
+        Array<{ day_date: Date; direction: string; count: bigint }>
+      >`
+        SELECT
+          DATE_TRUNC('day', m."sentAt") as day_date,
+          m.direction,
+          COUNT(*) as count
+        FROM "Message" m
+        INNER JOIN "Lead" l ON m."leadId" = l.id
+        WHERE ${buildAccessibleLeadSqlWhere({ userId: user.id, clientId })}
+          AND m."sentAt" >= ${statsFrom}
+          AND m."sentAt" < ${statsTo}
+        GROUP BY DATE_TRUNC('day', m."sentAt"), m.direction
+        ORDER BY day_date ASC
+      `;
+      const leadCountsByClientPromise = prisma.lead.groupBy({
+        by: ["clientId"],
+        where: { ...leadWhere, ...leadCreatedWindow },
+        _count: { id: true },
+        orderBy: { _count: { id: "desc" } },
+        take: 5,
+      });
+      const meetingCountsByClientPromise = prisma.lead.groupBy({
+        by: ["clientId"],
+        where: {
+          ...leadWhere,
+          ...(hasWindow
+            ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
+            : {
+                OR: [
+                  { appointmentBookedAt: { not: null } },
+                  { ghlAppointmentId: { not: null } },
+                  { calendlyInviteeUri: { not: null } },
+                  { calendlyScheduledEventUri: { not: null } },
+                ],
+              }),
+        },
+        _count: { id: true },
+      });
+      const perSetterResponseTimesPromise = clientId
+        ? calculatePerSetterResponseTimesSql({
+            userId: user.id,
+            clientId,
+            window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
+          })
+        : Promise.resolve<SetterResponseTimeRow[]>([]);
+
+      const [
+        responsesForBreakdowns,
+        totalLeadsForBreakdowns,
+        sentimentCounts,
+        statusCounts,
+        weeklyMessageStats,
+        leadCountsByClient,
+        meetingCountsByClient,
+        nextPerSetterResponseTimes,
+      ] = await Promise.all([
+        responsesForBreakdownsPromise,
+        totalLeadsForBreakdownsPromise,
+        sentimentCountsPromise,
+        statusCountsPromise,
+        weeklyMessageStatsPromise,
+        leadCountsByClientPromise,
+        meetingCountsByClientPromise,
+        perSetterResponseTimesPromise,
+      ]);
 
       const sentimentAgg = new Map<string, number>();
       for (const row of sentimentCounts) {
@@ -1426,15 +1507,6 @@ export async function getAnalytics(
         percentage: responsesForBreakdowns > 0 ? (count / responsesForBreakdowns) * 100 : 0,
       }));
 
-      // Get status breakdown
-      const statusCounts = await prisma.lead.groupBy({
-        by: ["status"],
-        where: { ...leadWhere, ...leadCreatedWindow },
-        _count: {
-          status: true,
-        },
-      });
-
       leadsByStatus = statusCounts.map((s) => ({
         status: s.status,
         count: s._count.status,
@@ -1442,13 +1514,6 @@ export async function getAnalytics(
           ? Math.round((s._count.status / totalLeadsForBreakdowns) * 100)
           : 0,
       }));
-
-      // Message stats (windowed when provided; defaults to last 7 days)
-      const statsTo = hasWindow ? new Date(windowTo!) : new Date();
-      const statsFrom = hasWindow ? new Date(windowFrom!) : new Date(statsTo);
-      if (!hasWindow) {
-        statsFrom.setDate(statsFrom.getDate() - 6); // 6 days ago + today = 7 days
-      }
 
       // Normalize to day boundaries for chart labels
       const statsStartDay = new Date(statsFrom);
@@ -1458,23 +1523,6 @@ export async function getAnalytics(
       if (statsTo.getTime() === statsEndDay.getTime()) {
         statsEndDay.setDate(statsEndDay.getDate() - 1);
       }
-
-      // Use raw SQL to group by date in the database instead of fetching all messages
-      const weeklyMessageStats = await prisma.$queryRaw<
-        Array<{ day_date: Date; direction: string; count: bigint }>
-      >`
-        SELECT
-          DATE_TRUNC('day', m."sentAt") as day_date,
-          m.direction,
-          COUNT(*) as count
-        FROM "Message" m
-        INNER JOIN "Lead" l ON m."leadId" = l.id
-        WHERE ${buildAccessibleLeadSqlWhere({ userId: user.id, clientId })}
-          AND m."sentAt" >= ${statsFrom}
-          AND m."sentAt" < ${statsTo}
-        GROUP BY DATE_TRUNC('day', m."sentAt"), m.direction
-        ORDER BY day_date ASC
-      `;
 
       // Build a lookup map for quick access
       const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -1514,34 +1562,6 @@ export async function getAnalytics(
           outbound: stats.outbound,
         });
       }
-
-      // Get top clients - use _count instead of loading all leads for efficiency
-      const [leadCountsByClient, meetingCountsByClient] = await Promise.all([
-        prisma.lead.groupBy({
-          by: ["clientId"],
-          where: { ...leadWhere, ...leadCreatedWindow },
-          _count: { id: true },
-          orderBy: { _count: { id: "desc" } },
-          take: 5,
-        }),
-        prisma.lead.groupBy({
-          by: ["clientId"],
-          where: {
-            ...leadWhere,
-            ...(hasWindow
-              ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
-              : {
-                  OR: [
-                    { appointmentBookedAt: { not: null } },
-                    { ghlAppointmentId: { not: null } },
-                    { calendlyInviteeUri: { not: null } },
-                    { calendlyScheduledEventUri: { not: null } },
-                  ],
-                }),
-          },
-          _count: { id: true },
-        }),
-      ]);
 
       const topClientIds = leadCountsByClient.map((r) => r.clientId);
       const clients = topClientIds.length
@@ -1644,14 +1664,7 @@ export async function getAnalytics(
         smsSubClients.sort((a, b) => b.leads - a.leads);
       }
 
-      // Calculate per-setter response times (only when a specific workspace is selected)
-      perSetterResponseTimes = clientId
-        ? await calculatePerSetterResponseTimesSql({
-            userId: user.id,
-            clientId,
-            window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
-          })
-        : [];
+      perSetterResponseTimes = nextPerSetterResponseTimes;
     }
 
     const analyticsData: AnalyticsData = {

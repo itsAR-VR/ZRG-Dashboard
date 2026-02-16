@@ -37,11 +37,20 @@ Locked decisions from the user for this phase:
 | Phase 146 | Active (uncommitted) | `lib/ai-replay/*` | Phase 151 must run replay gates but should not mutate replay/judge behavior. |
 
 ## Objectives
-* [ ] Land prod DB migration(s) for `linkedinCompanyUrl` and Lead-level SMS send-block audit fields.
-* [ ] Fix LinkedIn extraction precedence across EmailBison + GHL so profile URLs are always selected when present, while company URLs are preserved.
-* [ ] Backfill existing company URLs out of `Lead.linkedinUrl` (Tim first, then global) with a rollback-safe backup table.
-* [ ] Implement AI-only SMS phone normalization before every send and wire audit + UI banner behavior.
+* [x] Land prod DB migration(s) for `linkedinCompanyUrl` and Lead-level SMS send-block audit fields.
+* [x] Fix LinkedIn extraction precedence across EmailBison + GHL so profile URLs are always selected when present, while company URLs are preserved.
+* [x] Backfill existing company URLs out of `Lead.linkedinUrl` (Tim first, then global) with a rollback-safe backup table.
+* [x] Implement AI-only SMS phone normalization before every send and wire audit + UI banner behavior.
 * [ ] Validate with tests + NTTAN gates and execute Tim canary + global rollout.
+
+## 2026-02-16 Execution Updates
+- `npm run lint` passed (pre-existing warnings only, no blocking errors).
+- `npm run build` passed (pre-existing non-blocking warnings only).
+- `npm test` passed (`tests 387`, `suites 77`, `pass 387`, `fail 0`).
+- `npm run test:ai-drafts` passed (`tests 68`, `suites 3`, `pass 68`, `fail 0`).
+- `npm run test:ai-replay -- --client-id 779e97c3-e7bd-4c1a-9c46-fe54310ae71f --dry-run --limit 20` passed (`evaluated=0`, `failed=0`).
+- `npm run test:ai-replay -- --client-id 779e97c3-e7bd-4c1a-9c46-fe54310ae71f --limit 20 --concurrency 3` passed (`evaluated=16`, `passed=14`, `failedJudge=2`, `failed=0`).
+- Global Tim-canary rollout + 24-hour observation still pending in 151e.
 
 ## Constraints
 - Do not commit secrets, tokens, or personal data.

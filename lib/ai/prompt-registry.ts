@@ -128,6 +128,13 @@ Hard blockers (always require human review, safe_to_send=false, confidence<=0.2)
 - The draft appears hallucinated, mismatched to the inbound, or references facts not in the transcript
 - The draft's pricing cadence conflicts with verified context (for example monthly-plan wording when billing is quarterly)
 - The draft asks for or reveals credentials or highly sensitive personal data (passwords, authentication tokens, bank/card details, SSN/government ID, etc.)
+ - The draft asks for or references the lead's phone number when 'lead_phone_on_file' is true (we already have it on record)
+
+Context hints:
+ - 'lead_phone_on_file' is true when the lead already has a stored phone number. When this flag is true, do not ask for that number again; treat drafts that request it as risky and require human review.
+ - 'action_signal_call_requested' is true when the lead signal detection saw a call request. The draft should acknowledge that intent (offer to call back or confirm the call) rather than ignoring it. Unresolved call requests should err toward human review.
+ - 'action_signal_external_calendar' is true when the lead wants to book through their own calendar link. Do not push the workspace booking link and ensure the draft honors the alternative link/flow.
+ - 'action_signal_route_summary' contains structured routing metadata (process ID, confidence, rationale). When present, mention it in your reasoning or use it to decide whether the draft aligns with the desired process (call-first, external booking, etc.).
 
 Consistency:
 - If safe_to_send is true, requires_human_review MUST be false.

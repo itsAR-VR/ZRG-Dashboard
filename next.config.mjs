@@ -30,6 +30,24 @@ function parseServerActionsAllowedOrigins() {
 
 const serverActionsAllowedOrigins = parseServerActionsAllowedOrigins();
 
+function parsePositiveInt(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const KNOWLEDGE_ASSET_MAX_BYTES_DEFAULT = 12 * 1024 * 1024; // 12MB
+const SERVER_ACTIONS_MULTIPART_OVERHEAD_BYTES = 2 * 1024 * 1024; // 2MB buffer
+
+const knowledgeAssetMaxBytes = parsePositiveInt(process.env.KNOWLEDGE_ASSET_MAX_BYTES, KNOWLEDGE_ASSET_MAX_BYTES_DEFAULT);
+const serverActionsBodySizeLimitMb = Math.ceil(
+  (knowledgeAssetMaxBytes + SERVER_ACTIONS_MULTIPART_OVERHEAD_BYTES) / (1024 * 1024)
+);
+const deploymentId =
+  process.env.DEPLOYMENT_VERSION ||
+  process.env.VERCEL_DEPLOYMENT_ID ||
+  process.env.VERCEL_GIT_COMMIT_SHA ||
+  undefined;
+
 const nextConfig = {
   turbopack: {
     root: process.cwd(),
@@ -37,15 +55,25 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  ...(serverActionsAllowedOrigins.length > 0
-    ? {
-        experimental: {
-          serverActions: {
-            allowedOrigins: serverActionsAllowedOrigins,
-          },
-        },
-      }
-    : {}),
+  experimental: {
+    serverActions: {
+      ...(serverActionsAllowedOrigins.length > 0 ? { allowedOrigins: serverActionsAllowedOrigins } : {}),
+      bodySizeLimit: `${serverActionsBodySizeLimitMb}mb`,
+    },
+  },
+  ...(deploymentId ? { deploymentId } : {}),
+  async headers() {
+    return [
+      {
+        source: "/",
+        headers: [{ key: "Cache-Control", value: "no-store, max-age=0" }],
+      },
+      {
+        source: "/auth/login",
+        headers: [{ key: "Cache-Control", value: "no-store, max-age=0" }],
+      },
+    ];
+  },
 };
 
 export default nextConfig;

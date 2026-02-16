@@ -71,6 +71,7 @@ async function loadAutoSendWorkspaceContext(opts: {
           select: {
             id: true,
             clientId: true,
+            phone: true,
             client: {
               select: {
                 name: true,
@@ -183,6 +184,8 @@ async function loadAutoSendWorkspaceContext(opts: {
     (settings?.aiGoals || "").trim() ||
     null;
 
+  const leadPhoneOnFile = Boolean(lead?.phone?.trim());
+
   return {
     serviceDescription,
     goals,
@@ -196,6 +199,7 @@ async function loadAutoSendWorkspaceContext(opts: {
       aiContextMode: a.aiContextMode === "raw" ? "raw" : "notes",
       updatedAt: a.updatedAt,
     })),
+    leadPhoneOnFile,
   };
 }
 
@@ -210,6 +214,9 @@ export async function evaluateAutoSend(opts: {
   automatedReply?: boolean | null;
   replyReceivedAt?: string | Date | null;
   draft: string;
+  actionSignalCallRequested?: boolean | null;
+  actionSignalExternalCalendar?: boolean | null;
+  actionSignalRouteSummary?: string | null;
 }): Promise<AutoSendEvaluation> {
   const latestInbound = (opts.latestInbound || "").trim();
   const subject = (opts.subject || "").trim();
@@ -357,6 +364,10 @@ export async function evaluateAutoSend(opts: {
     draft,
     leadMemoryContext,
     workspaceContext,
+    leadPhoneOnFile: workspaceContext.leadPhoneOnFile,
+    actionSignalCallRequested: opts.actionSignalCallRequested ?? false,
+    actionSignalExternalCalendar: opts.actionSignalExternalCalendar ?? false,
+    actionSignalRouteSummary: opts.actionSignalRouteSummary ?? null,
   });
 
   const timeoutMs = Math.max(

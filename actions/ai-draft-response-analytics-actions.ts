@@ -194,6 +194,7 @@ export async function getAiDraftBookingConversionStats(opts?: {
     const { from, to } = resolveWindow({ from: opts?.from, to: opts?.to });
     const attributionWindowDays = clampPositiveInt(opts?.attributionWindowDays, 30);
     const maturityBufferDays = clampPositiveInt(opts?.maturityBufferDays, 7, 60);
+    const maturityCutoff = new Date(to.getTime() - maturityBufferDays * 24 * 60 * 60 * 1000);
 
     const emptyByDisposition = (): Record<Outcome, AiDraftBookingConversionBucket> => ({
       AUTO_SENT: emptyBookingBucket(),
@@ -272,7 +273,7 @@ export async function getAiDraftBookingConversionStats(opts?: {
                   and (l."appointmentStatus" is null or l."appointmentStatus" != 'canceled')
                   and l."appointmentCanceledAt" is null
                   then 'BOOKED_NO_TIMESTAMP'
-                when b.sent_at >= (${to} - (${maturityBufferDays} * interval '1 day'))
+                when b.sent_at >= ${maturityCutoff}
                   then 'PENDING'
                 else 'NOT_BOOKED'
               end as outcome

@@ -118,6 +118,23 @@ export interface KnowledgeAssetData {
   updatedAt: Date;
 }
 
+export interface KnowledgeAssetUploadSessionData {
+  bucket: string;
+  path: string;
+  token: string;
+  signedUrl: string;
+  maxUploadBytes: number;
+  extractionMaxBytes: number;
+}
+
+export interface FinalizeKnowledgeAssetUploadResult {
+  success: boolean;
+  asset?: KnowledgeAssetData;
+  warning?: string;
+  extractionSkipped?: boolean;
+  error?: string;
+}
+
 export interface QualificationQuestion {
   id: string;
   question: string;
@@ -1082,6 +1099,69 @@ function sanitizeStorageFilename(input: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120) || "file";
 }
 
+function parsePositiveIntEnv(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const KNOWLEDGE_ASSET_EXTRACTION_MAX_BYTES_DEFAULT = 12 * 1024 * 1024; // 12MB
+const KNOWLEDGE_ASSET_UPLOAD_MAX_BYTES_DEFAULT = 500 * 1024 * 1024; // 500MB
+
+function getKnowledgeAssetExtractionMaxBytes(): number {
+  return parsePositiveIntEnv(process.env.KNOWLEDGE_ASSET_MAX_BYTES, KNOWLEDGE_ASSET_EXTRACTION_MAX_BYTES_DEFAULT);
+}
+
+function getKnowledgeAssetUploadMaxBytes(): number {
+  const extractionMaxBytes = getKnowledgeAssetExtractionMaxBytes();
+  const uploadMaxBytes = parsePositiveIntEnv(
+    process.env.KNOWLEDGE_ASSET_MAX_UPLOAD_BYTES,
+    KNOWLEDGE_ASSET_UPLOAD_MAX_BYTES_DEFAULT
+  );
+  return Math.max(extractionMaxBytes, uploadMaxBytes);
+}
+
+function toMegabytesLabel(bytes: number): number {
+  return Math.max(1, Math.round(bytes / (1024 * 1024)));
+}
+
+function isValidKnowledgeAssetUploadPath(path: string, clientId: string): boolean {
+  const normalized = path.trim();
+  if (!normalized) return false;
+  if (normalized.length > 1024) return false;
+  if (normalized.startsWith("/") || normalized.endsWith("/")) return false;
+  if (normalized.includes("..")) return false;
+  if (!normalized.startsWith(`${clientId}/`)) return false;
+  return /^[a-zA-Z0-9._/-]+$/.test(normalized);
+}
+
+function toKnowledgeAssetData(asset: {
+  id: string;
+  name: string;
+  type: string;
+  fileUrl: string | null;
+  rawContent: string | null;
+  textContent: string | null;
+  aiContextMode: string | null;
+  originalFileName: string | null;
+  mimeType: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): KnowledgeAssetData {
+  return {
+    id: asset.id,
+    name: asset.name,
+    type: asset.type as KnowledgeAssetData["type"],
+    fileUrl: asset.fileUrl,
+    rawContent: asset.rawContent,
+    textContent: asset.textContent,
+    aiContextMode: asset.aiContextMode === "raw" ? "raw" : "notes",
+    originalFileName: asset.originalFileName,
+    mimeType: asset.mimeType,
+    createdAt: asset.createdAt,
+    updatedAt: asset.updatedAt,
+  };
+}
+
 function isSupabaseBucketNotFound(error: unknown): boolean {
   const anyErr = error as any;
   const status = anyErr?.statusCode ?? anyErr?.status ?? anyErr?.code;
@@ -1275,11 +1355,275 @@ export async function uploadWorkspaceBrandLogo(
   }
 }
 
-function detectDocxMimeType(file: File): boolean {
-  const type = (file.type || "").toLowerCase();
+function detectDocxMimeTypeFromMetadata(mimeType: string | null | undefined, filename: string | null | undefined): boolean {
+  const type = (mimeType || "").toLowerCase();
   if (type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return true;
-  const name = (file.name || "").toLowerCase();
+  const name = (filename || "").toLowerCase();
   return name.endsWith(".docx");
+}
+
+async function extractKnowledgeAssetNotesFromBytes(params: {
+  clientId: string;
+  filename: string;
+  mimeType: string;
+  bytes: Buffer;
+}): Promise<{ rawContent: string | null; textContent: string | null }> {
+  let fallbackText: string | null = null;
+
+  if (detectDocxMimeTypeFromMetadata(params.mimeType, params.filename)) {
+    try {
+      const mammoth = await import("mammoth");
+      const result = await mammoth.extractRawText({ buffer: params.bytes });
+      fallbackText = (result?.value || "").trim() || null;
+    } catch (docxError) {
+      console.error("[KnowledgeAssets] DOCX extraction failed (will fallback):", docxError);
+    }
+  }
+
+  const rawContent = await extractKnowledgeRawTextFromFile({
+    clientId: params.clientId,
+    filename: params.filename || "uploaded_file",
+    mimeType: params.mimeType,
+    bytes: params.bytes,
+    fallbackText,
+  });
+
+  const textContent = await summarizeKnowledgeRawTextToNotes({
+    clientId: params.clientId,
+    sourceLabel: `${params.filename || "uploaded_file"} (${params.mimeType || "unknown"})`,
+    rawText: rawContent,
+  });
+
+  return {
+    rawContent: rawContent || null,
+    textContent: textContent || null,
+  };
+}
+
+export async function createKnowledgeAssetUploadSession(input: {
+  clientId: string | null | undefined;
+  name: string;
+  originalFileName: string;
+  mimeType?: string | null;
+  fileSizeBytes?: number | null;
+}): Promise<{ success: boolean; session?: KnowledgeAssetUploadSessionData; error?: string }> {
+  try {
+    const clientId = typeof input.clientId === "string" ? input.clientId.trim() : "";
+    const name = typeof input.name === "string" ? input.name.trim() : "";
+    const originalFileName = typeof input.originalFileName === "string" ? input.originalFileName.trim() : "";
+    const mimeType = typeof input.mimeType === "string" ? input.mimeType.trim().toLowerCase() : "";
+    const fileSizeBytes =
+      typeof input.fileSizeBytes === "number" && Number.isFinite(input.fileSizeBytes)
+        ? Math.max(0, Math.floor(input.fileSizeBytes))
+        : null;
+
+    if (!clientId) return { success: false, error: "No workspace selected" };
+    if (!name) return { success: false, error: "Missing asset name" };
+    if (!originalFileName) return { success: false, error: "Missing file name" };
+
+    await requireSettingsWriteAccess(clientId);
+    await requireAuthUser();
+
+    const maxUploadBytes = getKnowledgeAssetUploadMaxBytes();
+    if (fileSizeBytes !== null && fileSizeBytes > maxUploadBytes) {
+      return {
+        success: false,
+        error: `File too large (max ${toMegabytesLabel(maxUploadBytes)}MB)`,
+      };
+    }
+
+    const bucket = process.env.SUPABASE_KNOWLEDGE_ASSETS_BUCKET || "knowledge-assets";
+    const safeName = sanitizeStorageFilename(originalFileName);
+    const path = `${clientId}/${crypto.randomUUID()}-${safeName}`;
+
+    try {
+      await ensureSupabaseStorageBucketExists(bucket);
+    } catch (ensureError) {
+      console.warn("[KnowledgeAssets] Storage bucket ensure failed (continuing):", ensureError);
+    }
+
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase.storage.from(bucket).createSignedUploadUrl(path, { upsert: false });
+    if (error || !data) {
+      console.error("[KnowledgeAssets] Failed to create signed upload URL:", error);
+      return { success: false, error: "Failed to initialize file upload" };
+    }
+
+    const extractionMaxBytes = getKnowledgeAssetExtractionMaxBytes();
+    console.info("[KnowledgeAssets] Signed upload session created", {
+      clientId,
+      path,
+      fileSizeBytes,
+      mimeType: mimeType || "application/octet-stream",
+    });
+
+    return {
+      success: true,
+      session: {
+        bucket,
+        path: data.path,
+        token: data.token,
+        signedUrl: data.signedUrl,
+        maxUploadBytes,
+        extractionMaxBytes,
+      },
+    };
+  } catch (error) {
+    console.error("[KnowledgeAssets] Failed to create upload session:", error);
+    return { success: false, error: "Failed to initialize upload session" };
+  }
+}
+
+export async function finalizeKnowledgeAssetUpload(input: {
+  clientId: string | null | undefined;
+  name: string;
+  path: string;
+  originalFileName: string;
+  mimeType?: string | null;
+  fileSizeBytes?: number | null;
+}): Promise<FinalizeKnowledgeAssetUploadResult> {
+  return withAiTelemetrySourceIfUnset("action:settings.finalize_knowledge_asset_upload", async () => {
+    try {
+      const clientId = typeof input.clientId === "string" ? input.clientId.trim() : "";
+      const name = typeof input.name === "string" ? input.name.trim() : "";
+      const path = typeof input.path === "string" ? input.path.trim() : "";
+      const originalFileName = typeof input.originalFileName === "string" ? input.originalFileName.trim() : "";
+      const mimeType = typeof input.mimeType === "string" ? input.mimeType.trim().toLowerCase() : "";
+      const fallbackSizeBytes =
+        typeof input.fileSizeBytes === "number" && Number.isFinite(input.fileSizeBytes)
+          ? Math.max(0, Math.floor(input.fileSizeBytes))
+          : null;
+
+      if (!clientId) return { success: false, error: "No workspace selected" };
+      if (!name) return { success: false, error: "Missing asset name" };
+      if (!path) return { success: false, error: "Missing upload path" };
+      if (!originalFileName) return { success: false, error: "Missing file name" };
+      if (!isValidKnowledgeAssetUploadPath(path, clientId)) {
+        return { success: false, error: "Invalid upload path" };
+      }
+
+      await requireSettingsWriteAccess(clientId);
+      const user = await requireAuthUser();
+
+      const bucket = process.env.SUPABASE_KNOWLEDGE_ASSETS_BUCKET || "knowledge-assets";
+      const maxUploadBytes = getKnowledgeAssetUploadMaxBytes();
+      const extractionMaxBytes = getKnowledgeAssetExtractionMaxBytes();
+
+      const supabase = createSupabaseAdminClient();
+      const { data: infoData, error: infoError } = await supabase.storage.from(bucket).info(path);
+      if (infoError || !infoData) {
+        console.warn("[KnowledgeAssets] Finalize info lookup failed:", infoError);
+        return { success: false, error: "Uploaded file not found. Please retry upload." };
+      }
+
+      const objectSize =
+        typeof infoData.size === "number" && Number.isFinite(infoData.size) && infoData.size > 0
+          ? infoData.size
+          : fallbackSizeBytes;
+      if (!objectSize || objectSize <= 0) {
+        return { success: false, error: "Uploaded file metadata is incomplete. Please retry upload." };
+      }
+      if (objectSize > maxUploadBytes) {
+        return {
+          success: false,
+          error: `File too large (max ${toMegabytesLabel(maxUploadBytes)}MB)`,
+        };
+      }
+
+      const normalizedMimeType =
+        mimeType ||
+        (typeof infoData.contentType === "string" && infoData.contentType.trim()
+          ? infoData.contentType.trim().toLowerCase()
+          : "application/octet-stream");
+      const fileUrl = `supabase-storage://${bucket}/${path}`;
+
+      let rawContent: string | null = null;
+      let textContent: string | null = null;
+      let warning: string | undefined;
+      let extractionSkipped = false;
+
+      if (objectSize > extractionMaxBytes) {
+        extractionSkipped = true;
+        warning = `Upload complete. File is larger than ${toMegabytesLabel(extractionMaxBytes)}MB extraction limit — add notes for AI context.`;
+      } else {
+        const { data: blob, error: downloadError } = await supabase.storage.from(bucket).download(path);
+        if (downloadError || !blob) {
+          console.error("[KnowledgeAssets] Storage download failed during finalize:", downloadError);
+          warning = "Upload complete, but extraction failed. Add notes for AI context.";
+        } else {
+          try {
+            const bytes = Buffer.from(await blob.arrayBuffer());
+            const extracted = await extractKnowledgeAssetNotesFromBytes({
+              clientId,
+              filename: originalFileName || "uploaded_file",
+              mimeType: normalizedMimeType,
+              bytes,
+            });
+            rawContent = extracted.rawContent;
+            textContent = extracted.textContent;
+          } catch (extractError) {
+            console.error("[KnowledgeAssets] Extraction failed during finalize:", extractError);
+            warning = "Upload complete, but extraction failed. Add notes for AI context.";
+          }
+        }
+      }
+
+      const settings = await prisma.workspaceSettings.upsert({
+        where: { clientId },
+        update: {},
+        create: { clientId },
+      });
+
+      const created = await prisma.knowledgeAsset.create({
+        data: {
+          workspaceSettingsId: settings.id,
+          name,
+          type: "file",
+          fileUrl,
+          originalFileName,
+          mimeType: normalizedMimeType || null,
+          rawContent,
+          textContent,
+          aiContextMode: "notes",
+        },
+      });
+
+      await recordKnowledgeAssetRevision({
+        clientId,
+        workspaceSettingsId: settings.id,
+        asset: {
+          id: created.id,
+          name: created.name,
+          type: created.type,
+          fileUrl: created.fileUrl,
+          rawContent: created.rawContent,
+          textContent: created.textContent,
+          aiContextMode: created.aiContextMode,
+        },
+        action: "CREATE",
+        createdByUserId: user.id,
+        createdByEmail: user.email ?? null,
+      });
+
+      revalidatePath("/");
+      console.info("[KnowledgeAssets] Finalized signed upload", {
+        clientId,
+        path,
+        objectSize,
+        extractionSkipped,
+      });
+
+      return {
+        success: true,
+        asset: toKnowledgeAssetData(created),
+        warning,
+        extractionSkipped,
+      };
+    } catch (error) {
+      console.error("Failed to finalize knowledge asset upload:", error);
+      return { success: false, error: "Failed to finalize uploaded asset" };
+    }
+  });
 }
 
 /**
@@ -1306,9 +1650,9 @@ export async function uploadKnowledgeAssetFile(
     await requireSettingsWriteAccess(clientId);
     const user = await requireAuthUser();
 
-    const maxBytes = Math.max(1, Number.parseInt(process.env.KNOWLEDGE_ASSET_MAX_BYTES || "12582912", 10) || 12_582_912); // 12MB
+    const maxBytes = getKnowledgeAssetExtractionMaxBytes();
     if (file.size > maxBytes) {
-      return { success: false, error: `File too large (max ${(maxBytes / (1024 * 1024)).toFixed(0)}MB)` };
+      return { success: false, error: `File too large (max ${toMegabytesLabel(maxBytes)}MB)` };
     }
 
     // Ensure settings exist
@@ -1363,29 +1707,11 @@ export async function uploadKnowledgeAssetFile(
       console.warn("[KnowledgeAssets] Storage upload failed (continuing):", storageError);
     }
 
-    // DOCX: extract locally, then summarize to notes via gpt-5-mini (low).
-    let fallbackText: string | null = null;
-    if (detectDocxMimeType(file)) {
-      try {
-        const mammoth = await import("mammoth");
-        const result = await mammoth.extractRawText({ buffer: bytes });
-        fallbackText = (result?.value || "").trim() || null;
-      } catch (docxError) {
-        console.error("[KnowledgeAssets] DOCX extraction failed (will fallback):", docxError);
-      }
-    }
-
-    const rawContent = await extractKnowledgeRawTextFromFile({
+    const extracted = await extractKnowledgeAssetNotesFromBytes({
       clientId,
       filename: file.name || "uploaded_file",
       mimeType,
       bytes,
-      fallbackText,
-    });
-    const textContent = await summarizeKnowledgeRawTextToNotes({
-      clientId,
-      sourceLabel: `${file.name || "uploaded_file"} (${mimeType || "unknown"})`,
-      rawText: rawContent,
     });
 
     const created = await prisma.knowledgeAsset.create({
@@ -1396,8 +1722,8 @@ export async function uploadKnowledgeAssetFile(
         fileUrl,
         originalFileName: file.name || null,
         mimeType: mimeType || null,
-        rawContent: rawContent || null,
-        textContent: textContent || null,
+        rawContent: extracted.rawContent,
+        textContent: extracted.textContent,
         aiContextMode: "notes",
       },
     });
@@ -1422,19 +1748,7 @@ export async function uploadKnowledgeAssetFile(
     revalidatePath("/");
       return {
         success: true,
-        asset: {
-          id: created.id,
-          name: created.name,
-          type: created.type as KnowledgeAssetData["type"],
-          fileUrl: created.fileUrl,
-          rawContent: created.rawContent,
-          textContent: created.textContent,
-          aiContextMode: created.aiContextMode === "raw" ? "raw" : "notes",
-          originalFileName: created.originalFileName,
-          mimeType: created.mimeType,
-          createdAt: created.createdAt,
-          updatedAt: created.updatedAt,
-        },
+        asset: toKnowledgeAssetData(created),
       };
     } catch (error) {
       console.error("Failed to upload knowledge asset file:", error);

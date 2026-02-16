@@ -102,6 +102,8 @@ import {
   getUserSettings,
   updateUserSettings,
   addKnowledgeAsset,
+  createKnowledgeAssetUploadSession,
+  finalizeKnowledgeAssetUpload,
   uploadKnowledgeAssetFile,
   uploadWorkspaceBrandLogo,
   addWebsiteKnowledgeAsset,
@@ -124,6 +126,7 @@ import {
   type QualificationQuestion,
   type CalendarLinkData,
 } from "@/actions/settings-actions"
+import { createClient as createSupabaseClient } from "@/lib/supabase/client"
 import {
   getAiObservabilitySummary,
   getAiRouteSkipSummary,
@@ -299,6 +302,13 @@ function extractCalendlyEventTypeUuidFromUri(input: string | null | undefined): 
 }
 
 const PRIMARY_WEBSITE_ASSET_NAME = "Primary: Website URL"
+const KNOWLEDGE_ASSET_MAX_BYTES_DEFAULT = 12 * 1024 * 1024 // 12MB
+const KNOWLEDGE_ASSET_MAX_BYTES_CLIENT = (() => {
+  const raw = process.env.NEXT_PUBLIC_KNOWLEDGE_ASSET_MAX_BYTES
+  const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : KNOWLEDGE_ASSET_MAX_BYTES_DEFAULT
+})()
+const KNOWLEDGE_ASSET_MAX_MB_CLIENT = Math.max(1, Math.round(KNOWLEDGE_ASSET_MAX_BYTES_CLIENT / (1024 * 1024)))
 const MAX_WORKSPACE_LOGO_BYTES = 5 * 1024 * 1024
 const WORKSPACE_LOGO_ACCEPT = "image/png,image/jpeg,image/jpg,image/webp"
 type DeferredSettingsSlice = "integrations" | "booking"
@@ -500,6 +510,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   const [newAssetContent, setNewAssetContent] = useState("")
   const [newAssetType, setNewAssetType] = useState<"text" | "url" | "file">("text")
   const [newAssetFile, setNewAssetFile] = useState<File | null>(null)
+  const [isUploadingAssetFile, setIsUploadingAssetFile] = useState(false)
   const [addAssetOpen, setAddAssetOpen] = useState(false)
   const [primaryWebsiteUrl, setPrimaryWebsiteUrl] = useState("")
   const [primaryWebsiteAssetId, setPrimaryWebsiteAssetId] = useState<string | null>(null)
@@ -911,7 +922,9 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
         const capabilities = capabilitiesResult.success ? capabilitiesResult.capabilities ?? null : null
         setWorkspaceCapabilities(capabilities)
-        setIsWorkspaceAdmin(Boolean(adminStatus.success && adminStatus.isAdmin) && !capabilities?.isClientPortalUser)
+        const derivedWorkspaceAdmin =
+          Boolean(capabilities?.isWorkspaceAdmin) || Boolean(adminStatus.success && adminStatus.isAdmin)
+        setIsWorkspaceAdmin(derivedWorkspaceAdmin && !capabilities?.isClientPortalUser)
         if (globalStatus.success) {
           globalAdminStatusRef.current = Boolean(globalStatus.isAdmin)
         }
@@ -1245,7 +1258,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
   }, [activeWorkspace, aiObsWindow, isClientPortalUser, isWorkspaceAdmin])
 
   useEffect(() => {
-    if (activeTab !== "ai" && activeTab !== "admin") return
+    if (activeTab !== "admin") return
     refreshAiObservability()
     refreshAiRouteSkips()
   }, [activeTab, refreshAiObservability, refreshAiRouteSkips])
@@ -2419,20 +2432,104 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         return
       }
 
-      const formData = new FormData()
-      formData.append("clientId", activeWorkspace)
-      formData.append("name", newAssetName.trim())
-      formData.append("file", newAssetFile)
+      setIsUploadingAssetFile(true)
+      try {
+        const assetName = newAssetName.trim()
+        const mimeType = (newAssetFile.type || "application/octet-stream").toLowerCase()
+        const shouldUseSignedUpload = newAssetFile.size > KNOWLEDGE_ASSET_MAX_BYTES_CLIENT
 
-      const result = await uploadKnowledgeAssetFile(formData)
-      if (result.success && result.asset) {
-        setKnowledgeAssets(prev => [result.asset!, ...prev])
-        setNewAssetName("")
-        setNewAssetContent("")
-        setNewAssetFile(null)
-        toast.success("File uploaded and processed")
-      } else {
-        toast.error(result.error || "Failed to upload file")
+        if (!shouldUseSignedUpload) {
+          const formData = new FormData()
+          formData.append("clientId", activeWorkspace)
+          formData.append("name", assetName)
+          formData.append("file", newAssetFile)
+
+          const result = await uploadKnowledgeAssetFile(formData)
+          if (result.success && result.asset) {
+            setKnowledgeAssets(prev => [result.asset!, ...prev])
+            setNewAssetName("")
+            setNewAssetContent("")
+            setNewAssetFile(null)
+            toast.success("File uploaded and processed")
+          } else {
+            toast.error(result.error || "Failed to upload file")
+          }
+          return
+        }
+
+        const sessionResult = await createKnowledgeAssetUploadSession({
+          clientId: activeWorkspace,
+          name: assetName,
+          originalFileName: newAssetFile.name,
+          mimeType,
+          fileSizeBytes: newAssetFile.size,
+        })
+        if (!sessionResult.success || !sessionResult.session) {
+          toast.error(sessionResult.error || "Failed to initialize file upload")
+          return
+        }
+
+        toast.message("Uploading file…", {
+          description: "Large files upload directly to storage before finalizing.",
+        })
+
+        const supabase = createSupabaseClient()
+        const { error: uploadError } = await supabase.storage
+          .from(sessionResult.session.bucket)
+          .uploadToSignedUrl(sessionResult.session.path, sessionResult.session.token, newAssetFile, {
+            cacheControl: "3600",
+            contentType: mimeType,
+          })
+
+        if (uploadError) {
+          const uploadMessage = uploadError.message || "Failed to upload file"
+          const isTokenExpired = /token|expired|signature/i.test(uploadMessage)
+          toast.error(
+            isTokenExpired
+              ? "Upload session expired. Please retry the upload."
+              : uploadMessage
+          )
+          return
+        }
+
+        const finalizeResult = await finalizeKnowledgeAssetUpload({
+          clientId: activeWorkspace,
+          name: assetName,
+          path: sessionResult.session.path,
+          originalFileName: newAssetFile.name,
+          mimeType,
+          fileSizeBytes: newAssetFile.size,
+        })
+
+        if (finalizeResult.success && finalizeResult.asset) {
+          setKnowledgeAssets(prev => [finalizeResult.asset!, ...prev])
+          setNewAssetName("")
+          setNewAssetContent("")
+          setNewAssetFile(null)
+
+          if (finalizeResult.extractionSkipped || finalizeResult.warning) {
+            toast.success("File uploaded")
+            toast.message("Add notes for AI context", {
+              description:
+                finalizeResult.warning ||
+                `Files above ${KNOWLEDGE_ASSET_MAX_MB_CLIENT}MB are stored without auto-extracted notes.`,
+            })
+          } else {
+            toast.success("File uploaded and processed")
+          }
+        } else {
+          toast.error(finalizeResult.error || "Failed to finalize uploaded file")
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const isTooLarge = /413|payload|entity too large|body exceeded|FUNCTION_PAYLOAD_TOO_LARGE|too large/i.test(message)
+        toast.error(
+          isTooLarge
+            ? `File upload failed (payload too large). Try a smaller file (max ${KNOWLEDGE_ASSET_MAX_MB_CLIENT}MB for inline extraction).`
+            : "Failed to upload file"
+        )
+      } finally {
+        setIsUploadingAssetFile(false)
       }
       return
     }
@@ -6279,7 +6376,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                           <p className="text-xs text-muted-foreground">
                             {newAssetType === "url"
                               ? "Website scraping uses Crawl4AI. If not configured, this will error until a Crawl4AI runner is available."
-                              : "Supported: PDF, DOCX, TXT/MD, and images. Uploaded files are processed into concise notes for AI."}
+                              : `Supported: PDF, DOCX, TXT/MD, and images. Files up to ${KNOWLEDGE_ASSET_MAX_MB_CLIENT}MB are extracted into AI notes; larger files upload directly and require manual notes.`}
                           </p>
                         </div>
 
@@ -6290,12 +6387,17 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                           <Button
                             onClick={handleAddAsset}
                             disabled={
+                              isUploadingAssetFile ||
                               !newAssetName.trim() ||
                               (newAssetType === "file" ? !newAssetFile : !newAssetContent.trim())
                             }
                           >
-                            <Plus className="h-4 w-4 mr-1.5" />
-                            Add Asset
+                            {isUploadingAssetFile ? (
+                              <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                            ) : (
+                              <Plus className="h-4 w-4 mr-1.5" />
+                            )}
+                            {isUploadingAssetFile ? "Uploading..." : "Add Asset"}
                           </Button>
                         </div>
                       </DialogContent>
@@ -6303,13 +6405,466 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </div>
                 </div>
 
-                <Separator />
+              </CardContent>
+            </Card>
+            </fieldset>
+          </TabsContent>
 
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2">
-                    <Sparkles className="h-5 w-5 text-primary" />
-                    <h4 className="font-semibold">AI Behavior Rules</h4>
+          {/* Booking Processes (Phase 36) */}
+          <TabsContent value="booking" className="space-y-6">
+            <fieldset disabled={isClientPortalUser} className="space-y-6">
+            <Alert className="border-amber-500/30 bg-amber-500/5">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <AlertTitle>Booking configuration notes</AlertTitle>
+              <AlertDescription>
+                <ul className="list-disc list-inside mt-2 space-y-1 text-sm">
+                  <li>
+                    Process 5 (lead scheduler links) is manual-review for now. We capture the lead&apos;s link and create a task for
+                    review with overlap suggestions when possible.
+                  </li>
+                  <li>
+                    Third-party scheduler auto-booking is planned (browser automation). This will ship behind a warning flag.
+                  </li>
+                </ul>
+              </AlertDescription>
+            </Alert>
+
+            {/* Booking Processes Reference (Phase 60) */}
+            <BookingProcessReference />
+
+            <BookingProcessManager
+              activeWorkspace={activeWorkspace}
+              qualificationQuestions={qualificationQuestions}
+            />
+
+            {/* Campaign Assignment Panel - moved here for booking context */}
+            <AiCampaignAssignmentPanel activeWorkspace={activeWorkspace} />
+
+            </fieldset>
+          </TabsContent>
+
+          {/* Team Management */}
+          <TabsContent value="team" className="space-y-6">
+            <fieldset disabled={isClientPortalUser} className="space-y-6">
+              {!isClientPortalUser ? (
+                <>
+                  <WorkspaceMembersManager
+                    activeWorkspace={activeWorkspace ?? null}
+                    isWorkspaceAdmin={isWorkspaceAdmin}
+                  />
+                  <ClientPortalUsersManager
+                    activeWorkspace={activeWorkspace ?? null}
+                    isWorkspaceAdmin={isWorkspaceAdmin}
+                  />
+                </>
+              ) : null}
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Shield className="h-5 w-5" />
+                  Security
+                </CardTitle>
+                <CardDescription>Security settings for your workspace</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p id="2fa-label" className="font-medium">Two-Factor Authentication</p>
+                    <p className="text-sm text-muted-foreground">Require 2FA for all team members</p>
                   </div>
+                  <Switch
+                    id="2fa-switch"
+                    aria-labelledby="2fa-label"
+                    disabled
+                    onCheckedChange={() => toast.info("Coming soon", { description: "2FA will be available in a future update." })}
+                  />
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium">SSO (Single Sign-On)</p>
+                    <p className="text-sm text-muted-foreground">Enable SAML-based SSO</p>
+                  </div>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    disabled
+                    onClick={() => toast.info("Coming soon", { description: "SSO will be available in a future update." })}
+                  >
+                    Configure
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+            </fieldset>
+          </TabsContent>
+
+          {/* Admin Dashboard (workspace admins only) */}
+          {showAdminTab ? (
+            <TabsContent value="admin" className="space-y-6">
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Model Selector</h3>
+                <Separator className="flex-1" />
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Sparkles className="h-5 w-5" />
+                    Campaign Strategist
+                  </CardTitle>
+                  <CardDescription>
+                    Configure model and reasoning for Campaign Strategist runs.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-3">
+                    <div className="space-y-0.5">
+                      <span className="text-sm font-medium">Workspace-wide</span>
+                      <p className="text-xs text-muted-foreground">Only admins can change these settings.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!isWorkspaceAdmin ? (
+                        <>
+                          <Lock className="h-4 w-4 text-muted-foreground" />
+                          <Badge variant="outline">Locked</Badge>
+                        </>
+                      ) : (
+                        <Badge variant="secondary">Admin</Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Model</Label>
+                      <Select
+                        value={insightsChatSettings.model}
+                        onValueChange={(v) => {
+                          const nextModel = v
+                          setInsightsChatSettings((prev) => ({
+                            ...prev,
+                            model: nextModel,
+                            reasoningEffort:
+                              nextModel === "gpt-5.2"
+                                ? prev.reasoningEffort
+                                : prev.reasoningEffort === "extra_high"
+                                  ? "high"
+                                  : prev.reasoningEffort,
+                          }))
+                          handleChange()
+                        }}
+                        disabled={!isWorkspaceAdmin}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="gpt-5-mini">GPT-5 Mini (default)</SelectItem>
+                          <SelectItem value="gpt-5.1">GPT-5.1</SelectItem>
+                          <SelectItem value="gpt-5.2">GPT-5.2</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">Used by the Insights Console and background summaries.</p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Reasoning Effort</Label>
+                      <Select
+                        value={insightsChatSettings.reasoningEffort}
+                        onValueChange={(v) => {
+                          setInsightsChatSettings((prev) => ({ ...prev, reasoningEffort: v }))
+                          handleChange()
+                        }}
+                        disabled={!isWorkspaceAdmin}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="low">Low</SelectItem>
+                          <SelectItem value="medium">Medium</SelectItem>
+                          <SelectItem value="high">High</SelectItem>
+                          {insightsChatSettings.model === "gpt-5.2" ? (
+                            <SelectItem value="extra_high">Extra High (GPT-5.2 only)</SelectItem>
+                          ) : null}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">Higher effort improves quality but increases latency/cost.</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Email Draft Generation Model (Phase 30) */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Mail className="h-5 w-5" />
+                    Email Draft Generation
+                  </CardTitle>
+                  <CardDescription>
+                    Configure the AI model used for generating email draft responses.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-3">
+                    <div className="space-y-0.5">
+                      <span className="text-sm font-medium">Workspace-wide</span>
+                      <p className="text-xs text-muted-foreground">Only admins can change these settings.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!isWorkspaceAdmin ? (
+                        <>
+                          <Lock className="h-4 w-4 text-muted-foreground" />
+                          <Badge variant="outline">Locked</Badge>
+                        </>
+                      ) : (
+                        <Badge variant="secondary">Admin</Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Model</Label>
+                      <Select
+                        value={draftGenerationSettings.model}
+                        onValueChange={(v) => {
+                          const nextModel = v
+                          setDraftGenerationSettings((prev) => ({
+                            ...prev,
+                            model: nextModel,
+                            reasoningEffort:
+                              nextModel === "gpt-5.2"
+                                ? prev.reasoningEffort
+                                : prev.reasoningEffort === "extra_high"
+                                  ? "high"
+                                  : prev.reasoningEffort,
+                          }))
+                          handleChange()
+                        }}
+                        disabled={!isWorkspaceAdmin}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="gpt-5.1">GPT-5.1 (default)</SelectItem>
+                          <SelectItem value="gpt-5.2">GPT-5.2</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        GPT-5.2 offers enhanced reasoning for complex leads.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Reasoning Effort</Label>
+                      <Select
+                        value={draftGenerationSettings.reasoningEffort}
+                        onValueChange={(v) => {
+                          setDraftGenerationSettings((prev) => ({ ...prev, reasoningEffort: v }))
+                          handleChange()
+                        }}
+                        disabled={!isWorkspaceAdmin}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="low">Low</SelectItem>
+                          <SelectItem value="medium">Medium (Recommended)</SelectItem>
+                          <SelectItem value="high">High</SelectItem>
+                          {draftGenerationSettings.model === "gpt-5.2" ? (
+                            <SelectItem value="extra_high">Extra High (GPT-5.2 only)</SelectItem>
+                          ) : null}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        Higher reasoning = better personalization, more tokens.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2 rounded-lg border bg-blue-500/10 p-3 text-sm">
+                    <Sparkles className="h-4 w-4 mt-0.5 text-blue-600" />
+                    <div className="space-y-1">
+                      <div className="font-medium text-blue-700">Two-Step Drafting</div>
+                      <p className="text-xs text-muted-foreground">
+                        Email drafts use a two-step pipeline: first analyzing the lead for personalization, then generating a structurally unique response.
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Email Draft Verification Model (Step 3) (Phase 104) */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Mail className="h-5 w-5" />
+                    Email Draft Verification (Step 3)
+                  </CardTitle>
+                  <CardDescription>
+                    Configure the AI model used for the final safety/format pass on email drafts (deterministic, low temperature).
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-3">
+                    <div className="space-y-0.5">
+                      <span className="text-sm font-medium">Workspace-wide</span>
+                      <p className="text-xs text-muted-foreground">Only admins can change these settings.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {!isWorkspaceAdmin ? (
+                        <>
+                          <Lock className="h-4 w-4 text-muted-foreground" />
+                          <Badge variant="outline">Locked</Badge>
+                        </>
+                      ) : (
+                        <Badge variant="secondary">Admin</Badge>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Model</Label>
+                      <Select
+                        value={emailDraftVerificationSettings.model}
+                        onValueChange={(v) => {
+                          setEmailDraftVerificationSettings({ model: v })
+                          handleChange()
+                        }}
+                        disabled={!isWorkspaceAdmin}
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="gpt-5.2">GPT-5.2 (Recommended)</SelectItem>
+                          <SelectItem value="gpt-5.1">GPT-5.1</SelectItem>
+                          <SelectItem value="gpt-5-mini">GPT-5 Mini</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        Runs with <span className="font-medium">temperature 0</span> and the lowest compatible reasoning effort
+                        (none on GPT-5.1/5.2; minimal on GPT-5 Mini).
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Ops override: <span className="font-mono">OPENAI_EMAIL_VERIFIER_MODEL</span> (env) takes precedence if set.
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Controls</h3>
+                <Separator className="flex-1" />
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Sparkles className="h-5 w-5" />
+                    Campaign Strategist Controls
+                  </CardTitle>
+                  <CardDescription>
+                    Operational toggles for strategist tools and automated summaries.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between p-3 rounded-lg border">
+                      <div className="space-y-0.5">
+                        <span id="enable-campaign-changes-label" className="text-sm">Enable campaign changes (future)</span>
+                        <p className="text-xs text-muted-foreground">Allow the chatbot to change campaign response mode (disabled in v1).</p>
+                      </div>
+                      <Switch
+                        id="enable-campaign-changes-switch"
+                        aria-labelledby="enable-campaign-changes-label"
+                        checked={insightsChatSettings.enableCampaignChanges}
+                        disabled={!isWorkspaceAdmin}
+                        onCheckedChange={(v) => {
+                          setInsightsChatSettings((prev) => ({ ...prev, enableCampaignChanges: v }))
+                          handleChange()
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between p-3 rounded-lg border">
+                      <div className="space-y-0.5">
+                        <span id="enable-experiment-writes-label" className="text-sm">Enable experiment writes (future)</span>
+                        <p className="text-xs text-muted-foreground">Allow the chatbot to create experiments with human approval (disabled in v1).</p>
+                      </div>
+                      <Switch
+                        id="enable-experiment-writes-switch"
+                        aria-labelledby="enable-experiment-writes-label"
+                        checked={insightsChatSettings.enableExperimentWrites}
+                        disabled={!isWorkspaceAdmin}
+                        onCheckedChange={(v) => {
+                          setInsightsChatSettings((prev) => ({ ...prev, enableExperimentWrites: v }))
+                          handleChange()
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between p-3 rounded-lg border">
+                      <div className="space-y-0.5">
+                        <span id="enable-followup-pauses-label" className="text-sm">Enable follow-up pauses (future)</span>
+                        <p className="text-xs text-muted-foreground">Allow the chatbot to pause follow-ups with human approval (disabled in v1).</p>
+                      </div>
+                      <Switch
+                        id="enable-followup-pauses-switch"
+                        aria-labelledby="enable-followup-pauses-label"
+                        checked={insightsChatSettings.enableFollowupPauses}
+                        disabled={!isWorkspaceAdmin}
+                        onCheckedChange={(v) => {
+                          setInsightsChatSettings((prev) => ({ ...prev, enableFollowupPauses: v }))
+                          handleChange()
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between p-3 rounded-lg border">
+                      <div className="space-y-0.5">
+                        <span id="enable-message-performance-weekly-label" className="text-sm">Weekly message performance (UTC)</span>
+                        <p className="text-xs text-muted-foreground">Run message performance insights weekly for this workspace.</p>
+                      </div>
+                      <Switch
+                        id="enable-message-performance-weekly-switch"
+                        aria-labelledby="enable-message-performance-weekly-label"
+                        checked={insightsChatSettings.messagePerformanceWeeklyEnabled}
+                        disabled={!isWorkspaceAdmin}
+                        onCheckedChange={(v) => {
+                          setInsightsChatSettings((prev) => ({ ...prev, messagePerformanceWeeklyEnabled: v }))
+                          handleChange()
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2 rounded-lg border bg-muted/30 p-3 text-sm">
+                    <AlertTriangle className="h-4 w-4 mt-0.5 text-muted-foreground" />
+                    <div className="space-y-1">
+                      <div className="font-medium">Read-only v1</div>
+                      <p className="text-xs text-muted-foreground">
+                        The Insights Console does not execute writes yet. These toggles are scaffolding for future controlled rollouts.
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Sparkles className="h-5 w-5" />
+                    AI Behavior Rules
+                  </CardTitle>
+                  <CardDescription>Runtime behavior switches for meeting confirmation, review gating, and sequence guardrails.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
                   <div className="grid gap-3">
                     <div className="flex items-center justify-between p-3 rounded-lg border">
                       <div className="space-y-0.5">
@@ -6431,638 +6986,75 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                       />
                     </div>
                   </div>
-                </div>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
 
-            <Card className={cn(
-              "border-2",
-              isFollowUpsPaused ? "border-amber-500/50 bg-amber-500/5" : "border-border"
-            )}>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className={cn(
-                      "flex h-10 w-10 items-center justify-center rounded-lg",
-                      isFollowUpsPaused ? "bg-amber-500/20" : "bg-muted"
-                    )}>
-                      {isFollowUpsPaused ? (
-                        <PauseCircle className="h-5 w-5 text-amber-500" />
-                      ) : (
-                        <PlayCircle className="h-5 w-5 text-muted-foreground" />
-                      )}
-                    </div>
-                    <div>
-                      <CardTitle className="text-base">Follow-Up Sequences</CardTitle>
-                      <CardDescription>
-                        {isFollowUpsPaused
-                          ? `Paused until ${followUpsPausedUntil ? formatWorkspaceDateTime(followUpsPausedUntil) : "manual resume"}`
-                          : "Sequences are running normally"}
-                      </CardDescription>
-                    </div>
-                  </div>
-                  <Badge variant={isFollowUpsPaused ? "destructive" : "secondary"}>
-                    {isFollowUpsPaused ? "Paused" : "Active"}
-                  </Badge>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {isFollowUpsPaused ? (
-                  <Button
-                    onClick={() => handleResumeWorkspaceFollowUps()}
-                    variant="outline"
-                    disabled={!activeWorkspace || isPausingFollowUps}
-                    className="w-full"
-                  >
-                    Resume Follow-ups
-                  </Button>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <Input
-                      type="number"
-                      min={1}
-                      max={365}
-                      step={1}
-                      className="w-[90px]"
-                      value={pauseFollowUpsDays}
-                      disabled={!activeWorkspace || isPausingFollowUps}
-                      onChange={(e) => setPauseFollowUpsDays(e.target.value)}
-                    />
-                    <span className="text-sm text-muted-foreground">days</span>
-                    <Button
-                      variant="outline"
-                      disabled={!activeWorkspace || isPausingFollowUps}
-                      onClick={() => handlePauseWorkspaceFollowUps()}
-                    >
-                      Pause
-                    </Button>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Sparkles className="h-5 w-5" />
-                  Campaign Strategist
-                </CardTitle>
-                <CardDescription>
-                  Model + reasoning settings for the Campaign Strategist (read-only v1). Action tools are wired but disabled by default.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-3">
-                  <div className="space-y-0.5">
-                    <span className="text-sm font-medium">Workspace-wide</span>
-                    <p className="text-xs text-muted-foreground">Only admins can change these settings.</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {!isWorkspaceAdmin ? (
-                      <>
-                        <Lock className="h-4 w-4 text-muted-foreground" />
-                        <Badge variant="outline">Locked</Badge>
-                      </>
-                    ) : (
-                      <Badge variant="secondary">Admin</Badge>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label>Model</Label>
-                    <Select
-                      value={insightsChatSettings.model}
-                      onValueChange={(v) => {
-                        const nextModel = v
-                        setInsightsChatSettings((prev) => ({
-                          ...prev,
-                          model: nextModel,
-                          reasoningEffort:
-                            nextModel === "gpt-5.2"
-                              ? prev.reasoningEffort
-                              : prev.reasoningEffort === "extra_high"
-                                ? "high"
-                                : prev.reasoningEffort,
-                        }))
-                        handleChange()
-                      }}
-                      disabled={!isWorkspaceAdmin}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="gpt-5-mini">GPT-5 Mini (default)</SelectItem>
-                        <SelectItem value="gpt-5.1">GPT-5.1</SelectItem>
-                        <SelectItem value="gpt-5.2">GPT-5.2</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">Used by the Insights Console and background summaries.</p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Reasoning Effort</Label>
-                    <Select
-                      value={insightsChatSettings.reasoningEffort}
-                      onValueChange={(v) => {
-                        setInsightsChatSettings((prev) => ({ ...prev, reasoningEffort: v }))
-                        handleChange()
-                      }}
-                      disabled={!isWorkspaceAdmin}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="low">Low</SelectItem>
-                        <SelectItem value="medium">Medium</SelectItem>
-                        <SelectItem value="high">High</SelectItem>
-                        {insightsChatSettings.model === "gpt-5.2" ? (
-                          <SelectItem value="extra_high">Extra High (GPT-5.2 only)</SelectItem>
-                        ) : null}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">Higher effort improves quality but increases latency/cost.</p>
-                  </div>
-                </div>
-
-                <Separator />
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between p-3 rounded-lg border">
-                    <div className="space-y-0.5">
-                      <span id="enable-campaign-changes-label" className="text-sm">Enable campaign changes (future)</span>
-                      <p className="text-xs text-muted-foreground">Allow the chatbot to change campaign response mode (disabled in v1).</p>
-                    </div>
-                    <Switch
-                      id="enable-campaign-changes-switch"
-                      aria-labelledby="enable-campaign-changes-label"
-                      checked={insightsChatSettings.enableCampaignChanges}
-                      disabled={!isWorkspaceAdmin}
-                      onCheckedChange={(v) => {
-                        setInsightsChatSettings((prev) => ({ ...prev, enableCampaignChanges: v }))
-                        handleChange()
-                      }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between p-3 rounded-lg border">
-                    <div className="space-y-0.5">
-                      <span id="enable-experiment-writes-label" className="text-sm">Enable experiment writes (future)</span>
-                      <p className="text-xs text-muted-foreground">Allow the chatbot to create experiments with human approval (disabled in v1).</p>
-                    </div>
-                    <Switch
-                      id="enable-experiment-writes-switch"
-                      aria-labelledby="enable-experiment-writes-label"
-                      checked={insightsChatSettings.enableExperimentWrites}
-                      disabled={!isWorkspaceAdmin}
-                      onCheckedChange={(v) => {
-                        setInsightsChatSettings((prev) => ({ ...prev, enableExperimentWrites: v }))
-                        handleChange()
-                      }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between p-3 rounded-lg border">
-                    <div className="space-y-0.5">
-                      <span id="enable-followup-pauses-label" className="text-sm">Enable follow-up pauses (future)</span>
-                      <p className="text-xs text-muted-foreground">Allow the chatbot to pause follow-ups with human approval (disabled in v1).</p>
-                    </div>
-                    <Switch
-                      id="enable-followup-pauses-switch"
-                      aria-labelledby="enable-followup-pauses-label"
-                      checked={insightsChatSettings.enableFollowupPauses}
-                      disabled={!isWorkspaceAdmin}
-                      onCheckedChange={(v) => {
-                        setInsightsChatSettings((prev) => ({ ...prev, enableFollowupPauses: v }))
-                        handleChange()
-                      }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between p-3 rounded-lg border">
-                    <div className="space-y-0.5">
-                      <span id="enable-message-performance-weekly-label" className="text-sm">Weekly message performance (UTC)</span>
-                      <p className="text-xs text-muted-foreground">Run message performance insights weekly for this workspace.</p>
-                    </div>
-                    <Switch
-                      id="enable-message-performance-weekly-switch"
-                      aria-labelledby="enable-message-performance-weekly-label"
-                      checked={insightsChatSettings.messagePerformanceWeeklyEnabled}
-                      disabled={!isWorkspaceAdmin}
-                      onCheckedChange={(v) => {
-                        setInsightsChatSettings((prev) => ({ ...prev, messagePerformanceWeeklyEnabled: v }))
-                        handleChange()
-                      }}
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-2 rounded-lg border bg-muted/30 p-3 text-sm">
-                  <AlertTriangle className="h-4 w-4 mt-0.5 text-muted-foreground" />
-                  <div className="space-y-1">
-                    <div className="font-medium">Read-only v1</div>
-                    <p className="text-xs text-muted-foreground">
-                      The Insights Console does not execute writes yet. These toggles are scaffolding for future controlled rollouts.
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Email Draft Generation Model (Phase 30) */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Mail className="h-5 w-5" />
-                  Email Draft Generation
-                </CardTitle>
-                <CardDescription>
-                  Configure the AI model used for generating email draft responses.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-3">
-                  <div className="space-y-0.5">
-                    <span className="text-sm font-medium">Workspace-wide</span>
-                    <p className="text-xs text-muted-foreground">Only admins can change these settings.</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {!isWorkspaceAdmin ? (
-                      <>
-                        <Lock className="h-4 w-4 text-muted-foreground" />
-                        <Badge variant="outline">Locked</Badge>
-                      </>
-                    ) : (
-                      <Badge variant="secondary">Admin</Badge>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label>Model</Label>
-                    <Select
-                      value={draftGenerationSettings.model}
-                      onValueChange={(v) => {
-                        const nextModel = v
-                        setDraftGenerationSettings((prev) => ({
-                          ...prev,
-                          model: nextModel,
-                          reasoningEffort:
-                            nextModel === "gpt-5.2"
-                              ? prev.reasoningEffort
-                              : prev.reasoningEffort === "extra_high"
-                                ? "high"
-                                : prev.reasoningEffort,
-                        }))
-                        handleChange()
-                      }}
-                      disabled={!isWorkspaceAdmin}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="gpt-5.1">GPT-5.1 (default)</SelectItem>
-                        <SelectItem value="gpt-5.2">GPT-5.2</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      GPT-5.2 offers enhanced reasoning for complex leads.
-                    </p>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Reasoning Effort</Label>
-                    <Select
-                      value={draftGenerationSettings.reasoningEffort}
-                      onValueChange={(v) => {
-                        setDraftGenerationSettings((prev) => ({ ...prev, reasoningEffort: v }))
-                        handleChange()
-                      }}
-                      disabled={!isWorkspaceAdmin}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="low">Low</SelectItem>
-                        <SelectItem value="medium">Medium (Recommended)</SelectItem>
-                        <SelectItem value="high">High</SelectItem>
-                        {draftGenerationSettings.model === "gpt-5.2" ? (
-                          <SelectItem value="extra_high">Extra High (GPT-5.2 only)</SelectItem>
-                        ) : null}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      Higher reasoning = better personalization, more tokens.
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-2 rounded-lg border bg-blue-500/10 p-3 text-sm">
-                  <Sparkles className="h-4 w-4 mt-0.5 text-blue-600" />
-                  <div className="space-y-1">
-                    <div className="font-medium text-blue-700">Two-Step Drafting</div>
-                    <p className="text-xs text-muted-foreground">
-                      Email drafts use a two-step pipeline: first analyzing the lead for personalization, then generating a structurally unique response.
-                    </p>
-                  </div>
-                </div>
-	              </CardContent>
-	            </Card>
-
-            {/* Email Draft Verification Model (Step 3) (Phase 104) */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Mail className="h-5 w-5" />
-                  Email Draft Verification (Step 3)
-                </CardTitle>
-                <CardDescription>
-                  Configure the AI model used for the final safety/format pass on email drafts (deterministic, low temperature).
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between rounded-lg border bg-muted/30 p-3">
-                  <div className="space-y-0.5">
-                    <span className="text-sm font-medium">Workspace-wide</span>
-                    <p className="text-xs text-muted-foreground">Only admins can change these settings.</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {!isWorkspaceAdmin ? (
-                      <>
-                        <Lock className="h-4 w-4 text-muted-foreground" />
-                        <Badge variant="outline">Locked</Badge>
-                      </>
-                    ) : (
-                      <Badge variant="secondary">Admin</Badge>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label>Model</Label>
-                    <Select
-                      value={emailDraftVerificationSettings.model}
-                      onValueChange={(v) => {
-                        setEmailDraftVerificationSettings({ model: v })
-                        handleChange()
-                      }}
-                      disabled={!isWorkspaceAdmin}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="gpt-5.2">GPT-5.2 (Recommended)</SelectItem>
-                        <SelectItem value="gpt-5.1">GPT-5.1</SelectItem>
-                        <SelectItem value="gpt-5-mini">GPT-5 Mini</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      Runs with <span className="font-medium">temperature 0</span> and the lowest compatible reasoning effort
-                      (none on GPT-5.1/5.2; minimal on GPT-5 Mini).
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Ops override: <span className="font-mono">OPENAI_EMAIL_VERIFIER_MODEL</span> (env) takes precedence if set.
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {showAdminTab ? (
-              <Card>
+              <Card className={cn(
+                "border-2",
+                isFollowUpsPaused ? "border-amber-500/50 bg-amber-500/5" : "border-border"
+              )}>
                 <CardHeader>
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <CardTitle className="flex items-center gap-2">
-                        <Activity className="h-5 w-5" />
-                        AI Route Switch Activity
-                      </CardTitle>
-                      <CardDescription>
-                        Current route states and recent skip events when routes are disabled in workspace settings.
-                      </CardDescription>
-                    </div>
-                    <Button variant="outline" size="sm" onClick={refreshAiRouteSkips} disabled={aiRouteSkipsLoading}>
-                      <RefreshCcw className="h-4 w-4 mr-2" />
-                      Refresh
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {aiRouteSkipsError ? <div className="text-sm text-destructive">{aiRouteSkipsError}</div> : null}
-
-                  {aiRouteSkipsLoading ? (
-                    <div className="flex items-center justify-center py-8">
-                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                    </div>
-                  ) : (
-                    <>
-                      <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
-                        <div className="rounded-lg border p-3">
-                          <p className="text-xs text-muted-foreground">AI Draft Generation</p>
-                          <div className="mt-1 flex items-center justify-between">
-                            <Badge variant={aiPipelineToggles.draftGenerationEnabled ? "secondary" : "destructive"}>
-                              {aiPipelineToggles.draftGenerationEnabled ? "ON" : "OFF"}
-                            </Badge>
-                            <span className="text-sm text-muted-foreground">
-                              {aiRouteSkips?.counts.draftGeneration ?? 0} skips
-                            </span>
-                          </div>
-                        </div>
-                        <div className="rounded-lg border p-3">
-                          <p className="text-xs text-muted-foreground">Draft Generation (Step 2)</p>
-                          <div className="mt-1 flex items-center justify-between">
-                            <Badge variant={aiPipelineToggles.draftGenerationStep2Enabled ? "secondary" : "destructive"}>
-                              {aiPipelineToggles.draftGenerationStep2Enabled ? "ON" : "OFF"}
-                            </Badge>
-                            <span className="text-sm text-muted-foreground">
-                              {aiRouteSkips?.counts.draftGenerationStep2 ?? 0} skips
-                            </span>
-                          </div>
-                        </div>
-                        <div className="rounded-lg border p-3">
-                          <p className="text-xs text-muted-foreground">Draft Verification (Step 3)</p>
-                          <div className="mt-1 flex items-center justify-between">
-                            <Badge variant={aiPipelineToggles.draftVerificationStep3Enabled ? "secondary" : "destructive"}>
-                              {aiPipelineToggles.draftVerificationStep3Enabled ? "ON" : "OFF"}
-                            </Badge>
-                            <span className="text-sm text-muted-foreground">
-                              {aiRouteSkips?.counts.draftVerificationStep3 ?? 0} skips
-                            </span>
-                          </div>
-                        </div>
-                        <div className="rounded-lg border p-3">
-                          <p className="text-xs text-muted-foreground">Meeting Overseer</p>
-                          <div className="mt-1 flex items-center justify-between">
-                            <Badge variant={aiPipelineToggles.meetingOverseerEnabled ? "secondary" : "destructive"}>
-                              {aiPipelineToggles.meetingOverseerEnabled ? "ON" : "OFF"}
-                            </Badge>
-                            <span className="text-sm text-muted-foreground">
-                              {aiRouteSkips?.counts.meetingOverseer ?? 0} skips
-                            </span>
-                          </div>
-                        </div>
-                        <div className="rounded-lg border p-3">
-                          <p className="text-xs text-muted-foreground">Booking Process Router</p>
-                          <div className="mt-1 flex items-center justify-between">
-                            <Badge variant={aiPipelineToggles.aiRouteBookingProcessEnabled ? "secondary" : "destructive"}>
-                              {aiPipelineToggles.aiRouteBookingProcessEnabled ? "ON" : "OFF"}
-                            </Badge>
-                            <span className="text-sm text-muted-foreground">events</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <Separator />
-
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm font-medium">Recent Skip Events</p>
-                          <p className="text-xs text-muted-foreground">
-                            Window: {aiRouteSkips?.window ?? aiObsWindow}
-                          </p>
-                        </div>
-                        {aiRouteSkips?.events.length ? (
-                          <div className="space-y-2">
-                            {aiRouteSkips.events.map((event) => {
-                              const routeLabel =
-                                event.route === "draft_generation"
-                                  ? "AI Draft Generation"
-                                  : event.route === "draft_generation_step2"
-                                    ? "Draft Generation (Step 2)"
-                                  : event.route === "draft_verification_step3"
-                                    ? "Draft Verification (Step 3)"
-                                    : "Meeting Overseer";
-                              return (
-                                <div key={event.id} className="rounded-lg border p-3 text-sm">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <Badge variant="outline">{routeLabel}</Badge>
-                                    <span className="text-xs text-muted-foreground">{new Date(event.createdAt).toLocaleString()}</span>
-                                  </div>
-                                  <div className="mt-1 text-xs text-muted-foreground">
-                                    reason: {event.reason}
-                                    {event.channel ? ` · channel: ${event.channel}` : ""}
-                                    {event.source ? ` · source: ${event.source}` : ""}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className={cn(
+                        "flex h-10 w-10 items-center justify-center rounded-lg",
+                        isFollowUpsPaused ? "bg-amber-500/20" : "bg-muted"
+                      )}>
+                        {isFollowUpsPaused ? (
+                          <PauseCircle className="h-5 w-5 text-amber-500" />
                         ) : (
-                          <div className="text-sm text-muted-foreground">No skip events in this window.</div>
+                          <PlayCircle className="h-5 w-5 text-muted-foreground" />
                         )}
                       </div>
-                    </>
+                      <div>
+                        <CardTitle className="text-base">Follow-Up Sequences</CardTitle>
+                        <CardDescription>
+                          {isFollowUpsPaused
+                            ? `Paused until ${followUpsPausedUntil ? formatWorkspaceDateTime(followUpsPausedUntil) : "manual resume"}`
+                            : "Sequences are running normally"}
+                        </CardDescription>
+                      </div>
+                    </div>
+                    <Badge variant={isFollowUpsPaused ? "destructive" : "secondary"}>
+                      {isFollowUpsPaused ? "Paused" : "Active"}
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {isFollowUpsPaused ? (
+                    <Button
+                      onClick={() => handleResumeWorkspaceFollowUps()}
+                      variant="outline"
+                      disabled={!activeWorkspace || isPausingFollowUps}
+                      className="w-full"
+                    >
+                      Resume Follow-ups
+                    </Button>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Input
+                        type="number"
+                        min={1}
+                        max={365}
+                        step={1}
+                        className="w-[90px]"
+                        value={pauseFollowUpsDays}
+                        disabled={!activeWorkspace || isPausingFollowUps}
+                        onChange={(e) => setPauseFollowUpsDays(e.target.value)}
+                      />
+                      <span className="text-sm text-muted-foreground">days</span>
+                      <Button
+                        variant="outline"
+                        disabled={!activeWorkspace || isPausingFollowUps}
+                        onClick={() => handlePauseWorkspaceFollowUps()}
+                      >
+                        Pause
+                      </Button>
+                    </div>
                   )}
                 </CardContent>
               </Card>
-            ) : null}
 
-            {isWorkspaceAdmin && activeWorkspace && !isClientPortalUser ? (
-              <BulkDraftRegenerationCard clientId={activeWorkspace} />
-            ) : null}
-
-            {aiDashboardCard}
-            </fieldset>
-          </TabsContent>
-
-          {/* Booking Processes (Phase 36) */}
-          <TabsContent value="booking" className="space-y-6">
-            <fieldset disabled={isClientPortalUser} className="space-y-6">
-            <Alert className="border-amber-500/30 bg-amber-500/5">
-              <AlertTriangle className="h-4 w-4 text-amber-500" />
-              <AlertTitle>Booking configuration notes</AlertTitle>
-              <AlertDescription>
-                <ul className="list-disc list-inside mt-2 space-y-1 text-sm">
-                  <li>
-                    Process 5 (lead scheduler links) is manual-review for now. We capture the lead&apos;s link and create a task for
-                    review with overlap suggestions when possible.
-                  </li>
-                  <li>
-                    Third-party scheduler auto-booking is planned (browser automation). This will ship behind a warning flag.
-                  </li>
-                </ul>
-              </AlertDescription>
-            </Alert>
-
-            {/* Booking Processes Reference (Phase 60) */}
-            <BookingProcessReference />
-
-            <BookingProcessManager
-              activeWorkspace={activeWorkspace}
-              qualificationQuestions={qualificationQuestions}
-            />
-
-            {/* Campaign Assignment Panel - moved here for booking context */}
-            <AiCampaignAssignmentPanel activeWorkspace={activeWorkspace} />
-
-            </fieldset>
-          </TabsContent>
-
-          {/* Team Management */}
-          <TabsContent value="team" className="space-y-6">
-            <fieldset disabled={isClientPortalUser} className="space-y-6">
-              {!isClientPortalUser ? (
-                <>
-                  <WorkspaceMembersManager
-                    activeWorkspace={activeWorkspace ?? null}
-                    isWorkspaceAdmin={isWorkspaceAdmin}
-                  />
-                  <ClientPortalUsersManager
-                    activeWorkspace={activeWorkspace ?? null}
-                    isWorkspaceAdmin={isWorkspaceAdmin}
-                  />
-                </>
-              ) : null}
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Shield className="h-5 w-5" />
-                  Security
-                </CardTitle>
-                <CardDescription>Security settings for your workspace</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p id="2fa-label" className="font-medium">Two-Factor Authentication</p>
-                    <p className="text-sm text-muted-foreground">Require 2FA for all team members</p>
-                  </div>
-                  <Switch
-                    id="2fa-switch"
-                    aria-labelledby="2fa-label"
-                    disabled
-                    onCheckedChange={() => toast.info("Coming soon", { description: "2FA will be available in a future update." })}
-                  />
-                </div>
-                <Separator />
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">SSO (Single Sign-On)</p>
-                    <p className="text-sm text-muted-foreground">Enable SAML-based SSO</p>
-                  </div>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    disabled
-                    onClick={() => toast.info("Coming soon", { description: "SSO will be available in a future update." })}
-                  >
-                    Configure
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-            </fieldset>
-          </TabsContent>
-
-          {/* Admin Dashboard (workspace admins only) */}
-          {showAdminTab ? (
-            <TabsContent value="admin" className="space-y-6">
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
@@ -7189,6 +7181,143 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
                   </div>
                 </CardContent>
               </Card>
+
+              <Card>
+                <CardHeader>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <Activity className="h-5 w-5" />
+                        AI Route Switch Activity
+                      </CardTitle>
+                      <CardDescription>
+                        Current route states and recent skip events when routes are disabled in workspace settings.
+                      </CardDescription>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={refreshAiRouteSkips} disabled={aiRouteSkipsLoading}>
+                      <RefreshCcw className="h-4 w-4 mr-2" />
+                      Refresh
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {aiRouteSkipsError ? <div className="text-sm text-destructive">{aiRouteSkipsError}</div> : null}
+
+                  {aiRouteSkipsLoading ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">AI Draft Generation</p>
+                          <div className="mt-1 flex items-center justify-between">
+                            <Badge variant={aiPipelineToggles.draftGenerationEnabled ? "secondary" : "destructive"}>
+                              {aiPipelineToggles.draftGenerationEnabled ? "ON" : "OFF"}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                              {aiRouteSkips?.counts.draftGeneration ?? 0} skips
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">Draft Generation (Step 2)</p>
+                          <div className="mt-1 flex items-center justify-between">
+                            <Badge variant={aiPipelineToggles.draftGenerationStep2Enabled ? "secondary" : "destructive"}>
+                              {aiPipelineToggles.draftGenerationStep2Enabled ? "ON" : "OFF"}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                              {aiRouteSkips?.counts.draftGenerationStep2 ?? 0} skips
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">Draft Verification (Step 3)</p>
+                          <div className="mt-1 flex items-center justify-between">
+                            <Badge variant={aiPipelineToggles.draftVerificationStep3Enabled ? "secondary" : "destructive"}>
+                              {aiPipelineToggles.draftVerificationStep3Enabled ? "ON" : "OFF"}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                              {aiRouteSkips?.counts.draftVerificationStep3 ?? 0} skips
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">Meeting Overseer</p>
+                          <div className="mt-1 flex items-center justify-between">
+                            <Badge variant={aiPipelineToggles.meetingOverseerEnabled ? "secondary" : "destructive"}>
+                              {aiPipelineToggles.meetingOverseerEnabled ? "ON" : "OFF"}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                              {aiRouteSkips?.counts.meetingOverseer ?? 0} skips
+                            </span>
+                          </div>
+                        </div>
+                        <div className="rounded-lg border p-3">
+                          <p className="text-xs text-muted-foreground">Booking Process Router</p>
+                          <div className="mt-1 flex items-center justify-between">
+                            <Badge variant={aiPipelineToggles.aiRouteBookingProcessEnabled ? "secondary" : "destructive"}>
+                              {aiPipelineToggles.aiRouteBookingProcessEnabled ? "ON" : "OFF"}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">events</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-medium">Recent Skip Events</p>
+                          <p className="text-xs text-muted-foreground">
+                            Window: {aiRouteSkips?.window ?? aiObsWindow}
+                          </p>
+                        </div>
+                        {aiRouteSkips?.events.length ? (
+                          <div className="space-y-2">
+                            {aiRouteSkips.events.map((event) => {
+                              const routeLabel =
+                                event.route === "draft_generation"
+                                  ? "AI Draft Generation"
+                                  : event.route === "draft_generation_step2"
+                                    ? "Draft Generation (Step 2)"
+                                  : event.route === "draft_verification_step3"
+                                    ? "Draft Verification (Step 3)"
+                                    : "Meeting Overseer";
+                              return (
+                                <div key={event.id} className="rounded-lg border p-3 text-sm">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="outline">{routeLabel}</Badge>
+                                    <span className="text-xs text-muted-foreground">{new Date(event.createdAt).toLocaleString()}</span>
+                                  </div>
+                                  <div className="mt-1 text-xs text-muted-foreground">
+                                    reason: {event.reason}
+                                    {event.channel ? ` · channel: ${event.channel}` : ""}
+                                    {event.source ? ` · source: ${event.source}` : ""}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-sm text-muted-foreground">No skip events in this window.</div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+
+              {isWorkspaceAdmin && activeWorkspace && !isClientPortalUser ? (
+                <BulkDraftRegenerationCard clientId={activeWorkspace} />
+              ) : null}
+
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Observability</h3>
+                <Separator className="flex-1" />
+              </div>
+
               {aiDashboardCard}
               <AdminDashboardTab clientId={activeWorkspace ?? null} active={activeTab === "admin"} />
             </TabsContent>

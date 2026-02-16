@@ -7,6 +7,7 @@ export type AutoSendEvaluatorWorkspaceContext = {
   serviceDescription: string | null;
   goals: string | null;
   knowledgeAssets: KnowledgeAssetForContext[];
+  leadPhoneOnFile?: boolean;
 };
 
 export type AutoSendEvaluatorInputBuildResult = {
@@ -135,6 +136,10 @@ export function buildAutoSendEvaluatorInput(params: {
     knowledgeContextTokens?: number;
     knowledgeAssetTokens?: number;
   };
+  leadPhoneOnFile?: boolean;
+  actionSignalCallRequested?: boolean;
+  actionSignalExternalCalendar?: boolean;
+  actionSignalRouteSummary?: string | null;
 }): AutoSendEvaluatorInputBuildResult {
   const budgets = params.budgets ?? {};
 
@@ -185,6 +190,10 @@ export function buildAutoSendEvaluatorInput(params: {
     knowledgeSignals,
   });
 
+  const actionSignalCallRequested = Boolean(params.actionSignalCallRequested);
+  const actionSignalExternalCalendar = Boolean(params.actionSignalExternalCalendar);
+  const actionSignalRouteSummary = (params.actionSignalRouteSummary || "").trim();
+
   const payload = {
     channel: params.channel,
     subject: (params.subject || "").trim() || null,
@@ -201,6 +210,10 @@ export function buildAutoSendEvaluatorInput(params: {
     goals: goals.text.trim() || null,
     knowledge_context: knowledge.context.trim() || null,
     lead_memory_context: leadMemoryContext || null,
+    lead_phone_on_file: Boolean(params.leadPhoneOnFile),
+    action_signal_call_requested: actionSignalCallRequested,
+    action_signal_external_calendar: actionSignalExternalCalendar,
+    action_signal_route_summary: actionSignalRouteSummary || null,
     pricing_terms_verified: {
       source_precedence: "service_description_first",
       service_description: serviceSignals,
