@@ -125,6 +125,8 @@ function areChannelsEqual(a: readonly Channel[], b: readonly Channel[]) {
 }
 
 const ALL_CHANNELS_TOGGLE_VALUE: string[] = ["all"]
+const READ_API_FAIL_OPEN_HEADER = "x-zrg-read-api-fail-open"
+const READ_API_FAIL_OPEN_REASON = "server_action_unavailable"
 
 type InboxCountsResult = Awaited<ReturnType<typeof getInboxCountsAction>>;
 
@@ -135,16 +137,44 @@ function isReadApiDisabledPayload(
   return (payload as { error?: unknown }).error === "READ_API_DISABLED";
 }
 
+function isServerActionNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : ""
+  return /server action/i.test(message) && /not found/i.test(message)
+}
+
+interface InboxCountsApiPayload {
+  success?: boolean
+  counts?: InboxCountsResult
+  error?: string
+}
+
+async function fetchInboxCountsRead(
+  clientId: string,
+  allowFailOpen: boolean
+): Promise<{ response: Response; json: InboxCountsApiPayload }> {
+  const response = await fetch(`/api/inbox/counts?clientId=${encodeURIComponent(clientId)}`, {
+    method: "GET",
+    headers: allowFailOpen ? { [READ_API_FAIL_OPEN_HEADER]: READ_API_FAIL_OPEN_REASON } : undefined,
+  })
+  const json = (await response.json()) as InboxCountsApiPayload
+  return { response, json }
+}
+
 async function getInboxCountsRead(clientId: string): Promise<InboxCountsResult> {
-  const response = await fetch(`/api/inbox/counts?clientId=${encodeURIComponent(clientId)}`, { method: "GET" });
-  const json = (await response.json()) as {
-    success?: boolean;
-    counts?: InboxCountsResult;
-    error?: string;
-  };
+  const { response, json } = await fetchInboxCountsRead(clientId, false)
   if (!response.ok && isReadApiDisabledPayload(json)) {
     // Runtime flag is off on the server; fail open to the legacy action.
-    return getInboxCountsAction(clientId);
+    try {
+      return await getInboxCountsAction(clientId)
+    } catch (error) {
+      if (isServerActionNotFoundError(error)) {
+        const retry = await fetchInboxCountsRead(clientId, true)
+        if (retry.response.ok && retry.json?.counts) {
+          return retry.json.counts
+        }
+      }
+      throw error
+    }
   }
   if (!response.ok || !json?.counts) {
     // Fail-open to the legacy Server Action for safety.

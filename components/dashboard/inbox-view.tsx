@@ -130,12 +130,48 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
 
 type ConversationsReadResult = Awaited<ReturnType<typeof getConversationsCursorAction>>;
 type ConversationDetailResult = Awaited<ReturnType<typeof getConversationAction>>;
+const READ_API_FAIL_OPEN_HEADER = "x-zrg-read-api-fail-open";
+const READ_API_FAIL_OPEN_REASON = "server_action_unavailable";
 
 function isReadApiDisabledPayload(
   payload: unknown
 ): payload is { error: "READ_API_DISABLED" } {
   if (!payload || typeof payload !== "object") return false;
   return (payload as { error?: unknown }).error === "READ_API_DISABLED";
+}
+
+function isServerActionNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return /server action/i.test(message) && /not found/i.test(message);
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  if (typeof error === "string" && error.trim()) return error;
+  return fallback;
+}
+
+function toReadListError(payload: unknown, status: number): ConversationsReadResult {
+  return {
+    success: false,
+    conversations: [],
+    nextCursor: null,
+    hasMore: false,
+    error:
+      payload && typeof (payload as { error?: unknown }).error === "string"
+        ? (payload as { error: string }).error
+        : `Inbox read failed (${status})`,
+  };
+}
+
+function toReadDetailError(payload: unknown, status: number): ConversationDetailResult {
+  return {
+    success: false,
+    error:
+      payload && typeof (payload as { error?: unknown }).error === "string"
+        ? (payload as { error: string }).error
+        : `Conversation read failed (${status})`,
+  };
 }
 
 function buildConversationsReadUrl(options: ConversationsCursorOptions & { cursor?: string | null }): string {
@@ -166,21 +202,42 @@ function buildConversationsReadUrl(options: ConversationsCursorOptions & { curso
 
 async function getConversationsCursorRead(options: ConversationsCursorOptions): Promise<ConversationsReadResult> {
   const url = buildConversationsReadUrl(options);
-  const response = await fetch(url, { method: "GET" });
-  const json = (await response.json()) as ConversationsReadResult;
+  const fetchRead = async (allowFailOpen: boolean) => {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: allowFailOpen
+        ? { [READ_API_FAIL_OPEN_HEADER]: READ_API_FAIL_OPEN_REASON }
+        : undefined,
+    });
+    const json = (await response.json()) as ConversationsReadResult;
+    return { response, json };
+  };
+
+  const { response, json } = await fetchRead(false);
   if (!response.ok) {
     if (isReadApiDisabledPayload(json)) {
       // Runtime flag is off on the server; fail open to the legacy action.
-      return getConversationsCursorAction(options);
+      try {
+        return await getConversationsCursorAction(options);
+      } catch (error) {
+        // When deployment/client action IDs drift, retry through read API fail-open mode.
+        if (isServerActionNotFoundError(error)) {
+          const retry = await fetchRead(true);
+          if (retry.response.ok) return retry.json;
+          return toReadListError(retry.json, retry.response.status);
+        }
+
+        return {
+          success: false,
+          conversations: [],
+          nextCursor: null,
+          hasMore: false,
+          error: getErrorMessage(error, "Inbox read fallback failed"),
+        };
+      }
     }
 
-    return {
-      success: false,
-      conversations: [],
-      nextCursor: null,
-      hasMore: false,
-      error: json && typeof (json as any).error === "string" ? (json as any).error : `Inbox read failed (${response.status})`,
-    };
+    return toReadListError(json, response.status);
   }
   return json;
 }
@@ -191,18 +248,37 @@ async function getConversationRead(leadId: string, channel?: Channel): Promise<C
   const query = params.toString();
   const url = query ? `/api/inbox/conversations/${encodeURIComponent(leadId)}?${query}` : `/api/inbox/conversations/${encodeURIComponent(leadId)}`;
 
-  const response = await fetch(url, { method: "GET" });
-  const json = (await response.json()) as ConversationDetailResult;
+  const fetchRead = async (allowFailOpen: boolean) => {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: allowFailOpen
+        ? { [READ_API_FAIL_OPEN_HEADER]: READ_API_FAIL_OPEN_REASON }
+        : undefined,
+    });
+    const json = (await response.json()) as ConversationDetailResult;
+    return { response, json };
+  };
+
+  const { response, json } = await fetchRead(false);
   if (!response.ok) {
     if (isReadApiDisabledPayload(json)) {
       // Runtime flag is off on the server; fail open to the legacy action.
-      return getConversationAction(leadId, channel);
+      try {
+        return await getConversationAction(leadId, channel);
+      } catch (error) {
+        if (isServerActionNotFoundError(error)) {
+          const retry = await fetchRead(true);
+          if (retry.response.ok) return retry.json;
+          return toReadDetailError(retry.json, retry.response.status);
+        }
+        return {
+          success: false,
+          error: getErrorMessage(error, "Conversation read fallback failed"),
+        };
+      }
     }
 
-    return {
-      success: false,
-      error: json && typeof (json as any).error === "string" ? (json as any).error : `Conversation read failed (${response.status})`,
-    };
+    return toReadDetailError(json, response.status);
   }
   return json;
 }

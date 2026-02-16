@@ -4,9 +4,15 @@ import { getInboxCounts } from "@/actions/lead-actions";
 import { isInboxReadApiEnabled } from "@/lib/feature-flags";
 
 export const dynamic = "force-dynamic";
+const READ_API_FAIL_OPEN_HEADER = "x-zrg-read-api-fail-open";
+const READ_API_FAIL_OPEN_REASON = "server_action_unavailable";
+
+function shouldFailOpenReadApi(request: NextRequest): boolean {
+  return request.headers.get(READ_API_FAIL_OPEN_HEADER) === READ_API_FAIL_OPEN_REASON;
+}
 
 export async function GET(request: NextRequest) {
-  if (!isInboxReadApiEnabled()) {
+  if (!isInboxReadApiEnabled() && !shouldFailOpenReadApi(request)) {
     const response = NextResponse.json(
       { success: false, error: "READ_API_DISABLED" },
       { status: 503 }
