@@ -620,6 +620,26 @@ export async function getCrmWindowSummary(params: {
     const whereSql = Prisma.join(whereParts, " AND ");
     const bookedWindowFrom = dateFrom && Number.isFinite(dateFrom.getTime()) ? dateFrom : null;
     const bookedWindowTo = dateTo && Number.isFinite(dateTo.getTime()) ? dateTo : null;
+    const bookedInWindowAnySql =
+      bookedWindowFrom && bookedWindowTo
+        ? Prisma.sql`(
+            c."appointmentBookedAt" IS NOT NULL
+            AND c."appointmentBookedAt" >= ${bookedWindowFrom}
+            AND c."appointmentBookedAt" < ${bookedWindowTo}
+          )`
+        : Prisma.sql`false`;
+    const bookedInWindowKeptSql =
+      bookedWindowFrom && bookedWindowTo
+        ? Prisma.sql`(
+            c."appointmentBookedAt" IS NOT NULL
+            AND c."appointmentBookedAt" >= ${bookedWindowFrom}
+            AND c."appointmentBookedAt" < ${bookedWindowTo}
+            AND NOT (c."appointmentStatus" = 'canceled' OR c."appointmentCanceledAt" IS NOT NULL)
+          )`
+        : Prisma.sql`false`;
+    const responseModePredicateSql = responseModeFilter
+      ? Prisma.sql`effective_response_mode = ${responseModeFilter}`
+      : Prisma.sql`true`;
 
     const rows = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SET LOCAL statement_timeout = 15000`;
@@ -710,19 +730,10 @@ export async function getCrmWindowSummary(params: {
             AND NOT (c."appointmentStatus" = 'canceled' OR c."appointmentCanceledAt" IS NOT NULL)
           ) as booked_evidence,
           (
-            (c."appointmentBookedAt" IS NOT NULL)
-            AND ${bookedWindowFrom} IS NOT NULL
-            AND ${bookedWindowTo} IS NOT NULL
-            AND c."appointmentBookedAt" >= ${bookedWindowFrom}
-            AND c."appointmentBookedAt" < ${bookedWindowTo}
+            ${bookedInWindowAnySql}
           ) as booked_in_window_any,
           (
-            (c."appointmentBookedAt" IS NOT NULL)
-            AND ${bookedWindowFrom} IS NOT NULL
-            AND ${bookedWindowTo} IS NOT NULL
-            AND c."appointmentBookedAt" >= ${bookedWindowFrom}
-            AND c."appointmentBookedAt" < ${bookedWindowTo}
-            AND NOT (c."appointmentStatus" = 'canceled' OR c."appointmentCanceledAt" IS NOT NULL)
+            ${bookedInWindowKeptSql}
           ) as booked_in_window,
           COALESCE(
             c."responseMode"::text,
@@ -752,7 +763,7 @@ export async function getCrmWindowSummary(params: {
             ELSE 'UNKNOWN'
           END as setter_key
         FROM joined
-        WHERE (${responseModeFilter} IS NULL OR effective_response_mode = ${responseModeFilter})
+        WHERE ${responseModePredicateSql}
       )
       SELECT
         (
@@ -1008,7 +1019,7 @@ async function calculateResponseTimeMetricsSql(opts: {
           AND ${accessibleWhere}
       )
       SELECT
-        AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)::double precision
+        AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)
           FILTER (
             WHERE
               next_sent_at IS NOT NULL
@@ -1031,7 +1042,7 @@ async function calculateResponseTimeMetricsSql(opts: {
               AND ${bh1}
               AND ${bh2}
         )::bigint AS setter_count,
-        AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)::double precision
+        AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)
           FILTER (
             WHERE
               next_sent_at IS NOT NULL
@@ -1834,32 +1845,29 @@ export async function getEmailCampaignAnalytics(opts?: {
       campaigns.map((c) => [c.clientId, c.client.settings?.meetingBookingProvider ?? "GHL"])
     );
 
-    const leads = await prisma.lead.findMany({
-      where: {
-        ...accessibleLeadWhere(user.id),
-        ...(opts?.clientId ? { clientId: opts.clientId } : {}),
-        emailCampaignId: { in: campaignIds },
-        OR: [
-          { lastInboundAt: { gte: from, lt: to } },
-          { appointmentBookedAt: { gte: from, lt: to } },
-        ],
-      },
-      select: {
-        id: true,
-        clientId: true,
-        emailCampaignId: true,
-        sentimentTag: true,
-        lastInboundAt: true,
-        appointmentBookedAt: true,
-        ghlAppointmentId: true,
-        calendlyInviteeUri: true,
-        calendlyScheduledEventUri: true,
-        industry: true,
-        employeeHeadcount: true,
-      },
-    });
-
     type BucketCounts = { positive: number; booked: number };
+    type CampaignKpiAggregateRow = {
+      campaign_id: string;
+      positive_replies: bigint;
+      meetings_requested: bigint;
+      meetings_booked: bigint;
+    };
+    type SentimentAggregateRow = {
+      sentiment: string | null;
+      count: bigint;
+    };
+    type IndustryAggregateRow = {
+      campaign_id: string;
+      industry: string;
+      positive_replies: bigint;
+      meetings_booked: bigint;
+    };
+    type HeadcountAggregateRow = {
+      campaign_id: string;
+      raw_headcount: string;
+      positive_replies: bigint;
+      meetings_booked: bigint;
+    };
 
     const rowsByCampaignId = new Map<string, EmailCampaignKpiRow>();
     const industryAgg = new Map<string, BucketCounts>();
@@ -1889,80 +1897,154 @@ export async function getEmailCampaignAnalytics(opts?: {
     const industryByCampaign = new Map<string, Map<string, BucketCounts>>();
     const headcountByCampaign = new Map<string, Map<HeadcountBucket, BucketCounts>>();
 
-    const inRange = (d: Date | null) => !!d && d >= from && d < to;
+    const accessibleWhere = buildAccessibleLeadSqlWhere({ userId: user.id, clientId: opts?.clientId ?? null });
+    const campaignWhere = Prisma.sql`l."emailCampaignId" IN (${Prisma.join(campaignIds)})`;
+    const positivePredicate = Prisma.sql`(
+      l."lastInboundAt" >= ${from}
+      AND l."lastInboundAt" < ${to}
+      AND l."sentimentTag" IN (${Prisma.join([...KPI_POSITIVE_REPLIES])})
+    )`;
+    const meetingRequestedPredicate = Prisma.sql`(
+      l."lastInboundAt" >= ${from}
+      AND l."lastInboundAt" < ${to}
+      AND l."sentimentTag" IN (${Prisma.join([...KPI_MEETINGS_REQUESTED])})
+    )`;
+    const calendlyCampaignIds = campaigns
+      .filter((campaign) => (clientProviderById.get(campaign.clientId) ?? "GHL") === "CALENDLY")
+      .map((campaign) => campaign.id);
+    const ghlCampaignIds = campaigns
+      .filter((campaign) => (clientProviderById.get(campaign.clientId) ?? "GHL") !== "CALENDLY")
+      .map((campaign) => campaign.id);
+    const calendlyBookedPredicate = calendlyCampaignIds.length
+      ? Prisma.sql`(
+          l."emailCampaignId" IN (${Prisma.join(calendlyCampaignIds)})
+          AND (l."calendlyInviteeUri" IS NOT NULL OR l."calendlyScheduledEventUri" IS NOT NULL)
+        )`
+      : Prisma.sql`false`;
+    const ghlBookedPredicate = ghlCampaignIds.length
+      ? Prisma.sql`(
+          l."emailCampaignId" IN (${Prisma.join(ghlCampaignIds)})
+          AND l."ghlAppointmentId" IS NOT NULL
+        )`
+      : Prisma.sql`false`;
+    const bookedForProviderPredicate = Prisma.sql`(${calendlyBookedPredicate} OR ${ghlBookedPredicate})`;
+    const bookedInRangePredicate = Prisma.sql`(
+      l."appointmentBookedAt" >= ${from}
+      AND l."appointmentBookedAt" < ${to}
+      AND ${bookedForProviderPredicate}
+    )`;
 
-    for (const lead of leads) {
-      const campaignId = lead.emailCampaignId;
-      if (!campaignId) continue;
+    const [campaignKpiRows, sentimentRows, industryRows, headcountRows] = await prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SET LOCAL statement_timeout = 15000`;
 
-      const row = rowsByCampaignId.get(campaignId);
-      if (!row) continue;
+        const campaignKpiRows = await tx.$queryRaw<CampaignKpiAggregateRow[]>`
+          SELECT
+            l."emailCampaignId"::text AS campaign_id,
+            COUNT(*) FILTER (WHERE ${positivePredicate})::bigint AS positive_replies,
+            COUNT(*) FILTER (WHERE ${meetingRequestedPredicate})::bigint AS meetings_requested,
+            COUNT(*) FILTER (WHERE ${bookedInRangePredicate})::bigint AS meetings_booked
+          FROM "Lead" l
+          WHERE ${accessibleWhere}
+            AND ${campaignWhere}
+            AND (
+              (l."lastInboundAt" >= ${from} AND l."lastInboundAt" < ${to})
+              OR (l."appointmentBookedAt" >= ${from} AND l."appointmentBookedAt" < ${to})
+            )
+          GROUP BY l."emailCampaignId"
+        `;
 
-      if (inRange(lead.lastInboundAt)) {
-        const tag = lead.sentimentTag || "Unknown";
-        sentimentAgg.set(tag, (sentimentAgg.get(tag) ?? 0) + 1);
+        const sentimentRows = await tx.$queryRaw<SentimentAggregateRow[]>`
+          SELECT
+            l."sentimentTag"::text AS sentiment,
+            COUNT(*)::bigint AS count
+          FROM "Lead" l
+          WHERE ${accessibleWhere}
+            AND ${campaignWhere}
+            AND l."lastInboundAt" >= ${from}
+            AND l."lastInboundAt" < ${to}
+          GROUP BY l."sentimentTag"
+        `;
+
+        const industryRows = await tx.$queryRaw<IndustryAggregateRow[]>`
+          SELECT
+            l."emailCampaignId"::text AS campaign_id,
+            COALESCE(NULLIF(BTRIM(l."industry"), ''), 'Unknown')::text AS industry,
+            COUNT(*) FILTER (WHERE ${positivePredicate})::bigint AS positive_replies,
+            COUNT(*) FILTER (WHERE ${bookedInRangePredicate})::bigint AS meetings_booked
+          FROM "Lead" l
+          WHERE ${accessibleWhere}
+            AND ${campaignWhere}
+            AND (${positivePredicate} OR ${bookedInRangePredicate})
+          GROUP BY l."emailCampaignId", COALESCE(NULLIF(BTRIM(l."industry"), ''), 'Unknown')
+        `;
+
+        const headcountRows = await tx.$queryRaw<HeadcountAggregateRow[]>`
+          SELECT
+            l."emailCampaignId"::text AS campaign_id,
+            COALESCE(NULLIF(BTRIM(l."employeeHeadcount"), ''), 'Unknown')::text AS raw_headcount,
+            COUNT(*) FILTER (WHERE ${positivePredicate})::bigint AS positive_replies,
+            COUNT(*) FILTER (WHERE ${bookedInRangePredicate})::bigint AS meetings_booked
+          FROM "Lead" l
+          WHERE ${accessibleWhere}
+            AND ${campaignWhere}
+            AND (${positivePredicate} OR ${bookedInRangePredicate})
+          GROUP BY l."emailCampaignId", COALESCE(NULLIF(BTRIM(l."employeeHeadcount"), ''), 'Unknown')
+        `;
+
+        return [campaignKpiRows, sentimentRows, industryRows, headcountRows] as const;
       }
+    );
 
-      const provider = row.provider;
-      const bookedForProvider =
-        provider === "CALENDLY"
-          ? Boolean(lead.calendlyInviteeUri || lead.calendlyScheduledEventUri)
-          : Boolean(lead.ghlAppointmentId);
+    for (const row of campaignKpiRows) {
+      const campaign = rowsByCampaignId.get(row.campaign_id);
+      if (!campaign) continue;
+      campaign.positiveReplies = Number(row.positive_replies ?? 0);
+      campaign.meetingsRequested = Number(row.meetings_requested ?? 0);
+      campaign.meetingsBooked = Number(row.meetings_booked ?? 0);
+    }
 
-      const isPositive = inRange(lead.lastInboundAt) && KPI_POSITIVE_REPLIES.includes(lead.sentimentTag as any);
-      const isMeetingRequested = inRange(lead.lastInboundAt) && KPI_MEETINGS_REQUESTED.includes(lead.sentimentTag as any);
-      const isBooked = inRange(lead.appointmentBookedAt) && bookedForProvider;
+    for (const row of sentimentRows) {
+      const sentiment = !row.sentiment || row.sentiment === "New" ? "Unknown" : row.sentiment;
+      sentimentAgg.set(sentiment, (sentimentAgg.get(sentiment) ?? 0) + Number(row.count ?? 0));
+    }
 
-      if (isPositive) row.positiveReplies += 1;
-      if (isMeetingRequested) row.meetingsRequested += 1;
-      if (isBooked) row.meetingsBooked += 1;
+    for (const row of industryRows) {
+      const campaignId = row.campaign_id;
+      const industry = row.industry || "Unknown";
+      const positiveReplies = Number(row.positive_replies ?? 0);
+      const meetingsBooked = Number(row.meetings_booked ?? 0);
 
-      const industry = (lead.industry || "").trim() || "Unknown";
-      const bucket = bucketHeadcount(lead.employeeHeadcount);
+      const globalIndustry = industryAgg.get(industry) ?? { positive: 0, booked: 0 };
+      globalIndustry.positive += positiveReplies;
+      globalIndustry.booked += meetingsBooked;
+      industryAgg.set(industry, globalIndustry);
 
-      if (isPositive) {
-        const globalInd = industryAgg.get(industry) ?? { positive: 0, booked: 0 };
-        globalInd.positive += 1;
-        industryAgg.set(industry, globalInd);
+      const byCampaign = industryByCampaign.get(campaignId) ?? new Map<string, BucketCounts>();
+      const current = byCampaign.get(industry) ?? { positive: 0, booked: 0 };
+      current.positive += positiveReplies;
+      current.booked += meetingsBooked;
+      byCampaign.set(industry, current);
+      industryByCampaign.set(campaignId, byCampaign);
+    }
 
-        const globalHc = headcountAgg.get(bucket) ?? { positive: 0, booked: 0 };
-        globalHc.positive += 1;
-        headcountAgg.set(bucket, globalHc);
+    for (const row of headcountRows) {
+      const campaignId = row.campaign_id;
+      const bucket = bucketHeadcount(row.raw_headcount);
+      const positiveReplies = Number(row.positive_replies ?? 0);
+      const meetingsBooked = Number(row.meetings_booked ?? 0);
 
-        const perCampaignInd = industryByCampaign.get(campaignId) ?? new Map<string, BucketCounts>();
-        const indCounts = perCampaignInd.get(industry) ?? { positive: 0, booked: 0 };
-        indCounts.positive += 1;
-        perCampaignInd.set(industry, indCounts);
-        industryByCampaign.set(campaignId, perCampaignInd);
+      const globalHeadcount = headcountAgg.get(bucket) ?? { positive: 0, booked: 0 };
+      globalHeadcount.positive += positiveReplies;
+      globalHeadcount.booked += meetingsBooked;
+      headcountAgg.set(bucket, globalHeadcount);
 
-        const perCampaignHc = headcountByCampaign.get(campaignId) ?? new Map<HeadcountBucket, BucketCounts>();
-        const hcCounts = perCampaignHc.get(bucket) ?? { positive: 0, booked: 0 };
-        hcCounts.positive += 1;
-        perCampaignHc.set(bucket, hcCounts);
-        headcountByCampaign.set(campaignId, perCampaignHc);
-      }
-
-      if (isBooked) {
-        const globalInd = industryAgg.get(industry) ?? { positive: 0, booked: 0 };
-        globalInd.booked += 1;
-        industryAgg.set(industry, globalInd);
-
-        const globalHc = headcountAgg.get(bucket) ?? { positive: 0, booked: 0 };
-        globalHc.booked += 1;
-        headcountAgg.set(bucket, globalHc);
-
-        const perCampaignInd = industryByCampaign.get(campaignId) ?? new Map<string, BucketCounts>();
-        const indCounts = perCampaignInd.get(industry) ?? { positive: 0, booked: 0 };
-        indCounts.booked += 1;
-        perCampaignInd.set(industry, indCounts);
-        industryByCampaign.set(campaignId, perCampaignInd);
-
-        const perCampaignHc = headcountByCampaign.get(campaignId) ?? new Map<HeadcountBucket, BucketCounts>();
-        const hcCounts = perCampaignHc.get(bucket) ?? { positive: 0, booked: 0 };
-        hcCounts.booked += 1;
-        perCampaignHc.set(bucket, hcCounts);
-        headcountByCampaign.set(campaignId, perCampaignHc);
-      }
+      const byCampaign = headcountByCampaign.get(campaignId) ?? new Map<HeadcountBucket, BucketCounts>();
+      const current = byCampaign.get(bucket) ?? { positive: 0, booked: 0 };
+      current.positive += positiveReplies;
+      current.booked += meetingsBooked;
+      byCampaign.set(bucket, current);
+      headcountByCampaign.set(campaignId, byCampaign);
     }
 
     const campaignsOut = Array.from(rowsByCampaignId.values()).map((row) => {

@@ -1,7 +1,9 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState, type FocusEvent } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type FocusEvent } from "react"
 import { Loader2, RefreshCw } from "lucide-react"
+import { useVirtualizer } from "@tanstack/react-virtual"
+import { useDebounce } from "use-debounce"
 
 import {
   getCrmAssigneeOptions,
@@ -39,6 +41,9 @@ const RESPONSE_MODES = [
   { value: "HUMAN", label: "Human" },
   { value: "UNKNOWN", label: "Unknown" },
 ]
+
+const CRM_TABLE_ROW_ESTIMATE_PX = 56
+const CRM_TABLE_COLUMN_COUNT = 34
 
 const formatDate = (value: Date | null) => {
   if (!value) return "—"
@@ -462,19 +467,55 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
   const [filters, setFilters] = useState<CrmSheetFilters>({})
   const [assigneeOptions, setAssigneeOptions] = useState<CrmAssigneeOption[]>([])
   const [assigneeLoading, setAssigneeLoading] = useState(false)
+  const tableViewportRef = useRef<HTMLDivElement>(null)
 
   const canLoadMore = Boolean(nextCursor)
+  const windowFrom = window?.from ?? null
+  const windowTo = window?.to ?? null
+  const normalizedWindow = useMemo(() => {
+    if (!windowFrom || !windowTo) return undefined
+    return { from: windowFrom, to: windowTo }
+  }, [windowFrom, windowTo])
+  const [debouncedCampaign] = useDebounce(filters.campaign?.trim() ?? "", 350)
+  const [debouncedLeadCategory] = useDebounce(filters.leadCategory?.trim() ?? "", 350)
 
   const normalizedFilters = useMemo(() => {
     return {
-      ...filters,
-      campaign: filters.campaign?.trim() || null,
-      leadCategory: filters.leadCategory?.trim() || null,
+      campaign: debouncedCampaign || null,
+      leadCategory: debouncedLeadCategory || null,
       leadStatus: filters.leadStatus?.trim() || null,
-      dateFrom: window?.from ?? null,
-      dateTo: window?.to ?? null,
+      responseMode: filters.responseMode ?? null,
+      dateFrom: windowFrom,
+      dateTo: windowTo,
     }
-  }, [filters, window?.from, window?.to])
+  }, [debouncedCampaign, debouncedLeadCategory, filters.leadStatus, filters.responseMode, windowFrom, windowTo])
+
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => tableViewportRef.current,
+    estimateSize: () => CRM_TABLE_ROW_ESTIMATE_PX,
+    overscan: 8,
+  })
+
+  const virtualRows = rowVirtualizer.getVirtualItems()
+  const virtualPaddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
+  const virtualPaddingBottom =
+    virtualRows.length > 0
+      ? rowVirtualizer.getTotalSize() - virtualRows[virtualRows.length - 1].end
+      : 0
+
+  useEffect(() => {
+    tableViewportRef.current?.scrollTo({ top: 0 })
+  }, [
+    activeWorkspace,
+    normalizedFilters.campaign,
+    normalizedFilters.leadCategory,
+    normalizedFilters.leadStatus,
+    normalizedFilters.responseMode,
+    normalizedWindow?.from,
+    normalizedWindow?.to,
+  ])
 
   useEffect(() => {
     if (!activeWorkspace) {
@@ -494,7 +535,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
         clientId: activeWorkspace,
         limit: 150,
         filters: normalizedFilters,
-        window,
+        window: normalizedWindow,
       })
 
       if (cancelled) return
@@ -516,7 +557,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
     return () => {
       cancelled = true
     }
-  }, [activeWorkspace, normalizedFilters, window])
+  }, [activeWorkspace, normalizedFilters, normalizedWindow])
 
   useEffect(() => {
     if (!activeWorkspace) {
@@ -534,7 +575,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
       const result = await getCrmSummaryRead({
         clientId: activeWorkspace,
         filters: normalizedFilters,
-        window,
+        window: normalizedWindow,
       })
 
       if (cancelled) return
@@ -554,7 +595,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
     return () => {
       cancelled = true
     }
-  }, [activeWorkspace, normalizedFilters, window])
+  }, [activeWorkspace, normalizedFilters, normalizedWindow])
 
   useEffect(() => {
     if (!activeWorkspace) {
@@ -592,7 +633,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
       clientId: activeWorkspace,
       limit: 150,
       filters: normalizedFilters,
-      window,
+      window: normalizedWindow,
     })
 
     if (result.success && result.data) {
@@ -614,7 +655,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
       cursor: nextCursor,
       limit: 150,
       filters: normalizedFilters,
-      window,
+      window: normalizedWindow,
     })
 
     const data = result.data
@@ -936,7 +977,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
       ) : null}
 
       <div className="rounded-lg border">
-        <div className="overflow-auto">
+        <div ref={tableViewportRef} className="max-h-[70vh] overflow-auto">
           <Table className="min-w-[1800px]">
             <TableHeader>
               <TableRow>
@@ -979,18 +1020,32 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={34} className="h-28 text-center text-muted-foreground">
+                  <TableCell colSpan={CRM_TABLE_COLUMN_COUNT} className="h-28 text-center text-muted-foreground">
                     <Loader2 className="inline h-4 w-4 animate-spin" /> Loading CRM rows...
                   </TableCell>
                 </TableRow>
               ) : rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={34} className="h-28 text-center text-muted-foreground">
+                  <TableCell colSpan={CRM_TABLE_COLUMN_COUNT} className="h-28 text-center text-muted-foreground">
                     {error || "No CRM rows yet"}
                   </TableCell>
                 </TableRow>
               ) : (
-                rows.map((row) => (
+                <>
+                  {virtualPaddingTop > 0 ? (
+                    <TableRow aria-hidden="true">
+                      <TableCell
+                        colSpan={CRM_TABLE_COLUMN_COUNT}
+                        className="h-0 border-0 p-0"
+                        style={{ height: `${virtualPaddingTop}px` }}
+                      />
+                    </TableRow>
+                  ) : null}
+                  {virtualRows.map((virtualRow) => {
+                    const row = rows[virtualRow.index]
+                    if (!row) return null
+
+                    return (
                   <TableRow key={row.id}>
                     <TableCell>{formatDate(row.date)}</TableCell>
                     <TableCell>
@@ -1124,7 +1179,18 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
                     <TableCell>{responseModeLabel(row.responseMode)}</TableCell>
                     <TableCell>{row.leadScore == null ? "—" : row.leadScore}</TableCell>
                   </TableRow>
-                ))
+                    )
+                  })}
+                  {virtualPaddingBottom > 0 ? (
+                    <TableRow aria-hidden="true">
+                      <TableCell
+                        colSpan={CRM_TABLE_COLUMN_COUNT}
+                        className="h-0 border-0 p-0"
+                        style={{ height: `${virtualPaddingBottom}px` }}
+                      />
+                    </TableRow>
+                  ) : null}
+                </>
               )}
             </TableBody>
           </Table>
