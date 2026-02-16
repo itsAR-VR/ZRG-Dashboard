@@ -202,16 +202,31 @@ export const ConversationFeed = memo(function ConversationFeed({
     }
   }, [filteredConversations, sortBy, messageTimeById])
 
+  // TanStack Virtual triggers a rerender from inside `getMeasurements()` when certain
+  // options change (notably `getItemKey`). If we pass an inline `getItemKey` function,
+  // its identity changes every render and can cause React error #301 (render loop).
+  const sortedConversationsRef = useRef(sortedConversations)
+  sortedConversationsRef.current = sortedConversations
+
+  const getScrollElement = useCallback(() => parentRef.current, [])
+  const getItemKey = useCallback((index: number) => {
+    const conversations = sortedConversationsRef.current
+    if (index >= conversations.length) return "load-more"
+    return conversations[index]?.id ?? `conversation-${index}`
+  }, [])
+  const estimateSize = useCallback(() => ESTIMATED_CARD_HEIGHT, [])
+  const measureElement = useCallback(
+    (element: HTMLElement) => element.getBoundingClientRect().height,
+    []
+  )
+
   // Setup virtualizer with dynamic height measurement
   const rowVirtualizer = useVirtualizer({
     count: hasMore ? sortedConversations.length + 1 : sortedConversations.length,
-    getScrollElement: () => parentRef.current,
-    getItemKey: (index) => {
-      if (index >= sortedConversations.length) return "load-more"
-      return sortedConversations[index]?.id ?? `conversation-${index}`
-    },
-    estimateSize: () => ESTIMATED_CARD_HEIGHT,
-    measureElement: (element) => element.getBoundingClientRect().height,
+    getScrollElement,
+    getItemKey,
+    estimateSize,
+    measureElement,
     overscan: 5,
   })
 
