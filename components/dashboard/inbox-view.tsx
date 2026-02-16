@@ -186,15 +186,14 @@ export function InboxView({
   const activeConversationListTimestampRef = useRef<number>(0);
   const conversationsByIdRef = useRef<Map<string, ConversationWithSentiment>>(new Map());
 
-  // Reset SMS sub-client and score filters when switching workspaces
+  // Reset workspace-scoped state when switching workspaces.
+  // Uses functional setters to bail out when values are already defaults to avoid
+  // unnecessary rerenders during the workspace-switch remount/transition window.
   useEffect(() => {
     setActiveSmsClient((previous) => (previous === "all" ? previous : "all"));
     setActiveScoreFilter((previous) => (previous === "all" ? previous : "all"));
-  }, [activeWorkspace]);
+    setActiveSentiments((previous) => (previous.length === 0 ? previous : []));
 
-  // Reset selection when switching workspaces to avoid showing a lead from another workspace.
-  // Intentionally scoped to workspace transitions only.
-  useEffect(() => {
     // If the inbox was opened via deep-link (e.g. Slack "Edit in dashboard"),
     // keep that lead selected when the workspace auto-switches.
     const nextConversationId = initialConversationId ?? null;
@@ -205,6 +204,7 @@ export function InboxView({
     setIsCrmOpen((previous) => (previous ? false : previous));
     setNewConversationCount((previous) => (previous === 0 ? previous : 0));
     setSyncAllCursor((previous) => (previous === null ? previous : null));
+
     leadLastMessageAtRef.current = new Map();
     workspaceLastMessageAtRef.current = 0;
     activeConversationLastFetchedAtRef.current = new Map();
@@ -846,11 +846,6 @@ export function InboxView({
       setIsTogglingAutoFollowUpsOnReply(false);
     }
   }, [activeWorkspace, autoFollowUpsOnReplyEnabled]);
-
-  // Reset sentiment filter when workspace changes
-  useEffect(() => {
-    setActiveSentiments((previous) => (previous.length === 0 ? previous : []));
-  }, [activeWorkspace]);
 
   // Handle initial conversation selection (e.g., from CRM "Open in Master Inbox")
   useEffect(() => {

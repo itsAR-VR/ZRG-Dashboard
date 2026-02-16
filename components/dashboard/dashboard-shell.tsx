@@ -453,6 +453,14 @@ function DashboardPageInner() {
       context={{
         activeView,
         activeWorkspace,
+        selectedLeadId,
+        workspaceSelectionMode,
+        isWorkspaceTransitioning,
+        viewParam,
+        leadIdParam,
+        clientIdParam,
+        settingsTabParam,
+        actionParam,
       }}
     >
       <QueryProvider>
@@ -542,3 +550,7 @@ export default function DashboardPage() {
     </Suspense>
   )
 }
+
+// Preserve readable component names for production crash stacks.
+;(DashboardPageInner as any).displayName = "DashboardPageInner"
+;(DashboardPage as any).displayName = "DashboardPage"
