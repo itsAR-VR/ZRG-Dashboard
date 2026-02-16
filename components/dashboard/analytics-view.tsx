@@ -155,6 +155,30 @@ interface AnalyticsViewProps {
 
 type AnalyticsTab = "overview" | "workflows" | "campaigns" | "booking" | "crm" | "response-timing"
 const ANALYTICS_CACHE_TTL_MS = 90_000
+const USE_ANALYTICS_READ_API = process.env.NEXT_PUBLIC_ANALYTICS_READ_API_V1 === "1"
+
+type AnalyticsOverviewResult = Awaited<ReturnType<typeof getAnalytics>>
+
+async function getAnalyticsOverviewRead(
+  clientId: string,
+  opts?: { window?: { from: string; to: string } }
+): Promise<AnalyticsOverviewResult> {
+  if (!USE_ANALYTICS_READ_API) {
+    return getAnalytics(clientId, opts)
+  }
+
+  const params = new URLSearchParams()
+  params.set("clientId", clientId)
+  if (opts?.window?.from && opts?.window?.to) {
+    params.set("from", opts.window.from)
+    params.set("to", opts.window.to)
+  }
+
+  const response = await fetch(`/api/analytics/overview?${params.toString()}`, { method: "GET" })
+  const json = (await response.json()) as AnalyticsOverviewResult
+  if (!response.ok) return json
+  return json
+}
 
 export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsViewProps) {
   const [activeTab, setActiveTab] = useState<AnalyticsTab>("overview")
@@ -237,6 +261,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
       overviewFetchedAtRef.current = 0
       return
     }
+    const workspaceId = activeWorkspace
     const isOverviewCacheFresh =
       overviewFetchKey &&
       overviewFetchKeyRef.current === overviewFetchKey &&
@@ -251,7 +276,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
 
     async function fetchOverviewAnalytics() {
       setIsLoading(true)
-      const result = await getAnalytics(activeWorkspace, { window: windowParams })
+      const result = await getAnalyticsOverviewRead(workspaceId, { window: windowParams })
       if (cancelled) return
       if (result.success && result.data) {
         setData(result.data)

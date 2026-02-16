@@ -33,7 +33,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { getInboxCounts } from "@/actions/lead-actions"
+import { getInboxCounts as getInboxCountsAction } from "@/actions/lead-actions"
 import { signOut } from "@/actions/auth-actions"
 import { useUser } from "@/contexts/user-context"
 import type { Channel } from "@/actions/lead-actions"
@@ -126,6 +126,24 @@ function areChannelsEqual(a: readonly Channel[], b: readonly Channel[]) {
 
 const ALL_CHANNELS_TOGGLE_VALUE: string[] = ["all"]
 
+const USE_INBOX_READ_API = process.env.NEXT_PUBLIC_INBOX_READ_API_V1 === "1";
+
+type InboxCountsResult = Awaited<ReturnType<typeof getInboxCountsAction>>;
+
+async function getInboxCountsRead(clientId: string): Promise<InboxCountsResult> {
+  if (!USE_INBOX_READ_API) {
+    return getInboxCountsAction(clientId);
+  }
+
+  const response = await fetch(`/api/inbox/counts?clientId=${encodeURIComponent(clientId)}`, { method: "GET" });
+  const json = (await response.json()) as { success?: boolean; counts?: InboxCountsResult };
+  if (!response.ok || !json?.counts) {
+    // Fail-open to the legacy Server Action for safety.
+    return getInboxCountsAction(clientId);
+  }
+  return json.counts;
+}
+
 export function Sidebar({
   activeChannels,
   onChannelsChange,
@@ -169,6 +187,8 @@ export function Sidebar({
       lastWorkspaceRef.current = activeWorkspace
     }
 
+    const workspaceId = activeWorkspace
+
     const canFetch = () => {
       if (typeof document === "undefined") return true
       return document.visibilityState === "visible"
@@ -185,7 +205,7 @@ export function Sidebar({
 
       isFetchingCountsRef.current = true
       try {
-        const result = await getInboxCounts(activeWorkspace)
+        const result = await getInboxCountsRead(workspaceId)
         const nextCounts: FilterCounts = {
           allResponses: result.allResponses,
           attention: result.requiresAttention,

@@ -6,8 +6,8 @@ import { ConversationFeed, type ScoreFilter } from "./conversation-feed";
 import { ActionStation } from "./action-station";
 import { CrmDrawer } from "./crm-drawer";
 import { 
-  getConversationsCursor, 
-  getConversation, 
+  getConversationsCursor as getConversationsCursorAction, 
+  getConversation as getConversationAction, 
   type ConversationData,
   type Channel,
   type ConversationsCursorOptions 
@@ -36,6 +36,8 @@ interface InboxViewProps {
   onLeadSelect?: (leadId: string | null) => void;
   onClearFilters?: () => void;
 }
+
+const USE_INBOX_READ_API = process.env.NEXT_PUBLIC_INBOX_READ_API_V1 === "1";
 
 // Polling interval in milliseconds (60 seconds)
 const POLLING_INTERVAL = 60000;
@@ -126,6 +128,76 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
     requiresAttention: conv.requiresAttention,
     sentimentTag: conv.sentimentTag, // Keep original sentiment tag for filtering
   };
+}
+
+type ConversationsReadResult = Awaited<ReturnType<typeof getConversationsCursorAction>>;
+type ConversationDetailResult = Awaited<ReturnType<typeof getConversationAction>>;
+
+function buildConversationsReadUrl(options: ConversationsCursorOptions & { cursor?: string | null }): string {
+  const params = new URLSearchParams();
+
+  if (options.clientId) params.set("clientId", options.clientId);
+  if (options.cursor) params.set("cursor", options.cursor);
+  if (typeof options.limit === "number") params.set("limit", String(options.limit));
+  if (options.search) params.set("search", options.search);
+
+  if (options.channels && options.channels.length > 0) {
+    params.set("channels", options.channels.join(","));
+  }
+  if (options.sentimentTags && options.sentimentTags.length > 0) {
+    params.set("sentimentTags", options.sentimentTags.join(","));
+  }
+  if (options.smsCampaignId) params.set("smsCampaignId", options.smsCampaignId);
+  if (typeof options.smsCampaignUnattributed === "boolean") {
+    params.set("smsCampaignUnattributed", options.smsCampaignUnattributed ? "true" : "false");
+  }
+  if (options.filter) params.set("filter", options.filter);
+  if (options.scoreFilter) params.set("scoreFilter", options.scoreFilter);
+  if (options.channel) params.set("channel", options.channel);
+
+  const query = params.toString();
+  return query ? `/api/inbox/conversations?${query}` : "/api/inbox/conversations";
+}
+
+async function getConversationsCursorRead(options: ConversationsCursorOptions): Promise<ConversationsReadResult> {
+  if (!USE_INBOX_READ_API) {
+    return getConversationsCursorAction(options);
+  }
+
+  const url = buildConversationsReadUrl(options);
+  const response = await fetch(url, { method: "GET" });
+  const json = (await response.json()) as ConversationsReadResult;
+  if (!response.ok) {
+    return {
+      success: false,
+      conversations: [],
+      nextCursor: null,
+      hasMore: false,
+      error: json && typeof (json as any).error === "string" ? (json as any).error : `Inbox read failed (${response.status})`,
+    };
+  }
+  return json;
+}
+
+async function getConversationRead(leadId: string, channel?: Channel): Promise<ConversationDetailResult> {
+  if (!USE_INBOX_READ_API) {
+    return getConversationAction(leadId, channel);
+  }
+
+  const params = new URLSearchParams();
+  if (channel) params.set("channel", channel);
+  const query = params.toString();
+  const url = query ? `/api/inbox/conversations/${encodeURIComponent(leadId)}?${query}` : `/api/inbox/conversations/${encodeURIComponent(leadId)}`;
+
+  const response = await fetch(url, { method: "GET" });
+  const json = (await response.json()) as ConversationDetailResult;
+  if (!response.ok) {
+    return {
+      success: false,
+      error: json && typeof (json as any).error === "string" ? (json as any).error : `Conversation read failed (${response.status})`,
+    };
+  }
+  return json;
 }
 
 export function InboxView({
@@ -336,7 +408,7 @@ export function InboxView({
 
   const fetchConversationsPage = useCallback(
     async ({ pageParam }: { pageParam: unknown }) => {
-      const result = await getConversationsCursor({
+      const result = await getConversationsCursorRead({
         ...queryOptions,
         // Jam evidence shows cursor can serialize as `{}` across the RSC boundary.
         // Only pass it through when it is a real cursor string.
@@ -537,7 +609,7 @@ export function InboxView({
     }
 
     // Fetch full messages in background
-    const result = await getConversation(conversationId);
+    const result = await getConversationRead(conversationId);
     if (
       activeConversationRequestRef.current !== requestId ||
       activeConversationIdRef.current !== conversationId
