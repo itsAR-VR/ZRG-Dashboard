@@ -1,7 +1,7 @@
-# Phase 154b — Vercel KV Cache Layer + Safe Cache Keys + Invalidation Primitives
+# Phase 154b — Redis Cache Layer (Upstash via Vercel) + Safe Cache Keys + Invalidation Primitives
 
 ## Focus
-Add a shared cache (Vercel KV) for inbox reads so repeated workspace switching and filter changes do not repeatedly hit Postgres. This subphase defines cache keys, TTLs, and invalidation primitives that later realtime and job workers will use.
+Add a shared Redis cache (Upstash, provisioned via the Vercel marketplace/integration) for inbox reads so repeated workspace switching and filter changes do not repeatedly hit Postgres. This subphase defines cache keys, TTLs, and invalidation primitives that later realtime and job workers will use.
 
 ## Inputs
 - GET APIs from Phase 154a:
@@ -12,8 +12,8 @@ Add a shared cache (Vercel KV) for inbox reads so repeated workspace switching a
 
 ## Work
 1. Add KV integration:
-   - Add dependency: `@vercel/kv`
-   - New file: `lib/kv.ts` (thin wrapper: `getJson`, `setJson`, `incr`, `del`, `withCache`)
+   - Add dependency: `@upstash/redis`
+   - New file: `lib/redis.ts` (thin wrapper: `getJson`, `setJson`, `incr`, `del`, `withCache`)
 2. Define cache-busting version keys:
    - `inbox:v1:ver:{clientId}` integer (KV `incr`)
    - All cache keys include `ver` so a bump invalidates everything for that workspace without scanning deletes.
@@ -39,9 +39,8 @@ Add a shared cache (Vercel KV) for inbox reads so repeated workspace switching a
    - Defer exhaustive invalidation mapping until Phase 154d (realtime) and Phase 154e (jobs) are in place.
 
 ## Output
-- Inbox read APIs are backed by KV with safe, tenant-scoped cache keys and TTLs.
+- Inbox read APIs are backed by Redis with safe, tenant-scoped cache keys and TTLs.
 - A single “workspace version bump” primitive exists and is invoked on obvious inbox-mutating writes.
 
 ## Handoff
 Proceed to Phase 154c to maintain `inbox_counts` so counts become O(1) reads without scanning leads.
-
