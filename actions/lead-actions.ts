@@ -4,6 +4,7 @@ import { getPublicAppUrl } from "@/lib/app-url";
 import { addToAlternateEmails, emailsMatch, normalizeOptionalEmail, validateEmail } from "@/lib/email-participants";
 import { getAvailableChannels } from "@/lib/lead-matching";
 import { prisma } from "@/lib/prisma";
+import { redisGetJson, redisSetJson } from "@/lib/redis";
 import { toSafeActionError } from "@/lib/safe-action-error";
 import { sendSlackDmByEmail } from "@/lib/slack-dm";
 import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
@@ -547,6 +548,10 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       ? Prisma.sql`and l."assignedToUserId" = ${scope.userId}`
       : Prisma.sql``;
 
+    const cacheKey = `inbox:v1:counts:${scope.userId}:${clientId || "__all__"}:${setterFilter ? scope.userId : "__all__"}`;
+    const cached = await redisGetJson<typeof empty>(cacheKey);
+    if (cached) return cached;
+
     const isMissingLastZrgOutboundAt = (error: unknown): boolean => {
       if (!error || typeof error !== "object") return false;
       const anyError = error as { code?: unknown; message?: unknown };
@@ -778,14 +783,19 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       };
     };
 
+    let computed: typeof empty;
     try {
-      return await runCountsUsingLeadRollups();
+      computed = await runCountsUsingLeadRollups();
     } catch (error) {
       if (isMissingLastZrgOutboundAt(error)) {
-        return await runLegacyCounts();
+        computed = await runLegacyCounts();
+      } else {
+        throw error;
       }
-      throw error;
     }
+
+    await redisSetJson(cacheKey, computed, { exSeconds: 10 });
+    return computed;
   } catch (error) {
     // Auth/authorization issues are expected in some states (signed-out, stale workspace selection).
     // Avoid noisy error logs and return a safe empty-state.
@@ -1264,6 +1274,36 @@ export async function getConversationsCursor(
       return { success: true, conversations: [], nextCursor: null, hasMore: false };
     }
 
+    // Phase 43: SETTER role filtering
+    // If user is SETTER for the selected workspace, only show their assigned leads
+    let setterUserId: string | null = null;
+    if (clientId && scope.clientIds.length === 1) {
+      const userRole = await getUserRoleForClient(scope.userId, clientId);
+      if (isSetterRole(userRole)) {
+        setterUserId = scope.userId;
+      }
+    }
+
+    const cacheKey = [
+      "inbox:v1:list",
+      scope.userId,
+      clientId || "__all__",
+      setterUserId ? `setter:${setterUserId}` : "all",
+      cursor || "",
+      String(limit),
+      search || "",
+      channels?.length ? channels.join(",") : channel || "all",
+      sentimentTag || "",
+      sentimentTags?.length ? sentimentTags.join(",") : "",
+      smsCampaignId || "",
+      typeof smsCampaignUnattributed === "boolean" ? (smsCampaignUnattributed ? "unattributed" : "attributed") : "",
+      filter || "all",
+      scoreFilter || "all",
+    ].join(":");
+
+    const cached = await redisGetJson<ConversationsCursorResult>(cacheKey);
+    if (cached) return cached;
+
     // Build the where clause for filtering
     const whereConditions: any[] = [];
     const now = new Date();
@@ -1271,13 +1311,8 @@ export async function getConversationsCursor(
 
     whereConditions.push({ clientId: { in: scope.clientIds } });
 
-    // Phase 43: SETTER role filtering
-    // If user is SETTER for the selected workspace, only show their assigned leads
-    if (clientId && scope.clientIds.length === 1) {
-      const userRole = await getUserRoleForClient(scope.userId, clientId);
-      if (isSetterRole(userRole)) {
-        whereConditions.push({ assignedToUserId: scope.userId });
-      }
+    if (setterUserId) {
+      whereConditions.push({ assignedToUserId: setterUserId });
     }
 
     // Search filter
@@ -1667,12 +1702,15 @@ export async function getConversationsCursor(
       transformLeadToConversation(lead, { hasOpenReply: hasOpenReplyOverride, setterEmailMap })
     );
 
-    return {
+    const out: ConversationsCursorResult = {
       success: true,
       conversations,
       nextCursor,
       hasMore,
     };
+
+    await redisSetJson(cacheKey, out, { exSeconds: cursor ? 30 : 15 });
+    return out;
   } catch (error) {
     const safe = toSafeActionError(error, { defaultPublicMessage: "Failed to load conversations" });
     if (safe.errorClass === "not_authenticated" || safe.errorClass === "unauthorized") {
@@ -1929,12 +1967,14 @@ export async function getConversationsFromEnd(
 
     const nextCursor = reversedLeads.length > 0 ? reversedLeads[0].id : null;
 
-    return {
+    const out: ConversationsCursorResult = {
       success: true,
       conversations,
       nextCursor,
       hasMore: leads.length === limit,
     };
+
+    return out;
   } catch (error) {
     const safe = toSafeActionError(error, { defaultPublicMessage: "Failed to load conversations" });
     if (safe.errorClass === "not_authenticated" || safe.errorClass === "unauthorized") {

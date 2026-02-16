@@ -15,6 +15,7 @@ import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { isSamePhone, toStoredPhone } from "@/lib/phone-utils";
 import { requireAuthUser } from "@/lib/workspace-access";
 import { formatDurationMs } from "@/lib/business-hours";
+import { redisGetJson, redisSetJson } from "@/lib/redis";
 import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
 import { accessibleClientWhere, accessibleLeadWhere } from "@/lib/workspace-access-filters";
 import { requireWorkspaceCapabilities } from "@/lib/workspace-capabilities";
@@ -1228,12 +1229,22 @@ export async function getAnalytics(
 
     // Cache is user-scoped to avoid cross-user data leakage.
     const cacheKey = `${user.id}:${clientId || "__all__"}:${windowState.key}`;
+    const redisKey = `analytics:v1:${cacheKey}`;
     const now = Date.now();
 
     if (!opts?.forceRefresh) {
       const cached = analyticsCache.get(cacheKey);
       if (cached && cached.expiresAt > now) {
         return { success: true, data: cached.data };
+      }
+
+      const redisCached = await redisGetJson<AnalyticsData>(redisKey);
+      if (redisCached) {
+        analyticsCache.set(cacheKey, {
+          data: redisCached,
+          expiresAt: now + ANALYTICS_CACHE_TTL_MS,
+        });
+        return { success: true, data: redisCached };
       }
     }
 
@@ -1613,6 +1624,9 @@ export async function getAnalytics(
     analyticsCache.set(cacheKey, {
       data: analyticsData,
       expiresAt: Date.now() + ANALYTICS_CACHE_TTL_MS,
+    });
+    void redisSetJson(redisKey, analyticsData, {
+      exSeconds: Math.ceil(ANALYTICS_CACHE_TTL_MS / 1000),
     });
 
     return { success: true, data: analyticsData };

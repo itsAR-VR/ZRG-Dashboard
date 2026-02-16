@@ -1,7 +1,7 @@
 # Phase 154g — Analytics Read Path Speed (GET APIs + KV Cache + Chunking + Optional Pre-Aggregates)
 
 ## Focus
-Reduce analytics time-to-first-insight and steady-state DB load by moving analytics reads off client Server Actions and onto GET read APIs with KV caching, and by chunking heavy sections so the UI renders fast even when some charts are still loading.
+Reduce analytics time-to-first-insight and steady-state DB load by moving analytics reads off client Server Actions and onto GET read APIs with Redis caching, and by chunking heavy sections so the UI renders fast even when some charts are still loading.
 
 ## Inputs
 - Analytics UI entrypoints:
@@ -14,7 +14,7 @@ Reduce analytics time-to-first-insight and steady-state DB load by moving analyt
 - Existing caching:
   - client-side `useRef` cache in `AnalyticsView` (TTL 90s)
   - server-side in-memory cache map in `actions/analytics-actions.ts` (TTL 5m, not durable in serverless)
-- KV primitives from Phase 154b.
+- Redis primitives from Phase 154b.
 
 ## Work
 ### 1) Define the new read API surface (GET only)
@@ -31,7 +31,7 @@ Constraints:
 - All endpoints must apply existing authorization rules (match `accessibleClientWhere` / `resolveClientScope` patterns).
 
 ### 2) KV caching (server-side, production-grade)
-Implement KV caching around each endpoint with:
+Implement Redis caching around each endpoint with:
 - Key: `analytics:v1:{userId}:{clientId}:{window}:{endpoint}:{otherFiltersHash}:{ver}`
 - TTL defaults:
   - overview: 120s

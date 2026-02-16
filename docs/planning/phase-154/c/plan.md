@@ -6,7 +6,7 @@ Make inbox counts cheap and predictable by storing per-workspace rollups in Post
 ## Inputs
 - Current counts semantics: `actions/lead-actions.ts` `getInboxCounts` (raw SQL is the source of truth for categories).
 - Supabase Postgres (project ref `pzaptpgrcezknnsfytob`) and existing `Lead` rollup columns.
-- KV version bump primitive from Phase 154b (used to invalidate cached counts after recompute).
+- Redis version bump primitive from Phase 154b (used to invalidate cached counts after recompute).
 
 ## Work
 1. Define the canonical count categories (match current sidebar):
