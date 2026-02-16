@@ -997,76 +997,81 @@ async function calculateResponseTimeMetricsSql(opts: {
     const bh1 = sqlIsWithinEstBusinessHours(Prisma.sql`sent_at`);
     const bh2 = sqlIsWithinEstBusinessHours(Prisma.sql`next_sent_at`);
 
-    const rows = await prisma.$queryRaw<
-      Array<{
-        setter_avg_ms: number | null;
-        setter_count: bigint;
-        client_avg_ms: number | null;
-        client_count: bigint;
-      }>
-    >`
-      WITH ordered AS (
+    const rows = await prisma.$transaction(async (tx) => {
+      // Keep overview responsive under large message volumes. If this query times out,
+      // we fail open to "N/A" rather than delaying the entire analytics payload.
+      await tx.$executeRaw`SET LOCAL statement_timeout = 5000`;
+      return tx.$queryRaw<
+        Array<{
+          setter_avg_ms: number | null;
+          setter_count: bigint;
+          client_avg_ms: number | null;
+          client_count: bigint;
+        }>
+      >`
+        WITH ordered AS (
+          SELECT
+            m."sentAt" AS sent_at,
+            m.direction AS direction,
+            m.channel AS channel,
+            LEAD(m."sentAt") OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_sent_at,
+            LEAD(m.direction) OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_direction
+          FROM "Message" m
+          INNER JOIN "Lead" l ON l.id = m."leadId"
+          WHERE m."sentAt" >= ${windowFrom}
+            AND m."sentAt" < ${windowTo}
+            AND ${accessibleWhere}
+        )
         SELECT
-          m."sentAt" AS sent_at,
-          m.direction AS direction,
-          m.channel AS channel,
-          LEAD(m."sentAt") OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_sent_at,
-          LEAD(m.direction) OVER (PARTITION BY m."leadId", m.channel ORDER BY m."sentAt") AS next_direction
-        FROM "Message" m
-        INNER JOIN "Lead" l ON l.id = m."leadId"
-        WHERE m."sentAt" >= ${windowFrom}
-          AND m."sentAt" < ${windowTo}
-          AND ${accessibleWhere}
-      )
-      SELECT
-        AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)
-          FILTER (
-            WHERE
-              next_sent_at IS NOT NULL
-              AND next_sent_at > sent_at
-              AND next_sent_at < ${windowTo}
-              AND next_sent_at <= sent_at + INTERVAL '7 days'
-              AND direction = 'inbound'
-              AND next_direction = 'outbound'
-              AND ${bh1}
-              AND ${bh2}
-          ) AS setter_avg_ms,
-        COUNT(*) FILTER (
-            WHERE
-              next_sent_at IS NOT NULL
-              AND next_sent_at > sent_at
-              AND next_sent_at < ${windowTo}
-              AND next_sent_at <= sent_at + INTERVAL '7 days'
-              AND direction = 'inbound'
-              AND next_direction = 'outbound'
-              AND ${bh1}
-              AND ${bh2}
-        )::bigint AS setter_count,
-        AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)
-          FILTER (
-            WHERE
-              next_sent_at IS NOT NULL
-              AND next_sent_at > sent_at
-              AND next_sent_at < ${windowTo}
-              AND next_sent_at <= sent_at + INTERVAL '7 days'
-              AND direction = 'outbound'
-              AND next_direction = 'inbound'
-              AND ${bh1}
-              AND ${bh2}
-          ) AS client_avg_ms,
-        COUNT(*) FILTER (
-            WHERE
-              next_sent_at IS NOT NULL
-              AND next_sent_at > sent_at
-              AND next_sent_at < ${windowTo}
-              AND next_sent_at <= sent_at + INTERVAL '7 days'
-              AND direction = 'outbound'
-              AND next_direction = 'inbound'
-              AND ${bh1}
-              AND ${bh2}
-        )::bigint AS client_count
-      FROM ordered
-    `;
+          AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)
+            FILTER (
+              WHERE
+                next_sent_at IS NOT NULL
+                AND next_sent_at > sent_at
+                AND next_sent_at < ${windowTo}
+                AND next_sent_at <= sent_at + INTERVAL '7 days'
+                AND direction = 'inbound'
+                AND next_direction = 'outbound'
+                AND ${bh1}
+                AND ${bh2}
+            ) AS setter_avg_ms,
+          COUNT(*) FILTER (
+              WHERE
+                next_sent_at IS NOT NULL
+                AND next_sent_at > sent_at
+                AND next_sent_at < ${windowTo}
+                AND next_sent_at <= sent_at + INTERVAL '7 days'
+                AND direction = 'inbound'
+                AND next_direction = 'outbound'
+                AND ${bh1}
+                AND ${bh2}
+          )::bigint AS setter_count,
+          AVG(EXTRACT(EPOCH FROM (next_sent_at - sent_at)) * 1000)
+            FILTER (
+              WHERE
+                next_sent_at IS NOT NULL
+                AND next_sent_at > sent_at
+                AND next_sent_at < ${windowTo}
+                AND next_sent_at <= sent_at + INTERVAL '7 days'
+                AND direction = 'outbound'
+                AND next_direction = 'inbound'
+                AND ${bh1}
+                AND ${bh2}
+            ) AS client_avg_ms,
+          COUNT(*) FILTER (
+              WHERE
+                next_sent_at IS NOT NULL
+                AND next_sent_at > sent_at
+                AND next_sent_at < ${windowTo}
+                AND next_sent_at <= sent_at + INTERVAL '7 days'
+                AND direction = 'outbound'
+                AND next_direction = 'inbound'
+                AND ${bh1}
+                AND ${bh2}
+          )::bigint AS client_count
+        FROM ordered
+      `;
+    });
 
     const row = rows[0];
     if (!row) return defaultMetrics;
@@ -1326,63 +1331,68 @@ export async function getAnalytics(
     let perSetterResponseTimes: AnalyticsData["perSetterResponseTimes"] = [];
 
     if (includeCore) {
-      // Get total leads (windowed by createdAt when a window is provided)
-      totalLeads = await prisma.lead.count({
-        where: { ...leadWhere, ...leadCreatedWindow },
-      });
-
-      // Outbound leads contacted (best-effort from DB only; outbound SMS from GHL automations isn't ingested yet)
-      outboundLeadsContacted = await prisma.lead.count({
-        where: {
-          ...leadWhere,
-          messages: {
-            some: {
-              direction: "outbound",
-              ...messageWindow,
+      const [nextTotalLeads, nextOutboundLeadsContacted, nextResponses, nextMeetingsBooked, nextResponseTimeMetrics, nextCapacity] =
+        await Promise.all([
+          // Total leads (windowed by createdAt when a window is provided).
+          prisma.lead.count({
+            where: { ...leadWhere, ...leadCreatedWindow },
+          }),
+          // Outbound leads contacted (best-effort from DB only; outbound SMS from GHL automations isn't ingested yet).
+          prisma.lead.count({
+            where: {
+              ...leadWhere,
+              messages: {
+                some: {
+                  direction: "outbound",
+                  ...messageWindow,
+                },
+              },
             },
-          },
-        },
-      });
+          }),
+          // Responses = unique leads with inbound messages.
+          prisma.lead.count({
+            where: respondedLeadFilter,
+          }),
+          // Meetings booked.
+          prisma.lead.count({
+            where: {
+              ...leadWhere,
+              ...(hasWindow
+                ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
+                : {
+                    OR: [
+                      { appointmentBookedAt: { not: null } },
+                      { ghlAppointmentId: { not: null } },
+                      { calendlyInviteeUri: { not: null } },
+                      { calendlyScheduledEventUri: { not: null } },
+                    ],
+                  }),
+            },
+          }),
+          calculateResponseTimeMetricsSql({
+            userId: user.id,
+            clientId,
+            window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
+          }),
+          clientId
+            ? getWorkspaceCapacityUtilization({ clientId, windowDays: 30 }).catch((error) => {
+                console.warn("[Analytics] Failed to compute workspace capacity utilization:", error);
+                return null;
+              })
+            : Promise.resolve(null),
+        ]);
 
-      // Responses = unique leads with inbound messages
-      responses = await prisma.lead.count({
-        where: respondedLeadFilter,
-      });
+      totalLeads = nextTotalLeads;
+      outboundLeadsContacted = nextOutboundLeadsContacted;
+      responses = nextResponses;
+      meetingsBooked = nextMeetingsBooked;
+      responseTimeMetrics = nextResponseTimeMetrics;
+      capacity = nextCapacity;
 
       // Response rate = responses / outbound leads contacted
       responseRate = outboundLeadsContacted > 0
         ? Math.round((responses / outboundLeadsContacted) * 100)
         : 0;
-
-      // Meetings booked = leads with a booked appointment
-      meetingsBooked = await prisma.lead.count({
-        where: {
-          ...leadWhere,
-          ...(hasWindow
-            ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
-            : {
-                OR: [
-                  { appointmentBookedAt: { not: null } },
-                  { ghlAppointmentId: { not: null } },
-                  { calendlyInviteeUri: { not: null } },
-                  { calendlyScheduledEventUri: { not: null } },
-                ],
-              }),
-        },
-      });
-
-      responseTimeMetrics = await calculateResponseTimeMetricsSql({
-        userId: user.id,
-        clientId,
-        window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
-      });
-
-      capacity = clientId
-        ? await getWorkspaceCapacityUtilization({ clientId, windowDays: 30 }).catch((error) => {
-            console.warn("[Analytics] Failed to compute workspace capacity utilization:", error);
-            return null;
-          })
-        : null;
     }
 
     if (includeBreakdowns) {
