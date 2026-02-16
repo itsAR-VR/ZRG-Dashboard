@@ -54,3 +54,8 @@ Phase complete. Feed outcomes into the next architecture phase only if SLO gaps 
 - Observed backend exception: Prisma `P2010` / Postgres `42883` (`operator does not exist: timestamp without time zone >= interval`).
 - Implemented and validated typed SQL parameter fix in `actions/response-timing-analytics-actions.ts` (`::timestamp`, `::int`) to remove interval-comparison ambiguity.
 - Added regression test `lib/__tests__/response-timing-analytics-sql-typing.test.ts` and updated existing response-timing analytics source assertion test.
+- Deployed patch commit `66eefa4` to production and re-ran authenticated `8 cold + 8 warm` canary in live browser session for workspace `29156db4-e9bf-4e26-9cb8-2a75ae3d9384`.
+- Canary results (all endpoints `200`, `response-timing` failures `0`):
+  - Cold p95 (`x-zrg-duration-ms`): overview `336ms`, workflows `278ms`, campaigns `383ms`, response-timing `252ms`, CRM rows `434ms`.
+  - Warm p95 (`x-zrg-duration-ms`): overview `264ms`, workflows `241ms`, campaigns `308ms`, response-timing `301ms`, CRM rows `272ms`.
+- SLO status from canary packet: pass for warm and cold latency thresholds.

@@ -36,7 +36,7 @@ Close the remaining analytics performance gap now that Inbox/CRM navigation is f
 
 ## Objectives
 * [x] Eliminate analytics `500` regressions (starting with CRM summary `42P18`) and codify safe raw SQL bind patterns.
-* [ ] Achieve production analytics latency SLO with evidence packet (warm and cold) across overview/workflows/campaigns/response-timing/CRM summary endpoints.
+* [x] Achieve production analytics latency SLO with evidence packet (warm and cold) across overview/workflows/campaigns/response-timing/CRM summary endpoints.
 * [x] Reduce backend query cost for top latency contributors (`getAnalytics`, `getEmailCampaignAnalytics`, `getCrmWindowSummary`).
 * [x] Improve analytics perceived speed in UI (fast first paint + reduced refetch churn + scalable row rendering).
 * [ ] Ship with safe rollout/rollback controls and clear stop gates.
@@ -117,9 +117,7 @@ Close the remaining analytics performance gap now that Inbox/CRM navigation is f
 - [x] SLO evidence protocol for 157f: fixed `8 cold + 8 warm` samples per endpoint.
 
 ## Open Questions (Need Human Input)
-- [ ] Who will run the authenticated canary evidence packet (8 cold + 8 warm) and provide the artifact JSON from `scripts/analytics-canary-probe.ts`? (confidence ~80%)
-  - Why it matters: 157f/157g cannot be fully closed without authenticated warm/cold p95 and 403/rollback validation evidence.
-  - Current assumption in this plan: user/operator runs the script in production-authenticated context and shares artifact path.
+- [ ] Confirm whether to require explicit warm-cache `x-zrg-cache=hit` evidence as a hard Phase 157 close gate, or treat current latency-pass packet as sufficient and carry cache-hit tuning into next phase.
 
 ## Subphase Index
 * a — Production Baseline + Failure Repro Packet
@@ -143,4 +141,5 @@ Close the remaining analytics performance gap now that Inbox/CRM navigation is f
 - 2026-02-16 — Isolated production `GET /api/analytics/response-timing` `500` root cause using live request-id + filtered Vercel logs: Prisma `P2010` / Postgres `42883` (`operator does not exist: timestamp without time zone >= interval`) in response-timing raw SQL window arithmetic.
 - 2026-02-16 — Patched `actions/response-timing-analytics-actions.ts` to explicitly cast window/date and interval-day params (`::timestamp`, `::int`) across all response-timing conversion/pending predicates to eliminate ambiguous parameter typing in Postgres prepared statements.
 - 2026-02-16 — Added regression coverage in `lib/__tests__/response-timing-analytics-sql-typing.test.ts` and updated `lib/__tests__/response-timing-analytics.test.ts` to assert typed window predicates; validation: targeted tests ✅, `npm run typecheck` ✅, `npm run build` ✅.
-- Remaining for full Phase 157 closure: production warm/cold p95 evidence packet (157a/157f), canary/rollback packet, and failure-mode/auth drills (157g).
+- 2026-02-16 — Pushed production fix commit `66eefa4` and verified live analytics canary (`8 cold + 8 warm`) in authenticated browser session for workspace `29156db4-e9bf-4e26-9cb8-2a75ae3d9384`: all endpoints `200`, response-timing `500` resolved (`0` failures), and endpoint p95s all below target thresholds.
+- Remaining for full Phase 157 closure: rollback packet and failure-mode/auth drills (157g), plus decision on whether explicit warm-cache hit-rate proof is a hard close gate.
