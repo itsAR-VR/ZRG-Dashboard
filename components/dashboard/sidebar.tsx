@@ -126,17 +126,26 @@ function areChannelsEqual(a: readonly Channel[], b: readonly Channel[]) {
 
 const ALL_CHANNELS_TOGGLE_VALUE: string[] = ["all"]
 
-const USE_INBOX_READ_API = process.env.NEXT_PUBLIC_INBOX_READ_API_V1 === "1";
-
 type InboxCountsResult = Awaited<ReturnType<typeof getInboxCountsAction>>;
 
+function isReadApiDisabledPayload(
+  payload: unknown
+): payload is { error: "READ_API_DISABLED" } {
+  if (!payload || typeof payload !== "object") return false;
+  return (payload as { error?: unknown }).error === "READ_API_DISABLED";
+}
+
 async function getInboxCountsRead(clientId: string): Promise<InboxCountsResult> {
-  if (!USE_INBOX_READ_API) {
+  const response = await fetch(`/api/inbox/counts?clientId=${encodeURIComponent(clientId)}`, { method: "GET" });
+  const json = (await response.json()) as {
+    success?: boolean;
+    counts?: InboxCountsResult;
+    error?: string;
+  };
+  if (!response.ok && isReadApiDisabledPayload(json)) {
+    // Runtime flag is off on the server; fail open to the legacy action.
     return getInboxCountsAction(clientId);
   }
-
-  const response = await fetch(`/api/inbox/counts?clientId=${encodeURIComponent(clientId)}`, { method: "GET" });
-  const json = (await response.json()) as { success?: boolean; counts?: InboxCountsResult };
   if (!response.ok || !json?.counts) {
     // Fail-open to the legacy Server Action for safety.
     return getInboxCountsAction(clientId);

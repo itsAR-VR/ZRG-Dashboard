@@ -11,6 +11,7 @@ import { ClientMemberRole } from "@prisma/client";
 import { POSITIVE_SENTIMENTS, isPositiveSentiment } from "@/lib/sentiment-shared";
 import { slackPostMessage } from "@/lib/slack-bot";
 import { getPublicAppUrl } from "@/lib/app-url";
+import { markInboxCountsDirty } from "@/lib/inbox-counts-dirty";
 
 export type LeadAssignmentChannel = "sms" | "email" | "linkedin";
 export type LeadAssignmentSource = "round_robin" | "backfill" | "manual";
@@ -234,6 +235,7 @@ export async function assignLeadRoundRobin({
   }
 
   if (assignmentEvent) {
+    markInboxCountsDirty(clientId).catch(() => undefined);
     recordLeadAssignmentEvent(assignmentEvent).catch((error) => {
       console.error("[LeadAssignment] Failed to record assignment event:", error);
     });

@@ -1,55 +1,91 @@
-# Phase 155e — Durable Background Jobs (Inngest) for Recompute/Aggregates + Status Visibility
+# Phase 155e — Durable Background Work with Inngest (Retries/Backoff/Status)
 
 ## Focus
-Move recompute work off request/cron hot paths and into durable jobs with retries/backoff and predictable throughput. Keep Vercel cron as a trigger only.
+Move counts/analytics recompute out of request and cron hot paths into durable Inngest functions with idempotency, retry control, and observable status.
 
 ## Inputs
-- Existing cron routes in `app/api/cron/*`
-- Redis (Upstash) for:
-  - cache versions (`inbox:v1:ver:{clientId}`, `analytics:v1:ver:{clientId}`)
-  - job status keys
-- Postgres recompute functions from Phase 155b/155d (counts and optional analytics aggregates)
+- Existing cron trigger routes in `app/api/cron/*`.
+- Existing recompute logic from Phase 155b and 155d.
+- Redis status/version primitives in `lib/redis.ts`.
 
 ## Work
-1. Add Inngest to the repo (standard pattern for Next.js App Router)
-   - Define a single Inngest client and handler route.
-   - Ensure secrets/env vars are stored in Vercel (never in repo).
+1. **Inngest foundation**
+   - Add Inngest dependency and Next.js event/function endpoint wiring.
+   - Add environment configuration for Inngest keys and signing.
 
-2. Implement jobs
-   1) `recompute-inbox-counts`
-   - Trigger: cron endpoint or scheduled event.
-   - Steps:
-     - lock per clientId (avoid concurrent recompute per workspace)
-     - pull N dirty workspaces (oldest first)
-     - recompute counts
+2. **Define event contracts**
+   - `inbox.counts.dirty`
+   - `inbox.counts.recompute`
+   - `analytics.aggregates.recompute` (optional path gated by SLO miss)
+   - Include payload fields:
+     - `clientId`
+     - `requestId`
+     - `source`
+     - optional `priority`
+
+3. **Implement durable functions**
+   - `inbox-counts-recompute` function:
+     - lock/idempotency by `clientId + time bucket`
+     - run recompute
+     - bump `inbox:v1:ver:{clientId}`
      - clear dirty marker
-     - `INCR inbox:v1:ver:{clientId}`
+   - `analytics-recompute` function (if enabled):
+     - refresh aggregates/version
+     - bump `analytics:v1:ver:{clientId}`
 
-   2) `recompute-analytics-aggregates` (optional, only if Phase 155d needs derived tables)
-   - Trigger: cron endpoint or scheduled event.
-   - Steps:
-     - recompute last N days for active workspaces
-     - `INCR analytics:v1:ver:{clientId}`
+4. **Cron role**
+   - Cron routes enqueue events only.
+   - No heavy recompute execution inside cron request lifecycle.
 
-3. Status visibility
-   - Write a small JSON status blob to Redis:
-     - `jobs:v1:{jobName}:{clientId}`
-     - fields: `lastStartedAt`, `lastFinishedAt`, `lastStatus`, `lastError`, `durationMs`, `attempt`
-   - This allows UI/admin views (later) and operational debugging.
+5. **Status visibility**
+   - Write job status blob to Redis:
+     - `job:v1:{clientId}:{jobName}`
+   - Include:
+     - `status`
+     - `startedAt`
+     - `finishedAt`
+     - `durationMs`
+     - `attempt`
+     - `lastError`
 
-4. Cron-as-trigger
-   - Update cron routes to enqueue Inngest jobs rather than doing heavy work inline.
-   - Preserve existing auth (`CRON_SECRET`) semantics.
+6. **Reliability controls**
+   - Retries with exponential backoff.
+   - Dead-letter/final-failure logging path.
+   - Concurrency caps per job type.
+   - Idempotency for duplicate event deliveries.
 
-5. Verification
-   - Ensure jobs are idempotent and safe to retry.
-   - Ensure lock strategy prevents overlap without deadlocks.
+## Validation
+- Trigger dirty event and confirm recompute runs to completion.
+- Retry path verified by forced transient failure.
+- Duplicate events do not double-apply updates.
+- Queue backlog remains within alert threshold during canary.
 
 ## Output
-- Durable recompute jobs exist with retries/backoff and concurrency control.
-- Cron routes are lightweight triggers.
-- Job status is visible via Redis keys.
+- Durable recompute pipeline is Inngest-driven and observable.
+- Cron endpoints are lightweight and predictable.
 
 ## Handoff
-Proceed to Phase 155f to finish React #301 closure with targeted instrumentation and workspace-switch verification.
+Proceed to Phase 155f for React #301 closure, observability baseline enforcement, and release sign-off.
 
+## Progress This Turn (2026-02-16)
+- Added Inngest foundation wiring in code:
+  - Dependency: `inngest`
+  - Route handler: `app/api/inngest/route.ts` (`GET/POST/PUT` via `serve`)
+  - Client: `lib/inngest/client.ts`
+  - Event constant: `lib/inngest/events.ts`
+  - Function registry + durable function scaffold:
+    - `lib/inngest/functions/index.ts`
+    - `lib/inngest/functions/process-background-jobs.ts`
+- Added cron-trigger integration gate:
+  - `app/api/cron/background-jobs/route.ts` now supports `BACKGROUND_JOBS_USE_INNGEST=true` to enqueue event `background/process.requested` and return `202`.
+  - Existing inline processing remains default fallback (`BACKGROUND_JOBS_USE_INNGEST=false`) to avoid rollout breakage.
+- Added setup docs:
+  - `README.md` env vars and Inngest setup/troubleshooting section.
+  - Local helper script: `npm run inngest:dev`.
+- Verification:
+  - `npm run typecheck` passed.
+  - `npm run build` passed and includes `/api/inngest`.
+  - `npm run lint` passed with pre-existing warnings.
+- Live endpoint checks:
+  - `https://zrg-dashboard.vercel.app/api/inngest` returned `404` (route not available at that domain/deployment).
+  - `https://zrg-dashboard-zrg.vercel.app/api/inngest` returned `401` (Vercel authentication/deployment protection wall), which blocks Inngest sync.

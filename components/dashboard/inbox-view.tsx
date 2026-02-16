@@ -37,8 +37,6 @@ interface InboxViewProps {
   onClearFilters?: () => void;
 }
 
-const USE_INBOX_READ_API = process.env.NEXT_PUBLIC_INBOX_READ_API_V1 === "1";
-
 // Polling interval in milliseconds (60 seconds)
 const POLLING_INTERVAL = 60000;
 // Keep a slower heartbeat when realtime is connected.
@@ -133,6 +131,13 @@ function convertToComponentFormat(conv: ConversationData): ConversationWithSenti
 type ConversationsReadResult = Awaited<ReturnType<typeof getConversationsCursorAction>>;
 type ConversationDetailResult = Awaited<ReturnType<typeof getConversationAction>>;
 
+function isReadApiDisabledPayload(
+  payload: unknown
+): payload is { error: "READ_API_DISABLED" } {
+  if (!payload || typeof payload !== "object") return false;
+  return (payload as { error?: unknown }).error === "READ_API_DISABLED";
+}
+
 function buildConversationsReadUrl(options: ConversationsCursorOptions & { cursor?: string | null }): string {
   const params = new URLSearchParams();
 
@@ -160,14 +165,15 @@ function buildConversationsReadUrl(options: ConversationsCursorOptions & { curso
 }
 
 async function getConversationsCursorRead(options: ConversationsCursorOptions): Promise<ConversationsReadResult> {
-  if (!USE_INBOX_READ_API) {
-    return getConversationsCursorAction(options);
-  }
-
   const url = buildConversationsReadUrl(options);
   const response = await fetch(url, { method: "GET" });
   const json = (await response.json()) as ConversationsReadResult;
   if (!response.ok) {
+    if (isReadApiDisabledPayload(json)) {
+      // Runtime flag is off on the server; fail open to the legacy action.
+      return getConversationsCursorAction(options);
+    }
+
     return {
       success: false,
       conversations: [],
@@ -180,10 +186,6 @@ async function getConversationsCursorRead(options: ConversationsCursorOptions): 
 }
 
 async function getConversationRead(leadId: string, channel?: Channel): Promise<ConversationDetailResult> {
-  if (!USE_INBOX_READ_API) {
-    return getConversationAction(leadId, channel);
-  }
-
   const params = new URLSearchParams();
   if (channel) params.set("channel", channel);
   const query = params.toString();
@@ -192,6 +194,11 @@ async function getConversationRead(leadId: string, channel?: Channel): Promise<C
   const response = await fetch(url, { method: "GET" });
   const json = (await response.json()) as ConversationDetailResult;
   if (!response.ok) {
+    if (isReadApiDisabledPayload(json)) {
+      // Runtime flag is off on the server; fail open to the legacy action.
+      return getConversationAction(leadId, channel);
+    }
+
     return {
       success: false,
       error: json && typeof (json as any).error === "string" ? (json as any).error : `Conversation read failed (${response.status})`,

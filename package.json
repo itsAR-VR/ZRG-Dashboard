@@ -17,7 +17,8 @@
     "migrate:appointments": "tsx scripts/migrate-appointments.ts",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "logs:check": "node --import tsx scripts/logs/assert-known-errors.ts"
+    "logs:check": "node --import tsx scripts/logs/assert-known-errors.ts",
+    "inngest:dev": "npx inngest-cli@latest dev -u http://localhost:3000/api/inngest"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -62,6 +63,7 @@
     "cmdk": "1.0.4",
     "date-fns": "latest",
     "embla-carousel-react": "8.5.1",
+    "inngest": "^3.52.0",
     "input-otp": "1.4.1",
     "libphonenumber-js": "^1.12.35",
     "lucide-react": "^0.454.0",

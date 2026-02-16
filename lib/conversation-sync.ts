@@ -3,6 +3,7 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { exportMessages, getConversationByContact, getConversationMessages, getGHLContact } from "@/lib/ghl-api";
 import { fetchEmailBisonReplies, fetchEmailBisonSentEmails } from "@/lib/emailbison-api";
+import { markInboxCountsDirtyByLeadId } from "@/lib/inbox-counts-dirty";
 import { recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
 import {
   buildSentimentTranscriptFromMessages,
@@ -105,6 +106,7 @@ async function refreshLeadSentimentTagSystem(leadId: string, clientId: string): 
       lastMessageDirection: (lastMessage?.direction as string | undefined) ?? null,
     },
   });
+  await markInboxCountsDirtyByLeadId(leadId).catch(() => undefined);
 
   if (!isPositiveSentiment(sentimentTag)) {
     await prisma.lead.updateMany({

@@ -1,87 +1,103 @@
-# Phase 155 — Enterprise Inbox + Analytics Scale Completion (Counts, Realtime RLS, Jobs, Chunking) + React #301 Closure
+# Phase 155 — Enterprise Inbox + Analytics Scale Completion + React #301 Closure
 
 ## Purpose
-Complete the Phase 154 performance architecture so Inbox and Analytics remain fast and stable at enterprise scale, while eliminating the remaining React #301 workspace-switch crash vectors.
+Finalize the Phase 154 architecture so Inbox and Analytics are production-grade under enterprise load, remove workspace-switch render-loop risk, and ship with measurable rollout/rollback controls.
 
-## Context
-Phase 154 introduced the core shape of the new read path (GET read APIs + Redis caching) but does not yet include the enterprise-hardening layers that make performance predictable under load:
-- **Counts** are still computed from live tables on cold cache; Redis helps but does not provide O(1) semantics.
-- **Realtime** is currently wired with an anon-key client in `lib/supabase.ts` and must be moved to **session-auth + RLS** for tenant safety.
-- **Background recompute** is still cron/request-driven; we need durable execution and status visibility (Inngest).
-- **Analytics** is still heavy beyond the overview; we need GET endpoints for tabs, server-side caching, and client-side chunking/local persistence.
-- Users still report **minified React error #301** (“Too many re-renders”) when switching workspaces in production; the fix requires targeted instrumentation and eliminating remaining render-loop triggers.
-
-Locked decisions from the current discussion:
-- Rollout strategy: **gradual + monitor**, feature-flag driven rollback.
-- Inbox counts: **global + per-setter** stored materialized per workspace.
-- Realtime: **session-auth + RLS**, subscribe to `Lead` **INSERT + UPDATE** only (no `Message` subscriptions).
-- Freshness: **realtime + 60s heartbeat** (guards silent disconnects).
-- UX: **require an active workspace** (no “All Workspaces” inbox/analytics scope).
+## Locked Decisions
 - Durable jobs: **Inngest**.
-- Analytics: prioritize **overview first**, allow **derived aggregate tables** if KV + chunking is insufficient.
-- Local caching: **bounded sessionStorage** (keyed by user+workspace+window, TTL + max entries).
-- Production debugging: **console-only** (no new Sentry work in this phase).
-- Landing: Phase 154 changes should be **merged to main** and deployed behind flags.
+- Feature flags: **server-runtime evaluated** (no build-time-only rollback path).
+- Observability: **enterprise baseline** (`Sentry` + request IDs + structured logs + metrics).
+- Inbox freshness: **near-real-time (<15s)** using dirty marking + enqueue + invalidation.
+- Realtime scope: **Lead INSERT + UPDATE only** (no Message subscription).
+- Realtime fallback: **60s heartbeat** remains active.
+- Analytics performance SLO: **p95 <1.5s warm cache, <3s cold**.
+- Rollout: **canary 5% → 25% → 100%** with explicit stop gates.
+- Counts model strategy: **sentinel `scopeUserId` for global rows** (no nullable unique ambiguity).
+- Cache store: **Upstash Redis** (`lib/redis.ts`).
+- Legacy reads: keep one **release-cycle fallback** behind runtime kill switch.
+- Workspace UX parity from Phase 153: **hard release blocker** if regressed.
 
-## Concurrent Phases
-
-| Phase | Status | Overlap | Coordination |
-|-------|--------|---------|--------------|
-| Phase 154 | In progress (partial shipped on `phase-154`) | Files: `actions/lead-actions.ts`, `actions/analytics-actions.ts`, `components/dashboard/*`, `app/api/inbox/*`, `app/api/analytics/*` | Phase 155 builds on Phase 154; merge Phase 154 before starting Phase 155 implementation work. |
-| Phase 153 | Complete | Workspace switch UX, URL persistence (`components/dashboard/dashboard-shell.tsx`, `components/dashboard/inbox-view.tsx`) | Preserve “no stacked layout on switch”, no stuck spinner, and URL `clientId` persistence semantics. |
-| Phase 152 | Tracked | React #301 workspace-switch hardening in inbox | Do not reintroduce unstable state resets or object-identity churn. |
-| Phase 149 / 144 | Tracked | Dashboard render-loop hardening + performance | Keep query keys primitive/stable; avoid effect cascades and refetch churn. |
-| Phase 145–146 | Active/tracked | AI replay + drafting behavior | Avoid touching AI prompt/draft logic unless explicitly required; if touched, NTTAN gates are mandatory. |
+## Current-State Reality (Repo-Grounded)
+- `getInboxCounts` computes eight categories and derives `awaitingReply` from `totalNonBlacklisted - requiresAttention` in `actions/lead-actions.ts`.
+- Realtime is currently wired via `lib/supabase.ts` with anon client and `event: "*"`, which is not acceptable for tenant-safe final state.
+- Read APIs are now runtime-gated server-side via `lib/feature-flags.ts` + `READ_API_DISABLED` fail-open behavior in inbox/analytics clients.
+- `app/api/analytics/overview/route.ts` exists, but other analytics GET tabs are still action-driven.
+- `InboxCounts` and `InboxCountsDirty` Prisma models now exist and are synced to DB; dirty-mark + recompute helpers are present but durable enqueue wiring is still pending.
+- Inngest is not yet wired in the codebase and must be introduced in this phase.
 
 ## Objectives
-* [ ] Merge Phase 154 read-path changes to `main` and deploy behind feature flags with a rollback checklist.
-* [ ] Materialize inbox counts in Postgres as O(1) reads (`inbox_counts`) with dirty marking + recompute job.
-* [ ] Replace anon-key realtime subscriptions with session-authenticated Supabase Realtime + RLS and wire it to invalidate inbox queries.
-* [ ] Speed up analytics beyond overview: add GET read APIs for tabs + Redis caching + client chunking + bounded session persistence.
-* [ ] Move recompute/aggregation work into durable background jobs (Inngest) triggered by cron, with status visibility in Redis.
-* [ ] Eliminate remaining React #301 workspace-switch crash vectors via instrumentation + targeted render-loop fixes.
+- Merge and stabilize Phase 154 read-path work with server-runtime flags and canary rollout.
+- Materialize inbox counts (`global + per-setter`) for O(1) reads.
+- Replace anon realtime with session-authenticated realtime + RLS enforcement.
+- Complete analytics GET read APIs with cache/chunking/session persistence to hit SLO.
+- Move recompute/aggregation into durable Inngest jobs with retries/backoff and status visibility.
+- Eliminate remaining React #301 causes and add regression protection.
+- Ship enterprise observability baseline tied to rollout gates.
 
-## Constraints
-- Multi-tenant safety first:
-  - No shared CDN caching of authenticated payloads.
-  - Redis cache keys must be scoped by `userId + clientId + filters + version`.
-  - Realtime must be protected by RLS; no cross-tenant subscriptions.
-- Preserve existing semantics:
-  - Inbox filter categories and SETTER scoping must match `actions/lead-actions.ts:getInboxCounts`.
-  - Inbox list filters must match cursor semantics in `actions/lead-actions.ts:getConversationsCursor`.
-- Avoid render loops:
-  - No state updates in render.
-  - Effects must bail out with functional setters.
-  - React Query keys must be primitive/stable (strings/numbers), not object identities.
-- No secrets/PII in logs. Console instrumentation must be scrubbed and behind a debug gate if needed.
-- Prefer additive, reversible work with feature flags and clear rollback steps.
+## Required Interfaces / Additions
+- **Prisma models**:
+  - `InboxCounts`
+  - `InboxCountsDirty`
+- **Sentinel constant**:
+  - `GLOBAL_SCOPE_USER_ID = "00000000-0000-0000-0000-000000000000"`
+- **Server-runtime flag source**:
+  - centralized `lib/feature-flags.ts` (server evaluated)
+- **Realtime helper**:
+  - session-auth helper replacing dashboard use of `lib/supabase.ts`
+- **Inngest wiring**:
+  - event route + functions for recompute workloads
+- **Analytics API routes**:
+  - `/api/analytics/workflows`
+  - `/api/analytics/campaigns`
+  - `/api/analytics/response-timing`
+  - `/api/analytics/crm/rows`
 
-## Success Criteria
-- Phase 154 GET read APIs + Redis caching are merged to `main` and deployed behind flags:
-  - `NEXT_PUBLIC_INBOX_READ_API_V1`
-  - `NEXT_PUBLIC_ANALYTICS_READ_API_V1`
-- Inbox counts are served as O(1) reads from `inbox_counts` (global + per-setter), with dirty marking + recompute runner.
-- Realtime subscriptions use session auth + RLS and invalidate inbox list/counts without cross-tenant leakage.
-- Analytics first-load improves measurably:
-  - Overview core KPIs render quickly (chunked), with charts/breakdowns loading progressively.
-  - Redis caching reduces repeated cold queries under concurrency.
-- Durable jobs (Inngest) exist for counts recompute (and analytics aggregates if used) with retries/backoff and visible status keys.
-- React #301 is no longer reproducible on workspace switching in a production build.
-- Quality gates pass:
-  - `npm run lint`
-  - `npm run typecheck`
-  - `npm run build`
-  - `npm test`
-- NTTAN validation is executed because this phase touches inbox/message surfaces:
-  - `npm run test:ai-drafts`
-  - `npm run test:ai-replay -- --client-id <clientId> --dry-run --limit 20`
-  - `npm run test:ai-replay -- --client-id <clientId> --limit 20 --concurrency 3`
+## Data / Cache Contracts
+- Inbox counts cache version key: `inbox:v1:ver:{clientId}`
+- Analytics cache version key: `analytics:v1:ver:{clientId}`
+- User/workspace scoped cache key pattern:
+  - `inbox:v1:{userId}:{clientId}:{filters}:{ver}`
+  - `analytics:v1:{userId}:{clientId}:{from}:{to}:{endpoint}:{parts}:{ver}`
+- Session storage key pattern:
+  - `zrg:analytics:{userId}:{clientId}:{tab}:{parts}`
+  - TTL: 10 minutes
+  - Max entries: 20 (LRU eviction)
+
+## Rollout and Stop Gates
+- Canary stages: 5% then 25% then 100%.
+- Minimum observation window per stage: 30 minutes.
+- Automatic stop/rollback if any threshold is breached:
+  - React #301 or dashboard error-boundary rate increases above baseline.
+  - Auth failures (401/403) spike materially.
+  - Analytics p95 exceeds SLO for two consecutive windows.
+  - DB saturation or queue backlog exceeds defined alert threshold.
+- Rollback must be available without redeploy through server-runtime flags.
+
+## Quality Gates
+- `npm run lint`
+- `npm run typecheck`
+- `npm run build`
+- `npm test`
+- `npm run test:ai-drafts` (smoke guard due to shared inbox surfaces)
+- `npm run test:ai-replay -- --client-id <clientId> --dry-run --limit 20`
+- `npm run test:ai-replay -- --client-id <clientId> --limit 20 --concurrency 3`
 
 ## Subphase Index
-* a — Merge + Deploy Phase 154 Read Path Behind Flags (Gradual Rollout + Monitor)
-* b — Inbox Counts Materialization (Postgres `inbox_counts` + Dirty Marking + Recompute)
-* c — Supabase Realtime Enterprise Hardening (Session Auth + RLS + Invalidation Wiring)
-* d — Analytics Read Path Completion (GET APIs + Redis Cache + Chunking + Session Persistence)
-* e — Durable Background Jobs (Inngest) for Recompute/Aggregates + Status Visibility
-* f — React #301 Workspace Switch Closure (Instrumentation + Loop Elimination + Verification)
+- `a` — Merge + Deploy Phase 154 Read Path with Server-Runtime Flags + Canary
+- `b` — Inbox Counts Materialization (Prisma + Sentinel Scope + <15s Freshness)
+- `c` — Supabase Realtime Hardening (Session Auth + RLS + Invalidation)
+- `d` — Analytics Read Path Completion (GET APIs + Cache + Chunking + SLO)
+- `e` — Durable Jobs with Inngest (Cron as trigger, retries/backoff, status)
+- `f` — React #301 Closure + Enterprise Observability + Release Verification
 
+## Phase Exit Criteria
+- Workspace switching no longer reproduces React #301 in production build.
+- Counts/read paths are O(1)+cached and meet freshness targets.
+- Analytics endpoint latency meets SLO at warm and cold cache targets.
+- Cross-tenant realtime leakage is proven absent by test.
+- Inngest jobs are stable under retry and backlog scenarios.
+- Observability baseline is live and rollback controls are verified.
+
+## Phase Summary (running)
+- 2026-02-16 07:53:06Z — Completed local Phase 155a runtime-flag conversion: server-only flag resolver, read API runtime gating, client API-first fallback behavior, and local quality gates (`lint`, `typecheck`, `build`) passing. Canary/deploy verification remains pending Vercel access. (files: `lib/feature-flags.ts`, `app/api/inbox/counts/route.ts`, `app/api/inbox/conversations/route.ts`, `app/api/inbox/conversations/[leadId]/route.ts`, `app/api/analytics/overview/route.ts`, `components/dashboard/inbox-view.tsx`, `components/dashboard/sidebar.tsx`, `components/dashboard/analytics-view.tsx`, `docs/planning/phase-155/a/plan.md`, `docs/planning/phase-155/plan.md`)
+- 2026-02-16 08:10:08Z — Completed Phase 155b core materialized counts implementation with safe schema sync (no backup-table drop), corrected recompute total semantics, and validated with `db:push`, `lint`, `typecheck`, `build`, and `npm test` (384/384 passing). Also removed inbox virtualizer path in `components/dashboard/conversation-feed.tsx` to eliminate the remaining React #301 hotspot seen on workspace switching. Durable enqueue/orchestration and session-auth realtime remain pending (`155c` + `155e`). (files: `prisma/schema.prisma`, `actions/lead-actions.ts`, `lib/inbox-counts.ts`, `lib/inbox-counts-constants.ts`, `lib/inbox-counts-dirty.ts`, `lib/inbox-counts-recompute.ts`, `lib/inbox-counts-runner.ts`, `components/dashboard/conversation-feed.tsx`, `docs/planning/phase-155/b/plan.md`, `docs/planning/phase-155/plan.md`)

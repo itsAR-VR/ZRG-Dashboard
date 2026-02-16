@@ -278,6 +278,8 @@ model Client {
   promptOverrideRevisions PromptOverrideRevision[]
   promptSnippetOverrideRevisions PromptSnippetOverrideRevision[]
   leadMemoryEntries LeadMemoryEntry[]
+  inboxCounts InboxCounts[]
+  inboxCountsDirty InboxCountsDirty?
   workspaceMemoryEntries WorkspaceMemoryEntry[]
   knowledgeAssetRevisions KnowledgeAssetRevision[]
   messagePerformanceEvalRuns MessagePerformanceEvalRun[]
@@ -305,6 +307,49 @@ model ClientMember {
   @@unique([clientId, userId, role])
   @@index([userId])
   @@index([clientId])
+}
+
+model phase151_linkedin_backfill_backup {
+  leadId                String   @id
+  clientId              String
+  oldLinkedinUrl        String
+  oldLinkedinCompanyUrl String?
+  backfilledAt          DateTime @default(now()) @db.Timestamptz(6)
+
+  @@map("_phase151_linkedin_backfill_backup")
+}
+
+model InboxCounts {
+  id        String   @id @default(uuid())
+  clientId  String
+  client    Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  isGlobal  Boolean
+  scopeUserId String
+
+  allResponses                Int @default(0)
+  requiresAttention           Int @default(0)
+  previouslyRequiredAttention Int @default(0)
+  totalNonBlacklisted         Int @default(0)
+  awaitingReply               Int @default(0)
+  needsRepair                 Int @default(0)
+  aiSent                      Int @default(0)
+  aiReview                    Int @default(0)
+  total                       Int @default(0)
+
+  computedAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([clientId, isGlobal, scopeUserId])
+  @@index([clientId, isGlobal, scopeUserId])
+  @@index([clientId, computedAt(sort: Desc)])
+}
+
+model InboxCountsDirty {
+  clientId String   @id
+  client   Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  dirtyAt  DateTime @default(now())
+
+  @@index([dirtyAt])
 }
 
 // EmailBison base host allowlist (hostname only). Workspaces can select one base host.

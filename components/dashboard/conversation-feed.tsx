@@ -1,7 +1,6 @@
 "use client"
 
 import { memo, useState, useMemo, useRef, useCallback, useEffect } from "react"
-import { useVirtualizer } from "@tanstack/react-virtual"
 import { useDebouncedCallback } from "use-debounce"
 import type { Conversation } from "@/lib/mock-data"
 import { ConversationCard } from "./conversation-card"
@@ -18,8 +17,6 @@ import { Search, RefreshCw, Loader2, ChevronsUp, ChevronsDown, MessageSquare, In
 
 type SortOption = "recent" | "oldest" | "name-az" | "name-za"
 
-// Estimated card height for virtualization (actual height is measured dynamically)
-const ESTIMATED_CARD_HEIGHT = 160
 const EMPTY_SMS_CLIENT_OPTIONS: Array<{ id: string; name: string; leadCount: number }> = []
 const EMPTY_SYNCING_LEAD_IDS = new Set<string>()
 
@@ -202,42 +199,16 @@ export const ConversationFeed = memo(function ConversationFeed({
     }
   }, [filteredConversations, sortBy, messageTimeById])
 
-  // TanStack Virtual triggers a rerender from inside `getMeasurements()` when certain
-  // options change (notably `getItemKey`). If we pass an inline `getItemKey` function,
-  // its identity changes every render and can cause React error #301 (render loop).
-  const sortedConversationsRef = useRef(sortedConversations)
-  sortedConversationsRef.current = sortedConversations
-
-  const getScrollElement = useCallback(() => parentRef.current, [])
-  const getItemKey = useCallback((index: number) => {
-    const conversations = sortedConversationsRef.current
-    if (index >= conversations.length) return "load-more"
-    return conversations[index]?.id ?? `conversation-${index}`
-  }, [])
-  const estimateSize = useCallback(() => ESTIMATED_CARD_HEIGHT, [])
-  const measureElement = useCallback(
-    (element: HTMLElement) => element.getBoundingClientRect().height,
-    []
-  )
-
-  // Setup virtualizer with dynamic height measurement
-  const rowVirtualizer = useVirtualizer({
-    count: hasMore ? sortedConversations.length + 1 : sortedConversations.length,
-    getScrollElement,
-    getItemKey,
-    estimateSize,
-    measureElement,
-    overscan: 5,
-  })
-
   // Quick jump functions
   const jumpToTop = useCallback(() => {
-    rowVirtualizer.scrollToIndex(0)
-  }, [rowVirtualizer])
+    parentRef.current?.scrollTo({ top: 0, behavior: "smooth" })
+  }, [])
 
   const jumpToBottom = useCallback(() => {
-    rowVirtualizer.scrollToIndex(sortedConversations.length - 1)
-  }, [rowVirtualizer, sortedConversations.length])
+    const element = parentRef.current
+    if (!element) return
+    element.scrollTo({ top: element.scrollHeight, behavior: "smooth" })
+  }, [])
 
   // Count active conversations for sync all button
   const activeCount = filteredConversations.length
@@ -503,7 +474,7 @@ export const ConversationFeed = memo(function ConversationFeed({
         </Collapsible>
       </div>
 
-      {/* Virtualized Conversation List */}
+      {/* Conversation List */}
       <div 
         ref={parentRef}
         className="flex-1 overflow-y-auto p-3"
@@ -526,66 +497,32 @@ export const ConversationFeed = memo(function ConversationFeed({
             )}
           </div>
         ) : (
-          <div
-            style={{
-              height: `${rowVirtualizer.getTotalSize()}px`,
-              width: "100%",
-              position: "relative",
-            }}
-          >
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const isLoadMoreRow = virtualRow.index >= sortedConversations.length
+          <div className="space-y-2">
+            {sortedConversations.map((conversation) => (
+              <ConversationCard
+                key={conversation.id}
+                conversation={conversation}
+                isActive={activeConversationId === conversation.id}
+                onClick={() => handleSelectConversation(conversation.id)}
+                isSyncing={syncingLeadIds.has(conversation.id)}
+              />
+            ))}
 
-              if (isLoadMoreRow) {
-                return (
-                  <div
-                    key="load-more"
-                    ref={rowVirtualizer.measureElement}
-                    data-index={virtualRow.index}
-                    className="absolute top-0 left-0 w-full flex items-center justify-center py-4"
-                    style={{
-                      transform: `translateY(${virtualRow.start}px)`,
-                    }}
-                  >
-                    {isLoadingMore ? (
-                      <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                    ) : hasMore && onLoadMore ? (
-                      <Button 
-                        variant="ghost" 
-                        size="sm"
-                        onClick={onLoadMore}
-                      >
-                        Load more
-                      </Button>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">End of list</span>
-                    )}
-                  </div>
-                )
-              }
-
-              const conversation = sortedConversations[virtualRow.index]
-
-              return (
-                <div
-                  key={conversation.id}
-                  ref={rowVirtualizer.measureElement}
-                  data-index={virtualRow.index}
-                  className="absolute top-0 left-0 w-full"
-                  style={{
-                    transform: `translateY(${virtualRow.start}px)`,
-                    padding: "4px 0",
-                  }}
+            <div className="flex items-center justify-center py-4">
+              {isLoadingMore ? (
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              ) : hasMore && onLoadMore ? (
+                <Button 
+                  variant="ghost" 
+                  size="sm"
+                  onClick={onLoadMore}
                 >
-                  <ConversationCard
-                    conversation={conversation}
-                    isActive={activeConversationId === conversation.id}
-                    onClick={() => handleSelectConversation(conversation.id)}
-                    isSyncing={syncingLeadIds.has(conversation.id)}
-                  />
-                </div>
-              )
-            })}
+                  Load more
+                </Button>
+              ) : (
+                <span className="text-xs text-muted-foreground">End of list</span>
+              )}
+            </div>
           </div>
         )}
       </div>

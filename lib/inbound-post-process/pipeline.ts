@@ -28,6 +28,7 @@ import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { maybeAssignLead } from "@/lib/lead-assignment";
 import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
+import { markInboxCountsDirty } from "@/lib/inbox-counts-dirty";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { detectActionSignals, notifyActionSignals, EMPTY_ACTION_SIGNAL_RESULT } from "@/lib/action-signal-detector";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
@@ -229,6 +230,7 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
     where: { id: lead.id },
     data: { sentimentTag, status: leadStatus },
   });
+  await markInboxCountsDirty(client.id).catch(() => undefined);
 
   console.log(prefix, "Sentiment:", sentimentTag, "Status:", leadStatus);
 

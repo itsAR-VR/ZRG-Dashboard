@@ -3,6 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { processBackgroundJobs } from "@/lib/background-jobs/runner";
 import { recoverStaleSendingDrafts } from "@/lib/ai-drafts/stale-sending-recovery";
+import { inngest } from "@/lib/inngest/client";
+import { INNGEST_EVENT_BACKGROUND_PROCESS_REQUESTED } from "@/lib/inngest/events";
 import { LeadMemorySource } from "@prisma/client";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
@@ -26,6 +28,17 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value || "", 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return parsed;
+}
+
+const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
+
+function parseBoolean(value: string | undefined): boolean {
+  if (!value) return false;
+  return TRUE_VALUES.has(value.trim().toLowerCase());
+}
+
+function isInngestBackgroundTriggerEnabled(): boolean {
+  return parseBoolean(process.env.BACKGROUND_JOBS_USE_INNGEST);
 }
 
 function getStaleQueueAlertMinutes(): number {
@@ -83,6 +96,28 @@ export async function GET(request: NextRequest) {
     }
 
     try {
+      if (isInngestBackgroundTriggerEnabled()) {
+        const requestedAt = new Date().toISOString();
+        await inngest.send({
+          name: INNGEST_EVENT_BACKGROUND_PROCESS_REQUESTED,
+          data: {
+            source: "cron/background-jobs",
+            requestedAt,
+          },
+        });
+
+        return NextResponse.json(
+          {
+            success: true,
+            mode: "inngest",
+            enqueued: true,
+            requestedAt,
+            timestamp: requestedAt,
+          },
+          { status: 202 }
+        );
+      }
+
       // Intentionally avoid session advisory locks here:
       // this route uses pooled connections and session locks can become orphaned.
       // Per-job row locking in processBackgroundJobs() already prevents double processing.
