@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { getAnalytics } from "@/actions/analytics-actions";
+import { getResponseTimingAnalytics } from "@/actions/response-timing-analytics-actions";
 import { isAnalyticsReadApiEnabled } from "@/lib/feature-flags";
 import { requireAuthUser } from "@/lib/workspace-access";
 import {
@@ -37,38 +37,48 @@ export async function GET(request: NextRequest) {
   const clientId = searchParams.get("clientId") || null;
   const from = searchParams.get("from");
   const to = searchParams.get("to");
-  const partsRaw = (searchParams.get("parts") || "all").trim().toLowerCase();
-  const parts = partsRaw === "core" || partsRaw === "breakdowns" ? partsRaw : "all";
-  const forceRefresh = searchParams.get("forceRefresh") === "true";
-
-  const window = from && to ? { from, to } : undefined;
+  const channel = searchParams.get("channel");
+  const responder = searchParams.get("responder");
+  const attributionWindowDays = searchParams.get("attributionWindowDays");
+  const maturityBufferDays = searchParams.get("maturityBufferDays");
+  const topRespondersLimit = searchParams.get("topRespondersLimit");
   const cacheVersion = await getAnalyticsCacheVersion(clientId);
   const cacheKey = buildAnalyticsRouteCacheKey({
     userId: authUser.id,
     clientId,
-    endpoint: "overview",
-    params: { from, to, parts },
+    endpoint: "response-timing",
+    params: {
+      from,
+      to,
+      channel,
+      responder,
+      attributionWindowDays,
+      maturityBufferDays,
+      topRespondersLimit,
+    },
     version: cacheVersion,
   });
 
-  if (!forceRefresh) {
-    const cached = await readAnalyticsRouteCache<
-      Awaited<ReturnType<typeof getAnalytics>>
-    >(cacheKey);
-    if (cached) {
-      const response = NextResponse.json(cached, { status: 200 });
-      response.headers.set("x-zrg-cache", "hit");
-      response.headers.set("x-zrg-analytics-parts", parts);
-      return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
-        cacheControl: "private, max-age=120, stale-while-revalidate=300",
-      });
-    }
+  const cached = await readAnalyticsRouteCache<
+    Awaited<ReturnType<typeof getResponseTimingAnalytics>>
+  >(cacheKey);
+  if (cached) {
+    const response = NextResponse.json(cached, { status: 200 });
+    response.headers.set("x-zrg-cache", "hit");
+    return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
+      cacheControl: "private, max-age=120, stale-while-revalidate=300",
+    });
   }
 
-  const result = await getAnalytics(clientId, {
-    window,
-    forceRefresh,
-    parts,
+  const result = await getResponseTimingAnalytics({
+    clientId,
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
+    ...(channel ? { channel } : {}),
+    ...(responder ? { responder } : {}),
+    ...(attributionWindowDays ? { attributionWindowDays: Number(attributionWindowDays) } : {}),
+    ...(maturityBufferDays ? { maturityBufferDays: Number(maturityBufferDays) } : {}),
+    ...(topRespondersLimit ? { topRespondersLimit: Number(topRespondersLimit) } : {}),
   });
 
   if (!result.success) {
@@ -78,7 +88,6 @@ export async function GET(request: NextRequest) {
   await writeAnalyticsRouteCache(cacheKey, result, 120);
   const response = NextResponse.json(result, { status: 200 });
   response.headers.set("x-zrg-cache", "miss");
-  response.headers.set("x-zrg-analytics-parts", parts);
   return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
     cacheControl: "private, max-age=120, stale-while-revalidate=300",
   });

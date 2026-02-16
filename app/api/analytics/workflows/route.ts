@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { getAnalytics } from "@/actions/analytics-actions";
+import { getWorkflowAttributionAnalytics } from "@/actions/analytics-actions";
 import { isAnalyticsReadApiEnabled } from "@/lib/feature-flags";
 import { requireAuthUser } from "@/lib/workspace-access";
 import {
@@ -37,38 +37,30 @@ export async function GET(request: NextRequest) {
   const clientId = searchParams.get("clientId") || null;
   const from = searchParams.get("from");
   const to = searchParams.get("to");
-  const partsRaw = (searchParams.get("parts") || "all").trim().toLowerCase();
-  const parts = partsRaw === "core" || partsRaw === "breakdowns" ? partsRaw : "all";
-  const forceRefresh = searchParams.get("forceRefresh") === "true";
-
-  const window = from && to ? { from, to } : undefined;
   const cacheVersion = await getAnalyticsCacheVersion(clientId);
   const cacheKey = buildAnalyticsRouteCacheKey({
     userId: authUser.id,
     clientId,
-    endpoint: "overview",
-    params: { from, to, parts },
+    endpoint: "workflows",
+    params: { from, to },
     version: cacheVersion,
   });
 
-  if (!forceRefresh) {
-    const cached = await readAnalyticsRouteCache<
-      Awaited<ReturnType<typeof getAnalytics>>
-    >(cacheKey);
-    if (cached) {
-      const response = NextResponse.json(cached, { status: 200 });
-      response.headers.set("x-zrg-cache", "hit");
-      response.headers.set("x-zrg-analytics-parts", parts);
-      return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
-        cacheControl: "private, max-age=120, stale-while-revalidate=300",
-      });
-    }
+  const cached = await readAnalyticsRouteCache<
+    Awaited<ReturnType<typeof getWorkflowAttributionAnalytics>>
+  >(cacheKey);
+  if (cached) {
+    const response = NextResponse.json(cached, { status: 200 });
+    response.headers.set("x-zrg-cache", "hit");
+    return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
+      cacheControl: "private, max-age=120, stale-while-revalidate=300",
+    });
   }
 
-  const result = await getAnalytics(clientId, {
-    window,
-    forceRefresh,
-    parts,
+  const result = await getWorkflowAttributionAnalytics({
+    clientId,
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
   });
 
   if (!result.success) {
@@ -78,7 +70,6 @@ export async function GET(request: NextRequest) {
   await writeAnalyticsRouteCache(cacheKey, result, 120);
   const response = NextResponse.json(result, { status: 200 });
   response.headers.set("x-zrg-cache", "miss");
-  response.headers.set("x-zrg-analytics-parts", parts);
   return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
     cacheControl: "private, max-age=120, stale-while-revalidate=300",
   });

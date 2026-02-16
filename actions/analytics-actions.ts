@@ -466,6 +466,8 @@ export interface AnalyticsData {
   perSetterResponseTimes: SetterResponseTimeRow[];
 }
 
+export type AnalyticsOverviewParts = "all" | "core" | "breakdowns";
+
 export interface CrmSheetRow {
   id: string;
   leadId: string;
@@ -1199,7 +1201,7 @@ async function calculatePerSetterResponseTimesSql(opts: {
  */
 export async function getAnalytics(
   clientId?: string | null,
-  opts?: { forceRefresh?: boolean; window?: AnalyticsWindow }
+  opts?: { forceRefresh?: boolean; window?: AnalyticsWindow; parts?: AnalyticsOverviewParts }
 ): Promise<{
   success: boolean;
   data?: AnalyticsData;
@@ -1223,12 +1225,15 @@ export async function getAnalytics(
     const windowFrom = windowState.from;
     const windowTo = windowState.to;
     const hasWindow = Boolean(windowFrom && windowTo);
+    const parts = opts?.parts ?? "all";
+    const includeCore = parts !== "breakdowns";
+    const includeBreakdowns = parts !== "core";
 
     // Cleanup stale cache entries periodically
     maybeCleanupCache();
 
     // Cache is user-scoped to avoid cross-user data leakage.
-    const cacheKey = `${user.id}:${clientId || "__all__"}:${windowState.key}`;
+    const cacheKey = `${user.id}:${clientId || "__all__"}:${windowState.key}:${parts}`;
     const redisKey = `analytics:v1:${cacheKey}`;
     const now = Date.now();
 
@@ -1281,24 +1286,6 @@ export async function getAnalytics(
       };
     }
 
-    // Get total leads (windowed by createdAt when a window is provided)
-    const totalLeads = await prisma.lead.count({
-      where: { ...leadWhere, ...leadCreatedWindow },
-    });
-
-    // Outbound leads contacted (best-effort from DB only; outbound SMS from GHL automations isn't ingested yet)
-    const outboundLeadsContacted = await prisma.lead.count({
-      where: {
-        ...leadWhere,
-        messages: {
-          some: {
-            direction: "outbound",
-            ...messageWindow,
-          },
-        },
-      },
-    });
-
     const respondedLeadFilter = {
       ...leadWhere,
       messages: {
@@ -1309,156 +1296,55 @@ export async function getAnalytics(
       },
     };
 
-    // Responses = unique leads with inbound messages
-    const responses = await prisma.lead.count({
-      where: respondedLeadFilter,
-    });
+    let totalLeads = 0;
+    let outboundLeadsContacted = 0;
+    let responses = 0;
+    let responseRate = 0;
+    let meetingsBooked = 0;
+    let responseTimeMetrics: ResponseTimeMetrics = {
+      setterResponseTime: { avgMs: 0, formatted: "N/A", sampleCount: 0 },
+      clientResponseTime: { avgMs: 0, formatted: "N/A", sampleCount: 0 },
+    };
+    let capacity: CapacityUtilization | null = null;
 
-    // Response rate = responses / outbound leads contacted
-    const responseRate = outboundLeadsContacted > 0
-      ? Math.round((responses / outboundLeadsContacted) * 100)
-      : 0;
+    let sentimentBreakdown: AnalyticsData["sentimentBreakdown"] = [];
+    let leadsByStatus: AnalyticsData["leadsByStatus"] = [];
+    let weeklyStats: AnalyticsData["weeklyStats"] = [];
+    let topClients: AnalyticsData["topClients"] = [];
+    let smsSubClients: AnalyticsData["smsSubClients"] = [];
+    let perSetterResponseTimes: AnalyticsData["perSetterResponseTimes"] = [];
 
-    // Meetings booked = leads with a booked appointment
-    const meetingsBooked = await prisma.lead.count({
-      where: {
-        ...leadWhere,
-        ...(hasWindow
-          ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
-          : {
-              OR: [
-                { appointmentBookedAt: { not: null } },
-                { ghlAppointmentId: { not: null } },
-                { calendlyInviteeUri: { not: null } },
-                { calendlyScheduledEventUri: { not: null } },
-              ],
-            }),
-      },
-    });
-
-    // Response sentiment breakdown (responded leads only)
-    const sentimentCounts = await prisma.lead.groupBy({
-      by: ["sentimentTag"],
-      where: respondedLeadFilter,
-      _count: {
-        _all: true,
-      },
-    });
-
-    const sentimentAgg = new Map<string, number>();
-    for (const row of sentimentCounts) {
-      const raw = row.sentimentTag;
-      // "New" means "no inbound replies yet" and shouldn't show up in response sentiment.
-      const sentiment = !raw || raw === "New" ? "Unknown" : raw;
-      sentimentAgg.set(sentiment, (sentimentAgg.get(sentiment) ?? 0) + row._count._all);
-    }
-
-    const sentimentBreakdown = Array.from(sentimentAgg.entries()).map(([sentiment, count]) => ({
-      sentiment,
-      count,
-      percentage: responses > 0 ? (count / responses) * 100 : 0,
-    }));
-
-    // Get status breakdown
-    const statusCounts = await prisma.lead.groupBy({
-      by: ["status"],
-      where: { ...leadWhere, ...leadCreatedWindow },
-      _count: {
-        status: true,
-      },
-    });
-
-    const leadsByStatus = statusCounts.map((s) => ({
-      status: s.status,
-      count: s._count.status,
-      percentage: totalLeads > 0
-        ? Math.round((s._count.status / totalLeads) * 100)
-        : 0,
-    }));
-
-    // Message stats (windowed when provided; defaults to last 7 days)
-    const statsTo = hasWindow ? new Date(windowTo!) : new Date();
-    const statsFrom = hasWindow ? new Date(windowFrom!) : new Date(statsTo);
-    if (!hasWindow) {
-      statsFrom.setDate(statsFrom.getDate() - 6); // 6 days ago + today = 7 days
-    }
-
-    // Normalize to day boundaries for chart labels
-    const statsStartDay = new Date(statsFrom);
-    statsStartDay.setHours(0, 0, 0, 0);
-    const statsEndDay = new Date(statsTo);
-    statsEndDay.setHours(0, 0, 0, 0);
-    if (statsTo.getTime() === statsEndDay.getTime()) {
-      statsEndDay.setDate(statsEndDay.getDate() - 1);
-    }
-
-    // Use raw SQL to group by date in the database instead of fetching all messages
-    const weeklyMessageStats = await prisma.$queryRaw<
-      Array<{ day_date: Date; direction: string; count: bigint }>
-    >`
-      SELECT
-        DATE_TRUNC('day', m."sentAt") as day_date,
-        m.direction,
-        COUNT(*) as count
-      FROM "Message" m
-      INNER JOIN "Lead" l ON m."leadId" = l.id
-      WHERE ${buildAccessibleLeadSqlWhere({ userId: user.id, clientId })}
-        AND m."sentAt" >= ${statsFrom}
-        AND m."sentAt" < ${statsTo}
-      GROUP BY DATE_TRUNC('day', m."sentAt"), m.direction
-      ORDER BY day_date ASC
-    `;
-
-    // Build a lookup map for quick access
-    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const statsMap = new Map<string, { inbound: number; outbound: number }>();
-
-    for (const row of weeklyMessageStats) {
-      const dateKey = new Date(row.day_date).toISOString().split("T")[0];
-      if (!statsMap.has(dateKey)) {
-        statsMap.set(dateKey, { inbound: 0, outbound: 0 });
-      }
-      const entry = statsMap.get(dateKey)!;
-      if (row.direction === "inbound") {
-        entry.inbound = Number(row.count);
-      } else if (row.direction === "outbound") {
-        entry.outbound = Number(row.count);
-      }
-    }
-
-    // Build the stats array for the window
-    const weeklyStats: { day: string; inbound: number; outbound: number }[] = [];
-    const msPerDay = 24 * 60 * 60 * 1000;
-    const totalDays =
-      Math.max(0, Math.floor((statsEndDay.getTime() - statsStartDay.getTime()) / msPerDay)) + 1;
-    const useDateLabels = totalDays > 7;
-
-    for (let i = 0; i < totalDays; i++) {
-      const date = new Date(statsStartDay);
-      date.setDate(statsStartDay.getDate() + i);
-      const dateKey = date.toISOString().split("T")[0];
-      const stats = statsMap.get(dateKey) || { inbound: 0, outbound: 0 };
-
-      weeklyStats.push({
-        day: useDateLabels
-          ? date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
-          : dayNames[date.getDay()],
-        inbound: stats.inbound,
-        outbound: stats.outbound,
-      });
-    }
-
-    // Get top clients - use _count instead of loading all leads for efficiency
-    const [leadCountsByClient, meetingCountsByClient] = await Promise.all([
-      prisma.lead.groupBy({
-        by: ["clientId"],
+    if (includeCore) {
+      // Get total leads (windowed by createdAt when a window is provided)
+      totalLeads = await prisma.lead.count({
         where: { ...leadWhere, ...leadCreatedWindow },
-        _count: { id: true },
-        orderBy: { _count: { id: "desc" } },
-        take: 5,
-      }),
-      prisma.lead.groupBy({
-        by: ["clientId"],
+      });
+
+      // Outbound leads contacted (best-effort from DB only; outbound SMS from GHL automations isn't ingested yet)
+      outboundLeadsContacted = await prisma.lead.count({
+        where: {
+          ...leadWhere,
+          messages: {
+            some: {
+              direction: "outbound",
+              ...messageWindow,
+            },
+          },
+        },
+      });
+
+      // Responses = unique leads with inbound messages
+      responses = await prisma.lead.count({
+        where: respondedLeadFilter,
+      });
+
+      // Response rate = responses / outbound leads contacted
+      responseRate = outboundLeadsContacted > 0
+        ? Math.round((responses / outboundLeadsContacted) * 100)
+        : 0;
+
+      // Meetings booked = leads with a booked appointment
+      meetingsBooked = await prisma.lead.count({
         where: {
           ...leadWhere,
           ...(hasWindow
@@ -1472,58 +1358,155 @@ export async function getAnalytics(
                 ],
               }),
         },
-        _count: { id: true },
-      }),
-    ]);
+      });
 
-    const topClientIds = leadCountsByClient.map((r) => r.clientId);
-    const clients = topClientIds.length
-      ? await prisma.client.findMany({
-          where: { id: { in: topClientIds } },
-          select: { id: true, name: true },
-        })
-      : [];
+      responseTimeMetrics = await calculateResponseTimeMetricsSql({
+        userId: user.id,
+        clientId,
+        window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
+      });
 
-    const clientNameById = new Map(clients.map((c) => [c.id, c.name]));
-    const meetingCountByClient = new Map(meetingCountsByClient.map((r) => [r.clientId, r._count.id]));
+      capacity = clientId
+        ? await getWorkspaceCapacityUtilization({ clientId, windowDays: 30 }).catch((error) => {
+            console.warn("[Analytics] Failed to compute workspace capacity utilization:", error);
+            return null;
+          })
+        : null;
+    }
 
-    const topClients = leadCountsByClient.map((row) => ({
-      name: clientNameById.get(row.clientId) ?? "Unknown",
-      leads: row._count.id,
-      meetings: meetingCountByClient.get(row.clientId) ?? 0,
-    }));
+    if (includeBreakdowns) {
+      const responsesForBreakdowns = includeCore
+        ? responses
+        : await prisma.lead.count({ where: respondedLeadFilter });
+      const totalLeadsForBreakdowns = includeCore
+        ? totalLeads
+        : await prisma.lead.count({ where: { ...leadWhere, ...leadCreatedWindow } });
 
-    // SMS sub-client breakdown inside a workspace (Lead.smsCampaignId)
-    const smsSubClients: AnalyticsData["smsSubClients"] = [];
-    if (clientId) {
-      const positiveSentimentTags = [...POSITIVE_SENTIMENTS, "Positive"] as unknown as string[];
+      // Response sentiment breakdown (responded leads only)
+      const sentimentCounts = await prisma.lead.groupBy({
+        by: ["sentimentTag"],
+        where: respondedLeadFilter,
+        _count: {
+          _all: true,
+        },
+      });
 
-      const [campaigns, leadsBySmsCampaign, responsesBySmsCampaign, meetingsBySmsCampaign] = await Promise.all([
-        prisma.smsCampaign.findMany({
-          where: { clientId },
-          select: { id: true, name: true },
+      const sentimentAgg = new Map<string, number>();
+      for (const row of sentimentCounts) {
+        const raw = row.sentimentTag;
+        // "New" means "no inbound replies yet" and shouldn't show up in response sentiment.
+        const sentiment = !raw || raw === "New" ? "Unknown" : raw;
+        sentimentAgg.set(sentiment, (sentimentAgg.get(sentiment) ?? 0) + row._count._all);
+      }
+
+      sentimentBreakdown = Array.from(sentimentAgg.entries()).map(([sentiment, count]) => ({
+        sentiment,
+        count,
+        percentage: responsesForBreakdowns > 0 ? (count / responsesForBreakdowns) * 100 : 0,
+      }));
+
+      // Get status breakdown
+      const statusCounts = await prisma.lead.groupBy({
+        by: ["status"],
+        where: { ...leadWhere, ...leadCreatedWindow },
+        _count: {
+          status: true,
+        },
+      });
+
+      leadsByStatus = statusCounts.map((s) => ({
+        status: s.status,
+        count: s._count.status,
+        percentage: totalLeadsForBreakdowns > 0
+          ? Math.round((s._count.status / totalLeadsForBreakdowns) * 100)
+          : 0,
+      }));
+
+      // Message stats (windowed when provided; defaults to last 7 days)
+      const statsTo = hasWindow ? new Date(windowTo!) : new Date();
+      const statsFrom = hasWindow ? new Date(windowFrom!) : new Date(statsTo);
+      if (!hasWindow) {
+        statsFrom.setDate(statsFrom.getDate() - 6); // 6 days ago + today = 7 days
+      }
+
+      // Normalize to day boundaries for chart labels
+      const statsStartDay = new Date(statsFrom);
+      statsStartDay.setHours(0, 0, 0, 0);
+      const statsEndDay = new Date(statsTo);
+      statsEndDay.setHours(0, 0, 0, 0);
+      if (statsTo.getTime() === statsEndDay.getTime()) {
+        statsEndDay.setDate(statsEndDay.getDate() - 1);
+      }
+
+      // Use raw SQL to group by date in the database instead of fetching all messages
+      const weeklyMessageStats = await prisma.$queryRaw<
+        Array<{ day_date: Date; direction: string; count: bigint }>
+      >`
+        SELECT
+          DATE_TRUNC('day', m."sentAt") as day_date,
+          m.direction,
+          COUNT(*) as count
+        FROM "Message" m
+        INNER JOIN "Lead" l ON m."leadId" = l.id
+        WHERE ${buildAccessibleLeadSqlWhere({ userId: user.id, clientId })}
+          AND m."sentAt" >= ${statsFrom}
+          AND m."sentAt" < ${statsTo}
+        GROUP BY DATE_TRUNC('day', m."sentAt"), m.direction
+        ORDER BY day_date ASC
+      `;
+
+      // Build a lookup map for quick access
+      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const statsMap = new Map<string, { inbound: number; outbound: number }>();
+
+      for (const row of weeklyMessageStats) {
+        const dateKey = new Date(row.day_date).toISOString().split("T")[0];
+        if (!statsMap.has(dateKey)) {
+          statsMap.set(dateKey, { inbound: 0, outbound: 0 });
+        }
+        const entry = statsMap.get(dateKey)!;
+        if (row.direction === "inbound") {
+          entry.inbound = Number(row.count);
+        } else if (row.direction === "outbound") {
+          entry.outbound = Number(row.count);
+        }
+      }
+
+      // Build the stats array for the window
+      const msPerDay = 24 * 60 * 60 * 1000;
+      const totalDays =
+        Math.max(0, Math.floor((statsEndDay.getTime() - statsStartDay.getTime()) / msPerDay)) + 1;
+      const useDateLabels = totalDays > 7;
+
+      weeklyStats = [];
+      for (let i = 0; i < totalDays; i++) {
+        const date = new Date(statsStartDay);
+        date.setDate(statsStartDay.getDate() + i);
+        const dateKey = date.toISOString().split("T")[0];
+        const stats = statsMap.get(dateKey) || { inbound: 0, outbound: 0 };
+
+        weeklyStats.push({
+          day: useDateLabels
+            ? date.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+            : dayNames[date.getDay()],
+          inbound: stats.inbound,
+          outbound: stats.outbound,
+        });
+      }
+
+      // Get top clients - use _count instead of loading all leads for efficiency
+      const [leadCountsByClient, meetingCountsByClient] = await Promise.all([
+        prisma.lead.groupBy({
+          by: ["clientId"],
+          where: { ...leadWhere, ...leadCreatedWindow },
+          _count: { id: true },
+          orderBy: { _count: { id: "desc" } },
+          take: 5,
         }),
         prisma.lead.groupBy({
-          by: ["smsCampaignId"],
+          by: ["clientId"],
           where: {
-            clientId,
-            sentimentTag: { in: positiveSentimentTags },
-            ...(hasWindow ? { lastInboundAt: { gte: windowFrom!, lt: windowTo! } } : {}),
-          },
-          _count: { _all: true },
-        }),
-        prisma.lead.groupBy({
-          by: ["smsCampaignId"],
-          where: {
-            clientId,
-            messages: { some: { direction: "inbound", ...messageWindow } },
-          },
-          _count: { _all: true },
-        }),
-        prisma.lead.groupBy({
-          by: ["smsCampaignId"],
-          where: {
-            clientId,
+            ...leadWhere,
             ...(hasWindow
               ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
               : {
@@ -1535,70 +1518,120 @@ export async function getAnalytics(
                   ],
                 }),
           },
-          _count: { _all: true },
+          _count: { id: true },
         }),
       ]);
 
-      const nameById = new Map<string, string>(campaigns.map((c) => [c.id, c.name]));
-      const leadsCountByKey = new Map<string, number>();
-      const responsesCountByKey = new Map<string, number>();
-      const meetingsCountByKey = new Map<string, number>();
+      const topClientIds = leadCountsByClient.map((r) => r.clientId);
+      const clients = topClientIds.length
+        ? await prisma.client.findMany({
+            where: { id: { in: topClientIds } },
+            select: { id: true, name: true },
+          })
+        : [];
 
-      for (const row of leadsBySmsCampaign) {
-        leadsCountByKey.set(row.smsCampaignId ?? "__unattributed__", row._count._all);
+      const clientNameById = new Map(clients.map((c) => [c.id, c.name]));
+      const meetingCountByClient = new Map(meetingCountsByClient.map((r) => [r.clientId, r._count.id]));
+
+      topClients = leadCountsByClient.map((row) => ({
+        name: clientNameById.get(row.clientId) ?? "Unknown",
+        leads: row._count.id,
+        meetings: meetingCountByClient.get(row.clientId) ?? 0,
+      }));
+
+      // SMS sub-client breakdown inside a workspace (Lead.smsCampaignId)
+      smsSubClients = [];
+      if (clientId) {
+        const positiveSentimentTags = [...POSITIVE_SENTIMENTS, "Positive"] as unknown as string[];
+
+        const [campaigns, leadsBySmsCampaign, responsesBySmsCampaign, meetingsBySmsCampaign] = await Promise.all([
+          prisma.smsCampaign.findMany({
+            where: { clientId },
+            select: { id: true, name: true },
+          }),
+          prisma.lead.groupBy({
+            by: ["smsCampaignId"],
+            where: {
+              clientId,
+              sentimentTag: { in: positiveSentimentTags },
+              ...(hasWindow ? { lastInboundAt: { gte: windowFrom!, lt: windowTo! } } : {}),
+            },
+            _count: { _all: true },
+          }),
+          prisma.lead.groupBy({
+            by: ["smsCampaignId"],
+            where: {
+              clientId,
+              messages: { some: { direction: "inbound", ...messageWindow } },
+            },
+            _count: { _all: true },
+          }),
+          prisma.lead.groupBy({
+            by: ["smsCampaignId"],
+            where: {
+              clientId,
+              ...(hasWindow
+                ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
+                : {
+                    OR: [
+                      { appointmentBookedAt: { not: null } },
+                      { ghlAppointmentId: { not: null } },
+                      { calendlyInviteeUri: { not: null } },
+                      { calendlyScheduledEventUri: { not: null } },
+                    ],
+                  }),
+            },
+            _count: { _all: true },
+          }),
+        ]);
+
+        const nameById = new Map<string, string>(campaigns.map((c) => [c.id, c.name]));
+        const leadsCountByKey = new Map<string, number>();
+        const responsesCountByKey = new Map<string, number>();
+        const meetingsCountByKey = new Map<string, number>();
+
+        for (const row of leadsBySmsCampaign) {
+          leadsCountByKey.set(row.smsCampaignId ?? "__unattributed__", row._count._all);
+        }
+        for (const row of responsesBySmsCampaign) {
+          responsesCountByKey.set(row.smsCampaignId ?? "__unattributed__", row._count._all);
+        }
+        for (const row of meetingsBySmsCampaign) {
+          meetingsCountByKey.set(row.smsCampaignId ?? "__unattributed__", row._count._all);
+        }
+
+        const keys = new Set<string>([
+          ...leadsCountByKey.keys(),
+          ...responsesCountByKey.keys(),
+          ...meetingsCountByKey.keys(),
+        ]);
+
+        for (const key of keys) {
+          const name =
+            key === "__unattributed__"
+              ? "Unattributed"
+              : nameById.get(key) ?? "Unknown";
+
+          smsSubClients.push({
+            name,
+            leads: leadsCountByKey.get(key) ?? 0,
+            responses: responsesCountByKey.get(key) ?? 0,
+            meetingsBooked: meetingsCountByKey.get(key) ?? 0,
+          });
+        }
+
+        smsSubClients.sort((a, b) => b.leads - a.leads);
       }
-      for (const row of responsesBySmsCampaign) {
-        responsesCountByKey.set(row.smsCampaignId ?? "__unattributed__", row._count._all);
-      }
-      for (const row of meetingsBySmsCampaign) {
-        meetingsCountByKey.set(row.smsCampaignId ?? "__unattributed__", row._count._all);
-      }
 
-      const keys = new Set<string>([
-        ...leadsCountByKey.keys(),
-        ...responsesCountByKey.keys(),
-        ...meetingsCountByKey.keys(),
-      ]);
-
-      for (const key of keys) {
-        const name =
-          key === "__unattributed__"
-            ? "Unattributed"
-            : nameById.get(key) ?? "Unknown";
-
-        smsSubClients.push({
-          name,
-          leads: leadsCountByKey.get(key) ?? 0,
-          responses: responsesCountByKey.get(key) ?? 0,
-          meetingsBooked: meetingsCountByKey.get(key) ?? 0,
-        });
-      }
-
-      smsSubClients.sort((a, b) => b.leads - a.leads);
+      // Calculate per-setter response times (only when a specific workspace is selected)
+      perSetterResponseTimes = clientId
+        ? await calculatePerSetterResponseTimesSql({
+            userId: user.id,
+            clientId,
+            window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
+          })
+        : [];
     }
-
-    // Calculate response time metrics (setter and client, business hours only)
-    const responseTimeMetrics = await calculateResponseTimeMetricsSql({
-      userId: user.id,
-      clientId,
-      window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
-    });
-
-    // Calculate per-setter response times (only when a specific workspace is selected)
-    const perSetterResponseTimes = clientId
-      ? await calculatePerSetterResponseTimesSql({
-          userId: user.id,
-          clientId,
-          window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
-        })
-      : [];
-
-    const capacity = clientId
-      ? await getWorkspaceCapacityUtilization({ clientId, windowDays: 30 }).catch((error) => {
-          console.warn("[Analytics] Failed to compute workspace capacity utilization:", error);
-          return null;
-        })
-      : null;
 
     const analyticsData: AnalyticsData = {
       overview: {

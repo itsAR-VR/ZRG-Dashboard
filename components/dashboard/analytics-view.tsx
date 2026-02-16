@@ -43,6 +43,7 @@ import {
   getResponseTimingAnalytics,
   type ResponseTimingAnalyticsData,
 } from "@/actions/response-timing-analytics-actions"
+import { createClient as createSupabaseClient } from "@/lib/supabase/client"
 
 const AnalyticsCrmTable = dynamic(
   () => import("@/components/dashboard/analytics-crm-table").then((mod) => mod.AnalyticsCrmTable),
@@ -155,8 +156,154 @@ interface AnalyticsViewProps {
 
 type AnalyticsTab = "overview" | "workflows" | "campaigns" | "booking" | "crm" | "response-timing"
 const ANALYTICS_CACHE_TTL_MS = 90_000
+const ANALYTICS_SESSION_CACHE_TTL_MS = 10 * 60 * 1000
+const ANALYTICS_SESSION_CACHE_MAX_ENTRIES = 20
+const ANALYTICS_SESSION_CACHE_INDEX_KEY = "zrg:analytics:index:v1"
 
 type AnalyticsOverviewResult = Awaited<ReturnType<typeof getAnalytics>>
+type WorkflowAnalyticsResult = Awaited<ReturnType<typeof getWorkflowAttributionAnalytics>>
+type CampaignAnalyticsResult = Awaited<ReturnType<typeof getEmailCampaignAnalytics>>
+type ReactivationAnalyticsResult = Awaited<ReturnType<typeof getReactivationCampaignAnalytics>>
+type AiDraftOutcomeResult = Awaited<ReturnType<typeof getAiDraftResponseOutcomeStats>>
+type AiDraftBookingResult = Awaited<ReturnType<typeof getAiDraftBookingConversionStats>>
+type ResponseTimingResult = Awaited<ReturnType<typeof getResponseTimingAnalytics>>
+
+type CampaignsReadResult = {
+  success: boolean
+  data?: {
+    campaigns: CampaignAnalyticsResult["data"] | null
+    reactivation: ReactivationAnalyticsResult["data"] | null
+    aiDraftOutcome: AiDraftOutcomeResult["data"] | null
+    aiDraftBooking: AiDraftBookingResult["data"] | null
+  }
+  errors?: Record<string, string>
+  error?: string
+}
+
+type AnalyticsSessionEnvelope<T> = {
+  savedAt: number
+  data: T
+}
+
+type AnalyticsSessionIndexEntry = {
+  key: string
+  updatedAt: number
+}
+
+type CampaignsSessionData = {
+  campaigns: EmailCampaignKpiRow[] | null
+  reactivation: ReactivationAnalyticsData | null
+  aiDraftOutcome: AiDraftResponseOutcomeStats | null
+  aiDraftBooking: AiDraftBookingConversionStats | null
+}
+
+type ResponseTimingSessionData = ResponseTimingAnalyticsData
+type AnalyticsOverviewBreakdownsData = Pick<
+  AnalyticsData,
+  "sentimentBreakdown" | "weeklyStats" | "leadsByStatus" | "topClients" | "smsSubClients" | "perSetterResponseTimes"
+>
+
+function pickOverviewBreakdowns(data: AnalyticsData): AnalyticsOverviewBreakdownsData {
+  return {
+    sentimentBreakdown: data.sentimentBreakdown,
+    weeklyStats: data.weeklyStats,
+    leadsByStatus: data.leadsByStatus,
+    topClients: data.topClients,
+    smsSubClients: data.smsSubClients,
+    perSetterResponseTimes: data.perSetterResponseTimes,
+  }
+}
+
+function mergeOverviewData(
+  core: AnalyticsData,
+  breakdowns?: AnalyticsOverviewBreakdownsData | null
+): AnalyticsData {
+  if (!breakdowns) return core
+  return {
+    ...core,
+    sentimentBreakdown: breakdowns.sentimentBreakdown,
+    weeklyStats: breakdowns.weeklyStats,
+    leadsByStatus: breakdowns.leadsByStatus,
+    topClients: breakdowns.topClients,
+    smsSubClients: breakdowns.smsSubClients,
+    perSetterResponseTimes: breakdowns.perSetterResponseTimes,
+  }
+}
+
+function getSessionStorageSafe(): Storage | null {
+  if (typeof window === "undefined") return null
+  try {
+    return window.sessionStorage
+  } catch {
+    return null
+  }
+}
+
+function buildAnalyticsSessionStorageKey(opts: {
+  userId: string
+  clientId: string
+  tab: AnalyticsTab
+  parts: string
+}): string {
+  const userId = opts.userId.trim() || "anon"
+  const clientId = opts.clientId.trim() || "__all__"
+  const parts = opts.parts.trim() || "all"
+  return `zrg:analytics:${userId}:${clientId}:${opts.tab}:${parts}`
+}
+
+function readAnalyticsSessionCache<T>(key: string): T | null {
+  const storage = getSessionStorageSafe()
+  if (!storage) return null
+  try {
+    const raw = storage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as AnalyticsSessionEnvelope<T>
+    if (!parsed || typeof parsed !== "object") return null
+    if (!Number.isFinite(parsed.savedAt)) {
+      storage.removeItem(key)
+      return null
+    }
+    if (Date.now() - parsed.savedAt > ANALYTICS_SESSION_CACHE_TTL_MS) {
+      storage.removeItem(key)
+      return null
+    }
+    return parsed.data ?? null
+  } catch {
+    return null
+  }
+}
+
+function writeAnalyticsSessionCache<T>(key: string, data: T): void {
+  const storage = getSessionStorageSafe()
+  if (!storage) return
+  const now = Date.now()
+
+  try {
+    const payload: AnalyticsSessionEnvelope<T> = { savedAt: now, data }
+    storage.setItem(key, JSON.stringify(payload))
+
+    const rawIndex = storage.getItem(ANALYTICS_SESSION_CACHE_INDEX_KEY)
+    const parsedIndex = rawIndex ? (JSON.parse(rawIndex) as AnalyticsSessionIndexEntry[]) : []
+    const nextIndex = (Array.isArray(parsedIndex) ? parsedIndex : [])
+      .filter((entry) => entry && typeof entry.key === "string" && entry.key !== key)
+      .map((entry) => ({ key: entry.key, updatedAt: Number(entry.updatedAt) || 0 }))
+
+    nextIndex.push({ key, updatedAt: now })
+    nextIndex.sort((a, b) => b.updatedAt - a.updatedAt)
+
+    const overflow = nextIndex.slice(ANALYTICS_SESSION_CACHE_MAX_ENTRIES)
+    for (const entry of overflow) {
+      storage.removeItem(entry.key)
+    }
+
+    storage.setItem(
+      ANALYTICS_SESSION_CACHE_INDEX_KEY,
+      JSON.stringify(nextIndex.slice(0, ANALYTICS_SESSION_CACHE_MAX_ENTRIES))
+    )
+  } catch {
+    // Best-effort cache only; ignore storage quota/JSON errors.
+  }
+}
 
 function isReadApiDisabledPayload(
   payload: unknown
@@ -167,10 +314,11 @@ function isReadApiDisabledPayload(
 
 async function getAnalyticsOverviewRead(
   clientId: string,
-  opts?: { window?: { from: string; to: string } }
+  opts?: { window?: { from: string; to: string }; parts?: "all" | "core" | "breakdowns" }
 ): Promise<AnalyticsOverviewResult> {
   const params = new URLSearchParams()
   params.set("clientId", clientId)
+  params.set("parts", opts?.parts ?? "all")
   if (opts?.window?.from && opts?.window?.to) {
     params.set("from", opts.window.from)
     params.set("to", opts.window.to)
@@ -186,7 +334,135 @@ async function getAnalyticsOverviewRead(
   return json
 }
 
+async function getWorkflowAnalyticsRead(
+  clientId: string,
+  opts?: { window?: { from: string; to: string } }
+): Promise<WorkflowAnalyticsResult> {
+  const params = new URLSearchParams()
+  params.set("clientId", clientId)
+  if (opts?.window?.from && opts?.window?.to) {
+    params.set("from", opts.window.from)
+    params.set("to", opts.window.to)
+  }
+
+  try {
+    const response = await fetch(`/api/analytics/workflows?${params.toString()}`, { method: "GET" })
+    const json = (await response.json()) as WorkflowAnalyticsResult
+    if (!response.ok && isReadApiDisabledPayload(json)) {
+      return getWorkflowAttributionAnalytics(
+        opts?.window ? { clientId, ...opts.window } : { clientId }
+      )
+    }
+    if (!response.ok) return json
+    return json
+  } catch {
+    return getWorkflowAttributionAnalytics(
+      opts?.window ? { clientId, ...opts.window } : { clientId }
+    )
+  }
+}
+
+async function getCampaignAnalyticsRead(
+  clientId: string,
+  opts?: { window?: { from: string; to: string } }
+): Promise<CampaignsReadResult> {
+  const params = new URLSearchParams()
+  params.set("clientId", clientId)
+  if (opts?.window?.from && opts?.window?.to) {
+    params.set("from", opts.window.from)
+    params.set("to", opts.window.to)
+  }
+
+  const fallbackToActions = async (): Promise<CampaignsReadResult> => {
+    const payload = opts?.window ? { clientId, ...opts.window } : { clientId }
+    const [campaignResult, reactivationResult, aiOutcomeResult, aiBookingResult] = await Promise.all([
+      getEmailCampaignAnalytics(payload),
+      getReactivationCampaignAnalytics(payload),
+      getAiDraftResponseOutcomeStats(payload),
+      getAiDraftBookingConversionStats(payload),
+    ])
+
+    const errors: Record<string, string> = {}
+    if (!campaignResult.success) errors.campaigns = campaignResult.error || "Failed to load campaigns"
+    if (!reactivationResult.success) errors.reactivation = reactivationResult.error || "Failed to load reactivation"
+    if (!aiOutcomeResult.success) errors.aiDraftOutcome = aiOutcomeResult.error || "Failed to load AI outcomes"
+    if (!aiBookingResult.success) errors.aiDraftBooking = aiBookingResult.error || "Failed to load AI booking"
+
+    return {
+      success:
+        campaignResult.success ||
+        reactivationResult.success ||
+        aiOutcomeResult.success ||
+        aiBookingResult.success,
+      data: {
+        campaigns: campaignResult.success ? campaignResult.data ?? null : null,
+        reactivation: reactivationResult.success ? reactivationResult.data ?? null : null,
+        aiDraftOutcome: aiOutcomeResult.success ? aiOutcomeResult.data ?? null : null,
+        aiDraftBooking: aiBookingResult.success ? aiBookingResult.data ?? null : null,
+      },
+      ...(Object.keys(errors).length > 0 ? { errors } : {}),
+      ...(Object.keys(errors).length > 0 ? { error: Object.values(errors)[0] } : {}),
+    }
+  }
+
+  try {
+    const response = await fetch(`/api/analytics/campaigns?${params.toString()}`, { method: "GET" })
+    const json = (await response.json()) as CampaignsReadResult
+    if (!response.ok && isReadApiDisabledPayload(json)) {
+      return fallbackToActions()
+    }
+    if (!response.ok) return json
+    return json
+  } catch {
+    return fallbackToActions()
+  }
+}
+
+async function getResponseTimingAnalyticsRead(
+  clientId: string,
+  opts?: {
+    window?: { from: string; to: string }
+    channel?: "all" | "email" | "sms" | "linkedin"
+    responder?: string
+  }
+): Promise<ResponseTimingResult> {
+  const params = new URLSearchParams()
+  params.set("clientId", clientId)
+  if (opts?.window?.from && opts?.window?.to) {
+    params.set("from", opts.window.from)
+    params.set("to", opts.window.to)
+  }
+  if (opts?.channel && opts.channel !== "all") {
+    params.set("channel", opts.channel)
+  }
+  if (opts?.responder && opts.responder !== "all") {
+    params.set("responder", opts.responder)
+  }
+
+  const fallbackPayload = {
+    clientId,
+    ...(opts?.window ? opts.window : {}),
+    ...(opts?.channel && opts.channel !== "all" ? { channel: opts.channel } : { channel: null }),
+    ...(opts?.responder ? { responder: opts.responder } : { responder: "all" }),
+  }
+
+  try {
+    const response = await fetch(`/api/analytics/response-timing?${params.toString()}`, {
+      method: "GET",
+    })
+    const json = (await response.json()) as ResponseTimingResult
+    if (!response.ok && isReadApiDisabledPayload(json)) {
+      return getResponseTimingAnalytics(fallbackPayload)
+    }
+    if (!response.ok) return json
+    return json
+  } catch {
+    return getResponseTimingAnalytics(fallbackPayload)
+  }
+}
+
 export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsViewProps) {
+  const [sessionUserId, setSessionUserId] = useState("anon")
   const [activeTab, setActiveTab] = useState<AnalyticsTab>("overview")
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -207,14 +483,40 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
   const [datePreset, setDatePreset] = useState<"7d" | "30d" | "90d" | "custom">("30d")
   const [customFrom, setCustomFrom] = useState("")
   const [customTo, setCustomTo] = useState("")
-  const overviewFetchKeyRef = useRef<string | null>(null)
-  const overviewFetchedAtRef = useRef(0)
+  const overviewCoreFetchKeyRef = useRef<string | null>(null)
+  const overviewCoreFetchedAtRef = useRef(0)
+  const overviewBreakdownsFetchKeyRef = useRef<string | null>(null)
+  const overviewBreakdownsFetchedAtRef = useRef(0)
   const workflowFetchKeyRef = useRef<string | null>(null)
   const workflowFetchedAtRef = useRef(0)
   const campaignsFetchKeyRef = useRef<string | null>(null)
   const campaignsFetchedAtRef = useRef(0)
   const responseTimingFetchKeyRef = useRef<string | null>(null)
   const responseTimingFetchedAtRef = useRef(0)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const resolveSessionUser = async () => {
+      try {
+        const supabase = createSupabaseClient()
+        const {
+          data: { user },
+        } = await supabase.auth.getUser()
+        if (cancelled) return
+        if (user?.id) {
+          setSessionUserId(user.id)
+        }
+      } catch {
+        // Best-effort only. Fall back to "anon" cache scope when auth lookups fail.
+      }
+    }
+
+    void resolveSessionUser()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const windowRange = useMemo(() => {
     if (datePreset === "custom") {
@@ -248,12 +550,73 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     return "Selected window"
   }, [datePreset, customFrom, customTo, windowRange])
 
-  const overviewFetchKey = activeWorkspace ? `${activeWorkspace}:${windowKey}` : null
+  const overviewCoreFetchKey = activeWorkspace ? `${activeWorkspace}:${windowKey}:core` : null
+  const overviewBreakdownsFetchKey = activeWorkspace ? `${activeWorkspace}:${windowKey}:breakdowns` : null
   const workflowFetchKey = activeWorkspace ? `${activeWorkspace}:${windowKey}` : null
   const campaignsFetchKey = activeWorkspace ? `${activeWorkspace}:${windowKey}` : null
   const responseTimingFetchKey = activeWorkspace
     ? `${activeWorkspace}:${windowKey}:${responseTimingChannel}:${responseTimingResponder}`
     : null
+  const overviewCoreSessionCacheKey = useMemo(
+    () =>
+      activeWorkspace
+        ? buildAnalyticsSessionStorageKey({
+            userId: sessionUserId,
+            clientId: activeWorkspace,
+            tab: "overview",
+            parts: `window:${windowKey}:core`,
+          })
+        : null,
+    [activeWorkspace, sessionUserId, windowKey]
+  )
+  const overviewBreakdownsSessionCacheKey = useMemo(
+    () =>
+      activeWorkspace
+        ? buildAnalyticsSessionStorageKey({
+            userId: sessionUserId,
+            clientId: activeWorkspace,
+            tab: "overview",
+            parts: `window:${windowKey}:breakdowns`,
+          })
+        : null,
+    [activeWorkspace, sessionUserId, windowKey]
+  )
+  const workflowSessionCacheKey = useMemo(
+    () =>
+      activeWorkspace
+        ? buildAnalyticsSessionStorageKey({
+            userId: sessionUserId,
+            clientId: activeWorkspace,
+            tab: "workflows",
+            parts: `window:${windowKey}`,
+          })
+        : null,
+    [activeWorkspace, sessionUserId, windowKey]
+  )
+  const campaignsSessionCacheKey = useMemo(
+    () =>
+      activeWorkspace
+        ? buildAnalyticsSessionStorageKey({
+            userId: sessionUserId,
+            clientId: activeWorkspace,
+            tab: "campaigns",
+            parts: `window:${windowKey}`,
+          })
+        : null,
+    [activeWorkspace, sessionUserId, windowKey]
+  )
+  const responseTimingSessionCacheKey = useMemo(
+    () =>
+      activeWorkspace
+        ? buildAnalyticsSessionStorageKey({
+            userId: sessionUserId,
+            clientId: activeWorkspace,
+            tab: "response-timing",
+            parts: `window:${windowKey}:channel:${responseTimingChannel}:responder:${responseTimingResponder}`,
+          })
+        : null,
+    [activeWorkspace, responseTimingChannel, responseTimingResponder, sessionUserId, windowKey]
+  )
 
   useEffect(() => {
     if (!isActive || activeTab !== "overview") {
@@ -263,17 +626,34 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     if (!activeWorkspace) {
       setData(null)
       setIsLoading(false)
-      overviewFetchKeyRef.current = null
-      overviewFetchedAtRef.current = 0
+      overviewCoreFetchKeyRef.current = null
+      overviewCoreFetchedAtRef.current = 0
+      overviewBreakdownsFetchKeyRef.current = null
+      overviewBreakdownsFetchedAtRef.current = 0
       return
     }
     const workspaceId = activeWorkspace
-    const isOverviewCacheFresh =
-      overviewFetchKey &&
-      overviewFetchKeyRef.current === overviewFetchKey &&
-      Date.now() - overviewFetchedAtRef.current < ANALYTICS_CACHE_TTL_MS
+    const cachedCore = overviewCoreSessionCacheKey
+      ? readAnalyticsSessionCache<AnalyticsData>(overviewCoreSessionCacheKey)
+      : null
+    const cachedBreakdowns = overviewBreakdownsSessionCacheKey
+      ? readAnalyticsSessionCache<AnalyticsOverviewBreakdownsData>(overviewBreakdownsSessionCacheKey)
+      : null
+    if (cachedCore) {
+      setData(mergeOverviewData(cachedCore, cachedBreakdowns))
+      setIsLoading(false)
+    }
 
-    if (isOverviewCacheFresh) {
+    const isOverviewCoreCacheFresh =
+      overviewCoreFetchKey &&
+      overviewCoreFetchKeyRef.current === overviewCoreFetchKey &&
+      Date.now() - overviewCoreFetchedAtRef.current < ANALYTICS_CACHE_TTL_MS
+    const isOverviewBreakdownsCacheFresh =
+      overviewBreakdownsFetchKey &&
+      overviewBreakdownsFetchKeyRef.current === overviewBreakdownsFetchKey &&
+      Date.now() - overviewBreakdownsFetchedAtRef.current < ANALYTICS_CACHE_TTL_MS
+
+    if (isOverviewCoreCacheFresh && isOverviewBreakdownsCacheFresh) {
       setIsLoading(false)
       return
     }
@@ -281,16 +661,54 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     let cancelled = false
 
     async function fetchOverviewAnalytics() {
-      setIsLoading(true)
-      const result = await getAnalyticsOverviewRead(workspaceId, { window: windowParams })
-      if (cancelled) return
-      if (result.success && result.data) {
-        setData(result.data)
-        overviewFetchKeyRef.current = overviewFetchKey
-        overviewFetchedAtRef.current = Date.now()
-      } else {
-        setData(null)
+      let nextCore: AnalyticsData | null = cachedCore
+      const hasCachedSnapshot = Boolean(nextCore)
+      if (!hasCachedSnapshot) {
+        setIsLoading(true)
       }
+      if (!isOverviewCoreCacheFresh) {
+        const coreResult = await getAnalyticsOverviewRead(workspaceId, {
+          window: windowParams,
+          parts: "core",
+        })
+        if (cancelled) return
+        if (coreResult.success && coreResult.data) {
+          nextCore = coreResult.data
+          setData(mergeOverviewData(coreResult.data, cachedBreakdowns))
+          overviewCoreFetchKeyRef.current = overviewCoreFetchKey
+          overviewCoreFetchedAtRef.current = Date.now()
+          if (overviewCoreSessionCacheKey) {
+            writeAnalyticsSessionCache(overviewCoreSessionCacheKey, coreResult.data)
+          }
+        } else if (!hasCachedSnapshot) {
+          setData(null)
+          setIsLoading(false)
+          return
+        }
+      }
+
+      if (!isOverviewBreakdownsCacheFresh) {
+        const breakdownResult = await getAnalyticsOverviewRead(workspaceId, {
+          window: windowParams,
+          parts: "breakdowns",
+        })
+        if (cancelled) return
+        if (breakdownResult.success && breakdownResult.data) {
+          const breakdowns = pickOverviewBreakdowns(breakdownResult.data)
+          if (nextCore) {
+            const merged = mergeOverviewData(nextCore, breakdowns)
+            setData(merged)
+          } else {
+            setData((prev) => (prev ? mergeOverviewData(prev, breakdowns) : prev))
+          }
+          overviewBreakdownsFetchKeyRef.current = overviewBreakdownsFetchKey
+          overviewBreakdownsFetchedAtRef.current = Date.now()
+          if (overviewBreakdownsSessionCacheKey) {
+            writeAnalyticsSessionCache(overviewBreakdownsSessionCacheKey, breakdowns)
+          }
+        }
+      }
+
       setIsLoading(false)
     }
 
@@ -299,7 +717,16 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     return () => {
       cancelled = true
     }
-  }, [activeTab, activeWorkspace, isActive, overviewFetchKey, windowParams])
+  }, [
+    activeTab,
+    activeWorkspace,
+    isActive,
+    overviewBreakdownsFetchKey,
+    overviewBreakdownsSessionCacheKey,
+    overviewCoreFetchKey,
+    overviewCoreSessionCacheKey,
+    windowParams,
+  ])
 
   useEffect(() => {
     if (!isActive || activeTab !== "workflows") {
@@ -312,6 +739,14 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
       workflowFetchKeyRef.current = null
       workflowFetchedAtRef.current = 0
       return
+    }
+    const workspaceId = activeWorkspace
+    const cachedWorkflows = workflowSessionCacheKey
+      ? readAnalyticsSessionCache<WorkflowAttributionData>(workflowSessionCacheKey)
+      : null
+    if (cachedWorkflows) {
+      setWorkflowData(cachedWorkflows)
+      setWorkflowLoading(false)
     }
     const isWorkflowCacheFresh =
       workflowFetchKey &&
@@ -326,17 +761,22 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     let cancelled = false
 
     async function fetchWorkflowAnalytics() {
-      setWorkflowLoading(true)
-      const result = await getWorkflowAttributionAnalytics(
-        windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
-      )
+      if (!cachedWorkflows) {
+        setWorkflowLoading(true)
+      }
+      const result = await getWorkflowAnalyticsRead(workspaceId, { window: windowParams })
       if (cancelled) return
       if (result.success && result.data) {
         setWorkflowData(result.data)
         workflowFetchKeyRef.current = workflowFetchKey
         workflowFetchedAtRef.current = Date.now()
+        if (workflowSessionCacheKey) {
+          writeAnalyticsSessionCache(workflowSessionCacheKey, result.data)
+        }
       } else {
-        setWorkflowData(null)
+        if (!cachedWorkflows) {
+          setWorkflowData(null)
+        }
       }
       setWorkflowLoading(false)
     }
@@ -345,7 +785,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     return () => {
       cancelled = true
     }
-  }, [activeTab, activeWorkspace, isActive, windowParams, workflowFetchKey])
+  }, [activeTab, activeWorkspace, isActive, windowParams, workflowFetchKey, workflowSessionCacheKey])
 
   useEffect(() => {
     if (!isActive || activeTab !== "campaigns") {
@@ -370,6 +810,20 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
       campaignsFetchedAtRef.current = 0
       return
     }
+    const workspaceId = activeWorkspace
+    const cachedCampaigns = campaignsSessionCacheKey
+      ? readAnalyticsSessionCache<CampaignsSessionData>(campaignsSessionCacheKey)
+      : null
+    if (cachedCampaigns) {
+      setCampaignRows(cachedCampaigns.campaigns)
+      setReactivationData(cachedCampaigns.reactivation)
+      setAiDraftOutcomeStats(cachedCampaigns.aiDraftOutcome)
+      setAiDraftBookingStats(cachedCampaigns.aiDraftBooking)
+      setCampaignLoading(false)
+      setReactivationLoading(false)
+      setAiDraftOutcomeLoading(false)
+      setAiDraftBookingLoading(false)
+    }
     const isCampaignsCacheFresh =
       campaignsFetchKey &&
       campaignsFetchKeyRef.current === campaignsFetchKey &&
@@ -386,65 +840,64 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     let cancelled = false
 
     async function fetchCampaignData() {
-      setCampaignLoading(true)
-      setReactivationLoading(true)
-      setAiDraftOutcomeLoading(true)
-      setAiDraftBookingLoading(true)
+      if (!cachedCampaigns) {
+        setCampaignLoading(true)
+        setReactivationLoading(true)
+        setAiDraftOutcomeLoading(true)
+        setAiDraftBookingLoading(true)
+      }
 
-      const [campaignResult, workflowResult, aiOutcomeResult, aiBookingResult] = await Promise.all([
-        getEmailCampaignAnalytics(
-          windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
-        ),
-        getReactivationCampaignAnalytics(
-          windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
-        ),
-        getAiDraftResponseOutcomeStats(
-          windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
-        ),
-        getAiDraftBookingConversionStats(
-          windowParams ? { clientId: activeWorkspace, ...windowParams } : { clientId: activeWorkspace }
-        ),
-      ])
+      const result = await getCampaignAnalyticsRead(workspaceId, { window: windowParams })
 
       if (cancelled) return
 
-      if (campaignResult.success && campaignResult.data) {
-        setCampaignRows(campaignResult.data.campaigns)
+      if (result.data?.campaigns) {
+        setCampaignRows(result.data.campaigns.campaigns)
       } else {
         setCampaignRows(null)
       }
       setCampaignLoading(false)
 
-      if (workflowResult.success && workflowResult.data) {
-        setReactivationData(workflowResult.data)
+      if (result.data?.reactivation) {
+        setReactivationData(result.data.reactivation)
       } else {
         setReactivationData(null)
       }
       setReactivationLoading(false)
 
-      if (aiOutcomeResult.success && aiOutcomeResult.data) {
-        setAiDraftOutcomeStats(aiOutcomeResult.data)
+      if (result.data?.aiDraftOutcome) {
+        setAiDraftOutcomeStats(result.data.aiDraftOutcome)
       } else {
         setAiDraftOutcomeStats(null)
       }
       setAiDraftOutcomeLoading(false)
 
-      if (aiBookingResult.success && aiBookingResult.data) {
-        setAiDraftBookingStats(aiBookingResult.data)
+      if (result.data?.aiDraftBooking) {
+        setAiDraftBookingStats(result.data.aiDraftBooking)
       } else {
         setAiDraftBookingStats(null)
       }
       setAiDraftBookingLoading(false)
 
       const allCampaignCallsSucceeded =
-        campaignResult.success &&
-        workflowResult.success &&
-        aiOutcomeResult.success &&
-        aiBookingResult.success
+        result.success &&
+        Boolean(result.data?.campaigns) &&
+        Boolean(result.data?.reactivation) &&
+        Boolean(result.data?.aiDraftOutcome) &&
+        Boolean(result.data?.aiDraftBooking)
 
       if (allCampaignCallsSucceeded) {
         campaignsFetchKeyRef.current = campaignsFetchKey
         campaignsFetchedAtRef.current = Date.now()
+      }
+
+      if (campaignsSessionCacheKey) {
+        writeAnalyticsSessionCache<CampaignsSessionData>(campaignsSessionCacheKey, {
+          campaigns: result.data?.campaigns?.campaigns ?? null,
+          reactivation: result.data?.reactivation ?? null,
+          aiDraftOutcome: result.data?.aiDraftOutcome ?? null,
+          aiDraftBooking: result.data?.aiDraftBooking ?? null,
+        })
       }
     }
 
@@ -452,7 +905,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     return () => {
       cancelled = true
     }
-  }, [activeTab, activeWorkspace, campaignsFetchKey, isActive, windowParams])
+  }, [activeTab, activeWorkspace, campaignsFetchKey, campaignsSessionCacheKey, isActive, windowParams])
 
   useEffect(() => {
     if (!isActive || activeTab !== "response-timing") {
@@ -465,6 +918,14 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
       responseTimingFetchKeyRef.current = null
       responseTimingFetchedAtRef.current = 0
       return
+    }
+    const workspaceId = activeWorkspace
+    const cachedResponseTiming = responseTimingSessionCacheKey
+      ? readAnalyticsSessionCache<ResponseTimingSessionData>(responseTimingSessionCacheKey)
+      : null
+    if (cachedResponseTiming) {
+      setResponseTimingStats(cachedResponseTiming)
+      setResponseTimingLoading(false)
     }
     const isResponseTimingCacheFresh =
       responseTimingFetchKey &&
@@ -479,28 +940,26 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     let cancelled = false
 
     async function fetchResponseTimingAnalytics() {
-      setResponseTimingLoading(true)
-      const payload = windowParams
-        ? {
-            clientId: activeWorkspace,
-            ...windowParams,
-            channel: responseTimingChannel === "all" ? null : responseTimingChannel,
-            responder: responseTimingResponder,
-          }
-        : {
-            clientId: activeWorkspace,
-            channel: responseTimingChannel === "all" ? null : responseTimingChannel,
-            responder: responseTimingResponder,
-          }
-
-      const result = await getResponseTimingAnalytics(payload)
+      if (!cachedResponseTiming) {
+        setResponseTimingLoading(true)
+      }
+      const result = await getResponseTimingAnalyticsRead(workspaceId, {
+        window: windowParams,
+        channel: responseTimingChannel,
+        responder: responseTimingResponder,
+      })
       if (!cancelled) {
         if (result.success && result.data) {
           setResponseTimingStats(result.data)
           responseTimingFetchKeyRef.current = responseTimingFetchKey
           responseTimingFetchedAtRef.current = Date.now()
+          if (responseTimingSessionCacheKey) {
+            writeAnalyticsSessionCache(responseTimingSessionCacheKey, result.data)
+          }
         } else {
-          setResponseTimingStats(null)
+          if (!cachedResponseTiming) {
+            setResponseTimingStats(null)
+          }
         }
         setResponseTimingLoading(false)
       }
@@ -518,6 +977,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     responseTimingChannel,
     responseTimingFetchKey,
     responseTimingResponder,
+    responseTimingSessionCacheKey,
     windowParams,
   ])
 
