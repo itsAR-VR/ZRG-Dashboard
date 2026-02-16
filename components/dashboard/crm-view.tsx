@@ -47,7 +47,7 @@ import {
 	} from "@/actions/crm-actions"
 	import { refreshAndEnrichLead } from "@/actions/enrichment-actions"
 	import { resolveEmailBisonReplyUrlForLead } from "@/actions/emailbison-link-actions"
-	import { subscribeToLeads, unsubscribe } from "@/lib/supabase"
+	import { subscribeToWorkspaceLeadsRealtime, unsubscribeRealtimeChannel } from "@/lib/realtime-session"
 	import { toast } from "sonner"
 	import { cn } from "@/lib/utils"
 	import { LeadScoreBadge } from "./lead-score-badge"
@@ -514,15 +514,27 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
     setNewLeadCount(0)
     if (!activeWorkspace) return
 
-    const channel = subscribeToLeads(
-      (payload) => {
-        if (payload.eventType === "INSERT") {
-          setNewLeadCount((prev) => prev + 1)
-        }
-      },
-      { clientId: activeWorkspace }
-    )
-    return () => unsubscribe(channel)
+    let cancelled = false
+    let channel: Awaited<ReturnType<typeof subscribeToWorkspaceLeadsRealtime>> = null
+
+    const initializeRealtime = async () => {
+      channel = await subscribeToWorkspaceLeadsRealtime({
+        clientId: activeWorkspace,
+        onEvent: (payload) => {
+          if (cancelled) return
+          if (payload.eventType === "INSERT") {
+            setNewLeadCount((prev) => prev + 1)
+          }
+        },
+      })
+    }
+
+    void initializeRealtime()
+
+    return () => {
+      cancelled = true
+      unsubscribeRealtimeChannel(channel)
+    }
   }, [activeWorkspace])
 
   // Handle sort change

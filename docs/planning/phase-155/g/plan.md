@@ -88,3 +88,64 @@ Make the Inngest cutover safe and production-parity so enabling `BACKGROUND_JOBS
 
 ## Handoff
 After Phase 155g, it is safe to enable `BACKGROUND_JOBS_USE_INNGEST=true` broadly and proceed with remaining Phase 155 items (counts/analytics recompute events + realtime hardening + observability).
+
+## Output (2026-02-16)
+- Implemented cron/Inngest parity cutover wiring:
+  - Added shared maintenance module and delegated cron inline maintenance to it:
+    - `lib/background-jobs/maintenance.ts`
+    - `app/api/cron/background-jobs/route.ts`
+  - Added second durable event + function for maintenance parity:
+    - `background/maintenance.requested`
+    - `lib/inngest/functions/background-maintenance.ts`
+    - `lib/inngest/functions/index.ts`
+    - `lib/inngest/events.ts`
+- Added enqueue-failure fallback in cron:
+  - If `inngest.send()` fails while `BACKGROUND_JOBS_USE_INNGEST=true`, route now runs inline processing+maintenance in the same tick (`mode: "inline-fallback"`), avoiding dead-zone drops.
+- Added minimal Redis job status blobs for durable jobs:
+  - `lib/inngest/job-status.ts`
+  - Keys: `job:v1:{scope}:{jobName}` with fields:
+    - `status`, `startedAt`, `finishedAt`, `durationMs`, `attempt`, `lastError`, `source`, `updatedAt`
+  - Writers added to:
+    - `lib/inngest/functions/process-background-jobs.ts`
+    - `lib/inngest/functions/background-maintenance.ts`
+- Updated brittle tests to reflect new architecture split:
+  - `lib/__tests__/draft-pipeline-retention-cron.test.ts`
+  - `lib/__tests__/stale-sending-recovery.test.ts`
+
+## Validation Evidence
+- `npm run lint` ✅ (warnings only; pre-existing hook/compiler warnings in dashboard files)
+- `npm run build` ✅
+- `npm run typecheck` ✅
+- `npm test` ✅ (384 pass, 0 fail)
+
+### NTTAN Gate (required for cron/AI-adjacent changes)
+- `npm run test:ai-drafts` ✅ (68 pass, 0 fail)
+- No `docs/planning/phase-155/replay-case-manifest.json` existed, so fallback replay commands were used with workspace client ID from active production logs:
+  - `npm run test:ai-replay -- --client-id 731255d1-2ca5-4b37-ad34-aeb5b801be3b --limit 20 --dry-run` ✅
+  - `npm run test:ai-replay -- --client-id 731255d1-2ca5-4b37-ad34-aeb5b801be3b --limit 20 --concurrency 3` ✅
+- Replay artifact:
+  - `.artifacts/ai-replay/run-2026-02-16T10-59-17-959Z.json`
+- Replay judge metadata (from artifact `cases[].judge`):
+  - `promptKey`: `meeting.overseer.gate.v1`
+  - `systemPrompt`: present on evaluated cases (9)
+- Failure type counts:
+  - `draft_quality_error=1`, all others `0`
+- Critical invariants:
+  - `slot_mismatch=0`, `date_mismatch=0`, `fabricated_link=0`, `empty_draft=0`, `non_logistics_reply=0`
+
+## Multi-Agent Coordination (last 10 phases scan)
+- Scanned overlap across `docs/planning/phase-156` to `docs/planning/phase-147`.
+- Coordination notes:
+  - `phase-156` is settings IA scope and explicitly avoids inbox/analytics runtime behavior; no direct file overlap with this subphase (`cron/background-jobs`, `lib/inngest/*`, `lib/background-jobs/maintenance.ts`).
+  - Prior phases 154/155 touched cron and Inngest scaffolding; this subphase is additive parity hardening on those same paths.
+  - Untracked `docs/planning/phase-156/` and `lib/background-jobs/maintenance.ts` were treated as intentional concurrent-agent work per user instruction and integrated without revert.
+
+## RED TEAM Pass (post-implementation)
+- Closed risks:
+  - `BACKGROUND_JOBS_USE_INNGEST=true` no longer drops maintenance behavior.
+  - Enqueue failures no longer hard-fail the cron tick without processing fallback.
+- Remaining rollout risks:
+  - Env hygiene is still operationally configured, not code-enforced:
+    - Preview must not set `INNGEST_ENV=production`.
+    - Verify per preview deployment: `curl -I https://<preview-url>/api/inngest | rg -i x-inngest-env`.
+  - Production cutover should still be canary-gated (`5% -> 25% -> 100%`) with rollback via `BACKGROUND_JOBS_USE_INNGEST=false`.

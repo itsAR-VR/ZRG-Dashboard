@@ -117,6 +117,36 @@ Proceed to Phase 155e for durable Inngest orchestration and queue reliability.
 - Remaining gaps to fully satisfy 155d SLO objectives:
   - Canary p95 warm/cold evidence packet is still pending production metrics capture.
 
+## Incident Addendum (2026-02-16)
+- Production analytics SLO validation is currently blocked by read-path gating outage, not query latency:
+  - Jam evidence shows `GET /api/analytics/*` returning `503` with body `{ "success": false, "error": "READ_API_DISABLED" }`.
+  - Response headers include `x-zrg-read-api-enabled: 0` and `x-zrg-cache: MISS`.
+  - Evidence links:
+    - `https://jam.dev/c/ab6733e6-9088-45b8-bedd-c8657b534d76`
+    - `https://jam.dev/c/a87e4cbb-8c33-4cf6-a3de-08cce131b652`
+- Operational observation:
+  - Probe runs that used `clientId=<workspace-id>` placeholder are not valid for latency benchmarking.
+  - Even with invalid `clientId`, expected behavior should still be auth/validation errors, not global `READ_API_DISABLED`.
+
+## Immediate Recovery Steps (must complete before p95 packet)
+1. Re-enable read APIs in production runtime env and redeploy:
+   - `NEXT_PUBLIC_ANALYTICS_READ_API_V1=true`
+   - `NEXT_PUBLIC_INBOX_READ_API_V1=true`
+2. Validate endpoint health post-deploy:
+   - `/api/analytics/overview`
+   - `/api/analytics/workflows`
+   - `/api/analytics/campaigns`
+   - `/api/analytics/response-timing`
+   - `/api/analytics/crm/rows`
+   - Expect `x-zrg-read-api-enabled: 1`, 200 response, and `x-zrg-duration-ms` present.
+3. Re-run warm/cold p95 probe with a real workspace id (UUID), not placeholder text.
+4. Capture and append evidence packet for 155d SLO closure.
+
+## Hardening Follow-Up (post-recovery)
+- Update `lib/feature-flags.ts` so production defaults are fail-open for read APIs when envs are missing, with explicit env value required to disable.
+- Add server-env precedence (`ANALYTICS_READ_API_V1`, `INBOX_READ_API_V1`) while keeping `NEXT_PUBLIC_*` compatibility during migration.
+- Add alerting on sustained `READ_API_DISABLED` response volume to prevent silent recurrence.
+
 ## Progress This Turn (Terminus Maximus)
 - Work done:
   - Added helper-level Redis cache primitives for analytics routes (`getAnalyticsCacheVersion`, scoped key builder, read/write helpers).

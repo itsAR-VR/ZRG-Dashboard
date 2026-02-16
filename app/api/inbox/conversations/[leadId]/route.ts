@@ -6,6 +6,13 @@ import { isInboxReadApiEnabled } from "@/lib/feature-flags";
 export const dynamic = "force-dynamic";
 const READ_API_FAIL_OPEN_HEADER = "x-zrg-read-api-fail-open";
 const READ_API_FAIL_OPEN_REASON = "server_action_unavailable";
+const READ_API_DISABLED_REASON = "disabled_by_flag";
+
+function resolveRequestId(raw: string | null): string {
+  const trimmed = (raw || "").trim();
+  if (trimmed) return trimmed.slice(0, 128);
+  return crypto.randomUUID();
+}
 
 interface RouteParams {
   params: Promise<{ leadId: string }>;
@@ -34,29 +41,47 @@ function shouldFailOpenReadApi(request: NextRequest): boolean {
 }
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
+  const requestId = resolveRequestId(request.headers.get("x-request-id"));
+
   if (!isInboxReadApiEnabled() && !shouldFailOpenReadApi(request)) {
+    console.warn(
+      "[Read API] disabled",
+      JSON.stringify({
+        area: "inbox",
+        endpoint: "conversations/[leadId]",
+        requestId,
+        reason: READ_API_DISABLED_REASON,
+      })
+    );
     const response = NextResponse.json(
       { success: false, error: "READ_API_DISABLED" },
       { status: 503 }
     );
     response.headers.set("x-zrg-read-api-enabled", "0");
+    response.headers.set("x-zrg-read-api-reason", READ_API_DISABLED_REASON);
+    response.headers.set("x-request-id", requestId);
     response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
     return response;
   }
 
   const { leadId } = await params;
   if (!leadId) {
-    return NextResponse.json({ success: false, error: "Lead ID is required" }, { status: 400 });
+    const response = NextResponse.json({ success: false, error: "Lead ID is required" }, { status: 400 });
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
   const channelFilter = normalizeChannel(request.nextUrl.searchParams.get("channel"));
   const result = await getConversation(leadId, channelFilter);
   if (!result.success) {
-    return NextResponse.json(result, { status: mapConversationErrorToStatus(result.error) });
+    const response = NextResponse.json(result, { status: mapConversationErrorToStatus(result.error) });
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
   const response = NextResponse.json(result, { status: 200 });
   response.headers.set("x-zrg-read-api-enabled", "1");
+  response.headers.set("x-request-id", requestId);
   response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
   return response;
 }

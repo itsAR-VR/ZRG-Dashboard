@@ -15,7 +15,10 @@ import {
 import { getSmsCampaignFilters } from "@/actions/sms-campaign-actions";
 import { syncAllConversations, enqueueConversationSync, reanalyzeLeadSentiment } from "@/actions/message-actions";
 import { getAutoFollowUpsOnReply, setAutoFollowUpsOnReply } from "@/actions/settings-actions";
-import { subscribeToLeads, unsubscribe } from "@/lib/supabase";
+import {
+  subscribeToWorkspaceLeadsRealtime,
+  unsubscribeRealtimeChannel,
+} from "@/lib/realtime-session";
 import { Loader2, Wifi, WifiOff, Inbox, RefreshCw, FilterX } from "lucide-react";
 import { type Conversation, type Lead } from "@/lib/mock-data";
 import { Badge } from "@/components/ui/badge";
@@ -334,6 +337,7 @@ export function InboxView({
   const [showDelayedSpinner, setShowDelayedSpinner] = useState(false);
   
   const realtimeConnectedRef = useRef(false);
+  const realtimeInvalidateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevConversationIdRef = useRef<string | null>(null);
   const lastAutoSyncRef = useRef<Map<string, number>>(new Map());
   const activeConversationRequestRef = useRef(0);
@@ -1106,42 +1110,71 @@ export function InboxView({
       return;
     }
 
+    let cancelled = false;
+    let channel: Awaited<ReturnType<typeof subscribeToWorkspaceLeadsRealtime>> = null;
     realtimeConnectedRef.current = false;
+    setIsLive(false);
 
-    const channel = subscribeToLeads(
-      (payload) => {
-        realtimeConnectedRef.current = true;
-        setIsLive(true);
+    const scheduleInvalidation = () => {
+      if (realtimeInvalidateTimerRef.current) return;
+      realtimeInvalidateTimerRef.current = setTimeout(() => {
+        realtimeInvalidateTimerRef.current = null;
+        // Realtime callback remains invalidation-driven to avoid render-loop risk.
+        void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      }, 300);
+    };
 
-        const leadId =
-          typeof payload.new?.id === "string"
-            ? (payload.new.id as string)
-            : typeof payload.old?.id === "string"
-              ? (payload.old.id as string)
-              : null;
+    const initializeRealtime = async () => {
+      channel = await subscribeToWorkspaceLeadsRealtime({
+        clientId: activeWorkspace,
+        onConnectionStateChange: (state) => {
+          if (cancelled) return;
+          if (state === "subscribed") {
+            realtimeConnectedRef.current = true;
+            setIsLive(true);
+            return;
+          }
+          realtimeConnectedRef.current = false;
+          setIsLive(false);
+        },
+        onEvent: (payload) => {
+          if (cancelled) return;
+          scheduleInvalidation();
 
-        if (!leadId) return;
+          const leadId =
+            typeof payload.new?.id === "string"
+              ? (payload.new.id as string)
+              : typeof payload.old?.id === "string"
+                ? (payload.old.id as string)
+                : null;
 
-        const newLastMessageAt = parseRealtimeTimestampMs(payload.new?.lastMessageAt);
-        if (newLastMessageAt == null) return;
+          if (!leadId) return;
 
-        const previousLastMessageAt = leadLastMessageAtRef.current.get(leadId) ?? workspaceLastMessageAtRef.current ?? 0;
-        if (newLastMessageAt <= previousLastMessageAt) return;
+          const newLastMessageAt = parseRealtimeTimestampMs(payload.new?.lastMessageAt);
+          if (newLastMessageAt == null) return;
 
-        // Update our local baseline so repeated UPDATEs don't inflate the badge.
-        leadLastMessageAtRef.current.set(leadId, newLastMessageAt);
-        if (newLastMessageAt > workspaceLastMessageAtRef.current) {
-          workspaceLastMessageAtRef.current = newLastMessageAt;
-        }
+          const previousLastMessageAt = leadLastMessageAtRef.current.get(leadId) ?? workspaceLastMessageAtRef.current ?? 0;
+          if (newLastMessageAt <= previousLastMessageAt) return;
 
-        // Only increment when this update indicates a *new inbound* message.
-        const direction = payload.new?.lastMessageDirection;
-        if (direction === "inbound") {
-          setNewConversationCount((prev) => prev + 1);
-        }
-      },
-      { clientId: activeWorkspace }
-    );
+          // Update local baselines so repeated UPDATEs don't inflate the badge.
+          leadLastMessageAtRef.current.set(leadId, newLastMessageAt);
+          if (newLastMessageAt > workspaceLastMessageAtRef.current) {
+            workspaceLastMessageAtRef.current = newLastMessageAt;
+          }
+
+          // Keep the "new" badge signal scoped to inbound changes only.
+          if (payload.new?.lastMessageDirection === "inbound") {
+            setNewConversationCount((prev) => prev + 1);
+          }
+        },
+      });
+
+      if (!channel && !cancelled) {
+        setIsLive(false);
+      }
+    };
+
+    void initializeRealtime();
 
     const checkConnection = setTimeout(() => {
       if (!realtimeConnectedRef.current) {
@@ -1150,10 +1183,15 @@ export function InboxView({
     }, 5000);
 
     return () => {
+      cancelled = true;
       clearTimeout(checkConnection);
-      unsubscribe(channel);
+      if (realtimeInvalidateTimerRef.current) {
+        clearTimeout(realtimeInvalidateTimerRef.current);
+        realtimeInvalidateTimerRef.current = null;
+      }
+      unsubscribeRealtimeChannel(channel);
     };
-  }, [activeWorkspace, isActive]);
+  }, [activeWorkspace, isActive, queryClient]);
 
   // Handle new conversations badge click
   const handleNewConversationsClick = useCallback(() => {
@@ -1210,7 +1248,7 @@ export function InboxView({
   if (isError) {
     return (
       <div className="relative flex h-full min-h-0 w-full overflow-hidden">
-        <div className="flex flex-1 items-center justify-center">
+        <div className="flex flex-1 items-center justify-center" data-testid="inbox-error-state">
           <div className="text-center space-y-4">
             <div className="p-4 rounded-full bg-destructive/10 w-fit mx-auto">
               <WifiOff className="h-12 w-12 text-destructive" />
@@ -1220,7 +1258,12 @@ export function InboxView({
               <p className="text-sm text-muted-foreground max-w-md font-mono bg-muted p-2 rounded mt-2">
                 {error?.message || "Unknown error"}
               </p>
-              <Button variant="outline" onClick={() => refetch()} className="mt-4">
+              <Button
+                variant="outline"
+                onClick={() => refetch()}
+                className="mt-4"
+                data-testid="inbox-error-retry"
+              >
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Retry
               </Button>

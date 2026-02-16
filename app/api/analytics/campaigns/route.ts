@@ -18,6 +18,7 @@ import {
   mapAnalyticsErrorToStatus,
   readAnalyticsRouteCache,
   readApiDisabledResponse,
+  resolveRequestId,
   writeAnalyticsRouteCache,
 } from "@/app/api/analytics/_helpers";
 
@@ -38,23 +39,26 @@ type CampaignsRouteResponse = {
 
 export async function GET(request: NextRequest) {
   const startedAtMs = Date.now();
+  const searchParams = request.nextUrl.searchParams;
+  const requestId = resolveRequestId(request.headers.get("x-request-id"));
+  const clientId = searchParams.get("clientId") || null;
 
   if (!isAnalyticsReadApiEnabled()) {
-    return readApiDisabledResponse();
+    return readApiDisabledResponse({ endpoint: "campaigns", requestId, clientId });
   }
 
   let authUser: Awaited<ReturnType<typeof requireAuthUser>>;
   try {
     authUser = await requireAuthUser();
   } catch {
-    return NextResponse.json(
+    const response = NextResponse.json(
       { success: false, error: "Not authenticated" },
       { status: 401 }
     );
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
-  const searchParams = request.nextUrl.searchParams;
-  const clientId = searchParams.get("clientId") || null;
   const from = searchParams.get("from");
   const to = searchParams.get("to");
   const cacheVersion = await getAnalyticsCacheVersion(clientId);
@@ -72,6 +76,7 @@ export async function GET(request: NextRequest) {
     response.headers.set("x-zrg-cache", "hit");
     return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
       cacheControl: "private, max-age=120, stale-while-revalidate=300",
+      requestId,
     });
   }
 
@@ -101,9 +106,11 @@ export async function GET(request: NextRequest) {
       (result.error === "Not authenticated" || result.error === "Unauthorized")
   );
   if (authFailure && !authFailure.success) {
-    return NextResponse.json(authFailure, {
+    const response = NextResponse.json(authFailure, {
       status: mapAnalyticsErrorToStatus(authFailure.error),
     });
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
   const data: CampaignsReadPayload = {
@@ -122,10 +129,12 @@ export async function GET(request: NextRequest) {
   const hasAnySuccess = Object.values(data).some((value) => value !== null);
   if (!hasAnySuccess) {
     const firstError = Object.values(errors)[0] || "Failed to load campaign analytics";
-    return NextResponse.json(
+    const response = NextResponse.json(
       { success: false, error: firstError, errors },
       { status: mapAnalyticsErrorToStatus(firstError) }
     );
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
   const payload: CampaignsRouteResponse = {
@@ -138,5 +147,6 @@ export async function GET(request: NextRequest) {
   response.headers.set("x-zrg-cache", "miss");
   return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
     cacheControl: "private, max-age=120, stale-while-revalidate=300",
+    requestId,
   });
 }

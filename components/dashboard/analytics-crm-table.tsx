@@ -62,6 +62,113 @@ const formatPercent01 = (value: number) => {
   return `${Math.round(value * 100)}%`
 }
 
+type CrmRowsResult = Awaited<ReturnType<typeof getCrmSheetRows>>
+type CrmSummaryResult = Awaited<ReturnType<typeof getCrmWindowSummary>>
+type CrmAssigneesResult = Awaited<ReturnType<typeof getCrmAssigneeOptions>>
+
+function isReadApiDisabledPayload(payload: unknown): payload is { error: "READ_API_DISABLED" } {
+  if (!payload || typeof payload !== "object") return false
+  return (payload as { error?: unknown }).error === "READ_API_DISABLED"
+}
+
+function appendCrmFilters(
+  params: URLSearchParams,
+  filters: CrmSheetFilters | undefined,
+  window?: { from: string; to: string }
+) {
+  if (!filters) {
+    if (window?.from) params.set("dateFrom", window.from)
+    if (window?.to) params.set("dateTo", window.to)
+    return
+  }
+
+  if (filters.campaign) params.set("campaign", filters.campaign)
+  if (filters.leadCategory) params.set("leadCategory", filters.leadCategory)
+  if (filters.leadStatus) params.set("leadStatus", filters.leadStatus)
+  if (filters.responseMode) params.set("responseMode", filters.responseMode)
+  if (window?.from || filters.dateFrom) params.set("dateFrom", window?.from ?? String(filters.dateFrom))
+  if (window?.to || filters.dateTo) params.set("dateTo", window?.to ?? String(filters.dateTo))
+}
+
+async function getCrmRowsRead(input: {
+  clientId: string
+  cursor?: string | null
+  limit?: number
+  filters?: CrmSheetFilters
+  window?: { from: string; to: string }
+}): Promise<CrmRowsResult> {
+  const params = new URLSearchParams()
+  params.set("mode", "rows")
+  params.set("clientId", input.clientId)
+  params.set("limit", String(input.limit ?? 150))
+  if (input.cursor) params.set("cursor", input.cursor)
+  appendCrmFilters(params, input.filters, input.window)
+
+  try {
+    const response = await fetch(`/api/analytics/crm/rows?${params.toString()}`, { method: "GET" })
+    const json = (await response.json()) as CrmRowsResult
+    if (!response.ok && isReadApiDisabledPayload(json)) {
+      return getCrmSheetRows(input)
+    }
+    return json
+  } catch {
+    return getCrmSheetRows(input)
+  }
+}
+
+async function getCrmSummaryRead(input: {
+  clientId: string
+  filters?: CrmSheetFilters
+  window?: { from: string; to: string }
+}): Promise<CrmSummaryResult> {
+  const params = new URLSearchParams()
+  params.set("mode", "summary")
+  params.set("clientId", input.clientId)
+  appendCrmFilters(params, input.filters, input.window)
+
+  try {
+    const response = await fetch(`/api/analytics/crm/rows?${params.toString()}`, { method: "GET" })
+    const json = (await response.json()) as CrmSummaryResult
+    if (!response.ok && isReadApiDisabledPayload(json)) {
+      return getCrmWindowSummary({
+        clientId: input.clientId,
+        filters: {
+          ...(input.filters || {}),
+          ...(input.window?.from ? { dateFrom: input.window.from } : {}),
+          ...(input.window?.to ? { dateTo: input.window.to } : {}),
+        },
+      })
+    }
+    return json
+  } catch {
+    return getCrmWindowSummary({
+      clientId: input.clientId,
+      filters: {
+        ...(input.filters || {}),
+        ...(input.window?.from ? { dateFrom: input.window.from } : {}),
+        ...(input.window?.to ? { dateTo: input.window.to } : {}),
+      },
+    })
+  }
+}
+
+async function getCrmAssigneesRead(clientId: string): Promise<CrmAssigneesResult> {
+  const params = new URLSearchParams()
+  params.set("mode", "assignees")
+  params.set("clientId", clientId)
+
+  try {
+    const response = await fetch(`/api/analytics/crm/rows?${params.toString()}`, { method: "GET" })
+    const json = (await response.json()) as CrmAssigneesResult
+    if (!response.ok && isReadApiDisabledPayload(json)) {
+      return getCrmAssigneeOptions({ clientId })
+    }
+    return json
+  } catch {
+    return getCrmAssigneeOptions({ clientId })
+  }
+}
+
 const responseTypeLabel = (value: CrmSheetRow["responseType"]) => {
   switch (value) {
     case "MEETING_REQUEST":
@@ -383,10 +490,11 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
       setIsLoading(true)
       setError(null)
 
-      const result = await getCrmSheetRows({
+      const result = await getCrmRowsRead({
         clientId: activeWorkspace,
         limit: 150,
         filters: normalizedFilters,
+        window,
       })
 
       if (cancelled) return
@@ -408,7 +516,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
     return () => {
       cancelled = true
     }
-  }, [activeWorkspace, normalizedFilters])
+  }, [activeWorkspace, normalizedFilters, window])
 
   useEffect(() => {
     if (!activeWorkspace) {
@@ -423,9 +531,10 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
       setSummaryLoading(true)
       setSummaryError(null)
 
-      const result = await getCrmWindowSummary({
+      const result = await getCrmSummaryRead({
         clientId: activeWorkspace,
         filters: normalizedFilters,
+        window,
       })
 
       if (cancelled) return
@@ -445,7 +554,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
     return () => {
       cancelled = true
     }
-  }, [activeWorkspace, normalizedFilters])
+  }, [activeWorkspace, normalizedFilters, window])
 
   useEffect(() => {
     if (!activeWorkspace) {
@@ -457,7 +566,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
 
     const fetchAssignees = async () => {
       setAssigneeLoading(true)
-      const result = await getCrmAssigneeOptions({ clientId: activeWorkspace })
+      const result = await getCrmAssigneesRead(activeWorkspace)
       if (cancelled) return
       if (result.success && result.data) {
         setAssigneeOptions(result.data)
@@ -479,10 +588,11 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
     setIsLoading(true)
     setError(null)
 
-    const result = await getCrmSheetRows({
+    const result = await getCrmRowsRead({
       clientId: activeWorkspace,
       limit: 150,
       filters: normalizedFilters,
+      window,
     })
 
     if (result.success && result.data) {
@@ -499,11 +609,12 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
     if (!activeWorkspace || !nextCursor) return
     setIsLoadingMore(true)
 
-    const result = await getCrmSheetRows({
+    const result = await getCrmRowsRead({
       clientId: activeWorkspace,
       cursor: nextCursor,
       limit: 150,
       filters: normalizedFilters,
+      window,
     })
 
     const data = result.data

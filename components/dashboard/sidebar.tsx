@@ -373,7 +373,11 @@ export function Sidebar({
         <div className="border-b border-border p-3">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="w-full justify-between">
+              <Button
+                variant="outline"
+                className="w-full justify-between"
+                data-testid="workspace-selector-trigger"
+              >
                 <span className="flex items-center gap-2 truncate">
                   <Building2 className="h-4 w-4 shrink-0" />
                   <span className="truncate">
@@ -395,10 +399,14 @@ export function Sidebar({
                   onChange={(e) => setWorkspaceSearch(e.target.value)}
                   placeholder="Search workspaces…"
                   className="h-8"
+                  data-testid="workspace-selector-search"
                 />
               </div>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => onWorkspaceChange(null)}>
+              <DropdownMenuItem
+                onClick={() => onWorkspaceChange(null)}
+                data-testid="workspace-option-all"
+              >
                 <span className={cn(!activeWorkspace && "font-semibold")}>
                   All Workspaces
                 </span>
@@ -407,6 +415,7 @@ export function Sidebar({
                 <DropdownMenuItem
                   key={workspace.id}
                   onClick={() => onWorkspaceChange(workspace.id)}
+                  data-testid={`workspace-option-${workspace.id}`}
                 >
                   <div className="flex w-full items-center justify-between gap-2">
                     <span className={cn(activeWorkspace === workspace.id && "font-semibold")}>

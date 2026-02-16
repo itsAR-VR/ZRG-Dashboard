@@ -1,24 +1,24 @@
 import "server-only";
 
+import { runBackgroundMaintenance } from "@/lib/background-jobs/maintenance";
 import { inngest } from "@/lib/inngest/client";
-import { INNGEST_EVENT_BACKGROUND_PROCESS_REQUESTED } from "@/lib/inngest/events";
-import { processBackgroundJobs } from "@/lib/background-jobs/runner";
+import { INNGEST_EVENT_BACKGROUND_MAINTENANCE_REQUESTED } from "@/lib/inngest/events";
 import { writeInngestJobStatus } from "@/lib/inngest/job-status";
 
-export const processBackgroundJobsFunction = inngest.createFunction(
+export const backgroundMaintenanceFunction = inngest.createFunction(
   {
-    id: "process-background-jobs",
-    retries: 5,
+    id: "background-maintenance",
+    retries: 3,
     concurrency: { limit: 1 },
   },
-  { event: INNGEST_EVENT_BACKGROUND_PROCESS_REQUESTED },
+  { event: INNGEST_EVENT_BACKGROUND_MAINTENANCE_REQUESTED },
   async ({ event, step, attempt }) => {
     const source = typeof event.data?.source === "string" ? event.data.source : "unknown";
     const requestedAt = typeof event.data?.requestedAt === "string" ? event.data.requestedAt : null;
     const startedAt = new Date();
 
     await writeInngestJobStatus({
-      jobName: "process-background-jobs",
+      jobName: "background-maintenance",
       status: "running",
       attempt,
       startedAt: startedAt.toISOString(),
@@ -26,10 +26,10 @@ export const processBackgroundJobsFunction = inngest.createFunction(
     });
 
     try {
-      const results = await step.run("process-background-jobs", async () => processBackgroundJobs());
+      const maintenance = await step.run("background-maintenance", async () => runBackgroundMaintenance());
       const finishedAt = new Date();
       await writeInngestJobStatus({
-        jobName: "process-background-jobs",
+        jobName: "background-maintenance",
         status: "succeeded",
         attempt,
         source,
@@ -42,12 +42,12 @@ export const processBackgroundJobsFunction = inngest.createFunction(
         source,
         requestedAt,
         processedAt: finishedAt.toISOString(),
-        ...results,
+        ...maintenance,
       };
     } catch (error) {
       const finishedAt = new Date();
       await writeInngestJobStatus({
-        jobName: "process-background-jobs",
+        jobName: "background-maintenance",
         status: "failed",
         attempt,
         source,

@@ -11,6 +11,7 @@ import {
   mapAnalyticsErrorToStatus,
   readAnalyticsRouteCache,
   readApiDisabledResponse,
+  resolveRequestId,
   writeAnalyticsRouteCache,
 } from "@/app/api/analytics/_helpers";
 
@@ -18,23 +19,26 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   const startedAtMs = Date.now();
+  const searchParams = request.nextUrl.searchParams;
+  const requestId = resolveRequestId(request.headers.get("x-request-id"));
+  const clientId = searchParams.get("clientId") || null;
 
   if (!isAnalyticsReadApiEnabled()) {
-    return readApiDisabledResponse();
+    return readApiDisabledResponse({ endpoint: "overview", requestId, clientId });
   }
 
   let authUser: Awaited<ReturnType<typeof requireAuthUser>>;
   try {
     authUser = await requireAuthUser();
   } catch {
-    return NextResponse.json(
+    const response = NextResponse.json(
       { success: false, error: "Not authenticated" },
       { status: 401 }
     );
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
-  const searchParams = request.nextUrl.searchParams;
-  const clientId = searchParams.get("clientId") || null;
   const from = searchParams.get("from");
   const to = searchParams.get("to");
   const partsRaw = (searchParams.get("parts") || "all").trim().toLowerCase();
@@ -61,6 +65,7 @@ export async function GET(request: NextRequest) {
       response.headers.set("x-zrg-analytics-parts", parts);
       return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
         cacheControl: "private, max-age=120, stale-while-revalidate=300",
+        requestId,
       });
     }
   }
@@ -72,7 +77,9 @@ export async function GET(request: NextRequest) {
   });
 
   if (!result.success) {
-    return NextResponse.json(result, { status: mapAnalyticsErrorToStatus(result.error) });
+    const response = NextResponse.json(result, { status: mapAnalyticsErrorToStatus(result.error) });
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
   await writeAnalyticsRouteCache(cacheKey, result, 120);
@@ -81,5 +88,6 @@ export async function GET(request: NextRequest) {
   response.headers.set("x-zrg-analytics-parts", parts);
   return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
     cacheControl: "private, max-age=120, stale-while-revalidate=300",
+    requestId,
   });
 }

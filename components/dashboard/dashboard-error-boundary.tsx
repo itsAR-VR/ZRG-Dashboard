@@ -54,7 +54,10 @@ export class DashboardErrorBoundary extends React.Component<
 
     // Minimal, production-safe fallback. The important part is the console error above.
     return (
-      <div className="flex h-screen w-full flex-col items-center justify-center gap-3 bg-background px-6 text-center">
+      <div
+        className="flex h-screen w-full flex-col items-center justify-center gap-3 bg-background px-6 text-center"
+        data-testid="dashboard-error-boundary"
+      >
         <div className="text-lg font-semibold text-foreground">Application error</div>
         <div className="max-w-md text-sm text-muted-foreground">
           A client-side exception occurred. Reload the page and try again.
@@ -77,6 +80,7 @@ export class DashboardErrorBoundary extends React.Component<
           type="button"
           onClick={this.handleReload}
           className="inline-flex h-11 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground"
+          data-testid="dashboard-error-boundary-reload"
         >
           Reload
         </button>

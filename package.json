@@ -7,6 +7,8 @@
     "dev": "next dev",
     "lint": "eslint .",
     "test": "node --import tsx scripts/test-orchestrator.ts",
+    "test:e2e": "npx playwright test",
+    "test:e2e:headed": "npx playwright test --headed --project=chromium",
     "test:ai-drafts": "node --import tsx scripts/test-ai-drafts.ts",
     "test:ai-replay": "node --require ./scripts/server-only-mock.cjs --import tsx scripts/live-ai-replay.ts",
     "test:ai-replay:sample": "npm run test:ai-replay -- --limit 2 --concurrency 1",
@@ -91,6 +93,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.3",
     "@eslint/js": "^9.39.2",
+    "@playwright/test": "^1.58.2",
     "@tailwindcss/postcss": "^4.1.9",
     "@types/node": "^22",
     "@types/papaparse": "^5.3.16",

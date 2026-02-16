@@ -7,7 +7,7 @@ Finalize the Phase 154 architecture so Inbox and Analytics are production-grade 
 - Durable jobs: **Inngest**.
 - Inngest env isolation: **Production uses `production`; Preview uses branch envs** (never `production`).
 - Feature flags: **server-runtime evaluated** (no build-time-only rollback path).
-- Observability: **enterprise baseline** (`Sentry` + request IDs + structured logs + metrics).
+- Observability: **enterprise baseline in-phase** (request IDs + structured logs + route metrics); external error platform wiring is deferred.
 - Inbox freshness: **near-real-time (<15s)** using dirty marking + enqueue + invalidation.
 - Realtime scope: **Lead INSERT + UPDATE only** (no Message subscription).
 - Realtime fallback: **60s heartbeat** remains active.
@@ -16,6 +16,7 @@ Finalize the Phase 154 architecture so Inbox and Analytics are production-grade 
 - Counts model strategy: **sentinel `scopeUserId` for global rows** (no nullable unique ambiguity).
 - Cache store: **Upstash Redis** (`lib/redis.ts`).
 - Legacy reads: keep one **release-cycle fallback** behind runtime kill switch.
+- Read API runtime policy: **production-safe default ON** (explicit env disable required), with one-cycle legacy fallback.
 - Inbox list baseline: **server pagination** (no virtualization baseline).
 - Cron cutover: **move `/api/cron/background-jobs` maintenance parity into Inngest** before enabling `BACKGROUND_JOBS_USE_INNGEST` broadly.
 - Workspace UX parity from Phase 153: **hard release blocker** if regressed.
@@ -24,12 +25,15 @@ Finalize the Phase 154 architecture so Inbox and Analytics are production-grade 
 - `getInboxCounts` computes eight categories and derives `awaitingReply` from `totalNonBlacklisted - requiresAttention` in `actions/lead-actions.ts`.
 - Dashboard realtime now uses session-auth subscriptions via `lib/realtime-session.ts` (Lead `INSERT/UPDATE` only, workspace-filtered); legacy anon helper remains in `lib/supabase.ts` but is no longer used by inbox/CRM views.
 - Read APIs are now runtime-gated server-side via `lib/feature-flags.ts` + `READ_API_DISABLED` fail-open behavior in inbox/analytics clients.
+- Read API runtime flags now resolve with server-env precedence and production-safe defaults (`INBOX_READ_API_V1` / `ANALYTICS_READ_API_V1` first, `NEXT_PUBLIC_*` fallback), plus disabled-path diagnostics (`x-zrg-read-api-reason`, `x-request-id`, structured disabled logs) across inbox/analytics read routes.
 - Analytics GET routes now exist for overview/workflows/campaigns/response timing/CRM rows; non-overview Redis versioning, client sessionStorage/LRU caching, and overview split-query execution are now implemented, with p95 evidence packet still pending for full 155d SLO closure.
 - Analytics Redis caching now exists both in `actions/analytics-actions.ts:getAnalytics` and non-overview GET routes with scoped keys + route TTLs; version invalidation is wired via `analytics:v1:ver:{clientId}` bump on dirty-mark writes, and analytics tabs now hydrate from bounded sessionStorage cache before background refresh.
 - Analytics read routes now emit `x-zrg-duration-ms` (plus `x-zrg-cache`) on successful responses to support canary warm/cold latency packet capture.
+- Current production incident: Jam captures (`ab6733e6-9088-45b8-bedd-c8657b534d76`, `a87e4cbb-8c33-4cf6-a3de-08cce131b652`) show analytics and inbox read endpoints returning `503` with `READ_API_DISABLED` and `x-zrg-read-api-enabled: 0`, blocking canary SLO evidence collection until gate recovery.
 - `InboxCounts` and `InboxCountsDirty` Prisma models now exist and are synced to DB; dirty-mark + recompute helpers are present but durable enqueue wiring is still pending.
 - Inngest is now wired and verified in production (`/api/inngest` sync succeeds; event `background/process.requested` triggers `process-background-jobs`).
 - `BACKGROUND_JOBS_USE_INNGEST=true` now enqueues both process + maintenance events and falls back inline if enqueue fails; safe canary rollout remains required before 100%.
+- Workspace-switch regression harness now exists in-repo (`playwright.config.mjs`, `e2e/workspace-switch.spec.mjs`) with stable selectors wired in sidebar/inbox/error-boundary components; runnable evidence is pending a network-enabled Playwright environment plus authenticated session state.
 
 ## Repo Reality Check (RED TEAM)
 
@@ -96,6 +100,11 @@ Finalize the Phase 154 architecture so Inbox and Analytics are production-grade 
   - DB saturation or queue backlog exceeds defined alert threshold.
 - Rollback must be available without redeploy through server-runtime flags.
 
+## Hard Release Blockers (Phase 155)
+- Workspace-switch flow remains stable under rapid switching (no React #301, no persistent "Error loading conversations", no stuck transition state).
+- Read APIs are healthy in production (`x-zrg-read-api-enabled: 1`) and no sustained `READ_API_DISABLED` 503s are present in Jam/console verification windows.
+- Analytics SLO evidence packet exists with real workspace IDs and shows p95 targets (`<1.5s warm`, `<3s cold`) from `x-zrg-duration-ms` + `x-zrg-cache` samples.
+
 ## Quality Gates
 - `npm run lint`
 - `npm run typecheck`
@@ -128,13 +137,15 @@ Finalize the Phase 154 architecture so Inbox and Analytics are production-grade 
 - ~~Enabling `BACKGROUND_JOBS_USE_INNGEST=true` drops `/api/cron/background-jobs` maintenance work (stale draft recovery + pruning)~~ → **closed in 155g** via `background/maintenance.requested` + shared maintenance helper.
 - `INNGEST_ENV=production` configured for Preview deployments can cause preview syncs to overwrite production sync URLs/definitions → restrict `INNGEST_ENV` to Production only (or unset and rely on `VERCEL_ENV` logic) and verify preview isolation.
 - ~~Inngest enqueue failure from cron currently hard-fails the cron tick~~ → **closed in 155g** via inline fallback execution when enqueue fails.
+- ~~Read APIs currently fail closed when runtime flag env vars are unset/misconfigured, producing global `READ_API_DISABLED` 503s across inbox/analytics GET paths in production~~ → **mitigated in code** via production-safe defaults and explicit disabled-route diagnostics; still requires production redeploy/env verification.
 
 ### Missing or ambiguous requirements
 - Counts freshness target is stated (<15s) but current materialized read considers rows valid for `INBOX_COUNTS_STALE_MS=5m` → define the actual freshness contract and enforce it via durable recompute + version bump.
 - Analytics SLO still requires final validation work beyond route coverage → capture p95 warm/cold evidence packet from canary and compare against gates.
+- Runtime flag precedence/default behavior is not yet codified for production safety (`server env` vs `NEXT_PUBLIC_*` compatibility) → lock precedence and safe defaults in code and ops docs.
 
 ### Observability / rollout gaps
-- “Enterprise observability baseline” is a locked decision but not yet wired → define minimum shippable slice (Sentry + request IDs + structured logs) and treat as rollout stop gate.
+- “Enterprise observability baseline” still needs consistency work across non-read routes/workers → complete request-ID + structured logging standardization and treat as rollout stop gate.
 - Canary plan exists but needs evidence packet format (what dashboards/log queries prove gates are green) → add a verification packet checklist.
 
 ### Multi-agent coordination
@@ -151,3 +162,6 @@ Finalize the Phase 154 architecture so Inbox and Analytics are production-grade 
 - 2026-02-16 11:46:42Z — Completed Phase 155d client session-cache hardening: wired tab-scoped sessionStorage cache (`zrg:analytics:{userId}:{clientId}:{tab}:{parts}`) with TTL 10m + LRU cap 20, added stale-fast hydration and background refresh for overview/workflows/campaigns/response-timing tabs, and preserved action fallback semantics. Validation passed: `typecheck`, `lint` (warnings only), `build`. Remaining for full 155d closure: overview split-query (`parts`) and p95 warm/cold evidence packet. (files: `components/dashboard/analytics-view.tsx`, `docs/planning/phase-155/d/plan.md`, `docs/planning/phase-155/plan.md`)
 - 2026-02-16 11:53:13Z — Completed Phase 155d overview split-query implementation: `getAnalytics` now supports part-scoped execution (`all|core|breakdowns`) with part-aware cache keys, overview GET route now caches by `parts` + analytics version and returns cache hit/miss headers, and analytics client overview flow now fetches `core` first then merges `breakdowns` in background. Validation passed: `typecheck`, `lint` (warnings only), `build`. Remaining for full 155d closure: canary p95 warm/cold evidence packet capture. (files: `actions/analytics-actions.ts`, `app/api/analytics/overview/route.ts`, `components/dashboard/analytics-view.tsx`, `docs/planning/phase-155/d/plan.md`, `docs/planning/phase-155/plan.md`)
 - 2026-02-16 11:57:03Z — Added analytics latency instrumentation for canary evidence capture: all analytics GET read routes now stamp `x-zrg-duration-ms` on successful responses while preserving `x-zrg-cache` semantics for warm/cold differentiation. Validation passed: `typecheck`, `lint` (warnings only), `build`. Remaining for full 155d closure: production p95 warm/cold evidence packet capture. (files: `app/api/analytics/_helpers.ts`, `app/api/analytics/overview/route.ts`, `app/api/analytics/workflows/route.ts`, `app/api/analytics/campaigns/route.ts`, `app/api/analytics/response-timing/route.ts`, `app/api/analytics/crm/rows/route.ts`, `docs/planning/phase-155/d/plan.md`, `docs/planning/phase-155/plan.md`)
+- 2026-02-16 12:52:00Z — Root-caused production analytics/inbox read-path outage via Jam evidence: repeated `503 READ_API_DISABLED` responses across `/api/analytics/*` and `/api/inbox/*` with `x-zrg-read-api-enabled: 0`. Locked remediation path: immediate env recovery + redeploy, then harden `lib/feature-flags.ts` to production-safe default ON with explicit-disable semantics and server-env precedence; keep legacy fallback for one release cycle. p95 packet capture is deferred until read APIs are re-enabled in production. (evidence: `https://jam.dev/c/ab6733e6-9088-45b8-bedd-c8657b534d76`, `https://jam.dev/c/a87e4cbb-8c33-4cf6-a3de-08cce131b652`)
+- 2026-02-16 12:35:42Z — Implemented read-path outage hardening and observability signals: production-safe server-runtime flag resolution in `lib/feature-flags.ts`, request-id propagation + disabled-reason headers on inbox/analytics read routes, and structured disabled-route logs for rollout diagnostics. Validation passed: `typecheck`, `lint` (warnings only), `build`, `npm test` (384/384). Remaining for 155f closure: full request-ID/log standardization, workspace-switch E2E coverage, and production p95 evidence packet post-redeploy. (files: `lib/feature-flags.ts`, `app/api/analytics/_helpers.ts`, `app/api/analytics/overview/route.ts`, `app/api/analytics/workflows/route.ts`, `app/api/analytics/campaigns/route.ts`, `app/api/analytics/response-timing/route.ts`, `app/api/analytics/crm/rows/route.ts`, `app/api/inbox/counts/route.ts`, `app/api/inbox/conversations/route.ts`, `app/api/inbox/conversations/[leadId]/route.ts`, `docs/planning/phase-155/f/plan.md`, `docs/planning/phase-155/plan.md`)
+- 2026-02-16 13:13:41Z — Updated 155/f release gate to 3 hard blockers (no Sentry dependency in-phase), added workspace-switch regression harness scaffolding, and wired deterministic test selectors for workspace switch + inbox/error-boundary assertions. Validation passed: `typecheck`, `lint` (warnings only), `build`, `npm test` (384/384). Playwright execution is blocked in this sandbox by network (`ENOTFOUND registry.npmjs.org` when resolving `playwright` via `npx`). (files: `docs/planning/phase-155/plan.md`, `docs/planning/phase-155/f/plan.md`, `components/dashboard/sidebar.tsx`, `components/dashboard/inbox-view.tsx`, `components/dashboard/dashboard-error-boundary.tsx`, `playwright.config.mjs`, `e2e/workspace-switch.spec.mjs`, `package.json`)

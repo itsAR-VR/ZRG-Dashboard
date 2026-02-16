@@ -8,8 +8,10 @@ function read(relPath: string): string {
 }
 
 describe("stale sending recovery wiring", () => {
-  it("invokes stale draft recovery in background jobs cron", () => {
-    const source = read("app/api/cron/background-jobs/route.ts");
-    assert.ok(source.includes("recoverStaleSendingDrafts"));
+  it("invokes stale draft recovery via shared background maintenance helper", () => {
+    const routeSource = read("app/api/cron/background-jobs/route.ts");
+    const maintenanceSource = read("lib/background-jobs/maintenance.ts");
+    assert.ok(routeSource.includes("runBackgroundMaintenance"));
+    assert.ok(maintenanceSource.includes("recoverStaleSendingDrafts"));
   });
 });

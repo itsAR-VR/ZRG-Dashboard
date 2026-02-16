@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { redisGetJson, redisSetJson } from "@/lib/redis";
 
+const REQUEST_ID_HEADER = "x-request-id";
+const READ_API_DISABLED_REASON = "disabled_by_flag";
+
 export function mapAnalyticsErrorToStatus(error: string | undefined): number {
   const message = (error || "").trim();
   if (message === "Not authenticated") return 401;
@@ -8,21 +11,54 @@ export function mapAnalyticsErrorToStatus(error: string | undefined): number {
   return 500;
 }
 
-export function readApiDisabledResponse() {
+function normalizeRequestId(raw: string | null | undefined): string {
+  const trimmed = (raw || "").trim();
+  if (trimmed) return trimmed.slice(0, 128);
+  return crypto.randomUUID();
+}
+
+export function resolveRequestId(requestId: string | null | undefined): string {
+  return normalizeRequestId(requestId);
+}
+
+export function readApiDisabledResponse(opts?: {
+  endpoint?: string;
+  requestId?: string | null;
+  clientId?: string | null;
+}) {
+  const requestId = normalizeRequestId(opts?.requestId);
+  const endpoint = opts?.endpoint || "analytics";
+  const clientId = (opts?.clientId || "").trim() || null;
+  console.warn(
+    "[Read API] disabled",
+    JSON.stringify({
+      area: "analytics",
+      endpoint,
+      requestId,
+      clientId,
+      reason: READ_API_DISABLED_REASON,
+    })
+  );
+
   const response = NextResponse.json(
     { success: false, error: "READ_API_DISABLED" },
     { status: 503 }
   );
   response.headers.set("x-zrg-read-api-enabled", "0");
+  response.headers.set("x-zrg-read-api-reason", READ_API_DISABLED_REASON);
+  response.headers.set(REQUEST_ID_HEADER, requestId);
   response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
   return response;
 }
 
 export function attachReadApiHeaders(
   response: NextResponse,
-  opts?: { cacheControl?: string }
+  opts?: { cacheControl?: string; requestId?: string | null }
 ): NextResponse {
   response.headers.set("x-zrg-read-api-enabled", "1");
+  if (opts?.requestId) {
+    response.headers.set(REQUEST_ID_HEADER, normalizeRequestId(opts.requestId));
+  }
   response.headers.set(
     "Cache-Control",
     opts?.cacheControl ?? "private, max-age=60, stale-while-revalidate=120"

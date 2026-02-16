@@ -16,6 +16,7 @@ import {
   mapAnalyticsErrorToStatus,
   readAnalyticsRouteCache,
   readApiDisabledResponse,
+  resolveRequestId,
   writeAnalyticsRouteCache,
 } from "@/app/api/analytics/_helpers";
 
@@ -52,32 +53,37 @@ function parseCrmFilters(searchParams: URLSearchParams): CrmSheetFilters {
 
 export async function GET(request: NextRequest) {
   const startedAtMs = Date.now();
+  const searchParams = request.nextUrl.searchParams;
+  const requestId = resolveRequestId(request.headers.get("x-request-id"));
+  const clientId = searchParams.get("clientId") || null;
 
   if (!isAnalyticsReadApiEnabled()) {
-    return readApiDisabledResponse();
+    return readApiDisabledResponse({ endpoint: "crm/rows", requestId, clientId });
   }
 
   let authUser: Awaited<ReturnType<typeof requireAuthUser>>;
   try {
     authUser = await requireAuthUser();
   } catch {
-    return NextResponse.json(
+    const response = NextResponse.json(
       { success: false, error: "Not authenticated" },
       { status: 401 }
     );
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
-  const searchParams = request.nextUrl.searchParams;
   const modeRaw = (searchParams.get("mode") || "rows").trim().toLowerCase();
   const mode: CrmReadMode =
     modeRaw === "summary" || modeRaw === "assignees" ? modeRaw : "rows";
 
-  const clientId = searchParams.get("clientId") || null;
   if (!clientId) {
-    return NextResponse.json(
+    const response = NextResponse.json(
       { success: false, error: "Missing clientId" },
       { status: 400 }
     );
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
   const cacheVersion = await getAnalyticsCacheVersion(clientId);
 
@@ -97,18 +103,22 @@ export async function GET(request: NextRequest) {
       response.headers.set("x-zrg-cache", "hit");
       return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
         cacheControl: "private, max-age=60, stale-while-revalidate=120",
+        requestId,
       });
     }
 
     const result = await getCrmAssigneeOptions({ clientId });
     if (!result.success) {
-      return NextResponse.json(result, { status: mapAnalyticsErrorToStatus(result.error) });
+      const response = NextResponse.json(result, { status: mapAnalyticsErrorToStatus(result.error) });
+      response.headers.set("x-request-id", requestId);
+      return response;
     }
     await writeAnalyticsRouteCache(cacheKey, result, 60);
     const response = NextResponse.json(result, { status: 200 });
     response.headers.set("x-zrg-cache", "miss");
     return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
       cacheControl: "private, max-age=60, stale-while-revalidate=120",
+      requestId,
     });
   }
 
@@ -137,18 +147,22 @@ export async function GET(request: NextRequest) {
       response.headers.set("x-zrg-cache", "hit");
       return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
         cacheControl: "private, max-age=60, stale-while-revalidate=120",
+        requestId,
       });
     }
 
     const result = await getCrmWindowSummary({ clientId, filters });
     if (!result.success) {
-      return NextResponse.json(result, { status: mapAnalyticsErrorToStatus(result.error) });
+      const response = NextResponse.json(result, { status: mapAnalyticsErrorToStatus(result.error) });
+      response.headers.set("x-request-id", requestId);
+      return response;
     }
     await writeAnalyticsRouteCache(cacheKey, result, 60);
     const response = NextResponse.json(result, { status: 200 });
     response.headers.set("x-zrg-cache", "miss");
     return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
       cacheControl: "private, max-age=60, stale-while-revalidate=120",
+      requestId,
     });
   }
 
@@ -178,6 +192,7 @@ export async function GET(request: NextRequest) {
     response.headers.set("x-zrg-cache", "hit");
     return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
       cacheControl: "private, max-age=30, stale-while-revalidate=60",
+      requestId,
     });
   }
 
@@ -189,7 +204,9 @@ export async function GET(request: NextRequest) {
   });
 
   if (!result.success) {
-    return NextResponse.json(result, { status: mapAnalyticsErrorToStatus(result.error) });
+    const response = NextResponse.json(result, { status: mapAnalyticsErrorToStatus(result.error) });
+    response.headers.set("x-request-id", requestId);
+    return response;
   }
 
   await writeAnalyticsRouteCache(cacheKey, result, 30);
@@ -197,5 +214,6 @@ export async function GET(request: NextRequest) {
   response.headers.set("x-zrg-cache", "miss");
   return attachReadApiHeaders(attachAnalyticsTimingHeader(response, startedAtMs), {
     cacheControl: "private, max-age=30, stale-while-revalidate=60",
+    requestId,
   });
 }

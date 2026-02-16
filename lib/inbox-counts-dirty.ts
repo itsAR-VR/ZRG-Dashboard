@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
+import { redisIncr } from "@/lib/redis";
 
 export async function markInboxCountsDirty(clientId: string): Promise<void> {
   const normalized = clientId.trim();
@@ -12,6 +13,9 @@ export async function markInboxCountsDirty(clientId: string): Promise<void> {
     update: { dirtyAt: new Date() },
     select: { clientId: true },
   });
+
+  // Keep analytics read caches coherent with fresh inbound/outbound activity.
+  await redisIncr(`analytics:v1:ver:${normalized}`);
 }
 
 export async function markInboxCountsDirtyByLeadId(leadId: string): Promise<void> {

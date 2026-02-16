@@ -92,3 +92,12 @@ Proceed to Phase 155b for counts materialization and near-real-time freshness.
   - Continue Phase 155b implementation (`InboxCounts`/`InboxCountsDirty` + dirty marking + recompute path).
   - After code-level subphases are landed, run Vercel canary checklist for Phase 155a rollout closure.
   - RED TEAM carry-forward: analytics tabs beyond overview still rely on Server Actions (expected until Phase 155d), and rollout evidence is pending preview/prod access.
+
+## Incident Carry-Forward (2026-02-16)
+- Production verification exposed a fail-closed runtime-flag outage:
+  - `/api/analytics/*` and `/api/inbox/*` returned `READ_API_DISABLED` with `x-zrg-read-api-enabled: 0`.
+  - Root cause is runtime env drift combined with default-disabled behavior in flag resolution.
+- Carry-forward remediation for 155a closure:
+  1. Apply production env recovery (`NEXT_PUBLIC_ANALYTICS_READ_API_V1=true`, `NEXT_PUBLIC_INBOX_READ_API_V1=true`) and redeploy.
+  2. Harden flag policy to production-safe default ON with explicit-disable semantics.
+  3. Add disabled-route telemetry/alerts to stop silent regression.
