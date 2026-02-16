@@ -10,13 +10,16 @@ Move counts/analytics recompute out of request and cron hot paths into durable I
 
 ## Work
 1. **Inngest foundation**
-   - Add Inngest dependency and Next.js event/function endpoint wiring.
-   - Add environment configuration for Inngest keys and signing.
+   - Completed in repo:
+     - dependency `inngest`
+     - route handler `app/api/inngest/route.ts` (`GET/POST/PUT` via `serve`)
+     - client `lib/inngest/client.ts` with Production env pinning
+     - function scaffold `lib/inngest/functions/process-background-jobs.ts`
 
 2. **Define event contracts**
-   - `inbox.counts.dirty`
-   - `inbox.counts.recompute`
-   - `analytics.aggregates.recompute` (optional path gated by SLO miss)
+   - `inbox/counts.dirty`
+   - `inbox/counts.recompute`
+   - `analytics/aggregates.recompute` (optional path gated by SLO miss)
    - Include payload fields:
      - `clientId`
      - `requestId`
@@ -34,8 +37,8 @@ Move counts/analytics recompute out of request and cron hot paths into durable I
      - bump `analytics:v1:ver:{clientId}`
 
 4. **Cron role**
-   - Cron routes enqueue events only.
-   - No heavy recompute execution inside cron request lifecycle.
+   - Cron routes enqueue events only (no heavy recompute execution inside cron request lifecycle).
+   - Do not enable `BACKGROUND_JOBS_USE_INNGEST=true` broadly until Phase 155g ports cron maintenance parity into Inngest.
 
 5. **Status visibility**
    - Write job status blob to Redis:
@@ -87,5 +90,6 @@ Proceed to Phase 155f for React #301 closure, observability baseline enforcement
   - `npm run build` passed and includes `/api/inngest`.
   - `npm run lint` passed with pre-existing warnings.
 - Live endpoint checks:
-  - `https://zrg-dashboard.vercel.app/api/inngest` returned `404` (route not available at that domain/deployment).
-  - `https://zrg-dashboard-zrg.vercel.app/api/inngest` returned `401` (Vercel authentication/deployment protection wall), which blocks Inngest sync.
+  - `https://zrg-dashboard.vercel.app/api/inngest` returns `200` and reports `x-inngest-env: production`.
+  - Inngest onboarding “Invoke your function” step can error, but manual event send `background/process.requested` successfully triggers `process-background-jobs` runs in Production.
+  - `https://zrg-dashboard-zrg.vercel.app` remains Vercel-protected (`401`) and must not be used for Inngest sync.

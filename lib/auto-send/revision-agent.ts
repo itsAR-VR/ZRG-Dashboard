@@ -677,7 +677,7 @@ export async function maybeReviseAutoSendDraft(opts: {
       reasoningEffort: revisionReasoningEffort,
       temperature: 0,
       systemFallback:
-        "Return ONLY valid JSON with keys: revised_draft, changes_made, issues_addressed, confidence, memory_proposals.",
+        "Return ONLY valid JSON with keys: revised_draft, changes_made, issues_addressed, unresolved_requirements, confidence, memory_proposals.",
       templateVars: { inputJson },
       schemaName: "auto_send_revise",
       strict: true,
@@ -706,7 +706,14 @@ export async function maybeReviseAutoSendDraft(opts: {
             },
           },
         },
-        required: ["revised_draft", "changes_made", "issues_addressed", "confidence"],
+        required: [
+          "revised_draft",
+          "changes_made",
+          "issues_addressed",
+          "unresolved_requirements",
+          "confidence",
+          "memory_proposals",
+        ],
       },
       budget: {
         min: 240,
