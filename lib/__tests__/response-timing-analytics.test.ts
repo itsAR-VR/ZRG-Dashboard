@@ -11,7 +11,7 @@ describe("Response timing analytics (Phase 132)", () => {
   it("anchors windowing to ResponseTimingEvent.inboundSentAt", () => {
     const source = read("actions/response-timing-analytics-actions.ts");
     assert.match(source, /rte\."inboundSentAt" >=/);
-    assert.match(source, /rte\."inboundSentAt" < \${to}/);
+    assert.match(source, /rte\."inboundSentAt" < \(\$\{to\}::timestamp\)/);
   });
 
   it("excludes canceled bookings and uses appointmentCanceledAt", () => {

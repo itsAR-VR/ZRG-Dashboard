@@ -216,8 +216,8 @@ export async function getResponseTimingAnalytics(opts?: {
           rte."aiResponseSentAt" as ai_response_sent_at
         from "ResponseTimingEvent" rte
         where rte."clientId" in (${Prisma.join(scope.clientIds)})
-          and rte."inboundSentAt" >= ${from}
-          and rte."inboundSentAt" < ${to}
+          and rte."inboundSentAt" >= (${from}::timestamp)
+          and rte."inboundSentAt" < (${to}::timestamp)
           and (rte."setterResponseSentAt" is not null or rte."aiResponseSentAt" is not null)
       ),
       lead_pick as (
@@ -268,7 +268,7 @@ export async function getResponseTimingAnalytics(opts?: {
               case
                 when l."appointmentBookedAt" is not null
                   and l."appointmentBookedAt" > c.response_sent_at
-                  and l."appointmentBookedAt" <= least(${to}, c.response_sent_at + (${attributionWindowDays} * interval '1 day'))
+                  and l."appointmentBookedAt" <= least((${to}::timestamp), c.response_sent_at + ((${attributionWindowDays}::int) * interval '1 day'))
                   and (l."appointmentStatus" is null or l."appointmentStatus" != 'canceled')
                   and l."appointmentCanceledAt" is null
                   then 'BOOKED'
@@ -277,7 +277,7 @@ export async function getResponseTimingAnalytics(opts?: {
                   and (l."appointmentStatus" is null or l."appointmentStatus" != 'canceled')
                   and l."appointmentCanceledAt" is null
                   then 'BOOKED_NO_TIMESTAMP'
-                when c.response_sent_at >= (${to} - (${maturityBufferDays} * interval '1 day'))
+                when c.response_sent_at >= ((${to}::timestamp) - ((${maturityBufferDays}::int) * interval '1 day'))
                   then 'PENDING'
                 else 'NOT_BOOKED'
               end as outcome
@@ -340,7 +340,7 @@ export async function getResponseTimingAnalytics(opts?: {
               case
                 when l."appointmentBookedAt" is not null
                   and l."appointmentBookedAt" > b.response_sent_at
-                  and l."appointmentBookedAt" <= least(${to}, b.response_sent_at + (${attributionWindowDays} * interval '1 day'))
+                  and l."appointmentBookedAt" <= least((${to}::timestamp), b.response_sent_at + ((${attributionWindowDays}::int) * interval '1 day'))
                   and (l."appointmentStatus" is null or l."appointmentStatus" != 'canceled')
                   and l."appointmentCanceledAt" is null
                   then 'BOOKED'
@@ -349,7 +349,7 @@ export async function getResponseTimingAnalytics(opts?: {
                   and (l."appointmentStatus" is null or l."appointmentStatus" != 'canceled')
                   and l."appointmentCanceledAt" is null
                   then 'BOOKED_NO_TIMESTAMP'
-                when b.response_sent_at >= (${to} - (${maturityBufferDays} * interval '1 day'))
+                when b.response_sent_at >= ((${to}::timestamp) - ((${maturityBufferDays}::int) * interval '1 day'))
                   then 'PENDING'
                 else 'NOT_BOOKED'
               end as outcome
@@ -383,7 +383,7 @@ export async function getResponseTimingAnalytics(opts?: {
               case
                 when l."appointmentBookedAt" is not null
                   and l."appointmentBookedAt" > b.response_sent_at
-                  and l."appointmentBookedAt" <= least(${to}, b.response_sent_at + (${attributionWindowDays} * interval '1 day'))
+                  and l."appointmentBookedAt" <= least((${to}::timestamp), b.response_sent_at + ((${attributionWindowDays}::int) * interval '1 day'))
                   and (l."appointmentStatus" is null or l."appointmentStatus" != 'canceled')
                   and l."appointmentCanceledAt" is null
                   then 'BOOKED'
@@ -392,7 +392,7 @@ export async function getResponseTimingAnalytics(opts?: {
                   and (l."appointmentStatus" is null or l."appointmentStatus" != 'canceled')
                   and l."appointmentCanceledAt" is null
                   then 'BOOKED_NO_TIMESTAMP'
-                when b.response_sent_at >= (${to} - (${maturityBufferDays} * interval '1 day'))
+                when b.response_sent_at >= ((${to}::timestamp) - ((${maturityBufferDays}::int) * interval '1 day'))
                   then 'PENDING'
                 else 'NOT_BOOKED'
               end as outcome
@@ -431,7 +431,7 @@ export async function getResponseTimingAnalytics(opts?: {
               case
                 when l."appointmentBookedAt" is not null
                   and l."appointmentBookedAt" > b.response_sent_at
-                  and l."appointmentBookedAt" <= least(${to}, b.response_sent_at + (${attributionWindowDays} * interval '1 day'))
+                  and l."appointmentBookedAt" <= least((${to}::timestamp), b.response_sent_at + ((${attributionWindowDays}::int) * interval '1 day'))
                   and (l."appointmentStatus" is null or l."appointmentStatus" != 'canceled')
                   and l."appointmentCanceledAt" is null
                   then 'BOOKED'
@@ -440,7 +440,7 @@ export async function getResponseTimingAnalytics(opts?: {
                   and (l."appointmentStatus" is null or l."appointmentStatus" != 'canceled')
                   and l."appointmentCanceledAt" is null
                   then 'BOOKED_NO_TIMESTAMP'
-                when b.response_sent_at >= (${to} - (${maturityBufferDays} * interval '1 day'))
+                when b.response_sent_at >= ((${to}::timestamp) - ((${maturityBufferDays}::int) * interval '1 day'))
                   then 'PENDING'
                 else 'NOT_BOOKED'
               end as outcome
