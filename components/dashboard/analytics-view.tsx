@@ -155,18 +155,20 @@ interface AnalyticsViewProps {
 
 type AnalyticsTab = "overview" | "workflows" | "campaigns" | "booking" | "crm" | "response-timing"
 const ANALYTICS_CACHE_TTL_MS = 90_000
-const USE_ANALYTICS_READ_API = process.env.NEXT_PUBLIC_ANALYTICS_READ_API_V1 === "1"
 
 type AnalyticsOverviewResult = Awaited<ReturnType<typeof getAnalytics>>
+
+function isReadApiDisabledPayload(
+  payload: unknown
+): payload is { error: "READ_API_DISABLED" } {
+  if (!payload || typeof payload !== "object") return false
+  return (payload as { error?: unknown }).error === "READ_API_DISABLED"
+}
 
 async function getAnalyticsOverviewRead(
   clientId: string,
   opts?: { window?: { from: string; to: string } }
 ): Promise<AnalyticsOverviewResult> {
-  if (!USE_ANALYTICS_READ_API) {
-    return getAnalytics(clientId, opts)
-  }
-
   const params = new URLSearchParams()
   params.set("clientId", clientId)
   if (opts?.window?.from && opts?.window?.to) {
@@ -176,6 +178,10 @@ async function getAnalyticsOverviewRead(
 
   const response = await fetch(`/api/analytics/overview?${params.toString()}`, { method: "GET" })
   const json = (await response.json()) as AnalyticsOverviewResult
+  if (!response.ok && isReadApiDisabledPayload(json)) {
+    // Runtime flag is off on the server; fail open to the legacy action.
+    return getAnalytics(clientId, opts)
+  }
   if (!response.ok) return json
   return json
 }

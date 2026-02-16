@@ -1,5 +1,6 @@
 import "server-only";
 
+import { markInboxCountsDirtyByLeadId } from "@/lib/inbox-counts-dirty";
 import { prisma } from "@/lib/prisma";
 
 export async function bumpLeadMessageRollup(opts: {
@@ -26,6 +27,7 @@ export async function bumpLeadMessageRollup(opts: {
       },
       data: { lastInboundAt: sentAt },
     });
+    await markInboxCountsDirtyByLeadId(leadId).catch(() => undefined);
     return;
   }
 
@@ -46,6 +48,8 @@ export async function bumpLeadMessageRollup(opts: {
       data: { lastZrgOutboundAt: sentAt },
     });
   }
+
+  await markInboxCountsDirtyByLeadId(leadId).catch(() => undefined);
 }
 
 export async function recomputeLeadMessageRollups(leadId: string): Promise<void> {
@@ -82,4 +86,6 @@ export async function recomputeLeadMessageRollups(leadId: string): Promise<void>
       lastMessageDirection: (lastMessage?.direction as string | undefined) ?? null,
     },
   });
+
+  await markInboxCountsDirtyByLeadId(leadId).catch(() => undefined);
 }

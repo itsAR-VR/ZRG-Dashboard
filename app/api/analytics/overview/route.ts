@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getAnalytics } from "@/actions/analytics-actions";
+import { isAnalyticsReadApiEnabled } from "@/lib/feature-flags";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,16 @@ function mapAnalyticsErrorToStatus(error: string | undefined): number {
 }
 
 export async function GET(request: NextRequest) {
+  if (!isAnalyticsReadApiEnabled()) {
+    const response = NextResponse.json(
+      { success: false, error: "READ_API_DISABLED" },
+      { status: 503 }
+    );
+    response.headers.set("x-zrg-read-api-enabled", "0");
+    response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
+    return response;
+  }
+
   const searchParams = request.nextUrl.searchParams;
   const clientId = searchParams.get("clientId") || null;
   const from = searchParams.get("from");
@@ -26,6 +37,7 @@ export async function GET(request: NextRequest) {
   }
 
   const response = NextResponse.json(result, { status: 200 });
+  response.headers.set("x-zrg-read-api-enabled", "1");
   response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
   return response;
 }

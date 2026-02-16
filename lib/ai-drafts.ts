@@ -47,6 +47,7 @@ import {
   resolveKnowledgeAssetContextSource,
   type KnowledgeAssetForContext,
 } from "@/lib/knowledge-asset-context";
+import { markInboxCountsDirtyByLeadId } from "@/lib/inbox-counts-dirty";
 import { getLeadMemoryContext } from "@/lib/lead-memory-context";
 import { recordAiRouteSkip } from "@/lib/ai/route-skip-observability";
 import {
@@ -5930,6 +5931,7 @@ Generate an appropriate ${channel} response following the guidelines above.
           channel,
         },
       });
+      await markInboxCountsDirtyByLeadId(leadId).catch(() => undefined);
 
       if (draftPipelineRunId) {
         try {
@@ -5984,6 +5986,7 @@ Generate an appropriate ${channel} response following the guidelines above.
                 data: { content: draftContent, status: "pending" },
                 select: { id: true },
               });
+              await markInboxCountsDirtyByLeadId(leadId).catch(() => undefined);
               return {
                 success: true,
                 draftId: existing.id,

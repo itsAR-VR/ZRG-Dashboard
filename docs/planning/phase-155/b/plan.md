@@ -1,106 +1,110 @@
-# Phase 155b — Inbox Counts Materialization (Postgres `inbox_counts` + Dirty Marking + Recompute)
+# Phase 155b — Inbox Counts Materialization (Prisma + Sentinel Scope + <15s Freshness)
 
 ## Focus
-Make inbox counts O(1) reads and predictable under load by materializing per-workspace rollups in Postgres, with dirty marking and a recompute runner. This replaces repeated lead scans on every sidebar refresh.
+Provide O(1) inbox counts for global and per-setter scopes using materialized counts tables, and guarantee near-real-time freshness (<15s) through dirty marking + durable enqueue.
 
 ## Inputs
-- Canonical counts semantics: `actions/lead-actions.ts:getInboxCounts`
-- Role semantics: `lib/workspace-access.ts:getUserRoleForClient` (OWNER/ADMIN/INBOX_MANAGER vs SETTER)
-- Supabase Postgres (project ref `pzaptpgrcezknnsfytob`)
-- Redis invalidation primitive (version bump):
-  - `inbox:v1:ver:{clientId}`
+- Canonical semantics in `actions/lead-actions.ts:getInboxCounts`.
+- Role scoping in `lib/workspace-access.ts`.
+- Redis version helper in `lib/redis.ts`.
+- Durable enqueue target: Inngest (from Phase 155e).
 
 ## Work
-1. Define canonical count categories (must match UI exactly):
-   - `all_responses`
-   - `requires_attention`
-   - `previously_required_attention`
-   - `needs_repair`
-   - `ai_sent`
-   - `ai_review`
+1. **Create Prisma models**
+   - Add `InboxCounts`.
+   - Add `InboxCountsDirty`.
+   - Add required indexes for lookup by `(clientId, isGlobal, scopeUserId)`.
+   - Add non-null `scopeUserId` and use sentinel global scope ID:
+     - `00000000-0000-0000-0000-000000000000`.
+
+2. **Count fields (must match canonical output)**
+   - `allResponses`
+   - `requiresAttention`
+   - `previouslyRequiredAttention`
+   - `totalNonBlacklisted`
+   - `awaitingReply`
+   - `needsRepair`
+   - `aiSent`
+   - `aiReview`
    - `total`
+   - Derive `awaitingReply = max(0, totalNonBlacklisted - requiresAttention)`.
 
-2. Create Postgres tables + constraints (global + per-setter):
-   - `inbox_counts` keyed by `(client_id, is_global, scope_user_id)`
-   - `inbox_counts_dirty` keyed by `client_id`
+3. **Dirty marking utility**
+   - Add `markInboxCountsDirty(clientId: string)` helper.
+   - Upsert dirty row with latest timestamp.
+   - Call helper from write paths that affect counts:
+     - lead assignment/status/sentiment/snooze updates
+     - inbound webhook updates to lead reply rollups
+     - AIDraft creation/needs-review changes
+     - auto-send message writes
 
-   SQL (baseline):
-   ```sql
-   create table if not exists inbox_counts (
-     client_id uuid not null,
-     is_global boolean not null,
-     scope_user_id uuid null,
+4. **Recompute implementation**
+   - Add `recomputeInboxCounts(clientId: string)`.
+   - Compute counts using one canonical SQL path aligned to `getInboxCounts`.
+   - Upsert:
+     - global row (`isGlobal=true`, sentinel scope ID)
+     - per-setter rows (`isGlobal=false`, assigned user scope IDs)
+   - On success:
+     - clear dirty marker
+     - increment `inbox:v1:ver:{clientId}`.
 
-     all_responses int not null default 0,
-     requires_attention int not null default 0,
-     previously_required_attention int not null default 0,
-     needs_repair int not null default 0,
-     ai_sent int not null default 0,
-     ai_review int not null default 0,
-     total int not null default 0,
+5. **Freshness SLA wiring**
+   - Dirty mark immediately on write.
+   - Enqueue recompute job immediately (Inngest event) from dirty mark path.
+   - Keep periodic cron safety-net for missed events.
+   - Target end-to-end update visibility under 15s.
 
-     computed_at timestamptz not null default now(),
-     updated_at timestamptz not null default now(),
+6. **Read-path integration**
+   - Update `getInboxCounts` to read materialized counts first.
+   - If row missing/stale, fallback to legacy computation.
+   - Keep fallback for one release cycle.
 
-     primary key (client_id, is_global, scope_user_id),
-     constraint inbox_counts_scope_ck check (
-       (is_global = true and scope_user_id is null) or
-       (is_global = false and scope_user_id is not null)
-     ),
-     constraint inbox_counts_nonneg_ck check (
-       all_responses >= 0 and requires_attention >= 0 and previously_required_attention >= 0 and
-       needs_repair >= 0 and ai_sent >= 0 and ai_review >= 0 and total >= 0
-     )
-   );
-
-   create index if not exists inbox_counts_client_global_idx
-     on inbox_counts (client_id, is_global);
-
-   create table if not exists inbox_counts_dirty (
-     client_id uuid primary key,
-     dirty_at timestamptz not null default now()
-   );
-
-   create index if not exists inbox_counts_dirty_at_idx
-     on inbox_counts_dirty (dirty_at asc);
-   ```
-
-3. Implement dirty marking trigger on `Lead`:
-   - Trigger only on updates to rollup fields that affect counts:
-     - `status`, `sentimentTag`, `snoozedUntil`,
-     - `lastInboundAt`, `lastOutboundAt`, `lastZrgOutboundAt`,
-     - `assignedToUserId`
-   - Do not add `Message` triggers (avoid hot-path overhead).
-
-4. Implement recompute function:
-   - Recompute for a single workspace in one pass, producing:
-     - global row (scope_user_id null)
-     - per-setter rows (scope_user_id = assignedToUserId; skip null)
-   - Use `COUNT(*) FILTER (...)` and match current semantics (including snooze + blacklisted/unqualified behavior).
-   - Upsert into `inbox_counts`.
-   - On success, delete `inbox_counts_dirty` for that clientId.
-
-5. Update server read path:
-   - Modify `actions/lead-actions.ts:getInboxCounts` to:
-     1) enforce auth + role scope
-     2) try `select` from `inbox_counts` for:
-        - global row when role is not SETTER
-        - per-setter row when role is SETTER
-     3) fallback to legacy computation if the table/function is missing (safe rollout)
-   - After recompute, bump `inbox:v1:ver:{clientId}` so Redis keys invalidate quickly.
-
-6. Validation
-   - Compare counts from:
-     - legacy computation
-     - `inbox_counts` rows
-   - Validate both:
-     - OWNER/ADMIN/INBOX_MANAGER sees global counts
-     - SETTER sees assigned-only counts
+## Validation
+- `npm run db:push` creates both tables/indexes.
+- Materialized values match legacy computation for at least 3 real workspaces.
+- SETTER and OWNER/ADMIN/INBOX_MANAGER scopes return correct rows.
+- Dirty mark + enqueue + recompute updates cache-visible counts within 15s.
+- Fallback path remains correct when materialized row is absent.
 
 ## Output
-- `inbox_counts` serves O(1) counts reads for global + per-setter scopes.
-- Workspaces are dirtied by Lead rollup updates and recomputed in the background.
+- O(1) counts reads are live with correct role scoping.
+- Freshness SLA path is implemented and measurable.
+- Legacy fallback remains available for rollback safety.
 
 ## Handoff
-Proceed to Phase 155c to harden Supabase Realtime (session auth + RLS) and wire invalidation to the new cached read paths.
+Proceed to Phase 155c for session-auth realtime and RLS-safe invalidation.
 
+## Progress This Turn (Terminus Maximus)
+- Work done:
+  - Implemented and validated Phase 155b materialized counts path:
+    - Prisma models for `InboxCounts` and `InboxCountsDirty` in `prisma/schema.prisma`.
+    - Materialized constants/helpers in `lib/inbox-counts.ts`, `lib/inbox-counts-constants.ts`, `lib/inbox-counts-dirty.ts`, `lib/inbox-counts-recompute.ts`, `lib/inbox-counts-runner.ts`.
+    - Read-path materialized lookup + stale fallback in `actions/lead-actions.ts:getInboxCounts`.
+    - Dirty-mark integration across lead/message/draft rollup paths in:
+      - `lib/lead-message-rollups.ts`
+      - `lib/inbound-post-process/pipeline.ts`
+      - `lib/lead-assignment.ts`
+      - `actions/message-actions.ts`
+      - `lib/conversation-sync.ts`
+      - `lib/ai-drafts.ts`
+  - Fixed a semantic mismatch in recompute totals:
+    - `lib/inbox-counts-recompute.ts` now computes `total` as `count(*)`, matching canonical legacy `getInboxCounts` behavior (includes `unqualified`).
+  - Resolved `db:push` data-loss blocker safely:
+    - Added mapped Prisma model for existing backup table `_phase151_linkedin_backfill_backup` to avoid destructive drop.
+    - Ran `npm run db:push` successfully without `--accept-data-loss`.
+  - Mitigated remaining React #301 hotspot in Inbox list rendering:
+    - Removed TanStack virtualizer path from `components/dashboard/conversation-feed.tsx`.
+    - Switched to stable paginated list rendering (existing server pagination + load-more retained).
+- Commands run:
+  - `npm run db:push` — pass (database synced; no data-loss accept required).
+  - `npm run lint` — pass (warnings only; pre-existing warnings remain).
+  - `npm run typecheck` — pass (run sequentially after build to avoid `.next/types` race).
+  - `npm run build` — pass.
+  - `npm test` — pass (`384` tests, `0` failures).
+- RED TEAM gaps:
+  - `<15s` freshness is not yet guaranteed because enqueue/orchestration is not wired; `markInboxCountsDirty` currently marks state but does not trigger durable recompute until Phase 155e.
+  - `recomputeDirtyInboxCounts` exists but is not yet integrated with Inngest/cron enqueue flow (pending Phase 155e).
+  - Dirty-mark coverage is high on core message/sentiment/draft paths, but additional lower-frequency lead mutation/admin paths should be audited in follow-on hardening.
+- Next concrete steps:
+  - Execute Phase 155c (session-auth realtime + RLS-safe invalidation) before enabling broader rollout.
+  - Execute Phase 155e to wire durable enqueue/recompute and close freshness SLA.

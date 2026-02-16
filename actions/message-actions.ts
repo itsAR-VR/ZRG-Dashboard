@@ -10,6 +10,7 @@ import { buildSentimentTranscriptFromMessages, classifySentiment, detectBounce, 
 import { sendEmailReply, sendEmailReplyForLead } from "@/actions/email-actions";
 import { refreshDraftAvailabilityCore } from "@/lib/draft-availability-refresh";
 import { ensureGhlContactIdForLead, resolveGhlContactIdForLead } from "@/lib/ghl-contacts";
+import { markInboxCountsDirtyByLeadId } from "@/lib/inbox-counts-dirty";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
 import { sendSmsSystem } from "@/lib/system-sender";
@@ -176,6 +177,7 @@ async function refreshLeadSentimentTag(leadId: string): Promise<{
       lastMessageDirection: (lastMessage?.direction as string | undefined) ?? null,
     },
   });
+  await markInboxCountsDirtyByLeadId(leadId).catch(() => undefined);
 
   // If sentiment is no longer positive, don't leave enrichment stuck in "pending".
   if (!isPositiveSentiment(sentimentTag)) {

@@ -1,65 +1,61 @@
-# Phase 155d — Analytics Read Path Completion (GET APIs + Redis Cache + Chunking + Session Persistence)
+# Phase 155d — Analytics Read Path Completion (GET APIs + Redis Cache + Chunking + Session Cache)
 
 ## Focus
-Make Analytics feel fast and scale under concurrency by moving reads to GET endpoints with Redis caching, chunking the UI so core KPIs render first, and adding bounded sessionStorage persistence.
+Finish analytics migration to cache-friendly GET APIs and hit the production SLO (`p95 <1.5s warm`, `<3s cold`) using chunked loading and bounded local persistence.
 
 ## Inputs
-- Analytics UI: `components/dashboard/analytics-view.tsx`
-- Server Actions:
-  - `actions/analytics-actions.ts`
-  - `actions/response-timing-analytics-actions.ts`
-  - `actions/ai-draft-response-analytics-actions.ts`
-- Existing GET endpoint: `GET /api/analytics/overview`
-- Redis helper: `lib/redis.ts`
-- UX decision: require workspace (no `clientId=null` analytics)
+- Current analytics UI in `components/dashboard/analytics-view.tsx`.
+- Existing overview route: `app/api/analytics/overview/route.ts`.
+- Analytics server actions in `actions/analytics-actions.ts`, `actions/response-timing-analytics-actions.ts`, and AI draft analytics actions.
+- Upstash Redis helpers in `lib/redis.ts`.
 
 ## Work
-1. Define GET read endpoints (read-only)
-   - `GET /api/analytics/overview?clientId=...&from=...&to=...&parts=core|breakdowns|all`
-   - `GET /api/analytics/workflows?...`
-   - `GET /api/analytics/campaigns?...`
-   - `GET /api/analytics/response-timing?...`
-   - `GET /api/analytics/crm/rows?clientId=...&cursor=...&limit=...` (pagination required)
+1. **Create missing GET routes**
+   - `GET /api/analytics/workflows`
+   - `GET /api/analytics/campaigns`
+   - `GET /api/analytics/response-timing`
+   - `GET /api/analytics/crm/rows`
+   - Extend `GET /api/analytics/overview` with `parts=core|breakdowns|all`.
 
-2. Server-side caching (Redis read-through)
-   - All caches must be user-scoped and include a version:
-     - `analytics:v1:ver:{clientId}` (incr on recompute jobs)
-     - key prefix: `analytics:v1:{userId}:{clientId}:{window}:{endpoint}:{filtersHash}:{ver}`
+2. **Server-runtime auth and access checks**
+   - Verify session in each route.
+   - Authorize `clientId` via workspace access helper.
+   - Return explicit 401/403 payloads.
+
+3. **Redis read-through caching**
+   - Use user/workspace/window scoped keys with version suffix.
    - TTL targets:
-     - overview core: 120s
-     - overview breakdowns: 120s
+     - overview core/breakdowns: 120s
      - workflows/campaigns/response timing: 120s
-     - CRM rows: 30–60s per page (cursor-based keying)
+     - CRM rows pages: 30-60s
+   - Invalidate by version bump:
+     - `analytics:v1:ver:{clientId}`.
 
-3. Client chunking (Overview first)
-   - Change `AnalyticsView` so overview fetches:
-     1) `parts=core` (KPI cards + minimal summary)
-     2) `parts=breakdowns` (charts + tables)
-   - Render core immediately with skeleton placeholders for breakdowns.
-   - Avoid “fan-out storms”: do not fetch every tab on initial mount; only fetch active tab.
+4. **Client chunking and fan-out control**
+   - Overview loads `parts=core` first, then `parts=breakdowns`.
+   - Only fetch active tab data on mount.
+   - Lazy fetch on tab switch with stale-while-refresh UX.
 
-4. Bounded sessionStorage persistence (perceived speed)
-   - Persist last successful payload per:
-     - `{userId}:{clientId}:{windowKey}:{tab}:{parts}`
-   - TTL: 10 minutes
-   - Cap: max 20 entries (evict oldest)
-   - Always background-refresh and overwrite.
+5. **Bounded sessionStorage cache**
+   - Key by `userId + clientId + tab + parts`.
+   - TTL 10 minutes.
+   - LRU cap 20 entries.
+   - Use stale-fast render then background refresh.
 
-5. Optional derived aggregates (only if still slow after caching + chunking)
-   - Introduce derived table(s) maintained by a recompute job:
-     - `analytics_message_daily (client_id, day, channel, direction, message_count)`
-   - Recompute last N days (e.g., 90) per active workspace.
-   - Use aggregates for weekly stats and channel counts to reduce base-table scans.
+6. **SLO measurement**
+   - Add per-endpoint latency metric tags for warm/cold cache.
+   - Validate p95 against targets before full rollout.
+   - If SLO misses persist, enable optional derived aggregate table path.
 
-6. Verification
-   - Confirm no data leakage across workspaces/users.
-   - Measure p95 server time for overview core and full overview with warm cache.
+## Validation
+- All analytics tabs load through GET APIs.
+- No cross-tenant data leakage in cache or route auth.
+- p95 warm and cold latency targets achieved in canary.
+- Tab switch perceived load materially improved by local cache and chunking.
 
 ## Output
-- Analytics reads are GET + Redis cached for the critical tabs.
-- Overview renders core KPIs first and progressively loads heavy charts.
-- Session persistence reduces perceived load on tab/window changes.
+- Analytics read path is GET + Redis-backed + progressively rendered.
+- SLO measurement is wired and actionable.
 
 ## Handoff
-Proceed to Phase 155e to move recompute work to Inngest and standardize job status + retry behavior.
-
+Proceed to Phase 155e for durable Inngest orchestration and queue reliability.

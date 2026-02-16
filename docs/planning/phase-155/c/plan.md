@@ -1,57 +1,60 @@
-# Phase 155c — Supabase Realtime Enterprise Hardening (Session Auth + RLS + Invalidation Wiring)
+# Phase 155c — Supabase Realtime Hardening (Session Auth + RLS + Invalidation)
 
 ## Focus
-Replace anon-key Realtime subscriptions with a session-authenticated Supabase client protected by RLS, and use realtime events to invalidate inbox list/counts while retaining a 60s heartbeat for consistency.
+Replace anon-key realtime with session-authenticated subscriptions enforced by RLS, limited to `Lead INSERT + UPDATE`, and wired only to cache/query invalidation (not direct state mutation).
 
 ## Inputs
-- Existing realtime client: `lib/supabase.ts` (anon-key, `postgres_changes` on `Lead`)
-- Supabase SSR helpers:
-  - `lib/supabase/client.ts` (browser client)
-  - `lib/supabase/server.ts` (server client)
-- Access model:
-  - `Client.userId` (owner)
-  - `ClientMember(userId, role)`
-  - `lib/workspace-access-filters.ts:accessibleClientWhere`
-- Polling policy (locked): realtime + 60s heartbeat
-- Realtime scope (locked): `Lead` INSERT + UPDATE only
+- Current realtime path in `lib/supabase.ts` (anon + `event: "*"`) is not acceptable for final state.
+- Session browser client in `lib/supabase/client.ts`.
+- Server auth helper in `lib/supabase/server.ts`.
+- Inbox query invalidation patterns in dashboard components.
 
 ## Work
-1. Implement RLS for Lead subscriptions
-   - Enable RLS on `Lead`.
-   - Add a helper function `has_client_access(client_id uuid)` (SECURITY DEFINER) that returns true if:
-     - `Client.userId = auth.uid()`, OR
-     - exists `ClientMember` for `(clientId, userId = auth.uid())`
-   - Policy:
-     - `SELECT` on `Lead` allowed when `has_client_access(Lead.clientId)`
-   - Confirm Supabase Realtime is configured to enforce RLS for `postgres_changes`.
+1. **RLS policy design and rollout**
+   - Enable/selectively verify RLS on `Lead`.
+   - Add `has_client_access(clientId uuid)` function (`SECURITY DEFINER`, locked `search_path`).
+   - Add policy allowing SELECT only when user owns client or is in `ClientMember`.
+   - Verify Realtime publication is configured to enforce RLS.
 
-2. Replace client-side realtime plumbing
-   - Deprecate `lib/supabase.ts` usage in dashboard components.
-   - Implement a new subscription helper that uses the session-auth browser client from `lib/supabase/client.ts`.
-   - Subscribe to `Lead`:
-     - events: INSERT + UPDATE
-     - filter: `clientId=eq.<activeWorkspace>`
+2. **Session-auth realtime helper**
+   - Introduce `lib/realtime-session.ts`.
+   - Use `createBrowserClient` session-aware client.
+   - Preflight `auth.getSession()` before subscribing.
+   - If no valid session, skip realtime and rely on heartbeat polling.
 
-3. Wire realtime → React Query invalidation (not state mutation)
-   - On relevant lead changes:
-     - invalidate the inbox list query key(s)
-     - invalidate counts query/read path
-   - Ensure invalidation does not cascade into render loops:
-     - do not call setters unconditionally
-     - do not rebuild query keys as objects
+3. **Subscription scope**
+   - Subscribe to `Lead` with:
+     - `event: INSERT`
+     - `event: UPDATE`
+     - `filter: clientId=eq.<activeWorkspace>`
+   - Do not subscribe to `Message`.
+   - Remove dashboard usage of `lib/supabase.ts`.
 
-4. Polling consistency
-   - Keep a 60s heartbeat refetch even when realtime is healthy (silent disconnect guard).
-   - When page becomes visible, do an immediate refetch (already present in inbox/sidebar patterns).
+4. **Workspace-switch lifecycle**
+   - On workspace change:
+     - teardown old channel first
+     - then subscribe to new channel
+   - Add short debounce to prevent rapid churn.
 
-5. Verification
-   - Confirm no cross-tenant events appear while subscribed.
-   - Confirm workspace switching correctly tears down old channel and subscribes to the new one.
+5. **Invalidation-only callback behavior**
+   - Realtime callback must only do:
+     - `queryClient.invalidateQueries` for inbox list/count keys
+   - No unguarded `setState` calls from callback.
+
+6. **Heartbeat fallback**
+   - Keep 60s polling heartbeat.
+   - Trigger immediate refetch on tab visibility regain.
+
+## Validation
+- Cross-tenant test: no events leak between inaccessible workspaces.
+- Workspace switch test: no orphaned channels and no duplicate event handling.
+- Expired session test: realtime gracefully disables, polling continues.
+- React loop guard: callback does not trigger render storms.
 
 ## Output
-- Inbox realtime is session-authenticated and protected by RLS.
-- Inbox freshness uses realtime invalidation plus a 60s heartbeat without polling storms.
+- Tenant-safe realtime invalidation is live.
+- Realtime path is session-authenticated and bounded.
+- Heartbeat fallback remains intact for disconnect resilience.
 
 ## Handoff
-Proceed to Phase 155d to complete analytics GET read APIs + caching + chunking and add bounded session persistence for perceived performance.
-
+Proceed to Phase 155d for analytics read-path completion and SLO attainment.

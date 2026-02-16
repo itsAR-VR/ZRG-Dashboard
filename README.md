@@ -294,6 +294,10 @@ model Message {
 | `DIRECT_URL` | Direct DB connection (port 5432) used for Prisma CLI (`db push`, migrations) |
 | `SLACK_WEBHOOK_URL` | (Optional) Slack notifications for meetings booked |
 | `CRON_SECRET` | Secret for Vercel Cron authentication (generate with `openssl rand -hex 32`) |
+| `INNGEST_EVENT_KEY` | Inngest event key (server-side) used when publishing events from API routes/cron triggers |
+| `INNGEST_SIGNING_KEY` | Inngest signing key used by `/api/inngest` to verify incoming function execution requests |
+| `INNGEST_APP_ID` | (Optional) Override Inngest app id (defaults to `zrg-dashboard`) |
+| `BACKGROUND_JOBS_USE_INNGEST` | (Optional) When `true`, `/api/cron/background-jobs` only enqueues an Inngest event and returns `202` instead of processing inline (default `false`) |
 | `CALENDLY_WEBHOOK_SIGNING_KEY` | (Optional) Global Calendly webhook signing key fallback. In production, a signing key is required for verification; per-workspace keys are stored in the DB when available. |
 | `INBOXXIA_EMAIL_SENT_ASYNC` | (Optional) Enqueue Inboxxia `EMAIL_SENT` webhook events to the `WebhookEvent` queue for burst resilience (Phase 53) (default off) |
 | `WEBHOOK_EVENT_CRON_LIMIT` | (Optional) Max `WebhookEvent` rows processed per cron tick (default `25`, max `200`) |
@@ -588,6 +592,21 @@ This runs every 10 minutes. To set up:
 3. Vercel automatically calls `/api/cron/followups` with `Authorization: Bearer <CRON_SECRET>`
 
 **Note:** Vercel Cron is available on Pro and Enterprise plans. On Hobby, use an external service like [cron-job.org](https://cron-job.org) with the same endpoint.
+
+### Inngest Setup (Durable Background Jobs)
+
+The app exposes Inngest at `/api/inngest` (App Router handler: `app/api/inngest/route.ts`).
+
+Production checklist:
+1. Add `INNGEST_EVENT_KEY` and `INNGEST_SIGNING_KEY` in Vercel project env vars.
+2. Deploy to Vercel so `/api/inngest` is live on your production domain.
+3. In Inngest Cloud, sync using your production app URL (for example `https://zrg-dashboard-zrg.vercel.app`).
+4. If Vercel Deployment Protection is enabled, add a bypass for Inngest or disable protection for that endpoint.
+5. Verify endpoint reachability: `https://<your-domain>/api/inngest` should return a non-404 response.
+
+Optional:
+- Set `BACKGROUND_JOBS_USE_INNGEST=true` to make `/api/cron/background-jobs` enqueue an Inngest event and return `202` instead of running inline.
+- Local dev sync: run `npm run dev` and `npm run inngest:dev`.
 
 ### Calendar Availability + Booking Notes
 

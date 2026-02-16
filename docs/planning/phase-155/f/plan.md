@@ -1,56 +1,77 @@
-# Phase 155f — React #301 Workspace Switch Closure (Instrumentation + Loop Elimination + Verification)
+# Phase 155f — React #301 Closure + Enterprise Observability + Release Sign-Off
 
 ## Focus
-Eliminate the remaining production React #301 (“Too many re-renders”) crashes during workspace switching by making the loop diagnosable (console-only) and removing the remaining state/effect cascades that can create infinite rerenders.
+Eliminate remaining workspace-switch render loops, install enterprise observability baselines, and enforce production release blockers before 100% rollout.
 
 ## Inputs
-- Existing crash capture:
-  - `components/dashboard/dashboard-error-boundary.tsx` logs `componentStack` + context.
-- Known loop vectors from prior phases:
-  - workspace switch effect cascades in `components/dashboard/inbox-view.tsx`
-  - unstable identities in virtualization/query keys
-  - counts polling + inbox refetch churn
-- New read-path changes (Phase 154) that must not reintroduce loops.
+- Current crash capture from dashboard error boundary.
+- Workspace switching surfaces:
+  - `components/dashboard/dashboard-shell.tsx`
+  - `components/dashboard/inbox-view.tsx`
+  - `components/dashboard/sidebar.tsx`
+- Prior hardening constraints from phases 149/152/153.
 
 ## Work
-1. Add targeted instrumentation (console-only)
-   - Add a debug gate (example: `?debug=1` or env flag) so production logs remain clean by default.
-   - Instrument the workspace switch boundary:
-     - `components/dashboard/dashboard-shell.tsx`
-     - `components/dashboard/inbox-view.tsx`
-     - `components/dashboard/sidebar.tsx`
-   - On abnormal render counts (e.g., >25 renders within a short time window), log:
-     - `activeWorkspace`, `activeView`, `selectedLeadId`
-     - current inbox query keys (string form)
-     - last state updates that fired (tagged reason strings)
+1. **Render-loop instrumentation**
+   - Add debug-gated render counter hook.
+   - Instrument shell, inbox, and sidebar boundaries.
+   - Emit loop warnings with context payload when render count exceeds threshold.
 
-2. Remove remaining loop triggers (rules)
-   - No `setState` calls in render paths.
-   - All workspace-change resets must use functional bail-outs.
-   - Avoid multiple effects that all fire on `activeWorkspace` change unless they are explicitly ordered and guarded.
-   - React Query keys must remain primitive/stable.
+2. **Loop trigger audits**
+   - Remove any state updates in render.
+   - Consolidate/guard workspace-change effects.
+   - Keep query keys primitive and stable.
+   - Ensure realtime callbacks perform invalidation only.
 
-3. Workspace switch verification matrix
-   - With inbox active:
-     - switch workspaces 10x rapidly
-     - switch while network is slow (throttle)
-     - switch when inbox list is empty
-     - switch when a conversation is selected
-   - Confirm no crash, no stuck spinner, no stacked layout.
+3. **Enterprise observability baseline**
+   - Wire `@sentry/nextjs` for client + server capture.
+   - Add request ID propagation from edge/request entry to logs.
+   - Standardize structured logs for API routes and workers:
+     - `requestId`
+     - `userId`
+     - `clientId`
+     - `route`
+     - `latencyMs`
+     - `cacheHit`
+     - `result`
+   - Add baseline metrics:
+     - inbox fetch latency
+     - analytics fetch latency
+     - queue depth
+     - queue retry/failure counts
+     - webhook lag
 
-4. Guardrails/regression
-   - Add at least one automated regression test that can catch obvious render-loop regressions (where feasible).
-   - Ensure required repo gates pass.
+4. **Regression protection**
+   - Add workspace-switch E2E test (production-build profile) asserting:
+     - no error-boundary activation
+     - no persistent spinner
+     - expected URL/clientId persistence
+   - Add canary smoke checklist for manual verification.
 
-5. NTTAN gates (required)
-   - `npm run test:ai-drafts`
-   - `npm run test:ai-replay -- --client-id <clientId> --dry-run --limit 20`
-   - `npm run test:ai-replay -- --client-id <clientId> --limit 20 --concurrency 3`
+5. **Phase 153 parity as hard blocker**
+   - Block release on:
+     - stacked layout regressions
+     - stuck spinner regressions
+     - URL persistence regressions
+
+6. **Final release checks**
+   - Run full gates:
+     - lint, typecheck, build, test
+     - AI smoke gates (`test:ai-drafts`, `test:ai-replay` runs)
+   - Review canary metrics and error trends.
+   - Approve 100% rollout only when all gates are green.
+
+## Validation
+- React #301 is not reproducible under rapid workspace switching.
+- Sentry captures synthetic test exceptions in preview and production.
+- Request IDs appear end-to-end in logs and correlated traces.
+- Required latency/error/queue metrics are visible on dashboard.
+- Phase 153 hard blockers are all clear.
 
 ## Output
-- React #301 workspace-switch crash is no longer reproducible in production builds.
-- Console-only instrumentation provides actionable signals if a new loop is introduced.
+- Workspace switch path is stable and regression-protected.
+- Enterprise observability baseline is active.
+- Production rollout sign-off is evidence-backed.
 
 ## Handoff
-Close Phase 155 with a short verification packet: what changed, how it was validated, and the rollback levers.
-
+Close Phase 155 with verification packet: shipped items, SLO evidence, and rollback levers.

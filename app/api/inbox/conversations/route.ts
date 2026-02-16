@@ -5,6 +5,7 @@ import {
   type Channel,
   type ConversationsCursorOptions,
 } from "@/actions/lead-actions";
+import { isInboxReadApiEnabled } from "@/lib/feature-flags";
 
 export const dynamic = "force-dynamic";
 
@@ -86,6 +87,16 @@ function mapActionErrorToStatus(error: string | undefined): number {
 }
 
 export async function GET(request: NextRequest) {
+  if (!isInboxReadApiEnabled()) {
+    const response = NextResponse.json(
+      { success: false, error: "READ_API_DISABLED" },
+      { status: 503 }
+    );
+    response.headers.set("x-zrg-read-api-enabled", "0");
+    response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
+    return response;
+  }
+
   const options = parseConversationsCursorOptions(request);
 
   const result = await getConversationsCursor(options);
@@ -94,6 +105,7 @@ export async function GET(request: NextRequest) {
   }
 
   const response = NextResponse.json(result, { status: 200 });
+  response.headers.set("x-zrg-read-api-enabled", "1");
   response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
   return response;
 }

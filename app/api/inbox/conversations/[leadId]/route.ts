@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { getConversation, type Channel } from "@/actions/lead-actions";
+import { isInboxReadApiEnabled } from "@/lib/feature-flags";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,16 @@ function mapConversationErrorToStatus(error: string | undefined): number {
 }
 
 export async function GET(request: NextRequest, { params }: RouteParams) {
+  if (!isInboxReadApiEnabled()) {
+    const response = NextResponse.json(
+      { success: false, error: "READ_API_DISABLED" },
+      { status: 503 }
+    );
+    response.headers.set("x-zrg-read-api-enabled", "0");
+    response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
+    return response;
+  }
+
   const { leadId } = await params;
   if (!leadId) {
     return NextResponse.json({ success: false, error: "Lead ID is required" }, { status: 400 });
@@ -39,6 +50,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   }
 
   const response = NextResponse.json(result, { status: 200 });
+  response.headers.set("x-zrg-read-api-enabled", "1");
   response.headers.set("Cache-Control", "private, max-age=0, must-revalidate");
   return response;
 }

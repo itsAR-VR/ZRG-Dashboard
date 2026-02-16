@@ -2,6 +2,8 @@
 
 import { getPublicAppUrl } from "@/lib/app-url";
 import { addToAlternateEmails, emailsMatch, normalizeOptionalEmail, validateEmail } from "@/lib/email-participants";
+import { ATTENTION_SENTIMENT_TAGS } from "@/lib/inbox-counts-constants";
+import { GLOBAL_SCOPE_USER_ID, INBOX_COUNTS_STALE_MS } from "@/lib/inbox-counts";
 import { getAvailableChannels } from "@/lib/lead-matching";
 import { prisma } from "@/lib/prisma";
 import { redisGetJson, redisSetJson } from "@/lib/redis";
@@ -101,19 +103,6 @@ function mapSentimentToClassification(sentimentTag: string | null): string {
   };
   return mapping[sentimentTag || ""] || "new";
 }
-
-/**
- * Tags that can require action when a lead has an unreplied inbound message.
- */
-const ATTENTION_SENTIMENT_TAGS = [
-  "Meeting Booked",
-  "Meeting Requested",
-  "Call Requested",
-  "Information Requested",
-  "Positive", // Legacy - treat as Interested
-  "Interested",
-  "Follow Up",
-] as const;
 
 // Sentiment tags that indicate the lead should be treated as disqualified (no AI scoring).
 const DISQUALIFIED_SENTIMENT_TAGS = [
@@ -552,6 +541,107 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     const cached = await redisGetJson<typeof empty>(cacheKey);
     if (cached) return cached;
 
+    const tryMaterializedCounts = async (): Promise<typeof empty | null> => {
+      if (!clientId || scope.clientIds.length !== 1) return null;
+
+      const workspaceId = scope.clientIds[0];
+      const isGlobalScope = !setterFilter;
+      const scopeUserId = isGlobalScope ? GLOBAL_SCOPE_USER_ID : scope.userId;
+
+      const row = await prisma.inboxCounts.findUnique({
+        where: {
+          clientId_isGlobal_scopeUserId: {
+            clientId: workspaceId,
+            isGlobal: isGlobalScope,
+            scopeUserId,
+          },
+        },
+        select: {
+          allResponses: true,
+          requiresAttention: true,
+          previouslyRequiredAttention: true,
+          awaitingReply: true,
+          needsRepair: true,
+          aiSent: true,
+          aiReview: true,
+          total: true,
+          computedAt: true,
+        },
+      });
+
+      if (!row) return null;
+      if (Date.now() - row.computedAt.getTime() > INBOX_COUNTS_STALE_MS) return null;
+
+      return {
+        allResponses: row.allResponses,
+        requiresAttention: row.requiresAttention,
+        previouslyRequiredAttention: row.previouslyRequiredAttention,
+        awaitingReply: row.awaitingReply,
+        needsRepair: row.needsRepair,
+        aiSent: row.aiSent,
+        aiReview: row.aiReview,
+        total: row.total,
+      };
+    };
+
+    const materialized = await tryMaterializedCounts();
+    if (materialized) {
+      await redisSetJson(cacheKey, materialized, { exSeconds: 10 });
+      return materialized;
+    }
+
+    const persistMaterializedSnapshot = async (
+      snapshot: typeof empty
+    ): Promise<void> => {
+      if (!clientId || scope.clientIds.length !== 1) return;
+
+      const workspaceId = scope.clientIds[0];
+      const isGlobalScope = !setterFilter;
+      const scopeUserId = isGlobalScope ? GLOBAL_SCOPE_USER_ID : scope.userId;
+      const totalNonBlacklisted = Math.max(
+        0,
+        snapshot.awaitingReply + snapshot.requiresAttention
+      );
+
+      await prisma.inboxCounts.upsert({
+        where: {
+          clientId_isGlobal_scopeUserId: {
+            clientId: workspaceId,
+            isGlobal: isGlobalScope,
+            scopeUserId,
+          },
+        },
+        create: {
+          clientId: workspaceId,
+          isGlobal: isGlobalScope,
+          scopeUserId,
+          allResponses: snapshot.allResponses,
+          requiresAttention: snapshot.requiresAttention,
+          previouslyRequiredAttention: snapshot.previouslyRequiredAttention,
+          totalNonBlacklisted,
+          awaitingReply: snapshot.awaitingReply,
+          needsRepair: snapshot.needsRepair,
+          aiSent: snapshot.aiSent,
+          aiReview: snapshot.aiReview,
+          total: snapshot.total,
+          computedAt: new Date(),
+        },
+        update: {
+          allResponses: snapshot.allResponses,
+          requiresAttention: snapshot.requiresAttention,
+          previouslyRequiredAttention: snapshot.previouslyRequiredAttention,
+          totalNonBlacklisted,
+          awaitingReply: snapshot.awaitingReply,
+          needsRepair: snapshot.needsRepair,
+          aiSent: snapshot.aiSent,
+          aiReview: snapshot.aiReview,
+          total: snapshot.total,
+          computedAt: new Date(),
+        },
+        select: { id: true },
+      });
+    };
+
     const isMissingLastZrgOutboundAt = (error: unknown): boolean => {
       if (!error || typeof error !== "object") return false;
       const anyError = error as { code?: unknown; message?: unknown };
@@ -794,6 +884,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
       }
     }
 
+    await persistMaterializedSnapshot(computed).catch(() => undefined);
     await redisSetJson(cacheKey, computed, { exSeconds: 10 });
     return computed;
   } catch (error) {
