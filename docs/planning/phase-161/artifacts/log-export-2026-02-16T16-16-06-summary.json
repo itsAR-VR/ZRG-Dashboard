@@ -1,0 +1,284 @@
+{
+  "sourceFile": "zrg-dashboard-log-export-2026-02-16T16-16-06.json",
+  "totalEntries": 120,
+  "uniqueRequestIds": 60,
+  "byStatus": [
+    {
+      "status": "",
+      "count": 4
+    },
+    {
+      "status": "503",
+      "count": 116
+    }
+  ],
+  "byMethod": [
+    {
+      "method": "GET",
+      "count": 120
+    }
+  ],
+  "byPath": [
+    {
+      "requestPath": "zrg-dashboard.vercel.app/api/inbox/conversations",
+      "count": 120
+    }
+  ],
+  "byType": [
+    {
+      "type": "function",
+      "count": 60,
+      "byStatus": [
+        {
+          "status": "",
+          "count": 2
+        },
+        {
+          "status": "503",
+          "count": 58
+        }
+      ]
+    },
+    {
+      "type": "middleware",
+      "count": 60,
+      "byStatus": [
+        {
+          "status": "",
+          "count": 2
+        },
+        {
+          "status": "503",
+          "count": 58
+        }
+      ]
+    }
+  ],
+  "byRegion": [
+    {
+      "region": "iad1",
+      "count": 60
+    },
+    {
+      "region": "sin1",
+      "count": 35
+    },
+    {
+      "region": "cpt1",
+      "count": 21
+    },
+    {
+      "region": "yul1",
+      "count": 4
+    }
+  ],
+  "byDeployment": [
+    {
+      "deploymentId": "dpl_AnY8GbAhbg62bW875FgQFyMhNxmJ",
+      "count": 120,
+      "deploymentDomains": [
+        "",
+        "zrg-dashboard-kw6v10pnj-zrg.vercel.app"
+      ]
+    }
+  ],
+  "byClientId": [
+    {
+      "clientId": "ef824aca-a3c9-4cde-b51f-2e421ebb6b6e",
+      "count": 114
+    },
+    {
+      "clientId": "1c5273a9-39a5-40e9-85dc-6636fa553506",
+      "count": 2
+    },
+    {
+      "clientId": "7a00f971-f94d-40e1-b8c9-1e2a47ab12af",
+      "count": 2
+    },
+    {
+      "clientId": "a9dcc367-a113-4d0e-b236-3196ea498b18",
+      "count": 2
+    }
+  ],
+  "adjacentInboxEndpointsPresent": [],
+  "timeline": {
+    "first": {
+      "TimeUTC": "2026-02-16 16:03:30",
+      "timestampInMs": 1771257810000,
+      "requestId": "jwhr4-1771257810000-c2248f18151a",
+      "responseStatusCode": 503,
+      "deploymentId": "dpl_AnY8GbAhbg62bW875FgQFyMhNxmJ",
+      "deploymentDomain": "zrg-dashboard-kw6v10pnj-zrg.vercel.app"
+    },
+    "last": {
+      "TimeUTC": "2026-02-16 16:03:39",
+      "timestampInMs": 1771257819680,
+      "requestId": "tglj9-1771257819680-9c605741024b",
+      "responseStatusCode": 503,
+      "deploymentId": "dpl_AnY8GbAhbg62bW875FgQFyMhNxmJ",
+      "deploymentDomain": "zrg-dashboard-kw6v10pnj-zrg.vercel.app"
+    },
+    "spanMs": 9680,
+    "bySecond": [
+      {
+        "second": "2026-02-16 16:03:30",
+        "entries": 10,
+        "uniqueRequestIds": 5,
+        "byStatus": [
+          {
+            "status": "503",
+            "count": 10
+          }
+        ]
+      },
+      {
+        "second": "2026-02-16 16:03:31",
+        "entries": 8,
+        "uniqueRequestIds": 4,
+        "byStatus": [
+          {
+            "status": "503",
+            "count": 8
+          }
+        ]
+      },
+      {
+        "second": "2026-02-16 16:03:32",
+        "entries": 16,
+        "uniqueRequestIds": 8,
+        "byStatus": [
+          {
+            "status": "503",
+            "count": 16
+          }
+        ]
+      },
+      {
+        "second": "2026-02-16 16:03:33",
+        "entries": 16,
+        "uniqueRequestIds": 8,
+        "byStatus": [
+          {
+            "status": "503",
+            "count": 16
+          }
+        ]
+      },
+      {
+        "second": "2026-02-16 16:03:34",
+        "entries": 22,
+        "uniqueRequestIds": 11,
+        "byStatus": [
+          {
+            "status": "",
+            "count": 2
+          },
+          {
+            "status": "503",
+            "count": 20
+          }
+        ]
+      },
+      {
+        "second": "2026-02-16 16:03:35",
+        "entries": 18,
+        "uniqueRequestIds": 9,
+        "byStatus": [
+          {
+            "status": "503",
+            "count": 18
+          }
+        ]
+      },
+      {
+        "second": "2026-02-16 16:03:36",
+        "entries": 10,
+        "uniqueRequestIds": 5,
+        "byStatus": [
+          {
+            "status": "503",
+            "count": 10
+          }
+        ]
+      },
+      {
+        "second": "2026-02-16 16:03:37",
+        "entries": 8,
+        "uniqueRequestIds": 4,
+        "byStatus": [
+          {
+            "status": "503",
+            "count": 8
+          }
+        ]
+      },
+      {
+        "second": "2026-02-16 16:03:38",
+        "entries": 4,
+        "uniqueRequestIds": 2,
+        "byStatus": [
+          {
+            "status": "",
+            "count": 2
+          },
+          {
+            "status": "503",
+            "count": 2
+          }
+        ]
+      },
+      {
+        "second": "2026-02-16 16:03:39",
+        "entries": 8,
+        "uniqueRequestIds": 4,
+        "byStatus": [
+          {
+            "status": "503",
+            "count": 8
+          }
+        ]
+      }
+    ]
+  },
+  "diagnostics": {
+    "entriesWithNonEmptyMessageOrLevel": 0,
+    "entriesWithBlankStatus": [
+      {
+        "TimeUTC": "2026-02-16 16:03:38",
+        "timestampInMs": 1771257818179,
+        "requestId": "wv52f-1771257818179-c313cd736094",
+        "type": "function",
+        "function": "/api/inbox/conversations",
+        "requestQueryString": "clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&limit=50&filter=ai_sent",
+        "deploymentDomain": ""
+      },
+      {
+        "TimeUTC": "2026-02-16 16:03:38",
+        "timestampInMs": 1771257818179,
+        "requestId": "wv52f-1771257818179-c313cd736094",
+        "type": "middleware",
+        "function": "middleware",
+        "requestQueryString": "clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&limit=50&filter=ai_sent",
+        "deploymentDomain": ""
+      },
+      {
+        "TimeUTC": "2026-02-16 16:03:34",
+        "timestampInMs": 1771257814326,
+        "requestId": "bt55h-1771257814326-1e70448f4d27",
+        "type": "middleware",
+        "function": "middleware",
+        "requestQueryString": "clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&limit=50&search=mcowan%40potomacinternationalpartners.com",
+        "deploymentDomain": ""
+      },
+      {
+        "TimeUTC": "2026-02-16 16:03:34",
+        "timestampInMs": 1771257814326,
+        "requestId": "bt55h-1771257814326-1e70448f4d27",
+        "type": "function",
+        "function": "/api/inbox/conversations",
+        "requestQueryString": "clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e&limit=50&search=mcowan%40potomacinternationalpartners.com",
+        "deploymentDomain": ""
+      }
+    ]
+  }
+}
