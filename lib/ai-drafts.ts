@@ -334,7 +334,7 @@ export function applyShouldBookNowConfirmationIfNeeded(params: {
     acceptedIndex && acceptedIndex > 0 && acceptedIndex <= params.availability.length
       ? params.availability[acceptedIndex - 1]!
       : null;
-  const selectedSlot = acceptedSlot ?? matchedSlot;
+  const selectedSlot = matchedSlot ?? acceptedSlot;
   // If we can't map to a concrete offered slot, let the overseer/generator keep the lead's own wording.
   if (!selectedSlot) return draft;
 
@@ -1379,6 +1379,30 @@ export function buildActionSignalsPromptAppendix(result: ActionSignalDetectionRe
 
   return lines.join("\n");
 }
+
+function buildCallPhoneContextAppendix(opts: {
+  actionSignals: ActionSignalDetectionResult | null | undefined;
+  leadPhoneOnFile: boolean;
+}): string {
+  const result = opts.actionSignals;
+  if (!hasActionSignalOrRoute(result)) return "";
+
+  const hasCallIntent = hasActionSignal(result, "call_requested") || result?.route?.processId === 4;
+  if (!hasCallIntent) return "";
+
+  const lines: string[] = ["PHONE CONTEXT:"];
+  lines.push(`- Lead phone on file: ${opts.leadPhoneOnFile ? "yes" : "no"}.`);
+  if (opts.leadPhoneOnFile) {
+    lines.push("- Do NOT ask the lead for their phone number (do not ask \"which number should we call?\").");
+    lines.push("- Confirm we will call them, and optionally ask what time works best to call.");
+  } else {
+    lines.push("- If a phone number is needed, ask: \"What's the best number to reach you?\" (one short question).");
+    lines.push("- Do not ask \"which number should we call?\".");
+  }
+  lines.push("- Never include any phone number digits in the outbound draft.");
+
+  return lines.join("\n");
+}
 // ---------------------------------------------------------------------------
 // Draft Output Hardening (Phase 45)
 // ---------------------------------------------------------------------------
@@ -1391,6 +1415,14 @@ const BOOKING_LINK_PLACEHOLDER_GLOBAL_REGEX =
 // Matches truncated URLs like "https://c" or "https://cal." (but not "https://cal.com/user").
 const TRUNCATED_URL_REGEX = /https?:\/\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.?(?=\s|$)/i;
 const TRUNCATED_URL_GLOBAL_REGEX = /https?:\/\/[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.?(?=\s|$)/gi;
+
+// Hard safety: never allow phone numbers to leak into outbound drafts.
+const PHONE_NUMBER_REGEX =
+  /\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?:\s*(?:ext\.?|x)\s*\d{1,5})?\b/i;
+const PHONE_NUMBER_GLOBAL_REGEX =
+  /\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?:\s*(?:ext\.?|x)\s*\d{1,5})?\b/gi;
+const PHONE_DIGITS_ONLY_REGEX = /\b\+?\d{10,15}\b/;
+const PHONE_DIGITS_ONLY_GLOBAL_REGEX = /\b\+?\d{10,15}\b/g;
 
 // Pricing placeholders like "${PRICE}" or "$X-$Y" (avoid matching real prices like "$5,000").
 const PRICING_PLACEHOLDER_REGEX = /\$\{[A-Z_]+\}|\$[A-Z](?:\s*-\s*\$[A-Z])?(?![A-Za-z0-9])/;
@@ -1526,14 +1558,21 @@ export function sanitizeDraftContent(content: string, leadId: string, channel: D
     result = result.replace(TRUNCATED_URL_GLOBAL_REGEX, "");
   }
 
+  const hadPhone = PHONE_NUMBER_REGEX.test(result) || PHONE_DIGITS_ONLY_REGEX.test(result);
+  if (hadPhone) {
+    result = result.replace(PHONE_NUMBER_GLOBAL_REGEX, "[phone redacted]");
+    result = result.replace(PHONE_DIGITS_ONLY_GLOBAL_REGEX, "[phone redacted]");
+  }
+
   // Avoid mutating formatting too aggressively (newlines matter for email).
   result = result.replace(/[ \t]{2,}/g, " ").trim();
 
-  if (hadPlaceholders || hadPricingPlaceholders || hadTruncatedUrl) {
+  if (hadPlaceholders || hadPricingPlaceholders || hadTruncatedUrl || hadPhone) {
     console.warn(`[AI Drafts] Sanitized draft for lead ${leadId} (${channel})`, {
       hadPlaceholders,
       hadPricingPlaceholders,
       hadTruncatedUrl,
+      hadPhone,
       changed: result !== before,
     });
   }
@@ -4286,6 +4325,10 @@ export async function generateResponseDraft(
           .join("\n")
       : "";
     const actionSignalsPromptAppendix = buildActionSignalsPromptAppendix(opts.actionSignals);
+    const callPhoneContextAppendix = buildCallPhoneContextAppendix({
+      actionSignals: opts.actionSignals,
+      leadPhoneOnFile: Boolean((lead.phone || "").trim()),
+    });
     const actionSignalsGateSummary = buildActionSignalsGateSummary(opts.actionSignals);
 
     // ---------------------------------------------------------------------------
@@ -4464,6 +4507,9 @@ export async function generateResponseDraft(
       }
       if (actionSignalsPromptAppendix) {
         strategyInstructions += `\n${actionSignalsPromptAppendix}\n`;
+      }
+      if (callPhoneContextAppendix) {
+        strategyInstructions += `\n${callPhoneContextAppendix}\n`;
       }
 
       // Lead-scheduler-link override (Phase 79): prevent booking-process templates from suggesting our times/link
@@ -4653,20 +4699,23 @@ Analyze this conversation and produce a JSON strategy for writing a personalized
               strategy,
             });
           } else {
-	        const generationInstructions = buildEmailDraftGenerationInstructions({
-	          aiName,
-	          aiTone,
-	          aiGreeting,
-	          firstName,
-	          signature: aiSignature || null,
-	          signatureContext: signatureContextForPrompt,
-	          leadSchedulerLink,
-	          ourCompanyName: companyName,
-	          sentimentTag,
-	          strategy,
-	          archetype: resolvedArchetype,
-	          forbiddenTerms: effectiveForbiddenTerms, // Phase 47e
-	        }) + emailLengthRules;
+		        const generationInstructions =
+              buildEmailDraftGenerationInstructions({
+		          aiName,
+		          aiTone,
+		          aiGreeting,
+		          firstName,
+		          signature: aiSignature || null,
+		          signatureContext: signatureContextForPrompt,
+		          leadSchedulerLink,
+		          ourCompanyName: companyName,
+		          sentimentTag,
+		          strategy,
+		          archetype: resolvedArchetype,
+		          forbiddenTerms: effectiveForbiddenTerms, // Phase 47e
+		        }) +
+              emailLengthRules +
+              (callPhoneContextAppendix ? `\n${callPhoneContextAppendix}\n` : "");
 
         const latestInboundForGeneration =
           (await getLatestInboundEmailTextForVerifier({ leadId, triggerMessageId }))?.trim() || null;
@@ -4919,6 +4968,9 @@ Write the email response now, following the strategy and structure archetype.
         }
         if (actionSignalsPromptAppendix) {
           fallbackSystemPrompt += `\n${actionSignalsPromptAppendix}\n`;
+        }
+        if (callPhoneContextAppendix) {
+          fallbackSystemPrompt += `\n${callPhoneContextAppendix}\n`;
         }
 
         // Lead-scheduler-link override (Phase 79): prevent fallback prompt from suggesting our times/link
@@ -5181,6 +5233,9 @@ Generate an appropriate email response following the guidelines and structure ar
       }
       if (actionSignalsPromptAppendix) {
         instructions += `\n${actionSignalsPromptAppendix}\n`;
+      }
+      if (callPhoneContextAppendix) {
+        instructions += `\n${callPhoneContextAppendix}\n`;
       }
 
       // Lead-scheduler-link override (Phase 79): prevent SMS/LinkedIn drafts from suggesting our times/link

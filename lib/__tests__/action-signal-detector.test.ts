@@ -25,6 +25,12 @@ describe("action signal detector: heuristics", () => {
     assert.equal(signal?.confidence, "medium");
   });
 
+  it("detects signature-style 'number below' call request phrasing", () => {
+    const signal = detectCallSignalHeuristic("You may reach me at the direct contact number below.", "Interested");
+    assert.equal(signal?.type, "call_requested");
+    assert.equal(signal?.confidence, "medium");
+  });
+
   it("does not treat plain phone signature text as a call request", () => {
     const signal = detectCallSignalHeuristic("Phone: 555-1234", "Interested");
     assert.equal(signal, null);
@@ -233,7 +239,7 @@ describe("action signal detector: booking process routing", () => {
 
   it("adds a call signal when the router routes to process 4 despite no heuristic hit", async () => {
     const result = await detectActionSignals({
-      strippedText: "Reach me at direct contact number below.",
+      strippedText: "Thanks.",
       fullText: "Reach me at direct contact number below.\n\nPhone: 555-123-4567",
       sentimentTag: "Interested",
       workspaceBookingLink: null,

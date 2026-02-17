@@ -133,6 +133,8 @@ const CALL_KEYWORD_PATTERNS = [
   /\bprefer\s+a\s+call\b/i,
   /\bspeak\s+on\s+the\s+phone\b/i,
   /\bphone\s+(call|conversation)\b/i,
+  /\b(?:reach|call|text)\s+me\s+(?:at|on)\s+(?:my|the)?\s*(?:direct\s+)?(?:contact\s+)?number\s+below\b/i,
+  /\b(?:my|the)\s*(?:direct\s+)?(?:contact\s+)?number\s+is\s+below\b/i,
   /\breach\s+me\s+at\s+\(?\d{3}\)?\s*[-.]?\s*\d{3}\b/i,
 ];
 
@@ -237,6 +239,7 @@ Process taxonomy:
 Rules:
 - Pick exactly one process ID.
 - Use process 4 for explicit call intent.
+- Treat phrases like "reach me at the number below", "direct contact number below", or "my number is in my signature" as explicit call intent (process 4), even if the phone number itself is only in the signature.
 - Use process 5 when lead explicitly directs to their own scheduling link.
 - If intent is ambiguous between 1/2/3, choose the best fit and set uncertain=true when needed.`;
 
@@ -684,7 +687,7 @@ export async function notifyActionSignals(opts: {
         opts.route?.rationale ? `Route Rationale: ${opts.route.rationale}` : null,
         `Confidence: ${signal.confidence}`,
         `Evidence: ${signal.evidence}`,
-        lead.phone ? `Phone: ${lead.phone}` : null,
+        signal.type === "call_requested" ? (lead.phone ? `Phone: ${lead.phone}` : "Phone: (missing)") : null,
         snippet ? `Message: ${snippet}` : null,
         `<${leadUrl}|View in Dashboard>`,
       ]

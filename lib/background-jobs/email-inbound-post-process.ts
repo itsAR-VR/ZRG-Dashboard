@@ -22,6 +22,7 @@ import {
 } from "@/lib/linkedin-utils";
 import { normalizePhone } from "@/lib/lead-matching";
 import { toStoredPhone } from "@/lib/phone-utils";
+import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import {
   analyzeInboundEmailReply,
   classifySentiment,
@@ -1095,6 +1096,15 @@ export async function runEmailInboundPostProcessJob(opts: {
           route: actionSignals.route,
         }).catch((error) => console.warn("[Email PostProcess] Action signal notify failed:", error));
       }
+
+      // If the lead asked for a call but we don't have a phone number, try to hydrate it (then Clay if needed).
+      if (actionSignalCallRequested && !(lead.phone || "").trim()) {
+        enrichPhoneThenSyncToGhl(lead.id, {
+          includeSignatureAi: false,
+          triggerReason: "call_intent",
+          triggerChannel: "email",
+        }).catch(() => undefined);
+      }
     }
   } catch (error) {
     console.warn("[Email PostProcess] Action signal detection failed (non-fatal):", error);
@@ -1159,106 +1169,126 @@ export async function runEmailInboundPostProcessJob(opts: {
     const combined = `Subject: ${subject ?? ""} | ${inboundText}`;
     const mustBlacklist = isOptOutText(combined) || detectBounce([{ body: combined, direction: "inbound", channel: "email" }]);
     if (!mustBlacklist) {
-      const draftResult = await generateResponseDraft(lead.id, transcript || latestInbound, lead.sentimentTag, "email", {
-        triggerMessageId: message.id,
-        autoBookingContext: autoBook.context?.schedulingDetected ? autoBook.context : null,
-        actionSignals: actionSignals.signals.length > 0 || actionSignals.route ? actionSignals : null,
-      });
+      let leadPhoneOnFileForCallPolicy = Boolean((lead.phone || "").trim());
+      if (actionSignalCallRequested && !leadPhoneOnFileForCallPolicy) {
+        // Best-effort: signature extraction may have enriched the phone after the lead record was loaded.
+        leadPhoneOnFileForCallPolicy = await prisma.lead
+          .findUnique({ where: { id: lead.id }, select: { phone: true } })
+          .then((row) => Boolean((row?.phone || "").trim()))
+          .catch(() => leadPhoneOnFileForCallPolicy);
+      }
 
-      if (draftResult.success && draftResult.draftId && draftResult.content) {
-        const draftId = draftResult.draftId;
-        const draftContent = draftResult.content;
-        const workspaceBookingLink = await resolveBookingLink(client.id, null)
-          .then((result) => result.bookingLink)
-          .catch(() => null);
+      const suppressDraftForCallRequestedNoPhone =
+        actionSignalCallRequested && !leadPhoneOnFileForCallPolicy;
 
-        let autoReplySent = false;
-        const leadAutoSendContext = await prisma.lead.findUnique({
-          where: { id: lead.id },
-          select: {
-            offeredSlots: true,
-            externalSchedulingLink: true,
-          },
-        });
-        const offeredSlots = (() => {
-          if (!leadAutoSendContext?.offeredSlots) return [];
-          try {
-            const parsed = JSON.parse(leadAutoSendContext.offeredSlots);
-            return Array.isArray(parsed) ? parsed : [];
-          } catch {
-            return [];
-          }
-        })();
-
-        const autoSendResult = await executeAutoSend({
-          clientId: client.id,
-          leadId: lead.id,
+      if (suppressDraftForCallRequestedNoPhone) {
+        console.log("[Email PostProcess] Skipping draft generation; call requested but no phone on file (notify-only policy)");
+      } else {
+        const draftResult = await generateResponseDraft(lead.id, transcript || latestInbound, lead.sentimentTag, "email", {
           triggerMessageId: message.id,
-          draftId,
-          draftContent,
-          draftPipelineRunId: draftResult.runId ?? null,
-          channel: "email",
-          latestInbound: inboundText,
-          subject,
-          conversationHistory: transcript,
-          sentimentTag: lead.sentimentTag,
-          messageSentAt: message.sentAt ?? new Date(),
-          automatedReply: null,
-          leadFirstName: lead.firstName,
-          leadLastName: lead.lastName,
-          leadEmail: lead.email,
-          leadTimezone: lead.timezone ?? null,
-          offeredSlots,
-          bookingLink: workspaceBookingLink,
-          leadSchedulerLink: leadAutoSendContext?.externalSchedulingLink ?? null,
-          actionSignalCallRequested,
-          actionSignalExternalCalendar,
-          actionSignalRouteSummary,
-          emailCampaign: lead.emailCampaign,
-          autoReplyEnabled: lead.autoReplyEnabled,
-          workspaceSettings: client.settings ?? null,
-          validateImmediateSend: true,
-          includeDraftPreviewInSlack: true,
+          autoBookingContext: autoBook.context?.schedulingDetected ? autoBook.context : null,
+          actionSignals: actionSignals.signals.length > 0 || actionSignals.route ? actionSignals : null,
         });
 
-        switch (autoSendResult.outcome.action) {
-          case "send_immediate": {
-            autoReplySent = true;
-            break;
-          }
-          case "send_delayed": {
-            console.log(
-              `[Auto-Send] Scheduled delayed send for draft ${draftId}, runAt: ${autoSendResult.outcome.runAt.toISOString()}`
-            );
-            break;
-          }
-          case "needs_review": {
-            if (!autoSendResult.outcome.slackDm.sent && !autoSendResult.outcome.slackDm.skipped) {
-              console.error(
-                `[Slack DM] Failed to notify Slack reviewers for draft ${draftId}: ${autoSendResult.outcome.slackDm.error || "unknown error"}`
-              );
-            }
-            break;
-          }
-          case "skip": {
-            if (autoSendResult.telemetry.delayedScheduleSkipReason) {
-              console.log(`[Auto-Send] Delayed send not scheduled: ${autoSendResult.telemetry.delayedScheduleSkipReason}`);
-            } else if (autoSendResult.telemetry.immediateValidationSkipReason || autoSendResult.telemetry.immediateValidationSkipReason === "") {
-              console.log(
-                `[Auto-Send] Skipping immediate send for draft ${draftId}: ${autoSendResult.telemetry.immediateValidationSkipReason || "unknown_reason"}`
-              );
-            }
-            break;
-          }
-          case "error": {
-            const prefix = autoSendResult.mode === "LEGACY_AUTO_REPLY" ? "Auto-Reply" : "Auto-Send";
-            console.error(`[${prefix}] Failed to send draft ${draftId}: ${autoSendResult.outcome.error}`);
-            break;
-          }
-        }
+        if (draftResult.success && draftResult.draftId && draftResult.content) {
+          const draftId = draftResult.draftId;
+          const draftContent = draftResult.content;
+          const workspaceBookingLink = await resolveBookingLink(client.id, null)
+            .then((result) => result.bookingLink)
+            .catch(() => null);
 
-        if (autoReplySent) {
-          console.log(`[Email PostProcess] Auto-replied for lead ${lead.id} (draft ${draftId})`);
+          let autoReplySent = false;
+          const leadAutoSendContext = await prisma.lead.findUnique({
+            where: { id: lead.id },
+            select: {
+              offeredSlots: true,
+              externalSchedulingLink: true,
+            },
+          });
+          const offeredSlots = (() => {
+            if (!leadAutoSendContext?.offeredSlots) return [];
+            try {
+              const parsed = JSON.parse(leadAutoSendContext.offeredSlots);
+              return Array.isArray(parsed) ? parsed : [];
+            } catch {
+              return [];
+            }
+          })();
+
+          const autoSendResult = await executeAutoSend({
+            clientId: client.id,
+            leadId: lead.id,
+            triggerMessageId: message.id,
+            draftId,
+            draftContent,
+            draftPipelineRunId: draftResult.runId ?? null,
+            channel: "email",
+            latestInbound: inboundText,
+            subject,
+            conversationHistory: transcript,
+            sentimentTag: lead.sentimentTag,
+            messageSentAt: message.sentAt ?? new Date(),
+            automatedReply: null,
+            leadFirstName: lead.firstName,
+            leadLastName: lead.lastName,
+            leadEmail: lead.email,
+            leadPhoneOnFile: leadPhoneOnFileForCallPolicy,
+            leadTimezone: lead.timezone ?? null,
+            offeredSlots,
+            bookingLink: workspaceBookingLink,
+            leadSchedulerLink: leadAutoSendContext?.externalSchedulingLink ?? null,
+            actionSignalCallRequested,
+            actionSignalExternalCalendar,
+            actionSignalRouteSummary,
+            emailCampaign: lead.emailCampaign,
+            autoReplyEnabled: lead.autoReplyEnabled,
+            workspaceSettings: client.settings ?? null,
+            validateImmediateSend: true,
+            includeDraftPreviewInSlack: true,
+          });
+
+          switch (autoSendResult.outcome.action) {
+            case "send_immediate": {
+              autoReplySent = true;
+              break;
+            }
+            case "send_delayed": {
+              console.log(
+                `[Auto-Send] Scheduled delayed send for draft ${draftId}, runAt: ${autoSendResult.outcome.runAt.toISOString()}`
+              );
+              break;
+            }
+            case "needs_review": {
+              if (!autoSendResult.outcome.slackDm.sent && !autoSendResult.outcome.slackDm.skipped) {
+                console.error(
+                  `[Slack DM] Failed to notify Slack reviewers for draft ${draftId}: ${autoSendResult.outcome.slackDm.error || "unknown error"}`
+                );
+              }
+              break;
+            }
+            case "skip": {
+              if (autoSendResult.telemetry.delayedScheduleSkipReason) {
+                console.log(`[Auto-Send] Delayed send not scheduled: ${autoSendResult.telemetry.delayedScheduleSkipReason}`);
+              } else if (
+                autoSendResult.telemetry.immediateValidationSkipReason ||
+                autoSendResult.telemetry.immediateValidationSkipReason === ""
+              ) {
+                console.log(
+                  `[Auto-Send] Skipping immediate send for draft ${draftId}: ${autoSendResult.telemetry.immediateValidationSkipReason || "unknown_reason"}`
+                );
+              }
+              break;
+            }
+            case "error": {
+              const prefix = autoSendResult.mode === "LEGACY_AUTO_REPLY" ? "Auto-Reply" : "Auto-Send";
+              console.error(`[${prefix}] Failed to send draft ${draftId}: ${autoSendResult.outcome.error}`);
+              break;
+            }
+          }
+
+          if (autoReplySent) {
+            console.log(`[Email PostProcess] Auto-replied for lead ${lead.id} (draft ${draftId})`);
+          }
         }
       }
     }

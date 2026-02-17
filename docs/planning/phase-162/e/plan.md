@@ -26,4 +26,4 @@ Improve FC draft generation so it correctly leverages signature-derived phone co
 - Draft quality is correct and safe even when signature is stripped from the inbound body used for generation.
 
 ## Handoff
-- Proceed to 162f to run NTTAN validation and FC replays with a larger sample size.
+- Proceed to 162f to run deterministic validation gates and finalize Phase 162 closure evidence.

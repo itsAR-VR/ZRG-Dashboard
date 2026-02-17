@@ -28,6 +28,7 @@ import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { maybeAssignLead } from "@/lib/lead-assignment";
 import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
+import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { markInboxCountsDirty } from "@/lib/inbox-counts-dirty";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import {
@@ -390,6 +391,17 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
           route: actionSignals.route,
         }).catch((err) => console.warn(prefix, "Action signal notify failed:", err));
       }
+
+      // If the lead asked for a call but we don't have a phone number on file, try to hydrate it
+      // (message content, signature AI, then Clay as a last resort).
+      if (actionSignalCallRequested && !(lead.phone || "").trim()) {
+        const triggerChannel = params.adapter.channel === "email" ? "email" : params.adapter.channel === "sms" ? "sms" : "unknown";
+        enrichPhoneThenSyncToGhl(lead.id, {
+          includeSignatureAi: params.adapter.channel === "email",
+          triggerReason: "call_intent",
+          triggerChannel,
+        }).catch(() => undefined);
+      }
     }
   } catch (err) {
     console.warn(prefix, "Action signal detection failed (non-fatal):", err);
@@ -401,7 +413,19 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
     console.log(prefix, "Skipping draft generation; scheduling follow-up task already created by auto-booking");
   }
 
-  if (!autoBook.booked && !schedulingHandled && shouldGenerateDraft(sentimentTag, lead.email)) {
+  let leadPhoneOnFileForCallPolicy = Boolean((lead.phone || "").trim());
+  if (actionSignalCallRequested && !leadPhoneOnFileForCallPolicy) {
+    // Best-effort: phone may have been enriched asynchronously (signature/GHL sync). Re-check once before suppressing.
+    leadPhoneOnFileForCallPolicy = await prisma.lead
+      .findUnique({ where: { id: lead.id }, select: { phone: true } })
+      .then((row) => Boolean((row?.phone || "").trim()))
+      .catch(() => leadPhoneOnFileForCallPolicy);
+  }
+
+  const suppressDraftForCallRequestedNoPhone =
+    actionSignalCallRequested && !leadPhoneOnFileForCallPolicy;
+
+  if (!autoBook.booked && !schedulingHandled && shouldGenerateDraft(sentimentTag, lead.email) && !suppressDraftForCallRequestedNoPhone) {
     console.log(prefix, "Generating draft for message", message.id);
 
     const webhookDraftTimeoutMs = Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
@@ -461,6 +485,7 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
           leadFirstName: lead.firstName,
           leadLastName: lead.lastName,
           leadEmail: lead.email,
+          leadPhoneOnFile: leadPhoneOnFileForCallPolicy,
           leadTimezone: lead.timezone ?? null,
           offeredSlots,
           bookingLink: workspaceBookingLink,
@@ -535,6 +560,8 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
     } else {
       console.error(prefix, "Failed to generate AI draft:", draftResult.error);
     }
+  } else if (!autoBook.booked && !schedulingHandled && shouldGenerateDraft(sentimentTag, lead.email) && suppressDraftForCallRequestedNoPhone) {
+    console.log(prefix, "Skipping draft generation; call requested but no phone on file (notify-only policy)");
   } else {
     console.log(prefix, "Skipping draft generation (sentiment:", sentimentTag, "auto-booked:", autoBook.booked, ")");
   }

@@ -571,6 +571,28 @@ test("applyShouldBookNowConfirmationIfNeeded prefers accepted_slot_index when pr
   assert.equal(result, "Booked for Tue, Feb 17 at 1:30 PM PST.");
 });
 
+test("applyShouldBookNowConfirmationIfNeeded prefers the slot referenced in the draft when it conflicts with accepted_slot_index", () => {
+  const availability = ["Tue, Feb 17 at 9:00 AM PST", "Tue, Feb 17 at 1:30 PM PST"];
+  const extraction = buildExtraction({
+    accepted_slot_index: 1,
+    decision_contract_v1: {
+      ...buildExtraction().decision_contract_v1!,
+      shouldBookNow: "yes",
+    },
+  });
+
+  const result = applyShouldBookNowConfirmationIfNeeded({
+    draft: "Tue, Feb 17 at 1:30 PM PST works for me.",
+    channel: "sms",
+    firstName: null,
+    aiName: "Chris",
+    extraction,
+    availability,
+  });
+
+  assert.equal(result, "Booked for Tue, Feb 17 at 1:30 PM PST.");
+});
+
 test("applyShouldBookNowConfirmationIfNeeded keeps an existing booked confirmation that references an offered slot", () => {
   const availability = ["Tue, Feb 17 at 9:00 AM PST", "Tue, Feb 17 at 1:30 PM PST"];
   const extraction = buildExtraction({

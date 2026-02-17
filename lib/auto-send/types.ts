@@ -55,6 +55,7 @@ export interface AutoSendContext {
   leadFirstName?: string | null;
   leadLastName?: string | null;
   leadEmail?: string | null;
+  leadPhoneOnFile?: boolean;
   leadTimezone?: string | null;
   offeredSlots?: AutoSendOfferedSlot[] | null;
   bookingLink?: string | null;

@@ -10,8 +10,9 @@ We have a concrete regression in Founders Club email handling (example lead: `em
 - Expected behavior:
   - Route as Booking Process **4** (Call Requested) when the intent is to call using a number in the signature.
   - Send a Slack notification for the call request.
-  - Per user decision: **do not auto-reply** when call intent is detected and a phone number is on file; notify only.
+  - Per user decision: **do not auto-reply** when call intent is detected; notify only (regardless of whether a phone is on file).
   - Also per user decision: do **not** create a “call task” unless sentiment is explicitly `Call Requested` (notify-only for signature-style contact language when sentiment is `Interested`).
+  - When the lead phone is missing (common for iPhone replies with no signature details), trigger the Clay phone enrichment stream to attempt to hydrate a callable number.
 
 Root causes discovered in repo + DB:
 - Draft generation uses **signature-stripped** text (`stripEmailQuotedSectionsForAutomation`), so call intent + signature phone can be invisible to generators.
@@ -23,9 +24,11 @@ Separate correctness issue:
 - `applyShouldBookNowConfirmationIfNeeded()` had logic that could fall back to `firstOfferedSlot` when it couldn’t map a slot explicitly referenced in the draft, causing incorrect booked confirmations and triggering `slot_mismatch` / `date_mismatch` invariants.
 
 Key locked decisions from user:
-- **Call Reply behavior:** If Booking Process 4 (call intent) is detected and we already have a phone number on file: **no auto-reply**.
+- **Call Reply behavior:** If Booking Process 4 (call intent) is detected: **no auto-reply** (notify only), regardless of whether a phone is on file, and this policy is **global across all workspaces**.
 - **Process 4 trigger policy:** “reach me at direct contact number below” (number in signature) with sentiment `Interested`: **notify only** (no call task unless sentiment is `Call Requested`).
 - **PII in prompts:** pass phone number to **draft + evaluator** prompts if needed, but enforce guardrails so it never appears in the outbound message.
+- **Clay enrichment dedupe:** for call-intent-triggered phone enrichment retries, apply a 24-hour dedupe window per lead/channel; keep legacy one-time enrichment behavior for non-call-intent paths.
+- **Validation policy:** no NTTAN/replay gate is required for this phase; closure is based on deterministic code-level gates.
 
 ## Concurrent Phases
 
@@ -38,13 +41,34 @@ Key locked decisions from user:
 | Phase 161 | Active | Inbox read API incident triage (`app/api/inbox/conversations/*`) | Independent; no coordination needed. |
 | Uncommitted working tree | Active | Many modified `lib/*` AI files present | Phase 162 must consolidate and verify these changes before committing/pushing. |
 
+## Repo Reality Check (RED TEAM)
+
+- What exists today:
+  - Planned touch files exist and are active in the current tree: `lib/ai-drafts.ts`, `lib/action-signal-detector.ts`, `lib/auto-send/orchestrator.ts`, `lib/auto-send-evaluator.ts`, `lib/inbound-post-process/pipeline.ts`, `lib/background-jobs/email-inbound-post-process.ts`, `lib/background-jobs/sms-inbound-post-process.ts`.
+  - Referenced symbols exist: `applyShouldBookNowConfirmationIfNeeded`, `notifyActionSignals`, `generateResponseDraft`, `loadAutoSendWorkspaceContext`, `evaluateAutoSend`, `executeAutoSend`.
+  - Required scripts exist: `test`, `typecheck`, `lint`, `build`.
+- What the plan assumes:
+  - Process 4 call-intent outcomes should always result in notify-only behavior (no auto-send).
+  - Router decisions and action signals remain synchronized so Slack notify is not skipped.
+  - No agentic replay gate is required for this phase; deterministic tests/build checks are sufficient.
+- Verified touch points:
+  - `lib/ai-drafts.ts` (`applyShouldBookNowConfirmationIfNeeded`, `generateResponseDraft`)
+  - `lib/meeting-overseer.ts` (`accepted_slot_index` semantics)
+  - `lib/action-signal-detector.ts` (`notifyActionSignals`)
+  - `lib/auto-send-evaluator.ts` (`loadAutoSendWorkspaceContext`, `evaluateAutoSend`)
+  - `lib/auto-send/orchestrator.ts` (`executeAutoSend`)
+  - `lib/ai/prompt-registry.ts` (`draft.verify.email.step3.v1` context)
+
 ## Objectives
-* [ ] Fix slot confirmation logic so booked confirmations never inject arbitrary availability.
-* [ ] Improve action-signal routing for “call me at number below/signature” so it reliably routes to Process 4 and triggers Slack notify.
-* [ ] Ensure auto-send evaluation and auto-send execution respect “phone on file” and “call intent” policy (skip auto-send, notify only).
-* [ ] Fix `auto_send_revise` structured output schema so revision loop stops throwing 400s.
-* [ ] Add regression tests/fixtures for the above.
-* [ ] Validate with AI behavior gates (NTTAN) and replay against Founders Club.
+* [x] Fix slot confirmation logic so booked confirmations never inject arbitrary availability.
+* [x] Improve action-signal routing for “call me at number below/signature” so it reliably routes to Process 4 and triggers Slack notify.
+* [x] If call intent is detected and lead phone is missing, trigger phone enrichment (best-effort: messages/signature AI, then Clay).
+* [x] If call intent is detected and lead phone is missing, suppress AI draft generation (notify-only; do not send a reply asking for a number).
+* [x] Ensure auto-send evaluation and auto-send execution respect “phone on file” and “call intent” policy (skip auto-send, notify only).
+* [x] Enforce call-intent enrichment dedupe at 24h per lead/channel, without changing non-call-intent enrichment policy.
+* [x] Fix `auto_send_revise` structured output schema so revision loop stops throwing 400s.
+* [x] Add regression tests/fixtures for the above.
+* [x] Validate with deterministic gates (`npm test`, `npm run lint`, `npm run typecheck`, `npm run build`).
 
 ## Constraints
 - **LLM-first**: prefer AI routing/extraction into structured JSON; deterministic actions should be powered by that structured output.
@@ -55,12 +79,59 @@ Key locked decisions from user:
 ## Success Criteria
 - Slot confirmations: no more `firstOfferedSlot`-style injection; `slot_mismatch`/`date_mismatch` caused by arbitrary slot selection is eliminated.
 - Action signal: “direct contact number below” style replies produce a `call_requested` signal and Slack notify fires (deduped).
+- Enrichment: when call intent is detected and lead phone is missing, we trigger the Clay phone enrichment stream (or otherwise hydrate a phone) so ops can call without asking for the number again.
+- Drafting: when call intent is detected and lead phone is missing, we do not generate an AI draft (notify-only policy).
+- Enrichment dedupe: repeated call-intent events for the same lead/channel do not retrigger Clay within 24h; non-call-intent enrichment behavior remains unchanged.
 - Auto-send: when call intent is detected and the lead has a phone on file, auto-send returns `skip` (no outbound message sent).
+- Auto-send: when call intent is detected and the lead phone is missing, auto-send still returns `skip` (no outbound message sent); rely on Slack notify + enrichment.
 - Revision agent: `auto_send_revise` no longer errors with invalid schema; revision loop works end-to-end.
-- Validation gates pass (NTTAN):
-  - `npm run test:ai-drafts`
-  - `npm run test:ai-replay -- --client-id ef824aca-a3c9-4cde-b51f-2e421ebb6b6e --dry-run --limit 20`
-  - `npm run test:ai-replay -- --client-id ef824aca-a3c9-4cde-b51f-2e421ebb6b6e --limit 20 --concurrency 3`
+- Validation gates pass:
+  - `npm test`
+  - `npm run lint`
+  - `npm run typecheck`
+  - `npm run build`
+
+## RED TEAM Findings (Gaps / Weak Spots)
+
+### Highest-risk failure modes
+- Shared `lib/*` files are currently modified in working tree, creating semantic-merge risk across concurrent phases.
+  - Mitigation: add explicit pre-flight conflict checks and coordination notes before commit/push.
+- Call-intent enrichment can trigger repeatedly if dedupe scope is not explicit.
+  - Mitigation: enforce 24h dedupe in the call-intent trigger path only and keep non-call-intent policy untouched.
+
+### Missing or ambiguous requirements
+- Policy scope and dedupe strategy were ambiguous.
+  - Plan fix: lock decisions to global call-intent auto-send skip and 24h lead/channel dedupe for call-intent enrichment path.
+
+### Repo mismatches (fix the plan)
+- Prior plan required replay/NTTAN gates that are now explicitly out-of-scope for this phase.
+  - Plan fix: replace replay gates with deterministic repository validation gates.
+
+### Security / permissions
+- Phone context is intentionally passed to AI prompts; accidental leakage into outbound text or logs remains a high-risk failure mode.
+  - Plan fix: require outbound phone-redaction guard plus artifact review for PII leakage regressions.
+
+### Testing / validation
+- Plan now requires deterministic test/build validation in place of replay/NTTAN.
+  - Plan fix: `npm test`, `npm run lint`, `npm run typecheck`, and `npm run build` are required before closure.
+
+### Multi-agent coordination
+- Phase 156 already touched `lib/auto-send-evaluator.ts` for `Lead.phone` selection, and this phase overlaps adjacent auto-send paths.
+  - Plan fix: append a dedicated coordination hardening subphase before final commit/push.
+
+## Assumptions (Agent)
+
+- Assumption: Subphases `a` through `f` are treated as completed/read-only for RED TEAM refinement, so additional hardening work is appended as a new subphase. (confidence ~95%)
+  - Mitigation question/check: if any `a`-`f` subphase is still actively in-flight, re-open it explicitly instead of executing `g`.
+- Assumption: No NTTAN/replay evidence is required for Phase 162 acceptance in this execution cycle. (confidence ~95%)
+  - Mitigation question/check: if release policy changes, add a dedicated replay phase rather than reopening this one mid-flight.
+
+## Resolved Decisions (2026-02-16)
+
+- Process 4 call intent auto-send suppression is global across workspaces.
+- Call-intent-triggered Clay enrichment uses a 24h dedupe window per lead/channel.
+- Dedupe scope applies only to call-intent-triggered enrichment path; non-call-intent behavior remains one-time policy.
+- NTTAN/replay is not required for this phase closure.
 
 ## Subphase Index
 * a — Preflight: Repro Packet + Working Tree Reconciliation
@@ -68,4 +139,29 @@ Key locked decisions from user:
 * c — Action-Signal: Process 4 Routing + Slack Notify Reliability
 * d — Auto-Send Safety: Phone-On-File + Call-Intent Policy + Revision Schema Fix
 * e — Drafting Guardrails: Phone Context + “Don’t Ask Which Number” + No-PII Output
-* f — NTTAN Validation + FC Replay Evidence + Commit/Push Checklist
+* f — Deterministic Validation + Commit/Push Checklist (No NTTAN)
+* g — Coordination Hardening + Phase Closure
+
+## Progress (2026-02-16)
+- Implemented:
+  - Slot confirmation: prefer the slot explicitly referenced in the draft over `accepted_slot_index` when they conflict.
+  - Call intent: expanded detection to catch "direct contact number below" style replies; Slack notify now shows `Phone: (missing)` for call requests when no phone exists.
+  - Enrichment: when call intent is detected and phone is missing, trigger best-effort phone hydration (messages/signature AI where applicable, then Clay stream).
+  - Drafting: suppress draft generation when call intent is detected and phone is missing (notify-only policy).
+  - Auto-send: skip auto-send when call intent is detected (regardless of whether phone is on file).
+  - Draft safety: add phone-context prompt appendix and hard redact any phone-like numbers from outbound drafts.
+- Tests:
+  - `npm test` (pass; 392/392 tests, 0 failures)
+  - `npm run lint` (pass with pre-existing warnings only)
+  - `npm run typecheck` (pass)
+  - `npm run build` (pass; no type/build errors)
+- Blocker:
+  - none currently blocking deterministic gates.
+- RED TEAM hardening status:
+  - coordination summary completed for overlapping `lib/*` files; no additional conflicts detected this turn.
+
+## Phase Summary (running)
+- 2026-02-16 19:10 local — Updated plan defaults: removed NTTAN/replay gates, locked global call-intent auto-send skip, and locked call-intent enrichment dedupe scope/window (files: `docs/planning/phase-162/plan.md`).
+- 2026-02-16 19:29 local — Implemented call-intent-only 24h Clay dedupe path and wired call-intent trigger metadata through inbound pipelines (files: `lib/phone-enrichment.ts`, `lib/inbound-post-process/pipeline.ts`, `lib/background-jobs/email-inbound-post-process.ts`, `lib/background-jobs/sms-inbound-post-process.ts`).
+- 2026-02-16 19:31 local — Deterministic validation gates passed (`npm test`, `npm run lint`, `npm run typecheck`, `npm run build`); no new cross-phase file conflicts beyond known shared AI pipeline files.
+- 2026-02-16 19:39 local — Corrected dedupe/one-time interaction so call-intent can retry after 24h while default path stays one-time; added regression tests for dedupe-window + retry policy branch logic (files: `lib/phone-enrichment.ts`, `lib/__tests__/phone-enrichment.test.ts`).

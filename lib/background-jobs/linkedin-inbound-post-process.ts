@@ -17,7 +17,7 @@ import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
-import { detectActionSignals, EMPTY_ACTION_SIGNAL_RESULT, notifyActionSignals } from "@/lib/action-signal-detector";
+import { detectActionSignals, EMPTY_ACTION_SIGNAL_RESULT, hasActionSignal, notifyActionSignals } from "@/lib/action-signal-detector";
 
 export async function runLinkedInInboundPostProcessJob(params: {
   clientId: string;
@@ -236,6 +236,7 @@ export async function runLinkedInInboundPostProcessJob(params: {
   handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
 
   let actionSignals = EMPTY_ACTION_SIGNAL_RESULT;
+  let actionSignalCallRequested = false;
   try {
     if (isPositiveSentiment(newSentiment)) {
       const workspaceBookingLink = await resolveBookingLink(client.id, null)
@@ -252,6 +253,7 @@ export async function runLinkedInInboundPostProcessJob(params: {
         provider: "unipile",
         aiRouteBookingProcessEnabled: client.settings?.aiRouteBookingProcessEnabled ?? true,
       });
+      actionSignalCallRequested = hasActionSignal(actionSignals, "call_requested");
       if (actionSignals.signals.length > 0) {
         console.log("[LinkedIn Post-Process] Action signals:", actionSignals.signals.map((signal) => signal.type).join(", "));
         notifyActionSignals({
@@ -338,6 +340,22 @@ export async function runLinkedInInboundPostProcessJob(params: {
     const webhookDraftTimeoutMs =
       Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
 
+    let leadPhoneOnFileForCallPolicy = Boolean((updatedLead?.phone || lead.phone || "").trim());
+    if (actionSignalCallRequested && !leadPhoneOnFileForCallPolicy) {
+      // Best-effort: phone may have been enriched asynchronously; re-check once before suppressing.
+      leadPhoneOnFileForCallPolicy = await prisma.lead
+        .findUnique({ where: { id: lead.id }, select: { phone: true } })
+        .then((row) => Boolean((row?.phone || "").trim()))
+        .catch(() => leadPhoneOnFileForCallPolicy);
+    }
+
+    const suppressDraftForCallRequestedNoPhone =
+      actionSignalCallRequested && !leadPhoneOnFileForCallPolicy;
+
+    if (suppressDraftForCallRequestedNoPhone) {
+      console.log("[LinkedIn Post-Process] Skipping draft generation; call requested but no phone on file (notify-only policy)");
+      // Notify-only policy: rely on Slack action-signal + enrichment ops handoff.
+    } else {
     const draftResult = await generateResponseDraft(
       lead.id,
       transcript || `Lead: ${messageBody}`,
@@ -357,6 +375,7 @@ export async function runLinkedInInboundPostProcessJob(params: {
       console.log(`[LinkedIn Post-Process] Generated AI draft: ${draftResult.draftId}`);
       // Note: LinkedIn drafts typically require manual review (no auto-send)
       // because LinkedIn has stricter anti-spam policies
+    }
     }
   } else {
     console.log(`[LinkedIn Post-Process] Skipping draft generation (sentiment: ${newSentiment})`);

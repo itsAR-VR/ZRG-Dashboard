@@ -173,6 +173,88 @@ describe("executeAutoSend - AI_AUTO_SEND path", () => {
     assert.equal(evaluateAutoSend.mock.calls.length, 0);
   });
 
+  it("skips auto-send when call intent is detected and a phone number is on file", async () => {
+    const evaluateAutoSend = mock.fn(async () => ({
+      confidence: 0.95,
+      safeToSend: true,
+      requiresHumanReview: false,
+      reason: "unused",
+    }));
+
+    const approveAndSendDraftSystem = mock.fn(async () => ({ success: true, messageId: "sent-1" }));
+    const recordAutoSendDecision = mock.fn(async () => undefined);
+
+    const { executeAutoSend } = createAutoSendExecutor({
+      approveAndSendDraftSystem,
+      decideShouldAutoReply: mock.fn(async () => ({ shouldReply: false, reason: "unused" })),
+      evaluateAutoSend,
+      getPublicAppUrl: () => "https://app.example.com",
+      getCampaignDelayConfig: mock.fn(async () => null),
+      scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: mock.fn(async (_opts: unknown) => ({ success: true })),
+      recordAutoSendDecision,
+    });
+
+    const result = await executeAutoSend(
+      createContext({
+        emailCampaign: createCampaign(),
+        actionSignalCallRequested: true,
+        leadPhoneOnFile: true,
+      })
+    );
+
+    assert.equal(result.mode, "AI_AUTO_SEND");
+    assert.equal(result.outcome.action, "skip");
+    assert.equal(result.outcome.reason, "call_requested_phone_on_file");
+    assert.equal(evaluateAutoSend.mock.calls.length, 0);
+    assert.equal(approveAndSendDraftSystem.mock.calls.length, 0);
+    assert.equal(recordAutoSendDecision.mock.calls.length, 1);
+  });
+
+  it("skips auto-send when call intent is detected and no phone number is on file", async () => {
+    const evaluateAutoSend = mock.fn(async () => ({
+      confidence: 0.95,
+      safeToSend: true,
+      requiresHumanReview: false,
+      reason: "unused",
+    }));
+
+    const approveAndSendDraftSystem = mock.fn(async () => ({ success: true, messageId: "sent-1" }));
+    const recordAutoSendDecision = mock.fn(async () => undefined);
+
+    const { executeAutoSend } = createAutoSendExecutor({
+      approveAndSendDraftSystem,
+      decideShouldAutoReply: mock.fn(async () => ({ shouldReply: false, reason: "unused" })),
+      evaluateAutoSend,
+      getPublicAppUrl: () => "https://app.example.com",
+      getCampaignDelayConfig: mock.fn(async () => null),
+      scheduleDelayedAutoSend: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      scheduleAutoSendAt: mock.fn(async () => ({ scheduled: false as const, skipReason: "unused" })),
+      validateDelayedAutoSend: mock.fn(async () => ({ proceed: true })),
+      getSlackAutoSendApprovalConfig: mock.fn(async () => defaultSlackApprovalConfig),
+      sendSlackDmByUserIdWithToken: mock.fn(async (_opts: unknown) => ({ success: true })),
+      recordAutoSendDecision,
+    });
+
+    const result = await executeAutoSend(
+      createContext({
+        emailCampaign: createCampaign(),
+        actionSignalCallRequested: true,
+        leadPhoneOnFile: false,
+      })
+    );
+
+    assert.equal(result.mode, "AI_AUTO_SEND");
+    assert.equal(result.outcome.action, "skip");
+    assert.equal(result.outcome.reason, "call_requested_phone_missing");
+    assert.equal(evaluateAutoSend.mock.calls.length, 0);
+    assert.equal(approveAndSendDraftSystem.mock.calls.length, 0);
+    assert.equal(recordAutoSendDecision.mock.calls.length, 1);
+  });
+
   it("sends immediately when confidence >= threshold and no delay configured", async () => {
     const evaluateAutoSend = mock.fn(async () => ({
       confidence: 0.95,

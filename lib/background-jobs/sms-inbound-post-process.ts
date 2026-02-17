@@ -13,6 +13,7 @@ import { syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { maybeAssignLead } from "@/lib/lead-assignment";
 import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
+import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
@@ -307,6 +308,15 @@ export async function runSmsInboundPostProcessJob(params: {
           route: actionSignals.route,
         }).catch((error) => console.warn("[SMS Post-Process] Action signal notify failed:", error));
       }
+
+      // If the lead asked for a call but we don't have a phone number, try to hydrate it (then Clay if needed).
+      if (actionSignalCallRequested && !(lead.phone || "").trim()) {
+        enrichPhoneThenSyncToGhl(lead.id, {
+          includeSignatureAi: false,
+          triggerReason: "call_intent",
+          triggerChannel: "sms",
+        }).catch(() => undefined);
+      }
     }
   } catch (error) {
     console.warn("[SMS Post-Process] Action signal detection failed (non-fatal):", error);
@@ -330,74 +340,84 @@ export async function runSmsInboundPostProcessJob(params: {
     const webhookDraftTimeoutMs =
       Number.parseInt(process.env.OPENAI_DRAFT_WEBHOOK_TIMEOUT_MS || "30000", 10) || 30_000;
 
-    const draftResult = await generateResponseDraft(
-      lead.id,
-      transcript || `Lead: ${messageBody}`,
-      newSentiment,
-      "sms",
-      {
+    let leadPhoneOnFileForCallPolicy = Boolean((lead.phone || "").trim());
+    if (actionSignalCallRequested && !leadPhoneOnFileForCallPolicy) {
+      // Best-effort: phone may have been enriched asynchronously; re-check once before suppressing.
+      leadPhoneOnFileForCallPolicy = await prisma.lead
+        .findUnique({ where: { id: lead.id }, select: { phone: true } })
+        .then((row) => Boolean((row?.phone || "").trim()))
+        .catch(() => leadPhoneOnFileForCallPolicy);
+    }
+
+    const suppressDraftForCallRequestedNoPhone =
+      actionSignalCallRequested && !leadPhoneOnFileForCallPolicy;
+
+    if (suppressDraftForCallRequestedNoPhone) {
+      console.log("[SMS Post-Process] Skipping draft generation; call requested but no phone on file (notify-only policy)");
+    } else {
+      const draftResult = await generateResponseDraft(lead.id, transcript || `Lead: ${messageBody}`, newSentiment, "sms", {
         timeoutMs: webhookDraftTimeoutMs,
         triggerMessageId: message.id,
         autoBookingContext: autoBook.context?.schedulingDetected ? autoBook.context : null,
         actionSignals: actionSignals.signals.length > 0 || actionSignals.route ? actionSignals : null,
-      }
-    );
-
-    if (draftResult.success && draftResult.draftId && draftResult.content) {
-      const draftId = draftResult.draftId;
-      const draftContent = draftResult.content;
-      const leadAutoSendContext = await prisma.lead.findUnique({
-        where: { id: lead.id },
-        select: {
-          offeredSlots: true,
-          externalSchedulingLink: true,
-        },
       });
-      const offeredSlots = (() => {
-        if (!leadAutoSendContext?.offeredSlots) return [];
-        try {
-          const parsed = JSON.parse(leadAutoSendContext.offeredSlots);
-          return Array.isArray(parsed) ? parsed : [];
-        } catch {
-          return [];
-        }
-      })();
-      const workspaceBookingLink = await resolveBookingLink(client.id, null)
-        .then((result) => result.bookingLink)
-        .catch(() => null);
 
-      console.log(`[SMS Post-Process] Generated AI draft: ${draftId}`);
+      if (draftResult.success && draftResult.draftId && draftResult.content) {
+        const draftId = draftResult.draftId;
+        const draftContent = draftResult.content;
+        const leadAutoSendContext = await prisma.lead.findUnique({
+          where: { id: lead.id },
+          select: {
+            offeredSlots: true,
+            externalSchedulingLink: true,
+          },
+        });
+        const offeredSlots = (() => {
+          if (!leadAutoSendContext?.offeredSlots) return [];
+          try {
+            const parsed = JSON.parse(leadAutoSendContext.offeredSlots);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        })();
+        const workspaceBookingLink = await resolveBookingLink(client.id, null)
+          .then((result) => result.bookingLink)
+          .catch(() => null);
 
-      const autoSendResult = await executeAutoSend({
-        clientId: client.id,
-        leadId: lead.id,
-        triggerMessageId: message.id,
-        draftId,
-        draftContent,
-        draftPipelineRunId: draftResult.runId ?? null,
-        channel: "sms",
-        latestInbound: messageBody,
-        subject: null,
-        conversationHistory: transcript || `Lead: ${messageBody}`,
-        sentimentTag: newSentiment,
-        messageSentAt,
-        automatedReply: null,
-        leadFirstName: lead.firstName,
-        leadLastName: lead.lastName,
-        leadEmail: lead.email,
-        leadTimezone: lead.timezone ?? null,
-        offeredSlots,
-        bookingLink: workspaceBookingLink,
-        leadSchedulerLink: leadAutoSendContext?.externalSchedulingLink ?? null,
-        actionSignalCallRequested,
-        actionSignalExternalCalendar,
-        actionSignalRouteSummary,
-        emailCampaign: lead.emailCampaign,
-        autoReplyEnabled: lead.autoReplyEnabled,
-        workspaceSettings: settings,
-        validateImmediateSend: true,
-        includeDraftPreviewInSlack: true,
-      });
+        console.log(`[SMS Post-Process] Generated AI draft: ${draftId}`);
+
+        const autoSendResult = await executeAutoSend({
+          clientId: client.id,
+          leadId: lead.id,
+          triggerMessageId: message.id,
+          draftId,
+          draftContent,
+          draftPipelineRunId: draftResult.runId ?? null,
+          channel: "sms",
+          latestInbound: messageBody,
+          subject: null,
+          conversationHistory: transcript || `Lead: ${messageBody}`,
+          sentimentTag: newSentiment,
+          messageSentAt,
+          automatedReply: null,
+          leadFirstName: lead.firstName,
+          leadLastName: lead.lastName,
+          leadEmail: lead.email,
+          leadPhoneOnFile: leadPhoneOnFileForCallPolicy,
+          leadTimezone: lead.timezone ?? null,
+          offeredSlots,
+          bookingLink: workspaceBookingLink,
+          leadSchedulerLink: leadAutoSendContext?.externalSchedulingLink ?? null,
+          actionSignalCallRequested,
+          actionSignalExternalCalendar,
+          actionSignalRouteSummary,
+          emailCampaign: lead.emailCampaign,
+          autoReplyEnabled: lead.autoReplyEnabled,
+          workspaceSettings: settings,
+          validateImmediateSend: true,
+          includeDraftPreviewInSlack: true,
+        });
 
       if (
         autoSendResult.mode === "AI_AUTO_SEND" &&
@@ -452,8 +472,9 @@ export async function runSmsInboundPostProcessJob(params: {
           break;
         }
       }
-    } else {
-      console.error(`[SMS Post-Process] Failed to generate AI draft: ${draftResult.error}`);
+      } else {
+        console.error(`[SMS Post-Process] Failed to generate AI draft: ${draftResult.error}`);
+      }
     }
   } else {
     console.log(`[SMS Post-Process] Skipping draft generation (sentiment: ${newSentiment})`);

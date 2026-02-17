@@ -52,6 +52,13 @@ test("sanitizeDraftContent does not strip real prices like $5,000/year, $500/mon
   assert.equal(output.includes("$0"), true);
 });
 
+test("sanitizeDraftContent redacts phone-like numbers", () => {
+  const input = "Call me at (555) 123-4567 or +15551234567.";
+  const output = withMutedWarn(() => sanitizeDraftContent(input, "lead-1", "email"));
+  assert.ok(!/555/.test(output));
+  assert.match(output, /\[phone redacted\]/i);
+});
+
 test("extractPricingAmounts extracts grounded prices", () => {
   const result = extractPricingAmounts("Pricing is $791/month or $9,500/year.");
   assert.deepEqual(result.sort((a, b) => a - b), [791, 9500]);

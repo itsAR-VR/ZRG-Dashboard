@@ -1,6 +1,6 @@
 import "@/lib/server-dns";
 
-import { prisma } from "@/lib/prisma";
+import { isPrismaUniqueConstraintError, prisma } from "@/lib/prisma";
 import { getGHLContact } from "@/lib/ghl-api";
 import { fetchEmailBisonLead, getCustomVariable } from "@/lib/emailbison-api";
 import { triggerEnrichmentForLead, type ClayEnrichmentRequest } from "@/lib/clay-api";
@@ -18,6 +18,36 @@ export type PhoneEnrichmentAttemptResult = {
   clayTriggered?: boolean;
   error?: string;
 };
+
+type PhoneEnrichmentTriggerReason = "default" | "call_intent";
+type PhoneEnrichmentTriggerChannel = "email" | "sms" | "linkedin" | "unknown";
+
+const CALL_INTENT_CLAY_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function normalizeTriggerChannel(channel: PhoneEnrichmentTriggerChannel | undefined): PhoneEnrichmentTriggerChannel {
+  if (channel === "email" || channel === "sms" || channel === "linkedin") return channel;
+  return "unknown";
+}
+
+export function isWithinCallIntentClayDedupeWindow(
+  lastTriggeredAt: Date | string | null | undefined,
+  now: Date = new Date()
+): boolean {
+  if (!lastTriggeredAt) return false;
+  const value = lastTriggeredAt instanceof Date ? lastTriggeredAt : new Date(lastTriggeredAt);
+  if (!Number.isFinite(value.getTime())) return false;
+  return now.getTime() - value.getTime() < CALL_INTENT_CLAY_DEDUPE_WINDOW_MS;
+}
+
+export function shouldAttemptClayPhoneEnrichment(params: {
+  triggerReason: PhoneEnrichmentTriggerReason;
+  inProgress: boolean;
+  alreadyAttempted: boolean;
+}): boolean {
+  if (params.inProgress) return false;
+  if (params.triggerReason === "call_intent") return true;
+  return !params.alreadyAttempted;
+}
 
 async function tryHydratePhoneFromRecentMessages(leadId: string): Promise<string | null> {
   const messages = await prisma.message.findMany({
@@ -139,6 +169,8 @@ async function ensureMissingPhoneTask(leadId: string, note: string): Promise<voi
 
 export async function enrichPhoneThenSyncToGhl(leadId: string, opts?: {
   includeSignatureAi?: boolean;
+  triggerReason?: PhoneEnrichmentTriggerReason;
+  triggerChannel?: PhoneEnrichmentTriggerChannel;
 }): Promise<PhoneEnrichmentAttemptResult> {
   try {
     const lead = await prisma.lead.findUnique({
@@ -356,13 +388,63 @@ export async function enrichPhoneThenSyncToGhl(leadId: string, opts?: {
       return { success: true, phoneFound: false, source: "none" };
     }
 
-    // One-time policy: only trigger Clay once per lead (avoid retry storms).
+    const triggerReason = opts?.triggerReason || "default";
+    const triggerChannel = normalizeTriggerChannel(opts?.triggerChannel);
+
+    // Call-intent path uses a 24h lead/channel dedupe window.
+    if (triggerReason === "call_intent") {
+      const now = new Date();
+      const recentlyTriggered = await prisma.notificationSendLog.findFirst({
+        where: {
+          clientId: lead.clientId,
+          leadId: lead.id,
+          kind: "phone_enrichment_call_intent",
+          destination: triggerChannel,
+        },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, createdAt: true },
+      });
+
+      if (isWithinCallIntentClayDedupeWindow(recentlyTriggered?.createdAt, now)) {
+        await ensureMissingPhoneTask(
+          lead.id,
+          "Clay phone enrichment was already attempted for this call request within the last 24 hours. Retry after the dedupe window."
+        ).catch(() => undefined);
+        return { success: true, phoneFound: false, source: "none" };
+      }
+
+      const dedupeWindowBucket = Math.floor(now.getTime() / CALL_INTENT_CLAY_DEDUPE_WINDOW_MS);
+      const dedupeKey = `phone_enrichment_call_intent:${lead.id}:${triggerChannel}:${dedupeWindowBucket}`;
+      try {
+        await prisma.notificationSendLog.create({
+          data: {
+            clientId: lead.clientId,
+            leadId: lead.id,
+            kind: "phone_enrichment_call_intent",
+            destination: triggerChannel,
+            dedupeKey,
+          },
+        });
+      } catch (error) {
+        if (isPrismaUniqueConstraintError(error)) {
+          await ensureMissingPhoneTask(
+            lead.id,
+            "Clay phone enrichment was already attempted for this call request within the last 24 hours. Retry after the dedupe window."
+          ).catch(() => undefined);
+          return { success: true, phoneFound: false, source: "none" };
+        }
+        console.warn("[PhoneEnrichment] Call-intent dedupe log write failed:", error);
+      }
+    }
+
+    // Default policy: only trigger Clay once per lead (avoid retry storms).
+    // Call-intent policy: allow retries after dedupe window (still blocked while in-progress).
     // NOTE: A lead can have `enrichmentStatus="enriched"` from a different source (e.g., signature),
     // while still missing a phone. In that case we still allow a single Clay phone attempt (retryCount=0).
     const alreadyAttempted = (lead.enrichmentRetryCount || 0) >= 1;
     const inProgress = lead.enrichmentStatus === "pending";
 
-    if (!inProgress && !alreadyAttempted) {
+    if (shouldAttemptClayPhoneEnrichment({ triggerReason, inProgress, alreadyAttempted })) {
       const companyDomain = lead.companyWebsite || null;
       const clay = await triggerClayPhoneEnrichment({
         leadId: lead.id,
