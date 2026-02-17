@@ -10,6 +10,7 @@ Validate end-to-end behavior with deterministic repository gates (tests/lint/typ
 ## Work
 - Local test gates (minimum):
   - `npm test`
+  - `npm run test:ai-drafts`
   - `npm run lint`
   - `npm run typecheck`
   - `npm run build`
@@ -44,10 +45,12 @@ Validate end-to-end behavior with deterministic repository gates (tests/lint/typ
   - Executed deterministic validation gates for current Phase 162 working tree.
   - Confirmed newly added call-intent behavior tests pass as part of suite (`action-signal`, `auto-send`, slot guard paths, `phone-enrichment`).
 - Commands run:
-  - `npm test` — pass (`392` tests, `0` failures).
+  - `npm test` — pass (`397` tests, `0` failures) after adding `lib/__tests__/phone-enrichment.test.ts` to `scripts/test-orchestrator.ts`.
+  - `npm run test:ai-drafts` — pass (`76` tests, `0` failures), including new revision-constraint window-fallback coverage.
   - `npm run lint` — pass with existing repo warnings only.
   - `npm run typecheck` — pass.
   - `npm run build` — pass.
+  - Re-validation (2026-02-17): `npm test` — pass (`399` tests, `0` failures); `npm run test:ai-drafts` — pass (`76` tests, `0` failures).
 - Blockers:
   - None.
 - Next concrete steps:

@@ -3587,21 +3587,16 @@ export function looksLikeTimeProposalText(messageText: string): boolean {
   );
 }
 
-function buildAutoBookingConfirmationMessage(opts: {
+export function buildAutoBookingConfirmationMessage(opts: {
   channel: "sms" | "email" | "linkedin";
   slotLabel: string;
   bookingLink: string | null;
-  includeCorrectionOption?: boolean;
 }): string {
-  const correctionText = opts.includeCorrectionOption
-    ? " Let me know if that doesn't work and we can find another time."
-    : "";
-  const base = `You're booked for ${opts.slotLabel}.${correctionText}`;
-  if (!opts.bookingLink) return base;
-  if (opts.channel === "sms") {
-    return `${base} Reschedule: ${opts.bookingLink}`;
+  const base = `You're booked for ${opts.slotLabel}.`;
+  if (!opts.bookingLink) {
+    return `${base} If the time doesn't work, let me know and we can find another time.`;
   }
-  return `${base} If you need to reschedule, use ${opts.bookingLink}.`;
+  return `${base} If the time doesn't work, let me know or feel free to reschedule using the calendar invite: ${opts.bookingLink}`;
 }
 
 async function sendAutoBookingConfirmation(opts: {
@@ -3611,7 +3606,6 @@ async function sendAutoBookingConfirmation(opts: {
   timeZone: string;
   leadTimeZone?: string | null;
   bookingLink: string | null;
-  includeCorrectionOption?: boolean;
 }): Promise<{ success: boolean; error?: string }> {
   if (!opts.lead) return { success: false, error: "Lead not found" };
 
@@ -3628,7 +3622,6 @@ async function sendAutoBookingConfirmation(opts: {
     channel: opts.channel,
     slotLabel,
     bookingLink: opts.bookingLink,
-    includeCorrectionOption: opts.includeCorrectionOption,
   });
 
   if (opts.channel === "sms") {
@@ -4557,7 +4550,6 @@ export async function processMessageForAutoBooking(
             timeZone,
             leadTimeZone: tzResult.timezone || null,
             bookingLink,
-            includeCorrectionOption: context.matchStrategy === "nearest_tie_later",
           });
           if (!confirmResult.success) {
             return makeResult({

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyBookingIntentAvailabilityMatchGuard,
   applyBookingOnlyConcisionGuard,
   applyClarifyOnlyThatDayDisambiguationGuard,
   applyClarifyOnlyWindowStartTimeGuard,
@@ -502,6 +503,127 @@ test("applyInfoThenBookingNoQualificationQuestionGuard removes revenue gating qu
   assert.equal(result.changed, true);
   assert.ok(!/annual revenue/i.test(result.draft));
   assert.match(result.draft, /If helpful, we can do a quick 15-minute call/i);
+});
+
+test("applyBookingIntentAvailabilityMatchGuard rewrites non-matching confirmation to an offered slot when shouldBookNow is no", () => {
+  const availability = ["Wed, Feb 18 at 11:30 AM EST", "Wed, Feb 18 at 6:30 PM EST"];
+  const offeredSlots = [
+    { label: "Wed, Feb 18 at 11:30 AM EST", datetime: "2026-02-18T16:30:00.000Z", offeredAt: "2026-02-10T12:00:00.000Z" },
+    { label: "Wed, Feb 18 at 6:30 PM EST", datetime: "2026-02-18T23:30:00.000Z", offeredAt: "2026-02-10T12:00:00.000Z" },
+  ];
+  const extraction = buildExtraction({
+    preferred_day_of_week: "wed",
+    preferred_time_of_day: "morning",
+    detected_timezone: "America/New_York",
+    accepted_slot_index: null,
+    decision_contract_v1: {
+      ...buildExtraction().decision_contract_v1!,
+      hasBookingIntent: "yes",
+      shouldBookNow: "no",
+      leadTimezone: "America/New_York",
+      leadProposedWindows: [
+        { type: "day_only", value: "wed", detail: null },
+        { type: "time_of_day", value: "morning", detail: null },
+      ],
+      responseMode: "clarify_only",
+    },
+  });
+
+  const result = applyBookingIntentAvailabilityMatchGuard({
+    draft: "Wednesday at 8:30 AM EST works. We'll send a calendar invite.",
+    extraction,
+    availability,
+    offeredSlots,
+    channel: "email",
+    firstName: "Alex",
+    aiName: "Chris",
+  });
+
+  assert.equal(result.changed, true);
+  assert.match(result.draft, /^Hi Alex,/);
+  assert.match(result.draft, /I can do Wed, Feb 18 at 11:30 AM EST\./);
+  assert.match(result.draft, /If that time doesn't work, let me know or feel free to reschedule using the calendar invite\./i);
+  assert.ok(!/8:30\s*AM/i.test(result.draft));
+});
+
+test("applyBookingIntentAvailabilityMatchGuard keeps drafts that already match offered availability", () => {
+  const availability = ["Wed, Feb 18 at 11:30 AM EST", "Wed, Feb 18 at 6:30 PM EST"];
+  const offeredSlots = [
+    { label: "Wed, Feb 18 at 11:30 AM EST", datetime: "2026-02-18T16:30:00.000Z", offeredAt: "2026-02-10T12:00:00.000Z" },
+    { label: "Wed, Feb 18 at 6:30 PM EST", datetime: "2026-02-18T23:30:00.000Z", offeredAt: "2026-02-10T12:00:00.000Z" },
+  ];
+  const extraction = buildExtraction({
+    preferred_day_of_week: "wed",
+    preferred_time_of_day: "morning",
+    detected_timezone: "America/New_York",
+    accepted_slot_index: null,
+    decision_contract_v1: {
+      ...buildExtraction().decision_contract_v1!,
+      hasBookingIntent: "yes",
+      shouldBookNow: "no",
+      leadTimezone: "America/New_York",
+      leadProposedWindows: [
+        { type: "day_only", value: "wed", detail: null },
+        { type: "time_of_day", value: "morning", detail: null },
+      ],
+      responseMode: "clarify_only",
+    },
+  });
+  const draft = "Wednesday at 11:30 AM EST works. We'll send a calendar invite.";
+
+  const result = applyBookingIntentAvailabilityMatchGuard({
+    draft,
+    extraction,
+    availability,
+    offeredSlots,
+    channel: "email",
+    firstName: "Alex",
+    aiName: "Chris",
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.draft, draft);
+});
+
+test("applyBookingIntentAvailabilityMatchGuard falls back to booking link when no slot matches the requested window", () => {
+  const availability = ["Wed, Feb 18 at 6:30 PM EST"];
+  const offeredSlots = [
+    { label: "Wed, Feb 18 at 6:30 PM EST", datetime: "2026-02-18T23:30:00.000Z", offeredAt: "2026-02-10T12:00:00.000Z" },
+  ];
+  const extraction = buildExtraction({
+    preferred_day_of_week: "wed",
+    preferred_time_of_day: "morning",
+    detected_timezone: "America/New_York",
+    accepted_slot_index: null,
+    decision_contract_v1: {
+      ...buildExtraction().decision_contract_v1!,
+      hasBookingIntent: "yes",
+      shouldBookNow: "no",
+      leadTimezone: "America/New_York",
+      leadProposedWindows: [
+        { type: "day_only", value: "wed", detail: null },
+        { type: "time_of_day", value: "morning", detail: null },
+      ],
+      responseMode: "clarify_only",
+    },
+  });
+
+  const result = applyBookingIntentAvailabilityMatchGuard({
+    draft: "Wednesday morning works. We'll send a calendar invite.",
+    extraction,
+    availability,
+    offeredSlots,
+    bookingLink: "https://calendly.com/example/intro",
+    channel: "email",
+    firstName: "Alex",
+    aiName: "Chris",
+  });
+
+  assert.equal(result.changed, true);
+  assert.match(result.draft, /^Hi Alex,/);
+  assert.match(result.draft, /don't have a matching slot in that window right now/i);
+  assert.match(result.draft, /https:\/\/calendly\.com\/example\/intro/);
+  assert.ok(!/I can do Wed, Feb 18 at 6:30 PM EST\./.test(result.draft));
 });
 
 test("applyShouldBookNowConfirmationIfNeeded avoids slot_mismatch by honoring the matched slot when available", () => {

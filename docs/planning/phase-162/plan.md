@@ -1,4 +1,4 @@
-# Phase 162 — Call-Request Signatures + Auto-Send Safety + Slot-Confirmation Correctness (Founders Club)
+codex resume 019c671a-18e8-7e51-ba8f-f61c63ca30cd# Phase 162 — Call-Request Signatures + Auto-Send Safety + Slot-Confirmation Correctness (Founders Club)
 
 ## Purpose
 Fix the end-to-end FC inbound→AI pipeline so “call me at the number below/in my signature” is handled correctly (Slack notified, no redundant phone-number ask, no unintended auto-send), and stop the system from injecting arbitrary availability slots into booked confirmations.
@@ -66,6 +66,8 @@ Key locked decisions from user:
 * [x] If call intent is detected and lead phone is missing, suppress AI draft generation (notify-only; do not send a reply asking for a number).
 * [x] Ensure auto-send evaluation and auto-send execution respect “phone on file” and “call intent” policy (skip auto-send, notify only).
 * [x] Enforce call-intent enrichment dedupe at 24h per lead/channel, without changing non-call-intent enrichment policy.
+* [x] Add a booking-intent availability alignment guard for `shouldBookNow=no` so drafts do not confirm unavailable windows; prefer one matching slot or scheduling-link fallback.
+* [x] Harden revision constraints to block confirmations when no offered slot matches inbound window unless draft includes scheduling-link fallback.
 * [x] Fix `auto_send_revise` structured output schema so revision loop stops throwing 400s.
 * [x] Add regression tests/fixtures for the above.
 * [x] Validate with deterministic gates (`npm test`, `npm run lint`, `npm run typecheck`, `npm run build`).
@@ -84,9 +86,12 @@ Key locked decisions from user:
 - Enrichment dedupe: repeated call-intent events for the same lead/channel do not retrigger Clay within 24h; non-call-intent enrichment behavior remains unchanged.
 - Auto-send: when call intent is detected and the lead has a phone on file, auto-send returns `skip` (no outbound message sent).
 - Auto-send: when call intent is detected and the lead phone is missing, auto-send still returns `skip` (no outbound message sent); rely on Slack notify + enrichment.
+- Booking-intent alignment: for `shouldBookNow=no`, drafts do not confirm unavailable requested windows; they either propose one matching offered slot or provide scheduling-link fallback.
+- Follow-up confirmation messaging: auto-book confirmation text uses consistent correction/reschedule wording with calendar-invite guidance.
 - Revision agent: `auto_send_revise` no longer errors with invalid schema; revision loop works end-to-end.
 - Validation gates pass:
   - `npm test`
+  - `npm run test:ai-drafts`
   - `npm run lint`
   - `npm run typecheck`
   - `npm run build`
@@ -149,12 +154,17 @@ Key locked decisions from user:
   - Enrichment: when call intent is detected and phone is missing, trigger best-effort phone hydration (messages/signature AI where applicable, then Clay stream).
   - Drafting: suppress draft generation when call intent is detected and phone is missing (notify-only policy).
   - Auto-send: skip auto-send when call intent is detected (regardless of whether phone is on file).
+  - Booking-intent availability guard: when `shouldBookNow=no`, align confirmations to in-window offered slots or switch to scheduling-link fallback if no matching slot exists.
+  - Revision constraints: enforce window-match/link-fallback invariants during revision validation.
+  - Follow-up confirmation wording: use consistent “let me know or reschedule using calendar invite” phrasing, with correction-only fallback when link is unavailable.
   - Draft safety: add phone-context prompt appendix and hard redact any phone-like numbers from outbound drafts.
 - Tests:
-  - `npm test` (pass; 392/392 tests, 0 failures)
+  - `npm test` (pass; 397/397 tests, 0 failures)
+  - `npm run test:ai-drafts` (pass; 76/76 tests, 0 failures)
   - `npm run lint` (pass with pre-existing warnings only)
   - `npm run typecheck` (pass)
   - `npm run build` (pass; no type/build errors)
+  - Re-validation after reconciliation (2026-02-17): `npm test` (pass; 399/399 tests, 0 failures) and `npm run test:ai-drafts` (pass; 76/76 tests, 0 failures)
 - Blocker:
   - none currently blocking deterministic gates.
 - RED TEAM hardening status:
@@ -165,3 +175,6 @@ Key locked decisions from user:
 - 2026-02-16 19:29 local — Implemented call-intent-only 24h Clay dedupe path and wired call-intent trigger metadata through inbound pipelines (files: `lib/phone-enrichment.ts`, `lib/inbound-post-process/pipeline.ts`, `lib/background-jobs/email-inbound-post-process.ts`, `lib/background-jobs/sms-inbound-post-process.ts`).
 - 2026-02-16 19:31 local — Deterministic validation gates passed (`npm test`, `npm run lint`, `npm run typecheck`, `npm run build`); no new cross-phase file conflicts beyond known shared AI pipeline files.
 - 2026-02-16 19:39 local — Corrected dedupe/one-time interaction so call-intent can retry after 24h while default path stays one-time; added regression tests for dedupe-window + retry policy branch logic (files: `lib/phone-enrichment.ts`, `lib/__tests__/phone-enrichment.test.ts`).
+- 2026-02-16 19:47 local — Added `phone-enrichment` test file to the orchestrated suite and re-ran all deterministic gates successfully (`npm test`, `npm run lint`, `npm run typecheck`, `npm run build`) on latest tree.
+- 2026-02-16 20:04 local — Reconciled additional slot-window safety edits: booking-intent availability alignment guard, revision-constraint window fallback enforcement, and follow-up confirmation wording tests; validated with `npm run test:ai-drafts` (files: `lib/ai-drafts.ts`, `lib/__tests__/ai-drafts-clarification-guards.test.ts`, `lib/auto-send/revision-constraints.ts`, `lib/auto-send/__tests__/revision-constraints.test.ts`, `lib/followup-engine.ts`, `lib/__tests__/followup-confirmation-message.test.ts`, `scripts/test-ai-drafts.ts`, `scripts/test-orchestrator.ts`).
+- 2026-02-17 — Re-ran deterministic validation post-reconciliation: `npm run test:ai-drafts` (76/76) and `npm test` (399/399) both green, including new `followup-confirmation-message` coverage in orchestrated suite.

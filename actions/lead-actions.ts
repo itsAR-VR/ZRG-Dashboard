@@ -1273,6 +1273,7 @@ function hasOpenReplyFromLeadRollups(lead: { lastInboundAt?: Date | null; lastZr
 }
 
 const INBOX_QUERY_STATEMENT_TIMEOUT_MS = 12_000;
+const INBOX_FULL_EMAIL_FALLBACK_TIMEOUT_MS = 5_000;
 
 function looksLikeFullEmailSearchTerm(value: string): boolean {
   if (!value.includes("@")) return false;
@@ -1281,6 +1282,34 @@ function looksLikeFullEmailSearchTerm(value: string): boolean {
   if (at <= 0) return false;
   const dot = value.indexOf(".", at + 2);
   return dot > at + 1;
+}
+
+function buildFullEmailSearchCondition(
+  emailTerm: string,
+  opts?: { includeCurrentReplierEmail?: boolean }
+): Prisma.LeadWhereInput {
+  const normalizedEmailTerm = emailTerm.trim().toLowerCase();
+  const orClauses: Prisma.LeadWhereInput[] = [
+    { email: { equals: normalizedEmailTerm, mode: "insensitive" } },
+    { alternateEmails: { has: normalizedEmailTerm } },
+  ];
+
+  if (opts?.includeCurrentReplierEmail) {
+    orClauses.push({ currentReplierEmail: { equals: normalizedEmailTerm, mode: "insensitive" } });
+  }
+
+  return { OR: orClauses };
+}
+
+function expandFullEmailSearchCondition(
+  whereConditions: any[],
+  conditionIndex: number | null,
+  emailTerm: string | null
+): any[] {
+  if (conditionIndex === null || !emailTerm) return whereConditions;
+  const expandedConditions = [...whereConditions];
+  expandedConditions[conditionIndex] = buildFullEmailSearchCondition(emailTerm, { includeCurrentReplierEmail: true });
+  return expandedConditions;
 }
 
 async function findLeadsWithStatementTimeout(queryOptions: any, timeoutMs = INBOX_QUERY_STATEMENT_TIMEOUT_MS): Promise<any[]> {
@@ -1427,6 +1456,8 @@ export async function getConversationsCursor(
 
     // Build the where clause for filtering
     const whereConditions: any[] = [];
+    let fullEmailSearchTerm: string | null = null;
+    let fullEmailSearchConditionIndex: number | null = null;
     const now = new Date();
     whereConditions.push({ OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] });
 
@@ -1447,16 +1478,12 @@ export async function getConversationsCursor(
         if (looksLikeFullEmailSearchTerm(normalizedSearchTerm)) {
           // Avoid `ILIKE %term%` scans on huge workspaces by treating full-email searches as exact matches.
           // This keeps inbox search responsive even at 100k+ leads.
-          // Important: do not include currentReplierEmail in this OR branch.
-          // It is not indexed and can force sequential scans that time out under load.
-          // alternateEmails already tracks known reply addresses.
           const emailTerm = normalizedSearchTerm.toLowerCase();
-          whereConditions.push({
-            OR: [
-              { email: { equals: emailTerm, mode: "insensitive" } },
-              { alternateEmails: { has: emailTerm } },
-            ],
-          });
+          // Primary pass stays on indexed-ish fields; we only include currentReplierEmail in a
+          // second pass if this returns no rows, to preserve perf while fixing false negatives.
+          whereConditions.push(buildFullEmailSearchCondition(emailTerm));
+          fullEmailSearchTerm = emailTerm;
+          fullEmailSearchConditionIndex = whereConditions.length - 1;
         } else {
           const terms = normalizedSearchTerm.split(/\s+/).filter(Boolean);
 
@@ -1744,8 +1771,9 @@ export async function getConversationsCursor(
 
     const collectLeads = async (
       baseQueryOptions: any,
-      opts?: { forceNoReplyStateFilter?: boolean }
+      opts?: { forceNoReplyStateFilter?: boolean; statementTimeoutMs?: number }
     ): Promise<any[]> => {
+      const statementTimeoutMs = opts?.statementTimeoutMs ?? INBOX_QUERY_STATEMENT_TIMEOUT_MS;
       const needsReplyStateFilter = replyStateFilter !== null && !opts?.forceNoReplyStateFilter;
       if (!needsReplyStateFilter) {
         const queryOptions: any = { ...baseQueryOptions, take: limit + 1 };
@@ -1753,7 +1781,7 @@ export async function getConversationsCursor(
           queryOptions.cursor = { id: cursor };
           queryOptions.skip = 1;
         }
-        return findLeadsWithStatementTimeout(queryOptions);
+        return findLeadsWithStatementTimeout(queryOptions, statementTimeoutMs);
       }
 
       const batchSize = Math.max(limit * 4, 200);
@@ -1769,7 +1797,7 @@ export async function getConversationsCursor(
           queryOptions.skip = 1;
         }
 
-        const batchLeads = await findLeadsWithStatementTimeout(queryOptions);
+        const batchLeads = await findLeadsWithStatementTimeout(queryOptions, statementTimeoutMs);
         if (batchLeads.length === 0) break;
 
         nextCursorId = batchLeads[batchLeads.length - 1]!.id;
@@ -1786,20 +1814,57 @@ export async function getConversationsCursor(
       return matched;
     };
 
-    let leads: any[];
-    try {
-      leads = await collectLeads(baseQueryOptionsFull);
-    } catch (error) {
-      const anyError = error as { code?: unknown };
-      if (anyError?.code === "P2021" || anyError?.code === "P2022") {
-        console.warn("[Inbox] getConversationsCursor falling back to schema-safe query:", {
-          code: anyError.code,
-        });
-        // When the DB is behind, the reply-state filter may rely on columns that don't exist yet.
-        // Fall back to "no reply-state filter" so the inbox still renders.
-        leads = await collectLeads(baseQueryOptionsSafe, { forceNoReplyStateFilter: true });
-      } else {
+    const executeCollectLeadsWithSchemaFallback = async (
+      fullQueryOptions: any,
+      opts?: { statementTimeoutMs?: number; allowSchemaSafeFallback?: boolean }
+    ): Promise<any[]> => {
+      try {
+        return await collectLeads(fullQueryOptions, opts);
+      } catch (error) {
+        const anyError = error as { code?: unknown };
+        if ((anyError?.code === "P2021" || anyError?.code === "P2022") && opts?.allowSchemaSafeFallback !== false) {
+          console.warn("[Inbox] getConversationsCursor falling back to schema-safe query:", {
+            code: anyError.code,
+          });
+          // When the DB is behind, the reply-state filter may rely on columns that don't exist yet.
+          // Fall back to "no reply-state filter" so the inbox still renders.
+          return collectLeads(baseQueryOptionsSafe, {
+            forceNoReplyStateFilter: true,
+            statementTimeoutMs: opts?.statementTimeoutMs,
+          });
+        }
         throw error;
+      }
+    };
+
+    let leads = await executeCollectLeadsWithSchemaFallback(baseQueryOptionsFull);
+
+    if (leads.length === 0 && fullEmailSearchTerm && fullEmailSearchConditionIndex !== null) {
+      const expandedWhereConditions = expandFullEmailSearchCondition(
+        whereConditions,
+        fullEmailSearchConditionIndex,
+        fullEmailSearchTerm
+      );
+      const expandedQueryOptionsFull: any = {
+        ...baseQueryOptionsFull,
+        where: expandedWhereConditions.length > 0 ? { AND: expandedWhereConditions } : undefined,
+      };
+
+      try {
+        const fallbackLeads = await executeCollectLeadsWithSchemaFallback(expandedQueryOptionsFull, {
+          statementTimeoutMs: INBOX_FULL_EMAIL_FALLBACK_TIMEOUT_MS,
+          allowSchemaSafeFallback: false,
+        });
+        if (fallbackLeads.length > 0) {
+          leads = fallbackLeads;
+          console.info("[InboxSearch] full-email fallback matched via currentReplierEmail", {
+            scopeSize: scope.clientIds.length,
+          });
+        }
+      } catch (fallbackError) {
+        console.warn("[InboxSearch] full-email fallback failed", {
+          message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        });
       }
     }
 
@@ -1886,6 +1951,8 @@ export async function getConversationsFromEnd(
 
     // Build the where clause (same as cursor version)
     const whereConditions: any[] = [];
+    let fullEmailSearchTerm: string | null = null;
+    let fullEmailSearchConditionIndex: number | null = null;
     const now = new Date();
     whereConditions.push({ OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] });
 
@@ -1898,12 +1965,9 @@ export async function getConversationsFromEnd(
       if (normalizedSearchTerm.length >= 3) {
         if (looksLikeFullEmailSearchTerm(normalizedSearchTerm)) {
           const emailTerm = normalizedSearchTerm.toLowerCase();
-          whereConditions.push({
-            OR: [
-              { email: { equals: emailTerm, mode: "insensitive" } },
-              { alternateEmails: { has: emailTerm } },
-            ],
-          });
+          whereConditions.push(buildFullEmailSearchCondition(emailTerm));
+          fullEmailSearchTerm = emailTerm;
+          fullEmailSearchConditionIndex = whereConditions.length - 1;
         } else {
           whereConditions.push({
             OR: [
@@ -2001,7 +2065,7 @@ export async function getConversationsFromEnd(
       : undefined;
 
     // Fetch from the "end" by reversing sort order
-    let leads = await findLeadsWithStatementTimeout({
+    const fromEndQueryOptions: any = {
       where,
       take: limit,
       orderBy: { updatedAt: "asc" }, // Reverse order
@@ -2052,7 +2116,38 @@ export async function getConversationsFromEnd(
           take: 1,
         },
       },
-    });
+    };
+
+    let leads = await findLeadsWithStatementTimeout(fromEndQueryOptions);
+
+    if (leads.length === 0 && fullEmailSearchTerm && fullEmailSearchConditionIndex !== null) {
+      const expandedWhereConditions = expandFullEmailSearchCondition(
+        whereConditions,
+        fullEmailSearchConditionIndex,
+        fullEmailSearchTerm
+      );
+      const fallbackQueryOptions = {
+        ...fromEndQueryOptions,
+        where: expandedWhereConditions.length > 0 ? { AND: expandedWhereConditions } : undefined,
+      };
+
+      try {
+        const fallbackLeads = await findLeadsWithStatementTimeout(
+          fallbackQueryOptions,
+          INBOX_FULL_EMAIL_FALLBACK_TIMEOUT_MS
+        );
+        if (fallbackLeads.length > 0) {
+          leads = fallbackLeads;
+          console.info("[InboxSearch] from-end full-email fallback matched via currentReplierEmail", {
+            scopeSize: scope.clientIds.length,
+          });
+        }
+      } catch (fallbackError) {
+        console.warn("[InboxSearch] from-end full-email fallback failed", {
+          message: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        });
+      }
+    }
 
     if (replyStateFilter) {
       leads = leads.filter((lead: any) => {

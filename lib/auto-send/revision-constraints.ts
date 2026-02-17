@@ -23,6 +23,14 @@ export type RevisionValidationResult = {
 };
 
 const TIME_PATTERN = /\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s?(am|pm)\b/gi;
+const WEEKDAY_PATTERN = /\b(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b/i;
+
+type ParsedWindowPreference = {
+  dayToken: string | null;
+  timeOfDay: "morning" | "afternoon" | "evening" | null;
+  range: { startMinutes: number; endMinutes: number } | null;
+  hasWindowSignal: boolean;
+};
 
 function normalizeText(value: string | null | undefined): string {
   return (value || "")
@@ -48,6 +56,128 @@ function extractTimeTokens(value: string): string[] {
       return `${hour}:${minute}${meridiem}`;
     })
   );
+}
+
+function normalizeDayToken(raw: string | null | undefined): string | null {
+  const value = (raw || "").trim().toLowerCase();
+  if (!value) return null;
+  if (value.startsWith("mon")) return "mon";
+  if (value.startsWith("tue")) return "tue";
+  if (value.startsWith("wed")) return "wed";
+  if (value.startsWith("thu")) return "thu";
+  if (value.startsWith("fri")) return "fri";
+  if (value.startsWith("sat")) return "sat";
+  if (value.startsWith("sun")) return "sun";
+  return null;
+}
+
+function parseTimeTokenToMinutes(token: string): number | null {
+  const normalized = normalizeText(token).replace(/\s+/g, "");
+  const match = normalized.match(/^(\d{1,2})(?::([0-5]\d))?(am|pm)$/);
+  if (!match) return null;
+  const hour12 = Number.parseInt(match[1] || "", 10);
+  const minute = Number.parseInt(match[2] || "0", 10);
+  const meridiem = match[3] || "";
+  if (!Number.isFinite(hour12) || hour12 < 1 || hour12 > 12) return null;
+  if (!Number.isFinite(minute) || minute < 0 || minute > 59) return null;
+  const hour24 = meridiem === "am" ? (hour12 === 12 ? 0 : hour12) : hour12 === 12 ? 12 : hour12 + 12;
+  return hour24 * 60 + minute;
+}
+
+function isMinuteWithinRange(value: number, startMinutes: number, endMinutes: number): boolean {
+  if (startMinutes <= endMinutes) return value >= startMinutes && value <= endMinutes;
+  return value >= startMinutes || value <= endMinutes;
+}
+
+function parseWindowRange(text: string): { startMinutes: number; endMinutes: number } | null {
+  const message = normalizeText(text);
+  if (!message) return null;
+
+  const patterns = [
+    /\bbetween\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*(?:and|to|-)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i,
+    /\bfrom\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*(?:to|-)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i,
+    /\b(\d{1,2}(?::\d{2})?)\s*-\s*(\d{1,2}(?::\d{2})?)\s*(am|pm)\b/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = message.match(pattern);
+    if (!match) continue;
+
+    const sharedMeridiem = (match[3] || "").trim().toLowerCase();
+    const startRaw = `${(match[1] || "").trim()}${sharedMeridiem && !/\b(am|pm)\b/i.test(match[1] || "") ? sharedMeridiem : ""}`;
+    const endRaw = `${(match[2] || "").trim()}${sharedMeridiem && !/\b(am|pm)\b/i.test(match[2] || "") ? sharedMeridiem : ""}`;
+    const startMinutes = parseTimeTokenToMinutes(startRaw);
+    const endMinutes = parseTimeTokenToMinutes(endRaw);
+    if (startMinutes === null || endMinutes === null) continue;
+    return { startMinutes, endMinutes };
+  }
+
+  return null;
+}
+
+function parseInboundWindowPreference(inboundBody: string): ParsedWindowPreference {
+  const inbound = normalizeText(inboundBody);
+  const dayMatch = inbound.match(WEEKDAY_PATTERN);
+  const dayToken = normalizeDayToken(dayMatch?.[1] || null);
+
+  const timeOfDay = /\bmorning\b/i.test(inbound)
+    ? "morning"
+    : /\bafternoon\b/i.test(inbound)
+      ? "afternoon"
+      : /\bevening\b/i.test(inbound)
+        ? "evening"
+        : null;
+  const range = parseWindowRange(inboundBody);
+
+  const hasWindowSignal =
+    Boolean(dayToken) ||
+    Boolean(timeOfDay) ||
+    Boolean(range) ||
+    /\b(today|tomorrow|this week|next week|between|after|before)\b/i.test(inbound);
+
+  return { dayToken, timeOfDay, range, hasWindowSignal };
+}
+
+function slotMatchesWindowPreference(slot: OfferedSlot, preference: ParsedWindowPreference): boolean {
+  const label = `${slot?.label || ""}`.trim();
+  if (!label) return false;
+
+  if (preference.dayToken) {
+    const dayMatch = normalizeText(label).match(WEEKDAY_PATTERN);
+    const slotDay = normalizeDayToken(dayMatch?.[1] || null);
+    if (slotDay !== preference.dayToken) return false;
+  }
+
+  const slotTimes = extractTimeTokens(label);
+  const slotMinute = slotTimes.length > 0 ? parseTimeTokenToMinutes(slotTimes[0] || "") : null;
+
+  if (preference.range) {
+    if (slotMinute === null) return false;
+    if (!isMinuteWithinRange(slotMinute, preference.range.startMinutes, preference.range.endMinutes)) return false;
+  }
+
+  if (preference.timeOfDay) {
+    if (slotMinute === null) return false;
+    if (preference.timeOfDay === "morning" && !(slotMinute >= 5 * 60 && slotMinute < 12 * 60)) return false;
+    if (preference.timeOfDay === "afternoon" && !(slotMinute >= 12 * 60 && slotMinute < 17 * 60)) return false;
+    if (preference.timeOfDay === "evening" && !(slotMinute >= 17 * 60 && slotMinute < 21 * 60)) return false;
+  }
+
+  return true;
+}
+
+function hasOfferedSlotMatchingInboundWindow(inboundBody: string, slots: OfferedSlot[]): boolean {
+  const preference = parseInboundWindowPreference(inboundBody);
+  if (!preference.hasWindowSignal) return true;
+  if (!Array.isArray(slots) || slots.length === 0) return false;
+  return slots.some((slot) => slotMatchesWindowPreference(slot, preference));
+}
+
+function draftIncludesKnownSchedulingLink(draft: string, bookingLink: string | null, leadSchedulerLink: string | null): boolean {
+  const text = normalizeText(draft);
+  const known = [leadSchedulerLink, bookingLink].map((entry) => normalizeText(entry)).filter(Boolean);
+  if (known.length === 0) return false;
+  return known.some((link) => text.includes(link));
 }
 
 function hasWindowPreferenceWithoutExactTime(inboundBody: string): boolean {
@@ -125,10 +255,16 @@ export function buildRevisionHardConstraints(input: RevisionConstraintInput): Re
 
   const preferSingleSlotForWindow =
     (input.offeredSlots || []).length > 0 && hasWindowPreferenceWithoutExactTime(input.inboundBody);
+  const hasWindowMatch = hasOfferedSlotMatchingInboundWindow(input.inboundBody, input.offeredSlots || []);
   if (preferSingleSlotForWindow) {
     hardRequirements.push(
       "Lead provided a day/window preference without exact slot: propose exactly one best-matching in-window slot and ask for confirmation; do not add a second fallback option."
     );
+    if (!hasWindowMatch) {
+      hardRequirements.push(
+        "No offered slot matches the requested window. Do not confirm an unavailable time; direct the lead to the provided scheduling link."
+      );
+    }
   }
 
   return {
@@ -155,12 +291,30 @@ export function validateRevisionAgainstHardConstraints(input: RevisionConstraint
 
   const preferSingleSlotForWindow =
     (input.offeredSlots || []).length > 0 && hasWindowPreferenceWithoutExactTime(input.inboundBody);
+  const hasWindowMatch = hasOfferedSlotMatchingInboundWindow(input.inboundBody, input.offeredSlots || []);
   if (preferSingleSlotForWindow) {
     const offeredMentions = countOfferedTimesMentioned(input.draft, input.offeredSlots || []);
     if (offeredMentions > 1) {
       reasons.push(
         "[window_over_offer] Lead provided day/window preference; draft offered multiple slot options instead of one-slot confirmation."
       );
+    }
+
+    if (!hasWindowMatch) {
+      const hasKnownLink = draftIncludesKnownSchedulingLink(input.draft, input.bookingLink, input.leadSchedulerLink);
+      if (!hasKnownLink) {
+        reasons.push(
+          "[window_no_match_link_missing] No offered slot matches the requested window; draft must direct to the provided scheduling link."
+        );
+      }
+      const hasCommittalCue =
+        /\b(works(?:\s+for\s+me)?|booked|confirmed|scheduled|lock(?:ed)?\s+in|calendar\s+invite)\b/i.test(input.draft);
+      const mentionsTime = extractTimeTokens(input.draft).length > 0;
+      if (hasCommittalCue && mentionsTime && !hasKnownLink) {
+        reasons.push(
+          "[window_no_match_confirmed_time] Draft confirms a concrete time even though no offered slot matches the requested window."
+        );
+      }
     }
   }
 

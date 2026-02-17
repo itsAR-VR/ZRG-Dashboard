@@ -50,7 +50,8 @@ Eliminate the “sometimes fast, sometimes extremely slow” Master Inbox behavi
 ## RED TEAM Findings (Gaps / Weak Spots)
 
 ### Highest-risk failure modes
-- Full-email OR branch can include an unindexed predicate (`currentReplierEmail`) and trigger sequential scans under load → keep primary full-email lookup on indexed fields (`email`, `alternateEmails`) and protect list queries with DB statement timeouts.
+- Full-email OR branch can include an unindexed predicate (`currentReplierEmail`) and trigger sequential scans under load.
+  - Implemented mitigation: two-pass lookup (primary indexed path on `email` + `alternateEmails`; bounded fallback adds `currentReplierEmail` only when pass 1 returns zero rows) plus DB statement-timeout guardrails.
 
 ### Missing or ambiguous requirements
 - Live p95 verification evidence was not yet recorded for this new hardening change set → require canary probe + Playwright perf run before phase closeout.
@@ -66,8 +67,8 @@ Eliminate the “sometimes fast, sometimes extremely slow” Master Inbox behavi
 
 ## Assumptions (Agent)
 
-- `alternateEmails` already captures the practical “reply alias” set for inbox email lookup, so removing `currentReplierEmail` from the primary full-email OR keeps results accurate for most production threads (confidence ~0.92).
-  - Mitigation question/check (optional): if operators report misses for current replier aliases, add a follow-up indexed path for `currentReplierEmail` in Phase 165.
+- Most production full-email matches are still resolved by indexed-ish fields (`email`, `alternateEmails`), so fallback activation should be rare (confidence ~0.84).
+  - Mitigation implemented: second pass only runs when the primary pass returns zero rows, and it uses a shorter DB statement timeout to cap blast radius.
 
 ## Success Criteria
 - Inbox endpoints expose `x-zrg-duration-ms` and `x-request-id` on success and failure.
@@ -87,3 +88,5 @@ Eliminate the “sometimes fast, sometimes extremely slow” Master Inbox behavi
 
 ## Phase Summary (running)
 - 2026-02-17 00:00 UTC — Hardened inbox timeout path after parsing `zrg-dashboard-log-export-2026-02-16T23-51-57.json`: removed unindexed `currentReplierEmail` branch from primary full-email search OR and added DB statement-timeout guardrails for conversation list queries (files: `actions/lead-actions.ts`, `docs/planning/phase-164/e/plan.md`).
+- 2026-02-17 01:10 UTC — Reintroduced “broader match” safely per phase decision: full-email search now runs a two-pass strategy (primary indexed condition, then bounded `currentReplierEmail` fallback only on zero-result primary pass) for both cursor and from-end conversation loaders (file: `actions/lead-actions.ts`).
+- 2026-02-17 01:20 UTC — Added schema-lag safety for the second pass: cursor fallback now explicitly disables schema-safe broad-query fallback so lagging schemas cannot leak unrelated conversations into full-email search results (file: `actions/lead-actions.ts`).

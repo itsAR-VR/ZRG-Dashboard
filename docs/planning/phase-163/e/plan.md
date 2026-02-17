@@ -31,3 +31,7 @@ Turn perf investigation into a permanent system: Playwright perf canaries, repea
 ## Handoff
 After merge, run live Playwright MCP verification on production and store the evidence artifacts for the release note.
 
+## Progress This Turn
+- Synced with Phase 164 execution to resolve a scope conflict: retained inbox performance guardrails while restoring broader full-email matching through a controlled second pass.
+- Code landed in `actions/lead-actions.ts`; remaining work for 163e is evidence refresh (Playwright + probe) and budget verification against live deployment.
+- Attempted live probe from this sandbox, but outbound network is restricted in this environment; production evidence run must execute from your live-capable environment/CI.

@@ -17,8 +17,13 @@ Close remaining RED TEAM gaps after 162a-162f by enforcing call-intent enrichmen
   - Update call-intent enrichment trigger path to 24h dedupe per lead/channel.
   - Keep non-call-intent enrichment triggers on existing one-time behavior.
   - Add/adjust tests covering dedupe window semantics.
+- Reconcile additional in-scope safety edits from active working tree:
+  - Booking-intent availability alignment guard (`shouldBookNow=no`) in draft generation path.
+  - Revision-constraint enforcement for no-window-match + scheduling-link fallback.
+  - Auto-book confirmation message wording coverage.
 - Run deterministic validation gates:
   - `npm test`
+  - `npm run test:ai-drafts`
   - `npm run lint`
   - `npm run typecheck`
   - `npm run build`
@@ -45,12 +50,15 @@ Close remaining RED TEAM gaps after 162a-162f by enforcing call-intent enrichmen
   - Updated Phase 162 root/subphase plans to remove NTTAN/replay requirements and lock user-approved defaults (global call-intent skip, call-intent-only 24h dedupe).
   - Implemented call-intent-only 24h Clay trigger dedupe in `lib/phone-enrichment.ts` using `NotificationSendLog` by lead/channel.
   - Wired call-intent trigger metadata (`triggerReason`, `triggerChannel`) through all call-intent enrichment entrypoints.
+  - Reconciled additional in-scope safety changes in `lib/ai-drafts.ts`, `lib/auto-send/revision-constraints.ts`, and `lib/followup-engine.ts` with matching tests.
   - Confirmed shared-file overlap awareness with active phases; changes remained scoped to Phase 162 AI/inbound files.
 - Commands run:
-  - `npm test` — pass (`392` tests, `0` failures).
+  - `npm test` — pass (`397` tests, `0` failures).
+  - `npm run test:ai-drafts` — pass (`76` tests, `0` failures).
   - `npm run lint` — pass with pre-existing warnings only (no new errors).
   - `npm run typecheck` — pass.
   - `npm run build` — pass.
+  - Re-validation (2026-02-17): `npm test` — pass (`399` tests, `0` failures) with `lib/__tests__/followup-confirmation-message.test.ts` included in suite.
 - Blockers:
   - None.
 - Next concrete steps:

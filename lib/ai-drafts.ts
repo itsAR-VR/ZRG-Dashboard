@@ -10,7 +10,7 @@ import {
 } from "@/lib/ai/prompt-snippets";
 import { prisma } from "@/lib/prisma";
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
-import { ensureLeadTimezone } from "@/lib/timezone-inference";
+import { ensureLeadTimezone, isValidIanaTimezone } from "@/lib/timezone-inference";
 import { formatAvailabilitySlots } from "@/lib/availability-format";
 import { selectDistributedAvailabilitySlots } from "@/lib/availability-distribution";
 import { getWorkspaceSlotOfferCountsForRange, incrementWorkspaceSlotOffersBatch } from "@/lib/slot-offer-ledger";
@@ -55,6 +55,7 @@ import {
   repairShouldBookNowAgainstOfferedSlots,
   runMeetingOverseerExtraction,
   runMeetingOverseerGateDecision,
+  selectOfferedSlotByPreference,
   shouldRunMeetingOverseer,
   type MeetingOverseerExtractDecision,
 } from "@/lib/meeting-overseer";
@@ -354,6 +355,287 @@ export function applyShouldBookNowConfirmationIfNeeded(params: {
     slotLabel: selectedSlot,
     acknowledgement,
   });
+}
+
+const SLOT_ALIGNMENT_MONTH_DAY_TOKEN_REGEX =
+  /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?\b/gi;
+const SLOT_ALIGNMENT_TIME_TOKEN_REGEX = /\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s?(am|pm)\b/gi;
+const SLOT_ALIGNMENT_WEEKDAY_TOKEN_REGEX =
+  /\b(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b/gi;
+const SLOT_ALIGNMENT_CONFIRMATION_CUE_REGEX =
+  /\b(works(?:\s+for\s+me)?|booked|booking|confirm(?:ed|ing)?|scheduled|lock(?:ed)?\s+in|calendar\s+invite|send(?:ing)?\s+(?:a\s+)?calendar\s+invite)\b/i;
+const SLOT_ALIGNMENT_RELATIVE_DAY_CUE_REGEX = /\b(today|tomorrow|this week|next week)\b/i;
+
+function normalizeSlotAlignmentDateToken(raw: string): string {
+  return raw.toLowerCase().replace(/\b(\d{1,2})(st|nd|rd|th)\b/g, "$1").replace(/\s+/g, " ").trim();
+}
+
+function normalizeSlotAlignmentTimeToken(raw: string): string {
+  const compact = raw.toLowerCase().replace(/\s+/g, "");
+  const match = compact.match(/^(\d{1,2})(?::([0-5]\d))?(am|pm)$/);
+  if (!match) return compact;
+  const hour = Number.parseInt(match[1] || "0", 10);
+  const minute = match[2] || "00";
+  const meridiem = match[3] || "";
+  return `${hour}:${minute}${meridiem}`;
+}
+
+function normalizeSlotAlignmentWeekdayToken(raw: string): string {
+  const value = raw.toLowerCase();
+  if (value.startsWith("mon")) return "mon";
+  if (value.startsWith("tue")) return "tue";
+  if (value.startsWith("wed")) return "wed";
+  if (value.startsWith("thu")) return "thu";
+  if (value.startsWith("fri")) return "fri";
+  if (value.startsWith("sat")) return "sat";
+  if (value.startsWith("sun")) return "sun";
+  return value;
+}
+
+function extractSlotAlignmentTokens(value: string, regex: RegExp, normalizer: (raw: string) => string): string[] {
+  const matches = value.match(regex) || [];
+  return Array.from(new Set(matches.map((entry) => normalizer(entry)).filter(Boolean)));
+}
+
+function hasSemanticAvailabilitySlotMatchForGuard(draft: string, availability: string[]): boolean {
+  if (!draft || availability.length === 0) return false;
+  if (availability.some((slot) => slot && draft.includes(slot))) return true;
+
+  const availabilityCorpus = availability.join("\n");
+  const availabilityTimes = new Set(
+    extractSlotAlignmentTokens(availabilityCorpus, SLOT_ALIGNMENT_TIME_TOKEN_REGEX, normalizeSlotAlignmentTimeToken)
+  );
+  const availabilityDates = new Set(
+    extractSlotAlignmentTokens(availabilityCorpus, SLOT_ALIGNMENT_MONTH_DAY_TOKEN_REGEX, normalizeSlotAlignmentDateToken)
+  );
+  const availabilityWeekdays = new Set(
+    extractSlotAlignmentTokens(availabilityCorpus, SLOT_ALIGNMENT_WEEKDAY_TOKEN_REGEX, normalizeSlotAlignmentWeekdayToken)
+  );
+
+  const draftTimes = extractSlotAlignmentTokens(draft, SLOT_ALIGNMENT_TIME_TOKEN_REGEX, normalizeSlotAlignmentTimeToken);
+  const draftDates = extractSlotAlignmentTokens(draft, SLOT_ALIGNMENT_MONTH_DAY_TOKEN_REGEX, normalizeSlotAlignmentDateToken);
+  const draftWeekdays = extractSlotAlignmentTokens(draft, SLOT_ALIGNMENT_WEEKDAY_TOKEN_REGEX, normalizeSlotAlignmentWeekdayToken);
+
+  if (draftTimes.some((token) => availabilityTimes.has(token))) return true;
+  if (draftDates.some((token) => availabilityDates.has(token))) return true;
+  if (draftWeekdays.some((token) => availabilityWeekdays.has(token)) && draftTimes.length === 0) return true;
+  return false;
+}
+
+function buildAvailabilityMismatchFallbackDraft(params: {
+  channel: DraftChannel;
+  firstName: string | null;
+  aiName: string;
+  slotLabel: string;
+}): string {
+  const sentence = `I can do ${params.slotLabel}. If that time doesn't work, let me know or feel free to reschedule using the calendar invite.`;
+  if (params.channel === "sms" || params.channel === "linkedin") return sentence;
+
+  const greeting = params.firstName ? `Hi ${params.firstName},\n\n` : "Hi,\n\n";
+  return `${greeting}${sentence}\n\nBest,\n${params.aiName}`;
+}
+
+function buildAvailabilityLinkFallbackDraft(params: {
+  channel: DraftChannel;
+  firstName: string | null;
+  aiName: string;
+  link: string;
+}): string {
+  const sentence = `I don't have a matching slot in that window right now. You can grab any open time here: ${params.link}`;
+  if (params.channel === "sms" || params.channel === "linkedin") return sentence;
+
+  const greeting = params.firstName ? `Hi ${params.firstName},\n\n` : "Hi,\n\n";
+  return `${greeting}${sentence}\n\nBest,\n${params.aiName}`;
+}
+
+function normalizeRelativePreferenceForGuard(raw: string | null | undefined): "today" | "tomorrow" | "this_week" | "next_week" | "later_this_week" | null {
+  const value = (raw || "").trim().toLowerCase();
+  if (!value) return null;
+  if (value.includes("tomorrow")) return "tomorrow";
+  if (value.includes("today")) return "today";
+  if (value.includes("next") && value.includes("week")) return "next_week";
+  if (value.includes("later") && value.includes("week")) return "later_this_week";
+  if (value.includes("this") && value.includes("week")) return "this_week";
+  if (value === "today" || value === "tomorrow" || value === "this_week" || value === "next_week" || value === "later_this_week") {
+    return value;
+  }
+  return null;
+}
+
+function resolveGuardPreferenceWindows(extraction: MeetingOverseerExtractDecision): {
+  preferredDayOfWeek: string | null;
+  preferredTimeOfDay: string | null;
+  relativePreference: "today" | "tomorrow" | "this_week" | "next_week" | "later_this_week" | null;
+} {
+  const contract = extraction.decision_contract_v1;
+  let preferredDayOfWeek = (extraction.preferred_day_of_week || "").trim() || null;
+  let preferredTimeOfDay = (extraction.preferred_time_of_day || "").trim() || null;
+  let relativePreference = normalizeRelativePreferenceForGuard(extraction.relative_preference || null);
+
+  const windows = Array.isArray(contract?.leadProposedWindows) ? contract!.leadProposedWindows : [];
+  for (const window of windows) {
+    if (!window || typeof window !== "object") continue;
+    if (!preferredDayOfWeek && window.type === "day_only" && typeof window.value === "string" && window.value.trim()) {
+      preferredDayOfWeek = window.value.trim();
+    }
+    if (!preferredTimeOfDay && window.type === "time_of_day" && typeof window.value === "string" && window.value.trim()) {
+      preferredTimeOfDay = window.value.trim();
+    }
+    if (!relativePreference && window.type === "relative" && typeof window.value === "string" && window.value.trim()) {
+      relativePreference = normalizeRelativePreferenceForGuard(window.value);
+    }
+  }
+
+  return {
+    preferredDayOfWeek,
+    preferredTimeOfDay,
+    relativePreference,
+  };
+}
+
+function filterOfferedSlotsByRelativePreference(params: {
+  offeredSlots: OfferedSlot[];
+  relativePreference: "today" | "tomorrow" | "this_week" | "next_week" | "later_this_week";
+  timeZone: string;
+  referenceDate: Date;
+}): OfferedSlot[] {
+  return params.offeredSlots.filter((slot) => {
+    const dayDiff = getDayDiffInTimeZone(slot.datetime, params.referenceDate, params.timeZone);
+    if (dayDiff === null) return false;
+
+    if (params.relativePreference === "today") return dayDiff === 0;
+    if (params.relativePreference === "tomorrow") return dayDiff === 1;
+    if (params.relativePreference === "this_week") return dayDiff >= 0 && dayDiff < 7;
+    if (params.relativePreference === "later_this_week") return dayDiff >= 1 && dayDiff < 7;
+    if (params.relativePreference === "next_week") return dayDiff >= 7 && dayDiff < 14;
+
+    return true;
+  });
+}
+
+function selectBestAvailabilitySlotForGuard(params: {
+  extraction: MeetingOverseerExtractDecision;
+  availability: string[];
+  offeredSlots?: OfferedSlot[] | null;
+  referenceDate?: Date | null;
+}): string | null {
+  const acceptedIndex = typeof params.extraction.accepted_slot_index === "number" ? params.extraction.accepted_slot_index : null;
+  if (acceptedIndex && acceptedIndex > 0 && acceptedIndex <= params.availability.length) {
+    return params.availability[acceptedIndex - 1] || null;
+  }
+
+  const offeredSlots = (params.offeredSlots || []).filter((slot) => slot && slot.label && slot.datetime);
+  if (offeredSlots.length === 0) return null;
+
+  const contract = params.extraction.decision_contract_v1;
+  const tzCandidate = contract?.leadTimezone || params.extraction.detected_timezone || "UTC";
+  const timeZone = isValidIanaTimezone(tzCandidate) ? tzCandidate : "UTC";
+  const preference = resolveGuardPreferenceWindows(params.extraction);
+
+  let candidates = offeredSlots.slice();
+  const referenceDate =
+    params.referenceDate instanceof Date && !Number.isNaN(params.referenceDate.getTime()) ? params.referenceDate : new Date();
+  if (preference.relativePreference) {
+    const relativeFiltered = filterOfferedSlotsByRelativePreference({
+      offeredSlots: candidates,
+      relativePreference: preference.relativePreference,
+      timeZone,
+      referenceDate,
+    });
+    if (relativeFiltered.length === 0) return null;
+    candidates = relativeFiltered;
+  }
+
+  const matched = selectOfferedSlotByPreference({
+    offeredSlots: candidates,
+    timeZone,
+    preferredDayOfWeek: preference.preferredDayOfWeek,
+    preferredTimeOfDay: preference.preferredTimeOfDay,
+  });
+  if (matched?.label) return matched.label;
+
+  if (preference.preferredDayOfWeek || preference.preferredTimeOfDay) return null;
+
+  const earliest = candidates.sort((a, b) => new Date(a.datetime).getTime() - new Date(b.datetime).getTime())[0] ?? null;
+  return earliest?.label || null;
+}
+
+export function applyBookingIntentAvailabilityMatchGuard(params: {
+  draft: string;
+  extraction: MeetingOverseerExtractDecision | null;
+  availability: string[];
+  offeredSlots?: OfferedSlot[] | null;
+  bookingLink?: string | null;
+  leadSchedulerLink?: string | null;
+  referenceDate?: Date | null;
+  channel: DraftChannel;
+  firstName: string | null;
+  aiName: string;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, changed: false };
+
+  const contract = params.extraction?.decision_contract_v1;
+  if (!contract) return { draft, changed: false };
+  if (contract.hasBookingIntent !== "yes") return { draft, changed: false };
+  if (contract.shouldBookNow === "yes") return { draft, changed: false };
+  if (!Array.isArray(params.availability) || params.availability.length === 0) return { draft, changed: false };
+
+  const hasConfirmationCue = SLOT_ALIGNMENT_CONFIRMATION_CUE_REGEX.test(draft);
+  const hasTemporalCue =
+    SLOT_ALIGNMENT_RELATIVE_DAY_CUE_REGEX.test(draft) ||
+    extractSlotAlignmentTokens(draft, SLOT_ALIGNMENT_TIME_TOKEN_REGEX, normalizeSlotAlignmentTimeToken).length > 0 ||
+    extractSlotAlignmentTokens(draft, SLOT_ALIGNMENT_MONTH_DAY_TOKEN_REGEX, normalizeSlotAlignmentDateToken).length > 0 ||
+    extractSlotAlignmentTokens(draft, SLOT_ALIGNMENT_WEEKDAY_TOKEN_REGEX, normalizeSlotAlignmentWeekdayToken).length > 0;
+  if (!hasConfirmationCue && !hasTemporalCue) return { draft, changed: false };
+
+  // Clarifying questions are allowed when we are not booking now.
+  if (draft.includes("?") && !hasConfirmationCue) return { draft, changed: false };
+
+  const preferredSlot = selectBestAvailabilitySlotForGuard({
+    extraction: params.extraction,
+    availability: params.availability,
+    offeredSlots: params.offeredSlots || null,
+    referenceDate: params.referenceDate || null,
+  });
+  const hasWindowPreference = (() => {
+    const windowPrefs = resolveGuardPreferenceWindows(params.extraction);
+    return Boolean(windowPrefs.preferredDayOfWeek || windowPrefs.preferredTimeOfDay || windowPrefs.relativePreference);
+  })();
+  const hasSemanticMatch = hasSemanticAvailabilitySlotMatchForGuard(draft, params.availability);
+  if (hasSemanticMatch) {
+    if (!hasWindowPreference) return { draft, changed: false };
+
+    const draftHasExplicitTime =
+      extractSlotAlignmentTokens(draft, SLOT_ALIGNMENT_TIME_TOKEN_REGEX, normalizeSlotAlignmentTimeToken).length > 0;
+    const alignsWithPreferredSlot =
+      Boolean(preferredSlot) && hasSemanticAvailabilitySlotMatchForGuard(draft, preferredSlot ? [preferredSlot] : []);
+
+    if (alignsWithPreferredSlot && draftHasExplicitTime) {
+      return { draft, changed: false };
+    }
+  }
+
+  const rewritten = preferredSlot
+    ? buildAvailabilityMismatchFallbackDraft({
+        channel: params.channel,
+        firstName: params.firstName,
+        aiName: params.aiName,
+        slotLabel: preferredSlot,
+      })
+    : (() => {
+        const link = (params.leadSchedulerLink || "").trim() || (params.bookingLink || "").trim() || "";
+        if (!link) return "";
+        return buildAvailabilityLinkFallbackDraft({
+          channel: params.channel,
+          firstName: params.firstName,
+          aiName: params.aiName,
+          link,
+        });
+      })();
+
+  if (!rewritten || rewritten === draft) return { draft, changed: false };
+  return { draft: rewritten, changed: true };
 }
 
 export function applySchedulingConfirmationWordingGuard(params: {
@@ -5680,6 +5962,26 @@ Generate an appropriate ${channel} response following the guidelines above.
         clientId: lead.clientId,
         latestInboundText: latestInboundTextForGuards,
       });
+
+      const bookingIntentAvailabilityGuard = applyBookingIntentAvailabilityMatchGuard({
+        draft: draftContent,
+        extraction: meetingOverseerExtractionDecision,
+        availability,
+        offeredSlots: offeredSlotsForOverseer,
+        bookingLink,
+        leadSchedulerLink,
+        referenceDate: triggerMessageRecord?.sentAt ?? null,
+        channel,
+        firstName: firstName || null,
+        aiName,
+      });
+      if (bookingIntentAvailabilityGuard.changed) {
+        draftContent = bookingIntentAvailabilityGuard.draft;
+        console.log("[AI Drafts] Applied booking-intent availability alignment guard", {
+          leadId,
+          channel,
+        });
+      }
 
           const bookingOnlyGuard = applyBookingOnlyConcisionGuard({
             draft: draftContent,

@@ -10,6 +10,7 @@ const DEFAULT_TEST_FILES = [
   "lib/__tests__/auto-send-evaluator-input.test.ts",
   "lib/__tests__/prompt-runner-temperature-reasoning.test.ts",
   "lib/__tests__/prompt-runner-attempt-expansion.test.ts",
+  "lib/auto-send/__tests__/revision-constraints.test.ts",
 ];
 
 async function main(): Promise<void> {

@@ -57,3 +57,46 @@ test("validateRevisionAgainstHardConstraints passes a one-slot confirmation", ()
   assert.equal(result.passed, true);
   assert.equal(result.reasons.length, 0);
 });
+
+test("buildRevisionHardConstraints requires link fallback when no offered slot matches requested window", () => {
+  const result = buildRevisionHardConstraints({
+    inboundBody: "Monday morning works for me",
+    offeredSlots: [
+      { label: "Mon, Feb 16 at 6:30 PM PST", datetime: "2026-02-17T02:30:00.000Z", offeredAt: "2026-02-12T00:00:00.000Z" },
+    ],
+    bookingLink: "https://cal.example.com/book",
+    leadSchedulerLink: null,
+  });
+
+  assert.ok(result.hardRequirements.some((line) => /no offered slot matches the requested window/i.test(line)));
+});
+
+test("validateRevisionAgainstHardConstraints fails when no window-matching slot exists and draft omits link", () => {
+  const result = validateRevisionAgainstHardConstraints({
+    inboundBody: "Monday morning works for me",
+    offeredSlots: [
+      { label: "Mon, Feb 16 at 6:30 PM PST", datetime: "2026-02-17T02:30:00.000Z", offeredAt: "2026-02-12T00:00:00.000Z" },
+    ],
+    bookingLink: "https://cal.example.com/book",
+    leadSchedulerLink: null,
+    draft: "Great, Monday at 6:30 PM PST works. We'll send a calendar invite.",
+  });
+
+  assert.equal(result.passed, false);
+  assert.ok(result.reasons.some((reason) => reason.includes("window_no_match_link_missing")));
+});
+
+test("validateRevisionAgainstHardConstraints passes when no window-matching slot exists and draft uses booking link", () => {
+  const result = validateRevisionAgainstHardConstraints({
+    inboundBody: "Monday morning works for me",
+    offeredSlots: [
+      { label: "Mon, Feb 16 at 6:30 PM PST", datetime: "2026-02-17T02:30:00.000Z", offeredAt: "2026-02-12T00:00:00.000Z" },
+    ],
+    bookingLink: "https://cal.example.com/book",
+    leadSchedulerLink: null,
+    draft: "I don't have a matching slot in that window right now. You can grab any open time here: https://cal.example.com/book",
+  });
+
+  assert.equal(result.passed, true);
+  assert.equal(result.reasons.length, 0);
+});
