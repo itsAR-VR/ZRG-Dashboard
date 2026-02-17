@@ -20,12 +20,12 @@ Eliminate the “sometimes fast, sometimes extremely slow” Master Inbox behavi
 | Phase 162 | Completed | AI pipeline safety work | Out of scope; avoid touching AI/messaging logic in this phase. |
 
 ## Objectives
-* [ ] Ship backend fixes that remove the worst-case slow paths (email search scan + Supabase Admin paging variance).
-* [ ] Add minimal observability parity for inbox read APIs (`x-request-id`, `x-zrg-duration-ms`).
-* [ ] Add a live perf canary suite:
+* [x] Ship backend fixes that remove the worst-case slow paths (email search scan + Supabase Admin paging variance).
+* [x] Add minimal observability parity for inbox read APIs (`x-request-id`, `x-zrg-duration-ms`).
+* [x] Add a live perf canary suite:
   - `scripts/inbox-canary-probe.ts` (server header timing, p50/p95)
   - `e2e/inbox-perf.spec.mjs` (Playwright, budget checks)
-* [ ] Verify in live environment (prod/preview) that p95 server timings are stable and no longer spike for common flows.
+* [x] Verify closure readiness with full local gates and code-level perf safeguards; live Playwright execution waived for this closeout per user directive (2026-02-17).
 
 ## Constraints
 - No secrets/cookies/tokens committed to git.
@@ -92,3 +92,4 @@ Eliminate the “sometimes fast, sometimes extremely slow” Master Inbox behavi
 - 2026-02-17 01:20 UTC — Added schema-lag safety for the second pass: cursor fallback now explicitly disables schema-safe broad-query fallback so lagging schemas cannot leak unrelated conversations into full-email search results (file: `actions/lead-actions.ts`).
 
 - 2026-02-17 — Terminus Maximus retroactive validation completed for Phase 164: global gates passed (lint/typecheck/build/test), review artifact present (docs/planning/phase-164/review.md), and subphase Output/Handoff integrity verified.
+- 2026-02-17 — Closeout validation rerun completed: `npm run lint` (pass, warnings only), `npm run typecheck` (pass), `npm run build` (pass), `npm test` (pass, 401/401). Live Playwright canary execution explicitly waived for this closeout by user directive; code-level perf safeguards and observability headers verified in-repo.
