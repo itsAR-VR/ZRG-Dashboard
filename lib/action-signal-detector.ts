@@ -326,6 +326,21 @@ function normalizeBookingProcessRoute(value: unknown): BookingProcessRoute | nul
   };
 }
 
+function buildRouteDerivedSignal(route: BookingProcessRoute): ActionSignal | null {
+  if (route.processId !== 4 && route.processId !== 5) return null;
+  const type: ActionSignalType = route.processId === 4 ? "call_requested" : "book_on_external_calendar";
+  const confidence: ActionSignal["confidence"] = route.confidence >= 0.8 ? "high" : "medium";
+  const fallbackEvidence =
+    route.processId === 4
+      ? "Booking process router classified this reply as a call request"
+      : "Booking process router classified this reply as a lead-provided scheduler flow";
+  return {
+    type,
+    confidence,
+    evidence: route.rationale ? `Booking process router rationale: ${route.rationale}` : fallbackEvidence,
+  };
+}
+
 async function recordBookingProcessRouteOutcome(opts: {
   clientId: string;
   leadId: string;
@@ -496,17 +511,17 @@ export async function detectActionSignals(opts: {
     return { ...EMPTY_ACTION_SIGNAL_RESULT };
   }
 
-  const signals: ActionSignal[] = [];
+  const preRouteSignals: ActionSignal[] = [];
   const disambiguate = opts.disambiguate ?? disambiguateSignatureSchedulerLink;
   const routeEnabled = opts.aiRouteBookingProcessEnabled ?? true;
 
   // Tier 1: Call signal
   const callSignal = detectCallSignalHeuristic(opts.strippedText, opts.sentimentTag);
-  if (callSignal) signals.push(callSignal);
+  if (callSignal) preRouteSignals.push(callSignal);
 
   // Tier 1: External calendar
   const calendarSignal = detectExternalCalendarHeuristic(opts.strippedText, opts.workspaceBookingLink);
-  if (calendarSignal) signals.push(calendarSignal);
+  if (calendarSignal) preRouteSignals.push(calendarSignal);
 
   // Tier 2: AI disambiguation — only if no calendar signal from Tier 1
   if (!calendarSignal && shouldRunSignatureLinkDisambiguation(opts.strippedText, opts.fullText)) {
@@ -518,7 +533,7 @@ export async function detectActionSignals(opts: {
     });
 
     if (disambiguation?.intentional) {
-      signals.push({
+      preRouteSignals.push({
         type: "book_on_external_calendar",
         confidence: "high",
         evidence: `AI disambiguation: ${disambiguation.evidence}`,
@@ -526,8 +541,8 @@ export async function detectActionSignals(opts: {
     }
   }
 
-  const hasCallSignalBeforeRoute = signals.some((s) => s.type === "call_requested");
-  const hasExternalCalendarSignalBeforeRoute = signals.some((s) => s.type === "book_on_external_calendar");
+  const hasCallSignalBeforeRoute = preRouteSignals.some((s) => s.type === "call_requested");
+  const hasExternalCalendarSignalBeforeRoute = preRouteSignals.some((s) => s.type === "book_on_external_calendar");
   let route: BookingProcessRoute | null = null;
   let routeReason: BookingProcessRoutingOutcome["reason"] = "disabled_by_workspace_settings";
 
@@ -569,17 +584,10 @@ export async function detectActionSignals(opts: {
     }
   }
 
-  if (!hasCallSignalBeforeRoute && route?.processId === 4) {
-    const evidence = route.rationale
-      ? `Booking process router rationale: ${route.rationale}`
-      : "Booking process router classified this reply as a call request";
-    const confidence = route.confidence >= 0.8 ? "high" : "medium";
-    signals.push({
-      type: "call_requested",
-      confidence,
-      evidence,
-    });
-  }
+  // AI router is the source of truth for signal routing when available.
+  // Deterministic/heuristic signals only apply in fail-open mode (no route).
+  const routeDerivedSignal = route ? buildRouteDerivedSignal(route) : null;
+  const signals = route ? (routeDerivedSignal ? [routeDerivedSignal] : []) : preRouteSignals;
 
   const hasCallSignal = signals.some((s) => s.type === "call_requested");
   const hasExternalCalendarSignal = signals.some((s) => s.type === "book_on_external_calendar");

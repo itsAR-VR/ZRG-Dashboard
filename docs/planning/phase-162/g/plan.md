@@ -51,6 +51,7 @@ Close remaining RED TEAM gaps after 162a-162f by enforcing call-intent enrichmen
   - Implemented call-intent-only 24h Clay trigger dedupe in `lib/phone-enrichment.ts` using `NotificationSendLog` by lead/channel.
   - Wired call-intent trigger metadata (`triggerReason`, `triggerChannel`) through all call-intent enrichment entrypoints.
   - Reconciled additional in-scope safety changes in `lib/ai-drafts.ts`, `lib/auto-send/revision-constraints.ts`, and `lib/followup-engine.ts` with matching tests.
+  - Hardened booking router notifications by making AI route JSON authoritative for action-signal routing in `lib/action-signal-detector.ts`; deterministic heuristics now act as fail-open fallback only.
   - Confirmed shared-file overlap awareness with active phases; changes remained scoped to Phase 162 AI/inbound files.
 - Commands run:
   - `npm test` — pass (`397` tests, `0` failures).
@@ -59,6 +60,7 @@ Close remaining RED TEAM gaps after 162a-162f by enforcing call-intent enrichmen
   - `npm run typecheck` — pass.
   - `npm run build` — pass.
   - Re-validation (2026-02-17): `npm test` — pass (`399` tests, `0` failures) with `lib/__tests__/followup-confirmation-message.test.ts` included in suite.
+  - Re-validation after action-signal router hardening (2026-02-17): `npm test` — pass (`401` tests, `0` failures) with new `action-signal-detector` routing-authority coverage.
 - Blockers:
   - None.
 - Next concrete steps:

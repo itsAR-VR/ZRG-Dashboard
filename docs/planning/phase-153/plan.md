@@ -110,3 +110,5 @@ Fix the Master Inbox UI regression where switching workspaces can (1) break the 
 ## Phase Summary (running)
 - 2026-02-16 04:05:47Z — Implemented subphases 153a/153b/153c: shared `InboxView` layout wrapper + centered early states, foreground-authoritative message-fetch guards, and workspace URL persistence via `clientId` (files: `components/dashboard/inbox-view.tsx`, `components/dashboard/dashboard-shell.tsx`).
 - 2026-02-16 04:05:47Z — Ran validation gates: `npm run lint`, `npm run typecheck`, `npm run build`, `npm test`, `npm run test:ai-drafts` passed. Replay commands executed but blocked by DB preflight connectivity; artifacts captured at `.artifacts/ai-replay/run-2026-02-16T04-05-03-442Z.json` and `.artifacts/ai-replay/run-2026-02-16T04-05-08-072Z.json`.
+
+- 2026-02-17 — Terminus Maximus retroactive validation completed for Phase 153: global gates passed (lint/typecheck/build/test), review artifact present (docs/planning/phase-153/review.md), and subphase Output/Handoff integrity verified.

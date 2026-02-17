@@ -151,6 +151,7 @@ Key locked decisions from user:
 - Implemented:
   - Slot confirmation: prefer the slot explicitly referenced in the draft over `accepted_slot_index` when they conflict.
   - Call intent: expanded detection to catch "direct contact number below" style replies; Slack notify now shows `Phone: (missing)` for call requests when no phone exists.
+  - Booking router signaling: when AI route classification is available, route JSON is now authoritative for Slack action-signal notifications (Process 4 => `call_requested`, Process 5 => `book_on_external_calendar`); deterministic keyword heuristics are fallback-only when routing is unavailable.
   - Enrichment: when call intent is detected and phone is missing, trigger best-effort phone hydration (messages/signature AI where applicable, then Clay stream).
   - Drafting: suppress draft generation when call intent is detected and phone is missing (notify-only policy).
   - Auto-send: skip auto-send when call intent is detected (regardless of whether phone is on file).
@@ -165,6 +166,7 @@ Key locked decisions from user:
   - `npm run typecheck` (pass)
   - `npm run build` (pass; no type/build errors)
   - Re-validation after reconciliation (2026-02-17): `npm test` (pass; 399/399 tests, 0 failures) and `npm run test:ai-drafts` (pass; 76/76 tests, 0 failures)
+  - Re-validation after AI-route-authoritative routing change (2026-02-17): `npm test` (pass; 401/401 tests, 0 failures) and `npm run test:ai-drafts` (pass; 76/76 tests, 0 failures)
 - Blocker:
   - none currently blocking deterministic gates.
 - RED TEAM hardening status:
@@ -178,3 +180,6 @@ Key locked decisions from user:
 - 2026-02-16 19:47 local — Added `phone-enrichment` test file to the orchestrated suite and re-ran all deterministic gates successfully (`npm test`, `npm run lint`, `npm run typecheck`, `npm run build`) on latest tree.
 - 2026-02-16 20:04 local — Reconciled additional slot-window safety edits: booking-intent availability alignment guard, revision-constraint window fallback enforcement, and follow-up confirmation wording tests; validated with `npm run test:ai-drafts` (files: `lib/ai-drafts.ts`, `lib/__tests__/ai-drafts-clarification-guards.test.ts`, `lib/auto-send/revision-constraints.ts`, `lib/auto-send/__tests__/revision-constraints.test.ts`, `lib/followup-engine.ts`, `lib/__tests__/followup-confirmation-message.test.ts`, `scripts/test-ai-drafts.ts`, `scripts/test-orchestrator.ts`).
 - 2026-02-17 — Re-ran deterministic validation post-reconciliation: `npm run test:ai-drafts` (76/76) and `npm test` (399/399) both green, including new `followup-confirmation-message` coverage in orchestrated suite.
+- 2026-02-17 — Updated `lib/action-signal-detector.ts` so AI booking-route JSON is authoritative for signal routing; added conflict + route5 fallback tests in `lib/__tests__/action-signal-detector.test.ts`; re-ran deterministic gates (`npm test` 401/401, `npm run test:ai-drafts` 76/76).
+
+- 2026-02-17 — Terminus Maximus retroactive validation completed for Phase 162: global gates passed (lint/typecheck/build/test), review artifact present (docs/planning/phase-162/review.md), and subphase Output/Handoff integrity verified.

@@ -30,8 +30,16 @@ Close the final Phase 160 success criterion by validating the signed-upload path
    - if production still lags Phase 160, record deploy owner handoff and expected rerun timing.
 
 ## Output
+- Live canary matrix executed against current production alias and captured:
+  - `10MB` upload attempt hit transport failure (`413`) during live run.
+  - `25MB`, `100MB`, and `501MB` attempts were blocked by legacy `max 12MB` gate in production UI.
+- Deployment parity verification completed:
+  - `zrg-dashboard.vercel.app` resolves to latest production deployment, but observed behavior remains Phase-159-era upload constraints.
+- Phase 160e is now documented as execution-complete with an environment parity blocker rather than a missing implementation step.
 
 ## Handoff
+- Keep Phase 160 in partial-closure state until a deployment demonstrably includes the signed-upload path.
+- Re-run the four-file canary matrix on that deployment and then update root success criteria checkboxes in `docs/planning/phase-160/plan.md`.
 
 ## Validation (RED TEAM)
 - Deployment parity check:

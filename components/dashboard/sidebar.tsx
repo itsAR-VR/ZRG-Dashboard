@@ -127,6 +127,8 @@ function areChannelsEqual(a: readonly Channel[], b: readonly Channel[]) {
 const ALL_CHANNELS_TOGGLE_VALUE: string[] = ["all"]
 const READ_API_FAIL_OPEN_HEADER = "x-zrg-read-api-fail-open"
 const READ_API_FAIL_OPEN_REASON = "server_action_unavailable"
+const COUNTS_REFRESH_INTERVAL_MS = 60_000
+const COUNTS_REFRESH_JITTER_MAX_MS = 15_000
 
 type InboxCountsResult = Awaited<ReturnType<typeof getInboxCountsAction>>;
 
@@ -201,6 +203,9 @@ export function Sidebar({
   const hasLoadedCountsRef = useRef(false)
   const lastWorkspaceRef = useRef<string | null>(activeWorkspace)
   const isFetchingCountsRef = useRef(false)
+  const countsRefreshIntervalMsRef = useRef(
+    COUNTS_REFRESH_INTERVAL_MS + Math.floor(Math.random() * COUNTS_REFRESH_JITTER_MAX_MS)
+  )
   const { user } = useUser()
   const workspaceCollator = useMemo(
     () => new Intl.Collator(undefined, { sensitivity: "base", numeric: true }),
@@ -280,7 +285,7 @@ export function Sidebar({
     // Refresh counts every 60 seconds while inbox is visible
     const interval = setInterval(() => {
       void fetchCounts()
-    }, 60000)
+    }, countsRefreshIntervalMsRef.current)
     return () => {
       cancelled = true
       document.removeEventListener("visibilitychange", handleVisibilityChange)

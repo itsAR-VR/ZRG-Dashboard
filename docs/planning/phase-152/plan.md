@@ -68,3 +68,5 @@ Eliminate the production React #301 ("Too many re-renders") crash that occurs wh
 
 ## Open Questions (Need Human Input)
 - Can you run the deployed workspace-switch repro (rapid 5-10 switches in inbox) and share whether React #301 is gone after this patch? This is required to decide whether 152b/152c are still necessary.
+
+- 2026-02-17 — Terminus Maximus retroactive validation completed for Phase 152: global gates passed (lint/typecheck/build/test), review artifact present (docs/planning/phase-152/review.md), and subphase Output/Handoff integrity verified.

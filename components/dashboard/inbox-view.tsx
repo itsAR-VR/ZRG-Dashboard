@@ -44,6 +44,7 @@ interface InboxViewProps {
 const POLLING_INTERVAL = 60000;
 // Keep a slower heartbeat when realtime is connected.
 const REALTIME_HEARTBEAT_INTERVAL = 60000;
+const POLLING_JITTER_MAX_MS = 15000;
 const EMPTY_SMS_CLIENT_OPTIONS: Array<{ id: string; name: string; leadCount: number }> = [];
 
 // Extended Conversation type with sentimentTag
@@ -347,6 +348,10 @@ export function InboxView({
   const conversationsByIdRef = useRef<Map<string, ConversationWithSentiment>>(new Map());
   const activeConversationIdRef = useRef<string | null>(activeConversationId);
   const isLoadingMessagesRef = useRef(isLoadingMessages);
+  const pollingIntervalMsRef = useRef(POLLING_INTERVAL + Math.floor(Math.random() * POLLING_JITTER_MAX_MS));
+  const realtimeHeartbeatIntervalMsRef = useRef(
+    REALTIME_HEARTBEAT_INTERVAL + Math.floor(Math.random() * POLLING_JITTER_MAX_MS)
+  );
 
   useEffect(() => {
     activeConversationIdRef.current = activeConversationId;
@@ -533,8 +538,8 @@ export function InboxView({
       if (!conversationsQueryEnabled) return false;
       if (query.state.status === "error") return false;
       if (!isPageVisible) return false;
-      if (isLive) return REALTIME_HEARTBEAT_INTERVAL;
-      return POLLING_INTERVAL;
+      if (isLive) return realtimeHeartbeatIntervalMsRef.current;
+      return pollingIntervalMsRef.current;
     },
   });
 

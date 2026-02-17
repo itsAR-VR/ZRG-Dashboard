@@ -51,6 +51,7 @@ Validate end-to-end behavior with deterministic repository gates (tests/lint/typ
   - `npm run typecheck` — pass.
   - `npm run build` — pass.
   - Re-validation (2026-02-17): `npm test` — pass (`399` tests, `0` failures); `npm run test:ai-drafts` — pass (`76` tests, `0` failures).
+  - Re-validation after AI-route-authoritative action-signal routing (2026-02-17): `npm test` — pass (`401` tests, `0` failures); `npm run test:ai-drafts` — pass (`76` tests, `0` failures).
 - Blockers:
   - None.
 - Next concrete steps:

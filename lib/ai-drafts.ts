@@ -575,7 +575,10 @@ export function applyBookingIntentAvailabilityMatchGuard(params: {
   const draft = (params.draft || "").trim();
   if (!draft) return { draft, changed: false };
 
-  const contract = params.extraction?.decision_contract_v1;
+  const extraction = params.extraction;
+  if (!extraction) return { draft, changed: false };
+
+  const contract = extraction.decision_contract_v1;
   if (!contract) return { draft, changed: false };
   if (contract.hasBookingIntent !== "yes") return { draft, changed: false };
   if (contract.shouldBookNow === "yes") return { draft, changed: false };
@@ -593,13 +596,13 @@ export function applyBookingIntentAvailabilityMatchGuard(params: {
   if (draft.includes("?") && !hasConfirmationCue) return { draft, changed: false };
 
   const preferredSlot = selectBestAvailabilitySlotForGuard({
-    extraction: params.extraction,
+    extraction,
     availability: params.availability,
     offeredSlots: params.offeredSlots || null,
     referenceDate: params.referenceDate || null,
   });
   const hasWindowPreference = (() => {
-    const windowPrefs = resolveGuardPreferenceWindows(params.extraction);
+    const windowPrefs = resolveGuardPreferenceWindows(extraction);
     return Boolean(windowPrefs.preferredDayOfWeek || windowPrefs.preferredTimeOfDay || windowPrefs.relativePreference);
   })();
   const hasSemanticMatch = hasSemanticAvailabilitySlotMatchForGuard(draft, params.availability);

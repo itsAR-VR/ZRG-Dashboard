@@ -237,6 +237,26 @@ describe("action signal detector: booking process routing", () => {
     assert.equal(result.route?.processId, 5);
   });
 
+  it("adds an external-calendar signal when the router routes to process 5 despite no heuristic hit", async () => {
+    const result = await detectActionSignals({
+      strippedText: "Thanks, sounds good.",
+      fullText: "Please use my scheduling link in signature.\n\nBook a meeting: https://calendly.com/demo-user/30min",
+      sentimentTag: "Interested",
+      workspaceBookingLink: "https://workspace.example/book",
+      clientId: "client-1",
+      leadId: "lead-1",
+      routeBookingProcess: async () => processRoute(5),
+      channel: "email",
+      provider: "emailbison",
+    });
+
+    const externalSignal = result.signals.find((signal) => signal.type === "book_on_external_calendar");
+    assert.ok(externalSignal, "external-calendar signal should be added from router outcome");
+    assert.match(externalSignal?.evidence ?? "", /booking process router/i);
+    assert.equal(result.hasExternalCalendarSignal, true);
+    assert.equal(result.route?.processId, 5);
+  });
+
   it("adds a call signal when the router routes to process 4 despite no heuristic hit", async () => {
     const result = await detectActionSignals({
       strippedText: "Thanks.",
@@ -255,6 +275,24 @@ describe("action signal detector: booking process routing", () => {
     assert.match(callSignal?.evidence ?? "", /booking process router/i);
     assert.equal(result.hasCallSignal, true);
     assert.equal(result.route?.processId, 4);
+  });
+
+  it("treats the AI route as authoritative when heuristics conflict", async () => {
+    const result = await detectActionSignals({
+      strippedText: "Can you call me tomorrow?",
+      fullText: "Can you call me tomorrow?",
+      sentimentTag: "Interested",
+      workspaceBookingLink: null,
+      clientId: "client-1",
+      leadId: "lead-1",
+      routeBookingProcess: async () => processRoute(2),
+      channel: "sms",
+      provider: "ghl",
+    });
+
+    assert.equal(result.hasCallSignal, false);
+    assert.equal(result.signals.length, 0);
+    assert.equal(result.route?.processId, 2);
   });
 
   it("fails open when router throws and keeps signal detection", async () => {

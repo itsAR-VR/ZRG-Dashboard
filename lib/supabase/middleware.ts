@@ -129,6 +129,13 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.next({ request });
   }
 
+  // Next Server Actions are POSTed to route paths (often "/"). Those requests already perform
+  // auth checks inside the action implementation (requireAuthUser/requireClientAccess). Skipping
+  // middleware auth refresh here avoids duplicating auth round-trips per action invocation.
+  if (request.method === "POST" && request.headers.has("next-action")) {
+    return NextResponse.next({ request });
+  }
+
   let supabaseResponse = NextResponse.next({
     request,
   });

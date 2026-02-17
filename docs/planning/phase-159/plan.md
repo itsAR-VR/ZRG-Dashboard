@@ -129,3 +129,5 @@ Restore “Add Asset” **file uploads** in Settings → Knowledge Assets by rem
   - Phase 159-only: `npm run typecheck`, `npm run build`, `npm test`: pass (clean snapshot)
 - Notes:
   - Production verification still required (upload 2–5MB and 10–12MB files on `zrg-dashboard.vercel.app` after deploy).
+
+- 2026-02-17 — Terminus Maximus retroactive validation completed for Phase 159: global gates passed (lint/typecheck/build/test), review artifact present (docs/planning/phase-159/review.md), and subphase Output/Handoff integrity verified.
