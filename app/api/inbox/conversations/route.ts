@@ -8,6 +8,8 @@ import {
 import { isInboxReadApiEnabled } from "@/lib/feature-flags";
 
 export const dynamic = "force-dynamic";
+// Large workspaces can require longer DB scans under load; keep parity with Pro max duration.
+export const maxDuration = 800;
 const READ_API_FAIL_OPEN_HEADER = "x-zrg-read-api-fail-open";
 const READ_API_FAIL_OPEN_REASON = "server_action_unavailable";
 const READ_API_DISABLED_REASON = "disabled_by_flag";

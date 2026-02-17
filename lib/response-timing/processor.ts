@@ -94,11 +94,14 @@ export async function processResponseTimingEvents(opts?: {
 
   const db = opts?.prisma ?? prisma;
   const dryRun = opts?.dryRun === true;
+  const transactionTimeoutMs = Math.max(20_000, Math.min(10 * 60_000, Math.trunc(maxMs + 5_000)));
+  const transactionMaxWaitMs = Math.min(60_000, Math.max(5_000, Math.trunc(transactionTimeoutMs / 2)));
 
-  const res = await db.$transaction(async (tx) => {
-    // Keep the transaction bounded; this is cron-safe work.
-    const statementTimeoutMs = Math.max(5000, Math.min(30_000, Math.trunc(maxMs + 2500)));
-    await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = ${statementTimeoutMs}`);
+  const res = await db.$transaction(
+    async (tx) => {
+      // Keep the transaction bounded; this is cron-safe work.
+      const statementTimeoutMs = Math.max(5000, Math.min(30_000, Math.trunc(maxMs + 2500)));
+      await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = ${statementTimeoutMs}`);
 
     let inserted = 0;
     let updatedSetter = 0;
@@ -377,8 +380,13 @@ export async function processResponseTimingEvents(opts?: {
       exhausted = true;
     }
 
-    return { inserted, updatedSetter, updatedAi, exhausted };
-  });
+      return { inserted, updatedSetter, updatedAi, exhausted };
+    },
+    {
+      maxWait: transactionMaxWaitMs,
+      timeout: transactionTimeoutMs,
+    }
+  );
 
   return {
     ...res,

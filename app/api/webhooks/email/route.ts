@@ -21,8 +21,8 @@ import { sendSlackDmByUserIdWithToken } from "@/lib/slack-dm";
 import { getSlackAutoSendApprovalConfig } from "@/lib/auto-send/get-approval-recipients";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
-// Reduced from 800s to 60s after moving AI classification to background jobs (Phase 31g).
-export const maxDuration = 60;
+// Keep headroom for bursty EMAIL_SENT batches when async enqueue mode is disabled or delayed.
+export const maxDuration = 800;
 
 // =============================================================================
 // Type Definitions

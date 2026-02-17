@@ -1317,11 +1317,19 @@ async function findLeadsWithStatementTimeout(queryOptions: any, timeoutMs = INBO
     typeof timeoutMs === "number" && Number.isFinite(timeoutMs)
       ? Math.max(1_000, Math.trunc(timeoutMs))
       : INBOX_QUERY_STATEMENT_TIMEOUT_MS;
+  const transactionTimeoutMs = Math.max(15_000, normalizedTimeoutMs + 5_000);
+  const transactionMaxWaitMs = Math.min(30_000, Math.max(5_000, Math.trunc(transactionTimeoutMs / 2)));
 
-  return prisma.$transaction(async (tx) => {
-    await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = ${normalizedTimeoutMs}`);
-    return tx.lead.findMany(queryOptions);
-  });
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = ${normalizedTimeoutMs}`);
+      return tx.lead.findMany(queryOptions);
+    },
+    {
+      maxWait: transactionMaxWaitMs,
+      timeout: transactionTimeoutMs,
+    }
+  );
 }
 
 /**

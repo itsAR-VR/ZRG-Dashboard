@@ -5,7 +5,7 @@ import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { refreshAvailabilityCachesDue } from "@/lib/availability-cache";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
-export const maxDuration = 60;
+export const maxDuration = 800;
 
 function isAuthorized(request: NextRequest): boolean {
   const expectedSecret = process.env.CRON_SECRET;
@@ -56,10 +56,11 @@ export async function GET(request: NextRequest) {
       const fromEnv = process.env.AVAILABILITY_CRON_TIME_BUDGET_MS
         ? Number.parseInt(process.env.AVAILABILITY_CRON_TIME_BUDGET_MS, 10)
         : null;
+      const maxBudgetMs = 10 * 60_000;
       const overallBudgetMs = Number.isFinite(fromQuery)
-        ? Math.max(10_000, Math.min(55_000, fromQuery as number))
+        ? Math.max(10_000, Math.min(maxBudgetMs, fromQuery as number))
         : Number.isFinite(fromEnv)
-          ? Math.max(10_000, Math.min(55_000, fromEnv as number))
+          ? Math.max(10_000, Math.min(maxBudgetMs, fromEnv as number))
           : 55_000;
 
       const concurrencyParam = request.nextUrl.searchParams.get("concurrency");

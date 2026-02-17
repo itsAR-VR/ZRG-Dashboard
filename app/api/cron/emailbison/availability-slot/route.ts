@@ -3,7 +3,7 @@ import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
 import { processEmailBisonFirstTouchAvailabilitySlots } from "@/lib/emailbison-first-touch-availability";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
-export const maxDuration = 60;
+export const maxDuration = 800;
 
 function isAuthorized(request: NextRequest): boolean {
   const expectedSecret = process.env.CRON_SECRET;
