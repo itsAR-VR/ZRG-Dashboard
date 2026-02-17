@@ -1272,6 +1272,29 @@ function hasOpenReplyFromLeadRollups(lead: { lastInboundAt?: Date | null; lastZr
   return !lastZrgOutboundAt || lastZrgOutboundAt.getTime() < lastInboundAt.getTime();
 }
 
+const INBOX_QUERY_STATEMENT_TIMEOUT_MS = 12_000;
+
+function looksLikeFullEmailSearchTerm(value: string): boolean {
+  if (!value.includes("@")) return false;
+  if (/\s/.test(value)) return false;
+  const at = value.indexOf("@");
+  if (at <= 0) return false;
+  const dot = value.indexOf(".", at + 2);
+  return dot > at + 1;
+}
+
+async function findLeadsWithStatementTimeout(queryOptions: any, timeoutMs = INBOX_QUERY_STATEMENT_TIMEOUT_MS): Promise<any[]> {
+  const normalizedTimeoutMs =
+    typeof timeoutMs === "number" && Number.isFinite(timeoutMs)
+      ? Math.max(1_000, Math.trunc(timeoutMs))
+      : INBOX_QUERY_STATEMENT_TIMEOUT_MS;
+
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(`SET LOCAL statement_timeout = ${normalizedTimeoutMs}`);
+    return tx.lead.findMany(queryOptions);
+  });
+}
+
 /**
  * Get conversations with cursor-based pagination
  * Optimized for large datasets (50,000+ leads)
@@ -1421,23 +1444,16 @@ export async function getConversationsCursor(
       // Guardrail: very short queries are disproportionately expensive on large workspaces.
       // The client also debounces, but this protects us from URL/state edge cases.
       if (normalizedSearchTerm.length >= 3) {
-        const looksLikeFullEmail = (value: string): boolean => {
-          if (!value.includes("@")) return false;
-          if (/\s/.test(value)) return false;
-          const at = value.indexOf("@");
-          if (at <= 0) return false;
-          const dot = value.indexOf(".", at + 2);
-          return dot > at + 1;
-        };
-
-        if (looksLikeFullEmail(normalizedSearchTerm)) {
+        if (looksLikeFullEmailSearchTerm(normalizedSearchTerm)) {
           // Avoid `ILIKE %term%` scans on huge workspaces by treating full-email searches as exact matches.
           // This keeps inbox search responsive even at 100k+ leads.
+          // Important: do not include currentReplierEmail in this OR branch.
+          // It is not indexed and can force sequential scans that time out under load.
+          // alternateEmails already tracks known reply addresses.
           const emailTerm = normalizedSearchTerm.toLowerCase();
           whereConditions.push({
             OR: [
               { email: { equals: emailTerm, mode: "insensitive" } },
-              { currentReplierEmail: { equals: emailTerm, mode: "insensitive" } },
               { alternateEmails: { has: emailTerm } },
             ],
           });
@@ -1737,7 +1753,7 @@ export async function getConversationsCursor(
           queryOptions.cursor = { id: cursor };
           queryOptions.skip = 1;
         }
-        return prisma.lead.findMany(queryOptions);
+        return findLeadsWithStatementTimeout(queryOptions);
       }
 
       const batchSize = Math.max(limit * 4, 200);
@@ -1753,7 +1769,7 @@ export async function getConversationsCursor(
           queryOptions.skip = 1;
         }
 
-        const batchLeads = await prisma.lead.findMany(queryOptions);
+        const batchLeads = await findLeadsWithStatementTimeout(queryOptions);
         if (batchLeads.length === 0) break;
 
         nextCursorId = batchLeads[batchLeads.length - 1]!.id;
@@ -1880,21 +1896,11 @@ export async function getConversationsFromEnd(
       const normalizedSearchTerm = rawSearchTerm.replace(/[),.;:\]\}]+$/g, "").trim();
 
       if (normalizedSearchTerm.length >= 3) {
-        const looksLikeFullEmail = (value: string): boolean => {
-          if (!value.includes("@")) return false;
-          if (/\s/.test(value)) return false;
-          const at = value.indexOf("@");
-          if (at <= 0) return false;
-          const dot = value.indexOf(".", at + 2);
-          return dot > at + 1;
-        };
-
-        if (looksLikeFullEmail(normalizedSearchTerm)) {
+        if (looksLikeFullEmailSearchTerm(normalizedSearchTerm)) {
           const emailTerm = normalizedSearchTerm.toLowerCase();
           whereConditions.push({
             OR: [
               { email: { equals: emailTerm, mode: "insensitive" } },
-              { currentReplierEmail: { equals: emailTerm, mode: "insensitive" } },
               { alternateEmails: { has: emailTerm } },
             ],
           });
@@ -1995,7 +2001,7 @@ export async function getConversationsFromEnd(
       : undefined;
 
     // Fetch from the "end" by reversing sort order
-    let leads = await prisma.lead.findMany({
+    let leads = await findLeadsWithStatementTimeout({
       where,
       take: limit,
       orderBy: { updatedAt: "asc" }, // Reverse order
