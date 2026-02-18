@@ -354,6 +354,21 @@ async function handleRegenerateFast(params: {
             select: {
               name: true,
               bisonCampaignId: true,
+              aiPersona: {
+                select: { signature: true },
+              },
+            },
+          },
+          client: {
+            select: {
+              settings: {
+                select: { aiSignature: true },
+              },
+              aiPersonas: {
+                where: { isDefault: true },
+                select: { signature: true },
+                take: 1,
+              },
             },
           },
         },
@@ -421,6 +436,12 @@ async function handleRegenerateFast(params: {
   }
 
   const lead = draft.lead;
+  const aiSignature = (
+    lead.emailCampaign?.aiPersona?.signature?.trim() ??
+    lead.client?.aiPersonas?.[0]?.signature?.trim() ??
+    lead.client?.settings?.aiSignature?.trim() ??
+    null
+  ) || null;
   const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "Unknown";
   const campaignLabel = lead.emailCampaign
     ? `${lead.emailCampaign.name} (${lead.emailCampaign.bisonCampaignId})`
@@ -443,6 +464,7 @@ async function handleRegenerateFast(params: {
     regenCount: value.regenCount,
     leadSchedulerLink: lead.externalSchedulingLink ?? null,
     timeoutMs: 15_000,
+    aiSignature,
   });
 
   if (!regenResult.success || typeof regenResult.content !== "string") {

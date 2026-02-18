@@ -5,7 +5,7 @@ import { runTextPrompt } from "@/lib/ai/prompt-runner";
 import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
 import { buildEffectiveEmailLengthRules, getEffectiveArchetypeInstructions, getEffectiveForbiddenTerms } from "@/lib/ai/prompt-snippets";
 import { EMAIL_DRAFT_STRUCTURE_ARCHETYPES, getArchetypeById, type EmailDraftArchetype } from "@/lib/ai-drafts/config";
-import { sanitizeDraftContent } from "@/lib/ai-drafts";
+import { enforcePersonaSignatureFooter, sanitizeDraftContent } from "@/lib/ai-drafts";
 import { enforceCanonicalBookingLink, replaceEmDashesWithCommaSpace } from "@/lib/ai-drafts/step3-verifier";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 import { detectBounce, isOptOutText } from "@/lib/sentiment";
@@ -98,6 +98,7 @@ export async function fastRegenerateDraftContent(opts: {
   sentimentTag: string;
   previousDraft: string;
   latestInbound?: { subject?: string | null; body: string } | null;
+  aiSignature?: string | null;
   /**
    * Email-only. If omitted, caller must provide `cycleSeed` + `regenCount`.
    * (We keep the selection logic explicit so UI/Slack can deterministically cycle.)
@@ -215,6 +216,7 @@ export async function fastRegenerateDraftContent(opts: {
 
         // Post-processing: keep deterministic and fast.
         content = sanitizeDraftContent(content, opts.leadId, "email");
+        content = enforcePersonaSignatureFooter(content, opts.aiSignature || null);
         content = replaceEmDashesWithCommaSpace(content);
 
         // Booking link enforcement (unless lead provided their own scheduler link).

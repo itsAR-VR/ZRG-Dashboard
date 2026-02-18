@@ -1607,6 +1607,13 @@ export async function fastRegenerateDraft(
           sentimentTag: true,
           email: true,
           externalSchedulingLink: true,
+          emailCampaign: {
+            select: {
+              aiPersona: {
+                select: { signature: true },
+              },
+            },
+          },
           client: {
             select: {
               settings: {
@@ -1615,7 +1622,13 @@ export async function fastRegenerateDraft(
                   draftGenerationStep2Enabled: true,
                   draftVerificationStep3Enabled: true,
                   meetingOverseerEnabled: true,
+                  aiSignature: true,
                 },
+              },
+              aiPersonas: {
+                where: { isDefault: true },
+                select: { signature: true },
+                take: 1,
               },
             },
           },
@@ -1639,6 +1652,12 @@ export async function fastRegenerateDraft(
       if (!shouldGenerateDraft(sentimentTag, email)) {
         return { success: false, error: "Cannot generate draft for this sentiment" };
       }
+
+      const aiSignature =
+        lead.emailCampaign?.aiPersona?.signature?.trim() ??
+        lead.client?.aiPersonas?.[0]?.signature?.trim() ??
+        lead.client?.settings?.aiSignature?.trim() ??
+        null;
 
       const notices = getDisabledRouteNotices(lead.client?.settings, { channel });
 
@@ -1696,6 +1715,7 @@ export async function fastRegenerateDraft(
         cycleSeed: channel === "email" ? opts?.cycleSeed : undefined,
         regenCount: channel === "email" ? opts?.regenCount : undefined,
         leadSchedulerLink: channel === "email" ? (lead.externalSchedulingLink ?? null) : null,
+        aiSignature,
       });
 
       if (!regenResult.success || typeof regenResult.content !== "string") {

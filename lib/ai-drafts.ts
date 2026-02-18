@@ -1865,6 +1865,50 @@ export function sanitizeDraftContent(content: string, leadId: string, channel: D
   return result;
 }
 
+function escapeSignatureRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripPersonaSignatureSuffix(content: string, signature: string): string {
+  const signatureText = signature.trim();
+  if (!signatureText) return content;
+
+  const lines = signatureText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return content;
+
+  const flexibleLines = lines.map((line) => escapeSignatureRegex(line).replace(/\s+/g, "\\s+"));
+  const separator = "\\s*(?:\\r?\\n|\\n)\\s*";
+  const pattern = flexibleLines.join(separator);
+  const signaturePattern = new RegExp(`(?:\\s*(?:${separator})?)${pattern}\\s*$`, "i");
+
+  if (!signaturePattern.test(content)) return content;
+  return content.replace(signaturePattern, "").trim();
+}
+
+export function enforcePersonaSignatureFooter(content: string, signature: string | null): string {
+  const signatureText = signature?.trim();
+  if (!signatureText) return content.trim();
+
+  const sanitizedRedactedSignature = signatureText
+    .replace(PHONE_NUMBER_GLOBAL_REGEX, "[phone redacted]")
+    .replace(PHONE_DIGITS_ONLY_GLOBAL_REGEX, "[phone redacted]");
+
+  let working = stripPersonaSignatureSuffix(content, signatureText);
+  if (working === content && sanitizedRedactedSignature !== signatureText) {
+    working = stripPersonaSignatureSuffix(content, sanitizedRedactedSignature);
+  }
+
+  const trimmed = working.trim();
+  if (!trimmed) {
+    return signatureText;
+  }
+
+  return `${trimmed}\n\n${signatureText}`;
+}
+
 function parseDollarAmountToNumber(token: string): number | null {
   const normalized = token.replace(/^\$/, "").replace(/[,\s]/g, "");
   const parsed = Number.parseFloat(normalized);
@@ -6229,6 +6273,9 @@ Generate an appropriate ${channel} response following the guidelines above.
     }
 
     draftContent = sanitizeDraftContent(draftContent, leadId, channel);
+    if (channel === "email") {
+      draftContent = enforcePersonaSignatureFooter(draftContent, aiSignature);
+    }
     let pricingSafety: ReturnType<typeof enforcePricingAmountSafety> | null = null;
     if (channel === "email") {
       const pricingSafetyResult = enforcePricingAmountSafety(draftContent, serviceDescription, knowledgeContext, {
