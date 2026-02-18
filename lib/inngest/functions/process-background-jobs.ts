@@ -10,11 +10,14 @@ export const processBackgroundJobsFunction = inngest.createFunction(
     id: "process-background-jobs",
     retries: 5,
     concurrency: { limit: 1 },
+    idempotency: "event.data.dispatchKey",
   },
   { event: INNGEST_EVENT_BACKGROUND_PROCESS_REQUESTED },
-  async ({ event, step, attempt }) => {
+  async ({ event, step, attempt, runId }) => {
     const source = typeof event.data?.source === "string" ? event.data.source : "unknown";
     const requestedAt = typeof event.data?.requestedAt === "string" ? event.data.requestedAt : null;
+    const dispatchKey = typeof event.data?.dispatchKey === "string" ? event.data.dispatchKey : null;
+    const correlationId = typeof event.data?.correlationId === "string" ? event.data.correlationId : null;
     const startedAt = new Date();
 
     await writeInngestJobStatus({
@@ -23,6 +26,10 @@ export const processBackgroundJobsFunction = inngest.createFunction(
       attempt,
       startedAt: startedAt.toISOString(),
       source,
+      runId,
+      dispatchKey,
+      correlationId,
+      requestedAt,
     });
 
     try {
@@ -36,11 +43,17 @@ export const processBackgroundJobsFunction = inngest.createFunction(
         startedAt: startedAt.toISOString(),
         finishedAt: finishedAt.toISOString(),
         durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
+        runId,
+        dispatchKey,
+        correlationId,
+        requestedAt,
       });
 
       return {
         source,
         requestedAt,
+        dispatchKey,
+        correlationId,
         processedAt: finishedAt.toISOString(),
         ...results,
       };
@@ -55,6 +68,10 @@ export const processBackgroundJobsFunction = inngest.createFunction(
         finishedAt: finishedAt.toISOString(),
         durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
         lastError: error instanceof Error ? error.message : "Unknown error",
+        runId,
+        dispatchKey,
+        correlationId,
+        requestedAt,
       });
       throw error;
     }

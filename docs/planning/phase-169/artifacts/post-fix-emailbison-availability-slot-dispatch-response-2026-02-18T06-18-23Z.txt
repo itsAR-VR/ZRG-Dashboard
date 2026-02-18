@@ -1,0 +1,12 @@
+HTTP/2 202 
+cache-control: public, max-age=0, must-revalidate
+content-type: application/json
+date: Wed, 18 Feb 2026 06:18:25 GMT
+server: Vercel
+strict-transport-security: max-age=63072000; includeSubDomains; preload
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+x-matched-path: /api/cron/emailbison/availability-slot
+x-vercel-cache: BYPASS
+x-vercel-id: yul1::iad1::wd669-1771395504390-145cefb1c525
+
+{"success":true,"mode":"dispatch-only","dispatch":{"source":"cron/emailbison-availability-slot","requestedAt":"2026-02-18T06:18:24.841Z","dispatchKey":"cron:emailbison-availability-slot:2026-02-18T06:18","correlationId":"1594c5e4-5fb2-41eb-99e5-8e82d1cde58e","dispatchWindowStart":"2026-02-18T06:18:00.000Z","dispatchWindowSeconds":60},"event":{"name":"cron/emailbison-availability-slot.requested","id":"cron/emailbison-availability-slot.requested:cron:emailbison-availability-slot:2026-02-18T06:18"},"publishedEventIds":["01KHQPCPPBFXR3DNGZET6HJQW4"],"timestamp":"2026-02-18T06:18:24.841Z"}

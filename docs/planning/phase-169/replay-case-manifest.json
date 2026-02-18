@@ -1,0 +1,36 @@
+{
+  "phase": 169,
+  "strategy": "hybrid_seed",
+  "sourceArtifacts": [
+    ".artifacts/ai-replay/run-2026-02-12T12-00-11-289Z.json",
+    ".artifacts/ai-replay/run-2026-02-14T06-56-00-549Z.json",
+    ".artifacts/ai-replay/run-2026-02-17T00-26-08-989Z.json"
+  ],
+  "criticalCore3": [
+    "2a703183-e8f3-4a1f-8cde-b4bf4b4197b6",
+    "bfbdfd3f-a65f-47e2-a53b-1c06e2b2bfc5",
+    "e8397ad8-fc39-40d9-9d53-7cc69c509d40"
+  ],
+  "criticalTop10": [
+    "34a65b66-682f-463f-b2bf-4f093a71837a",
+    "213730fe-0cb9-4b4c-bbfb-52a8c18395e1",
+    "e0cd6d11-d712-4d02-ac23-29d9cb624e5d",
+    "5d297bce-2e9f-4b08-a570-ab057e47dedd",
+    "32a32cf7-df46-470f-9dac-c58266449388",
+    "bdc3df89-fe27-42ab-b417-e601844f7826",
+    "287c685b-0e45-45fe-a2d3-48ab58c67ef2",
+    "0aa24388-9577-40b8-b2bc-4ad180d6cb01",
+    "73612727-d04a-41df-bc51-e4ca649e7e93",
+    "dbebb8e6-e34f-4b71-a798-48bc900becdd"
+  ],
+  "threadIds": [
+    "f800dbf1-e369-4aad-bab0-c5231ff1f4c2",
+    "ab4b5e61-1610-4904-b932-e9684ea2b5da",
+    "8d301175-d2d0-4e93-9255-ddd27b0e8c0d",
+    "89676858-4d04-4b82-b9b5-a143444b63cb",
+    "7a313bb4-2932-4d15-85fd-26aab14d8df7",
+    "1ba1df75-da98-43d8-b9a3-573bff5e6af8",
+    "4bbb7fac-63b9-4dbe-bf86-d561f1b546ff"
+  ],
+  "sourcePhase": 167
+}

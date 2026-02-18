@@ -1,0 +1,18 @@
+Total messages: 10 (Errors: 0, Warnings: 2)
+
+[LOG] [ActionStation] Fetching drafts for conversation: 4641e885-12e9-4ebc-be72-11c66c3d745a channel: sms @ https://zrg-dashboard.vercel.app/_next/static/chunks/6716.a90fbb6af8b10afe.js?dpl=dpl_4RvyBWdk1Cer8NbT7cHaF26MMcfh:0
+[LOG] [ActionStation] Fetching drafts for conversation: 4641e885-12e9-4ebc-be72-11c66c3d745a channel: linkedin @ https://zrg-dashboard.vercel.app/_next/static/chunks/6716.a90fbb6af8b10afe.js?dpl=dpl_4RvyBWdk1Cer8NbT7cHaF26MMcfh:0
+[LOG] [ActionStation] Draft fetch result: {success: true, data: Array(0)} @ https://zrg-dashboard.vercel.app/_next/static/chunks/6716.a90fbb6af8b10afe.js?dpl=dpl_4RvyBWdk1Cer8NbT7cHaF26MMcfh:0
+[LOG] [ActionStation] No drafts found @ https://zrg-dashboard.vercel.app/_next/static/chunks/6716.a90fbb6af8b10afe.js?dpl=dpl_4RvyBWdk1Cer8NbT7cHaF26MMcfh:0
+[LOG] [ActionStation] Fetching drafts for conversation: 455e3f43-d48d-497e-8a2f-83df59ec2c45 channel: sms @ https://zrg-dashboard.vercel.app/_next/static/chunks/6716.a90fbb6af8b10afe.js?dpl=dpl_4RvyBWdk1Cer8NbT7cHaF26MMcfh:0
+[LOG] [ActionStation] Fetching drafts for conversation: 455e3f43-d48d-497e-8a2f-83df59ec2c45 channel: email @ https://zrg-dashboard.vercel.app/_next/static/chunks/6716.a90fbb6af8b10afe.js?dpl=dpl_4RvyBWdk1Cer8NbT7cHaF26MMcfh:0
+[LOG] [ActionStation] Draft fetch result: {success: true, data: Array(0)} @ https://zrg-dashboard.vercel.app/_next/static/chunks/6716.a90fbb6af8b10afe.js?dpl=dpl_4RvyBWdk1Cer8NbT7cHaF26MMcfh:0
+[LOG] [ActionStation] No drafts found @ https://zrg-dashboard.vercel.app/_next/static/chunks/6716.a90fbb6af8b10afe.js?dpl=dpl_4RvyBWdk1Cer8NbT7cHaF26MMcfh:0
+[WARNING] The width(-1) and height(-1) of chart should be greater than 0,
+       please check the style of container, or the props width(100%) and height(100%),
+       or add a minWidth(0) or minHeight(undefined) or use aspect(undefined) to control the
+       height and width. @ https://zrg-dashboard.vercel.app/_next/static/chunks/8629.1bb28c566c2d1dfa.js?dpl=dpl_4RvyBWdk1Cer8NbT7cHaF26MMcfh:0
+[WARNING] The width(-1) and height(-1) of chart should be greater than 0,
+       please check the style of container, or the props width(100%) and height(100%),
+       or add a minWidth(0) or minHeight(undefined) or use aspect(undefined) to control the
+       height and width. @ https://zrg-dashboard.vercel.app/_next/static/chunks/8629.1bb28c566c2d1dfa.js?dpl=dpl_4RvyBWdk1Cer8NbT7cHaF26MMcfh:0

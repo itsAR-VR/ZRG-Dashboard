@@ -1,0 +1,322 @@
+{
+  "capturedAtUtc": "2026-02-18T05:52:06.564Z",
+  "backgroundFunctionRunRecent": [
+    {
+      "functionName": "background-maintenance",
+      "status": "SUCCEEDED",
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:52:00.000Z",
+      "runId": "01KHQMWFCZ2VDE5DQ6G1YT3WDR",
+      "createdAt": "2026-02-18T05:52:04.933Z",
+      "finishedAt": "2026-02-18T05:52:05.727Z",
+      "lastError": null
+    },
+    {
+      "functionName": "background-maintenance",
+      "status": "SUCCEEDED",
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:50:00.000Z",
+      "runId": "01KHQMS40FFTGKW9AQD7WVBZ9C",
+      "createdAt": "2026-02-18T05:51:33.944Z",
+      "finishedAt": "2026-02-18T05:51:33.960Z",
+      "lastError": null
+    },
+    {
+      "functionName": "background-maintenance",
+      "status": "RUNNING",
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:50:00.000Z",
+      "runId": "01KHQMS40FFTGKW9AQD7WVBZ9C",
+      "createdAt": "2026-02-18T05:51:33.359Z",
+      "finishedAt": null,
+      "lastError": null
+    },
+    {
+      "functionName": "background-maintenance",
+      "status": "SUCCEEDED",
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:49:00.000Z",
+      "runId": "01KHQMQ2MXDPAPRT86F1WHAQ8M",
+      "createdAt": "2026-02-18T05:51:15.804Z",
+      "finishedAt": "2026-02-18T05:51:15.820Z",
+      "lastError": null
+    },
+    {
+      "functionName": "background-maintenance",
+      "status": "RUNNING",
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:49:00.000Z",
+      "runId": "01KHQMQ2MXDPAPRT86F1WHAQ8M",
+      "createdAt": "2026-02-18T05:51:15.345Z",
+      "finishedAt": null,
+      "lastError": null
+    },
+    {
+      "functionName": "cron-response-timing",
+      "status": "SUCCEEDED",
+      "dispatchKey": "cron:response-timing:post-signing-fix:2026-02-18T05:51:10",
+      "runId": "01KHQMTTTTA1BMAEWDZCSR962N",
+      "createdAt": "2026-02-18T05:51:11.343Z",
+      "finishedAt": "2026-02-18T05:51:17.403Z",
+      "lastError": null
+    },
+    {
+      "functionName": "background-maintenance",
+      "status": "SUCCEEDED",
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:51:00.000Z",
+      "runId": "01KHQMTSTDT2R2JX3D5GPPPDN1",
+      "createdAt": "2026-02-18T05:51:10.472Z",
+      "finishedAt": "2026-02-18T05:51:11.312Z",
+      "lastError": null
+    },
+    {
+      "functionName": "process-background-jobs",
+      "status": "RUNNING",
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:41:00.000Z",
+      "runId": "01KHQM8DTFK1FWB7AKV8M0TRFB",
+      "createdAt": "2026-02-18T05:50:56.924Z",
+      "finishedAt": null,
+      "lastError": null
+    },
+    {
+      "functionName": "background-maintenance",
+      "status": "SUCCEEDED",
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:48:00.000Z",
+      "runId": "01KHQMN81BJ6A3GH5VBB589GSF",
+      "createdAt": "2026-02-18T05:50:42.723Z",
+      "finishedAt": "2026-02-18T05:50:42.740Z",
+      "lastError": null
+    },
+    {
+      "functionName": "background-maintenance",
+      "status": "RUNNING",
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:48:00.000Z",
+      "runId": "01KHQMN81BJ6A3GH5VBB589GSF",
+      "createdAt": "2026-02-18T05:50:41.699Z",
+      "finishedAt": null,
+      "lastError": null
+    }
+  ],
+  "backgroundFunctionRunStatusCountsLastHour": [
+    {
+      "_count": {
+        "_all": 1
+      },
+      "functionName": "cron-response-timing",
+      "status": "SUCCEEDED"
+    },
+    {
+      "_count": {
+        "_all": 1
+      },
+      "functionName": "process-background-jobs",
+      "status": "RUNNING"
+    },
+    {
+      "_count": {
+        "_all": 3
+      },
+      "functionName": "background-maintenance",
+      "status": "RUNNING"
+    },
+    {
+      "_count": {
+        "_all": 5
+      },
+      "functionName": "background-maintenance",
+      "status": "SUCCEEDED"
+    }
+  ],
+  "backgroundDispatchWindowRecent": [
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:52:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMWF70P0NXEWAVZZX9MQPR",
+      "maintenanceEventId": "01KHQMWF70P0NXEWAVZZX9MQPS",
+      "createdAt": "2026-02-18T05:52:04.306Z",
+      "updatedAt": "2026-02-18T05:52:04.458Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:51:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMTRYMMMVC4S0VA6A779YY",
+      "maintenanceEventId": "01KHQMTRYMMMVC4S0VA6A779YZ",
+      "createdAt": "2026-02-18T05:51:08.740Z",
+      "updatedAt": "2026-02-18T05:51:08.877Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:50:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMRWZ70P6ZH8NV7TW6QHPQ",
+      "maintenanceEventId": "01KHQMRWZ70P6ZH8NV7TW6QHPR",
+      "createdAt": "2026-02-18T05:50:07.320Z",
+      "updatedAt": "2026-02-18T05:50:07.453Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:49:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMQ2BWW6QC7EE12CNG4DWC",
+      "maintenanceEventId": "01KHQMQ2BWW6QC7EE12CNG4DWD",
+      "createdAt": "2026-02-18T05:49:07.309Z",
+      "updatedAt": "2026-02-18T05:49:07.455Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:48:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMN7NKFZ2J8QTDB34BX857",
+      "maintenanceEventId": "01KHQMN7NKFZ2J8QTDB34BX858",
+      "createdAt": "2026-02-18T05:48:07.204Z",
+      "updatedAt": "2026-02-18T05:48:07.329Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:47:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMKD8B4NX5EBC9W8GBJ26D",
+      "maintenanceEventId": "01KHQMKD8B4NX5EBC9W8GBJ26E",
+      "createdAt": "2026-02-18T05:47:07.387Z",
+      "updatedAt": "2026-02-18T05:47:07.513Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:46:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMHJDY58MXHBV660F323NZ",
+      "maintenanceEventId": "01KHQMHJDY58MXHBV660F323P0",
+      "createdAt": "2026-02-18T05:46:07.151Z",
+      "updatedAt": "2026-02-18T05:46:07.300Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:45:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMFR55SQTFS2PKVP5329W1",
+      "maintenanceEventId": "01KHQMFR55SQTFS2PKVP5329W2",
+      "createdAt": "2026-02-18T05:45:07.478Z",
+      "updatedAt": "2026-02-18T05:45:07.649Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:44:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMDXDS0Z1EA0W2AHY64WEY",
+      "maintenanceEventId": "01KHQMDXDS0Z1EA0W2AHY64WEZ",
+      "createdAt": "2026-02-18T05:44:07.339Z",
+      "updatedAt": "2026-02-18T05:44:07.461Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:43:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMC2KWB6X7GM9WEYBZH6YN",
+      "maintenanceEventId": "01KHQMC2KWB6X7GM9WEYBZH6YP",
+      "createdAt": "2026-02-18T05:43:07.118Z",
+      "updatedAt": "2026-02-18T05:43:07.296Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:42:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQMA86Z5C4W3Q2SQSNEW76F",
+      "maintenanceEventId": "01KHQMA86Z5C4W3Q2SQSNEW76G",
+      "createdAt": "2026-02-18T05:42:07.312Z",
+      "updatedAt": "2026-02-18T05:42:07.436Z"
+    },
+    {
+      "dispatchKey": "background-jobs:v1:60:2026-02-18T05:41:00.000Z",
+      "status": "ENQUEUED",
+      "processEventId": "01KHQM8DM9BHQE64MVXYC2EB52",
+      "maintenanceEventId": "01KHQM8DM9BHQE64MVXYC2EB53",
+      "createdAt": "2026-02-18T05:41:07.322Z",
+      "updatedAt": "2026-02-18T05:41:07.465Z"
+    }
+  ],
+  "manualProbeRows": [
+    {
+      "functionName": "cron-response-timing",
+      "status": "SUCCEEDED",
+      "dispatchKey": "cron:response-timing:post-signing-fix:2026-02-18T05:51:10",
+      "runId": "01KHQMTTTTA1BMAEWDZCSR962N",
+      "createdAt": "2026-02-18T05:51:11.343Z",
+      "finishedAt": "2026-02-18T05:51:17.403Z",
+      "lastError": null
+    }
+  ],
+  "inngestFunctionFailedRecentCount": 50,
+  "inngestInvalidSignatureRecentCount": 50,
+  "inngestInvalidSignatureSamples": [
+    {
+      "ts": 1771393816555,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:e7e51e69f52e0d470820d048",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393773495,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:e2ada0f99e230774d33286cc",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393742224,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:805212413adedee1c464de2d",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393701416,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:4d0b4a3ae6ec0f269a15c87a",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393691908,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:4d4a1a53c109638174f1b0d9",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393671839,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:f12575eb627b7bb7293febf9",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393635844,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:3f673a058d0ba992df1a76bd",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393613409,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:fff1966d89db608f8427fb9a",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393611977,
+      "function_id": "zrg-dashboard-cron-response-timing",
+      "source_event": "cron/response-timing.requested",
+      "source_event_id": "cron/response-timing.requested:cron:response-timing:consume-check:2026-02-18T05:44:32",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393594625,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:b57f09975d2ce563675de0fa",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393546196,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:ccbe4b4e305614ba544d0f81",
+      "message": "Invalid signature"
+    },
+    {
+      "ts": 1771393492972,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:36eb602e943cfd16c54d091a",
+      "message": "Invalid signature"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+HTTP/2 202 
+cache-control: public, max-age=0, must-revalidate
+content-type: application/json
+date: Wed, 18 Feb 2026 06:15:53 GMT
+server: Vercel
+strict-transport-security: max-age=63072000; includeSubDomains; preload
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+x-matched-path: /api/cron/availability
+x-vercel-cache: BYPASS
+x-vercel-id: yul1::iad1::nczz7-1771395352837-a9d370f58582
+
+{"success":true,"mode":"dispatch-only","dispatch":{"source":"cron/availability","requestedAt":"2026-02-18T06:15:52.936Z","dispatchKey":"cron:availability:2026-02-18T06:15","correlationId":"c1918e33-36b0-4a22-b995-159f13d201ff","dispatchWindowStart":"2026-02-18T06:15:00.000Z","dispatchWindowSeconds":60},"event":{"name":"cron/availability.requested","id":"cron/availability.requested:cron:availability:2026-02-18T06:15"},"publishedEventIds":["01KHQP82B8XJPZT1FXAR6K22KN"],"timestamp":"2026-02-18T06:15:52.936Z"}

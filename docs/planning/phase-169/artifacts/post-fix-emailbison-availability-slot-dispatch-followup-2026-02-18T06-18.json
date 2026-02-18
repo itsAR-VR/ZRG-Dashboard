@@ -1,0 +1,30 @@
+{
+  "capturedAtUtc": "2026-02-18T06:18:43.690Z",
+  "dispatchKey": "cron:emailbison-availability-slot:2026-02-18T06:18",
+  "attempts": [
+    {
+      "checkedAtUtc": "2026-02-18T06:18:43.636Z",
+      "rowCount": 1,
+      "rows": [
+        {
+          "status": "RUNNING",
+          "dispatchKey": "cron:emailbison-availability-slot:2026-02-18T06:18",
+          "runId": "01KHQPCPXNP45062EHKZ86P2GH",
+          "createdAt": "2026-02-18T06:18:26.101Z",
+          "finishedAt": null,
+          "lastError": null
+        }
+      ]
+    }
+  ],
+  "recentRows": [
+    {
+      "status": "RUNNING",
+      "dispatchKey": "cron:emailbison-availability-slot:2026-02-18T06:18",
+      "runId": "01KHQPCPXNP45062EHKZ86P2GH",
+      "createdAt": "2026-02-18T06:18:26.101Z",
+      "finishedAt": null,
+      "lastError": null
+    }
+  ]
+}

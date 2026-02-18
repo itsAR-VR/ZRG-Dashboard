@@ -1,0 +1,12 @@
+HTTP/2 202 
+cache-control: public, max-age=0, must-revalidate
+content-type: application/json
+date: Wed, 18 Feb 2026 05:51:08 GMT
+server: Vercel
+strict-transport-security: max-age=63072000; includeSubDomains; preload
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+x-matched-path: /api/cron/background-jobs
+x-vercel-cache: BYPASS
+x-vercel-id: yul1::iad1::vjkmg-1771393868553-5c9a9e362208
+
+{"success":true,"mode":"dispatch-only","enqueued":true,"enqueuedEvents":["background/process.requested","background/maintenance.requested"],"dispatch":{"source":"cron/background-jobs","requestedAt":"2026-02-18T05:51:08.738Z","dispatchKey":"background-jobs:v1:60:2026-02-18T05:51:00.000Z","correlationId":"9068d417-9060-4fc0-bbb9-ae849f446612","dispatchWindowStart":"2026-02-18T05:51:00.000Z","dispatchWindowSeconds":60},"dispatchIds":{"processDispatchId":"bg-process:b134e661a2a8563326166fe5","maintenanceDispatchId":"bg-maint:b134e661a2a8563326166fe5"},"publishedEventIds":["01KHQMTRYMMMVC4S0VA6A779YY","01KHQMTRYMMMVC4S0VA6A779YZ"],"trackingEnabled":true,"requestedAt":"2026-02-18T05:51:08.738Z","timestamp":"2026-02-18T05:51:08.738Z"}

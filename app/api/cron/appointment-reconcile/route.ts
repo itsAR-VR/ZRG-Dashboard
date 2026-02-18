@@ -1,9 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runAppointmentReconciliation } from "@/lib/appointment-reconcile-runner";
-import { APPOINTMENT_SOURCE } from "@/lib/meeting-lifecycle";
+import {
+  buildAppointmentReconcileOptions,
+  runAppointmentReconcileCron,
+} from "@/lib/cron/appointment-reconcile";
+import {
+  buildCronDispatchContext,
+  buildCronEventId,
+  collectDispatchParams,
+  isInngestConfigured,
+  parseBooleanFlag,
+} from "@/lib/inngest/cron-dispatch";
+import { inngest } from "@/lib/inngest/client";
+import { INNGEST_EVENT_CRON_APPOINTMENT_RECONCILE_REQUESTED } from "@/lib/inngest/events";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
+
+const APPOINTMENT_RECONCILE_PARAM_KEYS = [
+  "workspaceLimit",
+  "leadsPerWorkspace",
+  "staleDays",
+  "clientId",
+  "dryRun",
+] as const;
+
+function isDispatchEnabled(): boolean {
+  return parseBooleanFlag(process.env.CRON_APPOINTMENT_RECONCILE_USE_INNGEST);
+}
 
 /**
  * GET /api/cron/appointment-reconcile
@@ -36,31 +59,83 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  try {
-    const searchParams = request.nextUrl.searchParams;
+  const searchParams = request.nextUrl.searchParams;
 
-    const workspaceLimit = Math.max(1, parseInt(searchParams.get("workspaceLimit") || process.env.RECONCILE_WORKSPACE_LIMIT || "10", 10) || 10);
-    const leadsPerWorkspace = Math.max(1, parseInt(searchParams.get("leadsPerWorkspace") || process.env.RECONCILE_LEADS_PER_WORKSPACE || "50", 10) || 50);
-    const staleDays = Math.max(1, parseInt(searchParams.get("staleDays") || process.env.RECONCILE_STALE_DAYS || "7", 10) || 7);
-    const clientId = searchParams.get("clientId") || undefined;
-    const dryRun = searchParams.get("dryRun") === "true";
+  if (isDispatchEnabled()) {
+    if (!isInngestConfigured()) {
+      return NextResponse.json(
+        {
+          success: false,
+          mode: "dispatch-misconfigured",
+          error: "Inngest dispatch is enabled but INNGEST_EVENT_KEY is not configured",
+        },
+        { status: 503 }
+      );
+    }
+
+    const params = collectDispatchParams(searchParams, APPOINTMENT_RECONCILE_PARAM_KEYS);
+    const { requestedAt, dispatchData } = buildCronDispatchContext({
+      job: "appointment-reconcile",
+      source: "cron/appointment-reconcile",
+      dispatchWindowSeconds: 60,
+      params,
+    });
+    const eventId = buildCronEventId(INNGEST_EVENT_CRON_APPOINTMENT_RECONCILE_REQUESTED, dispatchData.dispatchKey);
+
+    try {
+      const sendResult = await inngest.send({
+        id: eventId,
+        name: INNGEST_EVENT_CRON_APPOINTMENT_RECONCILE_REQUESTED,
+        data: dispatchData,
+      });
+      const publishedEventIds = Array.isArray(sendResult?.ids) ? sendResult.ids : [];
+
+      return NextResponse.json(
+        {
+          success: true,
+          mode: "dispatch-only",
+          dispatch: dispatchData,
+          event: {
+            name: INNGEST_EVENT_CRON_APPOINTMENT_RECONCILE_REQUESTED,
+            id: eventId,
+          },
+          publishedEventIds,
+          timestamp: requestedAt,
+        },
+        { status: 202 }
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[Appointment Reconcile Cron] Dispatch enqueue failed:", error);
+      return NextResponse.json(
+        {
+          success: false,
+          mode: "dispatch-failed",
+          enqueueError: message,
+          dispatch: dispatchData,
+          event: {
+            name: INNGEST_EVENT_CRON_APPOINTMENT_RECONCILE_REQUESTED,
+            id: eventId,
+          },
+          timestamp: new Date().toISOString(),
+        },
+        { status: 503 }
+      );
+    }
+  }
+
+  try {
+    const options = buildAppointmentReconcileOptions(searchParams);
 
     console.log("[Appointment Reconcile Cron] Starting reconciliation...", {
-      workspaceLimit,
-      leadsPerWorkspace,
-      staleDays,
-      clientId: clientId || "all",
-      dryRun,
+      workspaceLimit: options.workspaceLimit,
+      leadsPerWorkspace: options.leadsPerWorkspace,
+      staleDays: options.staleDays,
+      clientId: options.clientId || "all",
+      dryRun: options.dryRun,
     });
 
-    const result = await runAppointmentReconciliation({
-      workspaceLimit,
-      leadsPerWorkspace,
-      staleDays,
-      clientId,
-      dryRun,
-      source: APPOINTMENT_SOURCE.RECONCILE_CRON,
-    });
+    const result = await runAppointmentReconcileCron(options);
 
     console.log("[Appointment Reconcile Cron] Completed:", result);
 

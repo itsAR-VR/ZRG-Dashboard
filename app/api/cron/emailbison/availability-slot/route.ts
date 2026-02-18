@@ -1,9 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
-import { processEmailBisonFirstTouchAvailabilitySlots } from "@/lib/emailbison-first-touch-availability";
+import { runEmailBisonAvailabilitySlotCron } from "@/lib/cron/emailbison-availability-slot";
+import {
+  buildCronDispatchContext,
+  buildCronEventId,
+  isInngestConfigured,
+  parseBooleanFlag,
+} from "@/lib/inngest/cron-dispatch";
+import { inngest } from "@/lib/inngest/client";
+import { INNGEST_EVENT_CRON_EMAILBISON_AVAILABILITY_SLOT_REQUESTED } from "@/lib/inngest/events";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
+
+function isDispatchEnabled(): boolean {
+  return parseBooleanFlag(process.env.CRON_EMAILBISON_AVAILABILITY_SLOT_USE_INNGEST);
+}
 
 function isAuthorized(request: NextRequest): boolean {
   const expectedSecret = process.env.CRON_SECRET;
@@ -19,21 +31,82 @@ function isAuthorized(request: NextRequest): boolean {
   return authHeader === `Bearer ${expectedSecret}` || legacy === expectedSecret;
 }
 
+async function enqueueEmailBisonAvailabilityDispatch(): Promise<NextResponse> {
+  if (!isInngestConfigured()) {
+    return NextResponse.json(
+      {
+        success: false,
+        mode: "dispatch-misconfigured",
+        error: "Inngest dispatch is enabled but INNGEST_EVENT_KEY is not configured",
+      },
+      { status: 503 }
+    );
+  }
+
+  const { requestedAt, dispatchData } = buildCronDispatchContext({
+    job: "emailbison-availability-slot",
+    source: "cron/emailbison-availability-slot",
+    dispatchWindowSeconds: 60,
+  });
+  const eventId = buildCronEventId(
+    INNGEST_EVENT_CRON_EMAILBISON_AVAILABILITY_SLOT_REQUESTED,
+    dispatchData.dispatchKey
+  );
+
+  try {
+    const sendResult = await inngest.send({
+      id: eventId,
+      name: INNGEST_EVENT_CRON_EMAILBISON_AVAILABILITY_SLOT_REQUESTED,
+      data: dispatchData,
+    });
+    const publishedEventIds = Array.isArray(sendResult?.ids) ? sendResult.ids : [];
+
+    return NextResponse.json(
+      {
+        success: true,
+        mode: "dispatch-only",
+        dispatch: dispatchData,
+        event: {
+          name: INNGEST_EVENT_CRON_EMAILBISON_AVAILABILITY_SLOT_REQUESTED,
+          id: eventId,
+        },
+        publishedEventIds,
+        timestamp: requestedAt,
+      },
+      { status: 202 }
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[Cron] EmailBison availability-slot dispatch enqueue failed:", error);
+    return NextResponse.json(
+      {
+        success: false,
+        mode: "dispatch-failed",
+        enqueueError: message,
+        dispatch: dispatchData,
+        event: {
+          name: INNGEST_EVENT_CRON_EMAILBISON_AVAILABILITY_SLOT_REQUESTED,
+          id: eventId,
+        },
+        timestamp: new Date().toISOString(),
+      },
+      { status: 503 }
+    );
+  }
+}
+
 export async function GET(request: NextRequest) {
   return withAiTelemetrySource(request.nextUrl.pathname, async () => {
     if (!isAuthorized(request)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    try {
-      const dryRun = request.nextUrl.searchParams.get("dryRun") === "true";
-      const timeBudgetMsParam = request.nextUrl.searchParams.get("timeBudgetMs");
-      const timeBudgetMs = timeBudgetMsParam ? Number.parseInt(timeBudgetMsParam, 10) : undefined;
+    if (isDispatchEnabled()) {
+      return enqueueEmailBisonAvailabilityDispatch();
+    }
 
-      const result = await processEmailBisonFirstTouchAvailabilitySlots({
-        dryRun,
-        timeBudgetMs,
-      });
+    try {
+      const result = await runEmailBisonAvailabilitySlotCron(request.nextUrl.searchParams);
 
       return NextResponse.json({
         success: true,

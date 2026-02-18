@@ -1,0 +1,12 @@
+HTTP/2 202 
+cache-control: public, max-age=0, must-revalidate
+content-type: application/json
+date: Wed, 18 Feb 2026 06:09:28 GMT
+server: Vercel
+strict-transport-security: max-age=63072000; includeSubDomains; preload
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+x-matched-path: /api/cron/followups
+x-vercel-cache: BYPASS
+x-vercel-id: yul1::iad1::ssl4g-1771394968133-06d371c74c71
+
+{"success":true,"mode":"dispatch-only","dispatch":{"source":"cron/followups","requestedAt":"2026-02-18T06:09:28.402Z","dispatchKey":"cron:followups:2026-02-18T06:09","correlationId":"52512e43-bad6-4c38-ae86-9793f1e70a1d","dispatchWindowStart":"2026-02-18T06:09:00.000Z","dispatchWindowSeconds":60},"event":{"name":"cron/followups.requested","id":"cron/followups.requested:cron:followups:2026-02-18T06:09"},"publishedEventIds":["01KHQNWATJW9Y4GBX9QGF4WXG7"],"timestamp":"2026-02-18T06:09:28.402Z"}

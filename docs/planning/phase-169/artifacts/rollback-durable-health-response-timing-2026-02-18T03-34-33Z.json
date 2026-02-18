@@ -1,0 +1,17 @@
+{
+  "capturedAtUtc": "2026-02-18T03:34:33.448Z",
+  "windows": {
+    "cronRunWindowStartUtc": "2026-02-17T21:34:33.448Z",
+    "failedWindowStartUtc": "2026-02-17T03:34:33.448Z"
+  },
+  "backgroundFunctionRun": {
+    "cronResponseTimingRecentRuns": [],
+    "cronResponseTimingStatusCountsLast6h": []
+  },
+  "webhookEvent": {
+    "statusCountsAllTime": [],
+    "pendingDue": 0,
+    "running": 0,
+    "failedLast24h": 0
+  }
+}

@@ -210,7 +210,10 @@ export async function processResponseTimingEvents(opts?: {
               next_m.id as next_message_id,
               next_m."sentAt" as next_sent_at,
               next_m."sentByUserId" as next_sent_by_user_id,
-              (extract(epoch from (next_m."sentAt" - rte."inboundSentAt")) * 1000)::int as response_ms
+              least(
+                2147483647::bigint,
+                greatest(0::bigint, floor(extract(epoch from (next_m."sentAt" - rte."inboundSentAt")) * 1000)::bigint)
+              )::int as response_ms
             from "ResponseTimingEvent" rte
             join lateral (
               select
@@ -344,8 +347,12 @@ export async function processResponseTimingEvents(opts?: {
 
         const aiActualDelaySeconds =
           row.aiMessageSentAt != null ? computeDelaySecondsFromDates(row.inboundSentAt, row.aiMessageSentAt) : null;
+        const aiResponseMsRaw =
+          row.aiMessageSentAt != null ? row.aiMessageSentAt.getTime() - row.inboundSentAt.getTime() : null;
         const aiResponseMs =
-          row.aiMessageSentAt != null ? Math.max(0, row.aiMessageSentAt.getTime() - row.inboundSentAt.getTime()) : null;
+          aiResponseMsRaw != null
+            ? Math.min(2_147_483_647, Math.max(0, aiResponseMsRaw))
+            : null;
 
         const shouldUpdate =
           row.draftId != null ||

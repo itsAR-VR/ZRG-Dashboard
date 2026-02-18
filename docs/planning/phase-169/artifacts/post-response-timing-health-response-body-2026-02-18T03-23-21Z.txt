@@ -1,0 +1,2 @@
+Vercel CLI 50.1.5 curl (beta) — https://vercel.com/feedback
+Error: unknown or unexpected option: -H

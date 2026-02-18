@@ -1,0 +1,7 @@
+path	http_code	bytes
+/api/cron/response-timing	202	527
+/api/cron/background-jobs	200	842
+/api/cron/followups	200	88
+/api/cron/availability	200	88
+/api/cron/appointment-reconcile	200	322
+/api/cron/emailbison/availability-slot	000	0

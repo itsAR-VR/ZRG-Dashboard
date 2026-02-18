@@ -1,0 +1,29 @@
+{
+  "capturedAtUtc": "2026-02-18T06:06:20.578Z",
+  "rows": [
+    {
+      "status": "SUCCEEDED",
+      "dispatchKey": "cron:appointment-reconcile:2026-02-18T06:01",
+      "runId": "01KHQND7EG4P3JQ8G2FXJS6304",
+      "createdAt": "2026-02-18T06:03:48.560Z",
+      "finishedAt": "2026-02-18T06:05:32.066Z",
+      "lastError": null
+    },
+    {
+      "status": "SUCCEEDED",
+      "dispatchKey": "cron:appointment-reconcile:2026-02-18T06:00",
+      "runId": "01KHQNBD3YVB39NX1J94ZJVQSH",
+      "createdAt": "2026-02-18T06:01:30.491Z",
+      "finishedAt": "2026-02-18T06:03:47.249Z",
+      "lastError": null
+    },
+    {
+      "status": "RUNNING",
+      "dispatchKey": "cron:appointment-reconcile:2026-02-18T05:59",
+      "runId": "01KHQNANRFGFCFDMBG3H8WE15E",
+      "createdAt": "2026-02-18T05:59:50.535Z",
+      "finishedAt": null,
+      "lastError": null
+    }
+  ]
+}

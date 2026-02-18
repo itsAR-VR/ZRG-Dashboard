@@ -1,0 +1,166 @@
+{
+  "capturedAtUtc": "2026-02-18T05:47:36.047Z",
+  "totalEventsFetched": 51,
+  "functionFailedEvents": 17,
+  "invalidSignatureFailures": 17,
+  "groupedByFunctionAndEvent": {
+    "zrg-dashboard-process-background-jobs <- background/process.requested": 8,
+    "zrg-dashboard-background-maintenance <- background/maintenance.requested": 8,
+    "zrg-dashboard-cron-response-timing <- cron/response-timing.requested": 1
+  },
+  "sample": [
+    {
+      "id": "01KHQM13JKRHP9J6QG7EB2MAPH",
+      "ts": 1771393635844,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:3f673a058d0ba992df1a76bd",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQMDXGZRNXC01BCCM5Z0G95",
+      "ts": 1771393613409,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:fff1966d89db608f8427fb9a",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQMEP30ABQKVTKM7NYQ93DD",
+      "ts": 1771393611977,
+      "function_id": "zrg-dashboard-cron-response-timing",
+      "source_event": "cron/response-timing.requested",
+      "source_event_id": "cron/response-timing.requested:cron:response-timing:consume-check:2026-02-18T05:44:32",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQKZ9PGFY1TQ31R5Z7CSMKZ",
+      "ts": 1771393594625,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:b57f09975d2ce563675de0fa",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQMC2TJX0MNRXCM5WTZ0VHZ",
+      "ts": 1771393546196,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:ccbe4b4e305614ba544d0f81",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQKXE80KMDJJ0Y4J27NP3EF",
+      "ts": 1771393492972,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:36eb602e943cfd16c54d091a",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQMA8AEWFXTAV7YC34BQ6HM",
+      "ts": 1771393490451,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:3c616730c9984a6f2b3385e4",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQKVKN5WWAP9ZGPR07DNWB3",
+      "ts": 1771393420553,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:39f410776640d1b668f9039d",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQKSRYS48TQJ9EK1ZFZ70F4",
+      "ts": 1771393404301,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:6de8e55a8d869ab5d8b40445",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQM8DTGDNTX401HA5Z8R9D4",
+      "ts": 1771393398804,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:d461adb426efdad8e82063ad",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQKQY9SSZ7TVNS6EV47AX91",
+      "ts": 1771393366065,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:1d9f86de39c789916308775e",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQM6K4A6J212JDSYC9FGHAH",
+      "ts": 1771393359314,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:e7e51e69f52e0d470820d048",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQM4REMR8HW3B190SFPPAVC",
+      "ts": 1771393292910,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:e2ada0f99e230774d33286cc",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQKM94J1BX9DSX02PAYN9W7",
+      "ts": 1771393269551,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:ddbc981a39eee452309b1206",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQKP3RGKH2F46THXDYSNTDQ",
+      "ts": 1771393266861,
+      "function_id": "zrg-dashboard-process-background-jobs",
+      "source_event": "background/process.requested",
+      "source_event_id": "bg-process:9c7e568e5c8fea81a901f827",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQM2XXXW218EKS4JP0GMJ19",
+      "ts": 1771393251910,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:4d4a1a53c109638174f1b0d9",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    },
+    {
+      "id": "01KHQM13J5Z8BNMEEQFKGNYNSW",
+      "ts": 1771393190773,
+      "function_id": "zrg-dashboard-background-maintenance",
+      "source_event": "background/maintenance.requested",
+      "source_event_id": "bg-maint:3f673a058d0ba992df1a76bd",
+      "error_message": "Invalid signature",
+      "error_error": "invalid status code: 401"
+    }
+  ]
+}

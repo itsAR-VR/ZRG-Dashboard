@@ -1,0 +1,12 @@
+HTTP/2 200 
+cache-control: public, max-age=0, must-revalidate
+content-type: application/json
+date: Wed, 18 Feb 2026 03:33:56 GMT
+server: Vercel
+strict-transport-security: max-age=63072000; includeSubDomains; preload
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+x-matched-path: /api/cron/response-timing
+x-vercel-cache: BYPASS
+x-vercel-id: yul1::iad1::lnfqg-1771385630492-22668b4cbe46
+
+{"success":true,"inserted":0,"updatedSetter":0,"updatedAi":0,"exhausted":false,"durationMs":5613,"scanFromIso":"2025-11-20T03:33:50.615Z","scanToIso":"2026-02-18T03:33:50.615Z","timestamp":"2026-02-18T03:33:56.228Z"}

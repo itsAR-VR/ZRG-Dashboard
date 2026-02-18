@@ -1,0 +1,7 @@
+Vercel CLI 50.1.5
+Fetching deployment "zrg-dashboard.vercel.app" in zrg
+Displaying runtime logs for deployment zrg-dashboard-1r6g869pg-zrg.vercel.app (dpl_H5nhFTEataQFMosXxTQP3jjfaxzg) starting from Feb Tu 22:33:47.09
+
+waiting for new logs...
+{"level":"info","message":"[Appointment Reconcile Cron] Starting reconciliation... {\n  workspaceLimit: 10,\n  leadsPerWorkspace: 50,\n  staleDays: 7,\n  clientId: 'all',\n  dryRun: false\n}","messageTruncated":false,"rowId":"1771385627249","source":"serverless","timestampInMs":1771385627249,"requestMethod":"GET","requestPath":"/api/cron/appointment-reconcile","domain":"zrg-dashboard-1r6g869pg-zrg.vercel.app","responseStatusCode":-1}
+waiting for new logs...

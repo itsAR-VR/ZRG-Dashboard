@@ -1,0 +1,26 @@
+{
+  "capturedAtUtc": "2026-02-18T06:15:54.017Z",
+  "dispatchKey": "cron:availability:2026-02-18T06:15",
+  "eventId": "cron/availability.requested:cron:availability:2026-02-18T06:15",
+  "rowsByDispatch": [
+    {
+      "functionName": "cron-availability",
+      "status": "SUCCEEDED",
+      "dispatchKey": "cron:availability:2026-02-18T06:15",
+      "runId": "01KHQP7DBV62WA49WAJPRSKPM4",
+      "createdAt": "2026-02-18T06:15:33.265Z",
+      "finishedAt": "2026-02-18T06:15:40.181Z",
+      "lastError": null
+    }
+  ],
+  "recentRows": [
+    {
+      "status": "SUCCEEDED",
+      "dispatchKey": "cron:availability:2026-02-18T06:15",
+      "runId": "01KHQP7DBV62WA49WAJPRSKPM4",
+      "createdAt": "2026-02-18T06:15:33.265Z",
+      "finishedAt": "2026-02-18T06:15:40.181Z",
+      "lastError": null
+    }
+  ]
+}

@@ -172,6 +172,19 @@ enum BackgroundJobStatus {
   FAILED
 }
 
+enum BackgroundDispatchStatus {
+  DISPATCHING
+  ENQUEUED
+  ENQUEUE_FAILED
+  INLINE_EMERGENCY
+}
+
+enum BackgroundFunctionRunStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
 // Webhook event queue (Phase 53): lightweight ingestion queue to absorb bursty providers.
 enum WebhookProvider {
   INBOXXIA
@@ -1451,6 +1464,53 @@ model BackgroundJob {
   @@index([leadId])
   @@index([messageId])
   @@index([draftId])
+}
+
+model BackgroundDispatchWindow {
+  id                    String                 @id @default(uuid())
+  dispatchKey           String                 @unique
+  source                String
+  requestedAt           DateTime
+  windowStart           DateTime
+  windowSeconds         Int                    @default(60)
+  correlationId         String
+  status                BackgroundDispatchStatus @default(DISPATCHING)
+  processDispatchId     String?
+  maintenanceDispatchId String?
+  processEventId        String?
+  maintenanceEventId    String?
+  errorMessage          String?                @db.Text
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([windowStart(sort: Desc)])
+  @@index([requestedAt(sort: Desc)])
+}
+
+model BackgroundFunctionRun {
+  id            String                    @id @default(uuid())
+  runKey        String                    @unique
+  functionName  String
+  status        BackgroundFunctionRunStatus
+  attempt       Int
+  runId         String?
+  source        String?
+  clientId      String?
+  dispatchKey   String?
+  correlationId String?
+  requestedAt   DateTime?
+  startedAt     DateTime
+  finishedAt    DateTime?
+  durationMs    Int?
+  lastError     String?                   @db.Text
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+
+  @@index([functionName, createdAt(sort: Desc)])
+  @@index([status, createdAt(sort: Desc)])
+  @@index([dispatchKey])
+  @@index([runId])
 }
 
 model BookingQualificationJob {

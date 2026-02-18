@@ -1,0 +1,7 @@
+Vercel CLI 50.1.5
+Fetching deployment "zrg-dashboard.vercel.app" in zrg
+Displaying runtime logs for deployment zrg-dashboard-l0uhppcif-zrg.vercel.app (dpl_EHuWrRAkKZmcv8M1QpbSarwBTh7H) starting from Feb Tu 22:23:22.35
+
+waiting for new logs...
+{"level":"info","message":"[cron] / status=200","messageTruncated":false,"rowId":"1771385010450","source":"edge-middleware","timestampInMs":1771385010450,"requestMethod":"GET","requestPath":"/api/cron/insights/context-packs","domain":"zrg-dashboard-l0uhppcif-zrg.vercel.app","responseStatusCode":-1}
+waiting for new logs...

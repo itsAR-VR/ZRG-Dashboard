@@ -129,12 +129,7 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.next({ request });
   }
 
-  // Next Server Actions are POSTed to route paths (often "/"). Those requests already perform
-  // auth checks inside the action implementation (requireAuthUser/requireClientAccess). Skipping
-  // middleware auth refresh here avoids duplicating auth round-trips per action invocation.
-  if (request.method === "POST" && request.headers.has("next-action")) {
-    return NextResponse.next({ request });
-  }
+  const isNextActionRequest = request.method === "POST" && request.headers.has("next-action");
 
   let supabaseResponse = NextResponse.next({
     request,
@@ -144,7 +139,9 @@ export async function updateSession(request: NextRequest) {
   // This avoids noisy auth refresh attempts for signed-out users (e.g. refresh_token_not_found).
   const isAuthPage = request.nextUrl.pathname.startsWith("/auth");
   const isApiRoute = request.nextUrl.pathname.startsWith("/api");
-  const isPublicRoute = isAuthPage || isApiRoute;
+  // Treat Server Action POSTs as public at middleware level so action-level auth checks remain
+  // authoritative while still allowing middleware refresh when a session cookie is present.
+  const isPublicRoute = isAuthPage || isApiRoute || isNextActionRequest;
   const isAuthCallbackRoute = request.nextUrl.pathname === "/auth/callback";
   const isResetPasswordRoute = request.nextUrl.pathname === "/auth/reset-password";
 

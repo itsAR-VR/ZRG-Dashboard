@@ -1,0 +1,5 @@
+timestamp_utc	endpoint	status	time_total_s	note
+2026-02-18T01:33:21Z	/api/cron/background-jobs	202	0.309364	sample
+2026-02-18T01:33:21Z	/api/cron/appointment-reconcile	000	12.009425000	timeout_or_network
+2026-02-18T01:33:34Z	/api/cron/response-timing	500	4.779454	sample
+2026-02-18T01:32:55Z	/api/cron/appointment-reconcile	200	106.121193

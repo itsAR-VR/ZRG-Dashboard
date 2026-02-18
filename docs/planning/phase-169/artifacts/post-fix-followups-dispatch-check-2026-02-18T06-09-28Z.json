@@ -1,0 +1,28 @@
+{
+  "capturedAtUtc": "2026-02-18T06:09:48.904Z",
+  "dispatchKey": "cron:followups:2026-02-18T06:09",
+  "eventId": "cron/followups.requested:cron:followups:2026-02-18T06:09",
+  "rowsByDispatch": [
+    {
+      "functionName": "cron-followups",
+      "status": "RUNNING",
+      "dispatchKey": "cron:followups:2026-02-18T06:09",
+      "runId": "01KHQNWAZQ35K7D6KPFREVJA5J",
+      "createdAt": "2026-02-18T06:09:37.045Z",
+      "finishedAt": null,
+      "lastError": null
+    }
+  ],
+  "recentRows": [
+    {
+      "status": "RUNNING",
+      "dispatchKey": "cron:followups:2026-02-18T06:09",
+      "runId": "01KHQNWAZQ35K7D6KPFREVJA5J",
+      "createdAt": "2026-02-18T06:09:37.045Z",
+      "finishedAt": null,
+      "lastError": null
+    }
+  ],
+  "invalidSignatureFailuresLast5m": 0,
+  "invalidSignatureFailureSamplesLast5m": []
+}

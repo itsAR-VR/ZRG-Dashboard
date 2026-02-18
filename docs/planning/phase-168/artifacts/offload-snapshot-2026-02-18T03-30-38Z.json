@@ -1,0 +1,10 @@
+{
+  "capturedAtUtc": "2026-02-18T03:30:38.735Z",
+  "window30StartUtc": "2026-02-18T03:00:38.735Z",
+  "window24hStartUtc": "2026-02-17T03:30:38.735Z",
+  "webhookOutstanding": [],
+  "webhookRecent30mByStatus": [],
+  "webhookRecent24hByTypeStatus": [],
+  "backgroundRuns30mByStatus": [],
+  "backgroundRuns24hByFunctionStatus": []
+}

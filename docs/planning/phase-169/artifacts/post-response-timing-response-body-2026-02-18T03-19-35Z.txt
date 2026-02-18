@@ -1,0 +1,7 @@
+Vercel CLI 50.1.5 curl (beta) — https://vercel.com/feedback
+Retrieving project…
+Retrieving project…
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100   527    0   527    0     0   1048      0 --:--:-- --:--:-- --:--:--  1047100   527    0   527    0     0   1047      0 --:--:-- --:--:-- --:--:--  1047
+{"success":true,"mode":"dispatch-only","dispatch":{"source":"cron/response-timing","requestedAt":"2026-02-18T03:19:44.324Z","dispatchKey":"cron:response-timing:2026-02-18T03:15","correlationId":"2fde9d66-d46e-4cdf-8543-f06562cb319a","dispatchWindowStart":"2026-02-18T03:15:00.000Z","dispatchWindowSeconds":300},"event":{"name":"cron/response-timing.requested","id":"cron/response-timing.requested:cron:response-timing:2026-02-18T03:15"},"publishedEventIds":["01KHQC5HE4JPKDTN7JTXDKZJ9F"],"timestamp":"2026-02-18T03:19:44.324Z"}

@@ -1,0 +1,59 @@
+{
+  "capturedAtUtc": "2026-02-18T06:24:15.114Z",
+  "checks": [
+    {
+      "key": "INNGEST_SIGNING_KEY",
+      "present": true,
+      "hasLeadingOrTrailingWhitespace": false,
+      "length": 77
+    },
+    {
+      "key": "CRON_SECRET",
+      "present": true,
+      "hasLeadingOrTrailingWhitespace": false,
+      "length": 64
+    },
+    {
+      "key": "CRON_RESPONSE_TIMING_USE_INNGEST",
+      "present": true,
+      "hasLeadingOrTrailingWhitespace": false,
+      "length": 4
+    },
+    {
+      "key": "CRON_APPOINTMENT_RECONCILE_USE_INNGEST",
+      "present": true,
+      "hasLeadingOrTrailingWhitespace": false,
+      "length": 4
+    },
+    {
+      "key": "CRON_FOLLOWUPS_USE_INNGEST",
+      "present": true,
+      "hasLeadingOrTrailingWhitespace": false,
+      "length": 4
+    },
+    {
+      "key": "CRON_AVAILABILITY_USE_INNGEST",
+      "present": true,
+      "hasLeadingOrTrailingWhitespace": false,
+      "length": 4
+    },
+    {
+      "key": "CRON_EMAILBISON_AVAILABILITY_SLOT_USE_INNGEST",
+      "present": true,
+      "hasLeadingOrTrailingWhitespace": false,
+      "length": 4
+    },
+    {
+      "key": "BACKGROUND_JOBS_USE_INNGEST",
+      "present": true,
+      "hasLeadingOrTrailingWhitespace": false,
+      "length": 4
+    },
+    {
+      "key": "INBOXXIA_EMAIL_SENT_ASYNC",
+      "present": true,
+      "hasLeadingOrTrailingWhitespace": false,
+      "length": 4
+    }
+  ]
+}

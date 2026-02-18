@@ -1,0 +1,26 @@
+{
+  "capturedAtUtc": "2026-02-18T05:55:38.645Z",
+  "dispatchKey": "",
+  "eventId": "",
+  "rowsByDispatch": [],
+  "recentCronRows": [
+    {
+      "status": "SUCCEEDED",
+      "dispatchKey": "cron:response-timing:2026-02-18T05:55",
+      "runId": "01KHQN2BS3NDWYF3CKVNRS0TR2",
+      "createdAt": "2026-02-18T05:55:19.634Z",
+      "finishedAt": "2026-02-18T05:55:25.989Z",
+      "lastError": null
+    },
+    {
+      "status": "SUCCEEDED",
+      "dispatchKey": "cron:response-timing:post-signing-fix:2026-02-18T05:51:10",
+      "runId": "01KHQMTTTTA1BMAEWDZCSR962N",
+      "createdAt": "2026-02-18T05:51:11.343Z",
+      "finishedAt": "2026-02-18T05:51:17.403Z",
+      "lastError": null
+    }
+  ],
+  "invalidSignatureFailuresLast5m": 0,
+  "invalidSignatureFailureSamplesLast5m": []
+}

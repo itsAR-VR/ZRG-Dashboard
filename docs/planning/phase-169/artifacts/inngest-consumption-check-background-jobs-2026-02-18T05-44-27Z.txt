@@ -1,0 +1,12 @@
+HTTP/2 200 
+cache-control: public, max-age=0, must-revalidate
+content-type: application/json
+date: Wed, 18 Feb 2026 05:44:31 GMT
+server: Vercel
+strict-transport-security: max-age=63072000; includeSubDomains; preload
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+x-matched-path: /api/cron/background-jobs
+x-vercel-cache: BYPASS
+x-vercel-id: yul1::iad1::942dz-1771393471474-5a20dd38ba62
+
+{"success":true,"mode":"dispatch-duplicate-suppressed","enqueued":false,"dispatch":{"source":"cron/background-jobs","requestedAt":"2026-02-18T05:44:31.554Z","dispatchKey":"background-jobs:v1:60:2026-02-18T05:44:00.000Z","correlationId":"c225cf0c-8e5d-40a4-9041-62f0eaefeba3","dispatchWindowStart":"2026-02-18T05:44:00.000Z","dispatchWindowSeconds":60},"dispatchIds":{"processDispatchId":"bg-process:fff1966d89db608f8427fb9a","maintenanceDispatchId":"bg-maint:fff1966d89db608f8427fb9a"},"existingDispatch":{"status":"ENQUEUED","processDispatchId":"bg-process:fff1966d89db608f8427fb9a","maintenanceDispatchId":"bg-maint:fff1966d89db608f8427fb9a","processEventId":"01KHQMDXDS0Z1EA0W2AHY64WEY","maintenanceEventId":"01KHQMDXDS0Z1EA0W2AHY64WEZ","updatedAt":"2026-02-18T05:44:07.461Z"},"trackingEnabled":true,"timestamp":"2026-02-18T05:44:31.643Z"}

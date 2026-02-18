@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
+import { runAvailabilityCron } from "@/lib/cron/availability";
 import { prisma } from "@/lib/prisma";
 import { withAiTelemetrySource } from "@/lib/ai/telemetry-context";
-import { refreshAvailabilityCachesDue } from "@/lib/availability-cache";
+import {
+  buildCronDispatchContext,
+  buildCronEventId,
+  isInngestConfigured,
+  parseBooleanFlag,
+} from "@/lib/inngest/cron-dispatch";
+import { inngest } from "@/lib/inngest/client";
+import { INNGEST_EVENT_CRON_AVAILABILITY_REQUESTED } from "@/lib/inngest/events";
 
 // Vercel Serverless Functions (Pro) require maxDuration in [1, 800].
 export const maxDuration = 800;
@@ -23,6 +31,10 @@ function isAuthorized(request: NextRequest): boolean {
 
 const LOCK_KEY = BigInt("61061061061");
 
+function isDispatchEnabled(): boolean {
+  return parseBooleanFlag(process.env.CRON_AVAILABILITY_USE_INNGEST);
+}
+
 async function tryAcquireLock(): Promise<boolean> {
   const rows = await prisma.$queryRaw<Array<{ locked: boolean }>>`select pg_try_advisory_lock(${LOCK_KEY}) as locked`;
   return Boolean(rows?.[0]?.locked);
@@ -32,10 +44,75 @@ async function releaseLock(): Promise<void> {
   await prisma.$queryRaw`select pg_advisory_unlock(${LOCK_KEY})`.catch(() => undefined);
 }
 
+async function enqueueAvailabilityDispatch(): Promise<NextResponse> {
+  if (!isInngestConfigured()) {
+    return NextResponse.json(
+      {
+        success: false,
+        mode: "dispatch-misconfigured",
+        error: "Inngest dispatch is enabled but INNGEST_EVENT_KEY is not configured",
+      },
+      { status: 503 }
+    );
+  }
+
+  const { requestedAt, dispatchData } = buildCronDispatchContext({
+    job: "availability",
+    source: "cron/availability",
+    dispatchWindowSeconds: 60,
+  });
+  const eventId = buildCronEventId(INNGEST_EVENT_CRON_AVAILABILITY_REQUESTED, dispatchData.dispatchKey);
+
+  try {
+    const sendResult = await inngest.send({
+      id: eventId,
+      name: INNGEST_EVENT_CRON_AVAILABILITY_REQUESTED,
+      data: dispatchData,
+    });
+    const publishedEventIds = Array.isArray(sendResult?.ids) ? sendResult.ids : [];
+
+    return NextResponse.json(
+      {
+        success: true,
+        mode: "dispatch-only",
+        dispatch: dispatchData,
+        event: {
+          name: INNGEST_EVENT_CRON_AVAILABILITY_REQUESTED,
+          id: eventId,
+        },
+        publishedEventIds,
+        timestamp: requestedAt,
+      },
+      { status: 202 }
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[Cron/Availability] Dispatch enqueue failed:", error);
+    return NextResponse.json(
+      {
+        success: false,
+        mode: "dispatch-failed",
+        enqueueError: message,
+        dispatch: dispatchData,
+        event: {
+          name: INNGEST_EVENT_CRON_AVAILABILITY_REQUESTED,
+          id: eventId,
+        },
+        timestamp: new Date().toISOString(),
+      },
+      { status: 503 }
+    );
+  }
+}
+
 export async function GET(request: NextRequest) {
   return withAiTelemetrySource(request.nextUrl.pathname, async () => {
     if (!isAuthorized(request)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    if (isDispatchEnabled()) {
+      return enqueueAvailabilityDispatch();
     }
 
     const acquired = await tryAcquireLock();
@@ -51,47 +128,11 @@ export async function GET(request: NextRequest) {
     const invocationId = crypto.randomUUID();
 
     try {
-      const timeBudgetMsParam = request.nextUrl.searchParams.get("timeBudgetMs");
-      const fromQuery = timeBudgetMsParam ? Number.parseInt(timeBudgetMsParam, 10) : null;
-      const fromEnv = process.env.AVAILABILITY_CRON_TIME_BUDGET_MS
-        ? Number.parseInt(process.env.AVAILABILITY_CRON_TIME_BUDGET_MS, 10)
-        : null;
-      const maxBudgetMs = 10 * 60_000;
-      const overallBudgetMs = Number.isFinite(fromQuery)
-        ? Math.max(10_000, Math.min(maxBudgetMs, fromQuery as number))
-        : Number.isFinite(fromEnv)
-          ? Math.max(10_000, Math.min(maxBudgetMs, fromEnv as number))
-          : 55_000;
-
-      const concurrencyParam = request.nextUrl.searchParams.get("concurrency");
-      const concurrency = concurrencyParam ? Number.parseInt(concurrencyParam, 10) : undefined;
-
-      const defaultBudgetMs = Math.max(10_000, Math.floor(overallBudgetMs * 0.75));
-      const directBudgetMs = Math.max(0, overallBudgetMs - defaultBudgetMs);
-
-      const defaultResult = await refreshAvailabilityCachesDue({
-        mode: "all",
-        timeBudgetMs: defaultBudgetMs,
-        concurrency,
-        invocationId,
-        availabilitySource: "DEFAULT",
-      });
-
-      const directBookResult =
-        directBudgetMs >= 10_000
-          ? await refreshAvailabilityCachesDue({
-              mode: "all",
-              timeBudgetMs: directBudgetMs,
-              concurrency,
-              invocationId,
-              availabilitySource: "DIRECT_BOOK",
-            })
-          : null;
+      const result = await runAvailabilityCron(request.nextUrl.searchParams, invocationId);
 
       return NextResponse.json({
         success: true,
-        default: defaultResult,
-        directBook: directBookResult,
+        ...result,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {

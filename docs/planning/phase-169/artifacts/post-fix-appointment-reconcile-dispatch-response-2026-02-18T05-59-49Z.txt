@@ -1,0 +1,12 @@
+HTTP/2 202 
+cache-control: public, max-age=0, must-revalidate
+content-type: application/json
+date: Wed, 18 Feb 2026 05:59:49 GMT
+server: Vercel
+strict-transport-security: max-age=63072000; includeSubDomains; preload
+vary: rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch
+x-matched-path: /api/cron/appointment-reconcile
+x-vercel-cache: BYPASS
+x-vercel-id: yul1::iad1::7j2jn-1771394389246-8c9760979daf
+
+{"success":true,"mode":"dispatch-only","dispatch":{"source":"cron/appointment-reconcile","requestedAt":"2026-02-18T05:59:49.429Z","dispatchKey":"cron:appointment-reconcile:2026-02-18T05:59","correlationId":"b9d76e1a-2165-4010-a24e-3395bdf73884","dispatchWindowStart":"2026-02-18T05:59:00.000Z","dispatchWindowSeconds":60},"event":{"name":"cron/appointment-reconcile.requested","id":"cron/appointment-reconcile.requested:cron:appointment-reconcile:2026-02-18T05:59"},"publishedEventIds":["01KHQNANDP0Z29RX5ZVH86KMSD"],"timestamp":"2026-02-18T05:59:49.429Z"}
