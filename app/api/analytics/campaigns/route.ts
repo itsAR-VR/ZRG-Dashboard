@@ -115,6 +115,7 @@ export async function GET(request: NextRequest) {
     clientId,
     ...(from ? { from } : {}),
     ...(to ? { to } : {}),
+    authUser,
   };
 
   const [campaignsResult, reactivationResult, aiDraftOutcomeResult, aiDraftBookingResult] =

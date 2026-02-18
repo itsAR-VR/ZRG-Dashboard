@@ -66,6 +66,7 @@ export async function GET(request: NextRequest) {
     clientId,
     ...(from ? { from } : {}),
     ...(to ? { to } : {}),
+    authUser,
   });
 
   if (!result.success) {

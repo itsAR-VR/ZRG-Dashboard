@@ -84,6 +84,7 @@ export async function GET(request: NextRequest) {
     ...(attributionWindowDays ? { attributionWindowDays: Number(attributionWindowDays) } : {}),
     ...(maturityBufferDays ? { maturityBufferDays: Number(maturityBufferDays) } : {}),
     ...(topRespondersLimit ? { topRespondersLimit: Number(topRespondersLimit) } : {}),
+    authUser,
   });
 
   if (!result.success) {

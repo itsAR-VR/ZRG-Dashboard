@@ -13,11 +13,10 @@ import { POSITIVE_SENTIMENTS } from "@/lib/sentiment-shared";
 import { normalizeEmail, normalizePhone } from "@/lib/lead-matching";
 import { normalizeLinkedInUrl } from "@/lib/linkedin-utils";
 import { isSamePhone, toStoredPhone } from "@/lib/phone-utils";
-import { requireAuthUser } from "@/lib/workspace-access";
+import { getAccessibleClientIdsForUser, requireAuthUser } from "@/lib/workspace-access";
 import { formatDurationMs } from "@/lib/business-hours";
 import { redisGetJson, redisSetJson } from "@/lib/redis";
 import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
-import { accessibleClientWhere, accessibleLeadWhere } from "@/lib/workspace-access-filters";
 import { requireWorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { getWorkspaceCapacityUtilization, type CapacityUtilization } from "@/lib/calendar-capacity-metrics";
 import { Prisma, type ClientMemberRole, type MeetingBookingProvider, type CrmResponseMode } from "@prisma/client";
@@ -25,9 +24,28 @@ import { Prisma, type ClientMemberRole, type MeetingBookingProvider, type CrmRes
 // Simple in-memory cache for analytics with TTL (5 minutes)
 // Analytics data can be slightly stale without issues, and this dramatically reduces DB load
 const ANALYTICS_CACHE_TTL_MS = 5 * 60 * 1000;
+const ANALYTICS_VERSION_KEY_PREFIX = "analytics:v1:ver:";
 interface AnalyticsCacheEntry {
   data: AnalyticsData;
   expiresAt: number;
+}
+
+type AnalyticsAuthUser = {
+  id: string;
+  email: string | null;
+};
+
+async function resolveAnalyticsClientScope(
+  user: AnalyticsAuthUser,
+  clientId?: string | null
+): Promise<{ clientIds: string[]; clientId: string | null } | null> {
+  const accessibleClientIds = await getAccessibleClientIdsForUser(user.id, user.email);
+  const normalizedClientId = (clientId || "").trim() || null;
+  if (normalizedClientId) {
+    if (!accessibleClientIds.includes(normalizedClientId)) return null;
+    return { clientIds: [normalizedClientId], clientId: normalizedClientId };
+  }
+  return { clientIds: accessibleClientIds, clientId: null };
 }
 
 export interface SequenceAttributionRow {
@@ -52,24 +70,23 @@ export async function getWorkflowAttributionAnalytics(opts?: {
   clientId?: string | null;
   from?: string;
   to?: string;
+  authUser?: AnalyticsAuthUser;
 }): Promise<{ success: boolean; data?: WorkflowAttributionData; error?: string }> {
   try {
-    const user = await requireAuthUser();
+    const user = opts?.authUser ?? (await requireAuthUser());
     const now = new Date();
     const windowState = resolveAnalyticsWindow({ from: opts?.from, to: opts?.to });
     const to = windowState.to ?? now;
     const from =
       windowState.from ?? new Date(to.getTime() - DEFAULT_ANALYTICS_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    const scope = await resolveAnalyticsClientScope(user, opts?.clientId ?? null);
+    if (!scope) return { success: false, error: "Unauthorized" };
 
-    if (opts?.clientId) {
-      const canAccess = await prisma.client.findFirst({
-        where: { id: opts.clientId, ...accessibleClientWhere(user.id) },
-        select: { id: true },
-      });
-      if (!canAccess) return { success: false, error: "Unauthorized" };
-    }
-
-    const accessibleWhere = buildAccessibleLeadSqlWhere({ userId: user.id, clientId: opts?.clientId ?? null });
+    const accessibleWhere = buildAccessibleLeadSqlWhere({
+      userId: user.id,
+      clientId: scope.clientId,
+      clientIds: scope.clientIds,
+    });
 
     const { totalsRows, sequenceRows } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SET LOCAL statement_timeout = 10000`;
@@ -181,6 +198,10 @@ export async function getWorkflowAttributionAnalytics(opts?: {
     };
   } catch (error) {
     console.error("[Analytics] Failed to get workflow attribution:", error);
+    const message = error instanceof Error ? error.message : "Unknown error";
+    if (message === "Not authenticated" || message === "Unauthorized") {
+      return { success: false, error: message };
+    }
     return { success: false, error: "Failed to fetch workflow attribution" };
   }
 }
@@ -211,24 +232,23 @@ export async function getReactivationCampaignAnalytics(opts?: {
   clientId?: string | null;
   from?: string;
   to?: string;
+  authUser?: AnalyticsAuthUser;
 }): Promise<{ success: boolean; data?: ReactivationAnalyticsData; error?: string }> {
   try {
-    const user = await requireAuthUser();
+    const user = opts?.authUser ?? (await requireAuthUser());
     const now = new Date();
     const windowState = resolveAnalyticsWindow({ from: opts?.from, to: opts?.to });
     const to = windowState.to ?? now;
     const from =
       windowState.from ?? new Date(to.getTime() - DEFAULT_ANALYTICS_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    const scope = await resolveAnalyticsClientScope(user, opts?.clientId ?? null);
+    if (!scope) return { success: false, error: "Unauthorized" };
 
-    if (opts?.clientId) {
-      const canAccess = await prisma.client.findFirst({
-        where: { id: opts.clientId, ...accessibleClientWhere(user.id) },
-        select: { id: true },
-      });
-      if (!canAccess) return { success: false, error: "Unauthorized" };
-    }
-
-    const accessibleWhere = buildAccessibleLeadSqlWhere({ userId: user.id, clientId: opts?.clientId ?? null });
+    const accessibleWhere = buildAccessibleLeadSqlWhere({
+      userId: user.id,
+      clientId: scope.clientId,
+      clientIds: scope.clientIds,
+    });
 
     const { rows } = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SET LOCAL statement_timeout = 10000`;
@@ -336,6 +356,10 @@ export async function getReactivationCampaignAnalytics(opts?: {
     };
   } catch (error) {
     console.error("[Analytics] Failed to get reactivation campaign analytics:", error);
+    const message = error instanceof Error ? error.message : "Unknown error";
+    if (message === "Not authenticated" || message === "Unauthorized") {
+      return { success: false, error: message };
+    }
     return { success: false, error: "Failed to fetch reactivation analytics" };
   }
 }
@@ -364,10 +388,19 @@ export async function invalidateAnalyticsCache(clientId?: string | null) {
   // This is a small in-memory cache per serverless instance.
   analyticsCache.clear();
 
-  // Optional: keep an escape hatch for future targeted invalidation.
-  if (clientId) {
-    void clientId;
-  }
+  const normalizedClientId = (clientId || "").trim();
+  if (!normalizedClientId) return;
+
+  const versionKey = `${ANALYTICS_VERSION_KEY_PREFIX}${normalizedClientId}`;
+  const current = await redisGetJson<number | string>(versionKey);
+  const parsed =
+    typeof current === "number"
+      ? current
+      : typeof current === "string"
+        ? Number.parseInt(current, 10)
+        : Number.NaN;
+  const nextVersion = Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) + 1 : 1;
+  await redisSetJson(versionKey, nextVersion, { exSeconds: 30 * 24 * 60 * 60 });
 }
 
 export interface AnalyticsWindow {
@@ -553,9 +586,10 @@ export interface CrmWindowSummary {
 export async function getCrmWindowSummary(params: {
   clientId?: string | null;
   filters?: CrmSheetFilters;
+  authUser?: AnalyticsAuthUser;
 }): Promise<{ success: boolean; data?: CrmWindowSummary; error?: string }> {
   try {
-    const user = await requireAuthUser();
+    const user = params.authUser ?? (await requireAuthUser());
     const clientId = params.clientId ?? null;
 
     if (!clientId) {
@@ -580,16 +614,14 @@ export async function getCrmWindowSummary(params: {
       };
     }
 
-    const canAccess = await prisma.client.findFirst({
-      where: { id: clientId, ...accessibleClientWhere(user.id) },
-      select: { id: true },
-    });
-    if (!canAccess) {
+    const scope = await resolveAnalyticsClientScope(user, clientId);
+    if (!scope?.clientId) {
       return { success: false, error: "Unauthorized" };
     }
+    const scopedClientId = scope.clientId;
 
     const filters = params.filters ?? {};
-    const whereParts: Prisma.Sql[] = [Prisma.sql`l."clientId" = ${clientId}`];
+    const whereParts: Prisma.Sql[] = [Prisma.sql`l."clientId" = ${scopedClientId}`];
 
     if (filters.leadStatus) {
       whereParts.push(Prisma.sql`l.status = ${filters.leadStatus}`);
@@ -946,9 +978,20 @@ export async function getCrmWindowSummary(params: {
   }
 }
 
-function buildAccessibleLeadSqlWhere(opts: { userId: string; clientId?: string | null }): Prisma.Sql {
+function buildAccessibleLeadSqlWhere(opts: {
+  userId: string;
+  clientId?: string | null;
+  clientIds?: string[];
+}): Prisma.Sql {
   if (opts.clientId) {
     return Prisma.sql`l."clientId" = ${opts.clientId}`;
+  }
+
+  if (Array.isArray(opts.clientIds)) {
+    if (opts.clientIds.length === 0) {
+      return Prisma.sql`false`;
+    }
+    return Prisma.sql`l."clientId" IN (${Prisma.join(opts.clientIds)})`;
   }
 
   return Prisma.sql`(
@@ -982,6 +1025,7 @@ function sqlIsWithinEstBusinessHours(tsSql: Prisma.Sql): Prisma.Sql {
 async function calculateResponseTimeMetricsSql(opts: {
   userId: string;
   clientId?: string | null;
+  clientIds?: string[];
   window?: { from: Date; to: Date };
 }): Promise<ResponseTimeMetrics> {
   const defaultMetrics: ResponseTimeMetrics = {
@@ -993,7 +1037,11 @@ async function calculateResponseTimeMetricsSql(opts: {
     const windowTo = opts.window?.to ?? new Date();
     const windowFrom = opts.window?.from ?? new Date(windowTo.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    const accessibleWhere = buildAccessibleLeadSqlWhere({ userId: opts.userId, clientId: opts.clientId });
+    const accessibleWhere = buildAccessibleLeadSqlWhere({
+      userId: opts.userId,
+      clientId: opts.clientId,
+      clientIds: opts.clientIds,
+    });
     const bh1 = sqlIsWithinEstBusinessHours(Prisma.sql`sent_at`);
     const bh2 = sqlIsWithinEstBusinessHours(Prisma.sql`next_sent_at`);
 
@@ -1106,18 +1154,10 @@ async function calculateResponseTimeMetricsSql(opts: {
  * @returns Array of SetterResponseTimeRow sorted by response count (most active first)
  */
 async function calculatePerSetterResponseTimesSql(opts: {
-  userId: string;
   clientId: string;
   window?: { from: Date; to: Date };
 }): Promise<SetterResponseTimeRow[]> {
   try {
-    // Ensure caller has access to the workspace (server-side guard; avoids cross-user cache poisoning).
-    const canAccess = await prisma.client.findFirst({
-      where: { id: opts.clientId, ...accessibleClientWhere(opts.userId) },
-      select: { id: true },
-    });
-    if (!canAccess) return [];
-
     const windowTo = opts.window?.to ?? new Date();
     const windowFrom = opts.window?.from ?? new Date(windowTo.getTime() - 30 * 24 * 60 * 60 * 1000);
 
@@ -1220,25 +1260,23 @@ async function calculatePerSetterResponseTimesSql(opts: {
  */
 export async function getAnalytics(
   clientId?: string | null,
-  opts?: { forceRefresh?: boolean; window?: AnalyticsWindow; parts?: AnalyticsOverviewParts }
+  opts?: {
+    forceRefresh?: boolean;
+    window?: AnalyticsWindow;
+    parts?: AnalyticsOverviewParts;
+    authUser?: AnalyticsAuthUser;
+  }
 ): Promise<{
   success: boolean;
   data?: AnalyticsData;
   error?: string;
 }> {
   try {
-    const user = await requireAuthUser();
-
-    // Enforce authorization (and avoid cache leakage) before serving any cached data.
-    if (clientId) {
-      const canAccess = await prisma.client.findFirst({
-        where: { id: clientId, ...accessibleClientWhere(user.id) },
-        select: { id: true },
-      });
-      if (!canAccess) {
-        return { success: false, error: "Unauthorized" };
-      }
-    }
+    const user = opts?.authUser ?? (await requireAuthUser());
+    const scope = await resolveAnalyticsClientScope(user, clientId);
+    if (!scope) return { success: false, error: "Unauthorized" };
+    const scopedClientId = scope.clientId;
+    const scopedClientIds = scope.clientIds;
 
     const windowState = resolveAnalyticsWindow(opts?.window);
     const windowFrom = windowState.from;
@@ -1252,7 +1290,7 @@ export async function getAnalytics(
     maybeCleanupCache();
 
     // Cache is user-scoped to avoid cross-user data leakage.
-    const cacheKey = `${user.id}:${clientId || "__all__"}:${windowState.key}:${parts}`;
+    const cacheKey = `${user.id}:${scopedClientId || "__all__"}:${windowState.key}:${parts}`;
     const redisKey = `analytics:v1:${cacheKey}`;
     const now = Date.now();
 
@@ -1272,7 +1310,11 @@ export async function getAnalytics(
       }
     }
 
-    const leadWhere = clientId ? { clientId } : accessibleLeadWhere(user.id);
+    const leadWhere: Prisma.LeadWhereInput = scopedClientId
+      ? { clientId: scopedClientId }
+      : scopedClientIds.length > 0
+        ? { clientId: { in: scopedClientIds } }
+        : { id: "__no_access__" };
     const leadCreatedWindow = hasWindow ? { createdAt: { gte: windowFrom!, lt: windowTo! } } : {};
     const messageWindow = hasWindow ? { sentAt: { gte: windowFrom!, lt: windowTo! } } : {};
 
@@ -1374,11 +1416,12 @@ export async function getAnalytics(
           }),
           calculateResponseTimeMetricsSql({
             userId: user.id,
-            clientId,
+            clientId: scopedClientId,
+            clientIds: scopedClientIds,
             window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
           }),
-          clientId
-            ? getWorkspaceCapacityUtilization({ clientId, windowDays: 30 }).catch((error) => {
+          scopedClientId
+            ? getWorkspaceCapacityUtilization({ clientId: scopedClientId, windowDays: 30 }).catch((error) => {
                 console.warn("[Analytics] Failed to compute workspace capacity utilization:", error);
                 return null;
               })
@@ -1435,7 +1478,11 @@ export async function getAnalytics(
           COUNT(*) as count
         FROM "Message" m
         INNER JOIN "Lead" l ON m."leadId" = l.id
-        WHERE ${buildAccessibleLeadSqlWhere({ userId: user.id, clientId })}
+        WHERE ${buildAccessibleLeadSqlWhere({
+          userId: user.id,
+          clientId: scopedClientId,
+          clientIds: scopedClientIds,
+        })}
           AND m."sentAt" >= ${statsFrom}
           AND m."sentAt" < ${statsTo}
         GROUP BY DATE_TRUNC('day', m."sentAt"), m.direction
@@ -1465,10 +1512,9 @@ export async function getAnalytics(
         },
         _count: { id: true },
       });
-      const perSetterResponseTimesPromise = clientId
+      const perSetterResponseTimesPromise = scopedClientId
         ? calculatePerSetterResponseTimesSql({
-            userId: user.id,
-            clientId,
+            clientId: scopedClientId,
             window: hasWindow ? { from: windowFrom!, to: windowTo! } : undefined,
           })
         : Promise.resolve<SetterResponseTimeRow[]>([]);
@@ -1518,11 +1564,8 @@ export async function getAnalytics(
       // Normalize to day boundaries for chart labels
       const statsStartDay = new Date(statsFrom);
       statsStartDay.setHours(0, 0, 0, 0);
-      const statsEndDay = new Date(statsTo);
+      const statsEndDay = new Date(Math.max(statsStartDay.getTime(), statsTo.getTime() - 1));
       statsEndDay.setHours(0, 0, 0, 0);
-      if (statsTo.getTime() === statsEndDay.getTime()) {
-        statsEndDay.setDate(statsEndDay.getDate() - 1);
-      }
 
       // Build a lookup map for quick access
       const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -1582,18 +1625,18 @@ export async function getAnalytics(
 
       // SMS sub-client breakdown inside a workspace (Lead.smsCampaignId)
       smsSubClients = [];
-      if (clientId) {
+      if (scopedClientId) {
         const positiveSentimentTags = [...POSITIVE_SENTIMENTS, "Positive"] as unknown as string[];
 
         const [campaigns, leadsBySmsCampaign, responsesBySmsCampaign, meetingsBySmsCampaign] = await Promise.all([
           prisma.smsCampaign.findMany({
-            where: { clientId },
+            where: { clientId: scopedClientId },
             select: { id: true, name: true },
           }),
           prisma.lead.groupBy({
             by: ["smsCampaignId"],
             where: {
-              clientId,
+              clientId: scopedClientId,
               sentimentTag: { in: positiveSentimentTags },
               ...(hasWindow ? { lastInboundAt: { gte: windowFrom!, lt: windowTo! } } : {}),
             },
@@ -1602,7 +1645,7 @@ export async function getAnalytics(
           prisma.lead.groupBy({
             by: ["smsCampaignId"],
             where: {
-              clientId,
+              clientId: scopedClientId,
               messages: { some: { direction: "inbound", ...messageWindow } },
             },
             _count: { _all: true },
@@ -1610,7 +1653,7 @@ export async function getAnalytics(
           prisma.lead.groupBy({
             by: ["smsCampaignId"],
             where: {
-              clientId,
+              clientId: scopedClientId,
               ...(hasWindow
                 ? { appointmentBookedAt: { gte: windowFrom!, lt: windowTo! } }
                 : {
@@ -1699,6 +1742,10 @@ export async function getAnalytics(
     return { success: true, data: analyticsData };
   } catch (error) {
     console.error("Failed to fetch analytics:", error);
+    const message = error instanceof Error ? error.message : "Unknown error";
+    if (message === "Not authenticated" || message === "Unauthorized") {
+      return { success: false, error: message };
+    }
     return { success: false, error: "Failed to fetch analytics" };
   }
 }
@@ -1803,30 +1850,26 @@ export async function getEmailCampaignAnalytics(opts?: {
   clientId?: string | null;
   from?: string; // ISO
   to?: string; // ISO
+  authUser?: AnalyticsAuthUser;
 }): Promise<{
   success: boolean;
   data?: { campaigns: EmailCampaignKpiRow[]; weeklyReport: WeeklyEmailCampaignReport };
   error?: string;
 }> {
   try {
-    const user = await requireAuthUser();
+    const user = opts?.authUser ?? (await requireAuthUser());
+    const scope = await resolveAnalyticsClientScope(user, opts?.clientId ?? null);
+    if (!scope) return { success: false, error: "Unauthorized" };
+    const scopedClientIds = scope.clientIds;
+    const scopedClientId = scope.clientId;
 
     const now = new Date();
     const to = opts?.to ? new Date(opts.to) : now;
     const from = opts?.from ? new Date(opts.from) : new Date(new Date(to).setDate(to.getDate() - 7));
 
-    if (opts?.clientId) {
-      const canAccess = await prisma.client.findFirst({
-        where: { id: opts.clientId, ...accessibleClientWhere(user.id) },
-        select: { id: true },
-      });
-      if (!canAccess) return { success: false, error: "Unauthorized" };
-    }
-
     const campaigns = await prisma.emailCampaign.findMany({
       where: {
-        ...(opts?.clientId ? { clientId: opts.clientId } : {}),
-        client: accessibleClientWhere(user.id),
+        ...(scopedClientId ? { clientId: scopedClientId } : { clientId: { in: scopedClientIds } }),
       },
       select: {
         id: true,
@@ -1920,7 +1963,11 @@ export async function getEmailCampaignAnalytics(opts?: {
     const industryByCampaign = new Map<string, Map<string, BucketCounts>>();
     const headcountByCampaign = new Map<string, Map<HeadcountBucket, BucketCounts>>();
 
-    const accessibleWhere = buildAccessibleLeadSqlWhere({ userId: user.id, clientId: opts?.clientId ?? null });
+    const accessibleWhere = buildAccessibleLeadSqlWhere({
+      userId: user.id,
+      clientId: scopedClientId,
+      clientIds: scopedClientIds,
+    });
     const campaignWhere = Prisma.sql`l."emailCampaignId" IN (${Prisma.join(campaignIds)})`;
     const positivePredicate = Prisma.sql`(
       l."lastInboundAt" >= ${from}
@@ -2178,21 +2225,20 @@ export interface SetterFunnelStats {
  * Assigned → Responded → Positive → Meeting Requested → Meeting Booked
  */
 export async function getSetterFunnelAnalytics(
-  clientId: string
+  clientId: string,
+  opts?: { authUser?: AnalyticsAuthUser }
 ): Promise<{ success: true; data: SetterFunnelStats[] } | { success: false; error: string }> {
   try {
-    const user = await requireAuthUser();
-    const canAccess = await prisma.client.findFirst({
-      where: { id: clientId, ...accessibleClientWhere(user.id) },
-      select: { id: true },
-    });
-    if (!canAccess) {
+    const user = opts?.authUser ?? (await requireAuthUser());
+    const scope = await resolveAnalyticsClientScope(user, clientId);
+    if (!scope?.clientId) {
       return { success: false, error: "Unauthorized" };
     }
+    const scopedClientId = scope.clientId;
 
     // Get all setters for this workspace
     const setters = await prisma.clientMember.findMany({
-      where: { clientId, role: "SETTER" },
+      where: { clientId: scopedClientId, role: "SETTER" },
       select: { userId: true },
     });
 
@@ -2213,7 +2259,7 @@ export async function getSetterFunnelAnalytics(
       // Get assigned leads with aggregated stats
       const assignedLeads = await prisma.lead.findMany({
         where: {
-          clientId,
+          clientId: scopedClientId,
           assignedToUserId: setter.userId,
         },
         select: {
@@ -2288,32 +2334,31 @@ export async function getCrmSheetRows(params: {
   cursor?: string | null;
   limit?: number;
   filters?: CrmSheetFilters;
+  authUser?: AnalyticsAuthUser;
 }): Promise<{
   success: boolean;
   data?: { rows: CrmSheetRow[]; nextCursor: string | null };
   error?: string;
 }> {
   try {
-    const user = await requireAuthUser();
+    const user = params.authUser ?? (await requireAuthUser());
     const clientId = params.clientId ?? null;
 
     if (!clientId) {
       return { success: true, data: { rows: [], nextCursor: null } };
     }
 
-    const canAccess = await prisma.client.findFirst({
-      where: { id: clientId, ...accessibleClientWhere(user.id) },
-      select: { id: true },
-    });
-    if (!canAccess) {
+    const scope = await resolveAnalyticsClientScope(user, clientId);
+    if (!scope?.clientId) {
       return { success: false, error: "Unauthorized" };
     }
+    const scopedClientId = scope.clientId;
 
     const limit = Math.min(params.limit ?? 100, 300);
     const filters = params.filters ?? {};
     const requestedResponseMode = filters.responseMode ?? null;
 
-    const leadWhere: Prisma.LeadWhereInput = { clientId };
+    const leadWhere: Prisma.LeadWhereInput = { clientId: scopedClientId };
     if (filters.leadStatus) {
       leadWhere.status = filters.leadStatus;
     }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { verifyRouteSecret } from "@/lib/api-secret-auth";
 import { createSupabaseAdminClient, resolveSupabaseUserIdByEmail } from "@/lib/supabase/admin";
 import { Prisma } from "@prisma/client";
 import { ensureReengagementFollowUpSequenceForClient } from "@/lib/followup-sequence-reengagement";
@@ -12,31 +13,6 @@ type BootstrapWorkspaceRequest = {
   adminPassword?: string;
   upsert?: boolean;
 };
-
-function getBearerToken(request: NextRequest): string | null {
-  const authHeader = request.headers.get("authorization") ?? "";
-  const [scheme, token] = authHeader.split(" ");
-  if (scheme !== "Bearer" || !token) return null;
-  return token;
-}
-
-function getProvidedSecret(request: NextRequest): string | null {
-  // Preferred: Authorization: Bearer <secret>
-  const bearer = getBearerToken(request);
-  if (bearer) return bearer;
-
-  // Some webhook tools don't support Authorization; allow a dedicated header.
-  const headerSecret =
-    request.headers.get("x-workspace-provisioning-secret") ??
-    request.headers.get("x-admin-secret") ??
-    request.headers.get("x-cron-secret");
-  if (headerSecret) return headerSecret;
-
-  // Last resort (not recommended): query string.
-  const url = new URL(request.url);
-  const qsSecret = url.searchParams.get("secret");
-  return qsSecret || null;
-}
 
 function normalizeOptionalString(value: unknown): string | undefined {
   if (value === undefined) return undefined;
@@ -81,16 +57,14 @@ export async function POST(request: NextRequest) {
     process.env.CRON_SECRET ??
     null;
 
-  if (!expectedSecret) {
-    return NextResponse.json(
-      { error: "Server misconfigured: set WORKSPACE_PROVISIONING_SECRET" },
-      { status: 500 }
-    );
-  }
-
-  const providedSecret = getProvidedSecret(request);
-  if (providedSecret !== expectedSecret) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const auth = verifyRouteSecret({
+    request,
+    expectedSecret,
+    allowQuerySecret: true,
+    misconfiguredError: "Server misconfigured: set WORKSPACE_PROVISIONING_SECRET",
+  });
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   const body = (await request.json().catch(() => null)) as BootstrapWorkspaceRequest | null;

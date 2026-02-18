@@ -104,9 +104,74 @@ This phase prioritizes code-level analysis and remediation first, using Playwrig
     - `npm test` (pass)
     - `npm run build` (pass)
     - Playwright perf canaries executed but skipped without authenticated storage state.
+- Founders Club analytics regression deep-dive (MCP live session):
+  - Reproduced `403 Unauthorized` on analytics read endpoints for `clientId=ef824aca-a3c9-4cde-b51f-2e421ebb6b6e` while inbox endpoints for the same workspace stayed `200`.
+  - Ran a 20-iteration MCP probe (160 total requests across analytics/inbox endpoints):
+    - Analytics overview/workflows/campaigns/crm-summary: 100% `403 Unauthorized`.
+    - Response timing: 100% `500 Failed to fetch response timing analytics`.
+    - Inbox counts/conversations: 100% `200`.
+  - Implemented analytics authorization unification to match platform scope semantics:
+    - Replaced owner/member-only checks with shared `getAccessibleClientIdsForUser` scope resolution.
+    - Updated analytics SQL scope helper to support explicit client ID lists (including super-admin all-client scopes).
+    - Removed duplicate per-setter access query pass (trusted upstream auth guard) to reduce overhead.
+  - Hardened analytics UX + edge-case math:
+    - Overview now surfaces explicit load/auth errors instead of incorrectly showing `No analytics data yet`.
+    - Fixed daily chart window boundary handling for exclusive end dates to prevent zero-day collapses.
+  - Added regression guard test: `lib/__tests__/analytics-actions-scope.test.ts`.
+  - Validation rerun after patch:
+    - `npm run lint` (warnings only, no errors)
+    - `node --import tsx --test lib/__tests__/analytics-actions-scope.test.ts` (pass)
+    - `npm run typecheck` (pass)
+    - `npm run build` (pass)
+- Response-timing 500 root cause (Founders Club):
+  - Ran production SQL repro against Founders Club dataset and confirmed deterministic failure:
+    - `ERROR: integer out of range` from `(extract(epoch from (ai_response_sent_at - ai_scheduled_run_at)) * 1000)::int`
+  - Founders Club has extreme AI drift outliers (`max_drift_ms=1770316499000`), which overflow `int` and caused endpoint-wide failure.
+  - Implemented fix in `actions/response-timing-analytics-actions.ts`:
+    - Cast drift to `bigint` instead of `int`.
+    - Added explicit Prisma interactive transaction budget (`timeout: 15000`, `maxWait: 5000`) for heavy analytics reads.
+  - Added regression guard: `lib/__tests__/response-timing-analytics-guards.test.ts`.
+  - Validation rerun after fix:
+    - `node --import tsx --test lib/__tests__/analytics-actions-scope.test.ts lib/__tests__/response-timing-analytics-guards.test.ts` (pass)
+    - `npm run typecheck` (pass)
+    - `npm run lint` (warnings only, no errors)
+    - `npm test` (pass)
+    - `npm run build` (pass)
+- Deeper architecture hardening (read-path duplicate-auth elimination):
+  - Attempted additional parallel explorer sub-agent passes; blocked by active agent-thread cap (`max 6`), so completed manual deep audit.
+  - Implemented route-auth pass-through (`authUser`) from read APIs into analytics actions to remove repeated Supabase auth calls on hot read paths:
+    - Updated routes: overview, workflows, campaigns, crm rows/summary, response-timing.
+    - Updated actions to accept pre-authenticated context while preserving secure fallback when called directly as server actions.
+  - Added response-timing scoped resolver for pre-authenticated context without changing workspace access semantics.
+  - Improved error semantics so auth failures stay `Not authenticated`/`Unauthorized` instead of collapsing into generic `500` messages in key analytics actions.
+  - Added guard coverage:
+    - `lib/__tests__/analytics-read-route-auth-pass-through.test.ts`
+    - expanded `lib/__tests__/analytics-actions-scope.test.ts` auth-semantics assertion
+  - Validation rerun:
+    - `node --import tsx --test lib/__tests__/analytics-actions-scope.test.ts lib/__tests__/response-timing-analytics-guards.test.ts lib/__tests__/analytics-read-route-auth-pass-through.test.ts` (pass)
+    - `npm run typecheck` (pass)
+    - `npm run lint` (warnings only, no errors)
+    - `npm run build` (pass)
+    - `npm test` (pass)
+- Platform hardening beyond analytics (inbox/admin/test routes):
+  - Added shared timing-safe route secret verification helper: `lib/api-secret-auth.ts`.
+  - Removed duplicated secret parsing/comparison logic across:
+    - `app/api/admin/workspaces/route.ts`
+    - `app/api/admin/workspaces/bootstrap/route.ts`
+    - `app/api/admin/workspaces/members/route.ts`
+  - Hardened `app/api/webhooks/ghl/test/route.ts`:
+    - now requires admin/provisioning secret for both `GET` and `POST`.
+    - prevents unauthenticated workspace metadata disclosure.
+  - Inbox read API auth/consistency hardening:
+    - route-auth pass-through added for `counts`, `conversations`, and `conversations/[leadId]`.
+    - counts route now enforces strict auth error propagation instead of silently returning empty counts on auth failures.
+    - actions support optional pre-authenticated context to avoid duplicate auth passes.
+  - Added regression guards:
+    - `lib/__tests__/admin-route-secret-hardening.test.ts`
+    - `lib/__tests__/inbox-read-route-auth-pass-through.test.ts`
 
 ## RED TEAM Open Items
 
 1. Staged load tooling + explicit band matrix added; execution evidence capture in progress (`artifacts/load-checks.*`).
-2. CRM/response-timing SQL-heavy paths still require dedicated query-level tuning.
+2. CRM SQL-heavy row enrichment remains candidate for further query-shape/index tuning under authenticated staged load bands.
 3. Observability packet template added; fill with command outputs before phase close.

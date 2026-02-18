@@ -23,6 +23,40 @@ import { ClientMemberRole, Prisma } from "@prisma/client";
 
 export type Channel = "sms" | "email" | "linkedin";
 
+type InboxAuthUser = {
+  id: string;
+  email: string | null;
+};
+
+function coerceInboxAuthUser(value: unknown): InboxAuthUser | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as { id?: unknown; email?: unknown };
+  if (typeof candidate.id !== "string" || !candidate.id.trim()) return undefined;
+  if (candidate.email !== null && candidate.email !== undefined && typeof candidate.email !== "string") {
+    return undefined;
+  }
+  return {
+    id: candidate.id,
+    email: typeof candidate.email === "string" ? candidate.email : null,
+  };
+}
+
+async function resolveInboxScope(
+  clientId?: string | null,
+  authUser?: InboxAuthUser
+): Promise<{ user: InboxAuthUser; clientIds: string[] }> {
+  const user = authUser ?? (await requireAuthUser());
+  const accessible = await getAccessibleClientIdsForUser(user.id, user.email);
+
+  const normalizedClientId = (clientId || "").trim();
+  if (normalizedClientId) {
+    if (!accessible.includes(normalizedClientId)) throw new Error("Unauthorized");
+    return { user, clientIds: [normalizedClientId] };
+  }
+
+  return { user, clientIds: accessible };
+}
+
 export interface ConversationData {
   id: string;
   lead: {
@@ -488,7 +522,10 @@ export async function getConversations(clientId?: string | null): Promise<{
  * Get inbox filter counts for sidebar
  * @param clientId - Optional client ID to filter by workspace
  */
-export async function getInboxCounts(clientId?: string | null): Promise<{
+export async function getInboxCounts(
+  clientId?: string | null,
+  opts?: { authUser?: InboxAuthUser; throwOnAuthError?: boolean }
+): Promise<{
   allResponses: number;
   requiresAttention: number;
   previouslyRequiredAttention: number;
@@ -510,7 +547,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
   };
 
   try {
-    const scope = await resolveClientScope(clientId);
+    const scope = await resolveInboxScope(clientId, opts?.authUser);
     if (scope.clientIds.length === 0) return empty;
     const now = new Date();
     const snoozeFilter = { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] };
@@ -519,9 +556,9 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     // If a specific clientId is provided and user is SETTER, only count their assigned leads
     let setterFilter: { assignedToUserId: string } | undefined;
     if (clientId && scope.clientIds.length === 1) {
-      const userRole = await getUserRoleForClient(scope.userId, clientId);
+      const userRole = await getUserRoleForClient(scope.user.id, clientId);
       if (isSetterRole(userRole)) {
-        setterFilter = { assignedToUserId: scope.userId };
+        setterFilter = { assignedToUserId: scope.user.id };
       }
     }
 
@@ -534,10 +571,10 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
 
     // Build SETTER filter clause for raw SQL
     const setterSqlClause = setterFilter
-      ? Prisma.sql`and l."assignedToUserId" = ${scope.userId}`
+      ? Prisma.sql`and l."assignedToUserId" = ${scope.user.id}`
       : Prisma.sql``;
 
-    const cacheKey = `inbox:v1:counts:${scope.userId}:${clientId || "__all__"}:${setterFilter ? scope.userId : "__all__"}`;
+    const cacheKey = `inbox:v1:counts:${scope.user.id}:${clientId || "__all__"}:${setterFilter ? scope.user.id : "__all__"}`;
     const cached = await redisGetJson<typeof empty>(cacheKey);
     if (cached) return cached;
 
@@ -546,7 +583,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
 
       const workspaceId = scope.clientIds[0];
       const isGlobalScope = !setterFilter;
-      const scopeUserId = isGlobalScope ? GLOBAL_SCOPE_USER_ID : scope.userId;
+      const scopeUserId = isGlobalScope ? GLOBAL_SCOPE_USER_ID : scope.user.id;
 
       const row = await prisma.inboxCounts.findUnique({
         where: {
@@ -597,7 +634,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
 
       const workspaceId = scope.clientIds[0];
       const isGlobalScope = !setterFilter;
-      const scopeUserId = isGlobalScope ? GLOBAL_SCOPE_USER_ID : scope.userId;
+      const scopeUserId = isGlobalScope ? GLOBAL_SCOPE_USER_ID : scope.user.id;
       const totalNonBlacklisted = Math.max(
         0,
         snapshot.awaitingReply + snapshot.requiresAttention
@@ -892,6 +929,9 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     // Avoid noisy error logs and return a safe empty-state.
     const message = error instanceof Error ? error.message : "";
     if (message === "Not authenticated" || message === "Unauthorized") {
+      if (opts?.throwOnAuthError) {
+        throw error instanceof Error ? error : new Error(message);
+      }
       return empty;
     }
 
@@ -903,9 +943,13 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
 /**
  * Get a single conversation with full message history
  */
-export async function getConversation(leadId: string, channelFilter?: Channel) {
+export async function getConversation(
+  leadId: string,
+  channelFilter?: Channel,
+  opts?: { authUser?: InboxAuthUser }
+) {
   try {
-    const user = await requireAuthUser();
+    const user = opts?.authUser ?? (await requireAuthUser());
     const accessible = await getAccessibleClientIdsForUser(user.id, user.email);
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
@@ -1160,6 +1204,8 @@ export interface ConversationsCursorOptions {
   filter?: "responses" | "attention" | "needs_repair" | "previous_attention" | "drafts" | "ai_sent" | "ai_review" | "all";
   // Lead scoring filter (Phase 33)
   scoreFilter?: "all" | "4" | "3+" | "2+" | "1+" | "unscored" | "disqualified";
+  // Optional route-authenticated user pass-through to avoid duplicate auth fetches.
+  authUser?: InboxAuthUser;
 }
 
 export interface ConversationsCursorResult {
@@ -1427,7 +1473,8 @@ export async function getConversationsCursor(
         ? (scoreFilterRaw as ConversationsCursorOptions["scoreFilter"])
         : undefined;
 
-    const scope = await resolveClientScope(clientId);
+    const authUser = coerceInboxAuthUser(raw.authUser);
+    const scope = await resolveInboxScope(clientId, authUser);
     if (scope.clientIds.length === 0) {
       return { success: true, conversations: [], nextCursor: null, hasMore: false };
     }
@@ -1436,15 +1483,15 @@ export async function getConversationsCursor(
     // If user is SETTER for the selected workspace, only show their assigned leads
     let setterUserId: string | null = null;
     if (clientId && scope.clientIds.length === 1) {
-      const userRole = await getUserRoleForClient(scope.userId, clientId);
+      const userRole = await getUserRoleForClient(scope.user.id, clientId);
       if (isSetterRole(userRole)) {
-        setterUserId = scope.userId;
+        setterUserId = scope.user.id;
       }
     }
 
     const cacheKey = [
       "inbox:v1:list",
-      scope.userId,
+      scope.user.id,
       clientId || "__all__",
       setterUserId ? `setter:${setterUserId}` : "all",
       cursor || "",
@@ -1947,6 +1994,7 @@ export async function getConversationsFromEnd(
   try {
     const {
       clientId,
+      authUser,
       limit = 50,
       search,
       channels,
@@ -1958,9 +2006,15 @@ export async function getConversationsFromEnd(
       filter,
     } = options;
 
-    const scope = await resolveClientScope(clientId);
+    const scope = await resolveInboxScope(clientId, authUser);
     if (scope.clientIds.length === 0) {
       return { success: true, conversations: [], nextCursor: null, hasMore: false };
+    }
+
+    let setterUserId: string | null = null;
+    if (clientId && scope.clientIds.length === 1) {
+      const userRole = await getUserRoleForClient(scope.user.id, clientId);
+      if (isSetterRole(userRole)) setterUserId = scope.user.id;
     }
 
     // Build the where clause (same as cursor version)
@@ -1971,6 +2025,7 @@ export async function getConversationsFromEnd(
     whereConditions.push({ OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }] });
 
     whereConditions.push({ clientId: { in: scope.clientIds } });
+    if (setterUserId) whereConditions.push({ assignedToUserId: setterUserId });
 
     if (search && search.trim()) {
       const rawSearchTerm = search.trim();

@@ -470,6 +470,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
   const [activeTab, setActiveTab] = useState<AnalyticsTab>("overview")
   const [data, setData] = useState<AnalyticsData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [overviewError, setOverviewError] = useState<string | null>(null)
   const [campaignRows, setCampaignRows] = useState<EmailCampaignKpiRow[] | null>(null)
   const [campaignLoading, setCampaignLoading] = useState(true)
   const [workflowData, setWorkflowData] = useState<WorkflowAttributionData | null>(null)
@@ -630,6 +631,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     if (!activeWorkspace) {
       setData(null)
       setIsLoading(false)
+      setOverviewError(null)
       overviewCoreFetchKeyRef.current = null
       overviewCoreFetchedAtRef.current = 0
       overviewBreakdownsFetchKeyRef.current = null
@@ -646,6 +648,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
     if (cachedCore) {
       setData(mergeOverviewData(cachedCore, cachedBreakdowns))
       setIsLoading(false)
+      setOverviewError(null)
     }
 
     const isOverviewCoreCacheFresh =
@@ -669,6 +672,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
       const hasCachedSnapshot = Boolean(nextCore)
       if (!hasCachedSnapshot) {
         setIsLoading(true)
+        setOverviewError(null)
       }
       if (!isOverviewCoreCacheFresh) {
         const coreResult = await getAnalyticsOverviewRead(workspaceId, {
@@ -679,6 +683,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
         if (coreResult.success && coreResult.data) {
           nextCore = coreResult.data
           setData(mergeOverviewData(coreResult.data, cachedBreakdowns))
+          setOverviewError(null)
           overviewCoreFetchKeyRef.current = overviewCoreFetchKey
           overviewCoreFetchedAtRef.current = Date.now()
           if (overviewCoreSessionCacheKey) {
@@ -686,6 +691,7 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
           }
         } else if (!hasCachedSnapshot) {
           setData(null)
+          setOverviewError(coreResult.error || "Failed to load overview analytics")
           setIsLoading(false)
           return
         }
@@ -1154,6 +1160,22 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
         {isLoading ? (
           <div className="flex flex-1 flex-col items-center justify-center">
             <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : overviewError ? (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center space-y-4 max-w-md">
+              <div className="p-4 rounded-full bg-destructive/10 w-fit mx-auto">
+                <BarChart3 className="h-12 w-12 text-destructive" />
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold">Unable to load analytics</h3>
+                <p className="text-sm text-muted-foreground">
+                  {overviewError === "Unauthorized"
+                    ? "You no longer have analytics access to this workspace. Re-select a workspace or refresh."
+                    : overviewError}
+                </p>
+              </div>
+            </div>
           </div>
         ) : !data || data.overview.totalLeads === 0 ? (
           <div className="flex-1 flex items-center justify-center">

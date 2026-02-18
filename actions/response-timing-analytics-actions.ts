@@ -3,7 +3,10 @@
 import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
-import { resolveClientScope } from "@/lib/workspace-access";
+import {
+  getAccessibleClientIdsForUser,
+  resolveClientScope,
+} from "@/lib/workspace-access";
 import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
 import { formatDurationMs } from "@/lib/business-hours";
 
@@ -54,6 +57,31 @@ export type ResponseTimingAnalyticsData = {
   aiChosenDelay: ResponseTimingBucketRow[];
   aiDrift: ResponseTimingBucketRow[];
 };
+
+type AnalyticsAuthUser = {
+  id: string;
+  email: string | null;
+};
+
+async function resolveResponseTimingScope(
+  clientId?: string | null,
+  authUser?: AnalyticsAuthUser
+): Promise<{ userId: string; clientIds: string[] }> {
+  const normalizedClientId = (clientId || "").trim() || null;
+  if (!authUser) {
+    return resolveClientScope(normalizedClientId);
+  }
+
+  const accessibleClientIds = await getAccessibleClientIdsForUser(authUser.id, authUser.email);
+  if (normalizedClientId) {
+    if (!accessibleClientIds.includes(normalizedClientId)) {
+      throw new Error("Unauthorized");
+    }
+    return { userId: authUser.id, clientIds: [normalizedClientId] };
+  }
+
+  return { userId: authUser.id, clientIds: accessibleClientIds };
+}
 
 function resolveWindow(opts?: { from?: string; to?: string }): { from: Date; to: Date } {
   const now = new Date();
@@ -147,9 +175,10 @@ export async function getResponseTimingAnalytics(opts?: {
   attributionWindowDays?: number;
   maturityBufferDays?: number;
   topRespondersLimit?: number;
+  authUser?: AnalyticsAuthUser;
 }): Promise<{ success: boolean; data?: ResponseTimingAnalyticsData; error?: string }> {
   try {
-    const scope = await resolveClientScope(opts?.clientId ?? null);
+    const scope = await resolveResponseTimingScope(opts?.clientId ?? null, opts?.authUser);
     const { from, to } = resolveWindow({ from: opts?.from, to: opts?.to });
     const attributionWindowDays = clampPositiveInt(opts?.attributionWindowDays, 30);
     const maturityBufferDays = clampPositiveInt(opts?.maturityBufferDays, 14, 60);
@@ -405,7 +434,7 @@ export async function getResponseTimingAnalytics(opts?: {
             select
               lead_id,
               response_sent_at,
-              (extract(epoch from (ai_response_sent_at - ai_scheduled_run_at)) * 1000)::int as drift_ms
+              (extract(epoch from (ai_response_sent_at - ai_scheduled_run_at)) * 1000)::bigint as drift_ms
             from filtered
             where responder_type = 'AI'
               and ai_response_sent_at is not null
@@ -466,7 +495,7 @@ export async function getResponseTimingAnalytics(opts?: {
       );
 
       return { responderAgg, metricRows };
-    });
+    }, { timeout: 15000, maxWait: 5000 });
 
     const responseTime = bucketRowsFromOrder(responseTimeBuckets);
     const aiChosenDelay = bucketRowsFromOrder(aiDelayBuckets);

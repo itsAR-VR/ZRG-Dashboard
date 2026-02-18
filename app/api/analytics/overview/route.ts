@@ -76,6 +76,7 @@ export async function GET(request: NextRequest) {
     // action-level cache on route misses to avoid redundant cache layers.
     forceRefresh: true,
     parts,
+    authUser,
   });
 
   if (!result.success) {

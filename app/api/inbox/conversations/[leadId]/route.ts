@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getConversation, type Channel } from "@/actions/lead-actions";
 import { isInboxReadApiEnabled } from "@/lib/feature-flags";
+import { requireAuthUser } from "@/lib/workspace-access";
 
 export const dynamic = "force-dynamic";
 const READ_API_FAIL_OPEN_HEADER = "x-zrg-read-api-fail-open";
@@ -66,6 +67,19 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
     return response;
   }
 
+  let authUser: Awaited<ReturnType<typeof requireAuthUser>>;
+  try {
+    authUser = await requireAuthUser();
+  } catch {
+    const response = NextResponse.json(
+      { success: false, error: "Not authenticated" },
+      { status: 401 }
+    );
+    response.headers.set("x-request-id", requestId);
+    response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
+    return response;
+  }
+
   const { leadId } = await params;
   if (!leadId) {
     const response = NextResponse.json({ success: false, error: "Lead ID is required" }, { status: 400 });
@@ -75,7 +89,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   }
 
   const channelFilter = normalizeChannel(request.nextUrl.searchParams.get("channel"));
-  const result = await getConversation(leadId, channelFilter);
+  const result = await getConversation(leadId, channelFilter, { authUser });
   if (!result.success) {
     const response = NextResponse.json(result, { status: mapConversationErrorToStatus(result.error) });
     response.headers.set("x-request-id", requestId);

@@ -151,7 +151,7 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    const result = await getCrmWindowSummary({ clientId, filters });
+    const result = await getCrmWindowSummary({ clientId, filters, authUser });
     if (!result.success) {
       const response = NextResponse.json(result, { status: mapAnalyticsErrorToStatus(result.error) });
       response.headers.set("x-request-id", requestId);
@@ -201,6 +201,7 @@ export async function GET(request: NextRequest) {
     cursor,
     limit,
     filters,
+    authUser,
   });
 
   if (!result.success) {

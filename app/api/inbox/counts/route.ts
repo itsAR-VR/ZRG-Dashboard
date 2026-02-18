@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { getInboxCounts } from "@/actions/lead-actions";
 import { isInboxReadApiEnabled } from "@/lib/feature-flags";
+import { requireAuthUser } from "@/lib/workspace-access";
 
 export const dynamic = "force-dynamic";
 // Keep parity with conversations read API runtime headroom on large workspaces.
@@ -18,6 +19,13 @@ function resolveRequestId(raw: string | null): string {
 
 function shouldFailOpenReadApi(request: NextRequest): boolean {
   return request.headers.get(READ_API_FAIL_OPEN_HEADER) === READ_API_FAIL_OPEN_REASON;
+}
+
+function mapActionErrorToStatus(error: string | undefined): number {
+  const message = (error || "").trim();
+  if (message === "Not authenticated" || message.startsWith("Not authenticated")) return 401;
+  if (message === "Unauthorized" || message.startsWith("Unauthorized")) return 403;
+  return 500;
 }
 
 export async function GET(request: NextRequest) {
@@ -48,7 +56,32 @@ export async function GET(request: NextRequest) {
     return response;
   }
 
-  const counts = await getInboxCounts(clientId);
+  let authUser: Awaited<ReturnType<typeof requireAuthUser>>;
+  try {
+    authUser = await requireAuthUser();
+  } catch {
+    const response = NextResponse.json(
+      { success: false, error: "Not authenticated" },
+      { status: 401 }
+    );
+    response.headers.set("x-request-id", requestId);
+    response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
+    return response;
+  }
+
+  let counts: Awaited<ReturnType<typeof getInboxCounts>>;
+  try {
+    counts = await getInboxCounts(clientId, { authUser, throwOnAuthError: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to load inbox counts";
+    const response = NextResponse.json(
+      { success: false, error: message },
+      { status: mapActionErrorToStatus(message) }
+    );
+    response.headers.set("x-request-id", requestId);
+    response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
+    return response;
+  }
 
   const response = NextResponse.json({ success: true, counts }, { status: 200 });
   response.headers.set("x-zrg-read-api-enabled", "1");

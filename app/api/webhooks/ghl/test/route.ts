@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { verifyRouteSecret } from "@/lib/api-secret-auth";
 
 /**
  * Test endpoint to simulate a GHL inbound SMS webhook
@@ -8,7 +9,29 @@ import { prisma } from "@/lib/prisma";
  * This endpoint allows you to test the webhook flow without needing
  * an actual GHL workflow to fire.
  */
+
+function requireWebhookTestAuth(request: NextRequest): NextResponse | null {
+  const expectedSecret =
+    process.env.ADMIN_ACTIONS_SECRET ??
+    process.env.WORKSPACE_PROVISIONING_SECRET ??
+    process.env.CRON_SECRET ??
+    null;
+
+  const auth = verifyRouteSecret({
+    request,
+    expectedSecret,
+    allowQuerySecret: true,
+    misconfiguredError:
+      "Server misconfigured: set ADMIN_ACTIONS_SECRET or WORKSPACE_PROVISIONING_SECRET",
+  });
+  if (auth.ok) return null;
+  return NextResponse.json({ error: auth.error }, { status: auth.status });
+}
+
 export async function POST(request: NextRequest) {
+  const authResponse = requireWebhookTestAuth(request);
+  if (authResponse) return authResponse;
+
   try {
     const body = await request.json();
     
@@ -113,7 +136,10 @@ export async function POST(request: NextRequest) {
 /**
  * GET handler - show test instructions
  */
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const authResponse = requireWebhookTestAuth(request);
+  if (authResponse) return authResponse;
+
   // Get registered clients for reference
   const clients = await prisma.client.findMany({
     select: {

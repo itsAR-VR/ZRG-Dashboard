@@ -6,6 +6,7 @@ import {
   type ConversationsCursorOptions,
 } from "@/actions/lead-actions";
 import { isInboxReadApiEnabled } from "@/lib/feature-flags";
+import { requireAuthUser } from "@/lib/workspace-access";
 
 export const dynamic = "force-dynamic";
 // Large workspaces can require longer DB scans under load; keep parity with Pro max duration.
@@ -130,8 +131,20 @@ export async function GET(request: NextRequest) {
   }
 
   const options = parseConversationsCursorOptions(request);
+  let authUser: Awaited<ReturnType<typeof requireAuthUser>>;
+  try {
+    authUser = await requireAuthUser();
+  } catch {
+    const response = NextResponse.json(
+      { success: false, error: "Not authenticated" },
+      { status: 401 }
+    );
+    response.headers.set("x-request-id", requestId);
+    response.headers.set("x-zrg-duration-ms", String(Date.now() - startedAt));
+    return response;
+  }
 
-  const result = await getConversationsCursor(options);
+  const result = await getConversationsCursor({ ...options, authUser });
   if (!result.success) {
     const response = NextResponse.json(result, { status: mapActionErrorToStatus(result.error) });
     response.headers.set("x-request-id", requestId);
