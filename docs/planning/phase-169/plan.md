@@ -36,8 +36,14 @@ Break the log-driven timeout/retry “reversal loop” by moving eligible high-e
 |-------|--------|---------|--------------|
 | Phase 165 | Active | Shares background orchestration surfaces (`app/api/cron/background-jobs`, `lib/background-jobs/*`) | Re-read files before changes; keep migration gating aligned with the dispatch ledger/flagging already surfaced there. |
 | Phase 167 | Active | Runtime/perf hardening for inbox and webhook entry points | Coordinate on shared handler files and avoid duplicating concurrency contracts. |
-| Phase 168 | Active | Live-performance verification + log analysis for cron+inbox routes | Use the same dashboards/Playwright snapshots when capturing baseline/post-migration metrics; avoid conflicting instrumentation. |
+| Phase 168 | Complete (`partially confirmed`) | Live-performance verification + log analysis for cron+inbox routes | Treat Phase 168 artifacts as baseline context; use Phase 169 residual-risk bridge evidence for cohesion. |
 | Working tree | Active | Ongoing edits in `README.md`, `docs/planning/phase-165/*`, `lib/inngest/*`, `lib/background-jobs/*`, `app/api/cron/background-jobs/route.ts`, untracked logs/artifacts, new `docs/planning/phase-168/` folder, and schema/test files | Keep merges small and coordinated; do not overwrite other phase’s changes. |
+
+## Phase 168 Residual Risk Coverage (Cohesion)
+- Bridge artifact: `docs/planning/phase-169/artifacts/phase-168-residual-risk-closure-2026-02-18T06-30-00Z.md`
+- Risk mapping:
+  - `/api/cron/emailbison/availability-slot` timeout branch from Phase 168 is addressed operationally in Phase 169 via dispatch + durable `SUCCEEDED` evidence.
+  - strict matched-window dashboard-export parity remains open and is tracked in this phase’s open questions.
 
 ## Objectives
 * [x] Produce a decision-complete migration matrix for the failing routes in this export (what migrates vs stays sync, and why).
@@ -142,6 +148,7 @@ Break the log-driven timeout/retry “reversal loop” by moving eligible high-e
 - 2026-02-18T06:19:20Z (UTC) — Enabled and verified emailbison availability-slot slice (`CRON_EMAILBISON_AVAILABILITY_SLOT_USE_INNGEST=true`): dispatch `202`, first durable snapshot `RUNNING`, then terminal `SUCCEEDED` (`post-fix-emailbison-availability-slot-ledger-2026-02-18T06-18-30Z.json`).
 - 2026-02-18T06:24:15Z (UTC) — Normalized trailing-newline production booleans (`CRON_AVAILABILITY_USE_INNGEST`, `CRON_EMAILBISON_AVAILABILITY_SLOT_USE_INNGEST`, `BACKGROUND_JOBS_USE_INNGEST`, `INBOXXIA_EMAIL_SENT_ASYNC`), redeployed, and verified post-fix env whitespace audit + dispatch sanity probe (`post-fix-env-whitespace-check-2026-02-18T06-24-14Z.json`, `post-fix-response-timing-sanity-response-2026-02-18T06-24-14Z.txt`).
 - 2026-02-18T06:25:14Z (UTC) — Captured `WebhookEvent` queue snapshot after full cron rollout; no due/running backlog observed (`duePending=0`, `dueFailed=0`, `runningCount=0`) (`post-fix-webhookevent-queue-snapshot-2026-02-18T06-25-13Z.json`).
+- 2026-02-18T06:47:11Z (UTC) — Added cross-phase cohesion bridge that maps Phase 168 residual risks to Phase 169 evidence, marking emailbison timeout branch as operationally addressed and dashboard-export parity as the remaining verification gap (files: `docs/planning/phase-169/plan.md`, `docs/planning/phase-169/d/plan.md`, `docs/planning/phase-169/artifacts/phase-168-residual-risk-closure-2026-02-18T06-30-00Z.md`).
 
 ## Open Questions (Need Human Input)
 - [ ] Can you provide or attach matched-window Vercel dashboard exports for all post-fix windows (`response-timing`, `appointment-reconcile`, `followups`, `availability`, `emailbison/availability-slot`) so we can close strict route-signature delta criteria?

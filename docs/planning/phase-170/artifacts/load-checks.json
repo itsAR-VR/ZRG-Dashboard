@@ -1,0 +1,1741 @@
+{
+  "generatedAt": "2026-02-18T08:17:47.141Z",
+  "startedAt": "2026-02-18T08:17:39.483Z",
+  "config": {
+    "baseUrl": "https://zrg-dashboard.vercel.app",
+    "clientId": "00000000-0000-0000-0000-000000000000",
+    "search": null,
+    "includeAnalytics": true,
+    "includeInbox": true,
+    "timeoutMs": 15000,
+    "usedCookie": false,
+    "bands": [
+      {
+        "name": "small",
+        "concurrency": 2,
+        "requestsPerWorker": 2
+      },
+      {
+        "name": "medium",
+        "concurrency": 4,
+        "requestsPerWorker": 2
+      },
+      {
+        "name": "large",
+        "concurrency": 6,
+        "requestsPerWorker": 2
+      }
+    ]
+  },
+  "endpoints": [
+    {
+      "endpoint": "/api/analytics/overview(core)",
+      "url": "https://zrg-dashboard.vercel.app/api/analytics/overview?clientId=00000000-0000-0000-0000-000000000000&parts=core"
+    },
+    {
+      "endpoint": "/api/analytics/campaigns",
+      "url": "https://zrg-dashboard.vercel.app/api/analytics/campaigns?clientId=00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "endpoint": "/api/analytics/response-timing",
+      "url": "https://zrg-dashboard.vercel.app/api/analytics/response-timing?clientId=00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "endpoint": "/api/analytics/crm/rows(summary)",
+      "url": "https://zrg-dashboard.vercel.app/api/analytics/crm/rows?clientId=00000000-0000-0000-0000-000000000000&mode=summary"
+    },
+    {
+      "endpoint": "/api/inbox/counts",
+      "url": "https://zrg-dashboard.vercel.app/api/inbox/counts?clientId=00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "endpoint": "/api/inbox/conversations",
+      "url": "https://zrg-dashboard.vercel.app/api/inbox/conversations?clientId=00000000-0000-0000-0000-000000000000&limit=50"
+    }
+  ],
+  "bands": [
+    {
+      "name": "small",
+      "concurrency": 2,
+      "requestsPerWorker": 2,
+      "summary": [
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "samples": 4,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 134,
+          "p95Ms": 981,
+          "maxMs": 981,
+          "statuses": {
+            "401": 4
+          }
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "samples": 4,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 93,
+          "p95Ms": 149,
+          "maxMs": 149,
+          "statuses": {
+            "401": 4
+          }
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "samples": 4,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 89,
+          "p95Ms": 124,
+          "maxMs": 124,
+          "statuses": {
+            "401": 4
+          }
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "samples": 4,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 90,
+          "p95Ms": 99,
+          "maxMs": 99,
+          "statuses": {
+            "401": 4
+          }
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "samples": 4,
+          "successRate": 1,
+          "errorRate": 0,
+          "p50Ms": 1,
+          "p95Ms": 1,
+          "maxMs": 1,
+          "statuses": {
+            "200": 4
+          }
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "samples": 4,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 1,
+          "p95Ms": 1,
+          "maxMs": 1,
+          "statuses": {
+            "401": 4
+          }
+        }
+      ],
+      "samples": [
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "small",
+          "runIndex": 1,
+          "status": 401,
+          "durationMs": 342,
+          "requestId": "2c94ede0-37db-4c52-a801-c034db1ed74e",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "small",
+          "runIndex": 2,
+          "status": 401,
+          "durationMs": 981,
+          "requestId": "2a2c9328-b483-4451-8cca-19787e27eadd",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "small",
+          "runIndex": 3,
+          "status": 401,
+          "durationMs": 93,
+          "requestId": "afd7fbe5-397d-41c2-8b9b-b60556197b0a",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "small",
+          "runIndex": 4,
+          "status": 401,
+          "durationMs": 149,
+          "requestId": "d48bf1a0-81c0-44d8-85af-96efeaca732d",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "small",
+          "runIndex": 5,
+          "status": 401,
+          "durationMs": 88,
+          "requestId": "0108bfe3-651e-45fd-83c4-967981f6f058",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "small",
+          "runIndex": 6,
+          "status": 401,
+          "durationMs": 89,
+          "requestId": "d073952b-8692-415b-b58a-6db4a2a4cdae",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "small",
+          "runIndex": 7,
+          "status": 401,
+          "durationMs": 99,
+          "requestId": "f6be9a32-d5bd-4833-a5ac-37344056433d",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "small",
+          "runIndex": 8,
+          "status": 401,
+          "durationMs": 88,
+          "requestId": "1d90a054-1696-4264-999f-da6b79ccecf7",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "small",
+          "runIndex": 9,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "f5276b2f-d23d-46ef-ab45-12adbbae83d6",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "small",
+          "runIndex": 10,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "85042702-271e-42ff-842e-786437b27b1c",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "small",
+          "runIndex": 11,
+          "status": 401,
+          "durationMs": 1,
+          "requestId": "8865b0ef-2c53-4630-84b9-1ba9798e4648",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "small",
+          "runIndex": 12,
+          "status": 401,
+          "durationMs": 1,
+          "requestId": "296769b4-ed96-4629-a92e-e4b40001fca1",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "small",
+          "runIndex": 13,
+          "status": 401,
+          "durationMs": 102,
+          "requestId": "037125e7-afe1-4383-b9ca-7ad80811959b",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "small",
+          "runIndex": 14,
+          "status": 401,
+          "durationMs": 134,
+          "requestId": "cdb288e5-c8a5-4a5d-a46a-74a017d5c870",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "small",
+          "runIndex": 15,
+          "status": 401,
+          "durationMs": 88,
+          "requestId": "2e2ac273-8968-409c-a771-cfe6038b3781",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "small",
+          "runIndex": 16,
+          "status": 401,
+          "durationMs": 124,
+          "requestId": "36077902-f501-4250-aad1-2f8558fd9844",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "small",
+          "runIndex": 17,
+          "status": 401,
+          "durationMs": 90,
+          "requestId": "6f7f65ab-1dbc-4ca2-a702-6ad1120d3422",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "small",
+          "runIndex": 18,
+          "status": 401,
+          "durationMs": 124,
+          "requestId": "8339e7fa-c25c-4a72-8ab4-77c0ed5ca8eb",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "small",
+          "runIndex": 19,
+          "status": 401,
+          "durationMs": 90,
+          "requestId": "e1a20667-495b-4734-89a3-fde9b9093d71",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "small",
+          "runIndex": 20,
+          "status": 401,
+          "durationMs": 96,
+          "requestId": "9d553c31-5a1a-4e45-9ce7-82828097690e",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "small",
+          "runIndex": 21,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "7d699280-3b11-43fc-bdee-451460d782a6",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "small",
+          "runIndex": 22,
+          "status": 200,
+          "durationMs": 0,
+          "requestId": "ebda4d3f-51a9-4d92-aff4-550129d14fd2",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "small",
+          "runIndex": 23,
+          "status": 401,
+          "durationMs": 1,
+          "requestId": "80697df5-1a94-4ed6-8b0a-ff96d268290d",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "small",
+          "runIndex": 24,
+          "status": 401,
+          "durationMs": 1,
+          "requestId": "b24258b4-ff65-4431-8692-a1828087fb26",
+          "timedOut": false,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "medium",
+      "concurrency": 4,
+      "requestsPerWorker": 2,
+      "summary": [
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "samples": 8,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 87,
+          "p95Ms": 266,
+          "maxMs": 266,
+          "statuses": {
+            "401": 8
+          }
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "samples": 8,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 123,
+          "p95Ms": 262,
+          "maxMs": 262,
+          "statuses": {
+            "401": 8
+          }
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "samples": 8,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 102,
+          "p95Ms": 180,
+          "maxMs": 180,
+          "statuses": {
+            "401": 8
+          }
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "samples": 8,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 94,
+          "p95Ms": 381,
+          "maxMs": 381,
+          "statuses": {
+            "401": 8
+          }
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "samples": 8,
+          "successRate": 1,
+          "errorRate": 0,
+          "p50Ms": 1,
+          "p95Ms": 18,
+          "maxMs": 18,
+          "statuses": {
+            "200": 8
+          }
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "samples": 8,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 1,
+          "p95Ms": 6,
+          "maxMs": 6,
+          "statuses": {
+            "401": 8
+          }
+        }
+      ],
+      "samples": [
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "medium",
+          "runIndex": 1,
+          "status": 401,
+          "durationMs": 84,
+          "requestId": "4595996e-d896-4f21-b822-4c06115451fb",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "medium",
+          "runIndex": 2,
+          "status": 401,
+          "durationMs": 77,
+          "requestId": "c89c2145-fbf6-4a92-a42b-135bec6faa14",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "medium",
+          "runIndex": 3,
+          "status": 401,
+          "durationMs": 154,
+          "requestId": "8d1f8065-a0a5-433c-9688-539996ff18ad",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "medium",
+          "runIndex": 4,
+          "status": 401,
+          "durationMs": 152,
+          "requestId": "269d7079-1a66-4442-a957-73cb6fb152ca",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "medium",
+          "runIndex": 5,
+          "status": 401,
+          "durationMs": 90,
+          "requestId": "0f10bdd5-bb17-4d81-bdb6-9d79be4aab19",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "medium",
+          "runIndex": 6,
+          "status": 401,
+          "durationMs": 89,
+          "requestId": "eca02a24-d9f5-4199-90f9-851d9ece3249",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "medium",
+          "runIndex": 7,
+          "status": 401,
+          "durationMs": 262,
+          "requestId": "7a9de524-efdb-4740-af00-d64a6057abd4",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "medium",
+          "runIndex": 8,
+          "status": 401,
+          "durationMs": 148,
+          "requestId": "2eaa38bf-3ee1-4a69-8d56-4cade97d975a",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "medium",
+          "runIndex": 9,
+          "status": 401,
+          "durationMs": 112,
+          "requestId": "db3e93fe-a621-4442-9b64-ca105e8c04d4",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "medium",
+          "runIndex": 10,
+          "status": 401,
+          "durationMs": 111,
+          "requestId": "8e993a60-73e8-4428-8f2a-31733c447fc5",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "medium",
+          "runIndex": 11,
+          "status": 401,
+          "durationMs": 99,
+          "requestId": "fbc23867-e1d5-4a9a-933e-2ce0635ed20f",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "medium",
+          "runIndex": 12,
+          "status": 401,
+          "durationMs": 102,
+          "requestId": "bf913f29-a6d0-4e62-bfc4-6bbf7c752bf9",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "medium",
+          "runIndex": 13,
+          "status": 401,
+          "durationMs": 94,
+          "requestId": "6cf5f369-175b-4188-80e2-0aadbf3510fd",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "medium",
+          "runIndex": 14,
+          "status": 401,
+          "durationMs": 85,
+          "requestId": "52811f59-bd70-42e6-b85d-1d50a017ed27",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "medium",
+          "runIndex": 15,
+          "status": 401,
+          "durationMs": 103,
+          "requestId": "155db4ac-c926-49a9-99dc-c586e328c69d",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "medium",
+          "runIndex": 16,
+          "status": 401,
+          "durationMs": 84,
+          "requestId": "00a3ec71-f875-4e4b-be29-3d2388f76e92",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "medium",
+          "runIndex": 17,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "ec0ffb63-cff3-4923-887d-14f17f7e0e0b",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "medium",
+          "runIndex": 18,
+          "status": 200,
+          "durationMs": 18,
+          "requestId": "c0728f6c-a65f-45de-b4c0-3804d826ffa6",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "medium",
+          "runIndex": 19,
+          "status": 200,
+          "durationMs": 0,
+          "requestId": "13ae83a9-554c-47d9-a967-cef71b68f197",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "medium",
+          "runIndex": 20,
+          "status": 200,
+          "durationMs": 6,
+          "requestId": "299c991f-8cfe-4646-aafe-d83226a06dfb",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "medium",
+          "runIndex": 21,
+          "status": 401,
+          "durationMs": 0,
+          "requestId": "62e83fd3-a556-4720-903e-02303d59295b",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "medium",
+          "runIndex": 22,
+          "status": 401,
+          "durationMs": 1,
+          "requestId": "07478eb0-0c54-45e2-9bb6-f27e8ed0a9a3",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "medium",
+          "runIndex": 23,
+          "status": 401,
+          "durationMs": 2,
+          "requestId": "a9ae75b2-358b-433e-9abc-30716185cf87",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "medium",
+          "runIndex": 24,
+          "status": 401,
+          "durationMs": 6,
+          "requestId": "8d70c0d5-c043-414c-935b-d26898ee1f11",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "medium",
+          "runIndex": 25,
+          "status": 401,
+          "durationMs": 266,
+          "requestId": "89d62a29-873c-4da2-8ad2-1e3594a21044",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "medium",
+          "runIndex": 26,
+          "status": 401,
+          "durationMs": 87,
+          "requestId": "41cefc96-e5cf-4555-9ee1-e6e2e2def974",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "medium",
+          "runIndex": 27,
+          "status": 401,
+          "durationMs": 81,
+          "requestId": "0f749d38-9197-40aa-beff-6a4d0f81c69c",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "medium",
+          "runIndex": 28,
+          "status": 401,
+          "durationMs": 95,
+          "requestId": "bd30e411-e56d-4061-a5d5-2ba6f18730ea",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "medium",
+          "runIndex": 29,
+          "status": 401,
+          "durationMs": 124,
+          "requestId": "e323a062-6e01-4de9-95e0-8ec31ab05496",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "medium",
+          "runIndex": 30,
+          "status": 401,
+          "durationMs": 90,
+          "requestId": "67e7ff92-7c19-4b3d-9a23-35bd83538b47",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "medium",
+          "runIndex": 31,
+          "status": 401,
+          "durationMs": 131,
+          "requestId": "68af2949-2b38-4019-9a9a-6586b3a09613",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "medium",
+          "runIndex": 32,
+          "status": 401,
+          "durationMs": 123,
+          "requestId": "ad8b613c-22b6-4515-8b00-afc602e94a9e",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "medium",
+          "runIndex": 33,
+          "status": 401,
+          "durationMs": 95,
+          "requestId": "33de8c98-4e00-4fca-897b-08de2832f4e7",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "medium",
+          "runIndex": 34,
+          "status": 401,
+          "durationMs": 94,
+          "requestId": "4014ffd5-c8a1-4cf0-b0e9-6de07f290883",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "medium",
+          "runIndex": 35,
+          "status": 401,
+          "durationMs": 180,
+          "requestId": "a49f8be6-a8f8-475a-832f-67cecd29ad94",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "medium",
+          "runIndex": 36,
+          "status": 401,
+          "durationMs": 180,
+          "requestId": "c91f93cc-f53d-4d3e-bffc-2527ae6dd1d8",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "medium",
+          "runIndex": 37,
+          "status": 401,
+          "durationMs": 86,
+          "requestId": "9fc8a1a6-e8d6-4e6a-bd3e-560e2282a7d7",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "medium",
+          "runIndex": 38,
+          "status": 401,
+          "durationMs": 118,
+          "requestId": "e2108520-6f28-4a7c-aeff-b37c302529b9",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "medium",
+          "runIndex": 39,
+          "status": 401,
+          "durationMs": 381,
+          "requestId": "bae9621a-3419-4815-a94a-e8638d854f65",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "medium",
+          "runIndex": 40,
+          "status": 401,
+          "durationMs": 97,
+          "requestId": "db986ac3-349f-4169-aeca-06fbbf084b1c",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "medium",
+          "runIndex": 41,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "293634fc-ae39-493f-bab9-893ea4b1e675",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "medium",
+          "runIndex": 42,
+          "status": 200,
+          "durationMs": 0,
+          "requestId": "0aed2bc4-ae86-48aa-88d1-474653019c14",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "medium",
+          "runIndex": 43,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "27ae957c-8742-4678-92f9-cbe335158703",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "medium",
+          "runIndex": 44,
+          "status": 200,
+          "durationMs": 8,
+          "requestId": "da21f5c2-742d-4970-8fa7-8dfd3da827b6",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "medium",
+          "runIndex": 45,
+          "status": 401,
+          "durationMs": 1,
+          "requestId": "0f92cd08-05b8-4f85-9ae5-e98909919c96",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "medium",
+          "runIndex": 46,
+          "status": 401,
+          "durationMs": 2,
+          "requestId": "cfa96b0a-e328-42fc-bb26-6585a2608feb",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "medium",
+          "runIndex": 47,
+          "status": 401,
+          "durationMs": 1,
+          "requestId": "159ce1b6-99d2-43ef-bdae-043d90325b21",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "medium",
+          "runIndex": 48,
+          "status": 401,
+          "durationMs": 0,
+          "requestId": "b9d09a97-9d5e-42a4-b929-5dff27ac08d3",
+          "timedOut": false,
+          "error": null
+        }
+      ]
+    },
+    {
+      "name": "large",
+      "concurrency": 6,
+      "requestsPerWorker": 2,
+      "summary": [
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "samples": 12,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 96,
+          "p95Ms": 267,
+          "maxMs": 267,
+          "statuses": {
+            "401": 12
+          }
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "samples": 12,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 95,
+          "p95Ms": 579,
+          "maxMs": 579,
+          "statuses": {
+            "401": 12
+          }
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "samples": 12,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 97,
+          "p95Ms": 104,
+          "maxMs": 104,
+          "statuses": {
+            "401": 12
+          }
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "samples": 12,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 86,
+          "p95Ms": 152,
+          "maxMs": 152,
+          "statuses": {
+            "401": 12
+          }
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "samples": 12,
+          "successRate": 1,
+          "errorRate": 0,
+          "p50Ms": 1,
+          "p95Ms": 1,
+          "maxMs": 1,
+          "statuses": {
+            "200": 12
+          }
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "samples": 12,
+          "successRate": 0,
+          "errorRate": 1,
+          "p50Ms": 0,
+          "p95Ms": 16,
+          "maxMs": 16,
+          "statuses": {
+            "401": 12
+          }
+        }
+      ],
+      "samples": [
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 1,
+          "status": 401,
+          "durationMs": 79,
+          "requestId": "29ba1863-4a41-4860-87ec-cd626067e21b",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 2,
+          "status": 401,
+          "durationMs": 84,
+          "requestId": "e65781c7-b2f2-485a-95d6-61aefcb90a9a",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 3,
+          "status": 401,
+          "durationMs": 97,
+          "requestId": "19b691c3-eec1-4d45-978b-7d5125142186",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 4,
+          "status": 401,
+          "durationMs": 118,
+          "requestId": "b50f447b-f1bb-43b1-89e8-c90c21629149",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 5,
+          "status": 401,
+          "durationMs": 91,
+          "requestId": "293c10a5-7776-4c5d-863f-ffdff02ef3e7",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 6,
+          "status": 401,
+          "durationMs": 102,
+          "requestId": "4f4bcea3-6937-4d7b-a77e-2edadd0fa291",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 7,
+          "status": 401,
+          "durationMs": 107,
+          "requestId": "14d4288c-6f7e-45c1-9405-9df240947d9f",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 8,
+          "status": 401,
+          "durationMs": 96,
+          "requestId": "4db581fa-cf4b-40ec-b25c-750f0ecc393e",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 9,
+          "status": 401,
+          "durationMs": 95,
+          "requestId": "b9bf447f-c95f-484b-accc-ca129099bf8f",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 10,
+          "status": 401,
+          "durationMs": 99,
+          "requestId": "eafd8c6d-0fd5-4ec7-806b-e634b536f27b",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 11,
+          "status": 401,
+          "durationMs": 90,
+          "requestId": "135e2111-d04c-4bfd-981d-e18ff99af82e",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 12,
+          "status": 401,
+          "durationMs": 579,
+          "requestId": "f36e2c1d-8b22-45b8-aaba-96cc9e360d59",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 13,
+          "status": 401,
+          "durationMs": 100,
+          "requestId": "208a91f0-22b3-4cae-bdc1-d828dc17324f",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 14,
+          "status": 401,
+          "durationMs": 87,
+          "requestId": "856417ff-9569-493f-8aa2-39284518ffb0",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 15,
+          "status": 401,
+          "durationMs": 98,
+          "requestId": "d1744643-cd18-4f06-9c9d-8fb77d81072f",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 16,
+          "status": 401,
+          "durationMs": 97,
+          "requestId": "afd5bb62-f6c0-4a72-85d6-c73b3b8bae9f",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 17,
+          "status": 401,
+          "durationMs": 104,
+          "requestId": "770a9d69-870e-4188-bbcf-1c58614d8122",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 18,
+          "status": 401,
+          "durationMs": 85,
+          "requestId": "cc69fee6-8704-4071-8602-88d6ea06b643",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 19,
+          "status": 401,
+          "durationMs": 85,
+          "requestId": "fdc1d035-679f-44f6-a93f-af6faec87b50",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 20,
+          "status": 401,
+          "durationMs": 86,
+          "requestId": "ac31e635-bbd9-4656-a971-796d016359d1",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 21,
+          "status": 401,
+          "durationMs": 86,
+          "requestId": "b62593d0-f4ba-4e56-8f48-d6482db64bb5",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 22,
+          "status": 401,
+          "durationMs": 91,
+          "requestId": "74f2efea-ba72-424b-b17f-06d8a8464aa0",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 23,
+          "status": 401,
+          "durationMs": 86,
+          "requestId": "bd0c29f3-4040-4ad2-ac18-e3386a380f68",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 24,
+          "status": 401,
+          "durationMs": 152,
+          "requestId": "38de62d0-9367-46c8-915e-6dfc7d7aa640",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 25,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "8adee3e8-1b1c-4ec3-8920-4b90b5383bd9",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 26,
+          "status": 200,
+          "durationMs": 0,
+          "requestId": "346ede0c-b345-496e-a8f3-ab5cfc75b85a",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 27,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "39eb7120-904a-4a94-8af0-8f7b8aac62bf",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 28,
+          "status": 200,
+          "durationMs": 0,
+          "requestId": "7e9bfd3e-1ce4-4df4-8505-2a98942dbf73",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 29,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "19560a62-1042-43dd-a35d-2426c93be8bd",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 30,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "3783ed52-cd96-4cfc-9b2a-92015d5ea43a",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 31,
+          "status": 401,
+          "durationMs": 1,
+          "requestId": "5f49ee9d-3d79-476e-bfd6-50ade46f5232",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 32,
+          "status": 401,
+          "durationMs": 0,
+          "requestId": "de8fa0ca-de23-4bb9-a6a4-354c41cf5913",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 33,
+          "status": 401,
+          "durationMs": 0,
+          "requestId": "ebf4c9ea-f489-4443-9175-d94b72fc8b28",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 34,
+          "status": 401,
+          "durationMs": 1,
+          "requestId": "2a4bf0c8-8ca3-4704-b050-1cd721f6a189",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 35,
+          "status": 401,
+          "durationMs": 8,
+          "requestId": "7b3aa616-5ebc-4afe-99a5-5c78f665a0f3",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 36,
+          "status": 401,
+          "durationMs": 0,
+          "requestId": "fe24d93e-33d2-4138-85dc-4fa079414830",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 37,
+          "status": 401,
+          "durationMs": 128,
+          "requestId": "19494d01-52cd-4dc2-b7ac-89ff5813885d",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 38,
+          "status": 401,
+          "durationMs": 96,
+          "requestId": "363b56b0-528a-4af3-b9aa-e19ba4e3740f",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 39,
+          "status": 401,
+          "durationMs": 267,
+          "requestId": "54d32167-a553-4471-8192-eafe0b13fc7a",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 40,
+          "status": 401,
+          "durationMs": 92,
+          "requestId": "f7b75875-e202-40c5-93ca-9a49cfd79492",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 41,
+          "status": 401,
+          "durationMs": 96,
+          "requestId": "9014278e-3f84-451e-8e7d-8994389cb64a",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/overview(core)",
+          "band": "large",
+          "runIndex": 42,
+          "status": 401,
+          "durationMs": 96,
+          "requestId": "61d13d06-d622-4653-b9c0-14eac6045969",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 43,
+          "status": 401,
+          "durationMs": 93,
+          "requestId": "4559840c-9581-4550-b247-76a6473d3fbe",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 44,
+          "status": 401,
+          "durationMs": 92,
+          "requestId": "4aa73e71-13de-4975-bb35-527106aeae16",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 45,
+          "status": 401,
+          "durationMs": 91,
+          "requestId": "435f1805-e87f-4de2-8b41-165312424b28",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 46,
+          "status": 401,
+          "durationMs": 113,
+          "requestId": "19b37114-0957-4a17-af89-f99470e5733a",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 47,
+          "status": 401,
+          "durationMs": 139,
+          "requestId": "199a0878-6eaa-4bb6-92b1-04fd10655f4f",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/campaigns",
+          "band": "large",
+          "runIndex": 48,
+          "status": 401,
+          "durationMs": 90,
+          "requestId": "befdde9e-6936-4b4c-a2a2-5c919122693c",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 49,
+          "status": 401,
+          "durationMs": 103,
+          "requestId": "cfdc983c-7623-4dac-a63f-0299524f9e35",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 50,
+          "status": 401,
+          "durationMs": 93,
+          "requestId": "f9f67167-4770-468b-bd79-4766abc41c78",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 51,
+          "status": 401,
+          "durationMs": 91,
+          "requestId": "962a4b8d-7b8d-434c-9f92-fee495ea4a64",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 52,
+          "status": 401,
+          "durationMs": 98,
+          "requestId": "70f1f439-eb14-43cf-a2ae-6f08deda4429",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 53,
+          "status": 401,
+          "durationMs": 98,
+          "requestId": "3d5051fc-40c8-4f2f-8fb0-b8c1b2d15d8f",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/response-timing",
+          "band": "large",
+          "runIndex": 54,
+          "status": 401,
+          "durationMs": 91,
+          "requestId": "3e8a0c54-8bc3-46f0-bcfe-2f1869e749f8",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 55,
+          "status": 401,
+          "durationMs": 106,
+          "requestId": "22b70276-76de-4673-ac72-7f3dee341e1a",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 56,
+          "status": 401,
+          "durationMs": 88,
+          "requestId": "5dc33a9a-ca47-42aa-bf1c-e3f52161b712",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 57,
+          "status": 401,
+          "durationMs": 84,
+          "requestId": "1b9b5f13-21c6-4e86-872d-42ddaf3b235e",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 58,
+          "status": 401,
+          "durationMs": 94,
+          "requestId": "15fe006c-8155-4afb-bb77-2ba91f6c09a5",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 59,
+          "status": 401,
+          "durationMs": 87,
+          "requestId": "aabc58ae-797c-4d62-bb37-7b96c64d3417",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/analytics/crm/rows(summary)",
+          "band": "large",
+          "runIndex": 60,
+          "status": 401,
+          "durationMs": 83,
+          "requestId": "a458ea13-56c7-45d3-953d-7c639dbc887e",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 61,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "f9bd55d7-4632-4515-9ea6-8783fe04bd52",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 62,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "d7815234-291a-46c5-9799-4499aad535f7",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 63,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "c80fddd8-1d90-4f66-ab0d-a23a3756ae11",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 64,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "8e6b966d-5a03-4a48-9db8-39d83a169a8f",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 65,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "425904cb-a327-4179-9a9b-529570953e64",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/counts",
+          "band": "large",
+          "runIndex": 66,
+          "status": 200,
+          "durationMs": 1,
+          "requestId": "91cdb4a1-5c1e-49b0-84dd-49dfab0e38cb",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 67,
+          "status": 401,
+          "durationMs": 0,
+          "requestId": "0bc090ac-c3a6-418a-b5c0-7282f51fdc46",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 68,
+          "status": 401,
+          "durationMs": 0,
+          "requestId": "e74c08da-ba2b-4815-8b22-d2a558e04f6c",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 69,
+          "status": 401,
+          "durationMs": 1,
+          "requestId": "88e6cab5-74b5-4033-9dea-e9f49f68cde0",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 70,
+          "status": 401,
+          "durationMs": 0,
+          "requestId": "9d1ead3e-446d-49df-a82a-2a5e077bb8a9",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 71,
+          "status": 401,
+          "durationMs": 0,
+          "requestId": "32ce4233-684a-4669-b0d4-2132ab3d6beb",
+          "timedOut": false,
+          "error": null
+        },
+        {
+          "endpoint": "/api/inbox/conversations",
+          "band": "large",
+          "runIndex": 72,
+          "status": 401,
+          "durationMs": 16,
+          "requestId": "4956eab5-7808-4524-b06b-6b9aaa033cb6",
+          "timedOut": false,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

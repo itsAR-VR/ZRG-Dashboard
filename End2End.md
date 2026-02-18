@@ -4778,7 +4778,7 @@
 - **Mental model:** follow-ups gain a “persona layer”: sequence selection can be persona-specific, and template rendering can pull persona identity/signature from either the selected sequence persona or the campaign persona.
 - **Operational takeaway:** to run Chris + Aaron concurrently, you configure two sequences with the same trigger but different persona bindings; the router selects based on campaign persona at runtime. (E1, E3, E5)
 
-## 18) Recent Phase Updates (94–108) + Where Multi‑Agent / Memory / Eval Fit
+## 21) Recent Phase Updates (94–108) + Where Multi‑Agent / Memory / Eval Fit
 
 ### PLAN
 - Add a compact, source‑grounded summary of the last 15 phases (94–108) so End2End reflects current platform reality.
@@ -4838,3 +4838,122 @@
 ### SYNTHESIZE
 - End2End now includes a concise update of phases 94–108, reflecting reliability hardening, booking correctness, messaging quality fixes, and the upcoming performance‑insight layer.
 - The next highest‑leverage AI improvements are **multi‑agent overseer + memory + eval**, but they should be built explicitly **on top of** Phase 106’s gate and **aligned to** Phase 108’s booked/not‑booked outcome labels to maximize booking and response quality. (E106, E108)
+
+## 22) Phase 169 (2026-02-18) — Log-Driven Inngest Offload + Verification Status
+
+### PLAN
+- Capture the operational reason for Phase 169 and the failure signatures it targeted.
+- Document the final scope lock (migrated routes vs routes that must stay synchronous).
+- Capture dispatch contract details (events, idempotency, concurrency, rollback flags).
+- Record production verification outcomes, including root-cause remediation and current flag state.
+- Preserve remaining open verification gaps so operators know exactly what is still required.
+
+### LOCATE
+- `docs/planning/phase-169/plan.md`
+- `docs/planning/phase-169/a/plan.md`
+- `docs/planning/phase-169/artifacts/inngest-offload-spec.md`
+- `docs/planning/phase-169/d/plan.md`
+- `docs/planning/phase-169/artifacts/signing-key-remediation-summary-2026-02-18T05-59-49Z.md`
+- `docs/planning/phase-169/artifacts/post-fix-cron-flag-snapshot-2026-02-18T06-21-26Z.md`
+- `docs/planning/phase-169/artifacts/phase-168-residual-risk-closure-2026-02-18T06-30-00Z.md`
+
+### EXTRACT
+- **E1 — `docs/planning/phase-169/plan.md:1-14`**
+  ```md
+  # Phase 169 — Log-driven Inngest offload for failing webhook + cron routes
+
+  Break the log-driven timeout/retry “reversal loop” by moving eligible high-error routes (webhook + cron) off the synchronous request path into durable execution (Inngest + existing DB queues), while keeping user-facing inbox read APIs synchronous.
+  ```
+- **E2 — `docs/planning/phase-169/plan.md:14-24`**
+  ```md
+  - `/api/webhooks/email`: `21,050` × `504` + `310` × blank status
+  - `/api/inbox/conversations`: `8,718` × `504` + `4,938` × `500` + `1,443` × blank status
+  - `/api/cron/response-timing`: `545` × `500` + `18` × blank status
+  - `/api/cron/background-jobs`: `77` × `500`
+  ```
+- **E3 — `docs/planning/phase-169/artifacts/inngest-offload-spec.md:5-18`**
+  ```md
+  ### Migrate to durable offload
+  - `/api/webhooks/email` (`EMAIL_SENT`) via existing `WebhookEvent` queue-first behavior.
+  - `/api/cron/background-jobs` via existing dispatch-only Inngest flow.
+  - New dispatch-only cron offloads:
+    - `/api/cron/response-timing`
+    - `/api/cron/appointment-reconcile`
+    - `/api/cron/followups`
+    - `/api/cron/availability`
+    - `/api/cron/emailbison/availability-slot`
+  ```
+- **E4 — `docs/planning/phase-169/artifacts/inngest-offload-spec.md:37-77`**
+  ```md
+  ## Canonical Event Names
+  - `cron/response-timing.requested`
+  - `cron/appointment-reconcile.requested`
+  - `cron/followups.requested`
+  - `cron/availability.requested`
+  - `cron/emailbison-availability-slot.requested`
+
+  Function-level idempotency for every new cron function:
+  - `idempotency: "event.data.dispatchKey"`
+
+  For each new cron function:
+  - `retries: 3`
+  - `concurrency: { limit: 1 }`
+  ```
+- **E5 — `docs/planning/phase-169/plan.md:141-149`**
+  ```md
+  - 2026-02-18T05:47:36Z (UTC) — Root cause identified: `Invalid signature` (`401`) traced to trailing whitespace/newline in production `INNGEST_SIGNING_KEY`.
+  - 2026-02-18T05:50Z–05:57Z (UTC) — Remediated signing key (trimmed) + redeployed; zero new `Invalid signature` failures and durable run ledger repopulation.
+  - 2026-02-18T06:19:20Z (UTC) — Enabled and verified emailbison availability-slot slice; dispatch `202`, then durable `SUCCEEDED`.
+  ```
+- **E6 — `docs/planning/phase-169/d/plan.md:94-103`**
+  ```md
+  - Root cause confirmed: production `INNGEST_SIGNING_KEY` contained trailing whitespace/newline causing `Invalid signature` (`401`) failures.
+  - `Invalid signature` failures after `2026-02-18T05:51:00Z` dropped to zero.
+  - Current production flag state:
+    `CRON_RESPONSE_TIMING_USE_INNGEST=true`
+    `CRON_APPOINTMENT_RECONCILE_USE_INNGEST=true`
+    `CRON_FOLLOWUPS_USE_INNGEST=true`
+    `CRON_AVAILABILITY_USE_INNGEST=true`
+    `CRON_EMAILBISON_AVAILABILITY_SLOT_USE_INNGEST=true`
+    `BACKGROUND_JOBS_USE_INNGEST=true`
+    `INBOXXIA_EMAIL_SENT_ASYNC=true`
+  ```
+- **E7 — `docs/planning/phase-169/artifacts/phase-168-residual-risk-closure-2026-02-18T06-30-00Z.md:20-30`**
+  ```md
+  ### Risk 2: Matched-window dashboard export parity
+  - Status: Still open (verification confidence gap).
+  - Required to fully close:
+    - attach matched baseline/post dashboard exports for all migrated routes, then append route-signature deltas into phase artifacts.
+  ```
+
+### SOLVE (Confidence: 0.9)
+- Phase 169 converted high-error webhook/cron execution from synchronous request handling to durable dispatch patterns, while explicitly keeping inbox read APIs synchronous to avoid UX regressions. (E1, E3)
+- Scope lock is clear:
+  - queue-first webhook handling remains for EmailBison `EMAIL_SENT`,
+  - background jobs stay dispatch-only,
+  - five cron routes now support dispatch-only mode behind per-route flags. (E3)
+- The rollout contract is deterministic and rollback-friendly:
+  - canonical event names are fixed,
+  - event idempotency is tied to `dispatchKey`,
+  - function settings are conservative (`retries: 3`, `concurrency limit 1`),
+  - each route has its own `*_USE_INNGEST` rollback toggle. (E4, E6)
+- Production verification identified and fixed the core blocker:
+  - `INNGEST_SIGNING_KEY` whitespace/newline caused callback signature failures (`401`),
+  - trimming the key restored durable run ingestion,
+  - post-fix failure counts dropped to zero in the sampled window. (E5, E6)
+- End-state from phase artifacts shows all planned cron offload flags enabled, webhook queue-first enabled, and emailbison availability-slot moved from timeout risk to durable `SUCCEEDED` execution. (E6)
+- The remaining gap is not route health; it is strict matched-window dashboard-export parity evidence for formal closure. (E7)
+
+### VERIFY
+- The phase itself records verification as operationally healthy but not fully closed until dashboard export parity packets are attached per migrated route. (E7)
+- `BackgroundDispatchWindow.status=ENQUEUED` should not be interpreted as execution success; terminal health must be read from `BackgroundFunctionRun` outcomes (noted in Phase 169 RED TEAM findings). (`docs/planning/phase-169/plan.md`)
+- Secret hygiene is now a required invariant for rollout operations: trim + whitespace-check critical secrets (`INNGEST_SIGNING_KEY`, `CRON_SECRET`) before deploy and probe windows. (E5, E6)
+
+### SYNTHESIZE
+- **Operational runbook (current):**
+  1. Keep per-route offload flags as the primary rollout/rollback control.
+  2. Confirm dispatch-only routes return `202` with deterministic `dispatchKey` + `correlationId`.
+  3. Confirm durable completion in `BackgroundFunctionRun` (`SUCCEEDED`), not just dispatch ledger enqueue.
+  4. Confirm `WebhookEvent` queue backlog remains stable (`duePending=0`, `runningCount=0` in the latest captured snapshot).
+  5. For formal closure, attach matched-window baseline/post dashboard exports and compute route-signature deltas.
+- **Cross-phase status:** Phase 168’s emailbison timeout residual is operationally addressed in Phase 169, while dashboard-export parity remains the open verification requirement. (E7)

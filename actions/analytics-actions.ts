@@ -2391,6 +2391,7 @@ export async function getCrmSheetRows(params: {
 
     let page: LeadCrmRowWithLead[] = [];
     let nextCursor: string | null = null;
+    const scannedDerivedResponseModeByLeadId = new Map<string, CrmResponseMode>();
 
     if (!requestedResponseMode) {
       const rows = await prisma.leadCrmRow.findMany({
@@ -2461,6 +2462,10 @@ export async function getCrmSheetRows(params: {
 
             for (const row of responseModeRows) {
               derivedByLeadId.set(row.leadId, deriveCrmResponseMode(row.sentBy, row.sentByUserId));
+              scannedDerivedResponseModeByLeadId.set(
+                row.leadId,
+                deriveCrmResponseMode(row.sentBy, row.sentByUserId)
+              );
             }
           } catch (error) {
             console.warn("[getCrmSheetRows] Derived response mode query failed:", error);
@@ -2501,6 +2506,10 @@ export async function getCrmSheetRows(params: {
     const responseModeByLeadId = new Map<string, CrmResponseMode>();
     const followUpsByLeadId = new Map<string, Date[]>();
 
+    for (const [leadId, mode] of scannedDerivedResponseModeByLeadId.entries()) {
+      responseModeByLeadId.set(leadId, mode);
+    }
+
     if (leadIds.length > 0) {
       const withTimeout = async <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> => {
         return prisma.$transaction(async (tx) => {
@@ -2509,98 +2518,116 @@ export async function getCrmSheetRows(params: {
         });
       };
 
-      try {
-        const touchRows = await withTimeout((tx) =>
-          tx.$queryRaw<Array<{ leadId: string; touch_count: bigint }>>`
-            SELECT m."leadId", COUNT(*)::bigint as touch_count
-            FROM "Message" m
-            JOIN "LeadCrmRow" lcr ON lcr."leadId" = m."leadId"
-            WHERE m."leadId" IN (${Prisma.join(leadIds)})
-              AND m.direction = 'outbound'
-              AND lcr."interestChannel" IS NOT NULL
-              AND lcr."interestRegisteredAt" IS NOT NULL
-              AND m.channel = lcr."interestChannel"
-              AND m."sentAt" < lcr."interestRegisteredAt"
-            GROUP BY m."leadId"
-          `
-        );
+      const leadsMissingResponseMode = [
+        ...new Set(
+          page
+            .filter((row) => !row.responseMode && !responseModeByLeadId.has(row.leadId))
+            .map((row) => row.leadId)
+        ),
+      ];
 
-        for (const row of touchRows) {
+      const touchRowsPromise = withTimeout((tx) =>
+        tx.$queryRaw<Array<{ leadId: string; touch_count: bigint }>>`
+          SELECT m."leadId", COUNT(*)::bigint as touch_count
+          FROM "Message" m
+          JOIN "LeadCrmRow" lcr ON lcr."leadId" = m."leadId"
+          WHERE m."leadId" IN (${Prisma.join(leadIds)})
+            AND m.direction = 'outbound'
+            AND lcr."interestChannel" IS NOT NULL
+            AND lcr."interestRegisteredAt" IS NOT NULL
+            AND m.channel = lcr."interestChannel"
+            AND m."sentAt" < lcr."interestRegisteredAt"
+          GROUP BY m."leadId"
+        `
+      );
+      const followUpRowsPromise = withTimeout((tx) =>
+        tx.followUpTask.findMany({
+          where: {
+            leadId: { in: leadIds },
+            status: "pending",
+          },
+          select: { leadId: true, dueDate: true },
+          orderBy: [{ leadId: "asc" }, { dueDate: "asc" }],
+        })
+      );
+      const responseRowsPromise = withTimeout((tx) =>
+        tx.$queryRaw<Array<{ leadId: string }>>`
+          SELECT DISTINCT m."leadId"
+          FROM "Message" m
+          JOIN "LeadCrmRow" lcr ON lcr."leadId" = m."leadId"
+          WHERE m."leadId" IN (${Prisma.join(leadIds)})
+            AND m.direction = 'outbound'
+            AND lcr."interestChannel" IS NOT NULL
+            AND lcr."interestRegisteredAt" IS NOT NULL
+            AND m.channel = lcr."interestChannel"
+            AND m."sentAt" > lcr."interestRegisteredAt"
+        `
+      );
+      const responseModeRowsPromise: Promise<
+        Array<{ leadId: string; sentBy: string | null; sentByUserId: string | null }>
+      > =
+        leadsMissingResponseMode.length > 0
+          ? withTimeout((tx) =>
+              tx.$queryRaw<Array<{ leadId: string; sentBy: string | null; sentByUserId: string | null }>>`
+                SELECT DISTINCT ON (m."leadId")
+                  m."leadId",
+                  m."sentBy",
+                  m."sentByUserId"
+                FROM "Message" m
+                JOIN "LeadCrmRow" lcr ON lcr."leadId" = m."leadId"
+                WHERE m."leadId" IN (${Prisma.join(leadsMissingResponseMode)})
+                  AND m.direction = 'outbound'
+                  AND lcr."interestChannel" IS NOT NULL
+                  AND lcr."interestRegisteredAt" IS NOT NULL
+                  AND m.channel = lcr."interestChannel"
+                  AND m."sentAt" > lcr."interestRegisteredAt"
+                ORDER BY m."leadId", m."sentAt" ASC
+              `
+            )
+          : Promise.resolve([]);
+
+      const [touchRowsResult, followUpRowsResult, responseRowsResult, responseModeRowsResult] =
+        await Promise.allSettled([
+          touchRowsPromise,
+          followUpRowsPromise,
+          responseRowsPromise,
+          responseModeRowsPromise,
+        ]);
+
+      if (touchRowsResult.status === "fulfilled") {
+        for (const row of touchRowsResult.value) {
           stepRespondedByLeadId.set(row.leadId, Number(row.touch_count));
         }
-      } catch (error) {
-        console.warn("[getCrmSheetRows] Step responded query failed:", error);
+      } else {
+        console.warn("[getCrmSheetRows] Step responded query failed:", touchRowsResult.reason);
       }
 
-      try {
-        const followUpRows = await withTimeout((tx) =>
-          tx.followUpTask.findMany({
-            where: {
-              leadId: { in: leadIds },
-              status: "pending",
-            },
-            select: { leadId: true, dueDate: true },
-            orderBy: [{ leadId: "asc" }, { dueDate: "asc" }],
-          })
-        );
-
-        for (const row of followUpRows) {
+      if (followUpRowsResult.status === "fulfilled") {
+        for (const row of followUpRowsResult.value) {
           const list = followUpsByLeadId.get(row.leadId) ?? [];
           if (list.length < 5) {
             list.push(row.dueDate);
             followUpsByLeadId.set(row.leadId, list);
           }
         }
-      } catch (error) {
-        console.warn("[getCrmSheetRows] Follow-up query failed:", error);
+      } else {
+        console.warn("[getCrmSheetRows] Follow-up query failed:", followUpRowsResult.reason);
       }
 
-      try {
-        const responseRows = await withTimeout((tx) =>
-          tx.$queryRaw<Array<{ leadId: string }>>`
-            SELECT DISTINCT m."leadId"
-            FROM "Message" m
-            JOIN "LeadCrmRow" lcr ON lcr."leadId" = m."leadId"
-            WHERE m."leadId" IN (${Prisma.join(leadIds)})
-              AND m.direction = 'outbound'
-              AND lcr."interestChannel" IS NOT NULL
-              AND lcr."interestRegisteredAt" IS NOT NULL
-              AND m.channel = lcr."interestChannel"
-              AND m."sentAt" > lcr."interestRegisteredAt"
-          `
-        );
-
-        for (const row of responseRows) {
+      if (responseRowsResult.status === "fulfilled") {
+        for (const row of responseRowsResult.value) {
           responseStepCompleteByLeadId.add(row.leadId);
         }
-      } catch (error) {
-        console.warn("[getCrmSheetRows] Response step query failed:", error);
+      } else {
+        console.warn("[getCrmSheetRows] Response step query failed:", responseRowsResult.reason);
       }
 
-      try {
-        const responseModeRows = await withTimeout((tx) =>
-          tx.$queryRaw<Array<{ leadId: string; sentBy: string | null; sentByUserId: string | null }>>`
-            SELECT DISTINCT ON (m."leadId")
-              m."leadId",
-              m."sentBy",
-              m."sentByUserId"
-            FROM "Message" m
-            JOIN "LeadCrmRow" lcr ON lcr."leadId" = m."leadId"
-            WHERE m."leadId" IN (${Prisma.join(leadIds)})
-              AND m.direction = 'outbound'
-              AND lcr."interestChannel" IS NOT NULL
-              AND lcr."interestRegisteredAt" IS NOT NULL
-              AND m.channel = lcr."interestChannel"
-              AND m."sentAt" > lcr."interestRegisteredAt"
-            ORDER BY m."leadId", m."sentAt" ASC
-          `
-        );
-
-        for (const row of responseModeRows) {
+      if (responseModeRowsResult.status === "fulfilled") {
+        for (const row of responseModeRowsResult.value) {
           responseModeByLeadId.set(row.leadId, deriveCrmResponseMode(row.sentBy, row.sentByUserId));
         }
-      } catch (error) {
-        console.warn("[getCrmSheetRows] Response mode query failed:", error);
+      } else {
+        console.warn("[getCrmSheetRows] Response mode query failed:", responseModeRowsResult.reason);
       }
     }
 

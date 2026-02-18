@@ -76,7 +76,7 @@ import { WorkspaceMembersManager } from "./settings/workspace-members-manager"
 import { AdminDashboardTab } from "./admin-dashboard-tab"
 // Note: FollowUpSequenceManager moved to Follow-ups view
 import { cn } from "@/lib/utils"
-import { getGlobalAdminStatus, getWorkspaceAdminStatus, getWorkspaceCapabilities } from "@/actions/access-actions"
+import { getGlobalAdminStatus, getWorkspaceCapabilities } from "@/actions/access-actions"
 import { getClients } from "@/actions/client-actions"
 import {
   getSlackApprovalRecipients,
@@ -506,6 +506,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   // Knowledge assets state
   const [knowledgeAssets, setKnowledgeAssets] = useState<KnowledgeAssetData[]>([])
+  const [knowledgeAssetsLoaded, setKnowledgeAssetsLoaded] = useState(false)
+  const [knowledgeAssetsLoading, setKnowledgeAssetsLoading] = useState(false)
   const [newAssetName, setNewAssetName] = useState("")
   const [newAssetContent, setNewAssetContent] = useState("")
   const [newAssetType, setNewAssetType] = useState<"text" | "url" | "file">("text")
@@ -906,24 +908,31 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
     async function loadSettings() {
       setIsLoading(true)
+      setKnowledgeAssets([])
+      setKnowledgeAssetsLoaded(false)
+      setKnowledgeAssetsLoading(false)
+      setPrimaryWebsiteAssetId(null)
+      setPrimaryWebsiteUrl("")
       try {
         const globalStatusPromise =
           globalAdminStatusRef.current === null
             ? getGlobalAdminStatus()
             : Promise.resolve({ success: true, isAdmin: globalAdminStatusRef.current })
-        const [result, adminStatus, capabilitiesResult, globalStatus] = await Promise.all([
-          getUserSettings(activeWorkspace),
-          activeWorkspace ? getWorkspaceAdminStatus(activeWorkspace) : Promise.resolve({ success: true, isAdmin: false }),
+        const calendarLinksPromise = activeWorkspace
+          ? getCalendarLinks(activeWorkspace)
+          : Promise.resolve({ success: true, data: [] as CalendarLinkData[] })
+        const [result, capabilitiesResult, globalStatus, calendarResult] = await Promise.all([
+          getUserSettings(activeWorkspace, { includeKnowledgeAssets: false }),
           activeWorkspace ? getWorkspaceCapabilities(activeWorkspace) : Promise.resolve({ success: true, capabilities: null }),
           globalStatusPromise,
+          calendarLinksPromise,
         ])
 
         if (isStale()) return
 
         const capabilities = capabilitiesResult.success ? capabilitiesResult.capabilities ?? null : null
         setWorkspaceCapabilities(capabilities)
-        const derivedWorkspaceAdmin =
-          Boolean(capabilities?.isWorkspaceAdmin) || Boolean(adminStatus.success && adminStatus.isAdmin)
+        const derivedWorkspaceAdmin = Boolean(capabilities?.isWorkspaceAdmin)
         setIsWorkspaceAdmin(derivedWorkspaceAdmin && !capabilities?.isClientPortalUser)
         if (globalStatus.success) {
           globalAdminStatusRef.current = Boolean(globalStatus.isAdmin)
@@ -1046,9 +1055,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
             const primaryUrl = primaryAsset?.textContent || primaryAsset?.fileUrl || ""
             setPrimaryWebsiteAssetId(primaryAsset?.id || null)
             setPrimaryWebsiteUrl(primaryUrl)
-          } else {
-            setPrimaryWebsiteAssetId(null)
-            setPrimaryWebsiteUrl("")
+            setKnowledgeAssetsLoaded(true)
           }
           // Set meeting booking settings
           setMeetingBooking({
@@ -1093,13 +1100,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
         setGhlUsers([])
         setGhlConnectionStatus("unknown")
 
-        // Load only core calendar links for general-tab warnings.
-        if (activeWorkspace) {
-          const calendarResult = await getCalendarLinks(activeWorkspace)
-          if (isStale()) return
-          if (calendarResult.success && calendarResult.data) {
-            setCalendarLinks(calendarResult.data)
-          }
+        if (calendarResult.success && calendarResult.data) {
+          setCalendarLinks(calendarResult.data)
         } else {
           setCalendarLinks([])
         }
@@ -1127,6 +1129,43 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       cancelled = true
     }
   }, [activeWorkspace])
+
+  useEffect(() => {
+    if (!activeWorkspace || isLoading) return
+    if (activeTab !== "ai") return
+    if (knowledgeAssetsLoaded || knowledgeAssetsLoading) return
+
+    let cancelled = false
+    setKnowledgeAssetsLoading(true)
+
+    getUserSettings(activeWorkspace, { includeKnowledgeAssets: true })
+      .then((result) => {
+        if (cancelled) return
+        if (!(result.success && result.knowledgeAssets)) {
+          setKnowledgeAssetsLoaded(true)
+          return
+        }
+
+        setKnowledgeAssets(result.knowledgeAssets)
+        const primaryAsset = result.knowledgeAssets.find((asset) => asset.name === PRIMARY_WEBSITE_ASSET_NAME)
+        const primaryUrl = primaryAsset?.textContent || primaryAsset?.fileUrl || ""
+        setPrimaryWebsiteAssetId(primaryAsset?.id || null)
+        setPrimaryWebsiteUrl(primaryUrl)
+        setKnowledgeAssetsLoaded(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setKnowledgeAssetsLoaded(true)
+      })
+      .finally(() => {
+        if (cancelled) return
+        setKnowledgeAssetsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, activeWorkspace, isLoading, knowledgeAssetsLoaded, knowledgeAssetsLoading])
 
   const hasLoadedDeferredSlice = useCallback((workspaceId: string, slice: DeferredSettingsSlice) => {
     return Boolean(deferredSliceLoadRef.current[workspaceId]?.[slice])
@@ -1631,8 +1670,8 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       void loadBookingSlice()
       schedulePrefetch(loadIntegrationsSlice, 1000)
     } else {
-      schedulePrefetch(loadIntegrationsSlice, 900)
-      schedulePrefetch(loadBookingSlice, 1300)
+      // Keep "general/ai/team/admin" lightweight: avoid prefetching heavy
+      // integrations/booking slices until the user actually visits those tabs.
     }
 
     return () => {
@@ -2070,7 +2109,7 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
       })
 
       // Refresh settings + calendar links so the banner can update without a full reload
-      const refreshed = await getUserSettings(activeWorkspace)
+      const refreshed = await getUserSettings(activeWorkspace, { includeKnowledgeAssets: false })
       if (refreshed.success && refreshed.data) {
         setSettings(refreshed.data)
       }
@@ -2710,9 +2749,14 @@ export function SettingsView({ activeWorkspace, activeTab = "general", onTabChan
 
   const refreshKnowledgeAssets = useCallback(async () => {
     if (!activeWorkspace) return
-    const res = await getUserSettings(activeWorkspace)
+    const res = await getUserSettings(activeWorkspace, { includeKnowledgeAssets: true })
     if (res.success && res.knowledgeAssets) {
       setKnowledgeAssets(res.knowledgeAssets)
+      setKnowledgeAssetsLoaded(true)
+      const primaryAsset = res.knowledgeAssets.find((asset) => asset.name === PRIMARY_WEBSITE_ASSET_NAME)
+      const primaryUrl = primaryAsset?.textContent || primaryAsset?.fileUrl || ""
+      setPrimaryWebsiteAssetId(primaryAsset?.id || null)
+      setPrimaryWebsiteUrl(primaryUrl)
     }
   }, [activeWorkspace])
 

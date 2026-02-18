@@ -1,0 +1,115 @@
+{
+  "generatedAt": "2026-02-18T08:17:41.013Z",
+  "startedAt": "2026-02-18T08:17:39.474Z",
+  "config": {
+    "baseUrl": "https://zrg-dashboard.vercel.app",
+    "clientId": "00000000-0000-0000-0000-000000000000",
+    "search": null,
+    "samples": 4,
+    "usedCookie": false
+  },
+  "summary": [
+    {
+      "endpoint": "/api/inbox/counts",
+      "samples": 4,
+      "successRate": 1,
+      "p50Ms": 1,
+      "p95Ms": 6,
+      "statuses": {
+        "200": 4
+      }
+    },
+    {
+      "endpoint": "/api/inbox/conversations",
+      "samples": 4,
+      "successRate": 0,
+      "p50Ms": 1,
+      "p95Ms": 2,
+      "statuses": {
+        "401": 4
+      }
+    }
+  ],
+  "samples": [
+    {
+      "endpoint": "/api/inbox/counts",
+      "url": "https://zrg-dashboard.vercel.app/api/inbox/counts?clientId=00000000-0000-0000-0000-000000000000",
+      "status": 200,
+      "durationMs": 6,
+      "requestId": "e56522f8-28fd-408a-a5f2-f75fac610a84",
+      "readApiEnabled": "1",
+      "readApiReason": null,
+      "runIndex": 1
+    },
+    {
+      "endpoint": "/api/inbox/conversations",
+      "url": "https://zrg-dashboard.vercel.app/api/inbox/conversations?clientId=00000000-0000-0000-0000-000000000000&limit=50",
+      "status": 401,
+      "durationMs": 2,
+      "requestId": "88c07454-9af3-4027-8754-e1001351b39b",
+      "readApiEnabled": null,
+      "readApiReason": null,
+      "runIndex": 1
+    },
+    {
+      "endpoint": "/api/inbox/counts",
+      "url": "https://zrg-dashboard.vercel.app/api/inbox/counts?clientId=00000000-0000-0000-0000-000000000000",
+      "status": 200,
+      "durationMs": 1,
+      "requestId": "c63e10d5-e218-4a61-a8b3-aad0c491416b",
+      "readApiEnabled": "1",
+      "readApiReason": null,
+      "runIndex": 2
+    },
+    {
+      "endpoint": "/api/inbox/conversations",
+      "url": "https://zrg-dashboard.vercel.app/api/inbox/conversations?clientId=00000000-0000-0000-0000-000000000000&limit=50",
+      "status": 401,
+      "durationMs": 1,
+      "requestId": "f9e5b3ed-c02d-4f20-b3df-891bcedc7ec5",
+      "readApiEnabled": null,
+      "readApiReason": null,
+      "runIndex": 2
+    },
+    {
+      "endpoint": "/api/inbox/counts",
+      "url": "https://zrg-dashboard.vercel.app/api/inbox/counts?clientId=00000000-0000-0000-0000-000000000000",
+      "status": 200,
+      "durationMs": 1,
+      "requestId": "b06a97ee-9c8d-4e83-9d45-4c56ff807130",
+      "readApiEnabled": "1",
+      "readApiReason": null,
+      "runIndex": 3
+    },
+    {
+      "endpoint": "/api/inbox/conversations",
+      "url": "https://zrg-dashboard.vercel.app/api/inbox/conversations?clientId=00000000-0000-0000-0000-000000000000&limit=50",
+      "status": 401,
+      "durationMs": 0,
+      "requestId": "38dbf863-e4eb-453c-8a40-fe7004ac043b",
+      "readApiEnabled": null,
+      "readApiReason": null,
+      "runIndex": 3
+    },
+    {
+      "endpoint": "/api/inbox/counts",
+      "url": "https://zrg-dashboard.vercel.app/api/inbox/counts?clientId=00000000-0000-0000-0000-000000000000",
+      "status": 200,
+      "durationMs": 0,
+      "requestId": "83d8793b-3020-4fff-8c4c-0ec0a358726b",
+      "readApiEnabled": "1",
+      "readApiReason": null,
+      "runIndex": 4
+    },
+    {
+      "endpoint": "/api/inbox/conversations",
+      "url": "https://zrg-dashboard.vercel.app/api/inbox/conversations?clientId=00000000-0000-0000-0000-000000000000&limit=50",
+      "status": 401,
+      "durationMs": 1,
+      "requestId": "8d26a186-d4af-4657-82fe-e382fe949c46",
+      "readApiEnabled": null,
+      "readApiReason": null,
+      "runIndex": 4
+    }
+  ]
+}

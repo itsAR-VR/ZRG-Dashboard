@@ -43,6 +43,8 @@ Verify each migration slice with objective evidence (paired Vercel dashboard exp
 
 ## Output
 - Completed production verification slices for all cron offload routes with dispatch-only responses and durable ledger evidence.
+- Cross-phase residual risk cohesion packet added:
+  - `docs/planning/phase-169/artifacts/phase-168-residual-risk-closure-2026-02-18T06-30-00Z.md`
 - Captured artifacts:
   - Baseline (inline behavior): `baseline-response-timing-response-body-2026-02-18T03-16-31Z.txt` + matching meta/log window.
   - Initial post-enable (dispatch-only): `post-response-timing-response-body-2026-02-18T03-19-35Z.txt` + matching meta/log window.
@@ -117,7 +119,9 @@ If all migrated routes remain stable, close verification by attaching matched-wi
 - Continue with verification closure tasks:
   1. Capture matched-window Vercel dashboard exports for response-timing, appointment-reconcile, followups, availability, and emailbison availability-slot post-fix windows.
   2. If desired for extra confidence, capture an additional `WebhookEvent` queue snapshot in the same export window (one snapshot already recorded with zero backlog).
-  3. Keep secret-whitespace checks in every env update step.
+ 3. Keep secret-whitespace checks in every env update step.
+- Cross-phase note:
+  - Use `phase-168-residual-risk-closure-2026-02-18T06-30-00Z.md` when discussing whether Phase 168 residual risks were addressed in production operations.
 - Coordination note: Phase 165 owns the broader background orchestration surfaces; avoid code edits there without re-reading latest phase-165 plan updates. This subphase used production env + artifact updates only.
 
 ## Progress This Turn (Terminus Maximus)

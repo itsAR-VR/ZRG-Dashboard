@@ -330,7 +330,7 @@ export function CrmDrawer({ lead, viewerRole, isOpen, onClose, onLeadUpdate }: C
     setIsWorkspaceContextLoaded(false)
     try {
       const [settingsResult, calendarResult] = await Promise.all([
-        getUserSettings(lead.clientId),
+        getUserSettings(lead.clientId, { includeKnowledgeAssets: false }),
         getCalendarLinks(lead.clientId),
       ])
       if (settingsResult.success) {

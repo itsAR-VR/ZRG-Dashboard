@@ -37,6 +37,37 @@ type CampaignsRouteResponse = {
   errors?: Record<string, string>;
 };
 
+type CampaignActionResult<T> = {
+  success: boolean;
+  data?: T;
+  error?: string;
+};
+
+const CAMPAIGNS_PART_TIMEOUT_MS = 8_000;
+
+async function runCampaignTask<T>(
+  label: string,
+  task: () => Promise<CampaignActionResult<T>>
+): Promise<CampaignActionResult<T>> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutFallback = new Promise<CampaignActionResult<T>>((resolve) => {
+    timeoutId = setTimeout(
+      () => resolve({ success: false, error: `${label} timed out` }),
+      CAMPAIGNS_PART_TIMEOUT_MS
+    );
+  });
+
+  try {
+    return await Promise.race([task(), timeoutFallback]);
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message ? error.message : `Failed to load ${label}`;
+    return { success: false, error: message };
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 export async function GET(request: NextRequest) {
   const startedAtMs = Date.now();
   const searchParams = request.nextUrl.searchParams;
@@ -88,10 +119,10 @@ export async function GET(request: NextRequest) {
 
   const [campaignsResult, reactivationResult, aiDraftOutcomeResult, aiDraftBookingResult] =
     await Promise.all([
-      getEmailCampaignAnalytics(params),
-      getReactivationCampaignAnalytics(params),
-      getAiDraftResponseOutcomeStats(params),
-      getAiDraftBookingConversionStats(params),
+      runCampaignTask("campaigns", () => getEmailCampaignAnalytics(params)),
+      runCampaignTask("reactivation", () => getReactivationCampaignAnalytics(params)),
+      runCampaignTask("AI outcomes", () => getAiDraftResponseOutcomeStats(params)),
+      runCampaignTask("AI booking", () => getAiDraftBookingConversionStats(params)),
     ]);
 
   const results = [

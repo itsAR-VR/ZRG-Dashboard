@@ -324,14 +324,18 @@ async function getAnalyticsOverviewRead(
     params.set("to", opts.window.to)
   }
 
-  const response = await fetch(`/api/analytics/overview?${params.toString()}`, { method: "GET" })
-  const json = (await response.json()) as AnalyticsOverviewResult
-  if (!response.ok && isReadApiDisabledPayload(json)) {
-    // Runtime flag is off on the server; fail open to the legacy action.
+  try {
+    const response = await fetch(`/api/analytics/overview?${params.toString()}`, { method: "GET" })
+    const json = (await response.json()) as AnalyticsOverviewResult
+    if (!response.ok && isReadApiDisabledPayload(json)) {
+      // Runtime flag is off on the server; fail open to the legacy action.
+      return getAnalytics(clientId, opts)
+    }
+    if (!response.ok) return json
+    return json
+  } catch {
     return getAnalytics(clientId, opts)
   }
-  if (!response.ok) return json
-  return json
 }
 
 async function getWorkflowAnalyticsRead(

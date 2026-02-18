@@ -586,7 +586,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
 
     const materialized = await tryMaterializedCounts();
     if (materialized) {
-      await redisSetJson(cacheKey, materialized, { exSeconds: 10 });
+      await redisSetJson(cacheKey, materialized, { exSeconds: 30 });
       return materialized;
     }
 
@@ -885,7 +885,7 @@ export async function getInboxCounts(clientId?: string | null): Promise<{
     }
 
     await persistMaterializedSnapshot(computed).catch(() => undefined);
-    await redisSetJson(cacheKey, computed, { exSeconds: 10 });
+    await redisSetJson(cacheKey, computed, { exSeconds: 30 });
     return computed;
   } catch (error) {
     // Auth/authorization issues are expected in some states (signed-out, stale workspace selection).
@@ -1459,8 +1459,11 @@ export async function getConversationsCursor(
       scoreFilter || "all",
     ].join(":");
 
-    const cached = await redisGetJson<ConversationsCursorResult>(cacheKey);
-    if (cached) return cached;
+    const shouldUsePageCache = !cursor;
+    if (shouldUsePageCache) {
+      const cached = await redisGetJson<ConversationsCursorResult>(cacheKey);
+      if (cached) return cached;
+    }
 
     // Build the where clause for filtering
     const whereConditions: any[] = [];
@@ -1792,7 +1795,8 @@ export async function getConversationsCursor(
         return findLeadsWithStatementTimeout(queryOptions, statementTimeoutMs);
       }
 
-      const batchSize = Math.max(limit * 4, 200);
+      // Bound reply-state scanning work so large-workspace spikes don't explode per-request DB cost.
+      const batchSize = Math.min(Math.max(limit * 3, 150), 400);
       const maxBatches = 10;
       const matched: any[] = [];
       let nextCursorId: string | null = cursor ?? null;
@@ -1904,7 +1908,9 @@ export async function getConversationsCursor(
       hasMore,
     };
 
-    await redisSetJson(cacheKey, out, { exSeconds: cursor ? 30 : 15 });
+    if (shouldUsePageCache) {
+      await redisSetJson(cacheKey, out, { exSeconds: 45 });
+    }
     return out;
   } catch (error) {
     const safe = toSafeActionError(error, { defaultPublicMessage: "Failed to load conversations" });

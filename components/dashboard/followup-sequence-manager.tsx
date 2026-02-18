@@ -215,7 +215,7 @@ export function FollowUpSequenceManager({ clientId }: FollowUpSequenceManagerPro
     setIsWorkspaceContextLoaded(false);
     try {
       const [settingsResult, calendarResult, personasResult] = await Promise.all([
-        getUserSettings(clientId),
+        getUserSettings(clientId, { includeKnowledgeAssets: false }),
         getCalendarLinks(clientId),
         listAiPersonas(clientId),
       ]);

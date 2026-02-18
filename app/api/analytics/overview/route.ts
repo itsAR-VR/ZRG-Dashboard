@@ -72,7 +72,9 @@ export async function GET(request: NextRequest) {
 
   const result = await getAnalytics(clientId, {
     window,
-    forceRefresh,
+    // Route cache is the source of truth for this endpoint; bypass the
+    // action-level cache on route misses to avoid redundant cache layers.
+    forceRefresh: true,
     parts,
   });
 

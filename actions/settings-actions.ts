@@ -162,13 +162,24 @@ async function requireSettingsWriteAccess(clientId: string): Promise<void> {
  * Get workspace settings (or return null if no workspace selected)
  * @param clientId - Workspace/client ID
  */
-export async function getUserSettings(clientId?: string | null): Promise<{
+type GetUserSettingsOptions = {
+  includeKnowledgeAssets?: boolean;
+  includeKnowledgeAssetBodies?: boolean;
+};
+
+export async function getUserSettings(
+  clientId?: string | null,
+  options?: GetUserSettingsOptions
+): Promise<{
   success: boolean;
   data?: UserSettingsData;
   knowledgeAssets?: KnowledgeAssetData[];
   error?: string;
 }> {
   try {
+    const includeKnowledgeAssets = options?.includeKnowledgeAssets !== false;
+    const includeKnowledgeAssetBodies = options?.includeKnowledgeAssetBodies !== false;
+
     if (!clientId) {
       // Return default settings when no workspace is selected
       return {
@@ -247,7 +258,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           bookingQualificationCriteria: null,
           bookingDisqualificationMessage: null,
         },
-        knowledgeAssets: [],
+        ...(includeKnowledgeAssets ? { knowledgeAssets: [] } : {}),
       };
     }
 
@@ -256,11 +267,6 @@ export async function getUserSettings(clientId?: string | null): Promise<{
     // Try to find existing settings for this workspace
     let settings = await prisma.workspaceSettings.findUnique({
       where: { clientId },
-      include: {
-        knowledgeAssets: {
-          orderBy: { createdAt: "desc" },
-        },
-      },
     });
 
     // Create default settings if none exist
@@ -295,22 +301,43 @@ export async function getUserSettings(clientId?: string | null): Promise<{
           calendarHealthMinSlots: 10,
         },
       });
-      settings = { ...created, knowledgeAssets: [] };
+      settings = created;
     }
 
-    const knowledgeAssets: KnowledgeAssetData[] = settings.knowledgeAssets.map((asset) => ({
-      id: asset.id,
-      name: asset.name,
-      type: asset.type as "file" | "text" | "url",
-      fileUrl: asset.fileUrl,
-      rawContent: asset.rawContent,
-      textContent: asset.textContent,
-      aiContextMode: asset.aiContextMode === "raw" ? "raw" : "notes",
-      originalFileName: asset.originalFileName,
-      mimeType: asset.mimeType,
-      createdAt: asset.createdAt,
-      updatedAt: asset.updatedAt,
-    }));
+    let knowledgeAssets: KnowledgeAssetData[] | undefined;
+    if (includeKnowledgeAssets) {
+      const assets = await prisma.knowledgeAsset.findMany({
+        where: { workspaceSettingsId: settings.id },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          name: true,
+          type: true,
+          fileUrl: true,
+          rawContent: includeKnowledgeAssetBodies,
+          textContent: includeKnowledgeAssetBodies,
+          aiContextMode: true,
+          originalFileName: true,
+          mimeType: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      });
+
+      knowledgeAssets = assets.map((asset) => ({
+        id: asset.id,
+        name: asset.name,
+        type: asset.type as "file" | "text" | "url",
+        fileUrl: asset.fileUrl,
+        rawContent: includeKnowledgeAssetBodies ? asset.rawContent : null,
+        textContent: includeKnowledgeAssetBodies ? asset.textContent : null,
+        aiContextMode: asset.aiContextMode === "raw" ? "raw" : "notes",
+        originalFileName: asset.originalFileName,
+        mimeType: asset.mimeType,
+        createdAt: asset.createdAt,
+        updatedAt: asset.updatedAt,
+      }));
+    }
 
     return {
       success: true,
@@ -392,7 +419,7 @@ export async function getUserSettings(clientId?: string | null): Promise<{
         bookingQualificationCriteria: settings.bookingQualificationCriteria,
         bookingDisqualificationMessage: settings.bookingDisqualificationMessage,
       },
-      knowledgeAssets,
+      ...(includeKnowledgeAssets ? { knowledgeAssets } : {}),
     };
   } catch (error) {
     console.error("Failed to fetch workspace settings:", error);
