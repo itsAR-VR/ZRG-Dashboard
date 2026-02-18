@@ -49,7 +49,7 @@
 
 ### Notes
 - Lint warnings are pre-existing (React hooks deps, `next/no-img-element`, etc.) and are not introduced by Phase 112 changes.
-- `next build` reports CSS optimization warnings for certain `bg-[color:var(--...)]` classes; build still succeeds.
+- `next build` reports CSS optimization warnings for certain `bg-[color:var(--token)]` classes; build still succeeds.
 - Working tree contains uncommitted changes and new files (expected for in-progress merge/commit workflow).
 
 ## Success Criteria → Evidence

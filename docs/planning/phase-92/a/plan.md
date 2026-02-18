@@ -155,7 +155,7 @@ Replace hard-coded LinkedIn color:
 
 **Execution Output (2026-02-02)**
 - Added sentiment/score/channel/brand tokens with `color-mix` bg/border helpers in `app/globals.css`.
-- Updated `conversation-card.tsx`, `lead-score-badge.tsx`, `follow-ups-view.tsx`, `crm-drawer.tsx` to use token-driven colors with `bg-[color:var(--...)]` syntax.
+- Updated `conversation-card.tsx`, `lead-score-badge.tsx`, `follow-ups-view.tsx`, `crm-drawer.tsx` to use token-driven colors with `bg-[color:var(--token)]` syntax.
 
 **Validation**
 - Not run in this subphase: `npm run lint`, `npm run build` (defer to phase end).

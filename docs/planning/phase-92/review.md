@@ -87,8 +87,8 @@ All quality gates passed.
 - ✅ Score tokens defined: `globals.css:70-82` (4 scores × 2 variants = 8 tokens)
 - ✅ Channel tokens defined: `globals.css:84-100` (6 channels + 8 brands = 14 tokens)
 - ✅ Dark mode overrides: `globals.css:141-200`
-- ✅ Applied in `conversation-card.tsx`: Line 39+ uses `bg-[color:var(--sentiment-*)]` syntax
-- ✅ Applied in `lead-score-badge.tsx`: Line 56+ uses `bg-[color:var(--score-*)]` syntax
+- ✅ Applied in `conversation-card.tsx`: Line 39+ uses `bg-[color:var(--sentiment-interested-bg)]` syntax
+- ✅ Applied in `lead-score-badge.tsx`: Line 56+ uses `bg-[color:var(--score-3-bg)]` syntax
 
 ### 92b — General Tab
 - ✅ Accordion for Auto-Send Schedule: `settings-view.tsx:2270-2373`
