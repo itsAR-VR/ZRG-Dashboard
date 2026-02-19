@@ -13,16 +13,20 @@ import {
 import { buildActionSignalsPromptAppendix } from "../ai-drafts";
 
 describe("action signal detector: heuristics", () => {
-  it("returns high-confidence call signal for Call Requested sentiment", () => {
+  it("does not infer call signal from sentiment tag alone", () => {
     const signal = detectCallSignalHeuristic("Thanks", "Call Requested");
-    assert.equal(signal?.type, "call_requested");
-    assert.equal(signal?.confidence, "high");
+    assert.equal(signal, null);
   });
 
   it("detects medium-confidence call keyword from stripped body", () => {
     const signal = detectCallSignalHeuristic("Can you call me tomorrow morning?", "Interested");
     assert.equal(signal?.type, "call_requested");
     assert.equal(signal?.confidence, "medium");
+  });
+
+  it("does not treat generic 'happy to chat' language as a call request", () => {
+    const signal = detectCallSignalHeuristic("Happy to chat", "Interested");
+    assert.equal(signal, null);
   });
 
   it("detects signature-style 'number below' call request phrasing", () => {
@@ -295,7 +299,7 @@ describe("action signal detector: booking process routing", () => {
     assert.equal(result.route?.processId, 2);
   });
 
-  it("fails open when router throws and keeps signal detection", async () => {
+  it("uses a deterministic 1/2/3 fallback route when router throws and AI routing is enabled", async () => {
     const result = await detectActionSignals({
       strippedText: "Can you call me?",
       fullText: "Can you call me?",
@@ -310,8 +314,11 @@ describe("action signal detector: booking process routing", () => {
       provider: "ghl",
     });
 
-    assert.equal(result.hasCallSignal, true);
-    assert.equal(result.route, null);
+    assert.equal(result.hasCallSignal, false);
+    assert.equal(result.signals.length, 0);
+    assert.ok(result.route, "fallback route should be present");
+    assert.equal(result.route?.processId, 1);
+    assert.equal(result.route?.uncertain, true);
   });
 
   it("skips routing when workspace toggle is disabled", async () => {

@@ -424,6 +424,9 @@ model WorkspaceSettings {
   autoApproveMeetings  Boolean  @default(true)
   flagUncertainReplies Boolean  @default(true)
   pauseForOOO          Boolean  @default(true)
+  // Phase 172: DB-backed high quota eligibility toggle for background-job scheduler.
+  // Default false for new workspaces; migration backfills existing workspaces to true.
+  highQuotaEnabled     Boolean  @default(false)
   // Workspace-level follow-up pause (end-of-day in workspace timezone).
   // When set to a future timestamp, follow-up automation should not auto-enroll or send outbound follow-ups.
   followUpsPausedUntil DateTime?

@@ -102,6 +102,32 @@ Useful toggles (see `app/api/cron/background-jobs/route.ts`):
 - `BACKGROUND_JOBS_USE_INNGEST` — force dispatch mode on/off
 - `BACKGROUND_JOBS_FORCE_INLINE` — emergency rollback to inline mode
 - `BACKGROUND_JOBS_INLINE_EMERGENCY_FALLBACK` — allow inline fallback when dispatch enqueue fails (keep off unless actively mitigating an incident)
+- `BACKGROUND_JOBS_INLINE_ON_STALE_RUN` — when stale `process-background-jobs` runs are auto-recovered, run one inline recovery cycle before dispatching again (defaults to on when unset)
+- `BACKGROUND_JOB_WORKER_CONCURRENCY` — bounded worker fan-out inside a single background run (`1-8`, default `4`)
+- `BACKGROUND_JOBS_INNGEST_CONCURRENCY` — bounded Inngest function concurrency for `process-background-jobs` (`1-8`, default `2`)
+- `BACKGROUND_JOB_WORKSPACE_QUOTA_DEFAULT` — per-workspace concurrent job ceiling baseline (`1-100`, default `64`)
+- `BACKGROUND_JOB_WORKSPACE_QUOTA_ENTERPRISE` — high-quota ceiling used only after promotion gates pass (`1-100`, default `100`)
+- `BACKGROUND_JOB_ENTERPRISE_CLIENT_IDS` — **deprecated fallback** comma-separated workspace IDs used only during Phase 172 cutover while `WorkspaceSettings.highQuotaEnabled` becomes source-of-truth
+- `BACKGROUND_JOB_AUTOSCALE_GLOBAL_FLOOR` — autoscale global floor (default `1024`)
+- `BACKGROUND_JOB_AUTOSCALE_WORKSPACE_MULTIPLIER` — workspace multiplier for global target (`target = max(floor, activeWorkspaces * multiplier)`, default `64`)
+- `BACKGROUND_JOB_AUTOSCALE_RAMP_STEP` — capacity increase per healthy ramp window (default `64`)
+- `BACKGROUND_JOB_AUTOSCALE_RAMP_WINDOW_MINUTES` — healthy ramp interval in minutes (default `5`)
+- `BACKGROUND_JOB_AUTOSCALE_STEP_DOWN_FACTOR` — multiplicative step-down factor on guardrail breach (default `0.5`)
+- `BACKGROUND_JOB_AUTOSCALE_OVERRIDE_CAPACITY` — operator override to pin autoscale capacity (optional)
+- `BACKGROUND_JOB_AUTOSCALE_FORCE_CONTENTION_BREACH` / `BACKGROUND_JOB_AUTOSCALE_FORCE_FAILURE_RATE_BREACH` — force guardrail breach signals for staging validation (optional)
+- `BACKGROUND_JOB_PARTITION_PER_WORKSPACE_CAP` — max jobs pulled per workspace into each run’s partitioned selection pool (default mirrors run limit)
+- `BACKGROUND_JOB_HIGH_QUOTA_PROMOTION_ENABLED` — enables promotion-gate evaluation for high-quota eligibility
+- `BACKGROUND_JOB_HIGH_QUOTA_PROMOTION_REQUIRED_WINDOWS` — healthy windows required before promotion gate opens (default `4`)
+- `BACKGROUND_JOB_HIGH_QUOTA_PROMOTION_WINDOW_MINUTES` — duration of each healthy window (default `30`)
+- `BACKGROUND_JOB_HIGH_QUOTA_PROMOTION_QUEUE_AGE_P95_MAX_SECONDS` — max queue-age p95 allowed for healthy window (default `180`)
+- `BACKGROUND_JOB_HIGH_QUOTA_PROMOTION_FAILURE_RATE_MAX_PERCENT` — max failure-rate percent allowed for healthy window (default `0.5`)
+- `BACKGROUND_JOB_HIGH_QUOTA_DEMOTION_REQUIRED_WINDOWS` — sustained breach windows required for demotion (default `2`)
+- `BACKGROUND_JOB_HIGH_QUOTA_DEMOTION_WINDOW_MINUTES` — duration of each demotion breach window (default `15`)
+- `BACKGROUND_JOB_HIGH_QUOTA_DEMOTION_FAILURE_RATE_MIN_PERCENT` — minimum failure-rate percent that counts toward demotion breach windows (default `2.0`)
+- `BACKGROUND_JOB_HIGH_QUOTA_PROMOTION_DUPLICATE_SEND_MAX_COUNT` — max duplicate sends allowed in healthy window (default `0`)
+- `BACKGROUND_JOB_OBS_DUPLICATE_SEND_COUNT` — manual duplicate-send override merged with durable `BackgroundFunctionRun.lastError` duplicate-signal scan
+- `BACKGROUND_FUNCTION_RUN_STALE_MINUTES` — stale cutoff for `BackgroundFunctionRun` recovery (default `15`)
+- `BACKGROUND_FUNCTION_RUN_STALE_RECOVERY_LIMIT` — max stale run rows recovered per cron tick (default `25`)
 
 ### Cron-driven automation
 

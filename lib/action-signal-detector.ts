@@ -71,6 +71,7 @@ type BookingProcessRoutingOutcome = {
   route: BookingProcessRoute | null;
   reason:
     | "routed"
+    | "fallback_deterministic_123"
     | "disabled_by_workspace_settings"
     | "non_positive_sentiment"
     | "router_parse_error"
@@ -140,12 +141,8 @@ const CALL_KEYWORD_PATTERNS = [
 
 export function detectCallSignalHeuristic(
   strippedText: string,
-  sentimentTag: string | null,
+  _sentimentTag: string | null,
 ): ActionSignal | null {
-  if (sentimentTag === "Call Requested") {
-    return { type: "call_requested", confidence: "high", evidence: "Sentiment classified as Call Requested" };
-  }
-
   const text = (strippedText || "").trim();
   if (!text) return null;
 
@@ -217,6 +214,10 @@ export function detectExternalCalendarHeuristic(
 
 const SCHEDULING_LANGUAGE_PRE_FILTER =
   /\b(book|schedule|calendar|meeting|availability|slot|time)\b/i;
+const PROCESS_3_TIME_PROPOSAL_REGEX =
+  /\b(today|tomorrow|tonight|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}\s*(?:am|pm))\b/i;
+const PROCESS_2_AVAILABILITY_REGEX =
+  /\b(availability|available|slot|slots|schedule|scheduling|book|booking|time(?:s)?\s+work|which\s+time)\b/i;
 const DISAMBIGUATION_INPUT_MAX_CHARS = 4000;
 const BOOKING_PROCESS_ROUTER_INPUT_MAX_CHARS = 6000;
 const BOOKING_PROCESS_ROUTER_TIMEOUT_MS = 4_000;
@@ -238,9 +239,11 @@ Process taxonomy:
 
 Rules:
 - Pick exactly one process ID.
-- Use process 4 for explicit call intent.
-- Treat phrases like "reach me at the number below", "direct contact number below", or "my number is in my signature" as explicit call intent (process 4), even if the phone number itself is only in the signature.
-- Use process 5 when lead explicitly directs to their own scheduling link.
+- Process 4 is STRICT. Use it only when the lead explicitly asks us to call them by phone and gives (or clearly references) a callback number/contact point (for example: "call me at...", "reach me at the number below", "my number is in my signature").
+- Do NOT use process 4 for generic openness like "happy to chat", "open to chat", "sounds good", "let's connect", or general meeting interest without a direct phone-call request.
+- Process 5 is STRICT. Use it only when the lead explicitly tells us to book through their scheduler/calendar link.
+- A scheduling link that appears only in a signature/footer is NOT enough for process 5 unless the body explicitly tells us to use it.
+- If uncertain between 4/5 and 1/2/3, prefer 1/2/3 and set uncertain=true.
 - If intent is ambiguous between 1/2/3, choose the best fit and set uncertain=true when needed.`;
 
 const ACTION_SIGNAL_DETECT_SYSTEM = `You are analyzing an email reply to determine if the sender is actively directing us to book a meeting via a specific scheduling link found in their email signature, or if the link is just passive contact information.
@@ -341,6 +344,24 @@ function buildRouteDerivedSignal(route: BookingProcessRoute): ActionSignal | nul
   };
 }
 
+function buildDeterministicFallbackRoute(strippedText: string): BookingProcessRoute {
+  const text = (strippedText || "").trim();
+  let processId: BookingProcessId = 1;
+
+  if (PROCESS_3_TIME_PROPOSAL_REGEX.test(text)) {
+    processId = 3;
+  } else if (PROCESS_2_AVAILABILITY_REGEX.test(text)) {
+    processId = 2;
+  }
+
+  return {
+    processId,
+    confidence: 0,
+    uncertain: true,
+    rationale: "AI booking router unavailable; applied deterministic fallback for process 1/2/3.",
+  };
+}
+
 async function recordBookingProcessRouteOutcome(opts: {
   clientId: string;
   leadId: string;
@@ -412,13 +433,6 @@ export async function routeBookingProcessWithAi(opts: {
       `Provider: ${opts.provider ?? "unknown"}`,
       `Sentiment: ${opts.sentimentTag ?? "unknown"}`,
     ];
-
-    if (opts.hasCallSignal) {
-      payloadLines.push("Has call signal: true");
-    }
-    if (opts.hasExternalCalendarSignal) {
-      payloadLines.push("Has external calendar signal: true");
-    }
 
     payloadLines.push(
       `Workspace booking link: ${opts.workspaceBookingLink ?? "none"}`,
@@ -582,12 +596,22 @@ export async function detectActionSignals(opts: {
       route = routeOutcome.route;
       routeReason = routeOutcome.reason;
     }
+
+    if (!route) {
+      route = buildDeterministicFallbackRoute(opts.strippedText);
+      routeReason = "fallback_deterministic_123";
+    }
   }
 
-  // AI router is the source of truth for signal routing when available.
-  // Deterministic/heuristic signals only apply in fail-open mode (no route).
+  // AI router is the source of truth for process-4/5 routing.
+  // When AI routing is enabled, avoid deterministic fallbacks to reduce false
+  // positives from generic "call/chat" wording.
   const routeDerivedSignal = route ? buildRouteDerivedSignal(route) : null;
-  const signals = route ? (routeDerivedSignal ? [routeDerivedSignal] : []) : preRouteSignals;
+  const signals = route
+    ? (routeDerivedSignal ? [routeDerivedSignal] : [])
+    : routeEnabled
+      ? []
+      : preRouteSignals;
 
   const hasCallSignal = signals.some((s) => s.type === "call_requested");
   const hasExternalCalendarSignal = signals.some((s) => s.type === "book_on_external_calendar");

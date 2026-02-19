@@ -1,0 +1,118 @@
+{
+  "capturedAt": "2026-02-19T08:04:07.399Z",
+  "autoscale": {
+    "config": {
+      "globalFloor": 1024,
+      "workspaceMultiplier": 64,
+      "rampStep": 64,
+      "rampWindowMs": 300000,
+      "stepDownFactor": 0.5,
+      "operatorOverrideCapacity": null
+    },
+    "baselineDecision": {
+      "timestamp": "2026-02-19T08:04:07.399Z",
+      "fromCapacity": 1024,
+      "toCapacity": 1024,
+      "reasonCode": "hold_target_reached",
+      "guardrailState": {
+        "contentionBreached": false,
+        "failureRateBreached": false
+      },
+      "operatorOverrideActive": false,
+      "correlationId": "staging-canary-baseline",
+      "globalTarget": 1024
+    },
+    "guardrailSimulationDecision": {
+      "timestamp": "2026-02-19T08:04:07.399Z",
+      "fromCapacity": 2048,
+      "toCapacity": 1024,
+      "reasonCode": "guardrail_step_down",
+      "guardrailState": {
+        "contentionBreached": true,
+        "failureRateBreached": false
+      },
+      "operatorOverrideActive": false,
+      "correlationId": "staging-canary-guardrail",
+      "globalTarget": 1280
+    }
+  },
+  "promotion": {
+    "runtimeConfigSnapshot": {
+      "enabled": false,
+      "requiredWindows": 4,
+      "windowMs": 1800000,
+      "queueAgeP95MaxSeconds": 180,
+      "failureRatePromotionMaxPercent": 0.5,
+      "demotionRequiredWindows": 2,
+      "demotionWindowMs": 900000,
+      "failureRateDemotionMinPercent": 2,
+      "duplicateSendMaxCount": 0
+    },
+    "runtimeBaselineDecision": {
+      "timestamp": "2026-02-19T08:04:07.399Z",
+      "promotionGranted": false,
+      "reasonCode": "feature_disabled",
+      "healthyWindows": 0,
+      "demotionBreachWindows": 0,
+      "requiredWindows": 4,
+      "signals": {
+        "queueAgeP95Seconds": 0,
+        "failureRatePercent": 0,
+        "contentionBreached": false,
+        "duplicateSendCount": 0
+      },
+      "nextState": {
+        "healthyWindows": 0,
+        "lastPromotionEvaluatedAtMs": null,
+        "promoted": false,
+        "demotionBreachWindows": 0,
+        "lastDemotionEvaluatedAtMs": null,
+        "lastObservedFailureRatePercent": 0
+      }
+    },
+    "forcedEnabledHealthyDecision": {
+      "timestamp": "2026-02-19T08:04:07.399Z",
+      "promotionGranted": false,
+      "reasonCode": "healthy_window_recorded",
+      "healthyWindows": 1,
+      "demotionBreachWindows": 0,
+      "requiredWindows": 4,
+      "signals": {
+        "queueAgeP95Seconds": 0,
+        "failureRatePercent": 0,
+        "contentionBreached": false,
+        "duplicateSendCount": 0
+      },
+      "nextState": {
+        "healthyWindows": 1,
+        "lastPromotionEvaluatedAtMs": 1771488247399,
+        "promoted": false,
+        "demotionBreachWindows": 0,
+        "lastDemotionEvaluatedAtMs": null,
+        "lastObservedFailureRatePercent": 0
+      }
+    },
+    "forcedEnabledDuplicateDecision": {
+      "timestamp": "2026-02-19T08:04:07.399Z",
+      "promotionGranted": false,
+      "reasonCode": "duplicate_send_immediate_demotion",
+      "healthyWindows": 0,
+      "demotionBreachWindows": 0,
+      "requiredWindows": 4,
+      "signals": {
+        "queueAgeP95Seconds": 12,
+        "failureRatePercent": 0,
+        "contentionBreached": false,
+        "duplicateSendCount": 1
+      },
+      "nextState": {
+        "healthyWindows": 0,
+        "lastPromotionEvaluatedAtMs": 1771488247399,
+        "promoted": false,
+        "demotionBreachWindows": 0,
+        "lastDemotionEvaluatedAtMs": 1771488247399,
+        "lastObservedFailureRatePercent": 0
+      }
+    }
+  }
+}

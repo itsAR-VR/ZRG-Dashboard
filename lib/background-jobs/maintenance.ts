@@ -15,6 +15,10 @@ function getStaleQueueAlertMinutes(): number {
   return Math.max(5, parsePositiveInt(process.env.BACKGROUND_JOB_STALE_QUEUE_ALERT_MINUTES, 30));
 }
 
+function getStaleFunctionRunAlertMinutes(): number {
+  return Math.max(5, parsePositiveInt(process.env.BACKGROUND_FUNCTION_RUN_STALE_MINUTES, 15));
+}
+
 function getDraftPipelineRetentionDays(): number {
   return Math.max(1, parsePositiveInt(process.env.DRAFT_PIPELINE_RUN_RETENTION_DAYS, 30));
 }
@@ -67,6 +71,16 @@ export type BackgroundMaintenanceResult = {
     oldestDueJobType: string | null;
     oldestDueRunAt: string | null;
     oldestDueAgeMinutes: number | null;
+    stale: boolean;
+  };
+  functionRunHealth: {
+    functionName: string;
+    staleRunAlertMinutes: number;
+    runningCount: number;
+    oldestRunningRunId: string | null;
+    oldestRunningRunKey: string | null;
+    oldestRunningStartedAt: string | null;
+    oldestRunningAgeMinutes: number | null;
     stale: boolean;
   };
   staleDraftRecovery: {
@@ -127,6 +141,47 @@ export async function runBackgroundMaintenance(opts?: {
     console.error("[Background Maintenance] Queue stale", queueHealth);
   }
 
+  const staleRunAlertMinutes = getStaleFunctionRunAlertMinutes();
+  const [runningFunctionCount, oldestRunningFunction] = await Promise.all([
+    prisma.backgroundFunctionRun.count({
+      where: {
+        functionName: "process-background-jobs",
+        status: "RUNNING",
+      },
+    }),
+    prisma.backgroundFunctionRun.findFirst({
+      where: {
+        functionName: "process-background-jobs",
+        status: "RUNNING",
+      },
+      orderBy: { startedAt: "asc" },
+      select: {
+        id: true,
+        runKey: true,
+        startedAt: true,
+      },
+    }),
+  ]);
+
+  const oldestRunningAgeMinutes = oldestRunningFunction
+    ? Math.max(0, Math.floor((now.getTime() - oldestRunningFunction.startedAt.getTime()) / 60_000))
+    : null;
+
+  const functionRunHealth = {
+    functionName: "process-background-jobs",
+    staleRunAlertMinutes,
+    runningCount: runningFunctionCount,
+    oldestRunningRunId: oldestRunningFunction?.id ?? null,
+    oldestRunningRunKey: oldestRunningFunction?.runKey ?? null,
+    oldestRunningStartedAt: oldestRunningFunction?.startedAt?.toISOString() ?? null,
+    oldestRunningAgeMinutes,
+    stale: oldestRunningAgeMinutes !== null && oldestRunningAgeMinutes >= staleRunAlertMinutes,
+  };
+
+  if (functionRunHealth.stale) {
+    console.error("[Background Maintenance] Function run stale", functionRunHealth);
+  }
+
   const staleDraftRecovery = await recoverStaleSendingDrafts().catch((error) => ({
     checked: 0,
     recovered: 0,
@@ -163,6 +218,7 @@ export async function runBackgroundMaintenance(opts?: {
 
   return {
     queueHealth,
+    functionRunHealth,
     staleDraftRecovery,
     pruning,
   };

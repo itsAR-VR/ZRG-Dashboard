@@ -1,6 +1,6 @@
 import "server-only";
 
-import { BackgroundDispatchStatus } from "@prisma/client";
+import { BackgroundDispatchStatus, BackgroundFunctionRunStatus } from "@prisma/client";
 import { isPrismaUniqueConstraintError, prisma } from "@/lib/prisma";
 
 function parseIsoDate(value: string): Date {
@@ -14,6 +14,20 @@ function parseIsoDate(value: string): Date {
 function serializeError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function getStaleFunctionRunMinutes(): number {
+  return Math.max(5, parsePositiveInt(process.env.BACKGROUND_FUNCTION_RUN_STALE_MINUTES, 15));
+}
+
+function getStaleFunctionRunRecoveryLimit(): number {
+  return Math.max(1, Math.min(200, parsePositiveInt(process.env.BACKGROUND_FUNCTION_RUN_STALE_RECOVERY_LIMIT, 25)));
 }
 
 type RegisterDispatchWindowInput = {
@@ -179,4 +193,81 @@ export async function markBackgroundDispatchInlineEmergency(input: {
     maintenanceDispatchId: input.maintenanceDispatchId,
     errorMessage: input.errorMessage,
   });
+}
+
+export type RecoverStaleBackgroundFunctionRunsResult = {
+  functionName: string;
+  staleMinutes: number;
+  recovered: number;
+  runKeys: string[];
+  oldestStartedAt: string | null;
+};
+
+export async function recoverStaleBackgroundFunctionRuns(input?: {
+  functionName?: string;
+  staleMinutes?: number;
+  limit?: number;
+  reason?: string;
+}): Promise<RecoverStaleBackgroundFunctionRunsResult> {
+  const functionName = input?.functionName?.trim() || "process-background-jobs";
+  const staleMinutes = Math.max(1, Math.trunc(input?.staleMinutes ?? getStaleFunctionRunMinutes()));
+  const limit = Math.max(1, Math.min(200, Math.trunc(input?.limit ?? getStaleFunctionRunRecoveryLimit())));
+  const cutoff = new Date(Date.now() - staleMinutes * 60_000);
+
+  const staleRuns = await prisma.backgroundFunctionRun.findMany({
+    where: {
+      functionName,
+      status: BackgroundFunctionRunStatus.RUNNING,
+      startedAt: { lt: cutoff },
+    },
+    orderBy: { startedAt: "asc" },
+    take: limit,
+    select: {
+      id: true,
+      runKey: true,
+      startedAt: true,
+    },
+  });
+
+  if (staleRuns.length === 0) {
+    return {
+      functionName,
+      staleMinutes,
+      recovered: 0,
+      runKeys: [],
+      oldestStartedAt: null,
+    };
+  }
+
+  const finishedAt = new Date();
+  const reason =
+    input?.reason?.trim() || `Recovered stale RUNNING run via cron watchdog (>${staleMinutes}m).`;
+
+  const result = await prisma.backgroundFunctionRun.updateMany({
+    where: {
+      id: { in: staleRuns.map((run) => run.id) },
+      status: BackgroundFunctionRunStatus.RUNNING,
+    },
+    data: {
+      status: BackgroundFunctionRunStatus.FAILED,
+      finishedAt,
+      lastError: reason,
+    },
+  });
+
+  const runKeys = staleRuns.map((run) => run.runKey);
+  console.error("[Background Dispatch] Recovered stale function runs", {
+    functionName,
+    staleMinutes,
+    recovered: result.count,
+    runKeys: runKeys.slice(0, 10),
+  });
+
+  return {
+    functionName,
+    staleMinutes,
+    recovered: result.count,
+    runKeys,
+    oldestStartedAt: staleRuns[0]?.startedAt.toISOString() ?? null,
+  };
 }

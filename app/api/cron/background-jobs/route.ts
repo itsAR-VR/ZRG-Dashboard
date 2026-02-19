@@ -10,6 +10,7 @@ import {
   markBackgroundDispatchEnqueued,
   markBackgroundDispatchFailed,
   markBackgroundDispatchInlineEmergency,
+  recoverStaleBackgroundFunctionRuns,
   registerBackgroundDispatchWindow,
 } from "@/lib/background-jobs/dispatch-ledger";
 import { runBackgroundMaintenance } from "@/lib/background-jobs/maintenance";
@@ -61,6 +62,14 @@ function isInlineEmergencyFallbackEnabled(): boolean {
 
 function isForceInlineModeEnabled(): boolean {
   return parseBoolean(process.env.BACKGROUND_JOBS_FORCE_INLINE);
+}
+
+function isInlineFallbackOnStaleRunEnabled(): boolean {
+  const explicit = process.env.BACKGROUND_JOBS_INLINE_ON_STALE_RUN;
+  if (!explicit || explicit.trim().length === 0) {
+    return true;
+  }
+  return parseBoolean(explicit);
 }
 
 function serializeError(error: unknown): string {
@@ -125,6 +134,30 @@ export async function GET(request: NextRequest) {
       }
 
       if (isInngestBackgroundTriggerEnabled()) {
+        const staleRecovery = await recoverStaleBackgroundFunctionRuns({
+          functionName: "process-background-jobs",
+        });
+
+        if (staleRecovery.recovered > 0 && isInlineFallbackOnStaleRunEnabled()) {
+          console.error("[Cron] Stale process-background-jobs runs detected; using inline recovery", {
+            recovered: staleRecovery.recovered,
+            staleMinutes: staleRecovery.staleMinutes,
+            runKeys: staleRecovery.runKeys.slice(0, 5),
+            oldestStartedAt: staleRecovery.oldestStartedAt,
+          });
+
+          const inlineResults = await runInlineBackgroundCycle();
+          return NextResponse.json({
+            success: true,
+            mode: "inline-stale-run-recovery",
+            enqueued: false,
+            dispatch: dispatchData,
+            staleRecovery,
+            ...inlineResults,
+            timestamp: new Date().toISOString(),
+          });
+        }
+
         const dispatchIds = buildBackgroundDispatchEventIds(dispatchData.dispatchKey);
         const registration = await registerBackgroundDispatchWindow({
           dispatchKey: dispatchData.dispatchKey,
@@ -176,11 +209,12 @@ export async function GET(request: NextRequest) {
               success: true,
               mode: "dispatch-only",
               enqueued: true,
-              enqueuedEvents: [
+            enqueuedEvents: [
                 INNGEST_EVENT_BACKGROUND_PROCESS_REQUESTED,
                 INNGEST_EVENT_BACKGROUND_MAINTENANCE_REQUESTED,
               ],
               dispatch: dispatchData,
+              staleRecovery,
               dispatchIds,
               publishedEventIds,
               trackingEnabled: registration.trackingEnabled,
@@ -212,6 +246,7 @@ export async function GET(request: NextRequest) {
                 retryable: true,
                 enqueueError: enqueueErrorMessage,
                 dispatch: dispatchData,
+                staleRecovery,
                 dispatchIds,
                 trackingEnabled: registration.trackingEnabled,
                 timestamp: new Date().toISOString(),
@@ -240,6 +275,7 @@ export async function GET(request: NextRequest) {
             enqueued: false,
             enqueueError: enqueueErrorMessage,
             dispatch: dispatchData,
+            staleRecovery,
             dispatchIds,
             trackingEnabled: registration.trackingEnabled,
             requestedAt,

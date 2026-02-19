@@ -1,0 +1,31 @@
+{
+  "phase": 171,
+  "strategy": "queue_stall_regression_seed",
+  "sourceArtifacts": [
+    ".artifacts/ai-replay/run-2026-02-19T02-00-23-901Z.json",
+    ".artifacts/ai-replay/run-2026-02-19T02-00-30-315Z.json"
+  ],
+  "threadIds": [
+    "1a996734-e57f-4744-9f58-8014e83fb08e",
+    "1e66555d-f740-4a6f-9809-83bad519888a",
+    "2deebafd-5996-4f14-8306-bacec8bd5902",
+    "2e8640c2-c4f0-4370-abf2-b153b016cd8a",
+    "3c3f2439-d747-4ea5-bc83-36078a0e9af5",
+    "4fffac5d-91d4-40fd-a941-4dc9fa3b9e9f",
+    "59a9592f-5781-4991-a05c-b5a792e5cf20",
+    "684b9ffa-6e05-44cf-8d14-6b513fafffe1",
+    "6bbd33e3-4b3f-49b8-a96e-3d41c559c775",
+    "70ca5ac5-2a1b-4578-8cdd-276cf228b8ad",
+    "826f11db-a6a0-458f-b2fd-3d71a9036220",
+    "8b808143-c385-4b41-902b-de4eca94fc39",
+    "8fa194fe-9f9d-46ad-9e36-a8fbf095cdb3",
+    "9bac1c70-6b08-4b67-a1fb-aacd964e48be",
+    "c1488876-0b25-4b0b-8144-ad5c057c4cda",
+    "c84cf694-2c25-4741-8a37-295141c7613c",
+    "d36c3aa5-37a9-48d6-9599-e58fabedaa46",
+    "d4994232-268b-4954-b125-1c4d12271341",
+    "d98ebd0a-ccc3-4530-9dc5-75cb771b3750",
+    "de17e019-9e2b-43c1-aafa-7a8e8bdaac9c"
+  ],
+  "sourcePhase": 171
+}

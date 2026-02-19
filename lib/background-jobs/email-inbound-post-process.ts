@@ -1,6 +1,6 @@
 import "server-only";
 
-import { prisma } from "@/lib/prisma";
+import { isPrismaUniqueConstraintError, prisma } from "@/lib/prisma";
 import {
   createEmailBisonLead,
   fetchEmailBisonLead,
@@ -60,6 +60,8 @@ import {
   buildActionSignalsGateSummary,
   hasActionSignal,
 } from "@/lib/action-signal-detector";
+import { slackPostMessage } from "@/lib/slack-bot";
+import { getPublicAppUrl } from "@/lib/app-url";
 
 function parseDate(...dateStrs: (string | null | undefined)[]): Date {
   for (const dateStr of dateStrs) {
@@ -71,6 +73,89 @@ function parseDate(...dateStrs: (string | null | undefined)[]): Date {
     }
   }
   return new Date();
+}
+
+function buildLeadInboxUrl(leadId: string): string {
+  return `${getPublicAppUrl()}/?view=inbox&leadId=${encodeURIComponent(leadId)}`;
+}
+
+async function notifyDraftSkipForOps(opts: {
+  clientId: string;
+  leadId: string;
+  messageId: string;
+  sentimentTag: string | null;
+  reason: "scheduling_followup_task" | "call_requested_no_phone";
+}): Promise<void> {
+  const [client, lead, settings] = await Promise.all([
+    prisma.client.findUnique({
+      where: { id: opts.clientId },
+      select: { id: true, name: true, slackBotToken: true },
+    }),
+    prisma.lead.findUnique({
+      where: { id: opts.leadId },
+      select: { id: true, firstName: true, lastName: true, email: true },
+    }),
+    prisma.workspaceSettings.findUnique({
+      where: { clientId: opts.clientId },
+      select: { slackAlerts: true, notificationSlackChannelIds: true },
+    }),
+  ]);
+
+  if (!client || !lead || !settings) return;
+  if (settings.slackAlerts === false) return;
+  if (!client.slackBotToken || settings.notificationSlackChannelIds.length === 0) return;
+
+  const leadName = [lead.firstName, lead.lastName].filter(Boolean).join(" ").trim() || lead.email || "Lead";
+  const leadUrl = buildLeadInboxUrl(opts.leadId);
+  const reasonText =
+    opts.reason === "scheduling_followup_task"
+      ? "Scheduling flow created a follow-up task, so draft generation was intentionally skipped."
+      : "Call intent was detected, but no phone is on file, so draft generation was intentionally skipped.";
+
+  for (const channelId of settings.notificationSlackChannelIds) {
+    const trimmed = (channelId || "").trim();
+    if (!trimmed) continue;
+
+    const dedupeKey = `draft_skip:${opts.clientId}:${opts.leadId}:${opts.messageId}:${opts.reason}:slack:${trimmed}`;
+    try {
+      await prisma.notificationSendLog.create({
+        data: {
+          clientId: opts.clientId,
+          leadId: opts.leadId,
+          kind: "draft_skip",
+          destination: "slack",
+          sentimentTag: opts.sentimentTag,
+          dedupeKey,
+        },
+      });
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) continue;
+      console.warn("[Email PostProcess] Draft-skip dedupe log create failed:", error);
+      continue;
+    }
+
+    const text = [
+      "⚠️ *AI Draft Skipped (Intentional Routing)*",
+      `Lead: ${leadName}`,
+      `Workspace: ${client.name}`,
+      opts.sentimentTag ? `Sentiment: ${opts.sentimentTag}` : null,
+      `Reason: ${reasonText}`,
+      `<${leadUrl}|View in Dashboard>`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const sent = await slackPostMessage({
+      token: client.slackBotToken,
+      channelId: trimmed,
+      text,
+    });
+
+    if (!sent.success) {
+      await prisma.notificationSendLog.deleteMany({ where: { dedupeKey } }).catch(() => undefined);
+      console.warn("[Email PostProcess] Draft-skip Slack notification failed:", sent.error);
+    }
+  }
 }
 
 /**
@@ -1145,6 +1230,15 @@ export async function runEmailInboundPostProcessJob(opts: {
   const schedulingHandled = Boolean(autoBook.context.followUpTaskCreated);
   if (schedulingHandled) {
     console.log("[Email PostProcess] Skipping draft generation; scheduling follow-up task already created by auto-booking");
+    if (actionSignals.signals.length === 0) {
+      notifyDraftSkipForOps({
+        clientId: client.id,
+        leadId: lead.id,
+        messageId: message.id,
+        sentimentTag: lead.sentimentTag,
+        reason: "scheduling_followup_task",
+      }).catch((error) => console.warn("[Email PostProcess] Draft-skip notify failed:", error));
+    }
   }
 
   if (!autoBook.booked && !schedulingHandled && lead.sentimentTag && shouldGenerateDraft(lead.sentimentTag, lead.email)) {
@@ -1183,6 +1277,15 @@ export async function runEmailInboundPostProcessJob(opts: {
 
       if (suppressDraftForCallRequestedNoPhone) {
         console.log("[Email PostProcess] Skipping draft generation; call requested but no phone on file (notify-only policy)");
+        if (actionSignals.signals.length === 0) {
+          notifyDraftSkipForOps({
+            clientId: client.id,
+            leadId: lead.id,
+            messageId: message.id,
+            sentimentTag: lead.sentimentTag,
+            reason: "call_requested_no_phone",
+          }).catch((error) => console.warn("[Email PostProcess] Draft-skip notify failed:", error));
+        }
       } else {
         const draftResult = await generateResponseDraft(lead.id, transcript || latestInbound, lead.sentimentTag, "email", {
           triggerMessageId: message.id,

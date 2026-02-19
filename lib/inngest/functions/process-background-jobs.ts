@@ -5,11 +5,21 @@ import { INNGEST_EVENT_BACKGROUND_PROCESS_REQUESTED } from "@/lib/inngest/events
 import { processBackgroundJobs } from "@/lib/background-jobs/runner";
 import { writeInngestJobStatus } from "@/lib/inngest/job-status";
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function getProcessBackgroundJobsConcurrency(): number {
+  return Math.max(1, Math.min(8, parsePositiveInt(process.env.BACKGROUND_JOBS_INNGEST_CONCURRENCY, 2)));
+}
+
 export const processBackgroundJobsFunction = inngest.createFunction(
   {
     id: "process-background-jobs",
     retries: 5,
-    concurrency: { limit: 1 },
+    concurrency: { limit: getProcessBackgroundJobsConcurrency() },
     idempotency: "event.data.dispatchKey",
   },
   { event: INNGEST_EVENT_BACKGROUND_PROCESS_REQUESTED },

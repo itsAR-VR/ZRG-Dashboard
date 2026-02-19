@@ -1745,8 +1745,11 @@ Process taxonomy:
 
 Rules:
 - Pick exactly one process ID.
-- Use process 4 for explicit call intent.
-- Use process 5 when lead explicitly directs to their own scheduling link.
+- Process 4 is STRICT. Use it only when the lead explicitly asks us to call them by phone and gives (or clearly references) a callback number/contact point (for example: "call me at...", "reach me at the number below", "my number is in my signature").
+- Do NOT use process 4 for generic openness like "happy to chat", "open to chat", "sounds good", "let's connect", or general meeting interest without a direct phone-call request.
+- Process 5 is STRICT. Use it only when the lead explicitly tells us to book through their scheduler/calendar link.
+- A scheduling link that appears only in a signature/footer is NOT enough for process 5 unless the body explicitly tells us to use it.
+- If uncertain between 4/5 and 1/2/3, prefer 1/2/3 and set uncertain=true.
 - If intent is ambiguous between 1/2/3, choose the best fit and set uncertain=true when needed.`,
         },
         {
