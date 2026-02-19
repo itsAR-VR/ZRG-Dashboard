@@ -136,6 +136,7 @@ Cron schedules live in `vercel.json`. All cron routes require `Authorization: Be
 Key cron families:
 
 - **Follow-ups**: `/api/cron/followups` (sequence processing + resumptions + notification digests)
+  - Includes scheduled timing follow-up task processing for `campaignName="Scheduled follow-up (auto)"` when enabled.
 - **Background jobs**: `/api/cron/background-jobs` (dispatch via Inngest or run inline based on env)
 - **Availability / booking**: `/api/cron/availability`, `/api/cron/booking-qualification-jobs`, `/api/cron/calendar-health`
 - **Insights**: `/api/cron/insights/*` (context packs, booked summaries, message performance)
@@ -213,6 +214,8 @@ Start with `.env.example` (checked in). Real values belong in `.env.local` (giti
 | `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY` | Enable Inngest-backed background dispatch |
 | `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | Redis-backed caching/queues where used |
 | `UNIPILE_DSN`, `UNIPILE_API_KEY`, `UNIPILE_WEBHOOK_SECRET` | LinkedIn integration (send + inbound webhook auth) |
+| `FOLLOWUP_TASK_AUTO_SEND_ENABLED` | Enable due-time auto-send for scheduled follow-up tasks (`email`/`sms` only) |
+| `FOLLOWUP_TASK_AUTO_SEND_LIMIT` | Max scheduled timing follow-up tasks processed per cron run (default `25`) |
 
 For advanced AI tuning knobs and reliability controls, see `CLAUDE.md`.
 

@@ -6,6 +6,7 @@ import { ClientMemberRole, EmailIntegrationProvider, Prisma } from "@prisma/clie
 import { ensureDefaultSequencesIncludeLinkedInStepsForClient } from "@/lib/followup-sequence-linkedin";
 import { resolveEmailIntegrationProvider } from "@/lib/email-integration";
 import { ensureReengagementFollowUpSequenceForClient } from "@/lib/followup-sequence-reengagement";
+import { normalizeCrmWebhookSettingsPatch } from "@/lib/crm-webhook-config";
 
 type ProvisionWorkspaceRequest = {
   // Required
@@ -171,6 +172,10 @@ function pickWorkspaceSettings(input: Record<string, unknown>): Record<string, u
     "airtableMode",
     "emailDigest",
     "slackAlerts",
+    "crmWebhookEnabled",
+    "crmWebhookUrl",
+    "crmWebhookEvents",
+    "crmWebhookSecret",
     "timezone",
     "workStartTime",
     "workEndTime",
@@ -251,6 +256,7 @@ function coerceWorkspaceSettings(values: Record<string, unknown>): Record<string
     "autoBookMeetings",
     "roundRobinEnabled",
     "roundRobinEmailOnly",
+    "crmWebhookEnabled",
   ] as const) {
     const raw = values[booleanField];
     if (typeof raw === "string") {
@@ -258,6 +264,18 @@ function coerceWorkspaceSettings(values: Record<string, unknown>): Record<string
       if (normalized === "true") out[booleanField] = true;
       if (normalized === "false") out[booleanField] = false;
     }
+  }
+
+  if (Array.isArray(values.crmWebhookEvents)) {
+    out.crmWebhookEvents = values.crmWebhookEvents
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  } else if (typeof values.crmWebhookEvents === "string") {
+    out.crmWebhookEvents = values.crmWebhookEvents
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
   }
 
   return out;
@@ -489,6 +507,18 @@ export async function POST(request: NextRequest) {
     ? (body.settings as Record<string, unknown>)
     : null;
   const settings = rawSettings ? coerceWorkspaceSettings(pickWorkspaceSettings(rawSettings)) : null;
+  if (settings) {
+    const normalizedCrmWebhook = normalizeCrmWebhookSettingsPatch({
+      crmWebhookEnabled: settings.crmWebhookEnabled,
+      crmWebhookUrl: settings.crmWebhookUrl,
+      crmWebhookEvents: settings.crmWebhookEvents,
+      crmWebhookSecret: settings.crmWebhookSecret,
+    });
+    if (normalizedCrmWebhook.error) {
+      return NextResponse.json({ error: normalizedCrmWebhook.error }, { status: 400 });
+    }
+    Object.assign(settings, normalizedCrmWebhook.values);
+  }
 
   if (settings?.followUpsPausedUntil instanceof Date) {
     if (Number.isNaN(settings.followUpsPausedUntil.getTime())) {

@@ -618,7 +618,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
   // Empty state
   if (allLeads.length === 0 && !debouncedSearch && statusFilter === "all") {
     return (
-      <div className="flex flex-col h-full">
+      <div className="flex h-full min-h-0 min-w-0 flex-col">
         <div className="border-b px-6 py-4">
           <h1 className="text-2xl font-bold">CRM / Leads</h1>
           <p className="text-muted-foreground">Manage your leads and contacts</p>
@@ -644,7 +644,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
       <div className="border-b px-6 py-4">
         <div className="flex items-center justify-between">
           <div>
@@ -678,7 +678,7 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
         </div>
       </div>
 
-      <div className="p-6 space-y-4 flex-1 overflow-hidden flex flex-col">
+      <div className="flex flex-1 min-h-0 min-w-0 flex-col space-y-4 overflow-hidden p-6">
         {/* Search and filters */}
         <div className="flex items-center gap-4">
           <div className="relative flex-1 max-w-md">
@@ -720,9 +720,9 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
         </div>
 
         {/* Virtualized table */}
-          <Card className="flex-1 overflow-hidden">
+          <Card className="flex flex-1 min-h-0 min-w-0 flex-col overflow-hidden">
             {/* Table header */}
-            <div className="border-b bg-muted/30 overflow-x-auto">
+            <div className="shrink-0 overflow-x-auto border-b bg-muted/30">
               <div className="flex min-w-[790px] items-center h-12 px-4">
               <button
                 type="button"
@@ -748,16 +748,12 @@ export function CRMView({ activeWorkspace, onOpenInInbox }: CRMViewProps) {
           </div>
           
           {/* Virtualized rows */}
-          <div
-            ref={parentRef}
-            className="overflow-auto"
-            style={{ height: "calc(100% - 48px)" }}
-          >
+          <div ref={parentRef} className="min-h-0 flex-1 overflow-auto">
             <div
+              className="relative min-w-[790px]"
               style={{
                 height: `${rowVirtualizer.getTotalSize()}px`,
                 width: "100%",
-                position: "relative",
               }}
             >
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {

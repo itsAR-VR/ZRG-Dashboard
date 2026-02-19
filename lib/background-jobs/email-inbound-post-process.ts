@@ -40,6 +40,7 @@ import {
 } from "@/lib/followup-engine";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
+import { scheduleFollowUpTimingFromInbound } from "@/lib/followup-timing";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { cleanEmailBody, stripEmailQuotedSectionsForAutomation } from "@/lib/email-cleaning";
 import { buildSentimentTranscriptFromMessages, detectBounce, isOptOutText } from "@/lib/sentiment";
@@ -1031,24 +1032,39 @@ export async function runEmailInboundPostProcessJob(opts: {
     channel: "email",
   });
 
-  // Snooze detection: if the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
-  const snoozeKeywordHit =
-    /\b(after|until|from)\b/i.test(inboundReplyOnly) &&
-    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundReplyOnly);
-
-  if (snoozeKeywordHit) {
-    const tzResult = await ensureLeadTimezone(lead.id);
-    const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
+  let timingFollowUpScheduled = false;
+  if (lead.sentimentTag === "Follow Up") {
+    const timingResult = await scheduleFollowUpTimingFromInbound({
+      clientId: client.id,
+      leadId: lead.id,
+      messageId: message.id,
       messageText: inboundReplyOnly,
-      timeZone: tzResult.timezone || "UTC",
+      sentimentTag: lead.sentimentTag,
+      inboundChannel: "email",
     });
+    timingFollowUpScheduled = timingResult.scheduled;
+  } else {
+    // Legacy deterministic snooze detection remains for non-follow-up sentiment paths.
+    const snoozeKeywordHit =
+      /\b(after|until|from|in)\b/i.test(inboundReplyOnly) &&
+      /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|q[1-4]|fy\d{2}\s*q[1-4]|\d{4}\s*q[1-4])\b/i.test(
+        inboundReplyOnly
+      );
 
-    if (snoozedUntilUtc && confidence >= 0.95) {
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: { snoozedUntil: snoozedUntilUtc },
+    if (snoozeKeywordHit) {
+      const tzResult = await ensureLeadTimezone(lead.id);
+      const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
+        messageText: inboundReplyOnly,
+        timeZone: tzResult.timezone || "UTC",
       });
-      await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
+
+      if (snoozedUntilUtc && confidence >= 0.95) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { snoozedUntil: snoozedUntilUtc },
+        });
+        await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
+      }
     }
   }
 
@@ -1227,7 +1243,7 @@ export async function runEmailInboundPostProcessJob(opts: {
   });
 
   // Draft generation (skip bounce emails and auto-booked appointments).
-  const schedulingHandled = Boolean(autoBook.context.followUpTaskCreated);
+  const schedulingHandled = Boolean(autoBook.context.followUpTaskCreated || timingFollowUpScheduled);
   if (schedulingHandled) {
     console.log("[Email PostProcess] Skipping draft generation; scheduling follow-up task already created by auto-booking");
     if (actionSignals.signals.length === 0) {

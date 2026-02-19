@@ -754,7 +754,7 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
   }
 
   return (
-    <div className="space-y-4">
+    <div className="min-h-0 min-w-0 space-y-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-3">
           <Input
@@ -976,8 +976,8 @@ export function AnalyticsCrmTable({ activeWorkspace, window, windowLabel }: Anal
         </div>
       ) : null}
 
-      <div className="rounded-lg border">
-        <div ref={tableViewportRef} className="max-h-[70vh] overflow-auto">
+      <div className="min-w-0 overflow-hidden rounded-lg border">
+        <div ref={tableViewportRef} className="max-h-[70vh] w-full overflow-auto">
           <Table className="min-w-[1800px]">
             <TableHeader>
               <TableRow>

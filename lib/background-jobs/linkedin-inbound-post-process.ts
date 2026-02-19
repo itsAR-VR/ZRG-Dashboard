@@ -17,6 +17,7 @@ import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
+import { scheduleFollowUpTimingFromInbound } from "@/lib/followup-timing";
 import { detectActionSignals, EMPTY_ACTION_SIGNAL_RESULT, hasActionSignal, notifyActionSignals } from "@/lib/action-signal-detector";
 
 export async function runLinkedInInboundPostProcessJob(params: {
@@ -174,6 +175,19 @@ export async function runLinkedInInboundPostProcessJob(params: {
     select: { sentimentTag: true },
   }))?.sentimentTag ?? null;
 
+  let timingFollowUpScheduled = false;
+  if (finalSentiment === "Follow Up") {
+    const timingResult = await scheduleFollowUpTimingFromInbound({
+      clientId: client.id,
+      leadId: lead.id,
+      messageId: message.id,
+      messageText: messageBody,
+      sentimentTag: finalSentiment,
+      inboundChannel: "linkedin",
+    });
+    timingFollowUpScheduled = timingResult.scheduled;
+  }
+
   await maybeAssignLead({
     leadId: lead.id,
     clientId: client.id,
@@ -328,7 +342,7 @@ export async function runLinkedInInboundPostProcessJob(params: {
   }
 
   // 7. AI Draft Generation
-  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated);
+  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated || timingFollowUpScheduled);
   if (schedulingHandled) {
     console.log("[LinkedIn Post-Process] Skipping draft generation; scheduling follow-up task already created by auto-booking");
   }

@@ -4,6 +4,8 @@ import crypto from "crypto";
 import { WebhookEventStatus, WebhookProvider } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { processInboxxiaEmailSentWebhookEvent } from "@/lib/webhook-events/inboxxia-email-sent";
+import { processCrmOutboundWebhookEvent } from "@/lib/webhook-events/crm-outbound";
+import { isWebhookEventTerminalError } from "@/lib/webhook-events/errors";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value || "", 10);
@@ -122,6 +124,7 @@ export async function processWebhookEvents(opts?: {
         emailSubject: true,
         emailBodyHtml: true,
         emailSentAt: true,
+        raw: true,
       },
     });
     if (!evt) continue;
@@ -147,6 +150,13 @@ export async function processWebhookEvents(opts?: {
           emailBodyHtml: evt.emailBodyHtml,
           emailSentAt: evt.emailSentAt,
         });
+      } else if (evt.provider === WebhookProvider.CRM) {
+        await processCrmOutboundWebhookEvent({
+          id: evt.id,
+          workspaceId: evt.workspaceId,
+          eventType: evt.eventType,
+          raw: evt.raw,
+        });
       } else {
         console.warn(`[WebhookEvents] Unsupported event: ${String(evt.provider)} ${evt.eventType}`);
         skipped++;
@@ -166,7 +176,7 @@ export async function processWebhookEvents(opts?: {
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 10_000);
       const attempts = evt.attempts;
-      const shouldRetry = attempts < evt.maxAttempts;
+      const shouldRetry = attempts < evt.maxAttempts && !isWebhookEventTerminalError(error);
 
       await prisma.webhookEvent.update({
         where: { id: evt.id },

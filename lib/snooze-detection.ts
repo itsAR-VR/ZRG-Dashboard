@@ -59,6 +59,59 @@ function extractMonthDayAfterKeyword(text: string): { month: number; day: number
   return null;
 }
 
+function normalizeYear(yearRaw: string | undefined): number | null {
+  if (!yearRaw) return null;
+  const parsed = Number.parseInt(yearRaw, 10);
+  if (!Number.isFinite(parsed)) return null;
+  if (yearRaw.length === 2) return 2000 + parsed;
+  if (yearRaw.length === 4) return parsed;
+  return null;
+}
+
+function extractQuarterReference(text: string): { quarter: 1 | 2 | 3 | 4; year: number | null } | null {
+  const lower = text.toLowerCase();
+
+  if (!/\b(after|until|from|in)\b/.test(lower)) return null;
+  if (/\bquarterly\b/.test(lower)) return null;
+
+  // "in Q3", "in Q3 2027", "in Q3 FY26"
+  {
+    const m = lower.match(
+      /\b(?:after|until|from|in)\b[^a-z0-9]{0,12}\bq([1-4])\b(?:[^a-z0-9]{0,4}(?:fy)?(\d{2,4}))?\b/
+    );
+    if (m) {
+      const quarter = Number.parseInt(m[1] || "", 10) as 1 | 2 | 3 | 4;
+      if (quarter >= 1 && quarter <= 4) {
+        return { quarter, year: normalizeYear(m[2]) };
+      }
+    }
+  }
+
+  // "in 2026 Q4", "in FY26 Q1"
+  {
+    const m = lower.match(
+      /\b(?:after|until|from|in)\b[^a-z0-9]{0,12}\b(?:fy)?(\d{2,4})\b[^a-z0-9]{0,6}\bq([1-4])\b/
+    );
+    if (m) {
+      const quarter = Number.parseInt(m[2] || "", 10) as 1 | 2 | 3 | 4;
+      if (quarter >= 1 && quarter <= 4) {
+        return { quarter, year: normalizeYear(m[1]) };
+      }
+    }
+  }
+
+  return null;
+}
+
+function resolveQuarterYear(opts: { quarter: 1 | 2 | 3 | 4; now: Date; explicitYear: number | null }): number {
+  if (opts.explicitYear) return opts.explicitYear;
+  const quarterStartMonth = (opts.quarter - 1) * 3 + 1;
+  const currentYear = opts.now.getUTCFullYear();
+  const thisYearQuarterStart = new Date(Date.UTC(currentYear, quarterStartMonth - 1, 1, 0, 0, 0));
+  if (thisYearQuarterStart.getTime() > opts.now.getTime()) return currentYear;
+  return currentYear + 1;
+}
+
 function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -120,22 +173,35 @@ export function detectSnoozedUntilUtcFromMessage(opts: {
   timeZone: string; // Lead timezone preferred, workspace fallback
 }): { snoozedUntilUtc: Date | null; confidence: number } {
   const now = opts.now ?? new Date();
-  const md = extractMonthDayAfterKeyword(opts.messageText || "");
-  if (!md) return { snoozedUntilUtc: null, confidence: 0 };
+  const monthDay = extractMonthDayAfterKeyword(opts.messageText || "");
+  if (monthDay) {
+    const currentYear = now.getUTCFullYear();
+    const candidateThisYear = new Date(Date.UTC(currentYear, monthDay.month - 1, monthDay.day, 0, 0, 0));
+    if (Number.isNaN(candidateThisYear.getTime())) return { snoozedUntilUtc: null, confidence: 0 };
 
-  const currentYear = now.getUTCFullYear();
-  const candidateThisYear = new Date(Date.UTC(currentYear, md.month - 1, md.day, 0, 0, 0));
-  if (Number.isNaN(candidateThisYear.getTime())) return { snoozedUntilUtc: null, confidence: 0 };
+    const year = candidateThisYear.getTime() >= now.getTime() ? currentYear : currentYear + 1;
+    const utc = zonedLocalToUtcDate({ year, month: monthDay.month, day: monthDay.day, hour: 9, timeZone: opts.timeZone });
+    if (!utc) return { snoozedUntilUtc: null, confidence: 0 };
 
-  const year = candidateThisYear.getTime() >= now.getTime() ? currentYear : currentYear + 1;
-  const utc = zonedLocalToUtcDate({ year, month: md.month, day: md.day, hour: 9, timeZone: opts.timeZone });
+    if (utc.getTime() <= now.getTime() + 60 * 60 * 1000) {
+      return { snoozedUntilUtc: null, confidence: 0 };
+    }
+
+    return { snoozedUntilUtc: utc, confidence: 0.99 };
+  }
+
+  const quarterRef = extractQuarterReference(opts.messageText || "");
+  if (!quarterRef) return { snoozedUntilUtc: null, confidence: 0 };
+  const year = resolveQuarterYear({
+    quarter: quarterRef.quarter,
+    now,
+    explicitYear: quarterRef.year,
+  });
+  const month = (quarterRef.quarter - 1) * 3 + 1;
+  const utc = zonedLocalToUtcDate({ year, month, day: 1, hour: 9, timeZone: opts.timeZone });
   if (!utc) return { snoozedUntilUtc: null, confidence: 0 };
-
-  // Only treat as a snooze if it's meaningfully in the future.
   if (utc.getTime() <= now.getTime() + 60 * 60 * 1000) {
     return { snoozedUntilUtc: null, confidence: 0 };
   }
-
-  return { snoozedUntilUtc: utc, confidence: 0.99 };
+  return { snoozedUntilUtc: utc, confidence: 0.97 };
 }
-

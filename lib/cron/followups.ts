@@ -10,6 +10,7 @@ import {
   resumeGhostedFollowUps,
   resumeSnoozedFollowUps,
 } from "@/lib/followup-engine";
+import { processScheduledTimingFollowUpTasksDue } from "@/lib/followup-timing";
 import { processDailyNotificationDigestsDue } from "@/lib/notification-center";
 import { retrySmsDndHeldLeads } from "@/lib/booking-sms-dnd-retry";
 import { getDbSchemaMissingColumnsForModels, isPrismaMissingTableOrColumnError } from "@/lib/db-schema-compat";
@@ -71,6 +72,7 @@ export async function runFollowupsCron(path: string = "/api/cron/followups") {
   let smsDndRetry: unknown = null;
   let backfill: unknown = null;
   let results: unknown = null;
+  let scheduledTiming: unknown = null;
   let notificationDigests: unknown = null;
 
   console.log("[Cron] Running booking backstop...");
@@ -157,6 +159,18 @@ export async function runFollowupsCron(path: string = "/api/cron/followups") {
     console.error("[Cron] Failed to process follow-ups:", error);
   }
 
+  console.log("[Cron] Processing scheduled timing follow-up tasks...");
+  try {
+    scheduledTiming = await processScheduledTimingFollowUpTasksDue();
+    console.log("[Cron] Scheduled timing follow-up processing complete:", scheduledTiming);
+  } catch (error) {
+    if (isPrismaMissingTableOrColumnError(error)) {
+      return schemaOutOfDateResponse({ path, details: error instanceof Error ? error.message : String(error) });
+    }
+    errors.push(`processScheduledTimingFollowUpTasksDue: ${error instanceof Error ? error.message : String(error)}`);
+    console.error("[Cron] Failed to process scheduled timing follow-up tasks:", error);
+  }
+
   console.log("[Cron] Processing notification digests...");
   try {
     notificationDigests = await processDailyNotificationDigestsDue({ limit: 50 });
@@ -182,6 +196,7 @@ export async function runFollowupsCron(path: string = "/api/cron/followups") {
       smsDndRetry,
       backfill,
       results,
+      scheduledTiming,
       notificationDigests,
       timestamp: new Date().toISOString(),
     },

@@ -16,6 +16,11 @@ import { crawl4aiExtractMarkdown } from "@/lib/crawl4ai";
 import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
 import { validateAutoSendCustomSchedule } from "@/lib/auto-send-schedule";
 import { buildKnowledgeAssetUpdateData, isPrivateNetworkHostname } from "@/lib/knowledge-asset-update";
+import {
+  getCrmWebhookSecretSet,
+  normalizeCrmWebhookSettingsPatch,
+  normalizeStoredCrmWebhookEvents,
+} from "@/lib/crm-webhook-config";
 import { resolveKnowledgeAssetContextSource } from "@/lib/knowledge-asset-context";
 import { MeetingBookingProvider, Prisma } from "@prisma/client";
 
@@ -70,6 +75,11 @@ export interface UserSettingsData {
   notificationSlackChannelIds: string[];
   notificationSentimentRules: Record<string, unknown> | null;
   notificationDailyDigestTime: string | null;
+  crmWebhookEnabled: boolean;
+  crmWebhookUrl: string | null;
+  crmWebhookEvents: ("lead_created" | "crm_row_updated")[];
+  crmWebhookSecret: string | null;
+  crmWebhookSecretSet: boolean;
   timezone: string | null;
   workStartTime: string | null;
   workEndTime: string | null;
@@ -228,6 +238,11 @@ export async function getUserSettings(
           notificationSlackChannelIds: [],
           notificationSentimentRules: null,
           notificationDailyDigestTime: "09:00",
+          crmWebhookEnabled: false,
+          crmWebhookUrl: null,
+          crmWebhookEvents: [],
+          crmWebhookSecret: null,
+          crmWebhookSecretSet: false,
           timezone: "America/New_York",
           workStartTime: "09:00",
           workEndTime: "17:00",
@@ -291,6 +306,10 @@ export async function getUserSettings(
           autoFollowUpsOnReply: false,
           emailDigest: true,
           slackAlerts: true,
+          crmWebhookEnabled: false,
+          crmWebhookUrl: null,
+          crmWebhookEvents: [],
+          crmWebhookSecret: null,
           timezone: "America/New_York",
           workStartTime: "09:00",
           workEndTime: "17:00",
@@ -388,6 +407,11 @@ export async function getUserSettings(
             ? (settings.notificationSentimentRules as Record<string, unknown>)
             : null,
         notificationDailyDigestTime: settings.notificationDailyDigestTime ?? "09:00",
+        crmWebhookEnabled: settings.crmWebhookEnabled ?? false,
+        crmWebhookUrl: settings.crmWebhookUrl ?? null,
+        crmWebhookEvents: normalizeStoredCrmWebhookEvents(settings.crmWebhookEvents),
+        crmWebhookSecret: null,
+        crmWebhookSecretSet: getCrmWebhookSecretSet(settings.crmWebhookSecret),
         timezone: settings.timezone,
         workStartTime: settings.workStartTime,
         workEndTime: settings.workEndTime,
@@ -488,6 +512,22 @@ export async function updateUserSettings(
       data.bookingQualificationCheckEnabled !== undefined ||
       data.bookingQualificationCriteria !== undefined ||
       data.bookingDisqualificationMessage !== undefined;
+    const wantsCrmWebhookUpdate =
+      data.crmWebhookEnabled !== undefined ||
+      data.crmWebhookUrl !== undefined ||
+      data.crmWebhookEvents !== undefined ||
+      typeof data.crmWebhookSecret === "string";
+
+    const normalizedCrmWebhookResult = normalizeCrmWebhookSettingsPatch({
+      crmWebhookEnabled: data.crmWebhookEnabled,
+      crmWebhookUrl: data.crmWebhookUrl,
+      crmWebhookEvents: data.crmWebhookEvents,
+      crmWebhookSecret: typeof data.crmWebhookSecret === "string" ? data.crmWebhookSecret : undefined,
+    });
+    if (normalizedCrmWebhookResult.error) {
+      return { success: false, error: normalizedCrmWebhookResult.error };
+    }
+    const normalizedCrmWebhook = normalizedCrmWebhookResult.values;
 
     let normalizedCustomSchedule = data.autoSendCustomSchedule;
     const normalizedCalendarHealthMinSlots =
@@ -519,6 +559,45 @@ export async function updateUserSettings(
     }
     if (wantsBookingQualificationSettingsUpdate) {
       await requireClientAdminAccess(clientId);
+    }
+    if (wantsCrmWebhookUpdate) {
+      await requireClientAdminAccess(clientId);
+      const existing = await prisma.workspaceSettings.findUnique({
+        where: { clientId },
+        select: {
+          crmWebhookEnabled: true,
+          crmWebhookUrl: true,
+          crmWebhookEvents: true,
+          crmWebhookSecret: true,
+        },
+      });
+
+      const currentUrl = normalizeCrmWebhookSettingsPatch({
+        crmWebhookUrl: existing?.crmWebhookUrl ?? null,
+      }).values.crmWebhookUrl;
+      const hasEnabledOverride = Object.prototype.hasOwnProperty.call(normalizedCrmWebhook, "crmWebhookEnabled");
+      const hasUrlOverride = Object.prototype.hasOwnProperty.call(normalizedCrmWebhook, "crmWebhookUrl");
+      const hasEventsOverride = Object.prototype.hasOwnProperty.call(normalizedCrmWebhook, "crmWebhookEvents");
+      const hasSecretOverride = Object.prototype.hasOwnProperty.call(normalizedCrmWebhook, "crmWebhookSecret");
+
+      const nextEnabled = hasEnabledOverride
+        ? Boolean(normalizedCrmWebhook.crmWebhookEnabled)
+        : existing?.crmWebhookEnabled ?? false;
+      const nextUrl = hasUrlOverride ? normalizedCrmWebhook.crmWebhookUrl ?? null : currentUrl ?? null;
+      const nextEvents = hasEventsOverride
+        ? normalizedCrmWebhook.crmWebhookEvents ?? []
+        : normalizeStoredCrmWebhookEvents(existing?.crmWebhookEvents);
+      const nextSecret = hasSecretOverride
+        ? normalizedCrmWebhook.crmWebhookSecret ?? null
+        : existing?.crmWebhookSecret ?? null;
+
+      if (nextEnabled) {
+        if (!nextUrl) return { success: false, error: "crmWebhookUrl is required when crmWebhookEnabled is true" };
+        if (!nextSecret) return { success: false, error: "crmWebhookSecret is required when crmWebhookEnabled is true" };
+        if (nextEvents.length === 0) {
+          return { success: false, error: "crmWebhookEvents must include at least one event when crmWebhookEnabled is true" };
+        }
+      }
     }
 
     await prisma.workspaceSettings.upsert({
@@ -564,6 +643,10 @@ export async function updateUserSettings(
         notificationSlackChannelIds: data.notificationSlackChannelIds,
         notificationSentimentRules: data.notificationSentimentRules as any,
         notificationDailyDigestTime: data.notificationDailyDigestTime,
+        crmWebhookEnabled: normalizedCrmWebhook.crmWebhookEnabled,
+        crmWebhookUrl: normalizedCrmWebhook.crmWebhookUrl,
+        crmWebhookEvents: normalizedCrmWebhook.crmWebhookEvents,
+        crmWebhookSecret: normalizedCrmWebhook.crmWebhookSecret,
         timezone: data.timezone,
         workStartTime: data.workStartTime,
         workEndTime: data.workEndTime,
@@ -641,6 +724,10 @@ export async function updateUserSettings(
         notificationSlackChannelIds: data.notificationSlackChannelIds ?? [],
         notificationSentimentRules: (data.notificationSentimentRules as any) ?? undefined,
         notificationDailyDigestTime: data.notificationDailyDigestTime ?? "09:00",
+        crmWebhookEnabled: normalizedCrmWebhook.crmWebhookEnabled ?? false,
+        crmWebhookUrl: normalizedCrmWebhook.crmWebhookUrl ?? null,
+        crmWebhookEvents: normalizedCrmWebhook.crmWebhookEvents ?? [],
+        crmWebhookSecret: normalizedCrmWebhook.crmWebhookSecret ?? null,
         timezone: data.timezone,
         workStartTime: data.workStartTime ?? "09:00",
         workEndTime: data.workEndTime ?? "17:00",

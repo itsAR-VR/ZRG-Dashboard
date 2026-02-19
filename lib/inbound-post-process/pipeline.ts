@@ -22,6 +22,7 @@ import {
 } from "@/lib/followup-engine";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
+import { scheduleFollowUpTimingFromInbound } from "@/lib/followup-timing";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
@@ -287,21 +288,39 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   pushStage("snooze_detection");
   const inboundText = messageBody.trim();
   const inboundReplyOnly = stripEmailQuotedSectionsForAutomation(inboundText).trim();
-  const snoozeKeywordHit =
-    /\b(after|until|from)\b/i.test(inboundReplyOnly) &&
-    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundReplyOnly);
+  let timingFollowUpScheduled = false;
+  if (sentimentTag === "Follow Up") {
+    const timingResult = await scheduleFollowUpTimingFromInbound({
+      clientId: client.id,
+      leadId: lead.id,
+      messageId: message.id,
+      messageText: inboundReplyOnly,
+      sentimentTag,
+      inboundChannel: params.adapter.channel,
+    });
+    timingFollowUpScheduled = timingResult.scheduled;
+    if (timingResult.scheduled && timingResult.dueDateUtc) {
+      console.log(prefix, "Scheduled follow-up timing task due", timingResult.dueDateUtc.toISOString());
+    }
+  } else {
+    const snoozeKeywordHit =
+      /\b(after|until|from|in)\b/i.test(inboundReplyOnly) &&
+      /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|q[1-4]|fy\d{2}\s*q[1-4]|\d{4}\s*q[1-4])\b/i.test(
+        inboundReplyOnly
+      );
 
-  if (snoozeKeywordHit) {
+    if (snoozeKeywordHit) {
       const tzResult = await ensureLeadTimezone(lead.id);
       const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
         messageText: inboundReplyOnly,
         timeZone: tzResult.timezone || "UTC",
       });
 
-    if (snoozedUntilUtc && confidence >= 0.95) {
-      await prisma.lead.update({ where: { id: lead.id }, data: { snoozedUntil: snoozedUntilUtc } });
-      await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
-      console.log(prefix, "Snoozed until", snoozedUntilUtc.toISOString());
+      if (snoozedUntilUtc && confidence >= 0.95) {
+        await prisma.lead.update({ where: { id: lead.id }, data: { snoozedUntil: snoozedUntilUtc } });
+        await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
+        console.log(prefix, "Snoozed until", snoozedUntilUtc.toISOString());
+      }
     }
   }
 
@@ -408,7 +427,7 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   }
 
   pushStage("draft_generation");
-  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated);
+  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated || timingFollowUpScheduled);
   if (schedulingHandled) {
     console.log(prefix, "Skipping draft generation; scheduling follow-up task already created by auto-booking");
   }

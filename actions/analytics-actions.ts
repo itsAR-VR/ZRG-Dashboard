@@ -3,7 +3,6 @@
 import { prisma } from "@/lib/prisma";
 import {
   deriveCrmResponseMode,
-  deriveCrmResponseType,
   mapLeadStatusFromSheet,
   mapSentimentTagFromSheet,
   normalizeCrmValue,
@@ -19,6 +18,8 @@ import { redisGetJson, redisSetJson } from "@/lib/redis";
 import { getSupabaseUserEmailsByIds } from "@/lib/supabase/admin";
 import { requireWorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { getWorkspaceCapacityUtilization, type CapacityUtilization } from "@/lib/calendar-capacity-metrics";
+import { buildCrmWebhookRowPayload } from "@/lib/crm-webhook-payload";
+import { enqueueCrmWebhookEvent } from "@/lib/crm-webhook-events";
 import { Prisma, type ClientMemberRole, type MeetingBookingProvider, type CrmResponseMode } from "@prisma/client";
 
 // Simple in-memory cache for analytics with TTL (5 minutes)
@@ -2693,20 +2694,10 @@ export async function getCrmSheetRows(params: {
 
     const rowsMapped: CrmSheetRow[] = page.map((row) => {
       const lead = row.lead;
-      const campaign =
-        row.interestCampaignName ?? lead.emailCampaign?.name ?? lead.smsCampaign?.name ?? lead.campaign?.name ?? null;
       const appointmentSetter =
         lead.assignedToUserId ? emailMap.get(lead.assignedToUserId) ?? lead.assignedToUserId : null;
       const setterAssignment =
         row.responseSentByUserId ? emailMap.get(row.responseSentByUserId) ?? row.responseSentByUserId : null;
-
-      const status = row.pipelineStatus ?? lead.status ?? null;
-      const qualified =
-        status === "qualified" || status === "meeting-booked"
-          ? true
-          : status === "unqualified" || status === "not-interested" || status === "blacklisted"
-            ? false
-            : null;
 
       const interestRegisteredAt = row.interestRegisteredAt ?? null;
       const interestChannel = row.interestChannel ?? null;
@@ -2720,51 +2711,16 @@ export async function getCrmSheetRows(params: {
           ? responseStepCompleteByLeadId.has(row.leadId)
           : null;
       const derivedResponseMode = responseModeByLeadId.get(row.leadId) ?? null;
-      const bookedEvidence = Boolean(lead.appointmentBookedAt || lead.ghlAppointmentId || lead.calendlyInviteeUri);
-      const responseType = deriveCrmResponseType({
-        sentimentTag: lead.sentimentTag ?? null,
-        snoozedUntil: lead.snoozedUntil ?? null,
-        bookedEvidence,
-      });
 
-      return {
-        id: row.id,
-        leadId: row.leadId,
-        date: interestRegisteredAt,
-        campaign,
-        companyName: lead.companyName ?? null,
-        website: lead.companyWebsite ?? null,
-        firstName: lead.firstName ?? null,
-        lastName: lead.lastName ?? null,
-        jobTitle: lead.jobTitle ?? null,
-        leadEmail: lead.email ?? null,
-        leadLinkedIn: lead.linkedinUrl ?? null,
-        phoneNumber: lead.phone ?? null,
+      return buildCrmWebhookRowPayload({
+        row,
         stepResponded,
-        leadCategory: row.leadCategoryOverride ?? row.interestType ?? lead.sentimentTag ?? null,
-        responseType,
-        leadStatus: status,
-        channel: interestChannel,
-        leadType: row.leadType ?? null,
-        applicationStatus: row.applicationStatus ?? null,
+        followUps,
+        responseStepComplete,
+        derivedResponseMode,
         appointmentSetter,
         setterAssignment,
-        notes: row.notes ?? null,
-        initialResponseDate: interestRegisteredAt,
-        followUp1: followUps[0] ?? null,
-        followUp2: followUps[1] ?? null,
-        followUp3: followUps[2] ?? null,
-        followUp4: followUps[3] ?? null,
-        followUp5: followUps[4] ?? null,
-        responseStepComplete,
-        dateOfBooking: lead.appointmentBookedAt ?? null,
-        dateOfMeeting: lead.appointmentStartAt ?? null,
-        qualified,
-        followUpDateRequested: lead.snoozedUntil ?? null,
-        setters: appointmentSetter,
-        responseMode: row.responseMode ?? derivedResponseMode ?? "UNKNOWN",
-        leadScore: row.leadScoreAtInterest ?? lead.overallScore ?? null,
-      };
+      });
     });
 
     return { success: true, data: { rows: rowsMapped, nextCursor } };
@@ -2818,6 +2774,15 @@ type CrmEditableField =
   | "phone"
   | "linkedinUrl"
   | "assignedToUserId";
+
+const CRM_WEBHOOK_WATCHED_FIELDS = new Set<CrmEditableField>([
+  "leadCategory",
+  "leadStatus",
+  "leadType",
+  "applicationStatus",
+  "notes",
+  "campaign",
+]);
 
 function parseExpectedUpdatedAt(value: string | null | undefined): Date | null {
   if (!value) return null;
@@ -3013,6 +2978,7 @@ export async function updateCrmSheetCell(params: {
         const currentCrm = lead.crmRow;
         const crmUpdate: Record<string, unknown> = {};
         let leadUpdate: Record<string, unknown> | null = null;
+        let crmRowUpdatedAt: Date | null = null;
 
         if (params.field === "leadCategory") {
           if (value !== (currentCrm?.leadCategoryOverride ?? null)) {
@@ -3062,11 +3028,13 @@ export async function updateCrmSheetCell(params: {
         if (leadUpdate) {
           await prisma.$transaction(async (tx) => {
             if (crmNeedsUpdate) {
-              await tx.leadCrmRow.upsert({
+              const updatedCrm = await tx.leadCrmRow.upsert({
                 where: { leadId: lead.id },
                 create: { leadId: lead.id, ...crmUpdate },
                 update: crmUpdate,
+                select: { updatedAt: true },
               });
+              crmRowUpdatedAt = updatedCrm.updatedAt;
             }
             await tx.lead.update({
               where: { id: lead.id },
@@ -3074,10 +3042,30 @@ export async function updateCrmSheetCell(params: {
             });
           });
         } else if (crmNeedsUpdate) {
-          await prisma.leadCrmRow.upsert({
+          const updatedCrm = await prisma.leadCrmRow.upsert({
             where: { leadId: lead.id },
             create: { leadId: lead.id, ...crmUpdate },
             update: crmUpdate,
+            select: { updatedAt: true },
+          });
+          crmRowUpdatedAt = updatedCrm.updatedAt;
+        }
+
+        if (crmNeedsUpdate && CRM_WEBHOOK_WATCHED_FIELDS.has(params.field)) {
+          const dedupeSeed = `${params.field}:${crmRowUpdatedAt?.toISOString() ?? ""}:${value ?? ""}`;
+          enqueueCrmWebhookEvent({
+            clientId: lead.clientId,
+            leadId: lead.id,
+            eventType: "crm_row_updated",
+            occurredAt: crmRowUpdatedAt ?? new Date(),
+            changedField: params.field,
+            source: "analytics.updateCrmSheetCell",
+            dedupeSeed,
+          }).catch((enqueueError) => {
+            console.warn(
+              `[updateCrmSheetCell] Failed to enqueue CRM webhook event for lead ${lead.id}:`,
+              enqueueError
+            );
           });
         }
 

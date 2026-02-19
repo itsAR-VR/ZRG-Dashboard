@@ -1,0 +1,6 @@
+{
+  "phase": 174,
+  "strategy": "timing_followup_ai_extractor_hardening",
+  "threadIds": [],
+  "notes": "Populate threadIds manually with high-risk follow-up defer conversations before running live replay."
+}

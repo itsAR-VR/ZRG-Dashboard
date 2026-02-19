@@ -188,6 +188,7 @@ enum BackgroundFunctionRunStatus {
 // Webhook event queue (Phase 53): lightweight ingestion queue to absorb bursty providers.
 enum WebhookProvider {
   INBOXXIA
+  CRM
 }
 
 enum WebhookEventStatus {
@@ -447,6 +448,11 @@ model WorkspaceSettings {
   notificationSlackChannelIds String[] @default([]) // Slack conversation IDs (C*/G*)
   notificationSentimentRules Json? // Sentiment -> { mode, destinations }
   notificationDailyDigestTime String? @default("09:00") // Local time in workspace timezone (HH:mm)
+  // CRM outbound webhook sync (Phase 173)
+  crmWebhookEnabled Boolean @default(false)
+  crmWebhookUrl     String?
+  crmWebhookEvents  String[] @default([])
+  crmWebhookSecret  String? @db.Text
   // Schedule Settings
   timezone             String?
   workStartTime        String?  @default("09:00")

@@ -2,6 +2,7 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { isPositiveSentiment } from "@/lib/sentiment";
+import { enqueueCrmWebhookEvent } from "@/lib/crm-webhook-events";
 
 export type LeadCrmRowInterestParams = {
   leadId: string;
@@ -20,6 +21,7 @@ export async function upsertLeadCrmRowOnInterest(params: LeadCrmRowInterestParam
     prisma.lead.findUnique({
       where: { id: params.leadId },
       select: {
+        clientId: true,
         fitScore: true,
         intentScore: true,
         overallScore: true,
@@ -71,6 +73,20 @@ export async function upsertLeadCrmRowOnInterest(params: LeadCrmRowInterestParam
       leadIntentScoreAtInterest: lead.intentScore ?? null,
     },
   });
+
+  try {
+    await enqueueCrmWebhookEvent({
+      clientId: lead.clientId,
+      leadId: params.leadId,
+      eventType: "lead_created",
+      occurredAt: params.messageSentAt,
+      messageId: params.messageId,
+      source: "lead-crm-row.upsertLeadCrmRowOnInterest",
+      dedupeSeed: params.messageId,
+    });
+  } catch (error) {
+    console.warn(`[LeadCrmRow] Failed to enqueue CRM webhook event for lead ${params.leadId}:`, error);
+  }
 
   return { updated: true as const };
 }

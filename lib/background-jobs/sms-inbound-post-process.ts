@@ -7,6 +7,7 @@ import { executeAutoSend } from "@/lib/auto-send";
 import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBooking } from "@/lib/followup-engine";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
+import { scheduleFollowUpTimingFromInbound } from "@/lib/followup-timing";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
@@ -98,29 +99,8 @@ export async function runSmsInboundPostProcessJob(params: {
   // SMS messages may contain timezone hints like "I'm in PST"
   await ensureLeadTimezone(lead.id, { conversationText: messageBody });
 
-  // 2. Snooze Detection
-  // If the lead asks to reconnect after a specific date, snooze/pause follow-ups until then.
+  // 2. Inbound text baseline
   const inboundText = messageBody.trim();
-  const snoozeKeywordHit =
-    /\b(after|until|from)\b/i.test(inboundText) &&
-    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/i.test(inboundText);
-
-  if (snoozeKeywordHit) {
-    const tzResult = await ensureLeadTimezone(lead.id, { conversationText: inboundText });
-    const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
-      messageText: inboundText,
-      timeZone: tzResult.timezone || "UTC",
-    });
-
-    if (snoozedUntilUtc && confidence >= 0.95) {
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: { snoozedUntil: snoozedUntilUtc },
-      });
-      await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
-      console.log(`[SMS Post-Process] Detected snooze until ${snoozedUntilUtc.toISOString()}`);
-    }
-  }
 
   // 3. AI Sentiment Classification
   // Build transcript from recent messages (up to 30 messages for context).
@@ -217,6 +197,43 @@ export async function runSmsInboundPostProcessJob(params: {
     where: { id: lead.id },
     select: { sentimentTag: true },
   }))?.sentimentTag ?? null;
+
+  let timingFollowUpScheduled = false;
+  if (finalSentiment === "Follow Up") {
+    const timingResult = await scheduleFollowUpTimingFromInbound({
+      clientId: client.id,
+      leadId: lead.id,
+      messageId: message.id,
+      messageText: inboundText,
+      sentimentTag: finalSentiment,
+      inboundChannel: "sms",
+    });
+    timingFollowUpScheduled = timingResult.scheduled;
+  } else {
+    // Legacy deterministic snooze detection remains for non-follow-up sentiment paths.
+    const snoozeKeywordHit =
+      /\b(after|until|from|in)\b/i.test(inboundText) &&
+      /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|q[1-4]|fy\d{2}\s*q[1-4]|\d{4}\s*q[1-4])\b/i.test(
+        inboundText
+      );
+
+    if (snoozeKeywordHit) {
+      const tzResult = await ensureLeadTimezone(lead.id, { conversationText: inboundText });
+      const { snoozedUntilUtc, confidence } = detectSnoozedUntilUtcFromMessage({
+        messageText: inboundText,
+        timeZone: tzResult.timezone || "UTC",
+      });
+
+      if (snoozedUntilUtc && confidence >= 0.95) {
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { snoozedUntil: snoozedUntilUtc },
+        });
+        await pauseFollowUpsUntil(lead.id, snoozedUntilUtc);
+        console.log(`[SMS Post-Process] Detected snooze until ${snoozedUntilUtc.toISOString()}`);
+      }
+    }
+  }
 
   await maybeAssignLead({
     leadId: lead.id,
@@ -328,7 +345,7 @@ export async function runSmsInboundPostProcessJob(params: {
 
   // 7. AI Draft Generation
   // Skip if auto-booked or sentiment doesn't need draft
-  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated);
+  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated || timingFollowUpScheduled);
   if (schedulingHandled) {
     console.log("[SMS Post-Process] Skipping draft generation; scheduling follow-up task already created by auto-booking");
   }

@@ -1098,7 +1098,11 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
   )
 
   return (
-    <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as AnalyticsTab)} className="flex flex-col h-full overflow-auto">
+    <Tabs
+      value={activeTab}
+      onValueChange={(value) => setActiveTab(value as AnalyticsTab)}
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-auto"
+    >
       <div className="border-b px-6 py-4 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -1834,8 +1838,8 @@ export function AnalyticsView({ activeWorkspace, isActive = true }: AnalyticsVie
         </div>
       </TabsContent>
 
-      <TabsContent value="crm" className="flex-1">
-        <div className="p-6">
+      <TabsContent value="crm" className="flex-1 min-h-0 min-w-0">
+        <div className="h-full min-h-0 min-w-0 overflow-hidden p-6">
           <AnalyticsCrmTable activeWorkspace={activeWorkspace} window={windowParams} windowLabel={windowLabel} />
         </div>
       </TabsContent>
