@@ -416,9 +416,13 @@ function hasSemanticAvailabilitySlotMatchForGuard(draft: string, availability: s
   const draftDates = extractSlotAlignmentTokens(draft, SLOT_ALIGNMENT_MONTH_DAY_TOKEN_REGEX, normalizeSlotAlignmentDateToken);
   const draftWeekdays = extractSlotAlignmentTokens(draft, SLOT_ALIGNMENT_WEEKDAY_TOKEN_REGEX, normalizeSlotAlignmentWeekdayToken);
 
-  if (draftTimes.some((token) => availabilityTimes.has(token))) return true;
+  // If the draft includes an explicit time, require a time match. Do not allow
+  // date-only matches to count as "aligned" when the time is wrong.
+  if (draftTimes.length > 0) {
+    return draftTimes.some((token) => availabilityTimes.has(token));
+  }
   if (draftDates.some((token) => availabilityDates.has(token))) return true;
-  if (draftWeekdays.some((token) => availabilityWeekdays.has(token)) && draftTimes.length === 0) return true;
+  if (draftWeekdays.some((token) => availabilityWeekdays.has(token))) return true;
   return false;
 }
 
@@ -427,8 +431,12 @@ function buildAvailabilityMismatchFallbackDraft(params: {
   firstName: string | null;
   aiName: string;
   slotLabel: string;
+  bookingLink?: string | null;
 }): string {
-  const sentence = `I can do ${params.slotLabel}. If that time doesn't work, let me know or feel free to reschedule using the calendar invite.`;
+  const link = (params.bookingLink || "").trim();
+  const sentence = link
+    ? `We can do ${params.slotLabel}. If that time doesn't work, you can grab another time here: ${link}`
+    : `We can do ${params.slotLabel}. If that time doesn't work, let me know and we can find another time.`;
   if (params.channel === "sms" || params.channel === "linkedin") return sentence;
 
   const greeting = params.firstName ? `Hi ${params.firstName},\n\n` : "Hi,\n\n";
@@ -441,7 +449,7 @@ function buildAvailabilityLinkFallbackDraft(params: {
   aiName: string;
   link: string;
 }): string {
-  const sentence = `I don't have a matching slot in that window right now. You can grab any open time here: ${params.link}`;
+  const sentence = `We don't have a matching slot in that window right now. You can grab any open time here: ${params.link}`;
   if (params.channel === "sms" || params.channel === "linkedin") return sentence;
 
   const greeting = params.firstName ? `Hi ${params.firstName},\n\n` : "Hi,\n\n";
@@ -3061,8 +3069,9 @@ function parseExplicitTimeWindow(
   message: string
 ): { startMinutes: number; endMinutes: number } | null {
   const patterns = [
-    /\bbetween\s+(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)\s*(?:and|to|-)\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)/i,
-    /\bfrom\s+(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)\s*(?:to|-)\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)/i,
+    // Allow timezone tokens between the time and separator, e.g. "from 1pm EST to 3pm EST".
+    /\bbetween\s+(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)\s*(?:[A-Z]{2,4})?\s*(?:and|to|-)\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)\s*(?:[A-Z]{2,4})?/i,
+    /\bfrom\s+(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)\s*(?:[A-Z]{2,4})?\s*(?:to|-)\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m?\.?|p\.?m?\.?)?)\s*(?:[A-Z]{2,4})?/i,
     /\b(\d{1,2}(?::\d{2})?)\s*-\s*(\d{1,2}(?::\d{2})?)\s*(am|pm)\b/i,
   ];
 
@@ -3126,6 +3135,8 @@ export function extractTimingPreferencesFromText(
   weekdayTokens?: string[];
   relativeWeek?: "this_week" | "next_week";
   timeWindow?: { startMinutes: number; endMinutes: number };
+  monthDayRange?: { month: number; startDay: number; endDay: number };
+  explicitMonthDays?: { month: number; day: number }[];
 } | null {
   const message = (text || "").trim();
   if (!message) return null;
@@ -3138,6 +3149,67 @@ export function extractTimingPreferencesFromText(
     if (normalized) weekdayTokens.add(normalized);
   }
 
+  const monthNameToNumber = (raw: string): number | null => {
+    const value = (raw || "").trim().toLowerCase();
+    if (value.startsWith("jan")) return 1;
+    if (value.startsWith("feb")) return 2;
+    if (value.startsWith("mar")) return 3;
+    if (value.startsWith("apr")) return 4;
+    if (value === "may") return 5;
+    if (value.startsWith("jun")) return 6;
+    if (value.startsWith("jul")) return 7;
+    if (value.startsWith("aug")) return 8;
+    if (value.startsWith("sep")) return 9;
+    if (value.startsWith("oct")) return 10;
+    if (value.startsWith("nov")) return 11;
+    if (value.startsWith("dec")) return 12;
+    return null;
+  };
+
+  const parseWeekOrdinal = (raw: string): number | null => {
+    const value = (raw || "").trim().toLowerCase();
+    if (value === "first" || value === "1st" || value === "1") return 1;
+    if (value === "second" || value === "2nd" || value === "2") return 2;
+    if (value === "third" || value === "3rd" || value === "3") return 3;
+    if (value === "fourth" || value === "4th" || value === "4") return 4;
+    if (value === "fifth" || value === "5th" || value === "5") return 5;
+    return null;
+  };
+
+  const monthDayRange = (() => {
+    const match = message.match(
+      /\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th|1|2|3|4|5)\s+week\s+(?:of|in)\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i
+    );
+    if (!match?.[1] || !match?.[2]) return null;
+    const weekIndex = parseWeekOrdinal(match[1]);
+    const month = monthNameToNumber(match[2]);
+    if (!weekIndex || !month) return null;
+    const startDay = (weekIndex - 1) * 7 + 1;
+    const endDay = weekIndex * 7;
+    return { month, startDay, endDay };
+  })();
+
+  const explicitMonthDays = (() => {
+    const matches = message.matchAll(
+      /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?\b/gi
+    );
+    const out: { month: number; day: number }[] = [];
+    for (const match of matches) {
+      const month = monthNameToNumber(match[1] || "");
+      const day = Number.parseInt(match[2] || "", 10);
+      if (!month || !Number.isFinite(day) || day < 1 || day > 31) continue;
+      out.push({ month, day });
+    }
+    // Dedupe and keep order.
+    const seen = new Set<string>();
+    return out.filter((entry) => {
+      const key = `${entry.month}-${entry.day}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  })();
+
   let relativeWeek: "this_week" | "next_week" | undefined;
   if (/\bnext\s+week\b/i.test(lower) || /\bnext\s+(mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b/i.test(lower)) {
     relativeWeek = "next_week";
@@ -3146,7 +3218,7 @@ export function extractTimingPreferencesFromText(
   }
 
   const timeWindow = parseExplicitTimeWindow(message);
-  if (weekdayTokens.size === 0 && !relativeWeek && !timeWindow) return null;
+  if (weekdayTokens.size === 0 && !relativeWeek && !timeWindow && !monthDayRange && explicitMonthDays.length === 0) return null;
 
   // Keep an explicit dependency on timezone for relative-week interpretation downstream.
   void timeZone;
@@ -3155,6 +3227,8 @@ export function extractTimingPreferencesFromText(
     weekdayTokens: weekdayTokens.size > 0 ? Array.from(weekdayTokens) : undefined,
     relativeWeek,
     timeWindow: timeWindow || undefined,
+    monthDayRange: monthDayRange || undefined,
+    explicitMonthDays: explicitMonthDays.length > 0 ? explicitMonthDays : undefined,
   };
 }
 
@@ -4489,35 +4563,54 @@ export async function generateResponseDraft(
           const timingPreferences = latestMessageBody
             ? extractTimingPreferencesFromText(latestMessageBody, timeZone)
             : null;
+
+          if (timingPreferences?.monthDayRange) {
+            const range = timingPreferences.monthDayRange;
+            candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
+              const d = new Date(iso);
+              if (Number.isNaN(d.getTime())) return false;
+              const parts = getLocalDateParts(d, timeZone);
+              if (!parts) return false;
+              return parts.month === range.month && parts.day >= range.startDay && parts.day <= range.endDay;
+            });
+          }
+
+          if (timingPreferences?.explicitMonthDays?.length) {
+            const allowed = new Set(
+              timingPreferences.explicitMonthDays.map((entry) => `${entry.month}-${entry.day}`)
+            );
+            candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
+              const d = new Date(iso);
+              if (Number.isNaN(d.getTime())) return false;
+              const parts = getLocalDateParts(d, timeZone);
+              if (!parts) return false;
+              return allowed.has(`${parts.month}-${parts.day}`);
+            });
+          }
+
           if (timingPreferences?.weekdayTokens?.length) {
-              const weekdayFormatter = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" });
-              const weekdayFiltered = candidateSlotsUtc.filter((iso) => {
-                const d = new Date(iso);
-                if (Number.isNaN(d.getTime())) return false;
-                const weekdayToken = weekdayFormatter.format(d).toLowerCase().slice(0, 3);
-                return timingPreferences.weekdayTokens!.includes(weekdayToken);
-              });
-              if (weekdayFiltered.length > 0) {
-                candidateSlotsUtc = weekdayFiltered;
-              }
+            const weekdayFormatter = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" });
+            candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
+              const d = new Date(iso);
+              if (Number.isNaN(d.getTime())) return false;
+              const weekdayToken = weekdayFormatter.format(d).toLowerCase().slice(0, 3);
+              return timingPreferences.weekdayTokens!.includes(weekdayToken);
+            });
           }
 
           if (timingPreferences?.relativeWeek) {
-              const relativeFiltered = candidateSlotsUtc.filter((iso) => {
-                const dayDiff = getDayDiffInTimeZone(iso, offeredAt, timeZone);
-                if (dayDiff === null) return false;
-                if (timingPreferences.relativeWeek === "this_week") {
-                  return dayDiff >= 0 && dayDiff < 7;
-                }
-                return dayDiff >= 7 && dayDiff < 14;
-              });
-              if (relativeFiltered.length > 0) {
-                candidateSlotsUtc = relativeFiltered;
+            candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
+              const dayDiff = getDayDiffInTimeZone(iso, offeredAt, timeZone);
+              if (dayDiff === null) return false;
+              if (timingPreferences.relativeWeek === "this_week") {
+                return dayDiff >= 0 && dayDiff < 7;
               }
+              return dayDiff >= 7 && dayDiff < 14;
+            });
           }
 
           if (timingPreferences?.timeWindow) {
-            const windowFiltered = candidateSlotsUtc.filter((iso) => {
+            candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
               const minutes = getMinutesOfDayInTimeZone(iso, timeZone);
               if (minutes === null) return false;
               return isMinuteWithinWindow(
@@ -4526,12 +4619,9 @@ export async function generateResponseDraft(
                 timingPreferences.timeWindow!.endMinutes
               );
             });
-            if (windowFiltered.length > 0) {
-              candidateSlotsUtc = windowFiltered;
-            }
           }
 
-          const excludeUtcIso = timingPreferences?.timeWindow ? new Set<string>() : existingOffered;
+          const excludeUtcIso = existingOffered;
 
           const selectedUtcIso = selectDistributedAvailabilitySlots({
             slotsUtcIso: candidateSlotsUtc,

@@ -311,44 +311,42 @@ export async function runSmsInboundPostProcessJob(params: {
   let actionSignalExternalCalendar = false;
   let actionSignalRouteSummary: string | null = null;
   try {
-    if (isPositiveSentiment(newSentiment)) {
-      const workspaceBookingLink = await resolveBookingLink(client.id, null)
-        .then((result) => result.bookingLink)
-        .catch(() => null);
-      actionSignals = await detectActionSignals({
-        strippedText: inboundText,
-        fullText: messageBody,
-        sentimentTag: newSentiment,
-        workspaceBookingLink,
+    const workspaceBookingLink = await resolveBookingLink(client.id, null)
+      .then((result) => result.bookingLink)
+      .catch(() => null);
+    actionSignals = await detectActionSignals({
+      strippedText: inboundText,
+      fullText: messageBody,
+      sentimentTag: newSentiment,
+      workspaceBookingLink,
+      clientId: client.id,
+      leadId: lead.id,
+      channel: "sms",
+      provider: "ghl",
+      aiRouteBookingProcessEnabled: settings?.aiRouteBookingProcessEnabled ?? true,
+    });
+    actionSignalCallRequested = hasActionSignal(actionSignals, "call_requested");
+    actionSignalExternalCalendar = hasActionSignal(actionSignals, "book_on_external_calendar");
+    actionSignalRouteSummary = buildActionSignalsGateSummary(actionSignals);
+    if (actionSignals.signals.length > 0) {
+      console.log("[SMS Post-Process] Action signals:", actionSignals.signals.map((signal) => signal.type).join(", "));
+      notifyActionSignals({
         clientId: client.id,
         leadId: lead.id,
-        channel: "sms",
-        provider: "ghl",
-        aiRouteBookingProcessEnabled: settings?.aiRouteBookingProcessEnabled ?? true,
-      });
-      actionSignalCallRequested = hasActionSignal(actionSignals, "call_requested");
-      actionSignalExternalCalendar = hasActionSignal(actionSignals, "book_on_external_calendar");
-      actionSignalRouteSummary = buildActionSignalsGateSummary(actionSignals);
-      if (actionSignals.signals.length > 0) {
-        console.log("[SMS Post-Process] Action signals:", actionSignals.signals.map((signal) => signal.type).join(", "));
-        notifyActionSignals({
-          clientId: client.id,
-          leadId: lead.id,
-          messageId: message.id,
-          signals: actionSignals.signals,
-          latestInboundText: messageBody,
-          route: actionSignals.route,
-        }).catch((error) => console.warn("[SMS Post-Process] Action signal notify failed:", error));
-      }
+        messageId: message.id,
+        signals: actionSignals.signals,
+        latestInboundText: messageBody,
+        route: actionSignals.route,
+      }).catch((error) => console.warn("[SMS Post-Process] Action signal notify failed:", error));
+    }
 
-      // If the lead asked for a call but we don't have a phone number, try to hydrate it (then Clay if needed).
-      if (actionSignalCallRequested && !(lead.phone || "").trim()) {
-        enrichPhoneThenSyncToGhl(lead.id, {
-          includeSignatureAi: false,
-          triggerReason: "call_intent",
-          triggerChannel: "sms",
-        }).catch(() => undefined);
-      }
+    // If the lead asked for a call but we don't have a phone number, try to hydrate it (then Clay if needed).
+    if (actionSignalCallRequested && !(lead.phone || "").trim()) {
+      enrichPhoneThenSyncToGhl(lead.id, {
+        includeSignatureAi: false,
+        triggerReason: "call_intent",
+        triggerChannel: "sms",
+      }).catch(() => undefined);
     }
   } catch (error) {
     console.warn("[SMS Post-Process] Action signal detection failed (non-fatal):", error);

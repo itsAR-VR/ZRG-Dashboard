@@ -267,33 +267,31 @@ export async function runLinkedInInboundPostProcessJob(params: {
   let actionSignals = EMPTY_ACTION_SIGNAL_RESULT;
   let actionSignalCallRequested = false;
   try {
-    if (isPositiveSentiment(newSentiment)) {
-      const workspaceBookingLink = await resolveBookingLink(client.id, null)
-        .then((result) => result.bookingLink)
-        .catch(() => null);
-      actionSignals = await detectActionSignals({
-        strippedText: messageBody,
-        fullText: messageBody,
-        sentimentTag: newSentiment,
-        workspaceBookingLink,
+    const workspaceBookingLink = await resolveBookingLink(client.id, null)
+      .then((result) => result.bookingLink)
+      .catch(() => null);
+    actionSignals = await detectActionSignals({
+      strippedText: messageBody,
+      fullText: messageBody,
+      sentimentTag: newSentiment,
+      workspaceBookingLink,
+      clientId: client.id,
+      leadId: lead.id,
+      channel: "linkedin",
+      provider: "unipile",
+      aiRouteBookingProcessEnabled: client.settings?.aiRouteBookingProcessEnabled ?? true,
+    });
+    actionSignalCallRequested = hasActionSignal(actionSignals, "call_requested");
+    if (actionSignals.signals.length > 0) {
+      console.log("[LinkedIn Post-Process] Action signals:", actionSignals.signals.map((signal) => signal.type).join(", "));
+      notifyActionSignals({
         clientId: client.id,
         leadId: lead.id,
-        channel: "linkedin",
-        provider: "unipile",
-        aiRouteBookingProcessEnabled: client.settings?.aiRouteBookingProcessEnabled ?? true,
-      });
-      actionSignalCallRequested = hasActionSignal(actionSignals, "call_requested");
-      if (actionSignals.signals.length > 0) {
-        console.log("[LinkedIn Post-Process] Action signals:", actionSignals.signals.map((signal) => signal.type).join(", "));
-        notifyActionSignals({
-          clientId: client.id,
-          leadId: lead.id,
-          messageId: message.id,
-          signals: actionSignals.signals,
-          latestInboundText: messageBody,
-          route: actionSignals.route,
-        }).catch((error) => console.warn("[LinkedIn Post-Process] Action signal notify failed:", error));
-      }
+        messageId: message.id,
+        signals: actionSignals.signals,
+        latestInboundText: messageBody,
+        route: actionSignals.route,
+      }).catch((error) => console.warn("[LinkedIn Post-Process] Action signal notify failed:", error));
     }
   } catch (error) {
     console.warn("[LinkedIn Post-Process] Action signal detection failed (non-fatal):", error);

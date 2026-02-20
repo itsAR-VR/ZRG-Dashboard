@@ -397,46 +397,44 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   let actionSignalExternalCalendar = false;
   let actionSignalRouteSummary: string | null = null;
   try {
-    if (isPositiveSentiment(sentimentTag)) {
-      const workspaceBookingLink = await resolveBookingLink(client.id, null)
-        .then((r) => r.bookingLink)
-        .catch(() => null);
-      actionSignals = await detectActionSignals({
-        strippedText: inboundReplyOnly,
-        fullText: rawText,
-        sentimentTag,
-        workspaceBookingLink,
+    const workspaceBookingLink = await resolveBookingLink(client.id, null)
+      .then((r) => r.bookingLink)
+      .catch(() => null);
+    actionSignals = await detectActionSignals({
+      strippedText: inboundReplyOnly,
+      fullText: rawText,
+      sentimentTag,
+      workspaceBookingLink,
+      clientId: client.id,
+      leadId: lead.id,
+      channel: params.adapter.channel,
+      provider: params.adapter.provider,
+      aiRouteBookingProcessEnabled: client.settings?.aiRouteBookingProcessEnabled ?? true,
+    });
+    actionSignalCallRequested = hasActionSignal(actionSignals, "call_requested");
+    actionSignalExternalCalendar = hasActionSignal(actionSignals, "book_on_external_calendar");
+    actionSignalRouteSummary = buildActionSignalsGateSummary(actionSignals);
+    if (actionSignals.signals.length > 0) {
+      console.log(prefix, "Action signals:", actionSignals.signals.map((s) => s.type).join(", "));
+      notifyActionSignals({
         clientId: client.id,
         leadId: lead.id,
-        channel: params.adapter.channel,
-        provider: params.adapter.provider,
-        aiRouteBookingProcessEnabled: client.settings?.aiRouteBookingProcessEnabled ?? true,
-      });
-      actionSignalCallRequested = hasActionSignal(actionSignals, "call_requested");
-      actionSignalExternalCalendar = hasActionSignal(actionSignals, "book_on_external_calendar");
-      actionSignalRouteSummary = buildActionSignalsGateSummary(actionSignals);
-      if (actionSignals.signals.length > 0) {
-        console.log(prefix, "Action signals:", actionSignals.signals.map((s) => s.type).join(", "));
-        notifyActionSignals({
-          clientId: client.id,
-          leadId: lead.id,
-          messageId: message.id,
-          signals: actionSignals.signals,
-          latestInboundText: messageBody,
-          route: actionSignals.route,
-        }).catch((err) => console.warn(prefix, "Action signal notify failed:", err));
-      }
+        messageId: message.id,
+        signals: actionSignals.signals,
+        latestInboundText: messageBody,
+        route: actionSignals.route,
+      }).catch((err) => console.warn(prefix, "Action signal notify failed:", err));
+    }
 
-      // If the lead asked for a call but we don't have a phone number on file, try to hydrate it
-      // (message content, signature AI, then Clay as a last resort).
-      if (actionSignalCallRequested && !(lead.phone || "").trim()) {
-        const triggerChannel = params.adapter.channel === "email" ? "email" : params.adapter.channel === "sms" ? "sms" : "unknown";
-        enrichPhoneThenSyncToGhl(lead.id, {
-          includeSignatureAi: params.adapter.channel === "email",
-          triggerReason: "call_intent",
-          triggerChannel,
-        }).catch(() => undefined);
-      }
+    // If the lead asked for a call but we don't have a phone number on file, try to hydrate it
+    // (message content, signature AI, then Clay as a last resort).
+    if (actionSignalCallRequested && !(lead.phone || "").trim()) {
+      const triggerChannel = params.adapter.channel === "email" ? "email" : params.adapter.channel === "sms" ? "sms" : "unknown";
+      enrichPhoneThenSyncToGhl(lead.id, {
+        includeSignatureAi: params.adapter.channel === "email",
+        triggerReason: "call_intent",
+        triggerChannel,
+      }).catch(() => undefined);
     }
   } catch (err) {
     console.warn(prefix, "Action signal detection failed (non-fatal):", err);

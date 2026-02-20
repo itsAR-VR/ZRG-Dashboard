@@ -74,8 +74,8 @@ export async function handleLeadSchedulerLinkIfPresent(opts: {
   if (!url) return { handled: false, outcome: "no_scheduler_link" };
 
   // Safety: only act when the lead explicitly wants us to book via their link.
-  // (Sentiment rules treat signature-only links as not meeting-booked.)
-  const schedulingIntentSentiments = new Set(["Meeting Requested", "Meeting Booked"]);
+  // Interested leads can still include explicit scheduler-link routing intent.
+  const schedulingIntentSentiments = new Set(["Meeting Requested", "Meeting Booked", "Interested"]);
   if (!schedulingIntentSentiments.has(lead.sentimentTag ?? "")) {
     return { handled: false, outcome: "sentiment_not_scheduling_intent" };
   }

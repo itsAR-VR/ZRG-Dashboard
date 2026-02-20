@@ -541,8 +541,8 @@ test("applyBookingIntentAvailabilityMatchGuard rewrites non-matching confirmatio
 
   assert.equal(result.changed, true);
   assert.match(result.draft, /^Hi Alex,/);
-  assert.match(result.draft, /I can do Wed, Feb 18 at 11:30 AM EST\./);
-  assert.match(result.draft, /If that time doesn't work, let me know or feel free to reschedule using the calendar invite\./i);
+  assert.match(result.draft, /We can do Wed, Feb 18 at 11:30 AM EST\./);
+  assert.match(result.draft, /If that time doesn't work, let me know and we can find another time\./i);
   assert.ok(!/8:30\s*AM/i.test(result.draft));
 });
 

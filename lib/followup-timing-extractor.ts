@@ -134,9 +134,9 @@ Rules:
       required: ["hasConcreteDate", "localDate", "localTime", "timezone", "rationale", "normalizedText"],
     },
     budget: {
-      min: 600,
-      max: 900,
-      retryMax: 1800,
+      min: 1800,
+      max: 2700,
+      retryMax: 5400,
       overheadTokens: 128,
       outputScale: 0.2,
       preferApiCount: true,

@@ -99,7 +99,7 @@ describe("action signal detector: signature disambiguation trigger", () => {
 });
 
 describe("action signal detector: end-to-end detection", () => {
-  it("gates out non-positive sentiment and skips disambiguation", async () => {
+  it("for non-positive sentiment, skips heuristics/disambiguation but still surfaces process-4/5 routing", async () => {
     let called = false;
     let routeCalled = false;
     const result = await detectActionSignals({
@@ -115,13 +115,45 @@ describe("action signal detector: end-to-end detection", () => {
       },
       routeBookingProcess: async () => {
         routeCalled = true;
-        return null;
+        return {
+          processId: 5,
+          confidence: 0.92,
+          rationale: "Lead explicitly asked us to use their scheduler link",
+          uncertain: false,
+        };
       },
+    });
+
+    assert.equal(result.hasExternalCalendarSignal, true);
+    assert.equal(result.route?.processId, 5);
+    assert.equal(result.signals.length, 1);
+    assert.equal(called, false);
+    assert.equal(routeCalled, true);
+  });
+
+  it("for non-positive sentiment, does not surface process-1/2/3 routes as action signals", async () => {
+    let called = false;
+    const result = await detectActionSignals({
+      strippedText: "Please send details first",
+      fullText: "Please send details first",
+      sentimentTag: "Not Interested",
+      workspaceBookingLink: null,
+      clientId: "client-1",
+      leadId: "lead-1",
+      disambiguate: async () => {
+        called = true;
+        return { intentional: true, evidence: "intentional" };
+      },
+      routeBookingProcess: async () => ({
+        processId: 2,
+        confidence: 0.88,
+        rationale: "Times/availability flow",
+        uncertain: false,
+      }),
     });
 
     assert.deepEqual(result, EMPTY_ACTION_SIGNAL_RESULT);
     assert.equal(called, false);
-    assert.equal(routeCalled, false);
   });
 
   it("returns both call and external-calendar signals from heuristics", async () => {

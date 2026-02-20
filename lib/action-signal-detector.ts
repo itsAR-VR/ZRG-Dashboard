@@ -509,8 +509,11 @@ export async function detectActionSignals(opts: {
   disambiguate?: SignatureDisambiguationFn;
   routeBookingProcess?: BookingProcessRoutingFn;
 }): Promise<ActionSignalDetectionResult> {
-  // Gate: positive sentiments only
-  if (!isPositiveSentiment(opts.sentimentTag)) {
+  const positiveSentiment = isPositiveSentiment(opts.sentimentTag);
+  const routeEnabled = opts.aiRouteBookingProcessEnabled ?? true;
+
+  // If routing is disabled and sentiment is non-positive, this stage is a no-op.
+  if (!positiveSentiment && !routeEnabled) {
     await recordBookingProcessRouteOutcome({
       clientId: opts.clientId,
       leadId: opts.leadId,
@@ -527,38 +530,43 @@ export async function detectActionSignals(opts: {
 
   const preRouteSignals: ActionSignal[] = [];
   const disambiguate = opts.disambiguate ?? disambiguateSignatureSchedulerLink;
-  const routeEnabled = opts.aiRouteBookingProcessEnabled ?? true;
+  let callSignal: ActionSignal | null = null;
+  let calendarSignal: ActionSignal | null = null;
 
-  // Tier 1: Call signal
-  const callSignal = detectCallSignalHeuristic(opts.strippedText, opts.sentimentTag);
-  if (callSignal) preRouteSignals.push(callSignal);
+  if (positiveSentiment) {
+    // Tier 1: Call signal
+    callSignal = detectCallSignalHeuristic(opts.strippedText, opts.sentimentTag);
+    if (callSignal) preRouteSignals.push(callSignal);
 
-  // Tier 1: External calendar
-  const calendarSignal = detectExternalCalendarHeuristic(opts.strippedText, opts.workspaceBookingLink);
-  if (calendarSignal) preRouteSignals.push(calendarSignal);
+    // Tier 1: External calendar
+    calendarSignal = detectExternalCalendarHeuristic(opts.strippedText, opts.workspaceBookingLink);
+    if (calendarSignal) preRouteSignals.push(calendarSignal);
 
-  // Tier 2: AI disambiguation — only if no calendar signal from Tier 1
-  if (!calendarSignal && shouldRunSignatureLinkDisambiguation(opts.strippedText, opts.fullText)) {
-    const disambiguation = await disambiguate({
-      strippedText: opts.strippedText,
-      fullText: opts.fullText,
-      clientId: opts.clientId,
-      leadId: opts.leadId,
-    });
-
-    if (disambiguation?.intentional) {
-      preRouteSignals.push({
-        type: "book_on_external_calendar",
-        confidence: "high",
-        evidence: `AI disambiguation: ${disambiguation.evidence}`,
+    // Tier 2: AI disambiguation — only if no calendar signal from Tier 1
+    if (!calendarSignal && shouldRunSignatureLinkDisambiguation(opts.strippedText, opts.fullText)) {
+      const disambiguation = await disambiguate({
+        strippedText: opts.strippedText,
+        fullText: opts.fullText,
+        clientId: opts.clientId,
+        leadId: opts.leadId,
       });
+
+      if (disambiguation?.intentional) {
+        preRouteSignals.push({
+          type: "book_on_external_calendar",
+          confidence: "high",
+          evidence: `AI disambiguation: ${disambiguation.evidence}`,
+        });
+      }
     }
   }
 
   const hasCallSignalBeforeRoute = preRouteSignals.some((s) => s.type === "call_requested");
   const hasExternalCalendarSignalBeforeRoute = preRouteSignals.some((s) => s.type === "book_on_external_calendar");
   let route: BookingProcessRoute | null = null;
-  let routeReason: BookingProcessRoutingOutcome["reason"] = "disabled_by_workspace_settings";
+  let routeReason: BookingProcessRoutingOutcome["reason"] = positiveSentiment
+    ? "disabled_by_workspace_settings"
+    : "non_positive_sentiment";
 
   if (routeEnabled) {
     if (opts.routeBookingProcess) {
@@ -597,10 +605,42 @@ export async function detectActionSignals(opts: {
       routeReason = routeOutcome.reason;
     }
 
-    if (!route) {
+    if (positiveSentiment && !route) {
       route = buildDeterministicFallbackRoute(opts.strippedText);
       routeReason = "fallback_deterministic_123";
     }
+  }
+
+  // For non-positive sentiment, only process-4/5 route outcomes should surface
+  // as actionable signals and notifications.
+  if (!positiveSentiment) {
+    const routeDerivedSignal = route ? buildRouteDerivedSignal(route) : null;
+    const signals = routeDerivedSignal ? [routeDerivedSignal] : [];
+    const hasCallSignal = routeDerivedSignal?.type === "call_requested";
+    const hasExternalCalendarSignal = routeDerivedSignal?.type === "book_on_external_calendar";
+
+    await recordBookingProcessRouteOutcome({
+      clientId: opts.clientId,
+      leadId: opts.leadId,
+      sentimentTag: opts.sentimentTag,
+      channel: opts.channel,
+      provider: opts.provider,
+      reason: routeReason,
+      route,
+      hasCallSignal: Boolean(hasCallSignal),
+      hasExternalCalendarSignal: Boolean(hasExternalCalendarSignal),
+    });
+
+    if (!routeDerivedSignal) {
+      return { ...EMPTY_ACTION_SIGNAL_RESULT };
+    }
+
+    return {
+      signals,
+      hasCallSignal: Boolean(hasCallSignal),
+      hasExternalCalendarSignal: Boolean(hasExternalCalendarSignal),
+      route,
+    };
   }
 
   // AI router is the source of truth for process-4/5 routing.

@@ -281,9 +281,9 @@ Also return suggestedSnoozeDays (integer, may be null) for how long we should pa
       required: ["message", "subject", "suggestedSnoozeDays", "rationale"],
     },
     budget: {
-      min: 350,
-      max: 550,
-      retryMax: 1100,
+      min: 1050,
+      max: 1650,
+      retryMax: 3300,
       overheadTokens: 128,
       outputScale: 0.2,
       preferApiCount: true,
@@ -766,32 +766,34 @@ export async function scheduleFollowUpTimingFromInbound(opts: {
       }
 
       const triggerMessageId = `followup_task:${taskId}`;
-      const existingDraft = await prisma.aIDraft.findUnique({
-        where: {
-          triggerMessageId_channel: {
-            triggerMessageId,
-            channel: taskType,
-          },
-        },
-        select: { id: true },
-      });
+      const draftContent =
+        (suggestedMessage || "").trim() ||
+        `Totally understand. What timeframe would be better to reconnect (a specific month/quarter/date works)?`;
 
-      if (!existingDraft) {
-        await prisma.aIDraft
-          .create({
-            data: {
-              leadId: lead.id,
+      await prisma.aIDraft
+        .upsert({
+          where: {
+            triggerMessageId_channel: {
               triggerMessageId,
-              content: suggestedMessage,
               channel: taskType,
-              status: "pending",
             },
-            select: { id: true },
-          })
-          .catch((error) => {
-            if (!isPrismaUniqueConstraintError(error)) throw error;
-          });
-      }
+          },
+          update: {
+            content: draftContent,
+            status: "pending",
+          },
+          create: {
+            leadId: lead.id,
+            triggerMessageId,
+            content: draftContent,
+            channel: taskType,
+            status: "pending",
+          },
+          select: { id: true },
+        })
+        .catch((error) => {
+          if (!isPrismaUniqueConstraintError(error)) throw error;
+        });
 
       return {
         evaluated: true,
