@@ -3897,7 +3897,7 @@ export async function processMessageForAutoBooking(
 
     const createClarificationTask = async (suggestedMessage: string) => {
       const type = await pickTaskType();
-      await prisma.followUpTask.create({
+      const task = await prisma.followUpTask.create({
         data: {
           leadId,
           type,
@@ -3905,7 +3905,28 @@ export async function processMessageForAutoBooking(
           status: "pending",
           suggestedMessage,
         },
+        select: { id: true },
       });
+
+      // Create an inbox-visible draft for the clarification task so this routing
+      // doesn't result in "no draft created" operator confusion.
+      const triggerMessageId = `followup_task:${task.id}`;
+      const content = (suggestedMessage || "").trim() || "Quick question: what timeframe would be best to follow up?";
+      await prisma.aIDraft
+        .create({
+          data: {
+            leadId,
+            triggerMessageId,
+            content,
+            channel: type,
+            status: "pending",
+          },
+          select: { id: true },
+        })
+        .catch((error) => {
+          if (!isPrismaUniqueConstraintError(error)) throw error;
+        });
+
       markTaskCreated({
         kind: "clarification",
         suggestedMessage,
@@ -4335,7 +4356,7 @@ export async function processMessageForAutoBooking(
     if (proposed.needsTimezoneClarification) {
       const type = await pickTaskType();
       const timezoneClarification = "What timezone are you in for that time?";
-      await prisma.followUpTask.create({
+      const task = await prisma.followUpTask.create({
         data: {
           leadId,
           type,
@@ -4343,7 +4364,25 @@ export async function processMessageForAutoBooking(
           status: "pending",
           suggestedMessage: timezoneClarification,
         },
+        select: { id: true },
       });
+
+      const triggerMessageId = `followup_task:${task.id}`;
+      await prisma.aIDraft
+        .create({
+          data: {
+            leadId,
+            triggerMessageId,
+            content: timezoneClarification,
+            channel: type,
+            status: "pending",
+          },
+          select: { id: true },
+        })
+        .catch((error) => {
+          if (!isPrismaUniqueConstraintError(error)) throw error;
+        });
+
       markTaskCreated({
         kind: "timezone_clarification",
         suggestedMessage: timezoneClarification,
@@ -4760,7 +4799,7 @@ export async function processMessageForAutoBooking(
               ? `I don’t have that exact time available — does ${offered[0]!.label} work instead?`
               : `Does ${offered[0]!.label} work for you?`;
 
-      await prisma.followUpTask.create({
+      const task = await prisma.followUpTask.create({
         data: {
           leadId,
           type,
@@ -4768,7 +4807,23 @@ export async function processMessageForAutoBooking(
           status: "pending",
           suggestedMessage: suggestion,
         },
+        select: { id: true },
       });
+      const triggerMessageId = `followup_task:${task.id}`;
+      await prisma.aIDraft
+        .create({
+          data: {
+            leadId,
+            triggerMessageId,
+            content: suggestion,
+            channel: type,
+            status: "pending",
+          },
+          select: { id: true },
+        })
+        .catch((error) => {
+          if (!isPrismaUniqueConstraintError(error)) throw error;
+        });
       markTaskCreated({
         kind: "alternatives",
         suggestedMessage: suggestion,
@@ -4776,7 +4831,7 @@ export async function processMessageForAutoBooking(
       });
     } else {
       const noAvailabilityMessage = "The lead proposed a time, but no availability match was found. Please propose alternative times.";
-      await prisma.followUpTask.create({
+      const task = await prisma.followUpTask.create({
         data: {
           leadId,
           type,
@@ -4784,7 +4839,23 @@ export async function processMessageForAutoBooking(
           status: "pending",
           suggestedMessage: noAvailabilityMessage,
         },
+        select: { id: true },
       });
+      const triggerMessageId = `followup_task:${task.id}`;
+      await prisma.aIDraft
+        .create({
+          data: {
+            leadId,
+            triggerMessageId,
+            content: noAvailabilityMessage,
+            channel: type,
+            status: "pending",
+          },
+          select: { id: true },
+        })
+        .catch((error) => {
+          if (!isPrismaUniqueConstraintError(error)) throw error;
+        });
       markTaskCreated({
         kind: "alternatives",
         suggestedMessage: noAvailabilityMessage,

@@ -17,7 +17,11 @@ import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
-import { scheduleFollowUpTimingFromInbound } from "@/lib/followup-timing";
+import {
+  cancelPendingTimingClarifyAttempt2OnInbound,
+  runFollowUpTimingReengageGate,
+  scheduleFollowUpTimingFromInbound,
+} from "@/lib/followup-timing";
 import { detectActionSignals, EMPTY_ACTION_SIGNAL_RESULT, hasActionSignal, notifyActionSignals } from "@/lib/action-signal-detector";
 
 export async function runLinkedInInboundPostProcessJob(params: {
@@ -175,14 +179,25 @@ export async function runLinkedInInboundPostProcessJob(params: {
     select: { sentimentTag: true },
   }))?.sentimentTag ?? null;
 
+  await cancelPendingTimingClarifyAttempt2OnInbound({ leadId: lead.id }).catch(() => undefined);
+
   let timingFollowUpScheduled = false;
-  if (finalSentiment === "Follow Up") {
+  const shouldRunTimingScheduler =
+    finalSentiment === "Follow Up" ||
+    (finalSentiment === "Not Interested" &&
+      (await runFollowUpTimingReengageGate({
+        clientId: client.id,
+        leadId: lead.id,
+        messageText: messageBody,
+      }).then((gate) => gate.decision === "deferral")));
+
+  if (shouldRunTimingScheduler) {
     const timingResult = await scheduleFollowUpTimingFromInbound({
       clientId: client.id,
       leadId: lead.id,
       messageId: message.id,
       messageText: messageBody,
-      sentimentTag: finalSentiment,
+      sentimentTag: "Follow Up",
       inboundChannel: "linkedin",
     });
     timingFollowUpScheduled = timingResult.scheduled;
@@ -344,7 +359,7 @@ export async function runLinkedInInboundPostProcessJob(params: {
   // 7. AI Draft Generation
   const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated || timingFollowUpScheduled);
   if (schedulingHandled) {
-    console.log("[LinkedIn Post-Process] Skipping draft generation; scheduling follow-up task already created by auto-booking");
+    console.log("[LinkedIn Post-Process] Skipping draft generation; scheduling follow-up task already created");
   }
   const shouldDraft = !autoBook.booked && !schedulingHandled && newSentiment && shouldGenerateDraft(newSentiment);
 

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { approveAndSendDraftSystem } from "@/actions/message-actions";
+import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
 import {
   getNextAutoSendWindow,
   isWithinAutoSendSchedule,
@@ -18,11 +19,31 @@ import { ensureLeadTimezone } from "@/lib/timezone-inference";
 
 const FOLLOWUP_TASK_AUTO_CAMPAIGN = "Scheduled follow-up (auto)";
 const FOLLOWUP_TASK_MANUAL_CAMPAIGN = "Scheduled follow-up (manual)";
+const FOLLOWUP_TASK_TIMING_CLARIFY_AUTO_CAMPAIGN = "Follow-up timing clarification (auto)";
+const FOLLOWUP_TASK_TIMING_CLARIFY_MANUAL_CAMPAIGN = "Follow-up timing clarification (manual)";
+const FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX = "Follow-up timing clarification";
+const TIMING_CLARIFY_ATTEMPT_RE = /#\s*(\d+)\s*$/;
 const DEFAULT_FOLLOWUP_SEND_HOUR_LOCAL = 9;
 const DEFAULT_PROCESS_LIMIT = 25;
 
 type SupportedTaskType = "email" | "sms" | "linkedin" | "call";
 type InboundTaskChannel = "email" | "sms" | "linkedin" | "unknown";
+
+function parseTimingClarifyAttempt(campaignName: string | null | undefined): 1 | 2 | null {
+  const name = (campaignName || "").trim();
+  if (!name) return null;
+  if (!name.startsWith(FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX)) return null;
+
+  const match = name.match(TIMING_CLARIFY_ATTEMPT_RE);
+  const parsed = match ? Number.parseInt(match[1] || "", 10) : 1;
+  if (parsed === 1 || parsed === 2) return parsed;
+  return null;
+}
+
+function buildTimingClarifyCampaignName(opts: { auto: boolean; attempt: 1 | 2 }): string {
+  const base = opts.auto ? FOLLOWUP_TASK_TIMING_CLARIFY_AUTO_CAMPAIGN : FOLLOWUP_TASK_TIMING_CLARIFY_MANUAL_CAMPAIGN;
+  return `${base} #${opts.attempt}`;
+}
 
 function parseBooleanEnv(value: string | undefined | null): boolean {
   if (!value) return false;
@@ -93,6 +114,231 @@ function pickScheduledFollowUpTaskType(opts: {
 export function buildScheduledFollowUpMessage(firstName: string | null | undefined): string {
   const safeFirstName = (firstName || "").trim() || "there";
   return `Hey ${safeFirstName} - circling back like you suggested. Is now a better time to revisit this?`;
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
+type RawFollowUpTimingClarification = {
+  message: string;
+  subject: string | null;
+  suggestedSnoozeDays: number | null;
+  rationale: string | null;
+};
+
+type RawFollowUpTimingReengageGate = {
+  decision: "deferral" | "hard_no" | "unclear";
+  rationale: string | null;
+};
+
+export type FollowUpTimingReengageGateDecision = RawFollowUpTimingReengageGate["decision"];
+
+export async function runFollowUpTimingReengageGate(opts: {
+  clientId: string;
+  leadId: string;
+  messageText: string;
+  now?: Date;
+}): Promise<{ decision: FollowUpTimingReengageGateDecision; rationale: string | null }> {
+  const input = JSON.stringify(
+    {
+      nowIso: (opts.now ?? new Date()).toISOString(),
+      messageText: opts.messageText || "",
+    },
+    null,
+    2
+  );
+
+  const result = await runStructuredJsonPrompt<RawFollowUpTimingReengageGate>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    featureId: "followup.timing_reengage_gate",
+    promptKey: "followup.timing_reengage_gate.v1",
+    model: "gpt-5-mini",
+    reasoningEffort: "low",
+    systemFallback: `You are classifying an inbound reply that was labeled "Not Interested".
+
+Decide whether this is actually a SOFT deferral (not now / maybe later / circle back later) or a HARD no (do not contact / no interest).
+
+Return JSON only:
+{
+  "decision": "deferral" | "hard_no" | "unclear",
+  "rationale": "short, operator-readable"
+}
+
+Decision rules:
+- deferral: they are not available now but leave the door open to future contact (even vague).
+- hard_no: clear rejection, no future contact desired ("no thanks", "not interested", "stop", "unsubscribe", hostile).
+- unclear: ambiguous, auto-reply, or cannot determine. When unclear, fail closed (do not schedule any clarify).`,
+    input,
+    schemaName: "followup_timing_reengage_gate",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        decision: { type: "string", enum: ["deferral", "hard_no", "unclear"] },
+        rationale: { type: ["string", "null"] },
+      },
+      required: ["decision", "rationale"],
+    },
+    budget: {
+      min: 200,
+      max: 320,
+      retryMax: 800,
+      overheadTokens: 128,
+      outputScale: 0.2,
+      preferApiCount: true,
+    },
+    validate: (value) => {
+      const anyValue = value as any;
+      if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not_an_object" };
+
+      const decisionRaw = typeof anyValue.decision === "string" ? anyValue.decision.trim() : "";
+      if (decisionRaw !== "deferral" && decisionRaw !== "hard_no" && decisionRaw !== "unclear") {
+        return { success: false, error: "invalid_decision" };
+      }
+
+      const rationaleRaw = anyValue.rationale;
+      const rationale =
+        typeof rationaleRaw === "string" ? (rationaleRaw.trim() || null) : rationaleRaw === null ? null : null;
+
+      return {
+        success: true,
+        data: {
+          decision: decisionRaw,
+          rationale,
+        },
+      };
+    },
+  }).catch(() => null);
+
+  if (!result || !result.success) {
+    return { decision: "unclear", rationale: null };
+  }
+
+  return { decision: result.data.decision, rationale: result.data.rationale };
+}
+
+async function generateFollowUpTimingClarification(opts: {
+  clientId: string;
+  leadId: string;
+  channel: "email" | "sms" | "linkedin";
+  messageText: string;
+  leadFirstName: string | null;
+  normalizedText: string | null;
+  extractionRationale: string | null;
+  nowIso: string;
+}): Promise<{ message: string; subject: string | null; snoozeDays: number } | null> {
+  const input = JSON.stringify(
+    {
+      nowIso: opts.nowIso,
+      channel: opts.channel,
+      leadFirstName: opts.leadFirstName,
+      messageText: opts.messageText,
+      normalizedText: opts.normalizedText,
+      extractionRationale: opts.extractionRationale,
+    },
+    null,
+    2
+  );
+
+  const result = await runStructuredJsonPrompt<RawFollowUpTimingClarification>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    featureId: "followup.timing_clarify",
+    promptKey: "followup.timing_clarify.v1",
+    model: "gpt-5-mini",
+    reasoningEffort: "low",
+    systemFallback: `You are replying to a lead who said "maybe later" / "not right now" but did NOT give a concrete follow-up date.
+
+Goal: ask a single, polite clarification question that gets a concrete timeframe (month/quarter/date), without being pushy.
+
+Rules:
+- Do NOT choose a specific date yourself.
+- If the lead mentioned an event (e.g. "this gig"), ask when that wraps or what month is better.
+- If the lead gave a range (e.g. "2-3 years"), ask for a specific month/year in that range.
+- Keep it short (1-2 sentences). No links. No emojis. No mention of AI.
+- For SMS: keep under 320 characters.
+- Return JSON only.
+
+Also return suggestedSnoozeDays (integer, may be null) for how long we should pause follow-ups while waiting for a reply (use your best judgement based on the message; longer for "years", shorter for "weeks").`,
+    input,
+    schemaName: "followup_timing_clarification",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        message: { type: "string" },
+        subject: { type: ["string", "null"] },
+        suggestedSnoozeDays: { type: ["number", "null"] },
+        rationale: { type: ["string", "null"] },
+      },
+      required: ["message", "subject", "suggestedSnoozeDays", "rationale"],
+    },
+    budget: {
+      min: 350,
+      max: 550,
+      retryMax: 1100,
+      overheadTokens: 128,
+      outputScale: 0.2,
+      preferApiCount: true,
+    },
+    validate: (value) => {
+      const anyValue = value as any;
+      if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not_an_object" };
+      if (typeof anyValue.message !== "string") return { success: false, error: "message_must_be_string" };
+      if (!(typeof anyValue.subject === "string" || anyValue.subject === null)) {
+        return { success: false, error: "subject_must_be_string_or_null" };
+      }
+      if (!(typeof anyValue.suggestedSnoozeDays === "number" || anyValue.suggestedSnoozeDays === null)) {
+        return { success: false, error: "suggestedSnoozeDays_must_be_number_or_null" };
+      }
+      if (!(typeof anyValue.rationale === "string" || anyValue.rationale === null)) {
+        return { success: false, error: "rationale_must_be_string_or_null" };
+      }
+
+      const message = String(anyValue.message || "").trim();
+      if (!message) return { success: false, error: "message_empty" };
+      if (opts.channel === "sms" && message.length > 320) {
+        return { success: false, error: "sms_message_too_long" };
+      }
+
+      const snoozeDaysRaw = anyValue.suggestedSnoozeDays;
+      const snoozeDays =
+        typeof snoozeDaysRaw === "number" && Number.isFinite(snoozeDaysRaw)
+          ? clampInt(snoozeDaysRaw, 1, 3650)
+          : 30;
+
+      return {
+        success: true,
+        data: {
+          message,
+          subject: typeof anyValue.subject === "string" ? anyValue.subject.trim() || null : null,
+          suggestedSnoozeDays: snoozeDays,
+          rationale: typeof anyValue.rationale === "string" ? anyValue.rationale.trim() || null : null,
+        },
+      };
+    },
+  });
+
+  if (!result.success) return null;
+
+  const message = (result.data.message || "").trim();
+  const snoozeDays =
+    typeof result.data.suggestedSnoozeDays === "number" && Number.isFinite(result.data.suggestedSnoozeDays)
+      ? clampInt(result.data.suggestedSnoozeDays, 1, 3650)
+      : 30;
+
+  return {
+    message,
+    subject: (result.data.subject || "").trim() || null,
+    snoozeDays,
+  };
 }
 
 function parseYmd(value: string | null): { year: number; month: number; day: number } | null {
@@ -180,8 +426,60 @@ export function isFollowUpTaskAutoSendEnabled(): boolean {
   return parseBooleanEnv(process.env.FOLLOWUP_TASK_AUTO_SEND_ENABLED);
 }
 
+export function isFollowUpTimingClarifyAutoSendEnabled(): boolean {
+  return parseBooleanEnv(process.env.FOLLOWUP_TIMING_CLARIFY_AUTO_SEND_ENABLED);
+}
+
 function buildLeadInboxUrl(leadId: string): string {
   return `${getPublicAppUrl()}/?view=inbox&leadId=${encodeURIComponent(leadId)}`;
+}
+
+export async function cancelPendingTimingClarifyAttempt2OnInbound(opts: {
+  leadId: string;
+}): Promise<{ cancelled: boolean; cancelledTaskIds: string[] }> {
+  const tasks = await prisma.followUpTask
+    .findMany({
+      where: {
+        leadId: opts.leadId,
+        status: "pending",
+        campaignName: {
+          startsWith: FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX,
+          endsWith: "#2",
+        },
+      },
+      select: { id: true, type: true },
+    })
+    .catch(() => []);
+
+  if (tasks.length === 0) {
+    return { cancelled: false, cancelledTaskIds: [] };
+  }
+
+  await prisma.followUpTask
+    .updateMany({
+      where: {
+        id: { in: tasks.map((t) => t.id) },
+        status: "pending",
+      },
+      data: { status: "cancelled" },
+    })
+    .catch(() => undefined);
+
+  await prisma.aIDraft
+    .updateMany({
+      where: {
+        leadId: opts.leadId,
+        status: "pending",
+        OR: tasks.map((t) => ({
+          triggerMessageId: `followup_task:${t.id}`,
+          channel: t.type,
+        })),
+      },
+      data: { status: "rejected" },
+    })
+    .catch(() => undefined);
+
+  return { cancelled: true, cancelledTaskIds: tasks.map((t) => t.id) };
 }
 
 async function notifyTimingExtractionMissForOps(opts: {
@@ -367,25 +665,166 @@ export async function scheduleFollowUpTimingFromInbound(opts: {
 
   const extractionDate = extracted.data.localDate;
   if (!extracted.success || !extracted.data.hasConcreteDate || !extractionDate) {
-    const alertSent = await notifyTimingExtractionMissForOps({
-      clientId: opts.clientId,
-      leadId: lead.id,
-      messageId: opts.messageId,
+    const reason = extracted.error?.message || "no_concrete_date_detected";
+    const taskType = pickScheduledFollowUpTaskType({
       inboundChannel,
-      reason: extracted.error?.message || "no_concrete_date_detected",
-      messageSnippet: messageText,
+      lead,
     });
-    return {
-      evaluated: true,
-      extractionSuccess: extracted.success,
-      scheduled: false,
-      taskId: null,
-      taskType: null,
-      dueDateUtc: null,
-      campaignName: null,
-      reason: extracted.error?.message || "no_concrete_date_detected",
-      alertSent,
-    };
+
+    if (taskType === "call") {
+      const alertSent = await notifyTimingExtractionMissForOps({
+        clientId: opts.clientId,
+        leadId: lead.id,
+        messageId: opts.messageId,
+        inboundChannel,
+        reason: `cannot_clarify_by_call:${reason}`,
+        messageSnippet: messageText,
+      });
+      return {
+        evaluated: true,
+        extractionSuccess: extracted.success,
+        scheduled: false,
+        taskId: null,
+        taskType: null,
+        dueDateUtc: null,
+        campaignName: null,
+        reason: `cannot_clarify_by_call:${reason}`,
+        alertSent,
+      };
+    }
+
+    const existingClarifyTask = await prisma.followUpTask.findFirst({
+      where: {
+        leadId: lead.id,
+        status: "pending",
+        OR: [
+          {
+            campaignName: {
+              startsWith: FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX,
+              endsWith: "#1",
+            },
+          },
+          { campaignName: FOLLOWUP_TASK_TIMING_CLARIFY_AUTO_CAMPAIGN },
+          { campaignName: FOLLOWUP_TASK_TIMING_CLARIFY_MANUAL_CAMPAIGN },
+        ],
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+
+    const nowIso = new Date().toISOString();
+    const clarification =
+      (await generateFollowUpTimingClarification({
+        clientId: opts.clientId,
+        leadId: lead.id,
+        channel: taskType,
+        messageText,
+        leadFirstName: lead.firstName ?? null,
+        normalizedText: extracted.data.normalizedText,
+        extractionRationale: extracted.data.rationale,
+        nowIso,
+      }).catch(() => null)) ?? null;
+
+    const suggestedMessage =
+      (clarification?.message || "").trim() ||
+      `Totally understand. What timeframe would be better to reconnect (a specific month/quarter/date works)?`;
+
+    const clarifyAutoEnabled =
+      isFollowUpTaskAutoSendEnabled() &&
+      isFollowUpTimingClarifyAutoSendEnabled() &&
+      (taskType === "email" || taskType === "sms" || taskType === "linkedin");
+    const campaignName = buildTimingClarifyCampaignName({ auto: clarifyAutoEnabled, attempt: 1 });
+
+    try {
+      const baseTaskUpdate = {
+        type: taskType,
+        dueDate: new Date(),
+        status: "pending" as const,
+        campaignName,
+        suggestedMessage,
+        subject: taskType === "email" ? (clarification?.subject || "Quick question") : null,
+      };
+
+      let taskId: string | null = null;
+      if (existingClarifyTask) {
+        const updated = await prisma.followUpTask.updateMany({
+          where: { id: existingClarifyTask.id },
+          data: baseTaskUpdate,
+        });
+        if (updated.count > 0) taskId = existingClarifyTask.id;
+      }
+
+      if (!taskId) {
+        const created = await prisma.followUpTask.create({
+          data: {
+            leadId: lead.id,
+            ...baseTaskUpdate,
+          },
+          select: { id: true },
+        });
+        taskId = created.id;
+      }
+
+      const triggerMessageId = `followup_task:${taskId}`;
+      const existingDraft = await prisma.aIDraft.findUnique({
+        where: {
+          triggerMessageId_channel: {
+            triggerMessageId,
+            channel: taskType,
+          },
+        },
+        select: { id: true },
+      });
+
+      if (!existingDraft) {
+        await prisma.aIDraft
+          .create({
+            data: {
+              leadId: lead.id,
+              triggerMessageId,
+              content: suggestedMessage,
+              channel: taskType,
+              status: "pending",
+            },
+            select: { id: true },
+          })
+          .catch((error) => {
+            if (!isPrismaUniqueConstraintError(error)) throw error;
+          });
+      }
+
+      return {
+        evaluated: true,
+        extractionSuccess: extracted.success,
+        scheduled: true,
+        taskId,
+        taskType,
+        dueDateUtc: new Date(),
+        campaignName,
+        reason: `clarify_missing_date:${reason}`,
+        alertSent: false,
+      };
+    } catch {
+      const alertSent = await notifyTimingExtractionMissForOps({
+        clientId: opts.clientId,
+        leadId: lead.id,
+        messageId: opts.messageId,
+        inboundChannel,
+        reason,
+        messageSnippet: messageText,
+      });
+      return {
+        evaluated: true,
+        extractionSuccess: extracted.success,
+        scheduled: false,
+        taskId: null,
+        taskType: null,
+        dueDateUtc: null,
+        campaignName: null,
+        reason,
+        alertSent,
+      };
+    }
   }
 
   const dateParts = parseYmd(extractionDate);
@@ -535,6 +974,44 @@ export async function scheduleFollowUpTimingFromInbound(opts: {
   });
   await pauseFollowUpsUntil(lead.id, dueDateUtc);
 
+  // If we previously asked for a concrete follow-up timeframe, cancel that pending task.
+  const pendingClarifyTasks = await prisma.followUpTask
+    .findMany({
+      where: {
+        leadId: lead.id,
+        status: "pending",
+        campaignName: { startsWith: FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX },
+      },
+      select: { id: true, type: true },
+    })
+    .catch(() => []);
+
+  if (pendingClarifyTasks.length > 0) {
+    await prisma.followUpTask
+      .updateMany({
+        where: {
+          id: { in: pendingClarifyTasks.map((t) => t.id) },
+          status: "pending",
+        },
+        data: { status: "cancelled" },
+      })
+      .catch(() => undefined);
+
+    await prisma.aIDraft
+      .updateMany({
+        where: {
+          leadId: lead.id,
+          status: "pending",
+          OR: pendingClarifyTasks.map((t) => ({
+            triggerMessageId: `followup_task:${t.id}`,
+            channel: t.type,
+          })),
+        },
+        data: { status: "rejected" },
+      })
+      .catch(() => undefined);
+  }
+
   return {
     evaluated: true,
     extractionSuccess: true,
@@ -548,11 +1025,20 @@ export async function scheduleFollowUpTimingFromInbound(opts: {
   };
 }
 
-async function markScheduledTaskManual(taskId: string): Promise<void> {
+function deriveManualCampaignName(currentCampaignName: string | null | undefined): string {
+  const campaign = (currentCampaignName || "").trim();
+  if (campaign.startsWith(FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX)) {
+    const attempt = parseTimingClarifyAttempt(campaign) ?? 1;
+    return buildTimingClarifyCampaignName({ auto: false, attempt });
+  }
+  return FOLLOWUP_TASK_MANUAL_CAMPAIGN;
+}
+
+async function markScheduledTaskManual(taskId: string, currentCampaignName: string | null | undefined): Promise<void> {
   await prisma.followUpTask.update({
     where: { id: taskId },
     data: {
-      campaignName: FOLLOWUP_TASK_MANUAL_CAMPAIGN,
+      campaignName: deriveManualCampaignName(currentCampaignName),
       status: "pending",
     },
   });
@@ -588,11 +1074,21 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
     };
   }
 
+  const clarifyEnabled = isFollowUpTimingClarifyAutoSendEnabled();
+  const timingClarifyCampaignWhere = clarifyEnabled
+    ? {
+        OR: [
+          { campaignName: FOLLOWUP_TASK_AUTO_CAMPAIGN },
+          { campaignName: { startsWith: FOLLOWUP_TASK_TIMING_CLARIFY_AUTO_CAMPAIGN } },
+        ],
+      }
+    : { campaignName: FOLLOWUP_TASK_AUTO_CAMPAIGN };
+
   const limit = opts?.limit ?? parsePositiveInt(process.env.FOLLOWUP_TASK_AUTO_SEND_LIMIT, DEFAULT_PROCESS_LIMIT);
   const tasks = await prisma.followUpTask.findMany({
     where: {
       status: "pending",
-      campaignName: FOLLOWUP_TASK_AUTO_CAMPAIGN,
+      ...timingClarifyCampaignWhere,
       dueDate: { lte: now },
     },
     orderBy: { dueDate: "asc" },
@@ -646,8 +1142,8 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
   for (const task of tasks) {
     result.processed += 1;
     try {
-      if (task.type !== "email" && task.type !== "sms") {
-        await markScheduledTaskManual(task.id);
+      if (task.type !== "email" && task.type !== "sms" && task.type !== "linkedin") {
+        await markScheduledTaskManual(task.id, task.campaignName);
         result.convertedToManual += 1;
         continue;
       }
@@ -655,14 +1151,14 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
       const leadStatus = (task.lead.status || "").trim().toLowerCase();
       const leadSentiment = (task.lead.sentimentTag || "").trim().toLowerCase();
       if (leadStatus === "blacklisted" || leadSentiment === "blacklist") {
-        await markScheduledTaskManual(task.id);
+        await markScheduledTaskManual(task.id, task.campaignName);
         result.convertedToManual += 1;
         continue;
       }
 
       const pausedUntil = task.lead.client.settings?.followUpsPausedUntil ?? null;
       if (pausedUntil && pausedUntil.getTime() > now.getTime()) {
-        await markScheduledTaskManual(task.id);
+        await markScheduledTaskManual(task.id, task.campaignName);
         result.convertedToManual += 1;
         continue;
       }
@@ -675,7 +1171,7 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
         select: { id: true },
       });
       if (hasRecentConversationActivity) {
-        await markScheduledTaskManual(task.id);
+        await markScheduledTaskManual(task.id, task.campaignName);
         result.convertedToManual += 1;
         continue;
       }
@@ -722,7 +1218,7 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
       }
 
       if (draft?.status === "rejected") {
-        await markScheduledTaskManual(task.id);
+        await markScheduledTaskManual(task.id, task.campaignName);
         result.convertedToManual += 1;
         continue;
       }
@@ -746,7 +1242,7 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
 
       const sendResult = await approveAndSendDraftSystem(draft.id, { sentBy: "ai" });
       if (!sendResult.success) {
-        await markScheduledTaskManual(task.id);
+        await markScheduledTaskManual(task.id, task.campaignName);
         result.convertedToManual += 1;
         result.errors.push(`task:${task.id}:${sendResult.error || "send_failed"}`);
         continue;
@@ -761,7 +1257,7 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
       result.sent += 1;
     } catch (error) {
       result.errors.push(`task:${task.id}:${error instanceof Error ? error.message : String(error)}`);
-      await markScheduledTaskManual(task.id).catch(() => undefined);
+      await markScheduledTaskManual(task.id, task.campaignName).catch(() => undefined);
       result.convertedToManual += 1;
     }
   }

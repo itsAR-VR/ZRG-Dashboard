@@ -13,11 +13,13 @@ import { ensureGhlContactIdForLead, resolveGhlContactIdForLead } from "@/lib/ghl
 import { markInboxCountsDirtyByLeadId } from "@/lib/inbox-counts-dirty";
 import { autoStartNoResponseSequenceOnOutbound } from "@/lib/followup-automation";
 import { bumpLeadMessageRollup, recomputeLeadMessageRollups } from "@/lib/lead-message-rollups";
-import { sendSmsSystem } from "@/lib/system-sender";
+import { sendLinkedInMessageSystem, sendSmsSystem } from "@/lib/system-sender";
 import { syncEmailConversationHistorySystem, syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { getAccessibleClientIdsForUser, requireAuthUser, requireClientAdminAccess } from "@/lib/workspace-access";
 import { withAiTelemetrySourceIfUnset } from "@/lib/ai/telemetry-context";
 import { recordAiRouteSkip } from "@/lib/ai/route-skip-observability";
+import { runStructuredJsonPrompt } from "@/lib/ai/prompt-runner";
+import { computeStepOffsetMs } from "@/lib/followup-schedule";
 import {
   sendLinkedInMessageWithWaterfall,
   checkLinkedInConnection,
@@ -42,6 +44,114 @@ const DRAFT_VERIFICATION_DISABLED_NOTICE =
   `Draft Verification (Step 3) is off in ${AI_ROUTE_SETTINGS_PATH}.`;
 const MEETING_OVERSEER_DISABLED_NOTICE =
   `Meeting Overseer is off in ${AI_ROUTE_SETTINGS_PATH}.`;
+
+function parseBooleanEnv(value: string | undefined | null): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+type RawFollowUpTimingClarification = {
+  message: string;
+  subject: string | null;
+  suggestedSnoozeDays: number | null;
+  rationale: string | null;
+};
+
+async function generateTimingClarifyNudge(opts: {
+  clientId: string;
+  leadId: string;
+  channel: "email" | "sms" | "linkedin";
+  leadFirstName: string | null;
+  messageText: string;
+}): Promise<{ message: string; subject: string | null } | null> {
+  const input = JSON.stringify(
+    {
+      nowIso: new Date().toISOString(),
+      channel: opts.channel,
+      leadFirstName: opts.leadFirstName,
+      messageText: opts.messageText,
+      normalizedText: null,
+      extractionRationale: "timing_clarify_attempt_2",
+    },
+    null,
+    2
+  );
+
+  const result = await runStructuredJsonPrompt<RawFollowUpTimingClarification>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    featureId: "followup.timing_clarify",
+    promptKey: "followup.timing_clarify.v1",
+    model: "gpt-5-mini",
+    reasoningEffort: "low",
+    systemFallback: `You are replying to a lead who said "maybe later" / "not right now" but did NOT give a concrete follow-up date.
+
+Goal: ask a single, polite clarification question that gets a concrete timeframe (month/quarter/date), without being pushy.
+
+Rules:
+- Do NOT choose a specific date yourself.
+- If the lead mentioned an event (e.g. "this gig"), ask when that wraps or what month is better.
+- If the lead gave a range (e.g. "2-3 years"), ask for a specific month/year in that range.
+- Keep it short (1-2 sentences). No links. No emojis. No mention of AI.
+- For SMS: keep under 320 characters.
+- Return JSON only.
+
+Also return suggestedSnoozeDays (integer, may be null).`,
+    input,
+    schemaName: "followup_timing_clarification",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        message: { type: "string" },
+        subject: { type: ["string", "null"] },
+        suggestedSnoozeDays: { type: ["number", "null"] },
+        rationale: { type: ["string", "null"] },
+      },
+      required: ["message", "subject", "suggestedSnoozeDays", "rationale"],
+    },
+    budget: {
+      min: 350,
+      max: 550,
+      retryMax: 1100,
+      overheadTokens: 128,
+      outputScale: 0.2,
+      preferApiCount: true,
+    },
+    validate: (value) => {
+      const anyValue = value as any;
+      if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not_an_object" };
+      if (typeof anyValue.message !== "string") return { success: false, error: "message_must_be_string" };
+      if (!(typeof anyValue.subject === "string" || anyValue.subject === null)) {
+        return { success: false, error: "subject_must_be_string_or_null" };
+      }
+      const message = String(anyValue.message || "").trim();
+      if (!message) return { success: false, error: "message_empty" };
+      if (opts.channel === "sms" && message.length > 320) {
+        return { success: false, error: "sms_message_too_long" };
+      }
+      return {
+        success: true,
+        data: {
+          message,
+          subject: typeof anyValue.subject === "string" ? anyValue.subject.trim() || null : null,
+          suggestedSnoozeDays:
+            typeof anyValue.suggestedSnoozeDays === "number" ? anyValue.suggestedSnoozeDays : null,
+          rationale: typeof anyValue.rationale === "string" ? anyValue.rationale : null,
+        },
+      };
+    },
+  }).catch(() => null);
+
+  if (!result || !result.success) return null;
+  return {
+    message: result.data.message,
+    subject: result.data.subject,
+  };
+}
 
 function getDisabledRouteNotices(settings?: {
   draftGenerationStep2Enabled?: boolean | null;
@@ -1222,6 +1332,7 @@ export async function approveAndSendDraftSystem(
       select: {
         id: true,
         leadId: true,
+        triggerMessageId: true,
         content: true,
         channel: true,
         status: true,
@@ -1236,6 +1347,214 @@ export async function approveAndSendDraftSystem(
       return { success: false, error: "Draft is not pending" };
     }
 
+    const followUpTaskId = (() => {
+      const trigger = (draft.triggerMessageId || "").trim();
+      if (!trigger.startsWith("followup_task:")) return null;
+      const id = trigger.slice("followup_task:".length).trim();
+      return id || null;
+    })();
+
+    const maybeHandleTimingClarifyFollowUpAutomation = async () => {
+      if (!followUpTaskId) return;
+
+      const task = await prisma.followUpTask.findUnique({
+        where: { id: followUpTaskId },
+        select: {
+          id: true,
+          leadId: true,
+          type: true,
+          campaignName: true,
+        },
+      });
+      if (!task) return;
+
+      const campaign = (task.campaignName || "").trim();
+      if (!campaign.startsWith("Follow-up timing clarification")) return;
+
+      const attempt = (() => {
+        const match = campaign.match(/#\s*(\d+)\s*$/);
+        const parsed = match ? Number.parseInt(match[1] || "", 10) : 1;
+        return parsed === 1 || parsed === 2 ? parsed : null;
+      })();
+      if (!attempt) return;
+
+      const lead = await prisma.lead.findUnique({
+        where: { id: task.leadId },
+        select: {
+          id: true,
+          clientId: true,
+          firstName: true,
+          autoFollowUpEnabled: true,
+        },
+      });
+      if (!lead) return;
+
+      const canAutoSendClarify =
+        parseBooleanEnv(process.env.FOLLOWUP_TASK_AUTO_SEND_ENABLED) &&
+        parseBooleanEnv(process.env.FOLLOWUP_TIMING_CLARIFY_AUTO_SEND_ENABLED) &&
+        (task.type === "email" || task.type === "sms" || task.type === "linkedin");
+
+      if (attempt === 1) {
+        const existingAttempt2 = await prisma.followUpTask.findFirst({
+          where: {
+            leadId: lead.id,
+            status: "pending",
+            campaignName: { startsWith: "Follow-up timing clarification", endsWith: "#2" },
+          },
+          select: { id: true },
+        });
+        if (existingAttempt2) return;
+
+        const safeFirstName = (lead.firstName || "").trim();
+        const deterministicAttempt2Message = (() => {
+          const prefix = safeFirstName ? `Hey ${safeFirstName} - ` : "";
+          return `${prefix}quick follow-up: what month or quarter would be best to reconnect?`;
+        })();
+        const aiNudge =
+          task.type === "email" || task.type === "linkedin"
+            ? await generateTimingClarifyNudge({
+                clientId: lead.clientId,
+                leadId: lead.id,
+                channel: task.type,
+                leadFirstName: lead.firstName,
+                messageText: finalContent,
+              })
+            : null;
+        const attempt2Message = (aiNudge?.message || deterministicAttempt2Message).trim();
+        const attempt2Subject = task.type === "email" ? aiNudge?.subject || "Quick question" : null;
+
+        const dueDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        const campaignName = `${canAutoSendClarify ? "Follow-up timing clarification (auto)" : "Follow-up timing clarification (manual)"} #2`;
+
+        const created = await prisma.followUpTask.create({
+          data: {
+            leadId: lead.id,
+            type: task.type,
+            dueDate,
+            status: "pending",
+            campaignName,
+            suggestedMessage: attempt2Message,
+            subject: attempt2Subject,
+          },
+          select: { id: true },
+        });
+
+        await prisma.aIDraft
+          .create({
+            data: {
+              leadId: lead.id,
+              triggerMessageId: `followup_task:${created.id}`,
+              content: attempt2Message,
+              channel: task.type as any,
+              status: "pending",
+            },
+            select: { id: true },
+          })
+          .catch(() => undefined);
+
+        return;
+      }
+
+      if (attempt === 2) {
+        const REENGAGEMENT_SEQUENCE_NAME = "Re-engagement Follow-up";
+        const ENROLL_DELAY_DAYS = 7;
+        const startedAt = new Date(Date.now() + ENROLL_DELAY_DAYS * 24 * 60 * 60 * 1000);
+
+        const sequence = await prisma.followUpSequence.findFirst({
+          where: {
+            clientId: lead.clientId,
+            isActive: true,
+            name: { equals: REENGAGEMENT_SEQUENCE_NAME, mode: "insensitive" },
+          },
+          include: {
+            steps: { orderBy: { stepOrder: "asc" }, take: 1 },
+          },
+        });
+
+        if (!sequence) {
+          const existingManual = await prisma.followUpTask.findFirst({
+            where: {
+              leadId: lead.id,
+              status: "pending",
+              campaignName: { startsWith: "Re-engagement follow-up" },
+            },
+            select: { id: true },
+          });
+          if (existingManual) return;
+
+          const safeFirstName = (lead.firstName || "").trim();
+          const fallbackMessage = safeFirstName
+            ? `Hey ${safeFirstName} - just checking back. Are you open to revisiting this sometime soon?`
+            : `Just checking back. Are you open to revisiting this sometime soon?`;
+
+          const created = await prisma.followUpTask.create({
+            data: {
+              leadId: lead.id,
+              type: task.type,
+              dueDate: startedAt,
+              status: "pending",
+              campaignName: "Re-engagement follow-up (manual)",
+              suggestedMessage: fallbackMessage,
+              subject: task.type === "email" ? "Checking in" : null,
+            },
+            select: { id: true },
+          });
+
+          await prisma.aIDraft
+            .create({
+              data: {
+                leadId: lead.id,
+                triggerMessageId: `followup_task:${created.id}`,
+                content: fallbackMessage,
+                channel: task.type as any,
+                status: "pending",
+              },
+              select: { id: true },
+            })
+            .catch(() => undefined);
+
+          return;
+        }
+
+        const existingInstance = await prisma.followUpInstance.findUnique({
+          where: { leadId_sequenceId: { leadId: lead.id, sequenceId: sequence.id } },
+          select: { id: true, status: true },
+        });
+        if (existingInstance) return;
+
+        const firstStep = sequence.steps[0] ?? null;
+        const nextStepDue = firstStep ? new Date(startedAt.getTime() + computeStepOffsetMs(firstStep)) : startedAt;
+
+        await prisma.$transaction([
+          prisma.followUpInstance.create({
+            data: {
+              leadId: lead.id,
+              sequenceId: sequence.id,
+              status: "active",
+              currentStep: 0,
+              startedAt,
+              nextStepDue,
+            },
+            select: { id: true },
+          }),
+          prisma.lead.update({
+            where: { id: lead.id },
+            data: { autoFollowUpEnabled: true },
+          }),
+        ]);
+      }
+    };
+
+    const maybeCompleteFollowUpTask = async () => {
+      if (!followUpTaskId) return;
+      await prisma.followUpTask
+        .updateMany({
+          where: { id: followUpTaskId, status: "pending" },
+          data: { status: "completed" },
+        })
+        .catch(() => undefined);
+    };
+
     // Email drafts: use dedicated sender (keeps existing behavior)
     // Phase 50: Pass CC to sendEmailReply
     if (draft.channel === "email") {
@@ -1247,12 +1566,41 @@ export async function approveAndSendDraftSystem(
         toName: opts.toName,
       });
       if (!result.success) return { success: false, error: result.error || "Failed to send email reply" };
+      await maybeCompleteFollowUpTask();
+      await maybeHandleTimingClarifyFollowUpAutomation();
       return { success: true, messageId: result.messageId };
     }
 
-    // LinkedIn drafts: system-send isn't supported today (manual send via approveAndSendDraft)
     if (draft.channel === "linkedin") {
-      return { success: false, error: "System send for LinkedIn drafts is not supported" };
+      const finalContent = opts.editedContent ?? draft.content;
+      const linkedInResult = await sendLinkedInMessageSystem(draft.leadId, finalContent, {
+        sentBy: opts.sentBy,
+        sentByUserId: opts.sentByUserId || undefined,
+        aiDraftId: draftId,
+        skipBookingProgress: true,
+      });
+
+      if (!linkedInResult.success) {
+        return { success: false, error: linkedInResult.error || "Failed to send LinkedIn message" };
+      }
+
+      const responseDisposition = computeAIDraftResponseDisposition({
+        sentBy: opts.sentBy,
+        draftContent: draft.content,
+        finalContent,
+      });
+
+      await prisma.aIDraft.update({
+        where: { id: draftId },
+        data: {
+          status: "approved",
+          responseDisposition,
+        },
+      });
+
+      await maybeCompleteFollowUpTask();
+      await maybeHandleTimingClarifyFollowUpAutomation();
+      return { success: true, messageId: linkedInResult.messageId };
     }
 
     // SMS drafts: support multipart (<=3 parts, <=160 chars each)
@@ -1327,6 +1675,8 @@ export async function approveAndSendDraftSystem(
       },
     });
 
+    await maybeCompleteFollowUpTask();
+    await maybeHandleTimingClarifyFollowUpAutomation();
     return { success: true, messageId: firstMessageId };
   } catch (error) {
     console.error("[approveAndSendDraftSystem] Failed:", error);
@@ -1386,33 +1736,14 @@ export async function approveAndSendDraft(
     }
 
     if (draft.channel === "linkedin") {
-      // Send LinkedIn message via Unipile
-      const finalContent = editedContent || draft.content;
-      const linkedInResult = await sendLinkedInMessage(draft.leadId, finalContent, undefined, undefined, {
+      const sendResult = await approveAndSendDraftSystem(draftId, {
         sentBy: "setter",
         sentByUserId: user.id,
-        aiDraftId: draftId,
+        editedContent,
       });
-
-      if (!linkedInResult.success) {
-        return linkedInResult;
-      }
-
-      // Mark draft as approved
-      const responseDisposition = computeAIDraftResponseDisposition({
-        sentBy: "setter",
-        draftContent: draft.content,
-        finalContent,
-      });
-
-      await prisma.aIDraft.update({
-        where: { id: draftId },
-        data: { status: "approved", responseDisposition },
-      });
-
+      if (!sendResult.success) return sendResult;
       revalidatePath("/");
-
-      return { success: true, messageId: linkedInResult.messageId };
+      return { success: true, messageId: sendResult.messageId };
     }
 
     // Send the message (SMS)

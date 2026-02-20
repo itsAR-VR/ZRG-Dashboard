@@ -22,7 +22,11 @@ import {
 } from "@/lib/followup-engine";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
-import { scheduleFollowUpTimingFromInbound } from "@/lib/followup-timing";
+import {
+  cancelPendingTimingClarifyAttempt2OnInbound,
+  runFollowUpTimingReengageGate,
+  scheduleFollowUpTimingFromInbound,
+} from "@/lib/followup-timing";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { ensureGhlContactIdForLead, syncGhlContactPhoneForLead } from "@/lib/ghl-contacts";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
@@ -285,17 +289,29 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   pushStage("pause_followups_on_reply");
   await pauseFollowUpsOnReply(lead.id);
 
+  pushStage("cancel_timing_clarify_attempt2_on_inbound");
+  await cancelPendingTimingClarifyAttempt2OnInbound({ leadId: lead.id }).catch(() => undefined);
+
   pushStage("snooze_detection");
   const inboundText = messageBody.trim();
   const inboundReplyOnly = stripEmailQuotedSectionsForAutomation(inboundText).trim();
   let timingFollowUpScheduled = false;
-  if (sentimentTag === "Follow Up") {
+  const shouldRunTimingScheduler =
+    sentimentTag === "Follow Up" ||
+    (sentimentTag === "Not Interested" &&
+      (await runFollowUpTimingReengageGate({
+        clientId: client.id,
+        leadId: lead.id,
+        messageText: inboundReplyOnly,
+      }).then((gate) => gate.decision === "deferral")));
+
+  if (shouldRunTimingScheduler) {
     const timingResult = await scheduleFollowUpTimingFromInbound({
       clientId: client.id,
       leadId: lead.id,
       messageId: message.id,
       messageText: inboundReplyOnly,
-      sentimentTag,
+      sentimentTag: "Follow Up",
       inboundChannel: params.adapter.channel,
     });
     timingFollowUpScheduled = timingResult.scheduled;
@@ -429,7 +445,7 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   pushStage("draft_generation");
   const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated || timingFollowUpScheduled);
   if (schedulingHandled) {
-    console.log(prefix, "Skipping draft generation; scheduling follow-up task already created by auto-booking");
+    console.log(prefix, "Skipping draft generation; scheduling follow-up task already created");
   }
 
   let leadPhoneOnFileForCallPolicy = Boolean((lead.phone || "").trim());

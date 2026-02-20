@@ -1,0 +1,27 @@
+{
+  "phase": 175,
+  "strategy": "followup_timing_clarify_antispam_hardening",
+  "threadIds": [
+    "f66d9fac-8eb5-46d2-b5a7-55137a4bf2b7",
+    "85183d59-9de9-4212-b32d-1737fb13775c",
+    "4a32ad36-f36d-4c8a-8495-0caee6d7a271",
+    "7ee36aba-856d-477a-af76-a393b239e1b7",
+    "e89ddd53-a741-4894-9cff-96bdd978c306",
+    "c83c7c09-dd9e-4e19-96b9-93552d9ec783",
+    "428e9613-df01-4872-8f69-42344225c0aa",
+    "9a067131-e14e-42c4-90e1-8cb5058d3d61",
+    "b5dcc9db-360c-417b-962b-c1ae51d909e2",
+    "6f0b11d0-9192-4fd4-a191-fa7feb85d8ca",
+    "ceef972b-bd00-4bfc-a300-cf4889b93e3f",
+    "aed092dc-8842-4ee7-ab24-e86cfa3c70a6",
+    "eaf1eb64-216e-4966-93eb-65201dc20e8e",
+    "d5f69b21-68dc-4d07-8d0d-79cedab3ae0e",
+    "9f9a21be-78e8-4759-ac13-f98b6ef46cc7",
+    "8206aff9-022e-496d-8f69-c4b1a75e32e2",
+    "6ad36d19-cbe0-4560-92ac-3f78089754ea",
+    "910650f8-b2c3-4b13-a7bf-64473270b15e",
+    "7653b937-0891-420e-8812-76e91e7e5894",
+    "6d42e0ee-0bd4-4915-8d71-b5593b251c84"
+  ],
+  "notes": "Auto-populated on 2026-02-20 from Founders Club replay selection to enforce manifest-first deterministic validation for timing-clarify deferrals."
+}

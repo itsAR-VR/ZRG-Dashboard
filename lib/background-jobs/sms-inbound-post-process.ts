@@ -7,7 +7,11 @@ import { executeAutoSend } from "@/lib/auto-send";
 import { pauseFollowUpsOnReply, pauseFollowUpsUntil, processMessageForAutoBooking } from "@/lib/followup-engine";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
-import { scheduleFollowUpTimingFromInbound } from "@/lib/followup-timing";
+import {
+  cancelPendingTimingClarifyAttempt2OnInbound,
+  runFollowUpTimingReengageGate,
+  scheduleFollowUpTimingFromInbound,
+} from "@/lib/followup-timing";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
@@ -198,14 +202,25 @@ export async function runSmsInboundPostProcessJob(params: {
     select: { sentimentTag: true },
   }))?.sentimentTag ?? null;
 
+  await cancelPendingTimingClarifyAttempt2OnInbound({ leadId: lead.id }).catch(() => undefined);
+
   let timingFollowUpScheduled = false;
-  if (finalSentiment === "Follow Up") {
+  const shouldRunTimingScheduler =
+    finalSentiment === "Follow Up" ||
+    (finalSentiment === "Not Interested" &&
+      (await runFollowUpTimingReengageGate({
+        clientId: client.id,
+        leadId: lead.id,
+        messageText: inboundText,
+      }).then((gate) => gate.decision === "deferral")));
+
+  if (shouldRunTimingScheduler) {
     const timingResult = await scheduleFollowUpTimingFromInbound({
       clientId: client.id,
       leadId: lead.id,
       messageId: message.id,
       messageText: inboundText,
-      sentimentTag: finalSentiment,
+      sentimentTag: "Follow Up",
       inboundChannel: "sms",
     });
     timingFollowUpScheduled = timingResult.scheduled;
@@ -347,7 +362,7 @@ export async function runSmsInboundPostProcessJob(params: {
   // Skip if auto-booked or sentiment doesn't need draft
   const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated || timingFollowUpScheduled);
   if (schedulingHandled) {
-    console.log("[SMS Post-Process] Skipping draft generation; scheduling follow-up task already created by auto-booking");
+    console.log("[SMS Post-Process] Skipping draft generation; scheduling follow-up task already created");
   }
   const shouldDraft = !autoBook.booked && !schedulingHandled && newSentiment && shouldGenerateDraft(newSentiment);
 

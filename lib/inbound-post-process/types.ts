@@ -25,6 +25,7 @@ export type InboundPostProcessPipelineStage =
   | "apply_auto_followup_policy"
   | "auto_start_meeting_requested"
   | "pause_followups_on_reply"
+  | "cancel_timing_clarify_attempt2_on_inbound"
   | "snooze_detection"
   | "auto_booking"
   | "reject_pending_drafts"
@@ -38,4 +39,3 @@ export type InboundPostProcessPipelineStage =
 export type InboundPostProcessResult = {
   stageLogs: InboundPostProcessPipelineStage[];
 };
-

@@ -40,7 +40,11 @@ import {
 } from "@/lib/followup-engine";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
 import { detectSnoozedUntilUtcFromMessage } from "@/lib/snooze-detection";
-import { scheduleFollowUpTimingFromInbound } from "@/lib/followup-timing";
+import {
+  cancelPendingTimingClarifyAttempt2OnInbound,
+  runFollowUpTimingReengageGate,
+  scheduleFollowUpTimingFromInbound,
+} from "@/lib/followup-timing";
 import { bumpLeadMessageRollup } from "@/lib/lead-message-rollups";
 import { cleanEmailBody, stripEmailQuotedSectionsForAutomation } from "@/lib/email-cleaning";
 import { buildSentimentTranscriptFromMessages, detectBounce, isOptOutText } from "@/lib/sentiment";
@@ -110,7 +114,7 @@ async function notifyDraftSkipForOps(opts: {
   const leadUrl = buildLeadInboxUrl(opts.leadId);
   const reasonText =
     opts.reason === "scheduling_followup_task"
-      ? "Scheduling flow created a follow-up task, so draft generation was intentionally skipped."
+      ? "Scheduling flow created a follow-up task (with a pending draft), so the normal inbound draft-generation step was intentionally skipped."
       : "Call intent was detected, but no phone is on file, so draft generation was intentionally skipped.";
 
   for (const channelId of settings.notificationSlackChannelIds) {
@@ -136,7 +140,7 @@ async function notifyDraftSkipForOps(opts: {
     }
 
     const text = [
-      "⚠️ *AI Draft Skipped (Intentional Routing)*",
+      "⚠️ *AI Draft Routed (Intentional Routing)*",
       `Lead: ${leadName}`,
       `Workspace: ${client.name}`,
       opts.sentimentTag ? `Sentiment: ${opts.sentimentTag}` : null,
@@ -1032,14 +1036,25 @@ export async function runEmailInboundPostProcessJob(opts: {
     channel: "email",
   });
 
+  await cancelPendingTimingClarifyAttempt2OnInbound({ leadId: lead.id }).catch(() => undefined);
+
   let timingFollowUpScheduled = false;
-  if (lead.sentimentTag === "Follow Up") {
+  const shouldRunTimingScheduler =
+    lead.sentimentTag === "Follow Up" ||
+    (lead.sentimentTag === "Not Interested" &&
+      (await runFollowUpTimingReengageGate({
+        clientId: client.id,
+        leadId: lead.id,
+        messageText: inboundReplyOnly,
+      }).then((gate) => gate.decision === "deferral")));
+
+  if (shouldRunTimingScheduler) {
     const timingResult = await scheduleFollowUpTimingFromInbound({
       clientId: client.id,
       leadId: lead.id,
       messageId: message.id,
       messageText: inboundReplyOnly,
-      sentimentTag: lead.sentimentTag,
+      sentimentTag: "Follow Up",
       inboundChannel: "email",
     });
     timingFollowUpScheduled = timingResult.scheduled;
@@ -1245,7 +1260,7 @@ export async function runEmailInboundPostProcessJob(opts: {
   // Draft generation (skip bounce emails and auto-booked appointments).
   const schedulingHandled = Boolean(autoBook.context.followUpTaskCreated || timingFollowUpScheduled);
   if (schedulingHandled) {
-    console.log("[Email PostProcess] Skipping draft generation; scheduling follow-up task already created by auto-booking");
+    console.log("[Email PostProcess] Skipping draft generation; scheduling follow-up task already created");
     if (actionSignals.signals.length === 0) {
       notifyDraftSkipForOps({
         clientId: client.id,

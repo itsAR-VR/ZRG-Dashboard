@@ -216,6 +216,7 @@ Start with `.env.example` (checked in). Real values belong in `.env.local` (giti
 | `UNIPILE_DSN`, `UNIPILE_API_KEY`, `UNIPILE_WEBHOOK_SECRET` | LinkedIn integration (send + inbound webhook auth) |
 | `FOLLOWUP_TASK_AUTO_SEND_ENABLED` | Enable due-time auto-send for scheduled follow-up tasks (`email`/`sms` only) |
 | `FOLLOWUP_TASK_AUTO_SEND_LIMIT` | Max scheduled timing follow-up tasks processed per cron run (default `25`) |
+| `FOLLOWUP_TIMING_CLARIFY_AUTO_SEND_ENABLED` | Enable due-time auto-send for “follow-up timing clarification” tasks (requires `FOLLOWUP_TASK_AUTO_SEND_ENABLED`; schedule-gated; supports `email`/`sms`/`linkedin` when configured) |
 
 For advanced AI tuning knobs and reliability controls, see `CLAUDE.md`.
 
