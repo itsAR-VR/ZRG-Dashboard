@@ -43,11 +43,24 @@ If validated, hand off to implementation closeout and deployment runbook; if fai
 - Work done:
   - Corrected cross-phase dependency reference from 182x to 181x.
   - Created `docs/planning/phase-181/replay-case-manifest.json` seeded for FC future-window deferral validation.
-  - Deferred NTTAN execution until implementation pass stabilizes and replay manifest is prepared.
+  - Executed NTTAN validation on latest code state after shipping follow-up fixes in commit `2d132f4`.
+  - Captured replay artifact + judge metadata and failure-type evidence.
 - Commands run:
-  - none
+  - `npm run test:ai-drafts` — pass (`78/78` tests passed).
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-181/replay-case-manifest.json --dry-run` — pass; selected 12 cases; artifact: `.artifacts/ai-replay/run-2026-02-21T16-22-29-008Z.json`.
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-181/replay-case-manifest.json --concurrency 3` — pass with one judge fail; artifact: `.artifacts/ai-replay/run-2026-02-21T16-22-34-547Z.json`.
+  - Replay judge metadata (from artifact):
+    - `judgePromptKey`: `meeting.overseer.gate.v1`
+    - `promptClientId`: `ef824aca-a3c9-4cde-b51f-2e421ebb6b6e`
+    - `judgeSystemPrompt`: scheduling overseer gate prompt (`.cases[].judge.systemPrompt` in artifact).
+  - Replay failure/invariant counts:
+    - `failureTypeCounts`: `draft_quality_error=1`, all others `0`
+    - `criticalInvariantCounts`: `slot_mismatch=0`, `date_mismatch=0`, `fabricated_link=0`, `empty_draft=0`, `non_logistics_reply=0`
 - Blockers:
-  - Replay manifest for phase 181 not yet written.
-  - NTTAN commands not yet executed in this turn.
+  - One remaining replay quality failure:
+    - case `5b0874d8-e9ba-4c6e-8e21-5babaee2fe11:email`
+    - failure type `draft_quality_error`
+    - reason: clarifier asks for two details ("date/time") instead of one detail for mid-March window.
 - Next concrete steps:
-  - Run NTTAN commands and capture artifact + judge metadata in Output.
+  - Tighten clarifier composition for mid-month windows so fallback copy never asks for "date/time" in a single question.
+  - Re-run the same replay manifest and close the single failing case.
