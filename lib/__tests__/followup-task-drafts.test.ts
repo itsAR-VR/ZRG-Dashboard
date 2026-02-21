@@ -39,6 +39,27 @@ describe("isEligibleFollowUpTaskDraftSource", () => {
     );
   });
 
+  it("allows future-window deferral and recontact auto campaigns", () => {
+    assert.equal(
+      isEligibleFollowUpTaskDraftSource({
+        campaignName: "Follow-up future-window deferral notice (auto)",
+      }),
+      true
+    );
+    assert.equal(
+      isEligibleFollowUpTaskDraftSource({
+        campaignName: "Follow-up future-window recontact (auto)",
+      }),
+      true
+    );
+    assert.equal(
+      isEligibleFollowUpTaskDraftSource({
+        campaignName: "Follow-up future-window recontact (manual)",
+      }),
+      false
+    );
+  });
+
   it("rejects ad-hoc booking/manual campaigns", () => {
     assert.equal(
       isEligibleFollowUpTaskDraftSource({
@@ -54,4 +75,3 @@ describe("isEligibleFollowUpTaskDraftSource", () => {
     );
   });
 });
-

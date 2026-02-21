@@ -6,6 +6,8 @@ const MESSAGEABLE_TASK_TYPES = ["email", "sms", "linkedin"] as const;
 type MessageableTaskType = (typeof MESSAGEABLE_TASK_TYPES)[number];
 const FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX = "Follow-up timing clarification";
 const FOLLOWUP_TASK_SCHEDULED_AUTO = "Scheduled follow-up (auto)";
+const FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_AUTO = "Follow-up future-window deferral notice (auto)";
+const FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_AUTO = "Follow-up future-window recontact (auto)";
 
 function normalizePositiveInt(value: number | undefined, fallback: number, opts?: { min?: number; max?: number }): number {
   const min = Math.max(1, Math.trunc(opts?.min ?? 1));
@@ -38,6 +40,8 @@ export function isEligibleFollowUpTaskDraftSource(task: FollowUpTaskEligibilityI
   const hasSequenceIdentity = Boolean((task.instanceId || "").trim()) && Number.isInteger(task.stepOrder);
   if (hasSequenceIdentity) return true;
   if (campaignName.startsWith(FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX)) return true;
+  if (campaignName === FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_AUTO) return true;
+  if (campaignName === FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_AUTO) return true;
   return campaignName === FOLLOWUP_TASK_SCHEDULED_AUTO;
 }
 
@@ -53,6 +57,12 @@ function buildEligibleFollowUpTaskWhereClause() {
       },
       {
         campaignName: FOLLOWUP_TASK_SCHEDULED_AUTO,
+      },
+      {
+        campaignName: FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_AUTO,
+      },
+      {
+        campaignName: FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_AUTO,
       },
     ],
   };

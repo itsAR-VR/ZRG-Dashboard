@@ -13,6 +13,8 @@ import {
   extractFollowUpTimingFromMessage,
   type FollowUpTimingExtractionResult,
 } from "@/lib/followup-timing-extractor";
+import { getWorkspaceAvailabilitySlotsUtc, refreshWorkspaceAvailabilityCache } from "@/lib/availability-cache";
+import { getBookingLink } from "@/lib/meeting-booking-provider";
 import { isPrismaUniqueConstraintError, prisma } from "@/lib/prisma";
 import { slackPostMessage } from "@/lib/slack-bot";
 import { ensureLeadTimezone } from "@/lib/timezone-inference";
@@ -22,6 +24,12 @@ const FOLLOWUP_TASK_MANUAL_CAMPAIGN = "Scheduled follow-up (manual)";
 const FOLLOWUP_TASK_TIMING_CLARIFY_AUTO_CAMPAIGN = "Follow-up timing clarification (auto)";
 const FOLLOWUP_TASK_TIMING_CLARIFY_MANUAL_CAMPAIGN = "Follow-up timing clarification (manual)";
 const FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX = "Follow-up timing clarification";
+const FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_AUTO_CAMPAIGN = "Follow-up future-window deferral notice (auto)";
+const FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_MANUAL_CAMPAIGN = "Follow-up future-window deferral notice (manual)";
+const FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_PREFIX = "Follow-up future-window deferral notice";
+const FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_AUTO_CAMPAIGN = "Follow-up future-window recontact (auto)";
+const FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_MANUAL_CAMPAIGN = "Follow-up future-window recontact (manual)";
+const FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_PREFIX = "Follow-up future-window recontact";
 const TIMING_CLARIFY_ATTEMPT_RE = /#\s*(\d+)\s*$/;
 const DEFAULT_FOLLOWUP_SEND_HOUR_LOCAL = 9;
 const DEFAULT_PROCESS_LIMIT = 25;
@@ -125,6 +133,12 @@ type RawFollowUpTimingClarification = {
   message: string;
   subject: string | null;
   suggestedSnoozeDays: number | null;
+  rationale: string | null;
+};
+
+type RawFutureWindowDeferralMessage = {
+  message: string;
+  subject: string | null;
   rationale: string | null;
 };
 
@@ -341,6 +355,103 @@ Also return suggestedSnoozeDays (integer, may be null) for how long we should pa
   };
 }
 
+async function generateFutureWindowDeferralMessage(opts: {
+  clientId: string;
+  leadId: string;
+  channel: "email" | "linkedin";
+  messageText: string;
+  leadFirstName: string | null;
+  windowLabel: string;
+  bookingLink: string | null;
+  nowIso: string;
+}): Promise<{ message: string; subject: string | null } | null> {
+  const input = JSON.stringify(
+    {
+      nowIso: opts.nowIso,
+      channel: opts.channel,
+      leadFirstName: opts.leadFirstName,
+      messageText: opts.messageText,
+      windowLabel: opts.windowLabel,
+      bookingLink: opts.bookingLink,
+    },
+    null,
+    2
+  );
+
+  const result = await runStructuredJsonPrompt<RawFutureWindowDeferralMessage>({
+    pattern: "structured_json",
+    clientId: opts.clientId,
+    leadId: opts.leadId,
+    featureId: "followup.future_window_deferral",
+    promptKey: "followup.future_window_deferral.v1",
+    model: "gpt-5-mini",
+    reasoningEffort: "low",
+    systemFallback: `You are replying to a lead who proposed a broad future window.
+
+Goal: acknowledge the window and explain availability is not published for that timeframe yet.
+
+Required:
+- Explicitly state we do not have availability published yet for the requested window.
+- State we will reach back out about one week before that window.
+- Include the booking link when provided.
+- Keep tone concise and professional.
+- Return JSON only.`,
+    input,
+    schemaName: "followup_future_window_deferral",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        message: { type: "string" },
+        subject: { type: ["string", "null"] },
+        rationale: { type: ["string", "null"] },
+      },
+      required: ["message", "subject", "rationale"],
+    },
+    budget: {
+      min: 750,
+      max: 1300,
+      retryMax: 2600,
+      overheadTokens: 128,
+      outputScale: 0.2,
+      preferApiCount: true,
+    },
+    validate: (value) => {
+      const anyValue = value as any;
+      if (!anyValue || typeof anyValue !== "object") return { success: false, error: "not_an_object" };
+      if (typeof anyValue.message !== "string") return { success: false, error: "message_must_be_string" };
+      if (!(typeof anyValue.subject === "string" || anyValue.subject === null)) {
+        return { success: false, error: "subject_must_be_string_or_null" };
+      }
+      if (!(typeof anyValue.rationale === "string" || anyValue.rationale === null)) {
+        return { success: false, error: "rationale_must_be_string_or_null" };
+      }
+
+      const message = anyValue.message.trim();
+      if (!message) return { success: false, error: "message_empty" };
+      if (opts.bookingLink && !message.includes(opts.bookingLink)) {
+        return { success: false, error: "booking_link_missing" };
+      }
+
+      return {
+        success: true,
+        data: {
+          message,
+          subject: typeof anyValue.subject === "string" ? anyValue.subject.trim() || null : null,
+          rationale: typeof anyValue.rationale === "string" ? anyValue.rationale.trim() || null : null,
+        },
+      };
+    },
+  }).catch(() => null);
+
+  if (!result || !result.success) return null;
+  return {
+    message: result.data.message.trim(),
+    subject: (result.data.subject || "").trim() || null,
+  };
+}
+
 function parseYmd(value: string | null): { year: number; month: number; day: number } | null {
   if (!value) return null;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -364,6 +475,89 @@ function parseHm(value: string | null): { hour: number; minute: number } | null 
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
   if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
   return { hour, minute };
+}
+
+function addDaysUtc(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function shiftToPreviousBusinessDay(date: Date, timeZone: string): Date {
+  const shifted = new Date(date.getTime());
+  for (let i = 0; i < 3; i += 1) {
+    const weekday = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      weekday: "short",
+    }).format(shifted);
+    if (weekday !== "Sat" && weekday !== "Sun") return shifted;
+    shifted.setUTCDate(shifted.getUTCDate() - 1);
+  }
+  return shifted;
+}
+
+function computeFutureWindowRecontactDueDateUtc(opts: {
+  windowStartDate: string;
+  timeZone: string;
+  now: Date;
+}): Date | null {
+  const parts = parseYmd(opts.windowStartDate);
+  if (!parts) return null;
+  const localWindowStart = zonedLocalDateTimeToUtc({
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: DEFAULT_FOLLOWUP_SEND_HOUR_LOCAL,
+    minute: 0,
+    timeZone: opts.timeZone,
+  });
+  if (!localWindowStart) return null;
+
+  const weekBefore = addDaysUtc(localWindowStart, -7);
+  const businessAdjusted = shiftToPreviousBusinessDay(weekBefore, opts.timeZone);
+  const minDue = new Date(opts.now.getTime() + 5 * 60 * 1000);
+  return businessAdjusted.getTime() < minDue.getTime() ? minDue : businessAdjusted;
+}
+
+function toFutureWindowLabel(opts: {
+  label: string | null;
+  startDate: string | null;
+  endDate: string | null;
+}): string {
+  const label = (opts.label || "").trim();
+  if (label) return label;
+  if (opts.startDate && opts.endDate && opts.startDate !== opts.endDate) {
+    return `${opts.startDate} to ${opts.endDate}`;
+  }
+  return opts.startDate || "that timeframe";
+}
+
+function buildDeterministicFutureWindowDeferralMessage(opts: {
+  firstName: string | null;
+  windowLabel: string;
+  bookingLink: string | null;
+}): string {
+  const name = (opts.firstName || "").trim() || "there";
+  const link = (opts.bookingLink || "").trim();
+  if (link) {
+    return `Hey ${name} - thanks for the note. We don't have availability published for ${opts.windowLabel} yet, but we'll reach out about a week before with options. You can also book here anytime: ${link}`;
+  }
+  return `Hey ${name} - thanks for the note. We don't have availability published for ${opts.windowLabel} yet, but we'll reach out about a week before with options.`;
+}
+
+function buildFutureWindowRecontactMessage(opts: {
+  firstName: string | null;
+  windowLabel: string;
+  bookingLink: string | null;
+  hasFreshAvailability: boolean;
+}): string {
+  const name = (opts.firstName || "").trim() || "there";
+  const link = (opts.bookingLink || "").trim();
+  if (opts.hasFreshAvailability && link) {
+    return `Hey ${name} - following up like promised ahead of ${opts.windowLabel}. We now have openings and you can grab a time that works here: ${link}`;
+  }
+  if (link) {
+    return `Hey ${name} - following up like promised ahead of ${opts.windowLabel}. We do not have finalized openings yet, but you can check the latest calendar here: ${link}`;
+  }
+  return `Hey ${name} - following up like promised ahead of ${opts.windowLabel}. Reply with a preferred day next week and we'll coordinate from there.`;
 }
 
 function getTimeZoneOffsetMs(date: Date, timeZone: string): number {
@@ -564,6 +758,63 @@ async function notifyTimingExtractionMissForOps(opts: {
   return sentAny;
 }
 
+async function queueAvailabilityRefreshRetry(clientId: string): Promise<void> {
+  const staleAt = new Date(Date.now() - 1_000);
+  const updated = await prisma.workspaceAvailabilityCache
+    .updateMany({
+      where: {
+        clientId,
+        availabilitySource: "DEFAULT",
+      },
+      data: { staleAt },
+    })
+    .catch(() => ({ count: 0 }));
+
+  if ((updated?.count ?? 0) > 0) return;
+  await refreshWorkspaceAvailabilityCache(clientId, {
+    availabilitySource: "DEFAULT",
+  }).catch(() => undefined);
+}
+
+async function cancelPendingTimingClarifyTasks(leadId: string): Promise<void> {
+  const pendingClarifyTasks = await prisma.followUpTask
+    .findMany({
+      where: {
+        leadId,
+        status: "pending",
+        campaignName: { startsWith: FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX },
+      },
+      select: { id: true, type: true },
+    })
+    .catch(() => []);
+
+  if (pendingClarifyTasks.length === 0) return;
+
+  await prisma.followUpTask
+    .updateMany({
+      where: {
+        id: { in: pendingClarifyTasks.map((t) => t.id) },
+        status: "pending",
+      },
+      data: { status: "cancelled" },
+    })
+    .catch(() => undefined);
+
+  await prisma.aIDraft
+    .updateMany({
+      where: {
+        leadId,
+        status: "pending",
+        OR: pendingClarifyTasks.map((t) => ({
+          triggerMessageId: `followup_task:${t.id}`,
+          channel: t.type,
+        })),
+      },
+      data: { status: "rejected" },
+    })
+    .catch(() => undefined);
+}
+
 export type ScheduleFollowUpTimingInboundResult = {
   evaluated: boolean;
   extractionSuccess: boolean;
@@ -631,6 +882,8 @@ export async function scheduleFollowUpTimingFromInbound(opts: {
           settings: {
             select: {
               timezone: true,
+              meetingBookingProvider: true,
+              calendlyEventTypeLink: true,
             },
           },
         },
@@ -662,6 +915,11 @@ export async function scheduleFollowUpTimingFromInbound(opts: {
     leadTimezone: timezoneResult.timezone || lead.timezone,
     workspaceTimezone: lead.client.settings?.timezone || null,
   });
+  const resolvedTimezone = resolveSchedulingTimezone({
+    extractedTimezone: extracted.data.timezone,
+    leadTimezone: timezoneResult.timezone || lead.timezone,
+    workspaceTimezone: lead.client.settings?.timezone || null,
+  });
 
   const extractionDate = extracted.data.localDate;
   if (!extracted.success || !extracted.data.hasConcreteDate || !extractionDate) {
@@ -670,6 +928,334 @@ export async function scheduleFollowUpTimingFromInbound(opts: {
       inboundChannel,
       lead,
     });
+
+    const futureWindowStart = extracted.data.futureWindowStartDate;
+    const futureWindowParse = parseYmd(futureWindowStart);
+    if (extracted.data.hasFutureWindow && futureWindowStart && futureWindowParse) {
+      const windowStartForCoverage =
+        zonedLocalDateTimeToUtc({
+          year: futureWindowParse.year,
+          month: futureWindowParse.month,
+          day: futureWindowParse.day,
+          hour: 12,
+          minute: 0,
+          timeZone: resolvedTimezone,
+        }) || new Date(Date.UTC(futureWindowParse.year, futureWindowParse.month - 1, futureWindowParse.day, 12, 0, 0));
+
+      let coverageMaxMs: number | null = null;
+      let availabilityFailureReason: string | null = null;
+      let bookingLink = await getBookingLink(lead.clientId, lead.client.settings || null).catch(() => null);
+
+      try {
+        const availability = await getWorkspaceAvailabilitySlotsUtc(opts.clientId, {
+          refreshIfStale: true,
+          availabilitySource: "DEFAULT",
+        });
+        if (availability.slotsUtc.length > 0) {
+          coverageMaxMs = availability.slotsUtc
+            .map((iso) => new Date(iso).getTime())
+            .filter((ms) => Number.isFinite(ms))
+            .reduce((max, value) => (value > max ? value : max), Number.NEGATIVE_INFINITY);
+          if (!Number.isFinite(coverageMaxMs)) coverageMaxMs = null;
+        }
+        if (!bookingLink) {
+          bookingLink = (availability.calendarUrl || "").trim() || null;
+        }
+        if (availability.lastError) {
+          availabilityFailureReason = availability.lastError;
+          await queueAvailabilityRefreshRetry(opts.clientId);
+        }
+      } catch (error) {
+        availabilityFailureReason = error instanceof Error ? error.message : "availability_fetch_failed";
+        await queueAvailabilityRefreshRetry(opts.clientId);
+      }
+
+      const beyondCoverage =
+        coverageMaxMs === null ? true : windowStartForCoverage.getTime() > Number(coverageMaxMs);
+
+      if (beyondCoverage) {
+        if (taskType === "call") {
+          const alertSent = await notifyTimingExtractionMissForOps({
+            clientId: opts.clientId,
+            leadId: lead.id,
+            messageId: opts.messageId,
+            inboundChannel,
+            reason: `future_window_requires_message_channel:${reason}`,
+            messageSnippet: messageText,
+          });
+          return {
+            evaluated: true,
+            extractionSuccess: extracted.success,
+            scheduled: false,
+            taskId: null,
+            taskType: null,
+            dueDateUtc: null,
+            campaignName: null,
+            reason: `future_window_requires_message_channel:${reason}`,
+            alertSent,
+          };
+        }
+
+        const windowLabel = toFutureWindowLabel({
+          label: extracted.data.futureWindowLabel,
+          startDate: extracted.data.futureWindowStartDate,
+          endDate: extracted.data.futureWindowEndDate,
+        });
+        const now = new Date();
+        const recontactDueUtc = computeFutureWindowRecontactDueDateUtc({
+          windowStartDate: futureWindowStart,
+          timeZone: resolvedTimezone,
+          now,
+        });
+        if (!recontactDueUtc) {
+          const alertSent = await notifyTimingExtractionMissForOps({
+            clientId: opts.clientId,
+            leadId: lead.id,
+            messageId: opts.messageId,
+            inboundChannel,
+            reason: `future_window_recontact_due_invalid:${reason}`,
+            messageSnippet: messageText,
+          });
+          return {
+            evaluated: true,
+            extractionSuccess: extracted.success,
+            scheduled: false,
+            taskId: null,
+            taskType: null,
+            dueDateUtc: null,
+            campaignName: null,
+            reason: `future_window_recontact_due_invalid:${reason}`,
+            alertSent,
+          };
+        }
+
+        const autoEnabled =
+          isFollowUpTaskAutoSendEnabled() && (taskType === "email" || taskType === "sms" || taskType === "linkedin");
+        const noticeCampaignName = autoEnabled
+          ? FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_AUTO_CAMPAIGN
+          : FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_MANUAL_CAMPAIGN;
+        const recontactCampaignName = autoEnabled
+          ? FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_AUTO_CAMPAIGN
+          : FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_MANUAL_CAMPAIGN;
+
+        const deterministicNotice = buildDeterministicFutureWindowDeferralMessage({
+          firstName: lead.firstName,
+          windowLabel,
+          bookingLink,
+        });
+
+        let noticeMessage = deterministicNotice;
+        let noticeSubject = taskType === "email" ? "Scheduling update" : null;
+        if ((taskType === "email" || taskType === "linkedin") && bookingLink) {
+          const aiNotice = await generateFutureWindowDeferralMessage({
+            clientId: opts.clientId,
+            leadId: lead.id,
+            channel: taskType,
+            messageText,
+            leadFirstName: lead.firstName,
+            windowLabel,
+            bookingLink,
+            nowIso: now.toISOString(),
+          }).catch(() => null);
+          if (aiNotice?.message) noticeMessage = aiNotice.message;
+          if (taskType === "email") noticeSubject = aiNotice?.subject || noticeSubject;
+        }
+
+        const recontactMessage = buildFutureWindowRecontactMessage({
+          firstName: lead.firstName,
+          windowLabel,
+          bookingLink,
+          hasFreshAvailability: coverageMaxMs !== null,
+        });
+
+        try {
+          const [existingNoticeTask, existingRecontactTask] = await Promise.all([
+            prisma.followUpTask.findFirst({
+              where: {
+                leadId: lead.id,
+                status: "pending",
+                campaignName: { startsWith: FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_PREFIX },
+              },
+              orderBy: { createdAt: "desc" },
+              select: { id: true },
+            }),
+            prisma.followUpTask.findFirst({
+              where: {
+                leadId: lead.id,
+                status: "pending",
+                campaignName: { startsWith: FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_PREFIX },
+              },
+              orderBy: { createdAt: "desc" },
+              select: { id: true },
+            }),
+          ]);
+
+          let noticeTaskId: string | null = null;
+          if (existingNoticeTask) {
+            const updated = await prisma.followUpTask.updateMany({
+              where: { id: existingNoticeTask.id },
+              data: {
+                type: taskType,
+                dueDate: now,
+                status: "pending",
+                campaignName: noticeCampaignName,
+                suggestedMessage: noticeMessage,
+                subject: taskType === "email" ? noticeSubject : null,
+              },
+            });
+            if (updated.count > 0) noticeTaskId = existingNoticeTask.id;
+          }
+          if (!noticeTaskId) {
+            const created = await prisma.followUpTask.create({
+              data: {
+                leadId: lead.id,
+                type: taskType,
+                dueDate: now,
+                status: "pending",
+                campaignName: noticeCampaignName,
+                suggestedMessage: noticeMessage,
+                subject: taskType === "email" ? noticeSubject : null,
+              },
+              select: { id: true },
+            });
+            noticeTaskId = created.id;
+          }
+
+          let recontactTaskId: string | null = null;
+          if (existingRecontactTask) {
+            const updated = await prisma.followUpTask.updateMany({
+              where: { id: existingRecontactTask.id },
+              data: {
+                type: taskType,
+                dueDate: recontactDueUtc,
+                status: "pending",
+                campaignName: recontactCampaignName,
+                suggestedMessage: recontactMessage,
+                subject: taskType === "email" ? "Checking in before your window" : null,
+              },
+            });
+            if (updated.count > 0) recontactTaskId = existingRecontactTask.id;
+          }
+          if (!recontactTaskId) {
+            const created = await prisma.followUpTask.create({
+              data: {
+                leadId: lead.id,
+                type: taskType,
+                dueDate: recontactDueUtc,
+                status: "pending",
+                campaignName: recontactCampaignName,
+                suggestedMessage: recontactMessage,
+                subject: taskType === "email" ? "Checking in before your window" : null,
+              },
+              select: { id: true },
+            });
+            recontactTaskId = created.id;
+          }
+
+          await Promise.all([
+            prisma.aIDraft
+              .upsert({
+                where: {
+                  triggerMessageId_channel: {
+                    triggerMessageId: `followup_task:${noticeTaskId}`,
+                    channel: taskType,
+                  },
+                },
+                update: {
+                  content: noticeMessage,
+                  status: "pending",
+                },
+                create: {
+                  leadId: lead.id,
+                  triggerMessageId: `followup_task:${noticeTaskId}`,
+                  content: noticeMessage,
+                  channel: taskType,
+                  status: "pending",
+                },
+                select: { id: true },
+              })
+              .catch((error) => {
+                if (!isPrismaUniqueConstraintError(error)) throw error;
+              }),
+            prisma.aIDraft
+              .upsert({
+                where: {
+                  triggerMessageId_channel: {
+                    triggerMessageId: `followup_task:${recontactTaskId}`,
+                    channel: taskType,
+                  },
+                },
+                update: {
+                  content: recontactMessage,
+                  status: "pending",
+                },
+                create: {
+                  leadId: lead.id,
+                  triggerMessageId: `followup_task:${recontactTaskId}`,
+                  content: recontactMessage,
+                  channel: taskType,
+                  status: "pending",
+                },
+                select: { id: true },
+              })
+              .catch((error) => {
+                if (!isPrismaUniqueConstraintError(error)) throw error;
+              }),
+          ]);
+
+          await prisma.lead.update({
+            where: { id: lead.id },
+            data: { snoozedUntil: recontactDueUtc },
+          });
+          await pauseFollowUpsUntil(lead.id, recontactDueUtc);
+          await cancelPendingTimingClarifyTasks(lead.id);
+
+          let alertSent = false;
+          if (availabilityFailureReason) {
+            alertSent = await notifyTimingExtractionMissForOps({
+              clientId: opts.clientId,
+              leadId: lead.id,
+              messageId: opts.messageId,
+              inboundChannel,
+              reason: `future_window_availability_fetch_failed:${availabilityFailureReason}`,
+              messageSnippet: messageText,
+            });
+          }
+
+          return {
+            evaluated: true,
+            extractionSuccess: extracted.success,
+            scheduled: true,
+            taskId: noticeTaskId,
+            taskType,
+            dueDateUtc: now,
+            campaignName: noticeCampaignName,
+            reason: `defer_until_window:${futureWindowStart}`,
+            alertSent,
+          };
+        } catch {
+          const alertSent = await notifyTimingExtractionMissForOps({
+            clientId: opts.clientId,
+            leadId: lead.id,
+            messageId: opts.messageId,
+            inboundChannel,
+            reason: `future_window_task_upsert_failed:${reason}`,
+            messageSnippet: messageText,
+          });
+          return {
+            evaluated: true,
+            extractionSuccess: extracted.success,
+            scheduled: false,
+            taskId: null,
+            taskType: null,
+            dueDateUtc: null,
+            campaignName: null,
+            reason: `future_window_task_upsert_failed:${reason}`,
+            alertSent,
+          };
+        }
+      }
+    }
 
     if (taskType === "call") {
       const alertSent = await notifyTimingExtractionMissForOps({
@@ -834,11 +1420,6 @@ export async function scheduleFollowUpTimingFromInbound(opts: {
     hour: DEFAULT_FOLLOWUP_SEND_HOUR_LOCAL,
     minute: 0,
   };
-  const resolvedTimezone = resolveSchedulingTimezone({
-    extractedTimezone: extracted.data.timezone,
-    leadTimezone: timezoneResult.timezone || lead.timezone,
-    workspaceTimezone: lead.client.settings?.timezone || null,
-  });
 
   if (!dateParts) {
     const alertSent = await notifyTimingExtractionMissForOps({
@@ -977,42 +1558,7 @@ export async function scheduleFollowUpTimingFromInbound(opts: {
   await pauseFollowUpsUntil(lead.id, dueDateUtc);
 
   // If we previously asked for a concrete follow-up timeframe, cancel that pending task.
-  const pendingClarifyTasks = await prisma.followUpTask
-    .findMany({
-      where: {
-        leadId: lead.id,
-        status: "pending",
-        campaignName: { startsWith: FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX },
-      },
-      select: { id: true, type: true },
-    })
-    .catch(() => []);
-
-  if (pendingClarifyTasks.length > 0) {
-    await prisma.followUpTask
-      .updateMany({
-        where: {
-          id: { in: pendingClarifyTasks.map((t) => t.id) },
-          status: "pending",
-        },
-        data: { status: "cancelled" },
-      })
-      .catch(() => undefined);
-
-    await prisma.aIDraft
-      .updateMany({
-        where: {
-          leadId: lead.id,
-          status: "pending",
-          OR: pendingClarifyTasks.map((t) => ({
-            triggerMessageId: `followup_task:${t.id}`,
-            channel: t.type,
-          })),
-        },
-        data: { status: "rejected" },
-      })
-      .catch(() => undefined);
-  }
+  await cancelPendingTimingClarifyTasks(lead.id);
 
   return {
     evaluated: true,
@@ -1032,6 +1578,12 @@ function deriveManualCampaignName(currentCampaignName: string | null | undefined
   if (campaign.startsWith(FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX)) {
     const attempt = parseTimingClarifyAttempt(campaign) ?? 1;
     return buildTimingClarifyCampaignName({ auto: false, attempt });
+  }
+  if (campaign.startsWith(FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_PREFIX)) {
+    return FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_MANUAL_CAMPAIGN;
+  }
+  if (campaign.startsWith(FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_PREFIX)) {
+    return FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_MANUAL_CAMPAIGN;
   }
   return FOLLOWUP_TASK_MANUAL_CAMPAIGN;
 }
@@ -1082,9 +1634,17 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
         OR: [
           { campaignName: FOLLOWUP_TASK_AUTO_CAMPAIGN },
           { campaignName: { startsWith: FOLLOWUP_TASK_TIMING_CLARIFY_AUTO_CAMPAIGN } },
+          { campaignName: FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_AUTO_CAMPAIGN },
+          { campaignName: FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_AUTO_CAMPAIGN },
         ],
       }
-    : { campaignName: FOLLOWUP_TASK_AUTO_CAMPAIGN };
+    : {
+        OR: [
+          { campaignName: FOLLOWUP_TASK_AUTO_CAMPAIGN },
+          { campaignName: FOLLOWUP_TASK_FUTURE_WINDOW_DEFER_NOTICE_AUTO_CAMPAIGN },
+          { campaignName: FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_AUTO_CAMPAIGN },
+        ],
+      };
 
   const limit = opts?.limit ?? parsePositiveInt(process.env.FOLLOWUP_TASK_AUTO_SEND_LIMIT, DEFAULT_PROCESS_LIMIT);
   const tasks = await prisma.followUpTask.findMany({
@@ -1099,6 +1659,7 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
       lead: {
         select: {
           id: true,
+          clientId: true,
           firstName: true,
           email: true,
           phone: true,
@@ -1122,6 +1683,8 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
                   workEndTime: true,
                   autoSendScheduleMode: true,
                   autoSendCustomSchedule: true,
+                  meetingBookingProvider: true,
+                  calendlyEventTypeLink: true,
                 },
               },
             },
@@ -1232,6 +1795,45 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
         await markScheduledTaskManual(task.id, task.campaignName);
         result.convertedToManual += 1;
         continue;
+      }
+
+      const isFutureWindowRecontact = (task.campaignName || "").startsWith(FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_PREFIX);
+      if (isFutureWindowRecontact) {
+        try {
+          const [availability, bookingLink] = await Promise.all([
+            getWorkspaceAvailabilitySlotsUtc(task.lead.clientId, {
+              refreshIfStale: true,
+              availabilitySource: "DEFAULT",
+            }),
+            getBookingLink(task.lead.clientId, task.lead.client.settings || null),
+          ]);
+          const message = buildFutureWindowRecontactMessage({
+            firstName: task.lead.firstName,
+            windowLabel: "your requested timeframe",
+            bookingLink: bookingLink || availability.calendarUrl || null,
+            hasFreshAvailability: availability.slotsUtc.length > 0,
+          });
+
+          await prisma.followUpTask.update({
+            where: { id: task.id },
+            data: {
+              suggestedMessage: message,
+              subject: task.type === "email" ? "Checking in before your window" : null,
+            },
+          });
+
+          if (draft && draft.status === "pending") {
+            await prisma.aIDraft.update({
+              where: { id: draft.id },
+              data: { content: message },
+            });
+          }
+        } catch (error) {
+          await queueAvailabilityRefreshRetry(task.lead.clientId).catch(() => undefined);
+          result.errors.push(
+            `task:${task.id}:future_window_recontact_refresh_failed:${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       }
 
       if (!draft) {
