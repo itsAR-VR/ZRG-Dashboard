@@ -1,0 +1,13 @@
+{
+  "phase": 176,
+  "strategy": "scheduling_window_enforcement_reschedule_support_and_no_draft_fix",
+  "threadIds": [
+    "0920ae43-ecf2-4bdd-bdc3-4c08e4549dc9",
+    "0294af0f-9e16-4fde-b1b5-a9506e927b9f",
+    "fbd7321b-212c-42e6-acc2-7470397ec643",
+    "5b0874d8-e9ba-4c6e-8e21-5babaee2fe11",
+    "01697e14-d8b5-4487-a3c6-2d9776befca0"
+  ],
+  "notes": "Caleb Owen reschedule windows (must not propose out-of-window times; link-only if no match). Jeff Shilling (multi-year deferral; must ask for concrete follow-up timeframe). Terra Mattson (competitor objection; must route to Objection, not Follow Up timing). Lee Cohen + Sanjit Ghate (Meeting Requested + intentional routing must still yield inbox-visible draft via FollowUpTask->AIDraft backfill)."
+}
+
