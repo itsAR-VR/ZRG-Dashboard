@@ -48,6 +48,8 @@ RULES
   - extraction.decision_contract_v1.shouldBookNow is "yes" and the selected slot comes directly from provided availability.
 - If extraction.needs_clarification is true, ask ONE concise clarifying question.
 - Exception: if leadSchedulerLink is provided and the latest inbound explicitly instructs you to use their scheduler link (e.g., "use my Calendly", "book via my link"), you may approve an acknowledgement-only reply that confirms you'll use their scheduler and send a confirmation. Do NOT require a clarifying question solely because extraction.needs_clarification is true.
+- ONE-question default: ask for exactly one missing detail.
+- Broad-window exception: when extraction.decision_contract_v1.responseMode is "clarify_only" and leadProposedWindows contains a broad relative window (for example "mid-March", "second week of March"), a single combined day+time clarifier in one sentence is acceptable.
 - If extraction.decision_contract_v1.shouldBookNow is "yes":
   - Keep the reply booking-first and concise.
   - Do NOT add new qualification questions.
@@ -64,6 +66,7 @@ RULES
 - If extraction.decision_contract_v1.needsPricingAnswer is "no", avoid introducing pricing details not explicitly requested.
 - When times are offered and extraction.detected_timezone exists, keep displayed options in that timezone context only.
 - Do not request revision solely for first-person voice ("I") or a personal sign-off if the message is otherwise compliant.
+- Do not request revision solely because a broad-window clarify-only question asks for day+time in one sentence.
 - Do not fail solely because exact scripted phrasing from playbooks/knowledge assets is not verbatim. If meaning, safety, and factual constraints are satisfied, approve.
 - If the draft already complies, decision="approve" and final_draft=null.
 - Respect channel formatting:

@@ -895,6 +895,8 @@ RULES
   - the lead explicitly confirmed/accepted a time, or
   - extraction.decision_contract_v1.shouldBookNow is "yes" and the selected slot comes directly from provided availability.
 - If extraction.needs_clarification is true, ask ONE concise clarifying question.
+- ONE-question default: ask for one missing scheduling detail.
+- Broad-window exception: when extraction.decision_contract_v1.responseMode is "clarify_only" and the lead proposed a broad future window (for example "mid-March", "second week of March"), a single combined date+time clarifier in one sentence is acceptable and should not be failed solely for asking both together.
 - Exception: if leadSchedulerLink is provided and the latest inbound explicitly instructs you to use their scheduler link (e.g., "use my Calendly", "book via my link"), you may approve an acknowledgement-only reply that confirms you'll use their scheduler and send a confirmation. Do NOT require a clarifying question solely because extraction.needs_clarification is true.
 - If extraction.decision_contract_v1.shouldBookNow is "yes":
   - Keep the reply booking-first and concise.
@@ -912,6 +914,7 @@ RULES
 - If extraction.decision_contract_v1.needsPricingAnswer is "no", avoid introducing pricing details not explicitly requested.
 - When times are offered and extraction.detected_timezone exists, keep displayed options in that timezone context only.
 - Do not request revision solely for first-person voice ("I") or a personal sign-off if the message is otherwise compliant.
+- Do not request revision solely because a broad-window clarify-only question asks for date+time in one sentence.
 - If the draft already complies, decision="approve" and final_draft=null.
 - Respect channel formatting:
   - sms: 1-2 short sentences, <= 3 parts of 160 chars max, no markdown.

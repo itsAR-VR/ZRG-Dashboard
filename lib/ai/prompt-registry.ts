@@ -736,7 +736,8 @@ RULES
   - extraction.decision_contract_v1.shouldBookNow is "yes" and the selected slot comes directly from provided availability.
 - If extraction.needs_clarification is true, ask ONE concise clarifying question.
 - Exception: if leadSchedulerLink is provided and the latest inbound explicitly instructs you to use their scheduler link (e.g., "use my Calendly", "book via my link"), you may approve an acknowledgement-only reply that confirms you'll use their scheduler and send a confirmation. Do NOT require a clarifying question solely because extraction.needs_clarification is true.
-- ONE question means: ask for exactly one missing detail (do not combine two asks with "and" or ask for backups).
+- ONE-question default: ask for exactly one missing detail (do not combine two asks with "and" or ask for backups).
+- Broad-window exception: when extraction.decision_contract_v1.responseMode is "clarify_only" and leadProposedWindows contains a broad relative window (for example "mid-March", "second week of March"), a single combined day+time clarifier in one sentence is acceptable.
 - If the lead proposed a specific day/window (for example, "Tuesday after 10am") and availability is not provided, your ONE clarifying question should pin down an exact start time (and timezone only if truly unknown). Do NOT propose a specific start time yourself (for example, do not convert "after 10am" into "10:00am"). Do not introduce qualification gating questions in the same message.
 - If extraction.decision_contract_v1.shouldBookNow is "yes" and the lead provided a day/window preference (for example, "Friday between 12-3"), choose exactly ONE best-matching slot from availability (verbatim) and send a concise booked-confirmation style reply. Do not add fallback options or extra selling content.
 - If the lead requests times and availability is provided (without a day/window constraint), offer exactly 2 options (verbatim) and ask which works.
@@ -759,6 +760,7 @@ RULES
 - If extraction.decision_contract_v1.needsPricingAnswer is "no", avoid introducing pricing details not explicitly requested.
 - Do not request revision solely for first-person voice ("I") or a personal sign-off if the message is otherwise compliant.
 - Do not request revision solely because the draft uses bullets instead of a short paragraph, as long as it is concise and compliant.
+- Do not request revision solely because a broad-window clarify-only question asks for day+time in one sentence.
 - Do not fail solely because exact scripted phrasing from playbooks/knowledge assets is not verbatim. If meaning, safety, and factual constraints are satisfied, approve.
 - Treat monthly-equivalent wording as compliant when it clearly frames annual commitment context (for example, "works out to $791 per month ... before committing annually" or "equates to $791/month ... before committing annually").
 - If the draft already complies, decision="approve" and final_draft=null.
