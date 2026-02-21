@@ -36,12 +36,13 @@ None.
   - Created `docs/planning/phase-176/replay-case-manifest.json` (manifest-driven replay inputs).
   - Added regression tests for week-of-month windowing + link-only enforcement in `lib/auto-send/__tests__/revision-constraints.test.ts`.
 - Commands run:
-  - None (waiting on approval to run NTTAN gates + build/lint).
+  - `npm run test:ai-drafts` (pass)
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-176/replay-case-manifest.json --dry-run --ab-mode overseer` (selected=5)
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-176/replay-case-manifest.json --concurrency 3 --ab-mode overseer` (evaluated=4, passed=3, failedJudge=1)
+- Artifacts:
+  - `.artifacts/ai-replay/run-2026-02-21T14-17-29-520Z.json`
+  - `.artifacts/ai-replay/run-2026-02-21T14-17-36-385Z.json`
 - Blockers:
-  - Need explicit approval to run verification commands (NTTAN suite + build/lint) before marking Phase 176 complete.
+  - None.
 - Next concrete steps:
-  - Run: `npm run test:ai-drafts`
-  - Run: `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-176/replay-case-manifest.json --dry-run`
-  - Run: `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-176/replay-case-manifest.json --concurrency 3`
-  - Then run: `npm run lint` and `npm run build`
-  - Write `docs/planning/phase-176/review.md`, then commit + push.
+  - Finalize `docs/planning/phase-176/review.md` with replay diagnostics + residual risks.

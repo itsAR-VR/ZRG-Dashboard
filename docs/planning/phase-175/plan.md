@@ -61,11 +61,11 @@ This work overlaps directly with recently modified timing/inbound files and shou
 | Working tree | Active | Uncommitted changes already present in target files | Run conflict checks before each slice; do not overwrite in-flight edits. |
 
 ## Pre-Flight Conflict Check (RED TEAM)
-* [ ] Run `git status --porcelain` and confirm expected overlap set before each implementation slice.
-* [ ] Re-read current versions of every target file immediately before editing (no cached assumptions).
-* [ ] If target files changed since planning, append a conflict note to the executing subphase Output:
+* [x] Run `git status --porcelain` and confirm expected overlap set before each implementation slice.
+* [x] Re-read current versions of every target file immediately before editing (no cached assumptions).
+* [x] If target files changed since planning, append a conflict note to the executing subphase Output:
   * `Issue`, `Cause`, `Resolution`, `Files affected`.
-* [ ] Keep Phase 175 edits scoped to timing clarify + gating; avoid opportunistic edits in shared cron/background systems.
+* [x] Keep Phase 175 edits scoped to timing clarify + gating; avoid opportunistic edits in shared cron/background systems.
 
 ## Decisions Locked (From This Thread)
 * If no concrete follow-up date is detected, ask for one (do not fabricate or choose a date).
@@ -179,6 +179,7 @@ This work overlaps directly with recently modified timing/inbound files and shou
 - 2026-02-20 — Product decisions locked: keep re-engagement delay at `7` days, keep `Objection` out of timing-reengage gate, and use hybrid attempt-2 copy (`sms` deterministic, `email`/`linkedin` AI with fallback) (files: `actions/message-actions.ts`, `docs/planning/phase-175/b/plan.md`, `docs/planning/phase-175/c/plan.md`)
 - 2026-02-20 — Subphases 175d/175e complete: added targeted clarify regression tests, executed manifest-first and fallback NTTAN replay validations, captured replay prompt/failure diagnostics, executed baseline comparison (`improved=3, regressed=4`), and closed build/lint gates after TypeScript fixes (files: `lib/__tests__/followup-timing-clarify-phase175.test.ts`, `docs/planning/phase-175/d/plan.md`, `docs/planning/phase-175/e/plan.md`, `actions/message-actions.ts`, `lib/inbound-post-process/types.ts`)
 - 2026-02-20 — Hardening pass from live Slack/Jam incidents: tripled follow-up timing prompt token budgets to reduce `max_output_tokens`; clarifier draft is now upserted/updated (prevents stale/duplicate drafts); and meeting-request availability selection now treats explicit timing windows (e.g. “second week of March”, explicit dates, time windows) as hard constraints and always excludes previously offered slots to avoid repeating times the lead already rejected (files: `lib/followup-timing-extractor.ts`, `lib/followup-timing.ts`, `lib/ai-drafts.ts`, `lib/__tests__/ai-drafts-clarification-guards.test.ts`).
+- 2026-02-21 — Final cleanup pass re-verified cross-phase conflict checks and preserved Phase 175 scope boundaries while closing adjacent phase validation gaps.
 * e — Manifest-driven replay hardening + conflict-log closeout requirements
 
 ## Assumptions (Agent)

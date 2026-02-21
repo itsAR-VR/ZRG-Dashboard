@@ -37,11 +37,11 @@ Recent phases overlap heavily with this scope (untracked/dirty working tree). Ph
 | Phase 175 | Active (tracked) | Follow-up timing clarifier tasks + auto-send gating | Phase 179 should align with Phase 175 clarifier logic (attempt #1 timeframe-only; attempt #2 includes calendar link) and harden due-time auto-send reliability. |
 
 ## Objectives
-* [ ] Identify the exact gating points causing “Slack notified but no auto-send” in follow-up timing + booking flows.
-* [ ] Prevent text-only false `Meeting Booked` and other high-impact sentiment mistakes.
-* [ ] Enforce “AI auto-send only for AI_AUTO_SEND campaigns” across inbound + follow-up-task senders.
-* [ ] Route lead-provided calendar links into Booking Process 5 and Slack notify (no “we’ll grab a time” replies).
-* [ ] Improve follow-up timing clarification drafts (attempt #1 asks timeframe; attempt #2 includes calendar link) and reduce `max_output_tokens` truncation rates.
+* [x] Identify the exact gating points causing “Slack notified but no auto-send” in follow-up timing + booking flows.
+* [x] Prevent text-only false `Meeting Booked` and other high-impact sentiment mistakes.
+* [x] Enforce “AI auto-send only for AI_AUTO_SEND campaigns” across inbound + follow-up-task senders.
+* [x] Route lead-provided calendar links into Booking Process 5 and Slack notify (no “we’ll grab a time” replies).
+* [x] Improve follow-up timing clarification drafts (attempt #1 asks timeframe; attempt #2 includes calendar link) and reduce `max_output_tokens` truncation rates.
 
 ## Constraints
 - Follow-up timing clarifier:
@@ -122,3 +122,6 @@ NTTAN validation (required):
 - 2026-02-21 — Implemented Meeting Booked evidence gate + external scheduler prompt alignment + Process 5 manual-only auto-send block (files: `lib/meeting-lifecycle.ts`, `lib/inbound-post-process/pipeline.ts`, `lib/background-jobs/email-inbound-post-process.ts`, `lib/background-jobs/sms-inbound-post-process.ts`, `lib/background-jobs/linkedin-inbound-post-process.ts`, `lib/sentiment.ts`, `lib/ai/prompts/sentiment-classify-v1.ts`, `lib/auto-send/orchestrator.ts`).
 - 2026-02-21 — Hardened follow-up timing auto-send reliability (meaningful activity gate + AI campaign gating) and enforced Attempt #2 booking link inclusion; increased follow-up timing extraction token retry budget 3x (files: `lib/followup-timing.ts`, `actions/message-actions.ts`, `lib/followup-timing-extractor.ts`).
 - 2026-02-21 — Completed NTTAN manifest replay (dry-run + live); captured artifact + judge metadata (files: `docs/planning/phase-179/d/plan.md`, `docs/planning/phase-179/review.md`).
+- 2026-02-21 — Post-fix rerun on phase manifest:
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-179/replay-case-manifest.json --dry-run --ab-mode overseer` (selected=12)
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-179/replay-case-manifest.json --concurrency 3 --ab-mode overseer` (evaluated=10, passed=9, failedJudge=1, zero critical invariant misses)

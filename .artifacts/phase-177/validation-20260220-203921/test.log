@@ -1,0 +1,2687 @@
+
+> zrg-dashboard@0.1.0 test
+> node --import tsx scripts/test-orchestrator.ts
+
+TAP version 13
+# Subtest: action signal detector: heuristics
+    # Subtest: does not infer call signal from sentiment tag alone
+    ok 1 - does not infer call signal from sentiment tag alone
+      ---
+      duration_ms: 21.046791
+      ...
+    # Subtest: detects medium-confidence call keyword from stripped body
+    ok 2 - detects medium-confidence call keyword from stripped body
+      ---
+      duration_ms: 0.338709
+      ...
+    # Subtest: does not treat generic 'happy to chat' language as a call request
+    ok 3 - does not treat generic 'happy to chat' language as a call request
+      ---
+      duration_ms: 1.326
+      ...
+    # Subtest: detects signature-style 'number below' call request phrasing
+    ok 4 - detects signature-style 'number below' call request phrasing
+      ---
+      duration_ms: 0.278541
+      ...
+    # Subtest: does not treat plain phone signature text as a call request
+    ok 5 - does not treat plain phone signature text as a call request
+      ---
+      duration_ms: 0.128666
+      ...
+    # Subtest: detects external scheduler link in body when not workspace link
+    ok 6 - detects external scheduler link in body when not workspace link
+      ---
+      duration_ms: 0.946792
+      ...
+    # Subtest: detects Notion Calendar meet link in body as external scheduler link
+    ok 7 - detects Notion Calendar meet link in body as external scheduler link
+      ---
+      duration_ms: 1.315625
+      ...
+    # Subtest: ignores scheduler link when it matches workspace booking link
+    ok 8 - ignores scheduler link when it matches workspace booking link
+      ---
+      duration_ms: 0.492375
+      ...
+    # Subtest: detects external-calendar phrase without URL
+    ok 9 - detects external-calendar phrase without URL
+      ---
+      duration_ms: 12.316792
+      ...
+    1..9
+ok 1 - action signal detector: heuristics
+  ---
+  duration_ms: 39.97925
+  type: 'suite'
+  ...
+# Subtest: action signal detector: signature disambiguation trigger
+    # Subtest: triggers only when link is in full text, missing from stripped text, and body has booking language
+    ok 1 - triggers only when link is in full text, missing from stripped text, and body has booking language
+      ---
+      duration_ms: 0.432
+      ...
+    # Subtest: does not trigger when link is already in stripped text
+    ok 2 - does not trigger when link is already in stripped text
+      ---
+      duration_ms: 0.095791
+      ...
+    # Subtest: does not trigger when body has no scheduling language
+    ok 3 - does not trigger when body has no scheduling language
+      ---
+      duration_ms: 0.235584
+      ...
+    # Subtest: does not trigger for call-only wording with signature link
+    ok 4 - does not trigger for call-only wording with signature link
+      ---
+      duration_ms: 0.085333
+      ...
+    1..4
+ok 2 - action signal detector: signature disambiguation trigger
+  ---
+  duration_ms: 0.995875
+  type: 'suite'
+  ...
+# Subtest: action signal detector: end-to-end detection
+    # Subtest: for non-positive sentiment, skips heuristics/disambiguation but still surfaces process-4/5 routing
+    ok 1 - for non-positive sentiment, skips heuristics/disambiguation but still surfaces process-4/5 routing
+      ---
+      duration_ms: 0.43725
+      ...
+    # Subtest: for non-positive sentiment, does not surface process-1/2/3 routes as action signals
+    ok 2 - for non-positive sentiment, does not surface process-1/2/3 routes as action signals
+      ---
+      duration_ms: 0.50975
+      ...
+    # Subtest: returns both call and external-calendar signals from heuristics
+    ok 3 - returns both call and external-calendar signals from heuristics
+      ---
+      duration_ms: 0.174458
+      ...
+    # Subtest: uses injected disambiguator for ambiguous signature-link case
+    ok 4 - uses injected disambiguator for ambiguous signature-link case
+      ---
+      duration_ms: 0.407459
+      ...
+    # Subtest: does not call disambiguator when Tier 1 already found body link
+    ok 5 - does not call disambiguator when Tier 1 already found body link
+      ---
+      duration_ms: 0.306833
+      ...
+    1..5
+ok 3 - action signal detector: end-to-end detection
+  ---
+  duration_ms: 2.042875
+  type: 'suite'
+  ...
+# Subtest: action signal detector: booking process routing
+    # Subtest: supports route-only outcomes for process 1 with no action signals
+    ok 1 - supports route-only outcomes for process 1 with no action signals
+      ---
+      duration_ms: 0.357375
+      ...
+    # Subtest: returns route metadata for process 4 alongside call signal
+    ok 2 - returns route metadata for process 4 alongside call signal
+      ---
+      duration_ms: 0.113125
+      ...
+    # Subtest: returns route metadata for process 5 alongside external-calendar signal
+    ok 3 - returns route metadata for process 5 alongside external-calendar signal
+      ---
+      duration_ms: 0.210208
+      ...
+    # Subtest: adds an external-calendar signal when the router routes to process 5 despite no heuristic hit
+    ok 4 - adds an external-calendar signal when the router routes to process 5 despite no heuristic hit
+      ---
+      duration_ms: 0.296292
+      ...
+    # Subtest: adds a call signal when the router routes to process 4 despite no heuristic hit
+    ok 5 - adds a call signal when the router routes to process 4 despite no heuristic hit
+      ---
+      duration_ms: 0.144542
+      ...
+    # Subtest: treats the AI route as authoritative when heuristics conflict
+    ok 6 - treats the AI route as authoritative when heuristics conflict
+      ---
+      duration_ms: 0.091708
+      ...
+    # Subtest: uses a deterministic 1/2/3 fallback route when router throws and AI routing is enabled
+    ok 7 - uses a deterministic 1/2/3 fallback route when router throws and AI routing is enabled
+      ---
+      duration_ms: 0.484
+      ...
+    # Subtest: skips routing when workspace toggle is disabled
+    ok 8 - skips routing when workspace toggle is disabled
+      ---
+      duration_ms: 0.091
+      ...
+    1..8
+ok 4 - action signal detector: booking process routing
+  ---
+  duration_ms: 1.916541
+  type: 'suite'
+  ...
+# Subtest: action signal prompt appendix
+    # Subtest: returns empty string when no signals are present
+    ok 1 - returns empty string when no signals are present
+      ---
+      duration_ms: 0.162708
+      ...
+    # Subtest: includes call guidance for call signals
+    ok 2 - includes call guidance for call signals
+      ---
+      duration_ms: 0.143084
+      ...
+    # Subtest: includes external-calendar guidance for external calendar signals
+    ok 3 - includes external-calendar guidance for external calendar signals
+      ---
+      duration_ms: 0.118667
+      ...
+    # Subtest: includes both guidance blocks when both signals exist
+    ok 4 - includes both guidance blocks when both signals exist
+      ---
+      duration_ms: 0.0925
+      ...
+    # Subtest: includes process-specific route guidance for route-only process 2
+    ok 5 - includes process-specific route guidance for route-only process 2
+      ---
+      duration_ms: 0.120791
+      ...
+    # Subtest: includes process 4 call guidance when route exists without explicit call signal
+    ok 6 - includes process 4 call guidance when route exists without explicit call signal
+      ---
+      duration_ms: 0.093041
+      ...
+    1..6
+ok 5 - action signal prompt appendix
+  ---
+  duration_ms: 0.835583
+  type: 'suite'
+  ...
+# Subtest: admin actions auth helper
+    # Subtest: filters empty secrets
+    ok 1 - filters empty secrets
+      ---
+      duration_ms: 1.324708
+      ...
+    # Subtest: returns 500 when no admin secrets configured
+    ok 2 - returns 500 when no admin secrets configured
+      ---
+      duration_ms: 48.829375
+      ...
+    # Subtest: accepts Bearer admin secret
+    ok 3 - accepts Bearer admin secret
+      ---
+      duration_ms: 1.023041
+      ...
+    # Subtest: accepts workspace provisioning secret header
+    ok 4 - accepts workspace provisioning secret header
+      ---
+      duration_ms: 0.473709
+      ...
+    # Subtest: does not accept cron secret header
+    ok 5 - does not accept cron secret header
+      ---
+      duration_ms: 0.233041
+      ...
+    1..5
+ok 6 - admin actions auth helper
+  ---
+  duration_ms: 53.715417
+  type: 'suite'
+  ...
+# Subtest: ai decision contract v1
+    # Subtest: derives booking_only contract for qualified booking intent
+    ok 1 - derives booking_only contract for qualified booking intent
+      ---
+      duration_ms: 0.575667
+      ...
+    # Subtest: derives info_then_booking when pricing is asked but booking-now is not ready
+    ok 2 - derives info_then_booking when pricing is asked but booking-now is not ready
+      ---
+      duration_ms: 0.165958
+      ...
+    # Subtest: does not infer pricing intent from qualification context
+    ok 3 - does not infer pricing intent from qualification context
+      ---
+      duration_ms: 0.076042
+      ...
+    # Subtest: validates strict yes/no and mode fields
+    ok 4 - validates strict yes/no and mode fields
+      ---
+      duration_ms: 0.133542
+      ...
+    # Subtest: repairs loose payload types into valid contract
+    ok 5 - repairs loose payload types into valid contract
+      ---
+      duration_ms: 0.152167
+      ...
+    1..5
+ok 7 - ai decision contract v1
+  ---
+  duration_ms: 1.815167
+  type: 'suite'
+  ...
+# Subtest: AI draft booking conversion analytics windowing
+    # Subtest: anchors windowing to Message.sentAt and dedupes by lead
+    ok 1 - anchors windowing to Message.sentAt and dedupes by lead
+      ---
+      duration_ms: 1.543625
+      ...
+    1..1
+ok 8 - AI draft booking conversion analytics windowing
+  ---
+  duration_ms: 3.260791
+  type: 'suite'
+  ...
+# Subtest: sanitizeDraftContent strips ${PRICE}-style placeholders
+ok 9 - sanitizeDraftContent strips ${PRICE}-style placeholders
+  ---
+  duration_ms: 7.817625
+  ...
+# Subtest: sanitizeDraftContent strips $X/$Y/$A placeholders without stripping real dollar amounts
+ok 10 - sanitizeDraftContent strips $X/$Y/$A placeholders without stripping real dollar amounts
+  ---
+  duration_ms: 0.599917
+  ...
+# Subtest: sanitizeDraftContent strips $X-$Y ranges
+ok 11 - sanitizeDraftContent strips $X-$Y ranges
+  ---
+  duration_ms: 0.09725
+  ...
+# Subtest: sanitizeDraftContent does not strip real prices like $5,000/year, $500/month, or $0
+ok 12 - sanitizeDraftContent does not strip real prices like $5,000/year, $500/month, or $0
+  ---
+  duration_ms: 0.080625
+  ...
+# Subtest: sanitizeDraftContent redacts phone-like numbers
+ok 13 - sanitizeDraftContent redacts phone-like numbers
+  ---
+  duration_ms: 0.60475
+  ...
+# Subtest: extractPricingAmounts extracts grounded prices
+ok 14 - extractPricingAmounts extracts grounded prices
+  ---
+  duration_ms: 5.975916
+  ...
+# Subtest: extractPricingAmounts excludes revenue/threshold amounts
+ok 15 - extractPricingAmounts excludes revenue/threshold amounts
+  ---
+  duration_ms: 0.183
+  ...
+# Subtest: extractPricingAmounts excludes qualification thresholds even when 'membership' is mentioned
+ok 16 - extractPricingAmounts excludes qualification thresholds even when 'membership' is mentioned
+  ---
+  duration_ms: 0.495666
+  ...
+# Subtest: extractPricingAmounts still extracts pricing even when qualification thresholds appear nearby
+ok 17 - extractPricingAmounts still extracts pricing even when qualification thresholds appear nearby
+  ---
+  duration_ms: 0.536333
+  ...
+# Subtest: extractPricingAmounts still reads regular one-time prices
+ok 18 - extractPricingAmounts still reads regular one-time prices
+  ---
+  duration_ms: 0.3915
+  ...
+# Subtest: detectPricingHallucinations flags unsupported pricing
+ok 19 - detectPricingHallucinations flags unsupported pricing
+  ---
+  duration_ms: 0.378209
+  ...
+# Subtest: detectPricingHallucinations accepts supported pricing
+ok 20 - detectPricingHallucinations accepts supported pricing
+  ---
+  duration_ms: 1.374542
+  ...
+# Subtest: detectPricingHallucinations uses knowledgeContext when serviceDescription is silent
+ok 21 - detectPricingHallucinations uses knowledgeContext when serviceDescription is silent
+  ---
+  duration_ms: 0.272333
+  ...
+# Subtest: detectPricingHallucinations prefers serviceDescription on conflict
+ok 22 - detectPricingHallucinations prefers serviceDescription on conflict
+  ---
+  duration_ms: 0.41775
+  ...
+# Subtest: detectPricingHallucinations flags cadence mismatch with same amount
+ok 23 - detectPricingHallucinations flags cadence mismatch with same amount
+  ---
+  duration_ms: 0.189375
+  ...
+# Subtest: detectPricingHallucinations does not infer cadence from unknown source cadence
+ok 24 - detectPricingHallucinations does not infer cadence from unknown source cadence
+  ---
+  duration_ms: 0.542833
+  ...
+# Subtest: detectPricingHallucinations keeps cadence scoped to each amount
+ok 25 - detectPricingHallucinations keeps cadence scoped to each amount
+  ---
+  duration_ms: 0.175875
+  ...
+# Subtest: detectPricingHallucinations ignores qualification thresholds even when membership is mentioned
+ok 26 - detectPricingHallucinations ignores qualification thresholds even when membership is mentioned
+  ---
+  duration_ms: 0.29625
+  ...
+# Subtest: enforcePricingAmountSafety removes unsupported dollar amounts
+ok 27 - enforcePricingAmountSafety removes unsupported dollar amounts
+  ---
+  duration_ms: 117.588458
+  ...
+# Subtest: enforcePricingAmountSafety keeps supported dollar amounts
+ok 28 - enforcePricingAmountSafety keeps supported dollar amounts
+  ---
+  duration_ms: 0.487042
+  ...
+# Subtest: enforcePricingAmountSafety keeps knowledgeContext pricing when serviceDescription is silent
+ok 29 - enforcePricingAmountSafety keeps knowledgeContext pricing when serviceDescription is silent
+  ---
+  duration_ms: 0.159125
+  ...
+# Subtest: enforcePricingAmountSafety rewrites cadence-mismatched amount to service-supported cadence
+ok 30 - enforcePricingAmountSafety rewrites cadence-mismatched amount to service-supported cadence
+  ---
+  duration_ms: 0.661625
+  ...
+# Subtest: enforcePricingAmountSafety normalizes monthly plan phrasing under quarterly-only billing
+ok 31 - enforcePricingAmountSafety normalizes monthly plan phrasing under quarterly-only billing
+  ---
+  duration_ms: 0.459416
+  ...
+# Subtest: enforcePricingAmountSafety removes orphan cadence-only pricing lines
+ok 32 - enforcePricingAmountSafety removes orphan cadence-only pricing lines
+  ---
+  duration_ms: 13.943666
+  ...
+# Subtest: enforcePricingAmountSafety adds cadence-safe clarifier when no source pricing exists
+ok 33 - enforcePricingAmountSafety adds cadence-safe clarifier when no source pricing exists
+  ---
+  duration_ms: 0.181708
+  ...
+# Subtest: enforcePricingAmountSafety does not strip revenue-threshold amounts
+ok 34 - enforcePricingAmountSafety does not strip revenue-threshold amounts
+  ---
+  duration_ms: 0.093208
+  ...
+# Subtest: enforcePricingAmountSafety does not strip revenue-threshold amounts when membership language is present
+ok 35 - enforcePricingAmountSafety does not strip revenue-threshold amounts when membership language is present
+  ---
+  duration_ms: 0.084625
+  ...
+# Subtest: mergeServiceDescriptions returns null when both inputs are empty
+ok 36 - mergeServiceDescriptions returns null when both inputs are empty
+  ---
+  duration_ms: 53.482209
+  ...
+# Subtest: mergeServiceDescriptions returns the non-empty input (trimmed)
+ok 37 - mergeServiceDescriptions returns the non-empty input (trimmed)
+  ---
+  duration_ms: 0.118875
+  ...
+# Subtest: mergeServiceDescriptions de-dupes when one contains the other (case/whitespace-insensitive)
+ok 38 - mergeServiceDescriptions de-dupes when one contains the other (case/whitespace-insensitive)
+  ---
+  duration_ms: 0.221458
+  ...
+# Subtest: mergeServiceDescriptions concatenates when both are distinct
+ok 39 - mergeServiceDescriptions concatenates when both are distinct
+  ---
+  duration_ms: 0.142667
+  ...
+# Subtest: AI ops feed internals
+    # Subtest: parseCursorDate returns null for invalid input
+    ok 1 - parseCursorDate returns null for invalid input
+      ---
+      duration_ms: 0.75875
+      ...
+    # Subtest: parseCursorDate parses a valid ISO timestamp
+    ok 2 - parseCursorDate parses a valid ISO timestamp
+      ---
+      duration_ms: 2.946375
+      ...
+    # Subtest: extractAiInteractionSummary reads bookingGate summaries only
+    ok 3 - extractAiInteractionSummary reads bookingGate summaries only
+      ---
+      duration_ms: 0.825042
+      ...
+    # Subtest: extractOverseerPayloadSummary omits evidence and returns intent/status for extract
+    ok 4 - extractOverseerPayloadSummary omits evidence and returns intent/status for extract
+      ---
+      duration_ms: 0.212417
+      ...
+    # Subtest: extractOverseerPayloadSummary returns decision + issuesCount for gate/booking_gate
+    ok 5 - extractOverseerPayloadSummary returns decision + issuesCount for gate/booking_gate
+      ---
+      duration_ms: 0.187708
+      ...
+    1..5
+ok 40 - AI ops feed internals
+  ---
+  duration_ms: 6.037125
+  type: 'suite'
+  ...
+# Subtest: Analytics response time metrics SQL
+    # Subtest: does not cast an aggregate before FILTER
+    ok 1 - does not cast an aggregate before FILTER
+      ---
+      duration_ms: 21.944542
+      ...
+    1..1
+ok 41 - Analytics response time metrics SQL
+  ---
+  duration_ms: 22.618292
+  type: 'suite'
+  ...
+# Subtest: AI draft outcome analytics windowing
+    # Subtest: anchors windowing to Message.sentAt (not AIDraft.updatedAt)
+    ok 1 - anchors windowing to Message.sentAt (not AIDraft.updatedAt)
+      ---
+      duration_ms: 0.936709
+      ...
+    1..1
+ok 42 - AI draft outcome analytics windowing
+  ---
+  duration_ms: 1.842708
+  type: 'suite'
+  ...
+# Subtest: appointment reconciliation eligibility helpers
+    # Subtest: computes hot cutoff in minutes
+    ok 1 - computes hot cutoff in minutes
+      ---
+      duration_ms: 1.828542
+      ...
+    # Subtest: buildHotLeadWhere includes follow-up instance requirement and no lastInboundAt
+    ok 2 - buildHotLeadWhere includes follow-up instance requirement and no lastInboundAt
+      ---
+      duration_ms: 0.203417
+      ...
+    # Subtest: buildWarmLeadWhere requires inbound replies
+    ok 3 - buildWarmLeadWhere requires inbound replies
+      ---
+      duration_ms: 0.1185
+      ...
+    # Subtest: provider eligibility allows email and appointment ID for GHL
+    ok 4 - provider eligibility allows email and appointment ID for GHL
+      ---
+      duration_ms: 0.088042
+      ...
+    # Subtest: provider eligibility requires email for Calendly
+    ok 5 - provider eligibility requires email for Calendly
+      ---
+      duration_ms: 0.401084
+      ...
+    # Subtest: buildHotLeadWhere applies excludeIds when provided
+    ok 6 - buildHotLeadWhere applies excludeIds when provided
+      ---
+      duration_ms: 0.147
+      ...
+    1..6
+ok 43 - appointment reconciliation eligibility helpers
+  ---
+  duration_ms: 3.914959
+  type: 'suite'
+  ...
+# Subtest: buildKnowledgeContextFromAssets
+    # Subtest: respects token budgets and returns per-asset token/byte stats
+    ok 1 - respects token budgets and returns per-asset token/byte stats
+      ---
+      duration_ms: 1.620292
+      ...
+    1..1
+ok 44 - buildKnowledgeContextFromAssets
+  ---
+  duration_ms: 2.770209
+  type: 'suite'
+  ...
+# Subtest: buildAutoSendEvaluatorInput
+    # Subtest: injects verified workspace context and truncates long fields by token estimate
+    ok 1 - injects verified workspace context and truncates long fields by token estimate
+      ---
+      duration_ms: 2.764542
+      ...
+    # Subtest: flags pricing cadence mismatch when draft conflicts with verified context
+    ok 2 - flags pricing cadence mismatch when draft conflicts with verified context
+      ---
+      duration_ms: 1.651792
+      ...
+    1..2
+ok 45 - buildAutoSendEvaluatorInput
+  ---
+  duration_ms: 6.257541
+  type: 'suite'
+  ...
+# Subtest: rankChunksForSelection: prefers chunks with token overlap
+ok 46 - rankChunksForSelection: prefers chunks with token overlap
+  ---
+  duration_ms: 1.363875
+  ...
+# Subtest: rankChunksForSelection: keeps mp:summary if message performance chunks exist
+ok 47 - rankChunksForSelection: keeps mp:summary if message performance chunks exist
+  ---
+  duration_ms: 0.434375
+  ...
+# Subtest: maybeReviseAutoSendDraft: skips when kill-switch is enabled
+ok 48 - maybeReviseAutoSendDraft: skips when kill-switch is enabled
+  ---
+  duration_ms: 1.445375
+  ...
+# Subtest: maybeReviseAutoSendDraft: persists revised draft when confidence improves
+ok 49 - maybeReviseAutoSendDraft: persists revised draft when confidence improves
+  ---
+  duration_ms: 3.297792
+  ...
+# Subtest: maybeReviseAutoSendDraft: does not persist when confidence does not improve
+ok 50 - maybeReviseAutoSendDraft: does not persist when confidence does not improve
+  ---
+  duration_ms: 643.291584
+  ...
+# Subtest: maybeReviseAutoSendDraft: skips when revision attempt is already claimed
+ok 51 - maybeReviseAutoSendDraft: skips when revision attempt is already claimed
+  ---
+  duration_ms: 0.375
+  ...
+# Subtest: maybeReviseAutoSendDraft: allows repeat attempts in loop mode (iteration>0) even if already claimed
+ok 52 - maybeReviseAutoSendDraft: allows repeat attempts in loop mode (iteration>0) even if already claimed
+  ---
+  duration_ms: 84.713583
+  ...
+# Subtest: formatAvailabilitySlotLabel
+    # Subtest: throws for missing or invalid datetime
+    ok 1 - throws for missing or invalid datetime
+      ---
+      duration_ms: 0.539041
+      ...
+    1..1
+ok 53 - formatAvailabilitySlotLabel
+  ---
+  duration_ms: 1.037583
+  type: 'suite'
+  ...
+# Subtest: formatAvailabilitySlots
+    # Subtest: skips blank or invalid slots
+    ok 1 - skips blank or invalid slots
+      ---
+      duration_ms: 57.24675
+      ...
+    1..1
+ok 54 - formatAvailabilitySlots
+  ---
+  duration_ms: 57.550166
+  type: 'suite'
+  ...
+# Subtest: applyValidatedReplacements
+    # Subtest: replaces multiple ranges in reverse order
+    ok 1 - replaces multiple ranges in reverse order
+      ---
+      duration_ms: 0.472375
+      ...
+    1..1
+ok 55 - applyValidatedReplacements
+  ---
+  duration_ms: 0.957125
+  type: 'suite'
+  ...
+# Subtest: validateAvailabilityReplacements
+    # Subtest: accepts valid replacements
+    ok 1 - accepts valid replacements
+      ---
+      duration_ms: 0.71575
+      ...
+    # Subtest: rejects overlapping ranges
+    ok 2 - rejects overlapping ranges
+      ---
+      duration_ms: 0.178125
+      ...
+    # Subtest: rejects non-candidate replacements
+    ok 3 - rejects non-candidate replacements
+      ---
+      duration_ms: 0.139208
+      ...
+    # Subtest: rejects duplicate newText
+    ok 4 - rejects duplicate newText
+      ---
+      duration_ms: 1.909042
+      ...
+    # Subtest: rejects oldText when it is not found in draft
+    ok 5 - rejects oldText when it is not found in draft
+      ---
+      duration_ms: 0.815125
+      ...
+    # Subtest: rejects oldText when it is not unique in draft
+    ok 6 - rejects oldText when it is not unique in draft
+      ---
+      duration_ms: 0.244417
+      ...
+    1..6
+ok 56 - validateAvailabilityReplacements
+  ---
+  duration_ms: 13.145833
+  type: 'suite'
+  ...
+# Subtest: buildRefreshCandidates
+    # Subtest: filters today/past + offered slots and respects cap ordering
+    ok 1 - filters today/past + offered slots and respects cap ordering
+      ---
+      duration_ms: 178.043166
+      ...
+    # Subtest: enforces candidate cap
+    ok 2 - enforces candidate cap
+      ---
+      duration_ms: 0.650167
+      ...
+    # Subtest: falls back to returning offered slots when no fresh slots remain
+    ok 3 - falls back to returning offered slots when no fresh slots remain
+      ---
+      duration_ms: 0.7525
+      ...
+    1..3
+ok 57 - buildRefreshCandidates
+  ---
+  duration_ms: 269.673542
+  type: 'suite'
+  ...
+# Subtest: detectPreferredTimezoneToken
+    # Subtest: picks the most frequent token
+    ok 1 - picks the most frequent token
+      ---
+      duration_ms: 0.332208
+      ...
+    1..1
+ok 58 - detectPreferredTimezoneToken
+  ---
+  duration_ms: 0.399542
+  type: 'suite'
+  ...
+# Subtest: background job autoscale control
+    # Subtest: ramps by one step after ramp window when target is above current
+    ok 1 - ramps by one step after ramp window when target is above current
+      ---
+      duration_ms: 13.704333
+      ...
+    # Subtest: holds during ramp window before next step is allowed
+    ok 2 - holds during ramp window before next step is allowed
+      ---
+      duration_ms: 0.400209
+      ...
+    # Subtest: steps down deterministically on guardrail breach and respects floor
+    ok 3 - steps down deterministically on guardrail breach and respects floor
+      ---
+      duration_ms: 10.485416
+      ...
+    # Subtest: honors operator override over guardrails and ramp logic
+    ok 4 - honors operator override over guardrails and ramp logic
+      ---
+      duration_ms: 0.151458
+      ...
+    # Subtest: updates autoscale state after a decision is applied
+    ok 5 - updates autoscale state after a decision is applied
+      ---
+      duration_ms: 0.122666
+      ...
+    1..5
+ok 59 - background job autoscale control
+  ---
+  duration_ms: 59.51825
+  type: 'suite'
+  ...
+# Subtest: background job fair scheduler
+    # Subtest: builds a round-robin queue by first-seen workspace order
+    ok 1 - builds a round-robin queue by first-seen workspace order
+      ---
+      duration_ms: 4.760833
+      ...
+    # Subtest: parses workspace quota config and legacy high-quota fallback ids
+    ok 2 - parses workspace quota config and legacy high-quota fallback ids
+      ---
+      duration_ms: 0.551834
+      ...
+    # Subtest: claims the next quota-eligible job and skips quota-blocked workspace entries
+    ok 3 - claims the next quota-eligible job and skips quota-blocked workspace entries
+      ---
+      duration_ms: 0.190708
+      ...
+    # Subtest: selects a partitioned due-job subset with per-workspace caps
+    ok 4 - selects a partitioned due-job subset with per-workspace caps
+      ---
+      duration_ms: 0.229084
+      ...
+    1..4
+ok 60 - background job fair scheduler
+  ---
+  duration_ms: 7.062666
+  type: 'suite'
+  ...
+# Subtest: background job promotion gate
+    # Subtest: keeps promotion disabled when feature flag is off
+    ok 1 - keeps promotion disabled when feature flag is off
+      ---
+      duration_ms: 1.785584
+      ...
+    # Subtest: records healthy windows and opens the gate after required windows
+    ok 2 - records healthy windows and opens the gate after required windows
+      ---
+      duration_ms: 0.167666
+      ...
+    # Subtest: resets healthy windows on threshold breach
+    ok 3 - resets healthy windows on threshold breach
+      ---
+      duration_ms: 0.096875
+      ...
+    # Subtest: demotes only after sustained demotion breaches when promoted
+    ok 4 - demotes only after sustained demotion breaches when promoted
+      ---
+      duration_ms: 0.196125
+      ...
+    # Subtest: demotes immediately on duplicate-send breach
+    ok 5 - demotes immediately on duplicate-send breach
+      ---
+      duration_ms: 0.089792
+      ...
+    # Subtest: computes queue-age p95 from runAt values
+    ok 6 - computes queue-age p95 from runAt values
+      ---
+      duration_ms: 0.116333
+      ...
+    1..6
+ok 61 - background job promotion gate
+  ---
+  duration_ms: 4.321583
+  type: 'suite'
+  ...
+# Subtest: cron background jobs safety
+    # Subtest: does not use Postgres session advisory locks (pooling can orphan locks)
+    ok 1 - does not use Postgres session advisory locks (pooling can orphan locks)
+      ---
+      duration_ms: 0.91
+      ...
+    1..1
+ok 62 - cron background jobs safety
+  ---
+  duration_ms: 1.47325
+  type: 'suite'
+  ...
+# Subtest: cron booking-qualification overlap lock
+    # Subtest: guards booking-qualification cron with a Postgres advisory lock
+    ok 1 - guards booking-qualification cron with a Postgres advisory lock
+      ---
+      duration_ms: 37.064042
+      ...
+    1..1
+ok 63 - cron booking-qualification overlap lock
+  ---
+  duration_ms: 37.812916
+  type: 'suite'
+  ...
+# Subtest: booking qualification helpers
+    # Subtest: builds deterministic dedupe keys
+    ok 1 - builds deterministic dedupe keys
+      ---
+      duration_ms: 0.8315
+      ...
+    # Subtest: substitutes disqualification template variables
+    ok 2 - substitutes disqualification template variables
+      ---
+      duration_ms: 0.483208
+      ...
+    # Subtest: extracts question answers from GHL custom fields using normalized question names
+    ok 3 - extracts question answers from GHL custom fields using normalized question names
+      ---
+      duration_ms: 2.222959
+      ...
+    1..3
+ok 64 - booking qualification helpers
+  ---
+  duration_ms: 6.516542
+  type: 'suite'
+  ...
+# Subtest: booking-target-selector
+    # Subtest: never falls back to with_questions when required answers are missing and no_questions is not configured
+    ok 1 - never falls back to with_questions when required answers are missing and no_questions is not configured
+      ---
+      duration_ms: 0.480458
+      ...
+    # Subtest: chooses no_questions when required answers are missing and no_questions is configured
+    ok 2 - chooses no_questions when required answers are missing and no_questions is configured
+      ---
+      duration_ms: 0.091208
+      ...
+    # Subtest: prefers with_questions when no required questions exist and it is configured
+    ok 3 - prefers with_questions when no required questions exist and it is configured
+      ---
+      duration_ms: 0.072
+      ...
+    # Subtest: falls back to no_questions when with_questions is not configured and no required answers are needed
+    ok 4 - falls back to no_questions when with_questions is not configured and no required answers are needed
+      ---
+      duration_ms: 0.140083
+      ...
+    1..4
+ok 65 - booking-target-selector
+  ---
+  duration_ms: 1.534375
+  type: 'suite'
+  ...
+# Subtest: calendar capacity metrics
+    # Subtest: computePct returns null when denominator is 0
+    ok 1 - computePct returns null when denominator is 0
+      ---
+      duration_ms: 0.408292
+      ...
+    # Subtest: computePct returns a 0-1 ratio
+    ok 2 - computePct returns a 0-1 ratio
+      ---
+      duration_ms: 0.089625
+      ...
+    # Subtest: filterSlotsInWindow filters invalid and out-of-window slots and normalizes to ISO
+    ok 3 - filterSlotsInWindow filters invalid and out-of-window slots and normalizes to ISO
+      ---
+      duration_ms: 12.881292
+      ...
+    1..3
+ok 66 - calendar capacity metrics
+  ---
+  duration_ms: 14.186208
+  type: 'suite'
+  ...
+# Subtest: calendly-api
+    # Subtest: POST /invitees includes questions_and_answers with position
+    ok 1 - POST /invitees includes questions_and_answers with position
+      ---
+      duration_ms: 13.659375
+      ...
+    # Subtest: POST /invitees omits questions_and_answers when empty/invalid
+    ok 2 - POST /invitees omits questions_and_answers when empty/invalid
+      ---
+      duration_ms: 0.545333
+      ...
+    # Subtest: GET event type parses custom_questions with name + position
+    ok 3 - GET event type parses custom_questions with name + position
+      ---
+      duration_ms: 23.163042
+      ...
+    # Subtest: POST scheduled event cancellation endpoint
+    ok 4 - POST scheduled event cancellation endpoint
+      ---
+      duration_ms: 3.866542
+      ...
+    1..4
+ok 67 - calendly-api
+  ---
+  duration_ms: 41.951708
+  type: 'suite'
+  ...
+# Subtest: confidence-policy
+    # Subtest: coerces configs with a safe default when shape is invalid
+    ok 1 - coerces configs with a safe default when shape is invalid
+      ---
+      duration_ms: 0.492459
+      ...
+    # Subtest: coerces thresholds to finite numbers only
+    ok 2 - coerces thresholds to finite numbers only
+      ---
+      duration_ms: 0.114625
+      ...
+    # Subtest: resolves thresholds from config with a default fallback
+    ok 3 - resolves thresholds from config with a default fallback
+      ---
+      duration_ms: 0.105958
+      ...
+    1..3
+ok 68 - confidence-policy
+  ---
+  duration_ms: 1.50175
+  type: 'suite'
+  ...
+# Subtest: CRM Sheet Utils
+    # Subtest: Status mapping
+        # Subtest: maps "Qualified" to Lead.status = "qualified"
+        ok 1 - maps "Qualified" to Lead.status = "qualified"
+          ---
+          duration_ms: 0.510708
+          ...
+        # Subtest: maps "Meeting Booked" to Lead.status = "meeting-booked"
+        ok 2 - maps "Meeting Booked" to Lead.status = "meeting-booked"
+          ---
+          duration_ms: 0.078666
+          ...
+        # Subtest: maps unknown values to "new"
+        ok 3 - maps unknown values to "new"
+          ---
+          duration_ms: 0.056041
+          ...
+        1..3
+    ok 1 - Status mapping
+      ---
+      duration_ms: 1.132583
+      type: 'suite'
+      ...
+    # Subtest: Category mapping
+        # Subtest: maps "Meeting Requested" to Lead.sentimentTag
+        ok 1 - maps "Meeting Requested" to Lead.sentimentTag
+          ---
+          duration_ms: 0.171292
+          ...
+        # Subtest: handles case-insensitive matching
+        ok 2 - handles case-insensitive matching
+          ---
+          duration_ms: 0.061792
+          ...
+        # Subtest: maps "Objection" to Lead.sentimentTag
+        ok 3 - maps "Objection" to Lead.sentimentTag
+          ---
+          duration_ms: 0.048541
+          ...
+        1..3
+    ok 2 - Category mapping
+      ---
+      duration_ms: 0.387834
+      type: 'suite'
+      ...
+    # Subtest: Normalize CRM values
+        # Subtest: trims strings and returns null for blanks
+        ok 1 - trims strings and returns null for blanks
+          ---
+          duration_ms: 0.081625
+          ...
+        1..1
+    ok 3 - Normalize CRM values
+      ---
+      duration_ms: 0.220291
+      type: 'suite'
+      ...
+    # Subtest: Response mode derivation
+        # Subtest: classifies AI responses
+        ok 1 - classifies AI responses
+          ---
+          duration_ms: 0.100292
+          ...
+        # Subtest: classifies HUMAN responses
+        ok 2 - classifies HUMAN responses
+          ---
+          duration_ms: 0.145625
+          ...
+        # Subtest: falls back to UNKNOWN
+        ok 3 - falls back to UNKNOWN
+          ---
+          duration_ms: 0.065458
+          ...
+        1..3
+    ok 4 - Response mode derivation
+      ---
+      duration_ms: 0.454792
+      type: 'suite'
+      ...
+    # Subtest: Response type derivation
+        # Subtest: labels booked leads as meeting requests
+        ok 1 - labels booked leads as meeting requests
+          ---
+          duration_ms: 0.121875
+          ...
+        # Subtest: labels meeting/call requests as meeting requests
+        ok 2 - labels meeting/call requests as meeting requests
+          ---
+          duration_ms: 0.064291
+          ...
+        # Subtest: labels information requests
+        ok 3 - labels information requests
+          ---
+          duration_ms: 0.068667
+          ...
+        # Subtest: labels objections
+        ok 4 - labels objections
+          ---
+          duration_ms: 0.119875
+          ...
+        # Subtest: labels follow-up future when snoozedUntil is in the future
+        ok 5 - labels follow-up future when snoozedUntil is in the future
+          ---
+          duration_ms: 0.05475
+          ...
+        # Subtest: labels follow-up future for any Follow Up sentiment
+        ok 6 - labels follow-up future for any Follow Up sentiment
+          ---
+          duration_ms: 0.047291
+          ...
+        # Subtest: falls back to OTHER when no rule matches
+        ok 7 - falls back to OTHER when no rule matches
+          ---
+          duration_ms: 0.046417
+          ...
+        1..7
+    ok 5 - Response type derivation
+      ---
+      duration_ms: 0.644458
+      type: 'suite'
+      ...
+    1..5
+ok 69 - CRM Sheet Utils
+  ---
+  duration_ms: 3.297958
+  type: 'suite'
+  ...
+# Subtest: background maintenance includes draft pipeline retention + memory pruning
+ok 70 - background maintenance includes draft pipeline retention + memory pruning
+  ---
+  duration_ms: 3.000709
+  ...
+# Subtest: stripNullBytes
+    # Subtest: removes embedded null bytes from strings
+    ok 1 - removes embedded null bytes from strings
+      ---
+      duration_ms: 0.460834
+      ...
+    # Subtest: preserves undefined and null semantics
+    ok 2 - preserves undefined and null semantics
+      ---
+      duration_ms: 0.085958
+      ...
+    1..2
+ok 71 - stripNullBytes
+  ---
+  duration_ms: 3.950375
+  type: 'suite'
+  ...
+# Subtest: cleanEmailBody
+    # Subtest: sanitizes null bytes from text and html payloads
+    ok 1 - sanitizes null bytes from text and html payloads
+      ---
+      duration_ms: 0.399625
+      ...
+    # Subtest: sanitizes html-only payloads
+    ok 2 - sanitizes html-only payloads
+      ---
+      duration_ms: 0.792583
+      ...
+    # Subtest: strips Gmail-style quoted threads where 'On ... wrote:' spans lines
+    ok 3 - strips Gmail-style quoted threads where 'On ... wrote:' spans lines
+      ---
+      duration_ms: 0.158542
+      ...
+    # Subtest: strips forwarded message blocks
+    ok 4 - strips forwarded message blocks
+      ---
+      duration_ms: 0.364292
+      ...
+    1..4
+ok 72 - cleanEmailBody
+  ---
+  duration_ms: 1.858834
+  type: 'suite'
+  ...
+# Subtest: stripEmailQuotedSectionsForAutomation
+    # Subtest: removes quoted thread boundaries across lines
+    ok 1 - removes quoted thread boundaries across lines
+      ---
+      duration_ms: 0.177333
+      ...
+    1..1
+ok 73 - stripEmailQuotedSectionsForAutomation
+  ---
+  duration_ms: 0.33425
+  type: 'suite'
+  ...
+# Subtest: sanitizeCcList normalizes, dedupes, and filters invalid emails
+ok 74 - sanitizeCcList normalizes, dedupes, and filters invalid emails
+  ---
+  duration_ms: 1.54075
+  ...
+# Subtest: sanitizeCcList enforces maxCc limit
+ok 75 - sanitizeCcList enforces maxCc limit
+  ---
+  duration_ms: 0.333458
+  ...
+# Subtest: normalizeOptionalEmail handles null/empty and normalizes
+ok 76 - normalizeOptionalEmail handles null/empty and normalizes
+  ---
+  duration_ms: 0.329875
+  ...
+# Subtest: emailsMatch is case-insensitive and null-safe
+ok 77 - emailsMatch is case-insensitive and null-safe
+  ---
+  duration_ms: 0.182833
+  ...
+# Subtest: detectCcReplier returns true only when emails differ
+ok 78 - detectCcReplier returns true only when emails differ
+  ---
+  duration_ms: 0.2465
+  ...
+# Subtest: addToAlternateEmails normalizes, dedupes, and excludes primary
+ok 79 - addToAlternateEmails normalizes, dedupes, and excludes primary
+  ---
+  duration_ms: 0.351792
+  ...
+# Subtest: applyOutboundToOverride ensures primary is CC'd when To differs
+ok 80 - applyOutboundToOverride ensures primary is CC'd when To differs
+  ---
+  duration_ms: 0.264667
+  ...
+# Subtest: applyOutboundToOverride removes To from CC and removes primary when primary is the To
+ok 81 - applyOutboundToOverride removes To from CC and removes primary when primary is the To
+  ---
+  duration_ms: 0.265417
+  ...
+# Subtest: computeLeadCurrentReplierUpdate sets current replier only when To differs from primary
+ok 82 - computeLeadCurrentReplierUpdate sets current replier only when To differs from primary
+  ---
+  duration_ms: 8.483375
+  ...
+# Subtest: computeLeadCurrentReplierUpdate clears current replier when selecting primary
+ok 83 - computeLeadCurrentReplierUpdate clears current replier when selecting primary
+  ---
+  duration_ms: 0.4395
+  ...
+# Subtest: computeLeadCurrentReplierUpdate preserves currentReplierSince when email is unchanged
+ok 84 - computeLeadCurrentReplierUpdate preserves currentReplierSince when email is unchanged
+  ---
+  duration_ms: 0.222417
+  ...
+# Subtest: pickEmailBisonReplyUuidForDeepLink
+    # Subtest: prefers an exact id match when that reply includes a uuid
+    ok 1 - prefers an exact id match when that reply includes a uuid
+      ---
+      duration_ms: 1.091958
+      ...
+    # Subtest: falls back to the newest reply with a uuid when preferred id is missing
+    ok 2 - falls back to the newest reply with a uuid when preferred id is missing
+      ---
+      duration_ms: 0.222042
+      ...
+    # Subtest: returns null when no replies include a uuid
+    ok 3 - returns null when no replies include a uuid
+      ---
+      duration_ms: 0.133875
+      ...
+    1..3
+ok 85 - pickEmailBisonReplyUuidForDeepLink
+  ---
+  duration_ms: 2.733667
+  type: 'suite'
+  ...
+# Subtest: buildEmailBisonReplyPayload
+    # Subtest: disables inject_previous_email_body to avoid copying lead signature/links
+    ok 1 - disables inject_previous_email_body to avoid copying lead signature/links
+      ---
+      duration_ms: 0.830958
+      ...
+    1..1
+ok 86 - buildEmailBisonReplyPayload
+  ---
+  duration_ms: 1.7865
+  type: 'suite'
+  ...
+# Subtest: stopEmailBisonCampaignFutureEmailsForLeads
+    # Subtest: returns success=true when EmailBison responds with data.success=true
+    ok 1 - returns success=true when EmailBison responds with data.success=true
+      ---
+      duration_ms: 27.970459
+      ...
+    # Subtest: returns success=false when EmailBison returns an empty body
+    ok 2 - returns success=false when EmailBison returns an empty body
+      ---
+      duration_ms: 0.380792
+      ...
+    # Subtest: returns success=false when EmailBison response omits the success flag
+    ok 3 - returns success=false when EmailBison response omits the success flag
+      ---
+      duration_ms: 3.326667
+      ...
+    1..3
+ok 87 - stopEmailBisonCampaignFutureEmailsForLeads
+  ---
+  duration_ms: 32.933667
+  type: 'suite'
+  ...
+# Subtest: runFollowupBookingGateWithOneRetry
+    # Subtest: does not retry when the first attempt approves
+    ok 1 - does not retry when the first attempt approves
+      ---
+      duration_ms: 1.286625
+      ...
+    # Subtest: retries exactly once when the first attempt needs clarification
+    ok 2 - retries exactly once when the first attempt needs clarification
+      ---
+      duration_ms: 0.21675
+      ...
+    # Subtest: does not retry when the first attempt denies
+    ok 3 - does not retry when the first attempt denies
+      ---
+      duration_ms: 0.114208
+      ...
+    # Subtest: returns null without retry when the first attempt fails
+    ok 4 - returns null without retry when the first attempt fails
+      ---
+      duration_ms: 0.094833
+      ...
+    # Subtest: returns null when the retry attempt fails
+    ok 5 - returns null when the retry attempt fails
+      ---
+      duration_ms: 0.099625
+      ...
+    1..5
+ok 88 - runFollowupBookingGateWithOneRetry
+  ---
+  duration_ms: 2.979125
+  type: 'suite'
+  ...
+# Subtest: deriveBookingSignal
+    # Subtest: routes accept_offer when scheduling-related and offered slots exist
+    ok 1 - routes accept_offer when scheduling-related and offered slots exist
+      ---
+      duration_ms: 0.855209
+      ...
+    # Subtest: does not book when not scheduling-related / decline / other
+    ok 2 - does not book when not scheduling-related / decline / other
+      ---
+      duration_ms: 0.120959
+      ...
+    # Subtest: routes proposed_time when lead proposes a time
+    ok 3 - routes proposed_time when lead proposes a time
+      ---
+      duration_ms: 3.044833
+      ...
+    # Subtest: routes day_only when propose_time is day-only with a weekday token
+    ok 4 - routes day_only when propose_time is day-only with a weekday token
+      ---
+      duration_ms: 0.144459
+      ...
+    # Subtest: treats request_times and reschedule as non-booking routes
+    ok 5 - treats request_times and reschedule as non-booking routes
+      ---
+      duration_ms: 20.032708
+      ...
+    # Subtest: fails closed when overseer is null
+    ok 6 - fails closed when overseer is null
+      ---
+      duration_ms: 0.24075
+      ...
+    # Subtest: carries through weekday/time-of-day preferences for downstream routing
+    ok 7 - carries through weekday/time-of-day preferences for downstream routing
+      ---
+      duration_ms: 0.109292
+      ...
+    1..7
+ok 89 - deriveBookingSignal
+  ---
+  duration_ms: 57.793
+  type: 'suite'
+  ...
+# Subtest: buildAutoBookingConfirmationMessage
+    # Subtest: uses the calendar-invite reschedule wording when booking link is present
+    ok 1 - uses the calendar-invite reschedule wording when booking link is present
+      ---
+      duration_ms: 0.518458
+      ...
+    # Subtest: falls back to correction-only wording when booking link is missing
+    ok 2 - falls back to correction-only wording when booking link is missing
+      ---
+      duration_ms: 0.092334
+      ...
+    1..2
+ok 90 - buildAutoBookingConfirmationMessage
+  ---
+  duration_ms: 1.198333
+  type: 'suite'
+  ...
+# Subtest: selectEarliestSlotForWeekday
+    # Subtest: returns earliest slot for requested weekday in UTC timezone
+    ok 1 - returns earliest slot for requested weekday in UTC timezone
+      ---
+      duration_ms: 56.252125
+      ...
+    # Subtest: handles timezone day rollover when selecting weekday
+    ok 2 - handles timezone day rollover when selecting weekday
+      ---
+      duration_ms: 1.521292
+      ...
+    # Subtest: returns null when the weekday token is invalid
+    ok 3 - returns null when the weekday token is invalid
+      ---
+      duration_ms: 0.118417
+      ...
+    # Subtest: returns null when no slots match the requested weekday
+    ok 4 - returns null when no slots match the requested weekday
+      ---
+      duration_ms: 0.424959
+      ...
+    # Subtest: prefers slots matching preferredTimeOfDay when available
+    ok 5 - prefers slots matching preferredTimeOfDay when available
+      ---
+      duration_ms: 0.769125
+      ...
+    # Subtest: falls back to weekday-only when preferredTimeOfDay has no matches
+    ok 6 - falls back to weekday-only when preferredTimeOfDay has no matches
+      ---
+      duration_ms: 0.295458
+      ...
+    1..6
+ok 91 - selectEarliestSlotForWeekday
+  ---
+  duration_ms: 60.823459
+  type: 'suite'
+  ...
+# Subtest: followup-engine responseDisposition
+    # Subtest: persists responseDisposition when a follow-up email draft is already sending but a message exists
+    ok 1 - persists responseDisposition when a follow-up email draft is already sending but a message exists
+      ---
+      duration_ms: 14.492083
+      ...
+    1..1
+ok 92 - followup-engine responseDisposition
+  ---
+  duration_ms: 15.028916
+  type: 'suite'
+  ...
+# Subtest: isLowRiskGenericAcceptance
+    # Subtest: returns true for a fresh offered slot
+    ok 1 - returns true for a fresh offered slot
+      ---
+      duration_ms: 13.548041
+      ...
+    # Subtest: returns false when the offered slot is stale
+    ok 2 - returns false when the offered slot is stale
+      ---
+      duration_ms: 0.148209
+      ...
+    # Subtest: returns false when offeredAt is missing/invalid
+    ok 3 - returns false when offeredAt is missing/invalid
+      ---
+      duration_ms: 0.089833
+      ...
+    1..3
+ok 93 - isLowRiskGenericAcceptance
+  ---
+  duration_ms: 14.71175
+  type: 'suite'
+  ...
+# Subtest: looksLikeTimeProposalText
+    # Subtest: does not treat generic business phrasing as a time proposal
+    ok 1 - does not treat generic business phrasing as a time proposal
+      ---
+      duration_ms: 0.504166
+      ...
+    # Subtest: still triggers on obvious time proposal phrases
+    ok 2 - still triggers on obvious time proposal phrases
+      ---
+      duration_ms: 0.324209
+      ...
+    1..2
+ok 94 - looksLikeTimeProposalText
+  ---
+  duration_ms: 0.912542
+  type: 'suite'
+  ...
+# Subtest: auto-booking sentiment guards
+    # Subtest: treats blocked sentiments as blocked, but fails open when sentiment is missing
+    ok 1 - treats blocked sentiments as blocked, but fails open when sentiment is missing
+      ---
+      duration_ms: 0.105833
+      ...
+    # Subtest: does not attempt auto-booking for blocked sentiments (meta guard, no DB required)
+    ok 2 - does not attempt auto-booking for blocked sentiments (meta guard, no DB required)
+      ---
+      duration_ms: 2.945375
+      ...
+    1..2
+ok 95 - auto-booking sentiment guards
+  ---
+  duration_ms: 3.517834
+  type: 'suite'
+  ...
+# Subtest: followup-template
+    # Subtest: extracts tokens (single and double braces)
+    ok 1 - extracts tokens (single and double braces)
+      ---
+      duration_ms: 8.189583
+      ...
+    # Subtest: detects unknown tokens
+    ok 2 - detects unknown tokens
+      ---
+      duration_ms: 0.763875
+      ...
+    # Subtest: renders firstName aliases
+    ok 3 - renders firstName aliases
+      ---
+      duration_ms: 0.572541
+      ...
+    # Subtest: renders basic lead variables
+    ok 4 - renders basic lead variables
+      ---
+      duration_ms: 0.185
+      ...
+    # Subtest: renders workspace and lead-company variables
+    ok 5 - renders workspace and lead-company variables
+      ---
+      duration_ms: 0.170792
+      ...
+    # Subtest: renders booking/availability variables
+    ok 6 - renders booking/availability variables
+      ---
+      duration_ms: 0.313375
+      ...
+    # Subtest: renders qualification question variables and aliases
+    ok 7 - renders qualification question variables and aliases
+      ---
+      duration_ms: 0.365542
+      ...
+    # Subtest: blocks rendering when a referenced variable is missing
+    ok 8 - blocks rendering when a referenced variable is missing
+      ---
+      duration_ms: 0.214167
+      ...
+    # Subtest: blocks rendering when signature is missing
+    ok 9 - blocks rendering when signature is missing
+      ---
+      duration_ms: 0.367166
+      ...
+    # Subtest: returns the template unchanged when no tokens are present
+    ok 10 - returns the template unchanged when no tokens are present
+      ---
+      duration_ms: 0.225334
+      ...
+    # Subtest: accumulates unknown-token and missing-value errors
+    ok 11 - accumulates unknown-token and missing-value errors
+      ---
+      duration_ms: 0.30175
+      ...
+    # Subtest: expands spintax deterministically per seed
+    ok 12 - expands spintax deterministically per seed
+      ---
+      duration_ms: 0.465791
+      ...
+    # Subtest: expands spintax with distributed variants across seeds
+    ok 13 - expands spintax with distributed variants across seeds
+      ---
+      duration_ms: 0.413625
+      ...
+    # Subtest: renders template variables inside spintax options
+    ok 14 - renders template variables inside spintax options
+      ---
+      duration_ms: 0.240625
+      ...
+    # Subtest: blocks malformed spintax patterns
+    ok 15 - blocks malformed spintax patterns
+      ---
+      duration_ms: 0.240042
+      ...
+    1..15
+ok 96 - followup-template
+  ---
+  duration_ms: 19.23125
+  type: 'suite'
+  ...
+# [Backstop] Completed 5 orphaned instances for meeting-booked leads
+# [Backstop] Failed to complete follow-ups for meeting-booked leads: Error: DB error
+#     at Object.updateMany (/Users/AR180/Desktop/Codespace/ZRG-Dashboard/lib/__tests__/followups-backstop.test.ts:61:17)
+#     at completeFollowUpsForMeetingBookedLeads (/Users/AR180/Desktop/Codespace/ZRG-Dashboard/lib/followup-engine.ts:2437:56)
+#     at TestContext.<anonymous> (/Users/AR180/Desktop/Codespace/ZRG-Dashboard/lib/__tests__/followups-backstop.test.ts:66:26)
+#     at Test.runInAsyncScope (node:async_hooks:206:9)
+#     at Test.run (node:internal/test_runner/test:796:25)
+#     at Suite.processPendingSubtests (node:internal/test_runner/test:526:18)
+#     at Test.postRun (node:internal/test_runner/test:889:19)
+#     at Test.run (node:internal/test_runner/test:835:12)
+#     at async Suite.processPendingSubtests (node:internal/test_runner/test:526:7)
+# Subtest: completeFollowUpsForMeetingBookedLeads
+    # Subtest: queries for active/paused non-post-booking instances on meeting-booked leads
+    ok 1 - queries for active/paused non-post-booking instances on meeting-booked leads
+      ---
+      duration_ms: 0.897958
+      ...
+    # Subtest: sets status to completed with completedAt and null nextStepDue
+    ok 2 - sets status to completed with completedAt and null nextStepDue
+      ---
+      duration_ms: 0.162208
+      ...
+    # Subtest: returns completedCount from updateMany result
+    ok 3 - returns completedCount from updateMany result
+      ---
+      duration_ms: 1.14775
+      ...
+    # Subtest: returns 0 on error
+    ok 4 - returns 0 on error
+      ---
+      duration_ms: 18.291542
+      ...
+    1..4
+ok 97 - completeFollowUpsForMeetingBookedLeads
+  ---
+  duration_ms: 21.350792
+  type: 'suite'
+  ...
+# Subtest: cron followups overlap lock
+    # Subtest: guards followups cron with a Postgres advisory lock
+    ok 1 - guards followups cron with a Postgres advisory lock
+      ---
+      duration_ms: 0.8175
+      ...
+    1..1
+ok 98 - cron followups overlap lock
+  ---
+  duration_ms: 1.281083
+  type: 'suite'
+  ...
+# Subtest: normalizeGhlAppointmentResponse
+    # Subtest: unwraps the appointment wrapper (production shape)
+    ok 1 - unwraps the appointment wrapper (production shape)
+      ---
+      duration_ms: 0.712834
+      ...
+    # Subtest: handles direct response shape with id
+    ok 2 - handles direct response shape with id
+      ---
+      duration_ms: 0.159875
+      ...
+    # Subtest: unwraps event wrapper shape
+    ok 3 - unwraps event wrapper shape
+      ---
+      duration_ms: 0.083083
+      ...
+    # Subtest: returns null for missing ID in appointment wrapper
+    ok 4 - returns null for missing ID in appointment wrapper
+      ---
+      duration_ms: 0.066167
+      ...
+    # Subtest: returns null for null/undefined input
+    ok 5 - returns null for null/undefined input
+      ---
+      duration_ms: 0.065375
+      ...
+    # Subtest: returns null for empty object
+    ok 6 - returns null for empty object
+      ---
+      duration_ms: 0.133208
+      ...
+    # Subtest: returns null for non-object input
+    ok 7 - returns null for non-object input
+      ---
+      duration_ms: 0.064125
+      ...
+    # Subtest: handles missing optional fields gracefully
+    ok 8 - handles missing optional fields gracefully
+      ---
+      duration_ms: 0.147666
+      ...
+    # Subtest: preserves empty string values for optional fields
+    ok 9 - preserves empty string values for optional fields
+      ---
+      duration_ms: 0.151625
+      ...
+    1..9
+ok 99 - normalizeGhlAppointmentResponse
+  ---
+  duration_ms: 2.476458
+  type: 'suite'
+  ...
+# Subtest: ObjectionResponseSchema
+    # Subtest: truncates agent_response longer than 300 chars
+    ok 1 - truncates agent_response longer than 300 chars
+      ---
+      duration_ms: 1.379958
+      ...
+    # Subtest: preserves agent_response at exactly 300 chars
+    ok 2 - preserves agent_response at exactly 300 chars
+      ---
+      duration_ms: 0.136042
+      ...
+    # Subtest: preserves short agent_response unchanged
+    ok 3 - preserves short agent_response unchanged
+      ---
+      duration_ms: 0.110333
+      ...
+    # Subtest: handles empty string agent_response
+    ok 4 - handles empty string agent_response
+      ---
+      duration_ms: 0.102416
+      ...
+    # Subtest: validates objection_type enum
+    ok 5 - validates objection_type enum
+      ---
+      duration_ms: 0.557916
+      ...
+    # Subtest: validates outcome enum
+    ok 6 - validates outcome enum
+      ---
+      duration_ms: 0.211916
+      ...
+    # Subtest: accepts all valid objection_type values
+    ok 7 - accepts all valid objection_type values
+      ---
+      duration_ms: 0.298
+      ...
+    # Subtest: accepts all valid outcome values
+    ok 8 - accepts all valid outcome values
+      ---
+      duration_ms: 0.298917
+      ...
+    1..8
+ok 100 - ObjectionResponseSchema
+  ---
+  duration_ms: 4.004167
+  type: 'suite'
+  ...
+# Subtest: normalizeWebsiteUrl
+    # Subtest: normalizes URLs and adds scheme when missing
+    ok 1 - normalizes URLs and adds scheme when missing
+      ---
+      duration_ms: 1.348542
+      ...
+    # Subtest: returns null for empty or invalid input
+    ok 2 - returns null for empty or invalid input
+      ---
+      duration_ms: 0.84025
+      ...
+    1..2
+ok 101 - normalizeWebsiteUrl
+  ---
+  duration_ms: 4.378333
+  type: 'suite'
+  ...
+# Subtest: extractPrimaryWebsiteUrlFromAssets
+    # Subtest: extracts the primary website URL from assets
+    ok 1 - extracts the primary website URL from assets
+      ---
+      duration_ms: 0.290125
+      ...
+    # Subtest: returns null when primary asset is missing
+    ok 2 - returns null when primary asset is missing
+      ---
+      duration_ms: 0.250209
+      ...
+    # Subtest: uses raw source when text content is missing
+    ok 3 - uses raw source when text content is missing
+      ---
+      duration_ms: 0.150208
+      ...
+    1..3
+ok 102 - extractPrimaryWebsiteUrlFromAssets
+  ---
+  duration_ms: 0.883375
+  type: 'suite'
+  ...
+# Subtest: resolveKnowledgeAssetContextSource
+    # Subtest: returns notes by default
+    ok 1 - returns notes by default
+      ---
+      duration_ms: 1.104291
+      ...
+    # Subtest: returns raw when mode is raw
+    ok 2 - returns raw when mode is raw
+      ---
+      duration_ms: 0.420375
+      ...
+    # Subtest: falls back to raw when notes are empty
+    ok 3 - falls back to raw when notes are empty
+      ---
+      duration_ms: 1.779125
+      ...
+    1..3
+ok 103 - resolveKnowledgeAssetContextSource
+  ---
+  duration_ms: 3.859208
+  type: 'suite'
+  ...
+# Subtest: knowledge asset update: trims name and updates text for text assets
+ok 104 - knowledge asset update: trims name and updates text for text assets
+  ---
+  duration_ms: 1.171791
+  ...
+# Subtest: knowledge asset update: rejects blank names
+ok 105 - knowledge asset update: rejects blank names
+  ---
+  duration_ms: 0.881292
+  ...
+# Subtest: knowledge asset update: validates and normalizes URL for url assets
+ok 106 - knowledge asset update: validates and normalizes URL for url assets
+  ---
+  duration_ms: 4.0245
+  ...
+# Subtest: knowledge asset update: rejects non-http urls
+ok 107 - knowledge asset update: rejects non-http urls
+  ---
+  duration_ms: 0.116291
+  ...
+# Subtest: knowledge asset update: rejects private network hosts
+ok 108 - knowledge asset update: rejects private network hosts
+  ---
+  duration_ms: 0.092291
+  ...
+# Subtest: knowledge asset update: rejects malformed urls
+ok 109 - knowledge asset update: rejects malformed urls
+  ---
+  duration_ms: 0.076042
+  ...
+# Subtest: knowledge asset update: supports raw content and mode
+ok 110 - knowledge asset update: supports raw content and mode
+  ---
+  duration_ms: 0.08
+  ...
+# Subtest: knowledge asset update: rejects invalid aiContextMode
+ok 111 - knowledge asset update: rejects invalid aiContextMode
+  ---
+  duration_ms: 0.061667
+  ...
+# Subtest: getNextRoundRobinIndex
+    # Subtest: returns -1 for empty sequences
+    ok 1 - returns -1 for empty sequences
+      ---
+      duration_ms: 0.405666
+      ...
+    # Subtest: treats null/undefined as -1 and starts at 0
+    ok 2 - treats null/undefined as -1 and starts at 0
+      ---
+      duration_ms: 4.960417
+      ...
+    # Subtest: wraps around at the end of the sequence
+    ok 3 - wraps around at the end of the sequence
+      ---
+      duration_ms: 0.21825
+      ...
+    1..3
+ok 112 - getNextRoundRobinIndex
+  ---
+  duration_ms: 10.337792
+  type: 'suite'
+  ...
+# Subtest: computeEffectiveSetterSequence
+    # Subtest: falls back to active setters when no configured sequence is present
+    ok 1 - falls back to active setters when no configured sequence is present
+      ---
+      duration_ms: 14.165792
+      ...
+    # Subtest: filters configured sequence to active setters and preserves duplicates
+    ok 2 - filters configured sequence to active setters and preserves duplicates
+      ---
+      duration_ms: 3.25925
+      ...
+    # Subtest: returns empty when configured sequence contains no active setters
+    ok 3 - returns empty when configured sequence contains no active setters
+      ---
+      duration_ms: 0.101458
+      ...
+    1..3
+ok 113 - computeEffectiveSetterSequence
+  ---
+  duration_ms: 17.844792
+  type: 'suite'
+  ...
+# Subtest: isChannelEligibleForLeadAssignment
+    # Subtest: allows all channels when emailOnly=false
+    ok 1 - allows all channels when emailOnly=false
+      ---
+      duration_ms: 0.117166
+      ...
+    # Subtest: allows only email channel when emailOnly=true
+    ok 2 - allows only email channel when emailOnly=true
+      ---
+      duration_ms: 0.133542
+      ...
+    1..2
+ok 114 - isChannelEligibleForLeadAssignment
+  ---
+  duration_ms: 0.437416
+  type: 'suite'
+  ...
+# Subtest: LeadContextBundle: draft profile returns unredacted memory
+ok 115 - LeadContextBundle: draft profile returns unredacted memory
+  ---
+  duration_ms: 2.781167
+  ...
+# Subtest: LeadContextBundle: non-draft profiles redact memory
+ok 116 - LeadContextBundle: non-draft profiles redact memory
+  ---
+  duration_ms: 0.73925
+  ...
+# Subtest: LeadContextBundle: excludes primary website asset from knowledgeContext
+ok 117 - LeadContextBundle: excludes primary website asset from knowledgeContext
+  ---
+  duration_ms: 0.85725
+  ...
+# Subtest: LeadContextBundle: respects per-profile budget overrides
+ok 118 - LeadContextBundle: respects per-profile budget overrides
+  ---
+  duration_ms: 1.850125
+  ...
+# Subtest: collectDraftChannelsFromInboundHistory
+    # Subtest: returns known draft channels in stable order
+    ok 1 - returns known draft channels in stable order
+      ---
+      duration_ms: 2.09325
+      ...
+    # Subtest: filters unsupported channels
+    ok 2 - filters unsupported channels
+      ---
+      duration_ms: 0.256208
+      ...
+    1..2
+ok 119 - collectDraftChannelsFromInboundHistory
+  ---
+  duration_ms: 3.750917
+  type: 'suite'
+  ...
+# Subtest: selectOfferedSlotByPreference
+    # Subtest: selects a slot matching the preferred weekday
+    ok 1 - selects a slot matching the preferred weekday
+      ---
+      duration_ms: 47.207334
+      ...
+    # Subtest: selects the earliest slot matching time-of-day
+    ok 2 - selects the earliest slot matching time-of-day
+      ---
+      duration_ms: 1.069042
+      ...
+    1..2
+ok 120 - selectOfferedSlotByPreference
+  ---
+  duration_ms: 49.228042
+  type: 'suite'
+  ...
+# Subtest: repairShouldBookNowAgainstOfferedSlots
+    # Subtest: sets accepted_slot_index when shouldBookNow=yes and a preferred slot exists
+    ok 1 - sets accepted_slot_index when shouldBookNow=yes and a preferred slot exists
+      ---
+      duration_ms: 1.321166
+      ...
+    # Subtest: uses an evidence start-time constraint (e.g., 10am) to avoid booking an earlier slot
+    ok 2 - uses an evidence start-time constraint (e.g., 10am) to avoid booking an earlier slot
+      ---
+      duration_ms: 6.145166
+      ...
+    # Subtest: degrades shouldBookNow=yes into clarify_only when no offered slot matches the lead's window
+    ok 3 - degrades shouldBookNow=yes into clarify_only when no offered slot matches the lead's window
+      ---
+      duration_ms: 0.70975
+      ...
+    1..3
+ok 121 - repairShouldBookNowAgainstOfferedSlots
+  ---
+  duration_ms: 8.574
+  type: 'suite'
+  ...
+# Subtest: shouldRunMeetingOverseer
+    # Subtest: does not run for blocked sentiments even if the message contains scheduling keywords
+    ok 1 - does not run for blocked sentiments even if the message contains scheduling keywords
+      ---
+      duration_ms: 0.34725
+      ...
+    # Subtest: does not run for blocked sentiments even when offered slots exist
+    ok 2 - does not run for blocked sentiments even when offered slots exist
+      ---
+      duration_ms: 0.1435
+      ...
+    # Subtest: still runs for positive/unknown sentiment when appropriate
+    ok 3 - still runs for positive/unknown sentiment when appropriate
+      ---
+      duration_ms: 0.298208
+      ...
+    1..3
+ok 122 - shouldRunMeetingOverseer
+  ---
+  duration_ms: 2.126458
+  type: 'suite'
+  ...
+# Subtest: memory-governance: scrub strips emails/phones but keeps urls
+ok 123 - memory-governance: scrub strips emails/phones but keeps urls
+  ---
+  duration_ms: 1.043875
+  ...
+# Subtest: memory-governance: empty allowlist disables auto-approval (fail-closed)
+ok 124 - memory-governance: empty allowlist disables auto-approval (fail-closed)
+  ---
+  duration_ms: 0.28025
+  ...
+# Subtest: memory-governance: allowlisted proposal auto-approves when thresholds met
+ok 125 - memory-governance: allowlisted proposal auto-approves when thresholds met
+  ---
+  duration_ms: 0.112625
+  ...
+# Subtest: memory-governance: non-allowlisted proposals become PENDING
+ok 126 - memory-governance: non-allowlisted proposals become PENDING
+  ---
+  duration_ms: 0.181292
+  ...
+# Subtest: memory-governance: ttlDays is capped by policy ttlCapDays
+ok 127 - memory-governance: ttlDays is capped by policy ttlCapDays
+  ---
+  duration_ms: 0.094292
+  ...
+# Subtest: computeRefreshedOfferedSlots
+    # Subtest: updates replaced labels, preserves unchanged labels present, and re-stamps offeredAt
+    ok 1 - updates replaced labels, preserves unchanged labels present, and re-stamps offeredAt
+      ---
+      duration_ms: 0.555375
+      ...
+    # Subtest: drops slots that are no longer present in the updated draft
+    ok 2 - drops slots that are no longer present in the updated draft
+      ---
+      duration_ms: 0.420958
+      ...
+    1..2
+ok 128 - computeRefreshedOfferedSlots
+  ---
+  duration_ms: 1.559042
+  type: 'suite'
+  ...
+# Subtest: AI telemetry metadata: returns undefined for non-objects
+ok 129 - AI telemetry metadata: returns undefined for non-objects
+  ---
+  duration_ms: 1.415083
+  ...
+# Subtest: AI telemetry metadata: drops unknown top-level keys
+ok 130 - AI telemetry metadata: drops unknown top-level keys
+  ---
+  duration_ms: 1.646791
+  ...
+# Subtest: AI telemetry metadata: strips long strings (no raw text)
+ok 131 - AI telemetry metadata: strips long strings (no raw text)
+  ---
+  duration_ms: 0.277916
+  ...
+# Subtest: AI telemetry metadata: strips non-plain objects and sanitizes arrays
+ok 132 - AI telemetry metadata: strips non-plain objects and sanitizes arrays
+  ---
+  duration_ms: 0.38825
+  ...
+# Subtest: AI telemetry metadata: allows autoSendRevision top-level key (stats-only)
+ok 133 - AI telemetry metadata: allows autoSendRevision top-level key (stats-only)
+  ---
+  duration_ms: 0.216959
+  ...
+# Subtest: isWithinCallIntentClayDedupeWindow returns false when no timestamp exists
+ok 134 - isWithinCallIntentClayDedupeWindow returns false when no timestamp exists
+  ---
+  duration_ms: 0.567709
+  ...
+# Subtest: isWithinCallIntentClayDedupeWindow returns true for timestamps inside 24 hours
+ok 135 - isWithinCallIntentClayDedupeWindow returns true for timestamps inside 24 hours
+  ---
+  duration_ms: 0.09275
+  ...
+# Subtest: isWithinCallIntentClayDedupeWindow returns false at or beyond 24 hours
+ok 136 - isWithinCallIntentClayDedupeWindow returns false at or beyond 24 hours
+  ---
+  duration_ms: 0.079875
+  ...
+# Subtest: shouldAttemptClayPhoneEnrichment keeps one-time behavior for non-call-intent triggers
+ok 137 - shouldAttemptClayPhoneEnrichment keeps one-time behavior for non-call-intent triggers
+  ---
+  duration_ms: 0.164416
+  ...
+# Subtest: shouldAttemptClayPhoneEnrichment allows call-intent retries when not in progress
+ok 138 - shouldAttemptClayPhoneEnrichment allows call-intent retries when not in progress
+  ---
+  duration_ms: 0.071166
+  ...
+# Subtest: resolvePhoneE164ForGhl
+    # Subtest: accepts explicit +E.164 numbers
+    ok 1 - accepts explicit +E.164 numbers
+      ---
+      duration_ms: 15.783042
+      ...
+    # Subtest: normalizes 00-prefix international numbers
+    ok 2 - normalizes 00-prefix international numbers
+      ---
+      duration_ms: 5.896459
+      ...
+    # Subtest: accepts digits that already include a valid calling code (stored without '+')
+    ok 3 - accepts digits that already include a valid calling code (stored without '+')
+      ---
+      duration_ms: 0.287375
+      ...
+    # Subtest: parses national-format numbers with deterministic region signals (UK)
+    ok 4 - parses national-format numbers with deterministic region signals (UK)
+      ---
+      duration_ms: 9.327375
+      ...
+    # Subtest: does not invent a country calling code for ambiguous 11-digit nationals
+    ok 5 - does not invent a country calling code for ambiguous 11-digit nationals
+      ---
+      duration_ms: 0.555792
+      ...
+    1..5
+ok 139 - resolvePhoneE164ForGhl
+  ---
+  duration_ms: 32.588084
+  type: 'suite'
+  ...
+# Subtest: toStoredPhone
+    # Subtest: stores explicit international numbers as +E.164-ish
+    ok 1 - stores explicit international numbers as +E.164-ish
+      ---
+      duration_ms: 0.267375
+      ...
+    # Subtest: stores NANP numbers with a leading 1 as +E.164-ish
+    ok 2 - stores NANP numbers with a leading 1 as +E.164-ish
+      ---
+      duration_ms: 0.07225
+      ...
+    # Subtest: does not promote 11-digit national numbers to '+' without an explicit prefix
+    ok 3 - does not promote 11-digit national numbers to '+' without an explicit prefix
+      ---
+      duration_ms: 0.13525
+      ...
+    1..3
+ok 140 - toStoredPhone
+  ---
+  duration_ms: 0.674334
+  type: 'suite'
+  ...
+# Subtest: prisma Appointment calendar attribution fields
+    # Subtest: exposes ghlCalendarId and calendlyEventTypeUri on AppointmentCreateInput
+    ok 1 - exposes ghlCalendarId and calendlyEventTypeUri on AppointmentCreateInput
+      ---
+      duration_ms: 0.428333
+      ...
+    1..1
+ok 141 - prisma Appointment calendar attribution fields
+  ---
+  duration_ms: 0.961
+  type: 'suite'
+  ...
+# Subtest: expandOutputTokenAttempts expands attempts by multiplier when retryExtraTokens is unset
+ok 142 - expandOutputTokenAttempts expands attempts by multiplier when retryExtraTokens is unset
+  ---
+  duration_ms: 2.579708
+  ...
+# Subtest: expandOutputTokenAttempts prefers additive retryExtraTokens when it exceeds multiplier growth
+ok 143 - expandOutputTokenAttempts prefers additive retryExtraTokens when it exceeds multiplier growth
+  ---
+  duration_ms: 1.1145
+  ...
+# Subtest: expandOutputTokenAttempts respects cap and stops expanding when capped
+ok 144 - expandOutputTokenAttempts respects cap and stops expanding when capped
+  ---
+  duration_ms: 0.2085
+  ...
+# Subtest: expandOutputTokenAttempts ignores non-positive retryExtraTokens
+ok 145 - expandOutputTokenAttempts ignores non-positive retryExtraTokens
+  ---
+  duration_ms: 0.158833
+  ...
+# Subtest: prompt runner: gpt-5-mini + temperature uses minimal reasoning (never none)
+ok 146 - prompt runner: gpt-5-mini + temperature uses minimal reasoning (never none)
+  ---
+  duration_ms: 1.451334
+  ...
+# Subtest: prompt runner: gpt-5-mini coerces reasoningEffort none -> minimal
+ok 147 - prompt runner: gpt-5-mini coerces reasoningEffort none -> minimal
+  ---
+  duration_ms: 0.208042
+  ...
+# Subtest: prompt runner: gpt-5.2 + temperature defaults to reasoning none
+ok 148 - prompt runner: gpt-5.2 + temperature defaults to reasoning none
+  ---
+  duration_ms: 0.243875
+  ...
+# Subtest: prompt runner: gpt-5.1 + temperature defaults to reasoning none
+ok 149 - prompt runner: gpt-5.1 + temperature defaults to reasoning none
+  ---
+  duration_ms: 0.231417
+  ...
+# Subtest: applyFlatPromptOverrides: system override applies when valid
+ok 150 - applyFlatPromptOverrides: system override applies when valid
+  ---
+  duration_ms: 9.946625
+  ...
+# Subtest: applyFlatPromptOverrides: workspace override wins over system default
+ok 151 - applyFlatPromptOverrides: workspace override wins over system default
+  ---
+  duration_ms: 0.852209
+  ...
+# Subtest: applyFlatPromptOverrides: stale workspace override falls back to valid system default
+ok 152 - applyFlatPromptOverrides: stale workspace override falls back to valid system default
+  ---
+  duration_ms: 0.272792
+  ...
+# Subtest: applyFlatPromptOverrides: stale system+workspace overrides fall back to code defaults
+ok 153 - applyFlatPromptOverrides: stale system+workspace overrides fall back to code defaults
+  ---
+  duration_ms: 6.229375
+  ...
+# Subtest: reactivation sequence prerequisites
+    # Subtest: returns no missing prerequisites for email-only sequences
+    ok 1 - returns no missing prerequisites for email-only sequences
+      ---
+      duration_ms: 0.817583
+      ...
+    # Subtest: requires phone + GHL credentials for SMS
+    ok 2 - requires phone + GHL credentials for SMS
+      ---
+      duration_ms: 0.141
+      ...
+    # Subtest: requires LinkedIn URL + Unipile for LinkedIn steps
+    ok 3 - requires LinkedIn URL + Unipile for LinkedIn steps
+      ---
+      duration_ms: 0.126292
+      ...
+    # Subtest: formats missing prerequisites for display
+    ok 4 - formats missing prerequisites for display
+      ---
+      duration_ms: 0.183083
+      ...
+    1..4
+ok 154 - reactivation sequence prerequisites
+  ---
+  duration_ms: 2.0785
+  type: 'suite'
+  ...
+# Subtest: responseDisposition idempotent paths
+    # Subtest: persists responseDisposition when email draft already has a message
+    ok 1 - persists responseDisposition when email draft already has a message
+      ---
+      duration_ms: 0.571
+      ...
+    # Subtest: persists responseDisposition for system email idempotent path
+    ok 2 - persists responseDisposition for system email idempotent path
+      ---
+      duration_ms: 5.406875
+      ...
+    # Subtest: always persists responseDisposition for SMS draft approvals
+    ok 3 - always persists responseDisposition for SMS draft approvals
+      ---
+      duration_ms: 1.613166
+      ...
+    1..3
+ok 155 - responseDisposition idempotent paths
+  ---
+  duration_ms: 8.362167
+  type: 'suite'
+  ...
+# Subtest: Response timing analytics (Phase 132)
+    # Subtest: anchors windowing to ResponseTimingEvent.inboundSentAt
+    ok 1 - anchors windowing to ResponseTimingEvent.inboundSentAt
+      ---
+      duration_ms: 1.724291
+      ...
+    # Subtest: excludes canceled bookings and uses appointmentCanceledAt
+    ok 2 - excludes canceled bookings and uses appointmentCanceledAt
+      ---
+      duration_ms: 4.084208
+      ...
+    # Subtest: attributes booking conversion to the first responder
+    ok 3 - attributes booking conversion to the first responder
+      ---
+      duration_ms: 0.330708
+      ...
+    # Subtest: defaults maturity buffer to 14 days
+    ok 4 - defaults maturity buffer to 14 days
+      ---
+      duration_ms: 0.247833
+      ...
+    1..4
+ok 156 - Response timing analytics (Phase 132)
+  ---
+  duration_ms: 7.674833
+  type: 'suite'
+  ...
+# Subtest: Response timing processor statement_timeout
+    # Subtest: does not parameterize SET LOCAL statement_timeout
+    ok 1 - does not parameterize SET LOCAL statement_timeout
+      ---
+      duration_ms: 1.99175
+      ...
+    # Subtest: explicitly sets ResponseTimingEvent.id in raw insert to avoid DB-default drift
+    ok 2 - explicitly sets ResponseTimingEvent.id in raw insert to avoid DB-default drift
+      ---
+      duration_ms: 0.319958
+      ...
+    1..2
+ok 157 - Response timing processor statement_timeout
+  ---
+  duration_ms: 3.200333
+  type: 'suite'
+  ...
+# Subtest: computeChosenDelaySeconds
+    # Subtest: returns a deterministic delay within the requested range
+    ok 1 - returns a deterministic delay within the requested range
+      ---
+      duration_ms: 0.982291
+      ...
+    # Subtest: handles equal min/max windows
+    ok 2 - handles equal min/max windows
+      ---
+      duration_ms: 0.166334
+      ...
+    # Subtest: treats max<min as an empty range and returns min
+    ok 3 - treats max<min as an empty range and returns min
+      ---
+      duration_ms: 0.114125
+      ...
+    1..3
+ok 158 - computeChosenDelaySeconds
+  ---
+  duration_ms: 2.633834
+  type: 'suite'
+  ...
+# Subtest: send_outcome_unknown recovery
+    # Subtest: updates drafts when send outcome is unknown (server action)
+    ok 1 - updates drafts when send outcome is unknown (server action)
+      ---
+      duration_ms: 0.568709
+      ...
+    # Subtest: updates drafts when send outcome is unknown (system send)
+    ok 2 - updates drafts when send outcome is unknown (system send)
+      ---
+      duration_ms: 10.645625
+      ...
+    1..2
+ok 159 - send_outcome_unknown recovery
+  ---
+  duration_ms: 11.8875
+  type: 'suite'
+  ...
+# Subtest: stale sending recovery wiring
+    # Subtest: invokes stale draft recovery via shared background maintenance helper
+    ok 1 - invokes stale draft recovery via shared background maintenance helper
+      ---
+      duration_ms: 0.573542
+      ...
+    1..1
+ok 160 - stale sending recovery wiring
+  ---
+  duration_ms: 1.067792
+  type: 'suite'
+  ...
+# Subtest: isTrueSuperAdminUser respects SUPER_ADMIN_EMAILS allowlist
+ok 161 - isTrueSuperAdminUser respects SUPER_ADMIN_EMAILS allowlist
+  ---
+  duration_ms: 0.693375
+  ...
+# Subtest: isTrueSuperAdminUser respects SUPER_ADMIN_USER_IDS allowlist
+ok 162 - isTrueSuperAdminUser respects SUPER_ADMIN_USER_IDS allowlist
+  ---
+  duration_ms: 0.145791
+  ...
+# Subtest: workspace capabilities allow admin roles to edit settings and view observability
+ok 163 - workspace capabilities allow admin roles to edit settings and view observability
+  ---
+  duration_ms: 0.702042
+  ...
+# Subtest: workspace capabilities restrict client portal users
+ok 164 - workspace capabilities restrict client portal users
+  ---
+  duration_ms: 0.102792
+  ...
+# Subtest: workspace capabilities restrict non-admin internal roles
+ok 165 - workspace capabilities restrict non-admin internal roles
+  ---
+  duration_ms: 0.088917
+  ...
+# Subtest: provisionWorkspaceMemberCore
+    # Subtest: creates a new user, sends email, and adds membership
+    ok 1 - creates a new user, sends email, and adds membership
+      ---
+      duration_ms: 1.062833
+      ...
+    # Subtest: adds membership only for existing users without emailing
+    ok 2 - adds membership only for existing users without emailing
+      ---
+      duration_ms: 0.181583
+      ...
+    # Subtest: rejects invalid roles
+    ok 3 - rejects invalid roles
+      ---
+      duration_ms: 0.081167
+      ...
+    # Subtest: rejects invalid emails
+    ok 4 - rejects invalid emails
+      ---
+      duration_ms: 0.073208
+      ...
+    # Subtest: fails when Resend is not configured for new users
+    ok 5 - fails when Resend is not configured for new users
+      ---
+      duration_ms: 0.104875
+      ...
+    # Subtest: returns success when membership already exists
+    ok 6 - returns success when membership already exists
+      ---
+      duration_ms: 0.163917
+      ...
+    1..6
+ok 166 - provisionWorkspaceMemberCore
+  ---
+  duration_ms: 2.416
+  type: 'suite'
+  ...
+# Subtest: sentBy=ai returns AUTO_SENT
+ok 167 - sentBy=ai returns AUTO_SENT
+  ---
+  duration_ms: 26.502459
+  ...
+# Subtest: sentBy=ai with edited content still returns AUTO_SENT
+ok 168 - sentBy=ai with edited content still returns AUTO_SENT
+  ---
+  duration_ms: 0.124208
+  ...
+# Subtest: sentBy=setter with identical content returns APPROVED
+ok 169 - sentBy=setter with identical content returns APPROVED
+  ---
+  duration_ms: 0.08275
+  ...
+# Subtest: sentBy=setter with different content returns EDITED
+ok 170 - sentBy=setter with different content returns EDITED
+  ---
+  duration_ms: 0.146541
+  ...
+# Subtest: sentBy=null defaults to setter logic
+ok 171 - sentBy=null defaults to setter logic
+  ---
+  duration_ms: 2.069417
+  ...
+# Subtest: whitespace-only difference counts as EDITED
+ok 172 - whitespace-only difference counts as EDITED
+  ---
+  duration_ms: 0.253292
+  ...
+# Subtest: evaluateStep3RewriteGuardrail flags large length rewrites
+ok 173 - evaluateStep3RewriteGuardrail flags large length rewrites
+  ---
+  duration_ms: 0.734209
+  ...
+# Subtest: evaluateStep3RewriteGuardrail allows small localized edits
+ok 174 - evaluateStep3RewriteGuardrail allows small localized edits
+  ---
+  duration_ms: 1.19525
+  ...
+# Subtest: evaluateStep3RewriteGuardrail flags large line count changes
+ok 175 - evaluateStep3RewriteGuardrail flags large line count changes
+  ---
+  duration_ms: 0.238333
+  ...
+# Subtest: evaluateStep3RewriteGuardrail does not flag at exact length ratio threshold
+ok 176 - evaluateStep3RewriteGuardrail does not flag at exact length ratio threshold
+  ---
+  duration_ms: 0.295041
+  ...
+# Subtest: evaluateStep3RewriteGuardrail does not flag when ratio is high but delta is below minDelta
+ok 177 - evaluateStep3RewriteGuardrail does not flag when ratio is high but delta is below minDelta
+  ---
+  duration_ms: 0.1925
+  ...
+# Subtest: evaluateStep3RewriteGuardrail does not flag at exact line ratio threshold
+ok 178 - evaluateStep3RewriteGuardrail does not flag at exact line ratio threshold
+  ---
+  duration_ms: 0.141708
+  ...
+# Subtest: evaluateStep3RewriteGuardrail does not flag identical drafts
+ok 179 - evaluateStep3RewriteGuardrail does not flag identical drafts
+  ---
+  duration_ms: 0.140708
+  ...
+# Subtest: replaceEmDashesWithCommaSpace replaces em-dash with comma+space
+ok 180 - replaceEmDashesWithCommaSpace replaces em-dash with comma+space
+  ---
+  duration_ms: 0.583792
+  ...
+# Subtest: replaceEmDashesWithCommaSpace avoids space before comma
+ok 181 - replaceEmDashesWithCommaSpace avoids space before comma
+  ---
+  duration_ms: 0.138375
+  ...
+# Subtest: enforceCanonicalBookingLink replaces [Calendly link] placeholder
+ok 182 - enforceCanonicalBookingLink replaces [Calendly link] placeholder
+  ---
+  duration_ms: 0.639792
+  ...
+# Subtest: enforceCanonicalBookingLink replaces wrong calendly link with canonical
+ok 183 - enforceCanonicalBookingLink replaces wrong calendly link with canonical
+  ---
+  duration_ms: 0.271209
+  ...
+# Subtest: enforceCanonicalBookingLink replaces GHL widget booking link with canonical
+ok 184 - enforceCanonicalBookingLink replaces GHL widget booking link with canonical
+  ---
+  duration_ms: 0.162417
+  ...
+# Subtest: enforceCanonicalBookingLink does not replace arbitrary URLs by default
+ok 185 - enforceCanonicalBookingLink does not replace arbitrary URLs by default
+  ---
+  duration_ms: 0.117625
+  ...
+# Subtest: enforceCanonicalBookingLink replaces any http(s) URL when replaceAllUrls is set
+ok 186 - enforceCanonicalBookingLink replaces any http(s) URL when replaceAllUrls is set
+  ---
+  duration_ms: 0.115333
+  ...
+# Subtest: enforceCanonicalBookingLink removes booking widget links when canonical is missing
+ok 187 - enforceCanonicalBookingLink removes booking widget links when canonical is missing
+  ---
+  duration_ms: 0.127375
+  ...
+# Subtest: removeForbiddenTerms strips forbidden words with word boundaries
+ok 188 - removeForbiddenTerms strips forbidden words with word boundaries
+  ---
+  duration_ms: 0.727583
+  ...
+# Subtest: removeForbiddenTerms strips forbidden phrases case-insensitively
+ok 189 - removeForbiddenTerms strips forbidden phrases case-insensitively
+  ---
+  duration_ms: 0.232458
+  ...
+# Subtest: determineAutoSendMode
+    # Subtest: returns AI_AUTO_SEND when campaign is AI mode (even if autoReplyEnabled is true)
+    ok 1 - returns AI_AUTO_SEND when campaign is AI mode (even if autoReplyEnabled is true)
+      ---
+      duration_ms: 0.541958
+      ...
+    # Subtest: returns LEGACY_AUTO_REPLY when no campaign and autoReplyEnabled=true
+    ok 2 - returns LEGACY_AUTO_REPLY when no campaign and autoReplyEnabled=true
+      ---
+      duration_ms: 0.077625
+      ...
+    # Subtest: returns DISABLED when campaign exists but is not AI mode
+    ok 3 - returns DISABLED when campaign exists but is not AI mode
+      ---
+      duration_ms: 0.134208
+      ...
+    # Subtest: returns DISABLED when no campaign and autoReplyEnabled=false
+    ok 4 - returns DISABLED when no campaign and autoReplyEnabled=false
+      ---
+      duration_ms: 0.060917
+      ...
+    # Subtest: returns DISABLED when global kill-switch is enabled
+    ok 5 - returns DISABLED when global kill-switch is enabled
+      ---
+      duration_ms: 0.078583
+      ...
+    1..5
+ok 190 - determineAutoSendMode
+  ---
+  duration_ms: 1.454208
+  type: 'suite'
+  ...
+# Subtest: executeAutoSend - AI_AUTO_SEND path
+    # Subtest: skips when global kill-switch is enabled
+    ok 1 - skips when global kill-switch is enabled
+      ---
+      duration_ms: 0.540334
+      ...
+    # Subtest: skips when draft content is missing/whitespace
+    ok 2 - skips when draft content is missing/whitespace
+      ---
+      duration_ms: 0.647166
+      ...
+    # Subtest: skips auto-send when call intent is detected and a phone number is on file
+    ok 3 - skips auto-send when call intent is detected and a phone number is on file
+      ---
+      duration_ms: 0.270333
+      ...
+    # Subtest: skips auto-send when call intent is detected and no phone number is on file
+    ok 4 - skips auto-send when call intent is detected and no phone number is on file
+      ---
+      duration_ms: 0.288125
+      ...
+    # Subtest: sends immediately when confidence >= threshold and no delay configured
+    ok 5 - sends immediately when confidence >= threshold and no delay configured
+      ---
+      duration_ms: 3.246041
+      ...
+    # Subtest: blocks approved send when post-AI invariants fail
+    ok 6 - blocks approved send when post-AI invariants fail
+      ---
+      duration_ms: 1.607083
+      ...
+    # Subtest: attempts revision when below threshold and uses revised evaluation when improved
+    ok 7 - attempts revision when below threshold and uses revised evaluation when improved
+      ---
+      duration_ms: 2.167958
+      ...
+    # Subtest: loops revision up to 3 iterations and stops early when threshold is met
+    ok 8 - loops revision up to 3 iterations and stops early when threshold is met
+      ---
+      duration_ms: 0.984583
+      ...
+    # Subtest: persists loop summary artifact when run id is present (threshold_met)
+    ok 9 - persists loop summary artifact when run id is present (threshold_met)
+      ---
+      duration_ms: 0.338375
+      ...
+    # Subtest: persists loop summary with stopReason=no_improvement when revision fails
+    ok 10 - persists loop summary with stopReason=no_improvement when revision fails
+      ---
+      duration_ms: 0.356583
+      ...
+    # Subtest: caps revision loop at 3 iterations (does not send when still below threshold)
+    ok 11 - caps revision loop at 3 iterations (does not send when still below threshold)
+      ---
+      duration_ms: 0.362834
+      ...
+    # Subtest: does not attempt revision when evaluator returns a hard block
+    ok 12 - does not attempt revision when evaluator returns a hard block
+      ---
+      duration_ms: 0.223875
+      ...
+    # Subtest: does not attempt revision when workspace toggle is disabled
+    ok 13 - does not attempt revision when workspace toggle is disabled
+      ---
+      duration_ms: 0.481291
+      ...
+    # Subtest: returns error when approveAndSendDraftSystem fails
+    ok 14 - returns error when approveAndSendDraftSystem fails
+      ---
+      duration_ms: 0.235709
+      ...
+    # Subtest: schedules delayed send when delay window is configured
+    ok 15 - schedules delayed send when delay window is configured
+      ---
+      duration_ms: 0.27575
+      ...
+    # Subtest: does not fallback to immediate send if delayed send is already scheduled
+    ok 16 - does not fallback to immediate send if delayed send is already scheduled
+      ---
+      duration_ms: 0.199291
+      ...
+    # Subtest: skips immediate send when validateDelayedAutoSend fails
+    ok 17 - skips immediate send when validateDelayedAutoSend fails
+      ---
+      duration_ms: 0.28275
+      ...
+    # Subtest: uses unknown_reason when immediate-send validation fails without a reason
+    ok 18 - uses unknown_reason when immediate-send validation fails without a reason
+      ---
+      duration_ms: 0.233375
+      ...
+    # Subtest: requires review when safeToSend=false even if confidence >= threshold (skipHumanReview disabled)
+    ok 19 - requires review when safeToSend=false even if confidence >= threshold (skipHumanReview disabled)
+      ---
+      duration_ms: 0.234791
+      ...
+    # Subtest: bypasses safeToSend when campaign toggle is enabled (confidence >= threshold)
+    ok 20 - bypasses safeToSend when campaign toggle is enabled (confidence >= threshold)
+      ---
+      duration_ms: 0.264833
+      ...
+    # Subtest: inherits workspace toggle when campaign override is null
+    ok 21 - inherits workspace toggle when campaign override is null
+      ---
+      duration_ms: 0.253083
+      ...
+    # Subtest: prefers explicit campaign false over workspace true
+    ok 22 - prefers explicit campaign false over workspace true
+      ---
+      duration_ms: 0.193541
+      ...
+    # Subtest: does not bypass hard blocks when campaign toggle is enabled
+    ok 23 - does not bypass hard blocks when campaign toggle is enabled
+      ---
+      duration_ms: 0.197125
+      ...
+    # Subtest: still requires confidence >= threshold when campaign toggle is enabled
+    ok 24 - still requires confidence >= threshold when campaign toggle is enabled
+      ---
+      duration_ms: 0.278833
+      ...
+    # Subtest: sends Slack review DM when safeToSend=false, including draft preview when enabled
+    ok 25 - sends Slack review DM when safeToSend=false, including draft preview when enabled
+      ---
+      duration_ms: 0.540583
+      ...
+    # Subtest: renders Unknown lead name in Slack blocks when lead info is missing
+    ok 26 - renders Unknown lead name in Slack blocks when lead info is missing
+      ---
+      duration_ms: 0.273459
+      ...
+    # Subtest: omits draft preview in Slack blocks when includeDraftPreviewInSlack=false
+    ok 27 - omits draft preview in Slack blocks when includeDraftPreviewInSlack=false
+      ---
+      duration_ms: 0.223583
+      ...
+    1..27
+ok 191 - executeAutoSend - AI_AUTO_SEND path
+  ---
+  duration_ms: 15.939459
+  type: 'suite'
+  ...
+# Subtest: executeAutoSend - LEGACY_AUTO_REPLY path
+    # Subtest: sends when decideShouldAutoReply returns shouldReply=true
+    ok 1 - sends when decideShouldAutoReply returns shouldReply=true
+      ---
+      duration_ms: 0.205042
+      ...
+    # Subtest: returns error when approveAndSendDraftSystem fails
+    ok 2 - returns error when approveAndSendDraftSystem fails
+      ---
+      duration_ms: 0.127
+      ...
+    # Subtest: skips when decideShouldAutoReply returns shouldReply=false
+    ok 3 - skips when decideShouldAutoReply returns shouldReply=false
+      ---
+      duration_ms: 0.105458
+      ...
+    1..3
+ok 192 - executeAutoSend - LEGACY_AUTO_REPLY path
+  ---
+  duration_ms: 0.51625
+  type: 'suite'
+  ...
+# Subtest: executeAutoSend - DISABLED + debug logging
+    # Subtest: returns skip in DISABLED mode and logs when AUTO_SEND_DEBUG=1
+    ok 1 - returns skip in DISABLED mode and logs when AUTO_SEND_DEBUG=1
+      ---
+      duration_ms: 0.254583
+      ...
+    # Subtest: logs starting and complete for non-disabled mode when AUTO_SEND_DEBUG=1
+    ok 2 - logs starting and complete for non-disabled mode when AUTO_SEND_DEBUG=1
+      ---
+      duration_ms: 0.165625
+      ...
+    # Subtest: default exported executeAutoSend returns DISABLED without calling external deps
+    ok 3 - default exported executeAutoSend returns DISABLED without calling external deps
+      ---
+      duration_ms: 0.074542
+      ...
+    1..3
+ok 193 - executeAutoSend - DISABLED + debug logging
+  ---
+  duration_ms: 0.565584
+  type: 'suite'
+  ...
+1..193
+# tests 419
+# suites 81
+# pass 419
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 37874.099

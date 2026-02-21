@@ -1,6 +1,7 @@
 # Phase 179 — Review
 
 Date: 2026-02-21
+Status: Complete (core fixes shipped; minor draft-quality follow-up recommended)
 
 ## What shipped in this change set
 - **Provider-evidence gate for `Meeting Booked`**:
@@ -42,6 +43,13 @@ Date: 2026-02-21
     - draft_quality_error=2 (all other failure types = 0)
   - CriticalInvariants:
     - slot_mismatch=0, date_mismatch=0, fabricated_link=0, empty_draft=0, non_logistics_reply=0
+- Post-fix rerun (overseer mode only):
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-179/replay-case-manifest.json --dry-run --ab-mode overseer` — pass (selected=12)
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-179/replay-case-manifest.json --concurrency 3 --ab-mode overseer`
+    - Artifact: `.artifacts/ai-replay/run-2026-02-21T14-21-25-007Z.json`
+    - Summary: evaluated=10 passed=9 failedJudge=1 failed=0 averageScore=63.9
+    - FailureTypes: draft_quality_error=1 (all other failure types = 0)
+    - CriticalInvariants: all zero
 
 ## Residual risk
 - Replay flagged `draft_quality_error=2` (near-threshold) with no critical invariant failures. If these are frequent in production, we should tune clarifier phrasing for:

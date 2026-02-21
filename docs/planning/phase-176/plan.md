@@ -32,10 +32,10 @@ This phase overlaps with recent work in follow-up timing + scheduling/AI draftin
 
 ## Objectives
 * [x] Identify where/why “draft skipped” and “no concrete date” warnings still occur in production paths.
-* [ ] Enforce meeting scheduling policy: match requested window to offered slots; otherwise send link-only (no alternative times).
-* [ ] Add explicit support for “move/reschedule meeting” requests (same policy constraints; do not repeat prior offers).
-* [ ] Ensure a draft exists even when scheduling flow creates a follow-up task (no “manual-only” dead ends).
-* [ ] Add regression coverage (unit + replay manifest) and run NTTAN gates.
+* [x] Enforce meeting scheduling policy: match requested window to offered slots; otherwise send link-only (no alternative times).
+* [x] Add explicit support for “move/reschedule meeting” requests (same policy constraints; do not repeat prior offers).
+* [x] Ensure a draft exists even when scheduling flow creates a follow-up task (no “manual-only” dead ends).
+* [x] Add regression coverage (unit + replay manifest) and run NTTAN gates.
 
 ## Constraints
 * Do not invent times: offered slots are source-of-truth.
@@ -83,3 +83,8 @@ This phase overlaps with recent work in follow-up timing + scheduling/AI draftin
 - 2026-02-20 — Identified emitters + root causes for the two Slack warnings and pulled Jam + Supabase-backed case IDs (files: `docs/planning/phase-176/a/plan.md`, `lib/followup-timing.ts`, `lib/background-jobs/email-inbound-post-process.ts`, `lib/followup-engine.ts`).
 - 2026-02-20 — Hardened scheduling window enforcement in the revision loop (week-of-month support + link-only no-match behavior) (files: `lib/auto-send/revision-constraints.ts`, `docs/planning/phase-176/b/plan.md`).
 - 2026-02-20 — Fixed “no draft” routed scheduling dead-ends via FollowUpTask→AIDraft backfill + skip fallback; enabled Objection classification for competitor deferrals (files: `lib/followup-task-drafts.ts`, `lib/background-jobs/*-inbound-post-process.ts`, `lib/inbound-post-process/pipeline.ts`, `lib/background-jobs/maintenance.ts`, `lib/sentiment.ts`, `docs/planning/phase-176/c/plan.md`).
+- 2026-02-21 — Completed deferred validation gates from 176d:
+  - `npm run test:ai-drafts` (pass)
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-176/replay-case-manifest.json --dry-run --ab-mode overseer`
+  - `npm run test:ai-replay -- --thread-ids-file docs/planning/phase-176/replay-case-manifest.json --concurrency 3 --ab-mode overseer`
+  - Live replay artifact: `.artifacts/ai-replay/run-2026-02-21T14-17-36-385Z.json` (evaluated=4, passed=3, failedJudge=1, zero critical invariant misses).

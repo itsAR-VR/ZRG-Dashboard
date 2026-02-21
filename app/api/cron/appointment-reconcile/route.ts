@@ -28,6 +28,17 @@ function isDispatchEnabled(): boolean {
   return parseBooleanFlag(process.env.CRON_APPOINTMENT_RECONCILE_USE_INNGEST);
 }
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function getDispatchWindowSeconds(): number {
+  const parsed = parsePositiveInt(process.env.CRON_APPOINTMENT_RECONCILE_DISPATCH_WINDOW_SECONDS, 60);
+  return Math.max(30, Math.min(3600, parsed));
+}
+
 /**
  * GET /api/cron/appointment-reconcile
  *
@@ -74,10 +85,11 @@ export async function GET(request: NextRequest) {
     }
 
     const params = collectDispatchParams(searchParams, APPOINTMENT_RECONCILE_PARAM_KEYS);
+    const dispatchWindowSeconds = getDispatchWindowSeconds();
     const { requestedAt, dispatchData } = buildCronDispatchContext({
       job: "appointment-reconcile",
       source: "cron/appointment-reconcile",
-      dispatchWindowSeconds: 60,
+      dispatchWindowSeconds,
       params,
     });
     const eventId = buildCronEventId(INNGEST_EVENT_CRON_APPOINTMENT_RECONCILE_REQUESTED, dispatchData.dispatchKey);

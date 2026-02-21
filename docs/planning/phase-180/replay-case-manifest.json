@@ -1,0 +1,28 @@
+{
+  "phase": 180,
+  "strategy": "restrict_intentional_routing_to_followup_only",
+  "clientId": "ef824aca-a3c9-4cde-b51f-2e421ebb6b6e",
+  "threadIds": [
+    "9579e7a8-b080-4162-9b70-d7ab9ee07c75",
+    "06d77552-e5df-4142-b448-bc1cf9e2bce7",
+    "e23a0bc5-321c-42a4-8ccb-043d3ea0e163",
+    "09f13ba9-5e39-4fb6-9ecb-0e7261063ee7",
+    "a3c63907-f933-45bb-9cc6-5334c2d707cb",
+    "d9e7d69a-6b74-4824-a650-b185140b1b0a",
+    "98fd69a1-305f-400d-8e2e-8e3bb537994d",
+    "c5be1ada-90e7-4a17-9fce-3d5062d97da6",
+    "8792bdd9-f5ba-443e-930a-23ea98f43b03",
+    "d4e0a8e7-bc6d-4815-be82-32813b2253cf",
+    "a346f2ac-0174-490c-b463-3277961a5a54",
+    "f47f3724-5e87-412d-abe5-b0d1fd277323",
+    "619b86d9-8ec5-4359-b35f-cc4f8371b73a",
+    "6e94d8ec-2419-4649-85e9-3bcfff9813aa",
+    "1df49d89-40e5-407d-9e5b-edb20f9ac5d2",
+    "cfd3b743-ec0f-4e64-9711-dfd20982b557",
+    "5b646c29-4fcd-417e-a9d9-0da3c280bdf5",
+    "9b11311c-a4d5-4eaf-86da-b852b9fb47c4",
+    "b2268f2d-221a-4626-b142-3536b571fc5e",
+    "18ed8cc7-cce5-4a51-a74d-9987bbd8e618"
+  ],
+  "notes": "Seeded from replay selection artifact run-2026-02-21T02-01-33-563Z for manifest-first reruns. IDs only (no message body content)."
+}

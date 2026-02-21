@@ -747,14 +747,12 @@ export async function getInboxCounts(
             where exists (
               select 1
               from "Message" m
-              join "EmailCampaign" ec on ec.id = l."emailCampaignId"
               where m."leadId" = l.id
                 and m.channel = 'email'
                 and m.direction = 'outbound'
                 and m.source = 'zrg'
                 and m."sentBy" = 'ai'
                 and m."aiDraftId" is not null
-                and ec."responseMode" = 'AI_AUTO_SEND'
             )
           )::int as "aiSent"
         from "Lead" l
@@ -868,9 +866,6 @@ export async function getInboxCounts(
           where: {
             ...clientFilter,
             ...snoozeFilter,
-            emailCampaign: {
-              is: { responseMode: "AI_AUTO_SEND" },
-            },
             messages: {
               some: {
                 channel: "email",
@@ -1647,12 +1642,8 @@ export async function getConversationsCursor(
     } else if (filter === "needs_repair") {
       whereConditions.push({ status: "needs_repair" });
     } else if (filter === "ai_sent") {
-      // Phase 70: "AI Sent" = actually sent by AI auto-send (not just evaluated/scheduled).
-      whereConditions.push({
-        emailCampaign: {
-          is: { responseMode: "AI_AUTO_SEND" },
-        },
-      });
+      // "AI Sent" = messages actually sent by AI automation, regardless of current campaign mode.
+      // This keeps historical auto-sent threads visible even after a campaign is switched to setter-managed.
       whereConditions.push({
         messages: {
           some: {
@@ -2102,11 +2093,7 @@ export async function getConversationsFromEnd(
     } else if (filter === "needs_repair") {
       whereConditions.push({ status: "needs_repair" });
     } else if (filter === "ai_sent") {
-      whereConditions.push({
-        emailCampaign: {
-          is: { responseMode: "AI_AUTO_SEND" },
-        },
-      });
+      // Keep historical auto-sent threads visible regardless of current campaign responseMode.
       whereConditions.push({
         messages: {
           some: {

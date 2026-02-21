@@ -128,6 +128,11 @@ Useful toggles (see `app/api/cron/background-jobs/route.ts`):
 - `BACKGROUND_JOB_OBS_DUPLICATE_SEND_COUNT` — manual duplicate-send override merged with durable `BackgroundFunctionRun.lastError` duplicate-signal scan
 - `BACKGROUND_FUNCTION_RUN_STALE_MINUTES` — stale cutoff for `BackgroundFunctionRun` recovery (default `15`)
 - `BACKGROUND_FUNCTION_RUN_STALE_RECOVERY_LIMIT` — max stale run rows recovered per cron tick (default `25`)
+- `CRON_APPOINTMENT_RECONCILE_USE_INNGEST` — enable dispatch-only execution for `/api/cron/appointment-reconcile`
+- `CRON_APPOINTMENT_RECONCILE_INNGEST_CONCURRENCY` — bounded Inngest function concurrency for `cron-appointment-reconcile` (`1-8`, default `4`)
+- `CRON_APPOINTMENT_RECONCILE_DISPATCH_WINDOW_SECONDS` — producer dispatch dedupe window for appointment reconcile events (`30-3600`, default `60`)
+- `RECONCILE_LEAD_CONCURRENCY` — per-workspace parallel lead reconciliation workers (`1-8`, default `4`)
+- `RECONCILE_WORKSPACE_CONCURRENCY` — parallel workspace reconciliation workers per run (`1-8`, default `2`)
 
 ### Cron-driven automation
 

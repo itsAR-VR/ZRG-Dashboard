@@ -32,6 +32,8 @@ const DEFAULT_WORKSPACE_LIMIT = 10;
 const DEFAULT_LEADS_PER_WORKSPACE = 50;
 const DEFAULT_STALE_DAYS = 7; // Re-check leads not checked in 7 days
 const DEFAULT_HOT_MINUTES = 1; // Re-check hot leads within N minutes
+const DEFAULT_WORKSPACE_CONCURRENCY = 2;
+const DEFAULT_LEAD_CONCURRENCY = 4;
 
 // Circuit breaker thresholds (Phase 57d)
 const DEFAULT_CIRCUIT_BREAKER_ERROR_RATE = 0.5; // 50% error rate triggers circuit breaker
@@ -47,6 +49,18 @@ function getCircuitBreakerMinChecks(): number {
   const parsed = Number.parseInt(process.env.RECONCILE_CIRCUIT_BREAKER_MIN_CHECKS || "", 10);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_CIRCUIT_BREAKER_MIN_CHECKS;
   return Math.max(1, Math.trunc(parsed));
+}
+
+function getReconcileLeadConcurrency(): number {
+  const parsed = Number.parseInt(process.env.RECONCILE_LEAD_CONCURRENCY || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_LEAD_CONCURRENCY;
+  return Math.max(1, Math.min(8, Math.trunc(parsed)));
+}
+
+function getReconcileWorkspaceConcurrency(): number {
+  const parsed = Number.parseInt(process.env.RECONCILE_WORKSPACE_CONCURRENCY || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_WORKSPACE_CONCURRENCY;
+  return Math.max(1, Math.min(8, Math.trunc(parsed)));
 }
 
 export function getReconcileHotMinutes(): number {
@@ -138,6 +152,14 @@ export function buildWarmLeadWhere(opts: {
 
   return { AND: conditions };
 }
+
+type ReconcileLeadCandidate = {
+  id: string;
+  ghlContactId: string | null;
+  email: string | null;
+  ghlAppointmentId: string | null;
+  calendlyScheduledEventUri: string | null;
+};
 
 export interface ReconcileRunnerOptions {
   /** Max workspaces to process per run */
@@ -245,7 +267,7 @@ async function getHotLeads(
   clientId: string,
   provider: MeetingBookingProvider,
   limit: number
-): Promise<Array<{ id: string; ghlContactId: string | null; email: string | null; ghlAppointmentId: string | null; calendlyScheduledEventUri: string | null }>> {
+): Promise<ReconcileLeadCandidate[]> {
   const hotCutoff = getHotCutoff(new Date(), getReconcileHotMinutes());
 
   const leads = await prisma.lead.findMany({
@@ -270,7 +292,7 @@ async function getWarmLeads(
   opts: ReconcileRunnerOptions,
   limit: number,
   excludeIds: string[]
-): Promise<Array<{ id: string; ghlContactId: string | null; email: string | null; ghlAppointmentId: string | null; calendlyScheduledEventUri: string | null }>> {
+): Promise<ReconcileLeadCandidate[]> {
   const staleDays = opts.staleDays ?? DEFAULT_STALE_DAYS;
   const staleCutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000);
 
@@ -293,6 +315,42 @@ async function getWarmLeads(
   });
 
   return leads;
+}
+
+async function reconcileLeadForWorkspace(
+  provider: MeetingBookingProvider,
+  lead: ReconcileLeadCandidate,
+  opts: Pick<ReconcileRunnerOptions, "dryRun" | "skipSideEffects"> & { source: AppointmentSource }
+): Promise<GHLReconcileResult | CalendlyReconcileResult> {
+  if (provider === "GHL") {
+    if (lead.ghlAppointmentId) {
+      return reconcileGHLAppointmentById(lead.id, lead.ghlAppointmentId, {
+        source: opts.source,
+        dryRun: opts.dryRun,
+        skipSideEffects: opts.skipSideEffects,
+      } satisfies GHLReconcileOptions);
+    }
+
+    return reconcileGHLAppointmentForLead(lead.id, {
+      source: opts.source,
+      dryRun: opts.dryRun,
+      skipSideEffects: opts.skipSideEffects,
+    } satisfies GHLReconcileOptions);
+  }
+
+  if (lead.calendlyScheduledEventUri) {
+    return reconcileCalendlyBookingByUri(lead.id, lead.calendlyScheduledEventUri, {
+      source: opts.source,
+      dryRun: opts.dryRun,
+      skipSideEffects: opts.skipSideEffects,
+    } satisfies CalendlyReconcileOptions);
+  }
+
+  return reconcileCalendlyBookingForLead(lead.id, {
+    source: opts.source,
+    dryRun: opts.dryRun,
+    skipSideEffects: opts.skipSideEffects,
+  } satisfies CalendlyReconcileOptions);
 }
 
 /**
@@ -328,63 +386,52 @@ async function reconcileWorkspace(
     errors: 0,
   };
 
-  for (const lead of leads) {
-    counters.leadsChecked++;
+  const workerCount = Math.min(leads.length, getReconcileLeadConcurrency());
+  let nextLeadIndex = 0;
 
-    let result: GHLReconcileResult | CalendlyReconcileResult;
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (true) {
+        const leadIndex = nextLeadIndex++;
+        if (leadIndex >= leads.length) break;
 
-    if (provider === "GHL") {
-      // If we have an existing appointment ID, use direct lookup
-      if (lead.ghlAppointmentId) {
-        result = await reconcileGHLAppointmentById(lead.id, lead.ghlAppointmentId, {
-          source,
-          dryRun: opts.dryRun,
-          skipSideEffects: opts.skipSideEffects,
-        } satisfies GHLReconcileOptions);
-      } else {
-        result = await reconcileGHLAppointmentForLead(lead.id, {
-          source,
-          dryRun: opts.dryRun,
-          skipSideEffects: opts.skipSideEffects,
-        } satisfies GHLReconcileOptions);
+        const lead = leads[leadIndex];
+        if (!lead) break;
+        counters.leadsChecked++;
+
+        try {
+          const result = await reconcileLeadForWorkspace(provider, lead, {
+            source,
+            dryRun: opts.dryRun,
+            skipSideEffects: opts.skipSideEffects,
+          });
+
+          switch (result.status) {
+            case "booked":
+              counters.booked++;
+              break;
+            case "canceled":
+              counters.canceled++;
+              break;
+            case "no_change":
+            case "no_appointments":
+            case "no_events":
+              counters.noChange++;
+              break;
+            case "skipped":
+              counters.skipped++;
+              break;
+            case "error":
+              counters.errors++;
+              break;
+          }
+        } catch (error) {
+          counters.errors++;
+          console.error(`[Reconcile Runner] Error reconciling lead ${lead.id}:`, error);
+        }
       }
-    } else {
-      // Calendly
-      if (lead.calendlyScheduledEventUri) {
-        result = await reconcileCalendlyBookingByUri(lead.id, lead.calendlyScheduledEventUri, {
-          source,
-          dryRun: opts.dryRun,
-          skipSideEffects: opts.skipSideEffects,
-        } satisfies CalendlyReconcileOptions);
-      } else {
-        result = await reconcileCalendlyBookingForLead(lead.id, {
-          source,
-          dryRun: opts.dryRun,
-          skipSideEffects: opts.skipSideEffects,
-        } satisfies CalendlyReconcileOptions);
-      }
-    }
-
-    switch (result.status) {
-      case "booked":
-        counters.booked++;
-        break;
-      case "canceled":
-        counters.canceled++;
-        break;
-      case "no_change":
-      case "no_appointments":
-      case "no_events":
-        counters.noChange++;
-        break;
-      case "skipped":
-        counters.skipped++;
-        break;
-      case "error":
-        counters.errors++;
-        break;
-    }
-  }
+    })
+  );
 
   return counters;
 }
@@ -411,7 +458,18 @@ export async function runAppointmentReconciliation(
     },
   };
 
-  for (const workspace of workspaces) {
+  const workspaceWorkerCount = Math.min(workspaces.length, getReconcileWorkspaceConcurrency());
+  let nextWorkspaceIndex = 0;
+  let stopRequested = false;
+
+  await Promise.all(Array.from({ length: workspaceWorkerCount }, async () => {
+    while (true) {
+      if (stopRequested) break;
+      const workspaceIndex = nextWorkspaceIndex++;
+      if (workspaceIndex >= workspaces.length) break;
+      const workspace = workspaces[workspaceIndex];
+      if (!workspace) break;
+
     try {
       const wsResult = await reconcileWorkspace(workspace, opts);
 
@@ -446,13 +504,15 @@ export async function runAppointmentReconciliation(
           minChecks: circuitBreakerMinChecks,
         });
         result.circuitBroken = true;
-        return result;
+        stopRequested = true;
+        break;
       }
     } catch (error) {
       console.error(`[Reconcile Runner] Error processing workspace ${workspace.id}:`, error);
       result.errors++;
     }
-  }
+    }
+  }));
 
   return result;
 }

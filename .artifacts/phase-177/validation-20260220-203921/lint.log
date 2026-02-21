@@ -1,0 +1,46 @@
+
+> zrg-dashboard@0.1.0 lint
+> eslint .
+
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+
+/Users/AR180/Desktop/Codespace/ZRG-Dashboard/components/dashboard/crm-view.tsx
+  485:6   warning  React Hook useEffect has a missing dependency: 'selectedLead'. Either include it or remove the dependency array                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   react-hooks/exhaustive-deps
+  488:26  warning  Compilation Skipped: Use of incompatible library
+
+This API returns functions which cannot be memoized without leading to stale UI. To prevent this, by default React Compiler will skip memoizing this component/hook. However, you may see issues if values from this API are passed to other components/hooks that are memoized.
+
+/Users/AR180/Desktop/Codespace/ZRG-Dashboard/components/dashboard/crm-view.tsx:488:26
+  486 |
+  487 |   // Setup virtualizer
+> 488 |   const rowVirtualizer = useVirtualizer({
+      |                          ^^^^^^^^^^^^^^ TanStack Virtual's `useVirtualizer()` API returns functions that cannot be memoized safely
+  489 |     count: hasNextPage ? allLeads.length + 1 : allLeads.length, // +1 for load more row
+  490 |     getScrollElement: () => parentRef.current,
+  491 |     estimateSize: () => ROW_HEIGHT,  react-hooks/incompatible-library
+  510:6   warning  React Hook useEffect has a missing dependency: 'lastVirtualItem'. Either include it or remove the dependency array                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                react-hooks/exhaustive-deps
+
+/Users/AR180/Desktop/Codespace/ZRG-Dashboard/components/dashboard/inbox-view.tsx
+  388:6  warning  React Hook useEffect has a missing dependency: 'initialConversationId'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/Users/AR180/Desktop/Codespace/ZRG-Dashboard/components/dashboard/settings-view.tsx
+  1131:6  warning  React Hook useEffect has a missing dependency: 'coerceNotificationRules'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+  2205:6  warning  React Hook useCallback has a missing dependency: 'handleChange'. Either include it or remove the dependency array           react-hooks/exhaustive-deps
+  2210:6  warning  React Hook useCallback has a missing dependency: 'handleChange'. Either include it or remove the dependency array           react-hooks/exhaustive-deps
+  2217:6  warning  React Hook useCallback has a missing dependency: 'handleChange'. Either include it or remove the dependency array           react-hooks/exhaustive-deps
+
+/Users/AR180/Desktop/Codespace/ZRG-Dashboard/components/dashboard/settings/client-portal-users-manager.tsx
+  52:6  warning  React Hook useEffect has a missing dependency: 'refreshUsers'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/Users/AR180/Desktop/Codespace/ZRG-Dashboard/components/dashboard/settings/integrations-manager.tsx
+  219:6  warning  React Hook useEffect has a missing dependency: 'fetchClients'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+/Users/AR180/Desktop/Codespace/ZRG-Dashboard/components/ui/chart.tsx
+  148:9  warning  The 'items' conditional could make the dependencies of useMemo Hook (at line 176) change on every render. To fix this, wrap the initialization of 'items' in its own useMemo() Hook  react-hooks/exhaustive-deps
+
+/Users/AR180/Desktop/Codespace/ZRG-Dashboard/lib/ai/retention.ts
+  8:3  warning  Unused eslint-disable directive (no problems were reported from 'no-var')
+
+✖ 12 problems (0 errors, 12 warnings)
+  0 errors and 1 warning potentially fixable with the `--fix` option.
+

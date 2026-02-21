@@ -1,0 +1,83 @@
+
+> zrg-dashboard@0.1.0 test:ai-replay
+> node --require ./scripts/server-only-mock.cjs --import tsx scripts/live-ai-replay.ts --thread-ids-file docs/planning/phase-177/replay-case-manifest.json --concurrency 3
+
+[dotenv@17.2.3] injecting env (75) from .env.local -- tip: 🗂️ backup and recover secrets: https://dotenvx.com/ops
+[dotenv@17.2.3] injecting env (0) from .env -- tip: ⚙️  specify custom .env file path with { path: '/custom/path/.env' }
+[dotenv@17.2.3] injecting env (0) from .env.local -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[dotenv@17.2.3] injecting env (0) from .env -- tip: 🔐 prevent committing .env to code: https://dotenvx.com/precommit
+[AI Replay] Starting run
+- runId: ai_replay_2026-02-21T01-56-50-189Z_ed7c2fd3
+- clientId: (from explicit thread IDs)
+- judgeClientId: (case client)
+- threadIds: 3
+- threadIdsFile: docs/planning/phase-177/replay-case-manifest.json
+- channel: any
+- limit: 20
+- concurrency: 3
+- retries: 1
+- dryRun: no
+- revisionLoop: overseer
+- overseerMode: fresh
+- judgeProfile: balanced
+- judgeThreshold: 62
+- adjudicationBand: 40,80
+- adjudicateBorderline: yes
+- abModes: off,platform,overseer,force
+- cleanupDrafts: yes
+- allowEmpty: no
+- out: /Users/AR180/Desktop/Codespace/ZRG-Dashboard/.artifacts/ai-replay/run-2026-02-21T01-56-50-190Z.json
+[AI Replay] Selected 3 case(s) from 3 candidate message(s).
+[AI Replay] Running mode: overseer
+[AI Drafts] Lead 370b29c7-3370-4bfc-824b-5c4b7172d72a using persona source: campaign (campaign: Chris Meade)
+[AI Drafts] Lead ba40ced8-43ce-4287-a682-097a37787150 using persona source: campaign (campaign: Chris Meade)
+[AI Drafts] Using booking process stage 1 (wave 1) for email
+[AI Drafts] Using booking process stage 1 (wave 2) for email
+[AI Drafts] AI selected archetype: A4_direct_scheduling_first (Direct Scheduling Ask First)
+[AI Drafts] Applied booking-intent availability alignment guard { leadId: '370b29c7-3370-4bfc-824b-5c4b7172d72a', channel: 'email' }
+[AI Drafts] Applied lead-scheduler-link no-choice guard { leadId: '370b29c7-3370-4bfc-824b-5c4b7172d72a', channel: 'email' }
+[AI Drafts] AI selected archetype: A4_direct_scheduling_first (Direct Scheduling Ask First)
+[AI Drafts] Sanitized draft for lead ba40ced8-43ce-4287-a682-097a37787150 (email) {
+  hadPlaceholders: false,
+  hadPricingPlaceholders: false,
+  hadTruncatedUrl: false,
+  hadPhone: true,
+  changed: true
+}
+[AI Replay] Running mode: off
+[AI Drafts] Lead ba40ced8-43ce-4287-a682-097a37787150 using persona source: campaign (campaign: Chris Meade)
+[AI Drafts] Lead 370b29c7-3370-4bfc-824b-5c4b7172d72a using persona source: campaign (campaign: Chris Meade)
+[AI Drafts] Using booking process stage 1 (wave 1) for email
+[AI Drafts] Using booking process stage 1 (wave 2) for email
+[AI Drafts] AI selected archetype: A4_direct_scheduling_first (Direct Scheduling Ask First)
+[AI Drafts] AI selected archetype: A4_direct_scheduling_first (Direct Scheduling Ask First)
+[AI Drafts] Applied booking-intent availability alignment guard { leadId: '370b29c7-3370-4bfc-824b-5c4b7172d72a', channel: 'email' }
+[AI Drafts] Applied lead-scheduler-link no-choice guard { leadId: '370b29c7-3370-4bfc-824b-5c4b7172d72a', channel: 'email' }
+[AI Drafts] Applied booking-intent availability alignment guard { leadId: 'ba40ced8-43ce-4287-a682-097a37787150', channel: 'email' }
+[AI Replay] Running mode: platform
+[AI Drafts] Lead 370b29c7-3370-4bfc-824b-5c4b7172d72a using persona source: campaign (campaign: Chris Meade)
+[AI Drafts] Lead ba40ced8-43ce-4287-a682-097a37787150 using persona source: campaign (campaign: Chris Meade)
+[AI Drafts] Using booking process stage 1 (wave 1) for email
+[AI Drafts] Using booking process stage 1 (wave 2) for email
+[AI Drafts] AI selected archetype: A4_direct_scheduling_first (Direct Scheduling Ask First)
+[AI Drafts] AI selected archetype: A4_direct_scheduling_first (Direct Scheduling Ask First)
+[AI Drafts] Applied booking-intent availability alignment guard { leadId: '370b29c7-3370-4bfc-824b-5c4b7172d72a', channel: 'email' }
+[AI Drafts] Applied lead-scheduler-link no-choice guard { leadId: '370b29c7-3370-4bfc-824b-5c4b7172d72a', channel: 'email' }
+[AI Drafts] Applied booking-intent availability alignment guard { leadId: 'ba40ced8-43ce-4287-a682-097a37787150', channel: 'email' }
+[AI Replay] Running mode: force
+[AI Drafts] Lead 370b29c7-3370-4bfc-824b-5c4b7172d72a using persona source: campaign (campaign: Chris Meade)
+[AI Drafts] Lead ba40ced8-43ce-4287-a682-097a37787150 using persona source: campaign (campaign: Chris Meade)
+[AI Drafts] Using booking process stage 1 (wave 1) for email
+[AI Drafts] Using booking process stage 1 (wave 2) for email
+[AI Drafts] AI selected archetype: A4_direct_scheduling_first (Direct Scheduling Ask First)
+[AI Drafts] AI selected archetype: A4_direct_scheduling_first (Direct Scheduling Ask First)
+[AI Drafts] Applied lead-scheduler-link no-choice guard { leadId: '370b29c7-3370-4bfc-824b-5c4b7172d72a', channel: 'email' }
+[AI Drafts] Applied booking-intent availability alignment guard { leadId: 'ba40ced8-43ce-4287-a682-097a37787150', channel: 'email' }
+[AI Replay] Artifact written: /Users/AR180/Desktop/Codespace/ZRG-Dashboard/.artifacts/ai-replay/run-2026-02-21T01-56-50-190Z.json
+[AI Replay] Summary: evaluated=2, passed=2, failedJudge=0, failed=0, averageScore=76
+[AI Replay] FailureTypes: decision_error=0, draft_generation_error=0, draft_quality_error=0, judge_error=0, infra_error=0, selection_error=0, execution_error=0
+[AI Replay] CriticalInvariants: total=0, slot_mismatch=0, date_mismatch=0, fabricated_link=0, empty_draft=0, non_logistics_reply=0
+[AI Replay][AB:off] evaluated=2 passed=1 avg=73 critical=0
+[AI Replay][AB:platform] evaluated=2 passed=1 avg=71.5 critical=0
+[AI Replay][AB:overseer] evaluated=2 passed=2 avg=76 critical=0
+[AI Replay][AB:force] evaluated=2 passed=1 avg=74.5 critical=0

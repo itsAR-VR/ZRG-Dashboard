@@ -8,6 +8,16 @@ import { inngest } from "@/lib/inngest/client";
 import { INNGEST_EVENT_CRON_APPOINTMENT_RECONCILE_REQUESTED } from "@/lib/inngest/events";
 import { writeInngestJobStatus } from "@/lib/inngest/job-status";
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function getAppointmentReconcileConcurrency(): number {
+  return Math.max(1, Math.min(8, parsePositiveInt(process.env.CRON_APPOINTMENT_RECONCILE_INNGEST_CONCURRENCY, 4)));
+}
+
 function buildSearchParamsFromEventParams(params: unknown): URLSearchParams {
   const searchParams = new URLSearchParams();
 
@@ -27,7 +37,7 @@ export const cronAppointmentReconcileFunction = inngest.createFunction(
   {
     id: "cron-appointment-reconcile",
     retries: 3,
-    concurrency: { limit: 1 },
+    concurrency: { limit: getAppointmentReconcileConcurrency() },
     idempotency: "event.data.dispatchKey",
   },
   { event: INNGEST_EVENT_CRON_APPOINTMENT_RECONCILE_REQUESTED },

@@ -88,14 +88,12 @@ export async function recomputeInboxCounts(clientId: string): Promise<void> {
           where exists (
             select 1
             from "Message" m
-            join "EmailCampaign" ec on ec.id = l."emailCampaignId"
             where m."leadId" = l.id
               and m.channel = 'email'
               and m.direction = 'outbound'
               and m.source = 'zrg'
               and m."sentBy" = 'ai'
               and m."aiDraftId" is not null
-              and ec."responseMode" = 'AI_AUTO_SEND'
           )
         )::int as "aiSent"
       from "Lead" l
@@ -144,14 +142,12 @@ export async function recomputeInboxCounts(clientId: string): Promise<void> {
           where exists (
             select 1
             from "Message" m
-            join "EmailCampaign" ec on ec.id = l."emailCampaignId"
             where m."leadId" = l.id
               and m.channel = 'email'
               and m.direction = 'outbound'
               and m.source = 'zrg'
               and m."sentBy" = 'ai'
               and m."aiDraftId" is not null
-              and ec."responseMode" = 'AI_AUTO_SEND'
           )
         )::int as "aiSent"
       from "Lead" l

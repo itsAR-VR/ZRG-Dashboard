@@ -1,0 +1,35 @@
+
+> zrg-dashboard@0.1.0 test:ai-replay
+> node --require ./scripts/server-only-mock.cjs --import tsx scripts/live-ai-replay.ts --thread-ids-file docs/planning/phase-177/replay-case-manifest.json --dry-run
+
+[dotenv@17.2.3] injecting env (75) from .env.local -- tip: 🔐 encrypt with Dotenvx: https://dotenvx.com
+[dotenv@17.2.3] injecting env (0) from .env -- tip: ⚙️  enable debug logging with { debug: true }
+[dotenv@17.2.3] injecting env (0) from .env.local -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+[dotenv@17.2.3] injecting env (0) from .env -- tip: ⚙️  override existing env vars with { override: true }
+[AI Replay] Starting run
+- runId: ai_replay_2026-02-21T01-40-37-081Z_23c091b9
+- clientId: (from explicit thread IDs)
+- judgeClientId: (case client)
+- threadIds: 3
+- threadIdsFile: docs/planning/phase-177/replay-case-manifest.json
+- channel: any
+- limit: 20
+- concurrency: 3
+- retries: 1
+- dryRun: yes
+- revisionLoop: overseer
+- overseerMode: fresh
+- judgeProfile: balanced
+- judgeThreshold: 62
+- adjudicationBand: 40,80
+- adjudicateBorderline: yes
+- abModes: (none)
+- cleanupDrafts: yes
+- allowEmpty: no
+- out: /Users/AR180/Desktop/Codespace/ZRG-Dashboard/.artifacts/ai-replay/run-2026-02-21T01-40-37-081Z.json
+[AI Replay] Selected 3 case(s) from 3 candidate message(s).
+[AI Replay] Running mode: overseer
+[AI Replay] Artifact written: /Users/AR180/Desktop/Codespace/ZRG-Dashboard/.artifacts/ai-replay/run-2026-02-21T01-40-37-081Z.json
+[AI Replay] Summary: evaluated=0, passed=0, failedJudge=0, failed=0, averageScore=n/a
+[AI Replay] FailureTypes: decision_error=0, draft_generation_error=0, draft_quality_error=0, judge_error=0, infra_error=0, selection_error=0, execution_error=0
+[AI Replay] CriticalInvariants: total=0, slot_mismatch=0, date_mismatch=0, fabricated_link=0, empty_draft=0, non_logistics_reply=0

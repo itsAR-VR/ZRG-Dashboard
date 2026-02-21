@@ -1,0 +1,425 @@
+
+> zrg-dashboard@0.1.0 test:ai-drafts
+> node --import tsx scripts/test-ai-drafts.ts
+
+TAP version 13
+# Subtest: sanitizeDraftContent strips ${PRICE}-style placeholders
+ok 1 - sanitizeDraftContent strips ${PRICE}-style placeholders
+  ---
+  duration_ms: 1.367459
+  ...
+# Subtest: sanitizeDraftContent strips $X/$Y/$A placeholders without stripping real dollar amounts
+ok 2 - sanitizeDraftContent strips $X/$Y/$A placeholders without stripping real dollar amounts
+  ---
+  duration_ms: 0.9905
+  ...
+# Subtest: sanitizeDraftContent strips $X-$Y ranges
+ok 3 - sanitizeDraftContent strips $X-$Y ranges
+  ---
+  duration_ms: 0.200958
+  ...
+# Subtest: sanitizeDraftContent does not strip real prices like $5,000/year, $500/month, or $0
+ok 4 - sanitizeDraftContent does not strip real prices like $5,000/year, $500/month, or $0
+  ---
+  duration_ms: 0.15475
+  ...
+# Subtest: sanitizeDraftContent redacts phone-like numbers
+ok 5 - sanitizeDraftContent redacts phone-like numbers
+  ---
+  duration_ms: 0.811875
+  ...
+# Subtest: extractPricingAmounts extracts grounded prices
+ok 6 - extractPricingAmounts extracts grounded prices
+  ---
+  duration_ms: 1.7355
+  ...
+# Subtest: extractPricingAmounts excludes revenue/threshold amounts
+ok 7 - extractPricingAmounts excludes revenue/threshold amounts
+  ---
+  duration_ms: 0.09525
+  ...
+# Subtest: extractPricingAmounts excludes qualification thresholds even when 'membership' is mentioned
+ok 8 - extractPricingAmounts excludes qualification thresholds even when 'membership' is mentioned
+  ---
+  duration_ms: 0.420125
+  ...
+# Subtest: extractPricingAmounts still extracts pricing even when qualification thresholds appear nearby
+ok 9 - extractPricingAmounts still extracts pricing even when qualification thresholds appear nearby
+  ---
+  duration_ms: 0.36875
+  ...
+# Subtest: extractPricingAmounts still reads regular one-time prices
+ok 10 - extractPricingAmounts still reads regular one-time prices
+  ---
+  duration_ms: 0.23425
+  ...
+# Subtest: detectPricingHallucinations flags unsupported pricing
+ok 11 - detectPricingHallucinations flags unsupported pricing
+  ---
+  duration_ms: 0.243459
+  ...
+# Subtest: detectPricingHallucinations accepts supported pricing
+ok 12 - detectPricingHallucinations accepts supported pricing
+  ---
+  duration_ms: 0.217375
+  ...
+# Subtest: detectPricingHallucinations uses knowledgeContext when serviceDescription is silent
+ok 13 - detectPricingHallucinations uses knowledgeContext when serviceDescription is silent
+  ---
+  duration_ms: 0.383708
+  ...
+# Subtest: detectPricingHallucinations prefers serviceDescription on conflict
+ok 14 - detectPricingHallucinations prefers serviceDescription on conflict
+  ---
+  duration_ms: 0.375834
+  ...
+# Subtest: detectPricingHallucinations flags cadence mismatch with same amount
+ok 15 - detectPricingHallucinations flags cadence mismatch with same amount
+  ---
+  duration_ms: 0.118417
+  ...
+# Subtest: detectPricingHallucinations does not infer cadence from unknown source cadence
+ok 16 - detectPricingHallucinations does not infer cadence from unknown source cadence
+  ---
+  duration_ms: 0.098583
+  ...
+# Subtest: detectPricingHallucinations keeps cadence scoped to each amount
+ok 17 - detectPricingHallucinations keeps cadence scoped to each amount
+  ---
+  duration_ms: 0.192209
+  ...
+# Subtest: detectPricingHallucinations ignores qualification thresholds even when membership is mentioned
+ok 18 - detectPricingHallucinations ignores qualification thresholds even when membership is mentioned
+  ---
+  duration_ms: 0.223042
+  ...
+# Subtest: enforcePricingAmountSafety removes unsupported dollar amounts
+ok 19 - enforcePricingAmountSafety removes unsupported dollar amounts
+  ---
+  duration_ms: 20.70525
+  ...
+# Subtest: enforcePricingAmountSafety keeps supported dollar amounts
+ok 20 - enforcePricingAmountSafety keeps supported dollar amounts
+  ---
+  duration_ms: 0.400792
+  ...
+# Subtest: enforcePricingAmountSafety keeps knowledgeContext pricing when serviceDescription is silent
+ok 21 - enforcePricingAmountSafety keeps knowledgeContext pricing when serviceDescription is silent
+  ---
+  duration_ms: 0.294917
+  ...
+# Subtest: enforcePricingAmountSafety rewrites cadence-mismatched amount to service-supported cadence
+ok 22 - enforcePricingAmountSafety rewrites cadence-mismatched amount to service-supported cadence
+  ---
+  duration_ms: 0.928459
+  ...
+# Subtest: enforcePricingAmountSafety normalizes monthly plan phrasing under quarterly-only billing
+ok 23 - enforcePricingAmountSafety normalizes monthly plan phrasing under quarterly-only billing
+  ---
+  duration_ms: 0.522417
+  ...
+# Subtest: enforcePricingAmountSafety removes orphan cadence-only pricing lines
+ok 24 - enforcePricingAmountSafety removes orphan cadence-only pricing lines
+  ---
+  duration_ms: 0.741417
+  ...
+# Subtest: enforcePricingAmountSafety adds cadence-safe clarifier when no source pricing exists
+ok 25 - enforcePricingAmountSafety adds cadence-safe clarifier when no source pricing exists
+  ---
+  duration_ms: 0.117667
+  ...
+# Subtest: enforcePricingAmountSafety does not strip revenue-threshold amounts
+ok 26 - enforcePricingAmountSafety does not strip revenue-threshold amounts
+  ---
+  duration_ms: 0.087
+  ...
+# Subtest: enforcePricingAmountSafety does not strip revenue-threshold amounts when membership language is present
+ok 27 - enforcePricingAmountSafety does not strip revenue-threshold amounts when membership language is present
+  ---
+  duration_ms: 0.167583
+  ...
+# Subtest: applyPricingAnswerNoSchedulingGuard removes scheduling paragraph for pricing-only replies
+ok 28 - applyPricingAnswerNoSchedulingGuard removes scheduling paragraph for pricing-only replies
+  ---
+  duration_ms: 3.385666
+  ...
+# Subtest: applyPricingAnswerQualificationGuard collapses multi-criteria qualifier and keeps one next step
+ok 29 - applyPricingAnswerQualificationGuard collapses multi-criteria qualifier and keeps one next step
+  ---
+  duration_ms: 1.830125
+  ...
+# Subtest: pricing guards do not modify shouldBookNow confirmations
+ok 30 - pricing guards do not modify shouldBookNow confirmations
+  ---
+  duration_ms: 0.164709
+  ...
+# Subtest: buildKnowledgeContextFromAssets
+    # Subtest: respects token budgets and returns per-asset token/byte stats
+    ok 1 - respects token budgets and returns per-asset token/byte stats
+      ---
+      duration_ms: 1.083333
+      ...
+    1..1
+ok 31 - buildKnowledgeContextFromAssets
+  ---
+  duration_ms: 2.753167
+  type: 'suite'
+  ...
+# Subtest: buildAutoSendEvaluatorInput
+    # Subtest: injects verified workspace context and truncates long fields by token estimate
+    ok 1 - injects verified workspace context and truncates long fields by token estimate
+      ---
+      duration_ms: 2.802
+      ...
+    # Subtest: flags pricing cadence mismatch when draft conflicts with verified context
+    ok 2 - flags pricing cadence mismatch when draft conflicts with verified context
+      ---
+      duration_ms: 0.259208
+      ...
+    1..2
+ok 32 - buildAutoSendEvaluatorInput
+  ---
+  duration_ms: 3.520333
+  type: 'suite'
+  ...
+# Subtest: expandOutputTokenAttempts expands attempts by multiplier when retryExtraTokens is unset
+ok 33 - expandOutputTokenAttempts expands attempts by multiplier when retryExtraTokens is unset
+  ---
+  duration_ms: 1.682292
+  ...
+# Subtest: expandOutputTokenAttempts prefers additive retryExtraTokens when it exceeds multiplier growth
+ok 34 - expandOutputTokenAttempts prefers additive retryExtraTokens when it exceeds multiplier growth
+  ---
+  duration_ms: 0.19825
+  ...
+# Subtest: expandOutputTokenAttempts respects cap and stops expanding when capped
+ok 35 - expandOutputTokenAttempts respects cap and stops expanding when capped
+  ---
+  duration_ms: 0.370333
+  ...
+# Subtest: expandOutputTokenAttempts ignores non-positive retryExtraTokens
+ok 36 - expandOutputTokenAttempts ignores non-positive retryExtraTokens
+  ---
+  duration_ms: 1.1975
+  ...
+# Subtest: prompt runner: gpt-5-mini + temperature uses minimal reasoning (never none)
+ok 37 - prompt runner: gpt-5-mini + temperature uses minimal reasoning (never none)
+  ---
+  duration_ms: 0.929584
+  ...
+# Subtest: prompt runner: gpt-5-mini coerces reasoningEffort none -> minimal
+ok 38 - prompt runner: gpt-5-mini coerces reasoningEffort none -> minimal
+  ---
+  duration_ms: 0.121083
+  ...
+# Subtest: prompt runner: gpt-5.2 + temperature defaults to reasoning none
+ok 39 - prompt runner: gpt-5.2 + temperature defaults to reasoning none
+  ---
+  duration_ms: 0.144208
+  ...
+# Subtest: prompt runner: gpt-5.1 + temperature defaults to reasoning none
+ok 40 - prompt runner: gpt-5.1 + temperature defaults to reasoning none
+  ---
+  duration_ms: 0.146458
+  ...
+# Subtest: ai draft pricing safety fixtures
+    # Subtest: knowledge-fallback-when-service-silent (knowledge-fallback-when-service-silent.json)
+    ok 1 - knowledge-fallback-when-service-silent (knowledge-fallback-when-service-silent.json)
+      ---
+      duration_ms: 8.545834
+      ...
+    # Subtest: no-pricing-adds-clarifier (no-pricing-adds-clarifier.json)
+    ok 2 - no-pricing-adds-clarifier (no-pricing-adds-clarifier.json)
+      ---
+      duration_ms: 1.2405
+      ...
+    # Subtest: quarterly-only-normalizes-monthly-plan-wording (quarterly-only-normalizes-monthly-plan-wording.json)
+    ok 3 - quarterly-only-normalizes-monthly-plan-wording (quarterly-only-normalizes-monthly-plan-wording.json)
+      ---
+      duration_ms: 21.060708
+      ...
+    # Subtest: revenue-threshold-is-not-pricing (revenue-threshold-is-not-pricing.json)
+    ok 4 - revenue-threshold-is-not-pricing (revenue-threshold-is-not-pricing.json)
+      ---
+      duration_ms: 0.271084
+      ...
+    # Subtest: service-precedence-over-knowledge (service-precedence-over-knowledge.json)
+    ok 5 - service-precedence-over-knowledge (service-precedence-over-knowledge.json)
+      ---
+      duration_ms: 0.517959
+      ...
+    1..5
+ok 41 - ai draft pricing safety fixtures
+  ---
+  duration_ms: 33.1235
+  type: 'suite'
+  ...
+# Subtest: sentBy=ai returns AUTO_SENT
+ok 42 - sentBy=ai returns AUTO_SENT
+  ---
+  duration_ms: 0.923708
+  ...
+# Subtest: sentBy=ai with edited content still returns AUTO_SENT
+ok 43 - sentBy=ai with edited content still returns AUTO_SENT
+  ---
+  duration_ms: 0.167709
+  ...
+# Subtest: sentBy=setter with identical content returns APPROVED
+ok 44 - sentBy=setter with identical content returns APPROVED
+  ---
+  duration_ms: 0.137458
+  ...
+# Subtest: sentBy=setter with different content returns EDITED
+ok 45 - sentBy=setter with different content returns EDITED
+  ---
+  duration_ms: 1.116291
+  ...
+# Subtest: sentBy=null defaults to setter logic
+ok 46 - sentBy=null defaults to setter logic
+  ---
+  duration_ms: 0.130917
+  ...
+# Subtest: whitespace-only difference counts as EDITED
+ok 47 - whitespace-only difference counts as EDITED
+  ---
+  duration_ms: 0.081209
+  ...
+# Subtest: evaluateStep3RewriteGuardrail flags large length rewrites
+ok 48 - evaluateStep3RewriteGuardrail flags large length rewrites
+  ---
+  duration_ms: 3.258542
+  ...
+# Subtest: evaluateStep3RewriteGuardrail allows small localized edits
+ok 49 - evaluateStep3RewriteGuardrail allows small localized edits
+  ---
+  duration_ms: 0.142167
+  ...
+# Subtest: evaluateStep3RewriteGuardrail flags large line count changes
+ok 50 - evaluateStep3RewriteGuardrail flags large line count changes
+  ---
+  duration_ms: 0.101417
+  ...
+# Subtest: evaluateStep3RewriteGuardrail does not flag at exact length ratio threshold
+ok 51 - evaluateStep3RewriteGuardrail does not flag at exact length ratio threshold
+  ---
+  duration_ms: 0.168541
+  ...
+# Subtest: evaluateStep3RewriteGuardrail does not flag when ratio is high but delta is below minDelta
+ok 52 - evaluateStep3RewriteGuardrail does not flag when ratio is high but delta is below minDelta
+  ---
+  duration_ms: 0.0975
+  ...
+# Subtest: evaluateStep3RewriteGuardrail does not flag at exact line ratio threshold
+ok 53 - evaluateStep3RewriteGuardrail does not flag at exact line ratio threshold
+  ---
+  duration_ms: 0.078417
+  ...
+# Subtest: evaluateStep3RewriteGuardrail does not flag identical drafts
+ok 54 - evaluateStep3RewriteGuardrail does not flag identical drafts
+  ---
+  duration_ms: 0.076167
+  ...
+# Subtest: replaceEmDashesWithCommaSpace replaces em-dash with comma+space
+ok 55 - replaceEmDashesWithCommaSpace replaces em-dash with comma+space
+  ---
+  duration_ms: 1.777083
+  ...
+# Subtest: replaceEmDashesWithCommaSpace avoids space before comma
+ok 56 - replaceEmDashesWithCommaSpace avoids space before comma
+  ---
+  duration_ms: 0.183333
+  ...
+# Subtest: enforceCanonicalBookingLink replaces [Calendly link] placeholder
+ok 57 - enforceCanonicalBookingLink replaces [Calendly link] placeholder
+  ---
+  duration_ms: 0.706625
+  ...
+# Subtest: enforceCanonicalBookingLink replaces wrong calendly link with canonical
+ok 58 - enforceCanonicalBookingLink replaces wrong calendly link with canonical
+  ---
+  duration_ms: 0.299292
+  ...
+# Subtest: enforceCanonicalBookingLink replaces GHL widget booking link with canonical
+ok 59 - enforceCanonicalBookingLink replaces GHL widget booking link with canonical
+  ---
+  duration_ms: 0.182084
+  ...
+# Subtest: enforceCanonicalBookingLink does not replace arbitrary URLs by default
+ok 60 - enforceCanonicalBookingLink does not replace arbitrary URLs by default
+  ---
+  duration_ms: 0.133125
+  ...
+# Subtest: enforceCanonicalBookingLink replaces any http(s) URL when replaceAllUrls is set
+ok 61 - enforceCanonicalBookingLink replaces any http(s) URL when replaceAllUrls is set
+  ---
+  duration_ms: 0.430208
+  ...
+# Subtest: enforceCanonicalBookingLink removes booking widget links when canonical is missing
+ok 62 - enforceCanonicalBookingLink removes booking widget links when canonical is missing
+  ---
+  duration_ms: 0.290625
+  ...
+# Subtest: removeForbiddenTerms strips forbidden words with word boundaries
+ok 63 - removeForbiddenTerms strips forbidden words with word boundaries
+  ---
+  duration_ms: 1.276667
+  ...
+# Subtest: removeForbiddenTerms strips forbidden phrases case-insensitively
+ok 64 - removeForbiddenTerms strips forbidden phrases case-insensitively
+  ---
+  duration_ms: 0.412042
+  ...
+# Subtest: buildRevisionHardConstraints flags one-slot rule for day/window preference
+ok 65 - buildRevisionHardConstraints flags one-slot rule for day/window preference
+  ---
+  duration_ms: 2.057167
+  ...
+# Subtest: validateRevisionAgainstHardConstraints fails when multiple offered times are proposed for window intent
+ok 66 - validateRevisionAgainstHardConstraints fails when multiple offered times are proposed for window intent
+  ---
+  duration_ms: 1.721542
+  ...
+# Subtest: validateRevisionAgainstHardConstraints fails slot mismatch for unsupported times
+ok 67 - validateRevisionAgainstHardConstraints fails slot mismatch for unsupported times
+  ---
+  duration_ms: 0.7285
+  ...
+# Subtest: validateRevisionAgainstHardConstraints passes a one-slot confirmation
+ok 68 - validateRevisionAgainstHardConstraints passes a one-slot confirmation
+  ---
+  duration_ms: 0.578708
+  ...
+# Subtest: buildRevisionHardConstraints requires link fallback when no offered slot matches requested window
+ok 69 - buildRevisionHardConstraints requires link fallback when no offered slot matches requested window
+  ---
+  duration_ms: 0.3415
+  ...
+# Subtest: validateRevisionAgainstHardConstraints fails when no window-matching slot exists and draft omits link
+ok 70 - validateRevisionAgainstHardConstraints fails when no window-matching slot exists and draft omits link
+  ---
+  duration_ms: 0.337208
+  ...
+# Subtest: validateRevisionAgainstHardConstraints passes when no window-matching slot exists and draft uses booking link
+ok 71 - validateRevisionAgainstHardConstraints passes when no window-matching slot exists and draft uses booking link
+  ---
+  duration_ms: 0.572833
+  ...
+# Subtest: buildRevisionHardConstraints treats week-of-month windows as window intent (Mon-Sun semantics)
+ok 72 - buildRevisionHardConstraints treats week-of-month windows as window intent (Mon-Sun semantics)
+  ---
+  duration_ms: 0.24425
+  ...
+# Subtest: validateRevisionAgainstHardConstraints fails link-only policy when week-of-month window has no matching slot
+ok 73 - validateRevisionAgainstHardConstraints fails link-only policy when week-of-month window has no matching slot
+  ---
+  duration_ms: 0.451416
+  ...
+1..73
+# tests 78
+# suites 3
+# pass 78
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1399.352584
