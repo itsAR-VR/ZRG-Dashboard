@@ -4195,6 +4195,7 @@ export async function generateResponseDraft(
         clientId: true,
         offeredSlots: true,
         externalSchedulingLink: true,
+        sentimentTag: true,
         snoozedUntil: true,
         client: {
             select: {

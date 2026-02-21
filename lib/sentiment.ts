@@ -343,7 +343,8 @@ Rules for signature fields:
 - Do not include extracted values inside cleaned_response.
 
 Meeting Booked classification notes:
-- Choose "Meeting Booked" ONLY if: an explicit date/time is accepted, OR the message confirms a booking/invite acceptance, OR the body explicitly instructs to book via THEIR scheduling link ("use my Calendly", "book via my link").
+- Choose "Meeting Booked" ONLY if: an explicit date/time is accepted, OR the message confirms a booking/invite acceptance (e.g., "invite accepted", "I booked it").
+- If they explicitly instruct us to book via THEIR scheduling link ("use my Calendly", "book via my link"), classify as "Meeting Requested" (manual booking flow), not "Meeting Booked".
 - Do NOT choose "Meeting Booked" if there is only a generic request for availability, or if a link exists only in a signature without explicit instruction.
 - If they request a meeting but no time is confirmed → "Meeting Requested".
 - "Call Requested" is for callback intent (they want us to call them), not for scheduling a call as a meeting.
@@ -372,7 +373,7 @@ Newsletter / marketing detection notes:
 Always output valid JSON. Always include classification, cleaned_response, is_newsletter, and set signature fields to null when not present.`;
 
 function defaultAvailabilityText(clientName?: string | null): string {
-  return `Here is the current availability for ${clientName || "the client"}:\n\nNO TIMES AVAILABLE - ASSUME THE TIME IS AVAILABLE AND CATEGORIZE AS 'Meeting Booked' IF A TIME HAS BEEN AGREED`;
+  return `Here is the current availability for ${clientName || "the client"}:\n\nNO TIMES AVAILABLE`;
 }
 
 export async function analyzeInboundEmailReply(opts: {

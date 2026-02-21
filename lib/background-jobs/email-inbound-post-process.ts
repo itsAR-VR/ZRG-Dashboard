@@ -59,6 +59,7 @@ import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
+import { coerceMeetingBookedSentimentToEvidence } from "@/lib/meeting-lifecycle";
 import {
   detectActionSignals,
   EMPTY_ACTION_SIGNAL_RESULT,
@@ -960,6 +961,17 @@ export async function runEmailInboundPostProcessJob(opts: {
         } else {
           // Fallback to simpler classifier
           newSentimentTag = await classifySentiment(transcript, { clientId: client.id, leadId: lead.id });
+        }
+
+        const meetingBookedGate = await coerceMeetingBookedSentimentToEvidence({
+          leadId: lead.id,
+          sentimentTag: newSentimentTag,
+        });
+        if (meetingBookedGate.downgraded) {
+          console.log(
+            `[Email PostProcess] Downgrading Meeting Booked (no provider evidence) -> ${meetingBookedGate.sentimentTag}`
+          );
+          newSentimentTag = meetingBookedGate.sentimentTag as SentimentTag;
         }
 
         const newStatus = SENTIMENT_TO_STATUS[newSentimentTag] || "new";

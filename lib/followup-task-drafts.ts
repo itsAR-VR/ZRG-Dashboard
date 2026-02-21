@@ -45,8 +45,8 @@ function buildEligibleFollowUpTaskWhereClause() {
   return {
     OR: [
       {
-        instanceId: { not: null as const },
-        stepOrder: { not: null as const },
+        instanceId: { not: null },
+        stepOrder: { not: null },
       },
       {
         campaignName: { startsWith: FOLLOWUP_TASK_TIMING_CLARIFY_PREFIX },

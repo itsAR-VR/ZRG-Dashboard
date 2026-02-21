@@ -1107,6 +1107,7 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
           timezone: true,
           emailCampaign: {
             select: {
+              responseMode: true,
               autoSendScheduleMode: true,
               autoSendCustomSchedule: true,
             },
@@ -1165,14 +1166,22 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
         continue;
       }
 
-      const hasRecentConversationActivity = await prisma.message.findFirst({
+      const responseMode = (task.lead.emailCampaign?.responseMode || "").trim();
+      if (responseMode !== "AI_AUTO_SEND") {
+        await markScheduledTaskManual(task.id, task.campaignName);
+        result.convertedToManual += 1;
+        continue;
+      }
+
+      const hasMeaningfulConversationActivity = await prisma.message.findFirst({
         where: {
           leadId: task.leadId,
           sentAt: { gt: task.createdAt },
+          OR: [{ direction: "inbound" }, { direction: "outbound", sentBy: "setter" }],
         },
         select: { id: true },
       });
-      if (hasRecentConversationActivity) {
+      if (hasMeaningfulConversationActivity) {
         await markScheduledTaskManual(task.id, task.campaignName);
         result.convertedToManual += 1;
         continue;

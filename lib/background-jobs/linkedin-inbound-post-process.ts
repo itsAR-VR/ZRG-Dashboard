@@ -18,6 +18,7 @@ import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
 import { resolveBookingLink } from "@/lib/meeting-booking-provider";
+import { coerceMeetingBookedSentimentToEvidence } from "@/lib/meeting-lifecycle";
 import {
   cancelPendingTimingClarifyAttempt2OnInbound,
   runFollowUpTimingReengageGate,
@@ -148,13 +149,24 @@ export async function runLinkedInInboundPostProcessJob(params: {
   const shouldClassify = !currentSentiment || currentSentiment === "New" || currentSentiment === "Neutral";
 
   if (shouldClassify) {
-    const sentimentTag = await classifySentiment(transcript || messageBody, {
+    let sentimentTag = await classifySentiment(transcript || messageBody, {
       clientId: client.id,
       leadId: lead.id,
       maxRetries: 1,
     });
 
     if (sentimentTag) {
+      const meetingBookedGate = await coerceMeetingBookedSentimentToEvidence({
+        leadId: lead.id,
+        sentimentTag,
+      });
+      if (meetingBookedGate.downgraded) {
+        console.log(
+          `[LinkedIn Post-Process] Downgrading Meeting Booked (no provider evidence) -> ${meetingBookedGate.sentimentTag}`
+        );
+        sentimentTag = meetingBookedGate.sentimentTag as typeof sentimentTag;
+      }
+
       // Update lead status based on sentiment
       const newStatus = SENTIMENT_TO_STATUS[sentimentTag];
       if (newStatus) {

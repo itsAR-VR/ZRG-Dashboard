@@ -40,6 +40,9 @@
  * - "manual" - Manually created/linked
  */
 
+import "server-only";
+
+import { prisma } from "@/lib/prisma";
 import type { Lead, MeetingBookingProvider } from "@prisma/client";
 
 // Appointment status constants
@@ -235,4 +238,56 @@ export function determineReconciliationProvider(
   }
   // Fall back to workspace default
   return workspaceProvider;
+}
+
+export async function coerceMeetingBookedSentimentToEvidence(opts: {
+  leadId: string;
+  sentimentTag: string | null;
+}): Promise<{ sentimentTag: string | null; downgraded: boolean; reason: string | null }> {
+  const sentiment = (opts.sentimentTag || "").trim();
+  if (sentiment !== "Meeting Booked") {
+    return { sentimentTag: opts.sentimentTag, downgraded: false, reason: null };
+  }
+
+  const lead = await prisma.lead
+    .findUnique({
+      where: { id: opts.leadId },
+      select: {
+        id: true,
+        ghlAppointmentId: true,
+        calendlyInviteeUri: true,
+        calendlyScheduledEventUri: true,
+      },
+    })
+    .catch(() => null);
+
+  if (!lead) {
+    return { sentimentTag: opts.sentimentTag, downgraded: false, reason: null };
+  }
+
+  const hasProviderIds = Boolean(lead.ghlAppointmentId || lead.calendlyInviteeUri || lead.calendlyScheduledEventUri);
+  if (hasProviderIds) {
+    return { sentimentTag: "Meeting Booked", downgraded: false, reason: null };
+  }
+
+  const hasActiveAppointment = await prisma.appointment
+    .findFirst({
+      where: {
+        leadId: lead.id,
+        status: { not: "CANCELED" },
+      },
+      select: { id: true },
+    })
+    .then((row) => Boolean(row?.id))
+    .catch(() => false);
+
+  if (hasActiveAppointment) {
+    return { sentimentTag: "Meeting Booked", downgraded: false, reason: null };
+  }
+
+  return {
+    sentimentTag: "Meeting Requested",
+    downgraded: true,
+    reason: "meeting_booked_without_provider_evidence",
+  };
 }

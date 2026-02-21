@@ -135,8 +135,8 @@ Rules:
     },
     budget: {
       min: 1800,
-      max: 2700,
-      retryMax: 5400,
+      max: 8100,
+      retryMax: 16200,
       overheadTokens: 128,
       outputScale: 0.2,
       preferApiCount: true,

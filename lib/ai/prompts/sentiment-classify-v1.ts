@@ -29,8 +29,9 @@ CATEGORIES
 - "Blacklist": Opt-out/unsubscribe/removal request, hostile opt-out language, spam complaint, email bounces, or inbox/address not monitored/no longer in use.
 - "Automated Reply": Auto-acknowledgements (e.g., "we received your message", "this is an automated response") that are NOT Out of Office.
 - "Out of Office": Absence/vacation/leave/OOO messages (including limited access + urgent-routing language).
-- "Meeting Booked": ONLY if a concrete time is explicitly accepted/confirmed, OR they confirm a booking/invite acceptance, OR they explicitly instruct to book via THEIR scheduling link in the body.
+- "Meeting Booked": ONLY if a concrete time is explicitly accepted/confirmed, OR they confirm a booking/invite acceptance (e.g., "invite accepted", "I booked it").
 - "Meeting Requested": Lead asks to arrange a meeting/demo OR explicitly agrees to a concrete day/time.
+  - If they explicitly instruct us to book via THEIR scheduling link (e.g., "use my Calendly", "book via my link"), this is NOT yet booked on our side; classify as "Meeting Requested".
   Guardrail: do NOT treat generic confirmations ("confirmed", "sounds good") as meeting requested unless a specific time exists in the immediately prior context.
 - "Call Requested": Callback intent. Lead explicitly asks us to call them by phone and provides (or clearly references) a callback number/contact point (e.g., "call me at…", "reach me at the number below", "my number is in my signature").
   Do NOT use this for scheduled-call intent (call-as-meeting) like "open to a quick call next week" or "let me know what time works best" (those are "Meeting Requested").

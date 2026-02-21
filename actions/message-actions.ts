@@ -34,6 +34,7 @@ import { coerceSmsDraftPartsOrThrow } from "@/lib/sms-multipart";
 import { BackgroundJobType } from "@prisma/client";
 import { enqueueBackgroundJob } from "@/lib/background-jobs/enqueue";
 import { mergeLinkedInFields, normalizeLinkedInUrl } from "@/lib/linkedin-utils";
+import { resolveBookingLink } from "@/lib/meeting-booking-provider";
 
 const AI_ROUTE_SETTINGS_PATH = "Settings -> Admin -> Admin Dashboard";
 const DRAFT_GENERATION_DISABLED_ERROR =
@@ -64,6 +65,7 @@ async function generateTimingClarifyNudge(opts: {
   channel: "email" | "sms" | "linkedin";
   leadFirstName: string | null;
   messageText: string;
+  bookingLink: string | null;
 }): Promise<{ message: string; subject: string | null } | null> {
   const input = JSON.stringify(
     {
@@ -71,6 +73,7 @@ async function generateTimingClarifyNudge(opts: {
       channel: opts.channel,
       leadFirstName: opts.leadFirstName,
       messageText: opts.messageText,
+      bookingLink: opts.bookingLink,
       normalizedText: null,
       extractionRationale: "timing_clarify_attempt_2",
     },
@@ -94,7 +97,9 @@ Rules:
 - Do NOT choose a specific date yourself.
 - If the lead mentioned an event (e.g. "this gig"), ask when that wraps or what month is better.
 - If the lead gave a range (e.g. "2-3 years"), ask for a specific month/year in that range.
-- Keep it short (1-2 sentences). No links. No emojis. No mention of AI.
+- Keep it short (1-2 sentences). No emojis. No mention of AI.
+- If bookingLink is present, include it as an optional escape hatch (e.g., "If easier, you can grab a time here: <link>").
+- If bookingLink is null, do NOT include any links.
 - For SMS: keep under 320 characters.
 - Return JSON only.
 
@@ -1406,10 +1411,17 @@ export async function approveAndSendDraftSystem(
         if (existingAttempt2) return;
 
         const safeFirstName = (lead.firstName || "").trim();
+        const bookingLink = await resolveBookingLink(lead.clientId, null)
+          .then((result) => result.bookingLink)
+          .catch(() => null);
+
         const deterministicAttempt2Message = (() => {
           const prefix = safeFirstName ? `Hey ${safeFirstName} - ` : "";
-          return `${prefix}quick follow-up: what month or quarter would be best to reconnect?`;
+          const base = `${prefix}quick follow-up: what month or quarter would be best to reconnect?`;
+          if (!bookingLink) return base;
+          return `${base}\n\nIf easier, you can grab a time here: ${bookingLink}`;
         })();
+
         const aiNudge =
           task.type === "email" || task.type === "linkedin"
             ? await generateTimingClarifyNudge({
@@ -1418,9 +1430,16 @@ export async function approveAndSendDraftSystem(
                 channel: task.type,
                 leadFirstName: lead.firstName,
                 messageText: finalContent,
+                bookingLink,
               })
             : null;
-        const attempt2Message = (aiNudge?.message || deterministicAttempt2Message).trim();
+
+        const attempt2MessageRaw = (aiNudge?.message || deterministicAttempt2Message).trim();
+        const attempt2Message = (() => {
+          if (!bookingLink) return attempt2MessageRaw;
+          if (attempt2MessageRaw.includes(bookingLink)) return attempt2MessageRaw;
+          return `${attempt2MessageRaw}\n\nIf easier, you can grab a time here: ${bookingLink}`;
+        })();
         const attempt2Subject = task.type === "email" ? aiNudge?.subject || "Quick question" : null;
 
         const dueDate = new Date(Date.now() + 24 * 60 * 60 * 1000);

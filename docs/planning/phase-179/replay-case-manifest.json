@@ -1,0 +1,21 @@
+{
+  "phase": 179,
+  "strategy": "fc_auto_send_and_sentiment_reliability_followup_and_booking",
+  "clientId": "ef824aca-a3c9-4cde-b51f-2e421ebb6b6e",
+  "threadIds": [
+    "0920ae43-ecf2-4bdd-bdc3-4c08e4549dc9",
+    "0294af0f-9e16-4fde-b1b5-a9506e927b9f",
+    "fbd7321b-212c-42e6-acc2-7470397ec643",
+    "5b0874d8-e9ba-4c6e-8e21-5babaee2fe11",
+    "01697e14-d8b5-4487-a3c6-2d9776befca0",
+    "25b16aaf-377f-478b-8ba4-7e63e7f0a8ee",
+    "02b32302-a570-46f3-adf0-7889d31de062",
+    "af92aebd-c9d1-4e23-a88e-2514c4994928",
+    "c1993a26-83f6-4e6a-a716-6f99c9185f13",
+    "8792bdd9-f5ba-443e-930a-23ea98f43b03",
+    "8fc716c7-07e7-48eb-9d5e-c3d3970d6619",
+    "df3c8df5-a0f5-44f7-9196-e017c10f1a92"
+  ],
+  "notes": "Covers: (1) follow-up deferrals without concrete date (must ask for timeframe; attempt #2 includes booking link), (2) Meeting Requested replies that were suppressed by 'intentional routing' and/or hijacked by followup_task drafts, (3) lead-provided scheduler link routing (Process 5 manual-only), (4) false 'Meeting Booked' from text-only messages without provider evidence."
+}
+

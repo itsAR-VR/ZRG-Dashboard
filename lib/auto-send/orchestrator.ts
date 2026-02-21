@@ -292,6 +292,24 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
       };
     }
 
+    // Booking Process 5 / external scheduler links are manual-only.
+    // Even in AI_AUTO_SEND campaigns, we must never auto-send in this case.
+    if (context.actionSignalExternalCalendar === true) {
+      await safeRecord({
+        draftId: context.draftId,
+        evaluatedAt: new Date(),
+        action: "skip",
+        reason: "external_scheduler_link_manual_only",
+        threshold: context.emailCampaign?.autoSendConfidenceThreshold ?? AUTO_SEND_CONSTANTS.DEFAULT_CONFIDENCE_THRESHOLD,
+      });
+
+      return {
+        mode: "AI_AUTO_SEND",
+        outcome: { action: "skip", reason: "external_scheduler_link_manual_only" },
+        telemetry: { path: "campaign_ai_auto_send", immediateValidationSkipReason: "external_scheduler_link_manual_only" },
+      };
+    }
+
     const threshold = context.emailCampaign?.autoSendConfidenceThreshold ?? AUTO_SEND_CONSTANTS.DEFAULT_CONFIDENCE_THRESHOLD;
     const campaignSkipHumanReview = context.emailCampaign?.autoSendSkipHumanReview;
     const skipHumanReview =
