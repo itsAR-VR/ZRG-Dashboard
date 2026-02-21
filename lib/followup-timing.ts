@@ -1797,6 +1797,7 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
         continue;
       }
 
+      let refreshedRecontactContent: string | null = null;
       const isFutureWindowRecontact = (task.campaignName || "").startsWith(FOLLOWUP_TASK_FUTURE_WINDOW_RECONTACT_PREFIX);
       if (isFutureWindowRecontact) {
         try {
@@ -1813,6 +1814,7 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
             bookingLink: bookingLink || availability.calendarUrl || null,
             hasFreshAvailability: availability.slotsUtc.length > 0,
           });
+          refreshedRecontactContent = message;
 
           await prisma.followUpTask.update({
             where: { id: task.id },
@@ -1837,7 +1839,10 @@ export async function processScheduledTimingFollowUpTasksDue(opts?: {
       }
 
       if (!draft) {
-        const content = (task.suggestedMessage || "").trim() || buildScheduledFollowUpMessage(task.lead.firstName);
+        const content =
+          (refreshedRecontactContent || "").trim() ||
+          (task.suggestedMessage || "").trim() ||
+          buildScheduledFollowUpMessage(task.lead.firstName);
         draft = await prisma.aIDraft.create({
           data: {
             leadId: task.leadId,

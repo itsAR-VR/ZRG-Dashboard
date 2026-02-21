@@ -33,6 +33,10 @@ type RawFollowUpTimingExtraction = {
   localDate: string | null;
   localTime: string | null;
   timezone: string | null;
+  hasFutureWindow: boolean;
+  futureWindowStartDate: string | null;
+  futureWindowEndDate: string | null;
+  futureWindowLabel: string | null;
   rationale: string | null;
   normalizedText: string | null;
 };
@@ -42,6 +46,10 @@ export type FollowUpTimingExtraction = {
   localDate: string | null;
   localTime: string | null;
   timezone: string | null;
+  hasFutureWindow: boolean;
+  futureWindowStartDate: string | null;
+  futureWindowEndDate: string | null;
+  futureWindowLabel: string | null;
   rationale: string | null;
   normalizedText: string | null;
 };
@@ -70,6 +78,10 @@ export async function extractFollowUpTimingFromMessage(opts: {
     localDate: null,
     localTime: null,
     timezone: null,
+    hasFutureWindow: false,
+    futureWindowStartDate: null,
+    futureWindowEndDate: null,
+    futureWindowLabel: null,
     rationale: null,
     normalizedText: null,
   };
@@ -110,7 +122,13 @@ Return ONLY JSON.
 
 Rules:
 - Determine whether the sender gives a concrete follow-up date/time.
-- Accept relative and quarter/fiscal language only if you can normalize it to a concrete local date.
+- When they describe a broad future window (for example: "mid-March", "second week of March", "next quarter"), set hasFutureWindow=true.
+- For hasFutureWindow=true:
+  - futureWindowStartDate must be YYYY-MM-DD when parseable.
+  - futureWindowEndDate should be YYYY-MM-DD when parseable, otherwise null.
+  - futureWindowLabel should preserve a concise, human-readable label from the message (for example "mid-March").
+- If they imply "later" but no parseable window start can be derived, set hasFutureWindow=false and all futureWindow* fields to null.
+- Accept relative and quarter/fiscal language only when you can normalize it into concrete local dates.
 - If no concrete date can be derived, set hasConcreteDate=false and date/time null.
 - localDate must be YYYY-MM-DD when hasConcreteDate=true.
 - localTime may be null if not provided.
@@ -128,10 +146,25 @@ Rules:
         localDate: { type: ["string", "null"] },
         localTime: { type: ["string", "null"] },
         timezone: { type: ["string", "null"] },
+        hasFutureWindow: { type: "boolean" },
+        futureWindowStartDate: { type: ["string", "null"] },
+        futureWindowEndDate: { type: ["string", "null"] },
+        futureWindowLabel: { type: ["string", "null"] },
         rationale: { type: ["string", "null"] },
         normalizedText: { type: ["string", "null"] },
       },
-      required: ["hasConcreteDate", "localDate", "localTime", "timezone", "rationale", "normalizedText"],
+      required: [
+        "hasConcreteDate",
+        "localDate",
+        "localTime",
+        "timezone",
+        "hasFutureWindow",
+        "futureWindowStartDate",
+        "futureWindowEndDate",
+        "futureWindowLabel",
+        "rationale",
+        "normalizedText",
+      ],
     },
     budget: {
       min: 1800,
@@ -158,6 +191,18 @@ Rules:
       if (!(typeof anyValue.timezone === "string" || anyValue.timezone === null)) {
         return { success: false, error: "timezone_must_be_string_or_null" };
       }
+      if (typeof anyValue.hasFutureWindow !== "boolean") {
+        return { success: false, error: "hasFutureWindow_must_be_boolean" };
+      }
+      if (!(typeof anyValue.futureWindowStartDate === "string" || anyValue.futureWindowStartDate === null)) {
+        return { success: false, error: "futureWindowStartDate_must_be_string_or_null" };
+      }
+      if (!(typeof anyValue.futureWindowEndDate === "string" || anyValue.futureWindowEndDate === null)) {
+        return { success: false, error: "futureWindowEndDate_must_be_string_or_null" };
+      }
+      if (!(typeof anyValue.futureWindowLabel === "string" || anyValue.futureWindowLabel === null)) {
+        return { success: false, error: "futureWindowLabel_must_be_string_or_null" };
+      }
       if (!(typeof anyValue.rationale === "string" || anyValue.rationale === null)) {
         return { success: false, error: "rationale_must_be_string_or_null" };
       }
@@ -171,6 +216,11 @@ Rules:
           localDate: normalizeDate(anyValue.localDate),
           localTime: normalizeTime(anyValue.localTime),
           timezone: normalizeTimezone(anyValue.timezone),
+          hasFutureWindow: Boolean(anyValue.hasFutureWindow),
+          futureWindowStartDate: normalizeDate(anyValue.futureWindowStartDate),
+          futureWindowEndDate: normalizeDate(anyValue.futureWindowEndDate),
+          futureWindowLabel:
+            typeof anyValue.futureWindowLabel === "string" ? anyValue.futureWindowLabel.trim() || null : null,
           rationale: typeof anyValue.rationale === "string" ? anyValue.rationale.trim() || null : null,
           normalizedText:
             typeof anyValue.normalizedText === "string" ? anyValue.normalizedText.trim() || null : null,
@@ -193,6 +243,7 @@ Rules:
 
   const extracted = result.data;
   const hasConcreteDate = extracted.hasConcreteDate && Boolean(extracted.localDate);
+  const hasFutureWindow = extracted.hasFutureWindow && Boolean(extracted.futureWindowStartDate);
 
   return {
     success: true,
@@ -201,6 +252,10 @@ Rules:
       localDate: hasConcreteDate ? extracted.localDate : null,
       localTime: hasConcreteDate ? extracted.localTime : null,
       timezone: hasConcreteDate ? extracted.timezone : null,
+      hasFutureWindow,
+      futureWindowStartDate: hasFutureWindow ? extracted.futureWindowStartDate : null,
+      futureWindowEndDate: hasFutureWindow ? extracted.futureWindowEndDate : null,
+      futureWindowLabel: hasFutureWindow ? extracted.futureWindowLabel : null,
       rationale: extracted.rationale,
       normalizedText: extracted.normalizedText,
     },
