@@ -926,13 +926,18 @@ export function createAutoSendExecutor(deps: AutoSendDependencies): { executeAut
 
     // Policy: if the lead explicitly wants a call, do not auto-send a reply.
     // Handle operational handoff via Slack action-signal notifications and phone enrichment.
-    if (context.actionSignalCallRequested === true) {
+    if (context.actionSignalCallRequested === true || context.sentimentTag === "Call Requested") {
       const threshold =
         mode === "AI_AUTO_SEND"
           ? context.emailCampaign?.autoSendConfidenceThreshold ?? AUTO_SEND_CONSTANTS.DEFAULT_CONFIDENCE_THRESHOLD
           : null;
 
-      const reason = context.leadPhoneOnFile === true ? "call_requested_phone_on_file" : "call_requested_phone_missing";
+      const reason =
+        context.actionSignalCallRequested === true
+          ? context.leadPhoneOnFile === true
+            ? "call_requested_phone_on_file"
+            : "call_requested_phone_missing"
+          : "call_requested_sentiment";
 
       await safeRecord({
         draftId: context.draftId,

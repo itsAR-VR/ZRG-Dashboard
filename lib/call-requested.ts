@@ -11,6 +11,9 @@ function buildLeadUrl(leadId: string): string {
 export async function ensureCallRequestedTask(opts: {
   leadId: string;
   latestInboundText?: string | null;
+  // When true, create the call task even if the lead sentiment isn't "Call Requested".
+  // This is used when booking-process routing detects explicit callback intent under a different sentiment.
+  force?: boolean;
 }): Promise<{ created: boolean; skipped?: boolean; reason?: string }> {
   const lead = await prisma.lead.findUnique({
     where: { id: opts.leadId },
@@ -25,7 +28,9 @@ export async function ensureCallRequestedTask(opts: {
   });
 
   if (!lead) return { created: false, skipped: true, reason: "lead_not_found" };
-  if (lead.sentimentTag !== "Call Requested") return { created: false, skipped: true, reason: "not_call_requested" };
+  if (!opts.force && lead.sentimentTag !== "Call Requested") {
+    return { created: false, skipped: true, reason: "not_call_requested" };
+  }
 
   const phone = (lead.phone || "").trim();
   if (!phone) return { created: false, skipped: true, reason: "missing_phone" };
@@ -61,4 +66,3 @@ export async function ensureCallRequestedTask(opts: {
 
   return { created: true };
 }
-

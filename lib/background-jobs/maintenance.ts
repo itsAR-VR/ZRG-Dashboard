@@ -3,6 +3,7 @@ import "server-only";
 import { LeadMemorySource } from "@prisma/client";
 
 import { recoverStaleSendingDrafts } from "@/lib/ai-drafts/stale-sending-recovery";
+import { backfillMissingFollowUpTaskDrafts } from "@/lib/followup-task-drafts";
 import { prisma } from "@/lib/prisma";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
@@ -87,6 +88,11 @@ export type BackgroundMaintenanceResult = {
     checked: number;
     recovered: number;
     missingMessages: number;
+    errors: string[];
+  };
+  followUpTaskDraftBackfill: {
+    candidates: number;
+    draftsCreated: number;
     errors: string[];
   };
   pruning: {
@@ -189,6 +195,12 @@ export async function runBackgroundMaintenance(opts?: {
     errors: [error instanceof Error ? error.message : "Unknown error"],
   }));
 
+  const followUpTaskDraftBackfill = await backfillMissingFollowUpTaskDrafts({ limit: 50, lookbackDays: 120 }).catch((error) => ({
+    candidates: 0,
+    draftsCreated: 0,
+    errors: [error instanceof Error ? error.message : "Unknown error"],
+  }));
+
   const retentionDays = getDraftPipelineRetentionDays();
   const cutoff = new Date(now);
   cutoff.setUTCDate(cutoff.getUTCDate() - retentionDays);
@@ -220,6 +232,7 @@ export async function runBackgroundMaintenance(opts?: {
     queueHealth,
     functionRunHealth,
     staleDraftRecovery,
+    followUpTaskDraftBackfill,
     pruning,
   };
 }

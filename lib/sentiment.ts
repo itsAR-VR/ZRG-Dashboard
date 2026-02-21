@@ -346,7 +346,9 @@ Meeting Booked classification notes:
 - Choose "Meeting Booked" ONLY if: an explicit date/time is accepted, OR the message confirms a booking/invite acceptance, OR the body explicitly instructs to book via THEIR scheduling link ("use my Calendly", "book via my link").
 - Do NOT choose "Meeting Booked" if there is only a generic request for availability, or if a link exists only in a signature without explicit instruction.
 - If they request a meeting but no time is confirmed → "Meeting Requested".
-- If they request a phone call but no time is confirmed → "Call Requested" (only if explicitly a phone call).
+- "Call Requested" is for callback intent (they want us to call them), not for scheduling a call as a meeting.
+  - Use "Call Requested" ONLY when they explicitly ask us to call them and provide (or clearly reference) a callback number/contact point (ex: "call me at…", "reach me at the number below", "my number is in my signature").
+  - If they are open to a call and ask to coordinate times (ex: "open to a quick call next week", "let me know what time works best"), classify as "Meeting Requested".
 
 Automated Reply vs Out Of Office:
 - Use "Automated Reply" for generic auto-acknowledgements (e.g., "we received your message", "thank you for contacting us").
@@ -466,9 +468,9 @@ export async function analyzeInboundEmailReply(opts: {
             "Meeting Requested: Recipient asks to arrange a meeting/demo but no confirmed time and no instruction to self-book.",
             "Call Requested: Recipient asks to arrange a phone call but no confirmed time (explicit phone call).",
             "Information Requested: Asks for details/clarifications/pricing/more information.",
-            "Follow Up: Defers timing / not right now but leaves the door open (e.g., 'not ready', 'maybe next year', 'reach out in 6 months').",
             "Not Interested: Clear hard decline with no future openness and no explicit unsubscribe request.",
             "Objection: Raises a concern/constraint that blocks the next step without a hard decline (e.g., price/budget, already using a provider, skeptical, doesn't apply).",
+            "Follow Up: Defers timing / not right now but leaves the door open (e.g., 'not ready', 'maybe next year', 'reach out in 6 months').",
           ],
         },
         {
@@ -515,7 +517,7 @@ export async function analyzeInboundEmailReply(opts: {
     constraints: [
       "Always choose exactly one category from allowed list.",
       "Meeting Booked MUST satisfy the guardrails; otherwise use Meeting Requested / Call Requested / other best fit.",
-      "If multiple cues exist, apply decision_rules priority order: Blacklist > Automated Reply > Out Of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Follow Up > Not Interested > Objection.",
+      "If multiple cues exist, apply decision_rules priority order: Blacklist > Automated Reply > Out Of Office > Meeting Booked > Meeting Requested > Call Requested > Information Requested > Not Interested > Objection > Follow Up.",
       "Signature data must be excluded from cleaned_response and only output under the correct JSON keys.",
       "Use null for signature keys if not present.",
       "Do NOT use scheduling links found only in signatures to decide classification unless the body explicitly references using that link.",
@@ -550,6 +552,7 @@ export async function analyzeInboundEmailReply(opts: {
           "Information Requested",
           "Follow Up",
           "Not Interested",
+          "Objection",
           "Automated Reply",
           "Out Of Office",
           "Blacklist",
@@ -606,6 +609,7 @@ export async function analyzeInboundEmailReply(opts: {
         "Information Requested",
         "Follow Up",
         "Not Interested",
+        "Objection",
         "Automated Reply",
         "Out Of Office",
         "Blacklist",

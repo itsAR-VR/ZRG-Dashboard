@@ -100,3 +100,32 @@ test("validateRevisionAgainstHardConstraints passes when no window-matching slot
   assert.equal(result.passed, true);
   assert.equal(result.reasons.length, 0);
 });
+
+test("buildRevisionHardConstraints treats week-of-month windows as window intent (Mon-Sun semantics)", () => {
+  const result = buildRevisionHardConstraints({
+    inboundBody: "The 2nd week of March works for me.",
+    offeredSlots: [
+      { label: "Mon, Mar 16 at 10:00 AM PST", datetime: "2026-03-16T17:00:00.000Z", offeredAt: "2026-03-01T00:00:00.000Z" },
+    ],
+    bookingLink: "https://cal.example.com/book",
+    leadSchedulerLink: null,
+  });
+
+  assert.equal(result.preferSingleSlotForWindow, true);
+  assert.ok(result.hardRequirements.some((line) => /no offered slot matches the requested window/i.test(line)));
+});
+
+test("validateRevisionAgainstHardConstraints fails link-only policy when week-of-month window has no matching slot", () => {
+  const result = validateRevisionAgainstHardConstraints({
+    inboundBody: "The 2nd week of March works for me.",
+    offeredSlots: [
+      { label: "Mon, Mar 16 at 10:00 AM PST", datetime: "2026-03-16T17:00:00.000Z", offeredAt: "2026-03-01T00:00:00.000Z" },
+    ],
+    bookingLink: "https://cal.example.com/book",
+    leadSchedulerLink: null,
+    draft: "I don't have that week open. Does Mon, Mar 16 at 10:00 AM PST work instead? If not, pick any time here: https://cal.example.com/book",
+  });
+
+  assert.equal(result.passed, false);
+  assert.ok(result.reasons.some((reason) => reason.includes("window_no_match_link_only")));
+});

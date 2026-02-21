@@ -27,7 +27,7 @@ export function extractSchedulerLinkFromText(text: string): string | null {
 
   // Quick scan for obvious calendar providers before doing more work.
   if (
-    !/(calendly\.com|meetings\.hubspot\.com|hubspot\.com\/meetings|leadconnectorhq\.com|gohighlevel\.com|msgsndr\.com|\/widget\/booking\/|\/widget\/bookings\/|calendar\.google\.com\/appointments\/schedules\/)/i.test(
+    !/(calendly\.com|meetings\.hubspot\.com|hubspot\.com\/meetings|leadconnectorhq\.com|gohighlevel\.com|msgsndr\.com|\/widget\/booking\/|\/widget\/bookings\/|calendar\.google\.com\/appointments\/schedules\/|calendar\.notion\.so\/meet\/)/i.test(
       raw
     )
   ) {
@@ -41,6 +41,8 @@ export function extractSchedulerLinkFromText(text: string): string | null {
     const type = detectCalendarType(normalized);
     if (type !== "unknown") return normalized;
     if (/calendar\.google\.com\/appointments\/schedules\//i.test(normalized)) return normalized;
+    // Notion Calendar (unsupported for availability fetch today, but still a lead-provided scheduler link).
+    if (/calendar\.notion\.so\/meet\//i.test(normalized)) return normalized;
   }
 
   return null;

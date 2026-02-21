@@ -54,6 +54,7 @@ import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { maybeAssignLead } from "@/lib/lead-assignment";
 import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
+import { backfillMissingFollowUpTaskDrafts, hasPendingEligibleFollowUpTaskDraft } from "@/lib/followup-task-drafts";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
 import { upsertLeadCrmRowOnInterest } from "@/lib/lead-crm-row";
@@ -1175,8 +1176,11 @@ export async function runEmailInboundPostProcessJob(opts: {
     emailBody: fullEmailBody,
   });
 
-  await ensureCallRequestedTask({ leadId: lead.id, latestInboundText: inboundText }).catch(() => undefined);
-  await handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: inboundText }).catch(() => undefined);
+  await handleLeadSchedulerLinkIfPresent({
+    leadId: lead.id,
+    latestInboundText: inboundReplyOnly || inboundText,
+    observedSchedulerLink: schedulerLink,
+  }).catch(() => undefined);
 
   let actionSignals = EMPTY_ACTION_SIGNAL_RESULT;
   let actionSignalCallRequested = false;
@@ -1224,6 +1228,28 @@ export async function runEmailInboundPostProcessJob(opts: {
     console.warn("[Email PostProcess] Action signal detection failed (non-fatal):", error);
   }
 
+  // If booking-process routing indicates a lead-provided scheduler flow (Process 5),
+  // run the scheduler-link handler with router force to avoid missing task creation
+  // when deterministic “explicit instruction” matching is too strict.
+  if (actionSignals.route?.processId === 5) {
+    handleLeadSchedulerLinkIfPresent({
+      leadId: lead.id,
+      latestInboundText: inboundReplyOnly || inboundText,
+      observedSchedulerLink: schedulerLink,
+      forceBookingProcess5: true,
+    }).catch(() => undefined);
+  }
+
+  // Create call task when booking-process routing detects callback intent (Process 4),
+  // even if sentiment classification picked a different tag.
+  if (actionSignalCallRequested || lead.sentimentTag === "Call Requested") {
+    ensureCallRequestedTask({
+      leadId: lead.id,
+      latestInboundText: inboundReplyOnly || inboundText,
+      force: actionSignalCallRequested,
+    }).catch(() => undefined);
+  }
+
   // If the lead is a positive reply, ensure they exist in GHL for SMS syncing.
   if (isPositiveSentiment(lead.sentimentTag)) {
     try {
@@ -1256,17 +1282,40 @@ export async function runEmailInboundPostProcessJob(opts: {
   });
 
   // Draft generation (skip bounce emails and auto-booked appointments).
-  const schedulingHandled = Boolean(autoBook.context.followUpTaskCreated || timingFollowUpScheduled);
-  if (schedulingHandled) {
-    console.log("[Email PostProcess] Skipping draft generation; scheduling follow-up task already created");
-    if (actionSignals.signals.length === 0) {
-      notifyDraftSkipForOps({
-        clientId: client.id,
-        leadId: lead.id,
-        messageId: message.id,
-        sentimentTag: lead.sentimentTag,
-        reason: "scheduling_followup_task",
-      }).catch((error) => console.warn("[Email PostProcess] Draft-skip notify failed:", error));
+  let schedulingHandled = false;
+  const shouldAttemptFollowUpRouting = lead.sentimentTag === "Follow Up" && timingFollowUpScheduled;
+  if (shouldAttemptFollowUpRouting) {
+    try {
+      const backfill = await backfillMissingFollowUpTaskDrafts({ leadId: lead.id, limit: 10, lookbackDays: 120 });
+      if (backfill.errors.length > 0) {
+        console.warn("[Email PostProcess] FollowUpTask draft backfill errors:", backfill.errors.slice(0, 3));
+      }
+    } catch (error) {
+      console.warn("[Email PostProcess] FollowUpTask draft backfill failed:", error);
+    }
+
+    const hasPendingRoutedDraft = await hasPendingEligibleFollowUpTaskDraft({
+      leadId: lead.id,
+      limit: 50,
+      lookbackDays: 120,
+    }).catch(() => true);
+
+    if (!hasPendingRoutedDraft) {
+      console.warn(
+        "[Email PostProcess] follow-up timing scheduled but no eligible pending routed draft found; falling back to normal draft generation"
+      );
+    } else {
+      schedulingHandled = true;
+      console.log("[Email PostProcess] Skipping draft generation; scheduling follow-up task already created");
+      if (actionSignals.signals.length === 0) {
+        notifyDraftSkipForOps({
+          clientId: client.id,
+          leadId: lead.id,
+          messageId: message.id,
+          sentimentTag: lead.sentimentTag,
+          reason: "scheduling_followup_task",
+        }).catch((error) => console.warn("[Email PostProcess] Draft-skip notify failed:", error));
+      }
     }
   }
 
@@ -1301,8 +1350,11 @@ export async function runEmailInboundPostProcessJob(opts: {
           .catch(() => leadPhoneOnFileForCallPolicy);
       }
 
-      const suppressDraftForCallRequestedNoPhone =
-        actionSignalCallRequested && !leadPhoneOnFileForCallPolicy;
+      const callRequestedFlow =
+        (actionSignalCallRequested || lead.sentimentTag === "Call Requested") &&
+        actionSignals.route?.processId !== 5;
+
+      const suppressDraftForCallRequestedNoPhone = callRequestedFlow && !leadPhoneOnFileForCallPolicy;
 
       if (suppressDraftForCallRequestedNoPhone) {
         console.log("[Email PostProcess] Skipping draft generation; call requested but no phone on file (notify-only policy)");

@@ -5,6 +5,7 @@ import { detectCalendarType, fetchCalendlyAvailability, fetchGHLAvailabilityWith
 import { getWorkspaceAvailabilitySlotsUtc } from "@/lib/availability-cache";
 import { getBookingLink } from "@/lib/meeting-booking-provider";
 import { getPublicAppUrl } from "@/lib/app-url";
+import { extractSchedulerLinkFromText, hasExplicitSchedulerLinkInstruction } from "@/lib/scheduling-link";
 
 function buildLeadUrl(leadId: string): string {
   const base = getPublicAppUrl();
@@ -52,6 +53,10 @@ async function fetchLeadSchedulerAvailability(url: string): Promise<{ slots: Ava
 export async function handleLeadSchedulerLinkIfPresent(opts: {
   leadId: string;
   latestInboundText?: string | null;
+  observedSchedulerLink?: string | null;
+  // When true, treat this message as an explicit lead-provided scheduler flow (Booking Process 5),
+  // even if deterministic “explicit instruction” regex misses the phrasing.
+  forceBookingProcess5?: boolean;
 }): Promise<{ handled: boolean; outcome?: string }> {
   const lead = await prisma.lead.findUnique({
     where: { id: opts.leadId },
@@ -70,14 +75,29 @@ export async function handleLeadSchedulerLinkIfPresent(opts: {
   });
   if (!lead) return { handled: false, outcome: "lead_not_found" };
 
-  const url = (lead.externalSchedulingLink || "").trim();
+  const latestInboundText = (opts.latestInboundText || "").trim();
+  const observedSchedulerLink = (opts.observedSchedulerLink || "").trim();
+  const forced = Boolean(opts.forceBookingProcess5);
+
+  // Safety: only act when the inbound message explicitly directs us to book via the lead's link.
+  // Do NOT create tasks just because a scheduler link exists in a signature/footer.
+  if (!forced && (!latestInboundText || !hasExplicitSchedulerLinkInstruction(latestInboundText))) {
+    return { handled: false, outcome: "no_explicit_instruction" };
+  }
+
+  const inferredLink = extractSchedulerLinkFromText(latestInboundText);
+  const url = (inferredLink || observedSchedulerLink || lead.externalSchedulingLink || "").trim();
   if (!url) return { handled: false, outcome: "no_scheduler_link" };
 
-  // Safety: only act when the lead explicitly wants us to book via their link.
-  // Interested leads can still include explicit scheduler-link routing intent.
-  const schedulingIntentSentiments = new Set(["Meeting Requested", "Meeting Booked", "Interested"]);
-  if (!schedulingIntentSentiments.has(lead.sentimentTag ?? "")) {
-    return { handled: false, outcome: "sentiment_not_scheduling_intent" };
+  // Best-effort: persist newly observed link so downstream flows (drafting, future messages) can reuse it.
+  const newLink = inferredLink || observedSchedulerLink;
+  if (newLink && newLink !== lead.externalSchedulingLink) {
+    prisma.lead
+      .updateMany({
+        where: { id: lead.id, externalSchedulingLink: { not: newLink } },
+        data: { externalSchedulingLink: newLink, externalSchedulingLinkLastSeenAt: new Date() },
+      })
+      .catch(() => undefined);
   }
 
   const isMeetingRequested = lead.sentimentTag === "Meeting Requested";

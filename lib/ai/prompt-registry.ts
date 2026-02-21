@@ -58,7 +58,9 @@ Meeting Booked classification notes:
 - Choose "Meeting Booked" ONLY if: an explicit date/time is accepted, OR the message confirms a booking/invite acceptance, OR the body explicitly instructs to book via THEIR scheduling link ("use my Calendly", "book via my link").
 - Do NOT choose "Meeting Booked" if there is only a generic request for availability, or if a link exists only in a signature without explicit instruction.
 - If they request a meeting but no time is confirmed → "Meeting Requested".
-- If they request a phone call but no time is confirmed → "Call Requested" (only if explicitly a phone call).
+- "Call Requested" is for callback intent (they want us to call them), not for scheduling a call as a meeting.
+  - Use "Call Requested" ONLY when they explicitly ask us to call them and provide (or clearly reference) a callback number/contact point (ex: "call me at…", "reach me at the number below", "my number is in my signature").
+  - If they are open to a call and ask to coordinate times (ex: "open to a quick call next week", "let me know what time works best"), classify as "Meeting Requested".
 
 Automated Reply vs Out Of Office:
 - Use "Automated Reply" for generic auto-acknowledgements (e.g., "we received your message", "thank you for contacting us").
@@ -1745,8 +1747,9 @@ Process taxonomy:
 
 Rules:
 - Pick exactly one process ID.
-- Process 4 is STRICT. Use it only when the lead explicitly asks us to call them by phone and gives (or clearly references) a callback number/contact point (for example: "call me at...", "reach me at the number below", "my number is in my signature").
-- Do NOT use process 4 for generic openness like "happy to chat", "open to chat", "sounds good", "let's connect", or general meeting interest without a direct phone-call request.
+- Process 4 is STRICT. Use it only for **callback intent**: the lead explicitly asks us to call them by phone and gives (or clearly references) a callback number/contact point (for example: "call me at...", "reach me at the number below", "my number is in my signature").
+- Do NOT use process 4 for **scheduled-call intent** (call-as-meeting) such as: "open to a quick call next week", "let me know what time works best", "happy to hop on a call", or any message that is asking to *schedule* a call/meeting rather than requesting a callback.
+- If the lead is asking to schedule a call/meeting (even if they use the word "call"), use process 2 or 3 (or 1 if qualification is still needed).
 - Process 5 is STRICT. Use it only when the lead explicitly tells us to book through their scheduler/calendar link.
 - A scheduling link that appears only in a signature/footer is NOT enough for process 5 unless the body explicitly tells us to use it.
 - If uncertain between 4/5 and 1/2/3, prefer 1/2/3 and set uncertain=true.

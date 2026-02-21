@@ -25,10 +25,16 @@ export type RevisionValidationResult = {
 const TIME_PATTERN = /\b(1[0-2]|0?[1-9])(?::([0-5]\d))?\s?(am|pm)\b/gi;
 const WEEKDAY_PATTERN = /\b(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b/i;
 
+type WeekOfMonthPreference = {
+  monthIndex: number;
+  weekIndex: number;
+};
+
 type ParsedWindowPreference = {
   dayToken: string | null;
   timeOfDay: "morning" | "afternoon" | "evening" | null;
   range: { startMinutes: number; endMinutes: number } | null;
+  weekOfMonth: WeekOfMonthPreference | null;
   hasWindowSignal: boolean;
 };
 
@@ -69,6 +75,74 @@ function normalizeDayToken(raw: string | null | undefined): string | null {
   if (value.startsWith("sat")) return "sat";
   if (value.startsWith("sun")) return "sun";
   return null;
+}
+
+function normalizeWeekOrdinalToken(raw: string | null | undefined): number | null {
+  const value = (raw || "").trim().toLowerCase();
+  if (!value) return null;
+  if (value === "1" || value === "1st" || value === "first") return 1;
+  if (value === "2" || value === "2nd" || value === "second") return 2;
+  if (value === "3" || value === "3rd" || value === "third") return 3;
+  if (value === "4" || value === "4th" || value === "fourth") return 4;
+  if (value === "5" || value === "5th" || value === "fifth") return 5;
+  return null;
+}
+
+function normalizeMonthToken(raw: string | null | undefined): number | null {
+  const value = (raw || "").trim().toLowerCase();
+  if (!value) return null;
+  if (value.startsWith("jan")) return 0;
+  if (value.startsWith("feb")) return 1;
+  if (value.startsWith("mar")) return 2;
+  if (value.startsWith("apr")) return 3;
+  if (value === "may") return 4;
+  if (value.startsWith("jun")) return 5;
+  if (value.startsWith("jul")) return 6;
+  if (value.startsWith("aug")) return 7;
+  if (value.startsWith("sep")) return 8;
+  if (value.startsWith("oct")) return 9;
+  if (value.startsWith("nov")) return 10;
+  if (value.startsWith("dec")) return 11;
+  return null;
+}
+
+function parseWeekOfMonthPreference(text: string): WeekOfMonthPreference | null {
+  const message = normalizeText(text);
+  if (!message) return null;
+  const match = message.match(
+    /\b(first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th|1|2|3|4|5)\s+week\s+(?:of|in)\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i
+  );
+  if (!match) return null;
+  const weekIndex = normalizeWeekOrdinalToken(match[1]);
+  const monthIndex = normalizeMonthToken(match[2]);
+  if (!weekIndex || monthIndex === null) return null;
+  return { monthIndex, weekIndex };
+}
+
+function weekOfMonthMonSunUtc(year: number, monthIndex: number, dayOfMonth: number): number | null {
+  if (!Number.isFinite(year) || year < 1970) return null;
+  if (!Number.isFinite(monthIndex) || monthIndex < 0 || monthIndex > 11) return null;
+  if (!Number.isFinite(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) return null;
+
+  const first = new Date(Date.UTC(year, monthIndex, 1));
+  const firstDow = first.getUTCDay(); // 0=Sun...6=Sat
+  const daysToMonday = (8 - firstDow) % 7;
+  const firstMonday = 1 + daysToMonday;
+  if (dayOfMonth < firstMonday) return 0;
+
+  return Math.floor((dayOfMonth - firstMonday) / 7) + 1;
+}
+
+function parseSlotUtcDateParts(slot: OfferedSlot): { year: number; monthIndex: number; dayOfMonth: number } | null {
+  const raw = typeof slot?.datetime === "string" ? slot.datetime.trim() : "";
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return {
+    year: parsed.getUTCFullYear(),
+    monthIndex: parsed.getUTCMonth(),
+    dayOfMonth: parsed.getUTCDate(),
+  };
 }
 
 function parseTimeTokenToMinutes(token: string): number | null {
@@ -119,6 +193,7 @@ function parseInboundWindowPreference(inboundBody: string): ParsedWindowPreferen
   const inbound = normalizeText(inboundBody);
   const dayMatch = inbound.match(WEEKDAY_PATTERN);
   const dayToken = normalizeDayToken(dayMatch?.[1] || null);
+  const weekOfMonth = parseWeekOfMonthPreference(inboundBody);
 
   const timeOfDay = /\bmorning\b/i.test(inbound)
     ? "morning"
@@ -131,16 +206,25 @@ function parseInboundWindowPreference(inboundBody: string): ParsedWindowPreferen
 
   const hasWindowSignal =
     Boolean(dayToken) ||
+    Boolean(weekOfMonth) ||
     Boolean(timeOfDay) ||
     Boolean(range) ||
     /\b(today|tomorrow|this week|next week|between|after|before)\b/i.test(inbound);
 
-  return { dayToken, timeOfDay, range, hasWindowSignal };
+  return { dayToken, weekOfMonth, timeOfDay, range, hasWindowSignal };
 }
 
 function slotMatchesWindowPreference(slot: OfferedSlot, preference: ParsedWindowPreference): boolean {
   const label = `${slot?.label || ""}`.trim();
   if (!label) return false;
+
+  if (preference.weekOfMonth) {
+    const parts = parseSlotUtcDateParts(slot);
+    if (!parts) return false;
+    if (parts.monthIndex !== preference.weekOfMonth.monthIndex) return false;
+    const slotWeek = weekOfMonthMonSunUtc(parts.year, parts.monthIndex, parts.dayOfMonth);
+    if (slotWeek !== preference.weekOfMonth.weekIndex) return false;
+  }
 
   if (preference.dayToken) {
     const dayMatch = normalizeText(label).match(WEEKDAY_PATTERN);
@@ -183,8 +267,10 @@ function draftIncludesKnownSchedulingLink(draft: string, bookingLink: string | n
 function hasWindowPreferenceWithoutExactTime(inboundBody: string): boolean {
   const inbound = normalizeText(inboundBody);
   if (!inbound) return false;
+  const hasWeekOfMonth = Boolean(parseWeekOfMonthPreference(inboundBody));
 
   const hasWindowLanguage =
+    hasWeekOfMonth ||
     /\bbetween\b/.test(inbound) ||
     /\bafter\b/.test(inbound) ||
     /\bbefore\b/.test(inbound) ||
@@ -305,6 +391,11 @@ export function validateRevisionAgainstHardConstraints(input: RevisionConstraint
       if (!hasKnownLink) {
         reasons.push(
           "[window_no_match_link_missing] No offered slot matches the requested window; draft must direct to the provided scheduling link."
+        );
+      }
+      if (offeredMentions > 0 || extractTimeTokens(input.draft).length > 0) {
+        reasons.push(
+          "[window_no_match_link_only] No offered slot matches the requested window; draft must be link-only and must not propose any times."
         );
       }
       const hasCommittalCue =

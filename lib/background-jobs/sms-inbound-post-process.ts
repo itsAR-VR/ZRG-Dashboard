@@ -18,6 +18,7 @@ import { syncSmsConversationHistorySystem } from "@/lib/conversation-sync";
 import { maybeAssignLead } from "@/lib/lead-assignment";
 import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
+import { backfillMissingFollowUpTaskDrafts, hasPendingEligibleFollowUpTaskDraft } from "@/lib/followup-task-drafts";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
 import { handleLeadSchedulerLinkIfPresent } from "@/lib/lead-scheduler-link";
@@ -300,11 +301,11 @@ export async function runSmsInboundPostProcessJob(params: {
     console.warn(`[SMS Post-Process] Failed to upsert CRM row for lead ${lead.id}:`, error);
   });
 
-  if (newSentiment === "Call Requested") {
-    ensureCallRequestedTask({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
-  }
-
-  handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
+  handleLeadSchedulerLinkIfPresent({
+    leadId: lead.id,
+    latestInboundText: messageBody,
+    observedSchedulerLink: schedulerLink,
+  }).catch(() => undefined);
 
   let actionSignals = EMPTY_ACTION_SIGNAL_RESULT;
   let actionSignalCallRequested = false;
@@ -352,15 +353,60 @@ export async function runSmsInboundPostProcessJob(params: {
     console.warn("[SMS Post-Process] Action signal detection failed (non-fatal):", error);
   }
 
+  // If booking-process routing indicates a lead-provided scheduler flow (Process 5),
+  // run the scheduler-link handler with router force to avoid missing task creation
+  // when deterministic “explicit instruction” matching is too strict.
+  if (actionSignals.route?.processId === 5) {
+    handleLeadSchedulerLinkIfPresent({
+      leadId: lead.id,
+      latestInboundText: messageBody,
+      observedSchedulerLink: schedulerLink,
+      forceBookingProcess5: true,
+    }).catch(() => undefined);
+  }
+
+  // Create call task when booking-process routing detects callback intent (Process 4),
+  // even if sentiment classification picked a different tag.
+  if (actionSignalCallRequested || newSentiment === "Call Requested") {
+    ensureCallRequestedTask({
+      leadId: lead.id,
+      latestInboundText: messageBody,
+      force: actionSignalCallRequested,
+    }).catch(() => undefined);
+  }
+
   // Phase 66: Removed sentiment-based Meeting Requested auto-start.
   // Meeting Requested is now triggered by setter email reply only
   // (see autoStartMeetingRequestedSequenceOnSetterEmailReply in lib/followup-automation.ts)
 
   // 7. AI Draft Generation
   // Skip if auto-booked or sentiment doesn't need draft
-  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated || timingFollowUpScheduled);
-  if (schedulingHandled) {
-    console.log("[SMS Post-Process] Skipping draft generation; scheduling follow-up task already created");
+  let schedulingHandled = false;
+  const shouldAttemptFollowUpRouting = newSentiment === "Follow Up" && timingFollowUpScheduled;
+  if (shouldAttemptFollowUpRouting) {
+    try {
+      const backfill = await backfillMissingFollowUpTaskDrafts({ leadId: lead.id, limit: 10, lookbackDays: 120 });
+      if (backfill.errors.length > 0) {
+        console.warn("[SMS Post-Process] FollowUpTask draft backfill errors:", backfill.errors.slice(0, 3));
+      }
+    } catch (error) {
+      console.warn("[SMS Post-Process] FollowUpTask draft backfill failed:", error);
+    }
+
+    const hasPendingRoutedDraft = await hasPendingEligibleFollowUpTaskDraft({
+      leadId: lead.id,
+      limit: 50,
+      lookbackDays: 120,
+    }).catch(() => true);
+
+    if (!hasPendingRoutedDraft) {
+      console.warn(
+        "[SMS Post-Process] follow-up timing scheduled but no eligible pending routed draft found; falling back to normal draft generation"
+      );
+    } else {
+      schedulingHandled = true;
+      console.log("[SMS Post-Process] Skipping draft generation; scheduling follow-up task already created");
+    }
   }
   const shouldDraft = !autoBook.booked && !schedulingHandled && newSentiment && shouldGenerateDraft(newSentiment);
 
@@ -379,8 +425,11 @@ export async function runSmsInboundPostProcessJob(params: {
         .catch(() => leadPhoneOnFileForCallPolicy);
     }
 
-    const suppressDraftForCallRequestedNoPhone =
-      actionSignalCallRequested && !leadPhoneOnFileForCallPolicy;
+    const callRequestedFlow =
+      (actionSignalCallRequested || newSentiment === "Call Requested") &&
+      actionSignals.route?.processId !== 5;
+
+    const suppressDraftForCallRequestedNoPhone = callRequestedFlow && !leadPhoneOnFileForCallPolicy;
 
     if (suppressDraftForCallRequestedNoPhone) {
       console.log("[SMS Post-Process] Skipping draft generation; call requested but no phone on file (notify-only policy)");

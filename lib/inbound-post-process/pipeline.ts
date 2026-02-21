@@ -33,6 +33,7 @@ import { enqueueLeadScoringJob } from "@/lib/lead-scoring";
 import { maybeAssignLead } from "@/lib/lead-assignment";
 import { notifyOnLeadSentimentChange } from "@/lib/notification-center";
 import { ensureCallRequestedTask } from "@/lib/call-requested";
+import { backfillMissingFollowUpTaskDrafts, hasPendingEligibleFollowUpTaskDraft } from "@/lib/followup-task-drafts";
 import { enrichPhoneThenSyncToGhl } from "@/lib/phone-enrichment";
 import { markInboxCountsDirty } from "@/lib/inbox-counts-dirty";
 import { extractSchedulerLinkFromText } from "@/lib/scheduling-link";
@@ -265,11 +266,14 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
     console.warn(prefix, "Failed to upsert CRM row for lead", lead.id, error);
   });
 
-  if (sentimentTag === "Call Requested") {
-    ensureCallRequestedTask({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
-  }
+  const inboundText = messageBody.trim();
+  const inboundReplyOnly = stripEmailQuotedSectionsForAutomation(inboundText).trim();
 
-  handleLeadSchedulerLinkIfPresent({ leadId: lead.id, latestInboundText: messageBody }).catch(() => undefined);
+  handleLeadSchedulerLinkIfPresent({
+    leadId: lead.id,
+    latestInboundText: inboundReplyOnly || inboundText,
+    observedSchedulerLink: schedulerLink,
+  }).catch(() => undefined);
 
   pushStage("maybe_assign_lead");
   await maybeAssignLead({
@@ -293,8 +297,6 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
   await cancelPendingTimingClarifyAttempt2OnInbound({ leadId: lead.id }).catch(() => undefined);
 
   pushStage("snooze_detection");
-  const inboundText = messageBody.trim();
-  const inboundReplyOnly = stripEmailQuotedSectionsForAutomation(inboundText).trim();
   let timingFollowUpScheduled = false;
   const shouldRunTimingScheduler =
     sentimentTag === "Follow Up" ||
@@ -440,10 +442,56 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
     console.warn(prefix, "Action signal detection failed (non-fatal):", err);
   }
 
+  // If booking-process routing indicates a lead-provided scheduler flow (Process 5),
+  // run the scheduler-link handler with router force. This avoids missing task creation
+  // when deterministic “explicit instruction” matching is too strict.
+  if (actionSignals.route?.processId === 5) {
+    handleLeadSchedulerLinkIfPresent({
+      leadId: lead.id,
+      latestInboundText: inboundReplyOnly || inboundText,
+      observedSchedulerLink: schedulerLink,
+      forceBookingProcess5: true,
+    }).catch(() => undefined);
+  }
+
+  // Create call task when booking-process routing detects callback intent (Process 4),
+  // even if sentiment classification picked a different tag.
+  if (actionSignalCallRequested || sentimentTag === "Call Requested") {
+    ensureCallRequestedTask({
+      leadId: lead.id,
+      latestInboundText: inboundReplyOnly || inboundText,
+      force: actionSignalCallRequested,
+    }).catch(() => undefined);
+  }
+
   pushStage("draft_generation");
-  const schedulingHandled = Boolean(autoBook.context?.followUpTaskCreated || timingFollowUpScheduled);
-  if (schedulingHandled) {
-    console.log(prefix, "Skipping draft generation; scheduling follow-up task already created");
+  let schedulingHandled = false;
+  const shouldAttemptFollowUpRouting = sentimentTag === "Follow Up" && timingFollowUpScheduled;
+  if (shouldAttemptFollowUpRouting) {
+    try {
+      const backfill = await backfillMissingFollowUpTaskDrafts({ leadId: lead.id, limit: 10, lookbackDays: 120 });
+      if (backfill.errors.length > 0) {
+        console.warn(prefix, "FollowUpTask draft backfill errors:", backfill.errors.slice(0, 3));
+      }
+    } catch (error) {
+      console.warn(prefix, "FollowUpTask draft backfill failed:", error);
+    }
+
+    const hasPendingRoutedDraft = await hasPendingEligibleFollowUpTaskDraft({
+      leadId: lead.id,
+      limit: 50,
+      lookbackDays: 120,
+    }).catch(() => true);
+
+    if (!hasPendingRoutedDraft) {
+      console.warn(
+        prefix,
+        "follow-up timing scheduled but no eligible pending routed draft found; falling back to normal draft generation"
+      );
+    } else {
+      schedulingHandled = true;
+      console.log(prefix, "Skipping draft generation; scheduling follow-up task already created");
+    }
   }
 
   let leadPhoneOnFileForCallPolicy = Boolean((lead.phone || "").trim());
@@ -455,8 +503,11 @@ export async function runInboundPostProcessPipeline(params: InboundPostProcessPa
       .catch(() => leadPhoneOnFileForCallPolicy);
   }
 
-  const suppressDraftForCallRequestedNoPhone =
-    actionSignalCallRequested && !leadPhoneOnFileForCallPolicy;
+  const callRequestedFlow =
+    (actionSignalCallRequested || sentimentTag === "Call Requested") &&
+    actionSignals.route?.processId !== 5;
+
+  const suppressDraftForCallRequestedNoPhone = callRequestedFlow && !leadPhoneOnFileForCallPolicy;
 
   if (!autoBook.booked && !schedulingHandled && shouldGenerateDraft(sentimentTag, lead.email) && !suppressDraftForCallRequestedNoPhone) {
     console.log(prefix, "Generating draft for message", message.id);

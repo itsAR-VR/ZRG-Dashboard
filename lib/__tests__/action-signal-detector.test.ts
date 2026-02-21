@@ -49,6 +49,15 @@ describe("action signal detector: heuristics", () => {
     assert.equal(signal?.confidence, "high");
   });
 
+  it("detects Notion Calendar meet link in body as external scheduler link", () => {
+    const signal = detectExternalCalendarHeuristic(
+      "Here's my calendar: https://calendar.notion.so/meet/bella-w91wj020so/v2",
+      "https://myworkspace.com/book"
+    );
+    assert.equal(signal?.type, "book_on_external_calendar");
+    assert.equal(signal?.confidence, "high");
+  });
+
   it("ignores scheduler link when it matches workspace booking link", () => {
     const signal = detectExternalCalendarHeuristic(
       "Book here: https://calendly.com/team/demo/",

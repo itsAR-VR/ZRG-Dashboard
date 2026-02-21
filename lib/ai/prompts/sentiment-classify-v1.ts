@@ -32,7 +32,8 @@ CATEGORIES
 - "Meeting Booked": ONLY if a concrete time is explicitly accepted/confirmed, OR they confirm a booking/invite acceptance, OR they explicitly instruct to book via THEIR scheduling link in the body.
 - "Meeting Requested": Lead asks to arrange a meeting/demo OR explicitly agrees to a concrete day/time.
   Guardrail: do NOT treat generic confirmations ("confirmed", "sounds good") as meeting requested unless a specific time exists in the immediately prior context.
-- "Call Requested": Lead explicitly asks for a PHONE call (ring/phone/call me/us) without a confirmed time.
+- "Call Requested": Callback intent. Lead explicitly asks us to call them by phone and provides (or clearly references) a callback number/contact point (e.g., "call me at…", "reach me at the number below", "my number is in my signature").
+  Do NOT use this for scheduled-call intent (call-as-meeting) like "open to a quick call next week" or "let me know what time works best" (those are "Meeting Requested").
   Do NOT use this just because a phone number appears in a signature.
 - "Information Requested": Asks for details/clarifications/pricing/more information about the offer.
 - "Follow Up": Defers timing / "not now" (e.g., "not ready to sell", "not right now", "not looking right now", "reach out in X", "next month", "maybe next year", "in a couple years").

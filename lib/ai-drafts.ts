@@ -449,7 +449,7 @@ function buildAvailabilityLinkFallbackDraft(params: {
   aiName: string;
   link: string;
 }): string {
-  const sentence = `We don't have a matching slot in that window right now. You can grab any open time here: ${params.link}`;
+  const sentence = `That window isn't available yet. You can grab any open time here: ${params.link}`;
   if (params.channel === "sms" || params.channel === "linkedin") return sentence;
 
   const greeting = params.firstName ? `Hi ${params.firstName},\n\n` : "Hi,\n\n";
@@ -1571,6 +1571,46 @@ function applyLeadSchedulerLinkNoChoiceGuard(params: {
 
   return {
     draft: buildLeadSchedulerLinkClarificationDraft({
+      channel: params.channel,
+      firstName: params.firstName,
+      aiName: params.aiName,
+    }),
+    changed: true,
+  };
+}
+
+function buildCallRequestedTimeClarificationDraft(params: {
+  channel: DraftChannel;
+  firstName: string | null;
+  aiName: string;
+}): string {
+  const sentence = "Happy to. What time works best for a quick call?";
+
+  if (params.channel === "sms") return sentence;
+  if (params.channel === "linkedin") return sentence;
+
+  const greeting = params.firstName ? `Hi ${params.firstName},\n\n` : "Hi,\n\n";
+  return `${greeting}${sentence}\n\nBest,\n${params.aiName}`;
+}
+
+function applyCallRequestedTimeClarificationGuard(params: {
+  draft: string;
+  leadSentiment: string | null | undefined;
+  channel: DraftChannel;
+  firstName: string | null;
+  aiName: string;
+}): { draft: string; changed: boolean } {
+  const draft = (params.draft || "").trim();
+  if (!draft) return { draft, changed: false };
+  if (params.leadSentiment !== "Call Requested") return { draft, changed: false };
+
+  // If the draft is already asking a clear "what time" question, don't override.
+  if (/\bwhat\s+time\b/i.test(draft) && draft.includes("?")) {
+    return { draft, changed: false };
+  }
+
+  return {
+    draft: buildCallRequestedTimeClarificationDraft({
       channel: params.channel,
       firstName: params.firstName,
       aiName: params.aiName,
@@ -3130,16 +3170,22 @@ function isMinuteWithinWindow(value: number, startMinutes: number, endMinutes: n
 
 export function extractTimingPreferencesFromText(
   text: string,
-  timeZone: string
+  timeZone: string,
+  referenceDate?: Date
 ): {
   weekdayTokens?: string[];
   relativeWeek?: "this_week" | "next_week";
   timeWindow?: { startMinutes: number; endMinutes: number };
   monthDayRange?: { month: number; startDay: number; endDay: number };
   explicitMonthDays?: { month: number; day: number }[];
+  explicitDayTimeWindows?: { month: number; day: number; startMinutes: number | null; endMinutes: number | null }[];
 } | null {
   const message = (text || "").trim();
   if (!message) return null;
+
+  const reference =
+    referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime()) ? referenceDate : new Date();
+  const referenceParts = getLocalDateParts(reference, timeZone);
 
   const lower = message.toLowerCase();
   const weekdayTokens = new Set<string>();
@@ -3184,8 +3230,43 @@ export function extractTimingPreferencesFromText(
     const weekIndex = parseWeekOrdinal(match[1]);
     const month = monthNameToNumber(match[2]);
     if (!weekIndex || !month) return null;
-    const startDay = (weekIndex - 1) * 7 + 1;
-    const endDay = weekIndex * 7;
+
+    // Week-of-month uses Mon–Sun semantics:
+    // - Week 1 starts on the first Monday of the month.
+    // - Week N starts N-1 weeks after that Monday.
+    const yearBase = referenceParts?.year ?? new Date(reference).getUTCFullYear();
+    const monthBase = referenceParts?.month ?? month;
+    const year = month < monthBase ? yearBase + 1 : yearBase;
+
+    const weekdayTokenForLocalYmd = (day: number): string | null => {
+      if (day < 1 || day > 31) return null;
+      try {
+        const d = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+        const token = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" })
+          .format(d)
+          .toLowerCase()
+          .slice(0, 3);
+        return token || null;
+      } catch {
+        return null;
+      }
+    };
+
+    let firstMonday: number | null = null;
+    for (let day = 1; day <= 7; day++) {
+      if (weekdayTokenForLocalYmd(day) === "mon") {
+        firstMonday = day;
+        break;
+      }
+    }
+    if (!firstMonday) return null;
+
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    if (!Number.isFinite(daysInMonth) || daysInMonth <= 0) return null;
+
+    const startDay = firstMonday + (weekIndex - 1) * 7;
+    if (startDay > daysInMonth) return null;
+    const endDay = Math.min(startDay + 6, daysInMonth);
     return { month, startDay, endDay };
   })();
 
@@ -3210,6 +3291,44 @@ export function extractTimingPreferencesFromText(
     });
   })();
 
+  const explicitDayTimeWindows = (() => {
+    const segments = message
+      .split(/\n+/)
+      .flatMap((line) => line.split(/;+/))
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    const out: { month: number; day: number; startMinutes: number | null; endMinutes: number | null }[] = [];
+    for (const segment of segments) {
+      const dateMatches = segment.matchAll(
+        /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?\b/gi
+      );
+      const window = parseExplicitTimeWindow(segment);
+
+      for (const match of dateMatches) {
+        const month = monthNameToNumber(match[1] || "");
+        const day = Number.parseInt(match[2] || "", 10);
+        if (!month || !Number.isFinite(day) || day < 1 || day > 31) continue;
+
+        out.push({
+          month,
+          day,
+          startMinutes: window?.startMinutes ?? null,
+          endMinutes: window?.endMinutes ?? null,
+        });
+      }
+    }
+
+    if (out.length === 0) return null;
+    const seen = new Set<string>();
+    return out.filter((entry) => {
+      const key = `${entry.month}-${entry.day}-${entry.startMinutes ?? "any"}-${entry.endMinutes ?? "any"}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  })();
+
   let relativeWeek: "this_week" | "next_week" | undefined;
   if (/\bnext\s+week\b/i.test(lower) || /\bnext\s+(mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(r(s(day)?)?)?|fri(day)?|sat(urday)?|sun(day)?)\b/i.test(lower)) {
     relativeWeek = "next_week";
@@ -3218,10 +3337,16 @@ export function extractTimingPreferencesFromText(
   }
 
   const timeWindow = parseExplicitTimeWindow(message);
-  if (weekdayTokens.size === 0 && !relativeWeek && !timeWindow && !monthDayRange && explicitMonthDays.length === 0) return null;
-
-  // Keep an explicit dependency on timezone for relative-week interpretation downstream.
-  void timeZone;
+  if (
+    weekdayTokens.size === 0 &&
+    !relativeWeek &&
+    !timeWindow &&
+    !monthDayRange &&
+    explicitMonthDays.length === 0 &&
+    !explicitDayTimeWindows
+  ) {
+    return null;
+  }
 
   return {
     weekdayTokens: weekdayTokens.size > 0 ? Array.from(weekdayTokens) : undefined,
@@ -3229,6 +3354,7 @@ export function extractTimingPreferencesFromText(
     timeWindow: timeWindow || undefined,
     monthDayRange: monthDayRange || undefined,
     explicitMonthDays: explicitMonthDays.length > 0 ? explicitMonthDays : undefined,
+    explicitDayTimeWindows: explicitDayTimeWindows || undefined,
   };
 }
 
@@ -3315,7 +3441,7 @@ Guidelines:
 - Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
 - Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If you mention pricing, the numeric dollar amount MUST match a price/fee/cost stated in About Our Business or Reference Information — do not round, estimate, or invent. If no pricing is explicitly present in those sections, do not state any dollar amount; instead ask one clarifying question and offer a quick call.
 - If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
-- TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". If no available times match their preference, ask what works better instead of offering mismatched times.
+- TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". If no available times match their preference, do NOT offer mismatched times; instead say that window isn't available and ask for a different window (or point them to the booking link if one is provided in context).
 - If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works. When the lead expressed a timing preference, only offer times that match it. When no timing preference was expressed, prefer sooner options but never offer same-day (today) times unless the lead explicitly asks for today. If no availability is provided, ask for their availability.
 - For objections, acknowledge and redirect professionally
 - Never be pushy or aggressive
@@ -3381,7 +3507,7 @@ Guidelines:
 - Only mention the website if an OUR WEBSITE section is provided. Never claim you lack an official link.
 - Never use pricing placeholders like \${PRICE}, $X-$Y, or made-up numbers. If you mention pricing, the numeric dollar amount MUST match a price/fee/cost stated in About Our Business or Reference Information — do not round, estimate, or invent. If no pricing is explicitly present in those sections, do not state any dollar amount; instead ask one clarifying question and offer a quick call.
 - If the lead asks for more info (e.g., "send me more info"), summarize our offer and relevant Reference Information. Do NOT treat "more info" as a website request unless they explicitly asked for a link.
-- TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". If no available times match their preference, ask what works better instead of offering mismatched times.
+- TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), ONLY offer times that match their request. Do NOT offer "this week" times if they said "next week". If no available times match their preference, do NOT offer mismatched times; instead say that window isn't available and ask for a different window (or point them to the booking link if one is provided in context).
 - If proposing meeting times and availability is provided, offer 2 options from the list (verbatim) and ask which works. When the lead expressed a timing preference, only offer times that match it. When no timing preference was expressed, prefer sooner options but never offer same-day (today) times unless the lead explicitly asks for today. If no availability is provided, ask for their availability.
 - For objections, acknowledge and redirect professionally.
 - Never be pushy or aggressive.
@@ -3418,7 +3544,7 @@ function buildEmailPrompt(opts: {
 
   const availabilityBlock = shouldConsiderScheduling
     ? (opts.availability.length
-      ? `If scheduling is the right next step, offer exactly 2 of these options (verbatim, keep in bullets). TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), only offer times that match. If no times match their preference, ask what works better instead. When no timing preference was expressed, prefer sooner options but never offer same-day (today) times unless the lead explicitly asks for today:\n${opts.availability
+      ? `If scheduling is the right next step, offer exactly 2 of these options (verbatim, keep in bullets). TIMING AWARENESS: If the lead expressed a timing preference (e.g., "next week", "after the 15th"), only offer times that match. If no times match their preference, do NOT offer mismatched times; instead say that window isn't available and ask for a different window (or direct them to the booking link if one is provided in context). When no timing preference was expressed, prefer sooner options but never offer same-day (today) times unless the lead explicitly asks for today:\n${opts.availability
         .map((slot) => `- ${slot}`)
         .join("\n")}`
       : "If scheduling is the right next step, propose that you'll send a couple time options (or ask for their availability).")
@@ -4431,13 +4557,16 @@ export async function generateResponseDraft(
         : null);
     const leadHasSchedulerLink = Boolean(leadSchedulerLink);
 
-    const shouldConsiderScheduling = [
-      "Meeting Requested",
-      "Call Requested",
-      "Interested",
-      "Positive",
-      "Information Requested",
-    ].includes(sentimentTag) && !leadHasSchedulerLink;
+    const shouldConsiderScheduling =
+      !leadHasSchedulerLink &&
+      ([
+        "Meeting Requested",
+        "Call Requested",
+        "Interested",
+        "Positive",
+        "Information Requested",
+      ].includes(sentimentTag) ||
+        Boolean(opts.autoBookingContext?.schedulingDetected));
 
     let latestMessageBody = (triggerMessageRecord?.body || "").trim();
     let latestMessageSubject = (triggerMessageRecord?.subject || "").trim();
@@ -4484,6 +4613,7 @@ export async function generateResponseDraft(
 
     let availability: string[] = [];
     let offeredSlotsForOverseer: OfferedSlot[] = [];
+    let noMatchingSlotsForTimingPreference = false;
 
     if (lead.offeredSlots) {
       try {
@@ -4561,64 +4691,83 @@ export async function generateResponseDraft(
 
           let candidateSlotsUtc = slots.slotsUtc;
           const timingPreferences = latestMessageBody
-            ? extractTimingPreferencesFromText(latestMessageBody, timeZone)
+            ? extractTimingPreferencesFromText(latestMessageBody, timeZone, offeredAt)
             : null;
+          const hasTimingPreference = Boolean(timingPreferences);
 
-          if (timingPreferences?.monthDayRange) {
-            const range = timingPreferences.monthDayRange;
+          if (timingPreferences?.explicitDayTimeWindows?.length) {
+            const windows = timingPreferences.explicitDayTimeWindows;
             candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
               const d = new Date(iso);
               if (Number.isNaN(d.getTime())) return false;
               const parts = getLocalDateParts(d, timeZone);
               if (!parts) return false;
-              return parts.month === range.month && parts.day >= range.startDay && parts.day <= range.endDay;
-            });
-          }
-
-          if (timingPreferences?.explicitMonthDays?.length) {
-            const allowed = new Set(
-              timingPreferences.explicitMonthDays.map((entry) => `${entry.month}-${entry.day}`)
-            );
-            candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
-              const d = new Date(iso);
-              if (Number.isNaN(d.getTime())) return false;
-              const parts = getLocalDateParts(d, timeZone);
-              if (!parts) return false;
-              return allowed.has(`${parts.month}-${parts.day}`);
-            });
-          }
-
-          if (timingPreferences?.weekdayTokens?.length) {
-            const weekdayFormatter = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" });
-            candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
-              const d = new Date(iso);
-              if (Number.isNaN(d.getTime())) return false;
-              const weekdayToken = weekdayFormatter.format(d).toLowerCase().slice(0, 3);
-              return timingPreferences.weekdayTokens!.includes(weekdayToken);
-            });
-          }
-
-          if (timingPreferences?.relativeWeek) {
-            candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
-              const dayDiff = getDayDiffInTimeZone(iso, offeredAt, timeZone);
-              if (dayDiff === null) return false;
-              if (timingPreferences.relativeWeek === "this_week") {
-                return dayDiff >= 0 && dayDiff < 7;
-              }
-              return dayDiff >= 7 && dayDiff < 14;
-            });
-          }
-
-          if (timingPreferences?.timeWindow) {
-            candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
               const minutes = getMinutesOfDayInTimeZone(iso, timeZone);
               if (minutes === null) return false;
-              return isMinuteWithinWindow(
-                minutes,
-                timingPreferences.timeWindow!.startMinutes,
-                timingPreferences.timeWindow!.endMinutes
-              );
+
+              return windows.some((window) => {
+                if (parts.month !== window.month || parts.day !== window.day) return false;
+                if (window.startMinutes === null || window.endMinutes === null) return true;
+                return isMinuteWithinWindow(minutes, window.startMinutes, window.endMinutes);
+              });
             });
+          } else {
+            if (timingPreferences?.monthDayRange) {
+              const range = timingPreferences.monthDayRange;
+              candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
+                const d = new Date(iso);
+                if (Number.isNaN(d.getTime())) return false;
+                const parts = getLocalDateParts(d, timeZone);
+                if (!parts) return false;
+                return parts.month === range.month && parts.day >= range.startDay && parts.day <= range.endDay;
+              });
+            }
+
+            if (timingPreferences?.explicitMonthDays?.length) {
+              const allowed = new Set(
+                timingPreferences.explicitMonthDays.map((entry) => `${entry.month}-${entry.day}`)
+              );
+              candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
+                const d = new Date(iso);
+                if (Number.isNaN(d.getTime())) return false;
+                const parts = getLocalDateParts(d, timeZone);
+                if (!parts) return false;
+                return allowed.has(`${parts.month}-${parts.day}`);
+              });
+            }
+
+            if (timingPreferences?.weekdayTokens?.length) {
+              const weekdayFormatter = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" });
+              candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
+                const d = new Date(iso);
+                if (Number.isNaN(d.getTime())) return false;
+                const weekdayToken = weekdayFormatter.format(d).toLowerCase().slice(0, 3);
+                return timingPreferences.weekdayTokens!.includes(weekdayToken);
+              });
+            }
+
+            if (timingPreferences?.relativeWeek) {
+              candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
+                const dayDiff = getDayDiffInTimeZone(iso, offeredAt, timeZone);
+                if (dayDiff === null) return false;
+                if (timingPreferences.relativeWeek === "this_week") {
+                  return dayDiff >= 0 && dayDiff < 7;
+                }
+                return dayDiff >= 7 && dayDiff < 14;
+              });
+            }
+
+            if (timingPreferences?.timeWindow) {
+              candidateSlotsUtc = candidateSlotsUtc.filter((iso) => {
+                const minutes = getMinutesOfDayInTimeZone(iso, timeZone);
+                if (minutes === null) return false;
+                return isMinuteWithinWindow(
+                  minutes,
+                  timingPreferences.timeWindow!.startMinutes,
+                  timingPreferences.timeWindow!.endMinutes
+                );
+              });
+            }
           }
 
           const excludeUtcIso = existingOffered;
@@ -4633,6 +4782,9 @@ export async function generateResponseDraft(
             preferWithinDays: 5,
             now: offeredAt,
           });
+          if (hasTimingPreference && selectedUtcIso.length === 0) {
+            noMatchingSlotsForTimingPreference = true;
+          }
 
           const formatted = formatAvailabilitySlots({
             slotsUtcIso: selectedUtcIso,
@@ -5843,6 +5995,18 @@ Generate an appropriate ${channel} response following the guidelines above.
       hasPublicBookingLinkOverride = false;
     }
 
+    if (!bookingEscalationReason && noMatchingSlotsForTimingPreference) {
+      const link = (leadSchedulerLink || "").trim() || (bookingLink || "").trim();
+      if (link) {
+        draftContent = buildAvailabilityLinkFallbackDraft({
+          channel,
+          firstName: firstName || null,
+          aiName,
+          link,
+        });
+      }
+    }
+
       if (channel === "email" && draftContent && (settings?.draftVerificationStep3Enabled ?? true)) {
         // Prevent verifier truncations by keeping the draft within our configured bounds.
         const preBounds = emailLengthBoundsForClamp ?? getEmailDraftCharBoundsFromEnv();
@@ -6335,6 +6499,21 @@ Generate an appropriate ${channel} response following the guidelines above.
           });
         }
       }
+
+      const callRequestedTimeGuard = applyCallRequestedTimeClarificationGuard({
+        draft: draftContent,
+        leadSentiment: lead.sentimentTag,
+        channel,
+        firstName: firstName || null,
+        aiName,
+      });
+      if (callRequestedTimeGuard.changed) {
+        draftContent = callRequestedTimeGuard.draft;
+        console.log("[AI Drafts] Applied call-requested time clarification guard", {
+          leadId,
+          channel,
+        });
+      }
     }
 
     if (channel === "email" && draftContent) {
@@ -6545,7 +6724,8 @@ Generate an appropriate ${channel} response following the guidelines above.
 function getResponseStrategy(sentimentTag: string): string {
   const strategies: Record<string, string> = {
     "Meeting Requested": "Confirm interest and propose specific meeting times. Be enthusiastic but professional.",
-    "Call Requested": "Acknowledge their request for a call. Confirm the best number to reach them and propose specific call times.",
+    "Call Requested":
+      "Acknowledge their request for a call. Confirm the best number to reach them. Ask what day/time works best for a quick call. Do NOT propose a specific time unless they already provided a concrete time window.",
     "Not Interested": "Acknowledge their decision respectfully. Ask if they'd like to be contacted in the future or if there's anything specific they're looking for.",
     "Information Requested":
       "Provide the requested information clearly and concisely using the service description and relevant knowledge assets. Offer to schedule a call for more details. Do not treat 'send me more info' as a website request unless they explicitly asked for a link.",
